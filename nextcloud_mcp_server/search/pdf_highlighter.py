@@ -414,6 +414,11 @@ class PDFHighlighter:
         return PDFHighlighter._WORD_RE.findall(s.lower())
 
     @staticmethod
+    def _clamp01(v: float) -> float:
+        """Clamp a normalized coordinate to ``[0, 1]``."""
+        return 0.0 if v < 0 else 1.0 if v > 1 else v
+
+    @staticmethod
     def _find_chunk_line_rects(
         page: pymupdf.Page, chunk_text: str
     ) -> list[tuple[float, float, float, float]] | None:
@@ -425,9 +430,10 @@ class PDFHighlighter:
         (table pipes, ``**``, list bullets) never appears in the text layer, so
         exact phrase search is fragile, and a single estimated-height box doesn't
         trace the real lines. Instead: tokenise the chunk and the page's words
-        (``get_text("words")``), anchor the chunk's leading/trailing token n-grams
-        in the page word stream, and return the matched words merged into one rect
-        per text line (page coordinates). None when the chunk can't be located.
+        (``get_text("words")``), find the densest contiguous cluster of words whose
+        tokens match the chunk, and return that region merged into one rect per text
+        line (page coordinates). Robust to markdown re-ordering and space-fused
+        tokens; None when the chunk can't be located.
         """
         want = PDFHighlighter._norm_tokens(PDFHighlighter.strip_markdown(chunk_text))
         if not want:
@@ -453,7 +459,7 @@ class PDFHighlighter:
         # Robust to markdown re-ordering and space-fused tokens (``issueof``,
         # ``powersunder``) that the text layer splits — we match on the tokens that
         # DO align and bound the region, instead of an exact contiguous phrase.
-        MAX_GAP = 12
+        MAX_GAP = 12  # tolerate a couple of stopword/punctuation words between hits
         runs: list[tuple[int, int, int]] = []  # (start_idx, end_idx, hit_count)
         run_start = prev = cand[0]
         hits = 1
@@ -466,7 +472,9 @@ class PDFHighlighter:
                 hits = 1
         runs.append((run_start, prev, hits))
         lo, hi, _ = max(runs, key=lambda r: r[2])
-        # Merge matched words into one rect per (block, line), in reading order.
+        # Merge the run's words — matched words plus the short gap words between them
+        # — into one rect per (block, line), in reading order. Including gap words
+        # covers the full chunk region (stopwords/punctuation that don't tokenise).
         lines: dict[tuple, list[float]] = {}
         order: list[tuple] = []
         for i in range(lo, hi + 1):
@@ -488,11 +496,7 @@ class PDFHighlighter:
 
     @staticmethod
     def _find_chunk_bbox(
-        page: pymupdf.Page,
-        chunk_text: str,
-        page_relative_start: int = 0,
-        page_relative_end: int = 0,
-        page_text_length: int = 0,
+        page: pymupdf.Page, chunk_text: str
     ) -> tuple[float, float, float, float] | None:
         """Single union bbox for a chunk (legacy PNG-overlay path).
 
@@ -841,9 +845,7 @@ class PDFHighlighter:
                 w = page_rect.width or 1.0
                 h = page_rect.height or 1.0
 
-                def _c(v: float) -> float:
-                    return 0.0 if v < 0 else 1.0 if v > 1 else v
-
+                _c = PDFHighlighter._clamp01
                 normalized = [
                     (_c(r[0] / w), _c(r[1] / h), _c(r[2] / w), _c(r[3] / h))
                     for r in rects
@@ -957,7 +959,6 @@ class PDFHighlighter:
                 page_boundary = page_boundaries[page_num - 1]
                 page_start = page_boundary["start_offset"]
                 page_end = page_boundary["end_offset"]
-                page_text_length = page_end - page_start
 
                 # Calculate what portion of the chunk appears on this page
                 chunk_start_on_page = max(start_offset, page_start)
@@ -966,9 +967,7 @@ class PDFHighlighter:
                 # Extract just the text that appears on this page
                 page_relative_text = full_text[chunk_start_on_page:chunk_end_on_page]
 
-                chunks_by_page[page_num].append(
-                    (chunk_index, chunk_page_info, page_relative_text, page_text_length)
-                )
+                chunks_by_page[page_num].append((chunk_index, page_relative_text))
 
             logger.debug(
                 "Chunks distributed across %s unique pages", len(chunks_by_page)
@@ -1000,21 +999,10 @@ class PDFHighlighter:
                     len(page_chunks),
                 )
 
-                for (
-                    chunk_index,
-                    chunk_page_info,
-                    chunk_text,
-                    page_text_length,
-                ) in page_chunks:
+                for chunk_index, chunk_text in page_chunks:
                     try:
-                        # Find chunk bounding box using text search
-                        bbox = PDFHighlighter._find_chunk_bbox(
-                            page,
-                            chunk_text,
-                            chunk_page_info["page_relative_start"],
-                            chunk_page_info["page_relative_end"],
-                            page_text_length,
-                        )
+                        # Find chunk bounding box via word-level matching
+                        bbox = PDFHighlighter._find_chunk_bbox(page, chunk_text)
 
                         if bbox is None:
                             logger.warning("Chunk %s: could not find bbox", chunk_index)
