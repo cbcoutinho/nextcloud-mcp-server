@@ -296,6 +296,20 @@ def should_use_page_aware(
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
 
 
+def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
+    """Bytes ingested for one document (card #401).
+
+    Files carry their raw WebDAV binary in ``content_bytes`` — that raw size is
+    what the customer ingested. Text doc types (note, deck card, news item, mail
+    message) have no binary (``content_bytes is None``), so fall back to the
+    UTF-8 size of the extracted text. Selecting on ``content_bytes is not None``
+    (not ``doc_type``) keeps this correct for any future binary-backed type.
+    """
+    if content_bytes is not None:
+        return len(content_bytes)
+    return len(content.encode("utf-8"))
+
+
 async def record_indexing_usage(
     *,
     enabled: bool,
@@ -307,11 +321,13 @@ async def record_indexing_usage(
     token_count: int,
     total_chars: int,
     page_count: int | None,
+    bytes_ingested: int,
+    bytes_stored: int,
     pipeline_tier: str | None = None,
 ) -> None:
     """Record the billable usage events for one embedded document.
 
-    Two metered dimensions (Deck #67), recorded independently:
+    Metered dimensions (Deck #67 / #401), recorded independently:
 
     - ``tokens_embedded`` — the embedding request's token count, recorded for
       *every* embedded document. The same metric search records, so the meter
@@ -324,15 +340,30 @@ async def record_indexing_usage(
       ``pages_embedded`` row — only ``tokens_embedded``. There is deliberately
       no chars/tokens-per-page constant: pages map 1:1 to parsed document pages
       (card #282).
+    - ``bytes_ingested`` — the raw source size at ingestion time, recorded for
+      *every* embedded document. For files this is the raw binary size fetched
+      from WebDAV; for text doc types (note, deck card, news item, mail message
+      — no binary) it is the UTF-8 size of the extracted text. The caller
+      resolves the right source per ``doc_type`` (see the call site).
+    - ``bytes_stored`` — the UTF-8 byte size of the chunk texts persisted as
+      Qdrant payload excerpts, recorded for *every* embedded document. Reflects
+      the indexed footprint and so includes chunk-overlap duplication; it is
+      therefore typically larger than ``bytes_ingested`` for text content.
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
     indexing. ``chunk_count`` is the empty-batch no-op guard — a document that
-    produced no chunks embedded nothing, so both events are skipped rather than
+    produced no chunks embedded nothing, so all events are skipped rather than
     writing zero-value rows. ``pages_embedded`` is additionally skipped when
     ``page_count`` is absent or not strictly positive — gating on the page count
     itself (not the ``doc_type``) keeps this correct if a future non-PDF parsed
     type starts reporting pages, and a malformed non-positive count meters as
-    "no pages" rather than emitting a zero/negative billing row.
+    "no pages" rather than emitting a zero/negative billing row. The
+    ``bytes_*`` events are likewise skipped on a non-positive count.
+
+    Cross-repo note: the control-plane rollup silently ignores a ``metric`` its
+    catalog doesn't know (see migration 007), so ``bytes_ingested`` /
+    ``bytes_stored`` only bill once the CP metric catalog + Stripe meter learn
+    them too (card #401).
 
     Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
     GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
@@ -393,6 +424,25 @@ async def record_indexing_usage(
                     metadata=metadata,
                     enabled=True,
                 )
+        # Byte-volume dimensions (card #401), recorded for every embedded
+        # document. Appended after the conditional pages block so the
+        # tokens-then-pages ordering above is preserved. Each is skipped on a
+        # non-positive count to avoid writing a zero-value billing row (the
+        # chunk_count guard already filtered truly-empty documents).
+        if bytes_ingested > 0:
+            await store.record_usage_event(
+                metric="bytes_ingested",
+                value=bytes_ingested,
+                metadata=metadata,
+                enabled=True,
+            )
+        if bytes_stored > 0:
+            await store.record_usage_event(
+                metric="bytes_stored",
+                value=bytes_stored,
+                metadata=metadata,
+                enabled=True,
+            )
     except Exception:
         # Reached only when shared()/store construction itself raises
         # (record_usage_event swallows its own write failures). Metering is on,
@@ -1448,6 +1498,13 @@ async def _index_document(
                     and not isinstance(raw_page_count, bool)
                     else None
                 ),
+                # bytes_ingested: raw source size at ingestion (raw WebDAV binary
+                # for files, UTF-8 text size for text doc types — note,
+                # deck_card, news_item, mail_message). See helper.
+                bytes_ingested=ingested_byte_size(content_bytes, content),
+                # bytes_stored: UTF-8 size of the chunk texts persisted as Qdrant
+                # payload excerpts (includes chunk-overlap duplication).
+                bytes_stored=sum(len(t.encode("utf-8")) for t in chunk_texts),
                 # Tier that produced the parsed pages (registry stamps it on the
                 # result metadata); text doc types stay "fast". Narrow defensively
                 # to str|None — file_metadata is loosely typed (Any values).
