@@ -409,9 +409,11 @@ class PDFHighlighter:
     # page's words regardless of how either side renders structure.
     _WORD_RE = re.compile(r"[0-9a-z]+")
 
-    # Max non-matching words tolerated between two matched words when growing a
-    # cluster (~2-3 stopword/punctuation words). Class-level for tunability /
-    # subclassing, consistent with _WORD_RE and COLORS.
+    # Max non-matching TOKENS tolerated between two matched tokens when growing a
+    # cluster (~10-12 single-token words; fewer for multi-token compounds).
+    # Deliberately generous to bridge stopword / punctuation / markdown-artifact
+    # runs; the densest-run hit count still selects the tightest cluster.
+    # Class-level for tunability / subclassing, consistent with _WORD_RE and COLORS.
     _CHUNK_MAX_GAP = 12
 
     @staticmethod
@@ -456,7 +458,7 @@ class PDFHighlighter:
             tuple[str, tuple[float, float, float, float, str, int, int, int]]
         ] = []
         for w in words:
-            for tok in PDFHighlighter._norm_tokens(str(w[4])):
+            for tok in PDFHighlighter._norm_tokens(w[4]):  # w[4] is the word str
                 flat.append((tok, w))
         if not flat:
             return None
