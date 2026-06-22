@@ -87,6 +87,51 @@ def test_pages_to_text_computes_block_spans_from_blocks():
     assert s2["page"] == 2 and text[s2["start_offset"] : s2["end_offset"]] == "Terms"
 
 
+def test_pages_to_text_matches_blocks_ignoring_whitespace():
+    """A block whose tag-stripped text fuses tokens across ``<br/>`` (no separator),
+    while the page markdown renders those breaks as spaces, is still located and
+    given a span — a verbatim find would drop it. This is the Student 147 page-15
+    regression (the FLASHMAN'S passage), where ~40% of blocks lost their bbox and
+    highlights came back disconnected.
+
+    The span must cover the full sentence region in the markdown."""
+    markdown = (
+        "YEAR 11 LEADERS AWARD\n\n"
+        'I am making a recommendation that Louis receives the "FLASHMAN\'S AWARD".'
+    )
+    body_html = (
+        "<p>I am making a recommendation<br/>that Louis receives the<br/>"
+        '"FLASHMAN\'S AWARD".</p>'
+    )
+    # Precondition: the fused stripped text is NOT a verbatim substring (the bug).
+    assert ocr._strip_html(body_html) not in markdown
+    pages = [
+        (
+            0,
+            markdown,
+            [
+                {
+                    "html": "<h2>YEAR 11 LEADERS AWARD</h2>",
+                    "bbox": [0.1, 0.02, 0.9, 0.07],
+                },
+                {"html": body_html, "bbox": [0.1, 0.1, 1.0, 0.24]},
+            ],
+        )
+    ]
+    text, _b, spans = ocr._pages_to_text(pages)
+    # Both blocks now get spans (pre-fix: only the heading matched verbatim).
+    assert len(spans) == 2
+    assert (
+        text[spans[0]["start_offset"] : spans[0]["end_offset"]]
+        == "YEAR 11 LEADERS AWARD"
+    )
+    # The body span maps back onto the real (whitespace-bearing) markdown sentence.
+    assert text[spans[1]["start_offset"] : spans[1]["end_offset"]] == (
+        'I am making a recommendation that Louis receives the "FLASHMAN\'S AWARD".'
+    )
+    assert spans[1]["bbox"] == [0.1, 0.1, 1.0, 0.24]
+
+
 def test_pages_to_text_skips_blocks_without_bbox_or_unmatched_text():
     """A block with no bbox, or whose text isn't in the markdown, is skipped
     (that region falls back to pymupdf) rather than guessed."""
