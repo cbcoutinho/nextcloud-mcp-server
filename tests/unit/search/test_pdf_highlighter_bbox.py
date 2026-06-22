@@ -230,3 +230,76 @@ def test_compute_chunk_bboxes_handles_unordered_page_boundaries():
     assert in_order == reversed_order
     assert reversed_order[0][1] == 1
     assert reversed_order[1][1] == 2
+
+
+@pytest.mark.unit
+def test_chunk_bbox_covers_multiple_lines():
+    """A chunk spanning several lines yields one tight rect PER LINE, not a single
+    estimated-height box (the #404 pymupdf-path geometry fix)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = ["Alpha beta gamma delta", "epsilon zeta eta theta", "iota kappa lambda mu"]
+    for i, ln in enumerate(lines):
+        page.insert_text((50, 100 + i * 30), ln)
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    body = " ".join(lines)
+    boundaries = [{"page": 1, "start_offset": 0, "end_offset": len(body)}]
+    chunks = [(0, 0, len(body), 1, body)]
+
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes, chunks=chunks, page_boundaries=boundaries, full_text=body
+    )
+    rects, page_num = results[0]
+    assert page_num == 1
+    # one rect per text line (3), vertically separated, each valid + normalized
+    assert len(rects) >= 3
+    y0s = sorted(r[1] for r in rects)
+    assert y0s[0] < y0s[-1]
+    for r in rects:
+        assert 0.0 <= r[0] < r[2] <= 1.0
+        assert 0.0 <= r[1] < r[3] <= 1.0
+
+
+@pytest.mark.unit
+def test_chunk_bbox_tolerates_space_fused_tokens():
+    """Markdown fuses words across breaks (``issueof``) that the text layer keeps
+    split; word-overlap matching still locates the chunk where the legacy exact
+    phrase search dropped it (#404)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((50, 100), "the issue of safety here today")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    body = "the issueof safety here"  # 'issueof' fused, as markdown often renders it
+    boundaries = [{"page": 1, "start_offset": 0, "end_offset": len(body)}]
+    chunks = [(0, 0, len(body), 1, body)]
+
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes, chunks=chunks, page_boundaries=boundaries, full_text=body
+    )
+    assert 0 in results  # located despite the fused token
+    rects, _ = results[0]
+    assert len(rects) >= 1
+
+
+@pytest.mark.unit
+def test_find_chunk_bbox_returns_single_union_box():
+    """The legacy PNG-overlay path's ``_find_chunk_bbox`` collapses the per-line
+    rects to one union box spanning all matched lines (#404)."""
+    spacing = 30
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = ["Alpha beta gamma", "delta epsilon zeta", "eta theta iota"]
+    for i, ln in enumerate(lines):
+        page.insert_text((50, 100 + i * spacing), ln)
+    union = PDFHighlighter._find_chunk_bbox(page, " ".join(lines))
+    doc.close()
+
+    assert union is not None
+    x0, y0, x1, y1 = union
+    assert x0 < x1 and y0 < y1
+    # Union spans all lines: taller than the first→last baseline gap.
+    assert (y1 - y0) > spacing * (len(lines) - 1)
