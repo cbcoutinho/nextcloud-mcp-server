@@ -300,10 +300,10 @@ def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
     """Bytes ingested for one document (card #401).
 
     Files carry their raw WebDAV binary in ``content_bytes`` — that raw size is
-    what the customer ingested. Text doc types (note, deck card, news item) have
-    no binary (``content_bytes is None``), so fall back to the UTF-8 size of the
-    extracted text. Selecting on ``content_bytes is not None`` (not ``doc_type``)
-    keeps this correct for any future binary-backed type.
+    what the customer ingested. Text doc types (note, deck card, news item, mail
+    message) have no binary (``content_bytes is None``), so fall back to the
+    UTF-8 size of the extracted text. Selecting on ``content_bytes is not None``
+    (not ``doc_type``) keeps this correct for any future binary-backed type.
     """
     if content_bytes is not None:
         return len(content_bytes)
@@ -1462,7 +1462,8 @@ async def _index_document(
                     else None
                 ),
                 # bytes_ingested: raw source size at ingestion (raw WebDAV binary
-                # for files, UTF-8 text size for text doc types). See helper.
+                # for files, UTF-8 text size for text doc types — note,
+                # deck_card, news_item, mail_message). See helper.
                 bytes_ingested=ingested_byte_size(content_bytes, content),
                 # bytes_stored: UTF-8 size of the chunk texts persisted as Qdrant
                 # payload excerpts (includes chunk-overlap duplication).

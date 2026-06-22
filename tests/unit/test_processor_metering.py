@@ -50,6 +50,15 @@ def test_ingested_byte_size_text_uses_utf8_length():
 
 
 @pytest.mark.unit
+def test_ingested_byte_size_mail_message_uses_utf8():
+    """mail_message has no binary (content_bytes=None) → same UTF-8 arm as text."""
+    # mail_message sets content_bytes=None in the processor, so it must measure
+    # the extracted text, not be mistaken for a binary-backed (file) doc type.
+    mail = "Subject: Hello\nBody text"
+    assert processor.ingested_byte_size(None, mail) == len(mail.encode("utf-8"))
+
+
+@pytest.mark.unit
 async def test_parsed_file_records_pages_and_tokens(store_spy):
     """A parsed PDF fires all events: pages_embedded = real page count."""
     await processor.record_indexing_usage(
