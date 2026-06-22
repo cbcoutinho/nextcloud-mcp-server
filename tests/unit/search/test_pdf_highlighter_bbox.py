@@ -289,16 +289,17 @@ def test_chunk_bbox_tolerates_space_fused_tokens():
 def test_find_chunk_bbox_returns_single_union_box():
     """The legacy PNG-overlay path's ``_find_chunk_bbox`` collapses the per-line
     rects to one union box spanning all matched lines (#404)."""
+    spacing = 30
     doc = pymupdf.open()
     page = doc.new_page(width=595, height=842)
     lines = ["Alpha beta gamma", "delta epsilon zeta", "eta theta iota"]
     for i, ln in enumerate(lines):
-        page.insert_text((50, 100 + i * 30), ln)
+        page.insert_text((50, 100 + i * spacing), ln)
     union = PDFHighlighter._find_chunk_bbox(page, " ".join(lines))
     doc.close()
 
     assert union is not None
     x0, y0, x1, y1 = union
     assert x0 < x1 and y0 < y1
-    # Union spans all three lines, so its height exceeds a single line.
-    assert (y1 - y0) > 40
+    # Union spans all lines: taller than the first→last baseline gap.
+    assert (y1 - y0) > spacing * (len(lines) - 1)

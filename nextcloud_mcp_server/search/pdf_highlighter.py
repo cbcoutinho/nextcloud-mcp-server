@@ -409,6 +409,11 @@ class PDFHighlighter:
     # page's words regardless of how either side renders structure.
     _WORD_RE = re.compile(r"[0-9a-z]+")
 
+    # Max non-matching words tolerated between two matched words when growing a
+    # cluster (~2-3 stopword/punctuation words). Class-level for tunability /
+    # subclassing, consistent with _WORD_RE and COLORS.
+    _CHUNK_MAX_GAP = 12
+
     @staticmethod
     def _norm_tokens(s: str) -> list[str]:
         return PDFHighlighter._WORD_RE.findall(s.lower())
@@ -450,8 +455,9 @@ class PDFHighlighter:
             return None
         want_set = set(want)
         cand = [i for i, (t, _) in enumerate(flat) if t in want_set]
-        # Require enough of the chunk's DISTINCT words on this page, else the chunk
-        # isn't really here — avoid drawing a spurious box.
+        # Coarse presence gate: require enough of the chunk's DISTINCT words SOMEWHERE
+        # on the page (not necessarily contiguous) before trusting a cluster — keeps a
+        # stray token from yielding a box. Cluster tightness is decided below.
         if not cand or len({flat[i][0] for i in cand}) < max(2, 0.4 * len(want_set)):
             return None
         # Densest contiguous cluster of matching words: split candidates wherever the
@@ -459,12 +465,11 @@ class PDFHighlighter:
         # Robust to markdown re-ordering and space-fused tokens (``issueof``,
         # ``powersunder``) that the text layer splits — we match on the tokens that
         # DO align and bound the region, instead of an exact contiguous phrase.
-        MAX_GAP = 12  # tolerate a couple of stopword/punctuation words between hits
         runs: list[tuple[int, int, int]] = []  # (start_idx, end_idx, hit_count)
         run_start = prev = cand[0]
         hits = 1
         for idx in cand[1:]:
-            if idx - prev <= MAX_GAP:
+            if idx - prev <= PDFHighlighter._CHUNK_MAX_GAP:
                 prev, hits = idx, hits + 1
             else:
                 runs.append((run_start, prev, hits))
@@ -519,15 +524,18 @@ class PDFHighlighter:
         page: pymupdf.Page,
         chunk_text: str,
         color: str = "yellow",
-        page_relative_start: int | None = None,
-        page_relative_end: int | None = None,
-        page_text_length: int | None = None,
     ) -> int:
         """Add bounding box highlight to a PDF page for the given chunk text.
 
         Uses text search to find the chunk's location on the page, then draws
         a bounding box around that region. Falls back to character offset estimation
         if text search fails.
+
+        TODO(#404): this single-chunk PNG path still uses the legacy
+        ``page.search_for`` phrase match, so it has the ~30% miss rate the batch
+        path fixed. Route it through ``_find_chunk_line_rects`` (drawing one rect
+        per line) to bring it to parity; deferred as it's a legacy, internally
+        only path.
 
         Args:
             page: PyMuPDF page object
@@ -703,27 +711,18 @@ class PDFHighlighter:
             page_relative_end = chunk_page_info["page_relative_end"]
             chunk_text = page_text[page_relative_start:page_relative_end]
 
-            # Calculate page text length for region estimation
-            page_text_length = page_end - page_start
-
             logger.debug(
-                "Extracted %s chars on page %s (offsets %s-%s of %s)",
+                "Extracted %s chars on page %s (offsets %s-%s)",
                 len(chunk_text),
                 page_num,
                 page_relative_start,
                 page_relative_end,
-                page_text_length,
             )
 
             # Get page and add highlights
             page = doc[page_num - 1]
             highlight_count = PDFHighlighter.highlight_chunk_on_page(
-                page,
-                chunk_text,
-                color,
-                page_relative_start=page_relative_start,
-                page_relative_end=page_relative_end,
-                page_text_length=page_text_length,
+                page, chunk_text, color
             )
 
             if highlight_count == 0:
@@ -772,10 +771,10 @@ class PDFHighlighter:
         """Compute normalized bounding boxes for chunks without rendering.
 
         Lightweight alternative to highlight_chunks_batch — opens the PDF,
-        locates each chunk on its assigned page using the same text-search
-        path as the highlighter (`_find_chunk_bbox`), and returns
-        page-normalized rectangles. Skips the get_pixmap + PIL pipeline
-        entirely, so no PNG bytes are produced.
+        locates each chunk on its assigned page via word-level token matching
+        (`_find_chunk_line_rects`), and returns page-normalized rectangles
+        (one per text line). Skips the get_pixmap + PIL pipeline entirely, so
+        no PNG bytes are produced.
 
         Args:
             pdf_bytes: PDF file bytes.
