@@ -66,14 +66,19 @@ class TestOcrChunkBboxes:
     """`_ocr_chunk_bboxes` attributes OCR block bboxes to chunks by char-span overlap."""
 
     @staticmethod
-    def _chunk(start, end):
+    def _chunk(start, end, page_number=None):
         from types import SimpleNamespace
 
-        return SimpleNamespace(start_offset=start, end_offset=end)
+        return SimpleNamespace(
+            start_offset=start, end_offset=end, page_number=page_number
+        )
 
     @staticmethod
-    def _span(start, end, bbox):
-        return {"start_offset": start, "end_offset": end, "bbox": bbox}
+    def _span(start, end, bbox, page=None):
+        s = {"start_offset": start, "end_offset": end, "bbox": bbox}
+        if page is not None:
+            s["page"] = page
+        return s
 
     def test_single_block_per_chunk(self):
         from nextcloud_mcp_server.vector.processor import _ocr_chunk_bboxes
@@ -104,3 +109,18 @@ class TestOcrChunkBboxes:
         # Chunk [50,60) overlaps no block -> omitted (pymupdf fallback territory).
         out = _ocr_chunk_bboxes([self._chunk(50, 60)], [self._span(0, 8, [0, 0, 1, 1])])
         assert out == {}
+
+    def test_page_guard_excludes_block_from_other_page(self):
+        from nextcloud_mcp_server.vector.processor import _ocr_chunk_bboxes
+
+        # A chunk assigned page 2 whose char range also overlaps a page-1 block
+        # (possible when a chunk straddles a page break, e.g. the char-based
+        # chunker). The page-1 box must NOT be attributed — it would render on
+        # page 2 at page-1 coordinates. Only the page-2 block survives.
+        chunks = [self._chunk(0, 20, page_number=2)]
+        spans = [
+            self._span(0, 8, [0.1, 0.1, 0.4, 0.2], page=1),
+            self._span(10, 18, [0.1, 0.3, 0.5, 0.4], page=2),
+        ]
+        out = _ocr_chunk_bboxes(chunks, spans)
+        assert out == {0: [(0.1, 0.3, 0.5, 0.4)]}

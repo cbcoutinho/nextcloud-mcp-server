@@ -221,19 +221,35 @@ def _ocr_chunk_bboxes(
     """Attribute OCR block bboxes to chunks by char-span overlap.
 
     ``block_spans`` is the OCR tier's per-block geometry (``OCR_BLOCK_SPANS_KEY``):
-    each ``{"bbox": [x0,y0,x1,y1] normalized, "start_offset", "end_offset", ...}``.
-    A block belongs to chunk *i* when their char spans intersect (half-open
-    overlap: ``block.start < chunk.end and block.end > chunk.start``). Returns
-    ``chunk_index -> [bbox, ...]`` (a chunk spanning N blocks gets N bboxes, in the
-    spans' reading order), omitting chunks with no overlapping block. Pure +
-    module-level so the interval-overlap predicate is unit-testable in isolation."""
+    each ``{"bbox": [x0,y0,x1,y1] normalized, "start_offset", "end_offset",
+    "page", ...}``. A block belongs to chunk *i* when their char spans intersect
+    (half-open overlap: ``block.start < chunk.end and block.end > chunk.start``)
+    AND the block's page matches the chunk's ``page_number``.
+
+    The page guard makes attribution correct-by-construction independent of the
+    chunker. ``chunk_bbox`` is stored as a flat rect list rendered on the chunk's
+    single ``page_number``, so a block from a *different* page must not be
+    attributed — its box would render on the wrong page at the wrong page's
+    coordinates. The page-aware chunker keeps every chunk single-page (guard is a
+    no-op), but the page-agnostic char-based chunker can straddle a page break: on
+    Student 147, 9/16 char-based chunks pulled blocks from two pages. When a chunk
+    has no ``page_number`` (no page boundaries), fall back to overlap-only.
+    Conversely, a span without a ``page`` key is excluded from any chunk that has a
+    ``page_number`` — ``_pages_to_text`` always stamps ``page`` on OCR spans, so this
+    only affects externally-built spans.
+
+    Returns ``chunk_index -> [bbox, ...]`` (a chunk spanning N blocks gets N bboxes,
+    in the spans' reading order), omitting chunks with no overlapping block. Pure +
+    module-level so the predicate is unit-testable in isolation."""
     out: dict[int, list[tuple[float, float, float, float]]] = {}
     for i, chunk in enumerate(chunks):
+        page = getattr(chunk, "page_number", None)
         boxes = [
             (s["bbox"][0], s["bbox"][1], s["bbox"][2], s["bbox"][3])
             for s in block_spans
             if s["start_offset"] < chunk.end_offset
             and s["end_offset"] > chunk.start_offset
+            and (page is None or s.get("page") == page)
         ]
         if boxes:
             out[i] = boxes

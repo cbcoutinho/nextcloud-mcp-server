@@ -74,8 +74,9 @@ def _strip_html(html: str) -> str:
     """Plain text of a block's ``html`` (tags removed, entities unescaped).
 
     surya emits per-block ``html`` (e.g. ``<h1>Title</h1>``); the page markdown is
-    those texts joined by ``\\n\\n``, so the stripped text appears verbatim in the
-    page markdown — which is how a block is located within the text (below)."""
+    those texts joined by ``\\n\\n``, so the stripped text appears in the page
+    markdown modulo whitespace — which is how a block is located within the text
+    (below, whitespace-insensitively)."""
     return _html.unescape(_TAG_RE.sub("", html)).strip()
 
 
@@ -105,6 +106,24 @@ def _normalize_bbox(raw: Any) -> list[float] | None:
     return out
 
 
+def _ws_index_map(s: str) -> tuple[str, list[int]]:
+    """Whitespace-free projection of ``s`` plus the original index of each kept char.
+
+    Lets a block's tag-stripped text be located in the page markdown ignoring
+    whitespace: surya's per-block ``html`` fuses tokens across ``<br/>``/``<li>``/
+    ``<td>`` when tags are removed, while the markdown renders those boundaries as
+    spaces/newlines. Match on ``"".join(s.split())`` of both, then map a hit at
+    normalized position ``k`` back to ``s`` via the returned index list.
+    """
+    kept: list[str] = []
+    idx: list[int] = []
+    for j, ch in enumerate(s):
+        if not ch.isspace():
+            kept.append(ch)
+            idx.append(j)
+    return "".join(kept), idx
+
+
 def _pages_to_text(
     pages: Sequence[tuple[Any, ...]],
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -123,9 +142,11 @@ def _pages_to_text(
 
     Block spans: within a page, each block's stripped-html text is located in the
     page markdown in ``reading_order`` (advancing a cursor), giving a doc-absolute
-    char span paired with the block's normalized bbox. A block whose text isn't
-    found verbatim, or has no usable bbox, is skipped (that region falls back to
-    pymupdf) rather than guessed at.
+    char span paired with the block's normalized bbox. Matching IGNORES whitespace
+    (tag stripping fuses tokens across ``<br/>``/``<li>``/``<td>`` that the markdown
+    renders as spaces/newlines) and maps the hit back to real offsets. A block whose
+    text isn't found even whitespace-insensitively, or has no usable bbox, is skipped
+    (that region falls back to pymupdf) rather than guessed at.
     """
     sep = "\n\n"
     parts: list[str] = []
@@ -146,7 +167,15 @@ def _pages_to_text(
             continue
         # markdown begins after this page's leading separator (none for page 0).
         md_start = start + (0 if i == 0 else len(sep))
-        cursor = 0
+        # Locate blocks IGNORING whitespace: tag stripping fuses tokens across
+        # <br/>/<li>/<td> (``recommendation`` + ``that`` -> ``recommendationthat``)
+        # that the page markdown renders as spaces/newlines, so a verbatim find
+        # dropped ~40% of blocks -> missing/disconnected highlights. We search the
+        # whitespace-free projection and map hits back to real offsets via norm_idx.
+        norm_md, norm_idx = _ws_index_map(markdown)
+        # ncursor advances only on a successful match (below), never on a skip — so
+        # a dropped block can't cause later in-order blocks to be missed.
+        ncursor = 0
         for raw in blocks:
             if not isinstance(raw, dict):
                 continue
@@ -154,28 +183,33 @@ def _pages_to_text(
             text = _strip_html(raw.get("html") or "")
             if bbox is None or not text:
                 continue
-            pos = markdown.find(text, cursor)
-            if pos < 0:
-                # Block text not in the page markdown at/after the cursor — the
-                # join invariant (markdown == block texts joined by \n\n) didn't
-                # hold for this block (e.g. gateway reformatting / version drift).
-                # Skip it (that region falls back to pymupdf); log so a systematic
-                # break is diagnosable rather than silently losing highlights.
+            needle = "".join(text.split())
+            if not needle:
+                continue
+            npos = norm_md.find(needle, ncursor)
+            if npos < 0:
+                # Not in the page markdown at/after the cursor even
+                # whitespace-insensitively — genuine drift (gateway reformatting /
+                # version skew / block reordering). Skip it (that region falls back
+                # to pymupdf); log so a systematic break is diagnosable rather than
+                # silently losing highlights.
                 logger.debug(
-                    "OCR block text %r not found in page %s markdown at cursor %s; "
-                    "skipping its bbox",
+                    "OCR block text %r not located in page %s markdown after cursor "
+                    "%s; skipping its bbox",
                     text[:40],
                     index + 1,
-                    cursor,
+                    ncursor,
                 )
                 continue
-            cursor = pos + len(text)
+            o_start = norm_idx[npos]
+            o_end = norm_idx[npos + len(needle) - 1] + 1
+            ncursor = npos + len(needle)
             block_spans.append(
                 {
                     "page": index + 1,
                     "bbox": bbox,
-                    "start_offset": md_start + pos,
-                    "end_offset": md_start + pos + len(text),
+                    "start_offset": md_start + o_start,
+                    "end_offset": md_start + o_end,
                 }
             )
     return "".join(parts), boundaries, block_spans
