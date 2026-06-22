@@ -439,6 +439,10 @@ class PDFHighlighter:
         tokens match the chunk, and return that region merged into one rect per text
         line (page coordinates). Robust to markdown re-ordering and space-fused
         tokens; None when the chunk can't be located.
+
+        Location is by content only (no char-offset disambiguation): if the same
+        text repeats on a page, the densest occurrence wins — same behaviour as the
+        legacy first-match phrase search.
         """
         want = PDFHighlighter._norm_tokens(PDFHighlighter.strip_markdown(chunk_text))
         if not want:
@@ -447,7 +451,10 @@ class PDFHighlighter:
         if not words:
             return None
         # One (token, word) per token; a single word may yield 0..n tokens.
-        flat: list[tuple[str, tuple]] = []
+        # word tuple: (x0, y0, x1, y1, text, block_no, line_no, word_no)
+        flat: list[
+            tuple[str, tuple[float, float, float, float, str, int, int, int]]
+        ] = []
         for w in words:
             for tok in PDFHighlighter._norm_tokens(str(w[4])):
                 flat.append((tok, w))
@@ -541,9 +548,6 @@ class PDFHighlighter:
             page: PyMuPDF page object
             chunk_text: Text to highlight (may contain markdown)
             color: Color name from COLORS dict
-            page_relative_start: Character offset where chunk starts on page (optional)
-            page_relative_end: Character offset where chunk ends on page (optional)
-            page_text_length: Total character length of page text (optional)
 
         Returns:
             Number of highlights added (1 for bounding box, 0 if failed)
@@ -954,8 +958,13 @@ class PDFHighlighter:
 
                 # Extract page-relative portion of chunk text
                 # This is critical for cross-page chunks where the start
-                # of the chunk might be on a different page
-                page_boundary = page_boundaries[page_num - 1]
+                # of the chunk might be on a different page. Match by `page` key
+                # (not list index) so out-of-order boundaries can't mislocate.
+                page_boundary = next(
+                    (b for b in page_boundaries if b["page"] == page_num), None
+                )
+                if page_boundary is None:
+                    continue
                 page_start = page_boundary["start_offset"]
                 page_end = page_boundary["end_offset"]
 
