@@ -403,63 +403,111 @@ class PDFHighlighter:
 
         return clean_text if clean_text else None
 
+    # Tokeniser for word-level matching: lowercase alphanumeric runs. Punctuation
+    # and whitespace are separators, so markdown markup (``**``, ``|``, ``-``) and
+    # the text layer's spacing differences fall away — the chunk's words match the
+    # page's words regardless of how either side renders structure.
+    _WORD_RE = re.compile(r"[0-9a-z]+")
+
+    @staticmethod
+    def _norm_tokens(s: str) -> list[str]:
+        return PDFHighlighter._WORD_RE.findall(s.lower())
+
+    @staticmethod
+    def _find_chunk_line_rects(
+        page: pymupdf.Page, chunk_text: str
+    ) -> list[tuple[float, float, float, float]] | None:
+        """Tight per-line rects for a chunk, located by word-level matching.
+
+        The legacy ``_find_chunk_bbox`` searched a markdown-derived phrase with the
+        page's exact ``search_for`` and kept only the FIRST hit — or dropped the
+        chunk entirely when no phrase matched (~30% of chunks). Markdown markup
+        (table pipes, ``**``, list bullets) never appears in the text layer, so
+        exact phrase search is fragile, and a single estimated-height box doesn't
+        trace the real lines. Instead: tokenise the chunk and the page's words
+        (``get_text("words")``), anchor the chunk's leading/trailing token n-grams
+        in the page word stream, and return the matched words merged into one rect
+        per text line (page coordinates). None when the chunk can't be located.
+        """
+        want = PDFHighlighter._norm_tokens(PDFHighlighter.strip_markdown(chunk_text))
+        if not want:
+            return None
+        words = page.get_text("words")  # (x0,y0,x1,y1, word, block, line, word_no)
+        if not words:
+            return None
+        # One (token, word) per token; a single word may yield 0..n tokens.
+        flat: list[tuple[str, tuple]] = []
+        for w in words:
+            for tok in PDFHighlighter._norm_tokens(str(w[4])):
+                flat.append((tok, w))
+        if not flat:
+            return None
+        want_set = set(want)
+        cand = [i for i, (t, _) in enumerate(flat) if t in want_set]
+        # Require enough of the chunk's DISTINCT words on this page, else the chunk
+        # isn't really here — avoid drawing a spurious box.
+        if not cand or len({flat[i][0] for i in cand}) < max(2, 0.4 * len(want_set)):
+            return None
+        # Densest contiguous cluster of matching words: split candidates wherever the
+        # gap of non-matching words exceeds MAX_GAP, keep the run with the most hits.
+        # Robust to markdown re-ordering and space-fused tokens (``issueof``,
+        # ``powersunder``) that the text layer splits — we match on the tokens that
+        # DO align and bound the region, instead of an exact contiguous phrase.
+        MAX_GAP = 12
+        runs: list[tuple[int, int, int]] = []  # (start_idx, end_idx, hit_count)
+        run_start = prev = cand[0]
+        hits = 1
+        for idx in cand[1:]:
+            if idx - prev <= MAX_GAP:
+                prev, hits = idx, hits + 1
+            else:
+                runs.append((run_start, prev, hits))
+                run_start = prev = idx
+                hits = 1
+        runs.append((run_start, prev, hits))
+        lo, hi, _ = max(runs, key=lambda r: r[2])
+        # Merge matched words into one rect per (block, line), in reading order.
+        lines: dict[tuple, list[float]] = {}
+        order: list[tuple] = []
+        for i in range(lo, hi + 1):
+            w = flat[i][1]
+            key = (w[5], w[6])
+            box = [float(w[0]), float(w[1]), float(w[2]), float(w[3])]
+            if key in lines:
+                cur = lines[key]
+                cur[0], cur[1] = min(cur[0], box[0]), min(cur[1], box[1])
+                cur[2], cur[3] = max(cur[2], box[2]), max(cur[3], box[3])
+            else:
+                lines[key] = box
+                order.append(key)
+        rects = [
+            (lines[key][0], lines[key][1], lines[key][2], lines[key][3])
+            for key in order
+        ]
+        return rects or None
+
     @staticmethod
     def _find_chunk_bbox(
         page: pymupdf.Page,
         chunk_text: str,
-        page_relative_start: int,
-        page_relative_end: int,
-        page_text_length: int,
+        page_relative_start: int = 0,
+        page_relative_end: int = 0,
+        page_text_length: int = 0,
     ) -> tuple[float, float, float, float] | None:
-        """Find bounding box for a chunk without modifying the page.
+        """Single union bbox for a chunk (legacy PNG-overlay path).
 
+        Prefer ``_find_chunk_line_rects`` for the stored per-line geometry; this
+        collapses those line rects to one bounding box for the image-render path.
         Returns (x0, y0, x1, y1) in page coordinates, or None if not found.
         """
-        page_rect = page.rect
-
-        # Strip markdown for searching
-        search_text = PDFHighlighter.strip_markdown(chunk_text)
-
-        # Try to find chunk location using text search
-        anchor_rect = None
-        search_phrases = []
-
-        # Build search phrases from chunk text
-        sentences = re.split(r"[.!?]\s+", search_text)
-        for sentence in sentences[:3]:
-            sentence = sentence.strip()
-            if len(sentence) >= 20:
-                search_phrases.append(sentence[:80])
-                if len(sentence) >= 40:
-                    search_phrases.append(sentence[:40])
-
-        # Also try first N characters
-        if len(search_text) >= 30:
-            search_phrases.append(search_text[:60])
-            search_phrases.append(search_text[:30])
-
-        for phrase in search_phrases:
-            if not phrase:
-                continue
-            rects = page.search_for(phrase.strip())
-            if rects:
-                anchor_rect = rects[0]
-                break
-
-        if not anchor_rect:
+        rects = PDFHighlighter._find_chunk_line_rects(page, chunk_text)
+        if not rects:
             return None
-
-        # Calculate chunk height based on character count
-        chunk_chars = len(search_text)
-        estimated_lines = max(1, chunk_chars / 60)
-        estimated_height = estimated_lines * 14
-
-        # Build bounding box
         return (
-            page_rect.x0 + 30,  # Left margin
-            anchor_rect.y0 - 5,  # Start slightly above anchor
-            page_rect.x1 - 30,  # Right margin
-            min(anchor_rect.y0 + estimated_height + 10, page_rect.y1 - 30),
+            min(r[0] for r in rects),
+            min(r[1] for r in rects),
+            max(r[2] for r in rects),
+            max(r[3] for r in rects),
         )
 
     @staticmethod
@@ -778,9 +826,6 @@ class PDFHighlighter:
                         page_num,
                     )
                     continue
-                page_text_length = (
-                    page_boundary["end_offset"] - page_boundary["start_offset"]
-                )
 
                 # Page-relative slice (handles chunks that span page boundaries)
                 chunk_start_on_page = max(start_offset, page_boundary["start_offset"])
@@ -788,27 +833,26 @@ class PDFHighlighter:
                 page_relative_text = full_text[chunk_start_on_page:chunk_end_on_page]
 
                 page = doc[page_num - 1]
-                bbox = PDFHighlighter._find_chunk_bbox(
-                    page,
-                    page_relative_text,
-                    chunk_page_info["page_relative_start"],
-                    chunk_page_info["page_relative_end"],
-                    page_text_length,
-                )
-
-                if bbox is None:
+                rects = PDFHighlighter._find_chunk_line_rects(page, page_relative_text)
+                if not rects:
                     continue
 
                 page_rect = page.rect
                 w = page_rect.width or 1.0
                 h = page_rect.height or 1.0
-                normalized = (
-                    bbox[0] / w,
-                    bbox[1] / h,
-                    bbox[2] / w,
-                    bbox[3] / h,
-                )
-                results[chunk_index] = ([normalized], page_num)
+
+                def _c(v: float) -> float:
+                    return 0.0 if v < 0 else 1.0 if v > 1 else v
+
+                normalized = [
+                    (_c(r[0] / w), _c(r[1] / h), _c(r[2] / w), _c(r[3] / h))
+                    for r in rects
+                ]
+                # Drop any rect that clamped to zero area (off-page artifact).
+                normalized = [n for n in normalized if n[2] > n[0] and n[3] > n[1]]
+                if not normalized:
+                    continue
+                results[chunk_index] = (normalized, page_num)
 
             logger.info("Computed bboxes for %s/%s chunks", len(results), len(chunks))
             return results
