@@ -1,13 +1,45 @@
 """MCP tools for Nextcloud file/folder sharing operations."""
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+
+logger = logging.getLogger(__name__)
+
+
+def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, str]:
+    """Compute ``(expire_date, expires_at)`` for a short-lived public link.
+
+    Nextcloud expires public links at midnight (the *start*) of ``expireDate``
+    in the owner's timezone, so the date is rounded up one day to guarantee the
+    link stays valid for at least the requested window — it may then live until
+    the end of the target's day.
+
+    Args:
+        expires_in_minutes: Requested lifetime in minutes; must be positive.
+        now: Current time (timezone-aware); injected for deterministic tests.
+
+    Returns:
+        A tuple of ``(expireDate as YYYY-MM-DD, expires_at as RFC3339 'Z')``.
+
+    Raises:
+        ValueError: If ``expires_in_minutes`` is not positive — this tool only
+            creates short-lived links, never a permanent (non-expiring) one.
+    """
+    if expires_in_minutes <= 0:
+        raise ValueError("expires_in_minutes must be a positive number of minutes")
+    target = now + timedelta(minutes=expires_in_minutes)
+    expire_date = (target.date() + timedelta(days=1)).isoformat()
+    expires_at = target.isoformat().replace("+00:00", "Z")
+    return expire_date, expires_at
 
 
 def configure_sharing_tools(mcp: FastMCP):
@@ -59,6 +91,82 @@ def configure_sharing_tools(mcp: FastMCP):
             permissions=permissions,
         )
         return json.dumps(share_data, indent=2)
+
+    @mcp.tool(
+        title="Create Public Download Link",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("sharing.write")
+    @instrument_tool
+    async def nc_share_create_public_link(
+        path: str,
+        ctx: Context,
+        expires_in_minutes: int = 30,
+        permissions: int = 1,
+    ) -> PublicDownloadLinkResponse:
+        """Create a short-lived, read-only public download link for a file.
+
+        Use this for binary files (especially images) instead of reading them
+        inline: ``nc_webdav_read_file`` returns base64, which can exceed the MCP
+        client response budget and get truncated, leaving the file undecodable.
+        A public link keeps the MCP response small and lets the client download
+        the exact original bytes from ``download_url``.
+
+        Args:
+            path: Path to the file to share (relative to your files, e.g.
+                "/Receipts/receipt.jpg")
+            expires_in_minutes: How long the link should remain valid, in
+                minutes (default: 30). Must be positive — this tool only
+                creates short-lived links, never a permanent one. See the
+                expiry caveat below.
+            permissions: Share permissions (default: 1 = read-only)
+
+        Expiry caveat:
+            Nextcloud enforces public-link expiry at **date granularity**
+            (midnight in the owner's timezone), not minute precision. The
+            requested expiry is rounded up so the link stays valid for at least
+            the requested window; ``expires_at`` reports the precise requested
+            instant, but the link may remain valid until the end of that day
+            server-side. To revoke earlier, call ``nc_share_delete`` with the
+            returned ``share_id``.
+
+        Returns:
+            PublicDownloadLinkResponse with the share URL, download URL, and
+            advisory expiry.
+
+        Raises:
+            ValueError: If ``expires_in_minutes`` is not positive.
+        """
+        expire_date, expires_at = _compute_link_expiry(
+            expires_in_minutes, datetime.now(timezone.utc)
+        )
+
+        client = await get_client(ctx)
+        share_data = await client.sharing.create_public_link(
+            path=path,
+            permissions=permissions,
+            expire_date=expire_date,
+        )
+
+        url = share_data.get("url", "")
+        if not url:
+            # OCS always returns a url for TYPE_LINK shares; an empty one means
+            # the response shape changed — surface it rather than silently
+            # handing back an unusable (empty) download link.
+            logger.warning(
+                "Public link share %s for %s returned no url",
+                share_data.get("id"),
+                path,
+            )
+        return PublicDownloadLinkResponse(
+            path=path,
+            share_id=int(share_data["id"]),
+            url=url,
+            download_url=f"{url}/download" if url else "",
+            token=share_data.get("token"),
+            permissions=int(share_data.get("permissions", permissions)),
+            expires_at=expires_at,
+        )
 
     @mcp.tool(
         title="Delete Share",
