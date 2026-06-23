@@ -675,8 +675,8 @@ def test_build_search_xml_escapes_special_chars_in_scope():
     assert href.text == f"/files/testuser/{scope}"
 
     # 3. The serialized body escapes the ampersand rather than emitting it raw.
-    assert "&amp;" in body
-    assert "Search & Retrieval" not in body
+    assert "& Plans" not in body  # no bare ampersand
+    assert "&amp; Plans" in body  # escaped form present
 
 
 @pytest.mark.unit

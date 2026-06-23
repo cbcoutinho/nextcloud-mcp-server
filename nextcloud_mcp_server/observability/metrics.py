@@ -237,7 +237,7 @@ qdrant_operations_total = Counter(
 document_parse_duration_seconds = Histogram(
     "astrolabe_document_parse_duration_seconds",
     "Document text-extraction (parse) duration in seconds",
-    ["processor", "tier", "status"],  # status: success | error
+    ["processor", "tier", "status"],  # status: success | error | pending
     # Buckets reach 300s: large PDFs exceed the 60s ceiling of the whole-doc
     # histogram, which would otherwise pile every large parse into +Inf.
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
@@ -246,7 +246,7 @@ document_parse_duration_seconds = Histogram(
 document_parse_total = Counter(
     "astrolabe_document_parse_total",
     "Total document parse attempts",
-    ["processor", "tier", "status"],  # status: success | error
+    ["processor", "tier", "status"],  # status: success | error | pending
 )
 
 document_pages_processed_total = Counter(

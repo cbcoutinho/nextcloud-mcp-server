@@ -16,6 +16,7 @@ from nextcloud_mcp_server.observability.tracing import trace_operation
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .classifier import DocClassification, classify_from_text, image_coverage_per_page
 from .escalation import TIER_LADDER, EscalationDecision
+from .ocr import OCR_BATCH_PENDING_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -758,10 +759,6 @@ class ProcessorRegistry:
             # document_parse_total{status="error"} and the parse-rate dashboard shows
             # GPU-boot polling as errors. Genuine failures stay "error"; worker-killed
             # failures land in document_parse_failed_total.
-            from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
-                OCR_BATCH_PENDING_KEY,
-            )
-
             if result.metadata.get(OCR_BATCH_PENDING_KEY):
                 status = "pending"
             elif result.success:
