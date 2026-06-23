@@ -148,6 +148,39 @@ class TestRegistryParseInstrumentation:
         mock_record.assert_called_once()
         assert mock_record.call_args.kwargs["status"] == "error"
 
+    async def test_batch_pending_records_pending_not_error(self, mock_tracer):
+        # A batch-OCR poll still in flight returns success=False + the pending
+        # sentinel; _parse_pdf_tier re-queues it via BatchPending. It must record
+        # status="pending", NOT "error" — otherwise every GPU-boot poll inflates
+        # the parse-rate dashboard's error line.
+        from nextcloud_mcp_server.document_processors.ocr import (
+            OCR_BATCH_PENDING_KEY,
+            OCR_BATCH_RETRY_IN_KEY,
+        )
+
+        result = ProcessingResult(
+            text="",
+            metadata={OCR_BATCH_PENDING_KEY: True, OCR_BATCH_RETRY_IN_KEY: 120},
+            processor="ocr",
+            success=False,
+        )
+        registry = ProcessorRegistry()
+        registry.register(
+            _FakeProcessor(result=result, proc_name="ocr", proc_tier="ocr")
+        )
+
+        with patch(
+            "nextcloud_mcp_server.document_processors.registry.record_document_parse"
+        ) as mock_record:
+            out = await registry.process(
+                b"%PDF-1.7", "application/pdf", filename="x.pdf"
+            )
+
+        assert out is result
+        mock_record.assert_called_once()
+        # Distinct status, not "error" — and not "success" (keeps it out of throughput).
+        assert mock_record.call_args.kwargs["status"] == "pending"
+
 
 class TestParseMetricHelpers:
     def test_success_increments_throughput_counters(self, metric_sample):

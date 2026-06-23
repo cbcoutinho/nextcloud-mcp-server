@@ -751,7 +751,23 @@ class ProcessorRegistry:
             result.metadata.setdefault("pipeline_tier", tier)
             pages = int(result.metadata.get("page_count", 0) or 0)
             chars = len(result.text)
-            status = "success" if result.success else "error"
+            # A batch-OCR poll still in flight (GPU booting / batch queued) returns
+            # success=False + the pending sentinel; _parse_pdf_tier re-queues it via
+            # BatchPending, so it is NOT a parse failure. Record it as a distinct
+            # status="pending" — otherwise every poll inflates
+            # document_parse_total{status="error"} and the parse-rate dashboard shows
+            # GPU-boot polling as errors. Genuine failures stay "error"; worker-killed
+            # failures land in document_parse_failed_total.
+            from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
+                OCR_BATCH_PENDING_KEY,
+            )
+
+            if result.metadata.get(OCR_BATCH_PENDING_KEY):
+                status = "pending"
+            elif result.success:
+                status = "success"
+            else:
+                status = "error"
             record_document_parse(
                 processor.name,
                 tier,
