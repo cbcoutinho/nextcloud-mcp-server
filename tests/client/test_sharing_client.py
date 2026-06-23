@@ -1,9 +1,12 @@
 """Unit tests for SharingClient — wire-format checks for the OCS Sharing API.
 
-These verify the payload shape sent to Nextcloud, particularly for
-``shareType=12`` (``IShare::TYPE_DECK``), which is what powers Deck card
-file attachments. The Deck UI fires this exact request — see
-``~/Software/deck/src/components/card/AttachmentList.vue:223-238``.
+These verify the payload shape sent to Nextcloud. Coverage includes:
+
+- ``shareType=12`` (``IShare::TYPE_DECK``), which powers Deck card file
+  attachments — the Deck UI fires this exact request (see
+  ``~/Software/deck/src/components/card/AttachmentList.vue:223-238``).
+- ``shareType=3`` public download links (``create_public_link``), including
+  the ``expireDate`` passthrough and the OCS error/empty-data branches.
 """
 
 import pytest
@@ -123,6 +126,25 @@ async def test_create_public_link_raises_on_empty_data(sharing_client, mocker):
 
     with pytest.raises(RuntimeError, match="Public link creation failed"):
         await sharing_client.create_public_link(path="/missing.jpg")
+
+
+async def test_create_public_link_raises_on_ocs_error(sharing_client, mocker):
+    """A non-100/200 OCS statuscode raises RuntimeError with the OCS message."""
+    response = mocker.Mock()
+    response.raise_for_status = mocker.Mock()
+    response.json.return_value = {
+        "ocs": {
+            "meta": {
+                "statuscode": 404,
+                "message": "Wrong path, file/folder doesn't exist",
+            },
+            "data": [],
+        }
+    }
+    sharing_client._client.post.return_value = response
+
+    with pytest.raises(RuntimeError, match="Wrong path"):
+        await sharing_client.create_public_link(path="/nope.jpg")
 
 
 async def test_create_share_raises_on_ocs_failure(sharing_client, mocker):

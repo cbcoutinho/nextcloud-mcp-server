@@ -102,7 +102,6 @@ def configure_sharing_tools(mcp: FastMCP):
         path: str,
         ctx: Context,
         expires_in_minutes: int = 30,
-        permissions: int = 1,
     ) -> PublicDownloadLinkResponse:
         """Create a short-lived, read-only public download link for a file.
 
@@ -112,6 +111,11 @@ def configure_sharing_tools(mcp: FastMCP):
         A public link keeps the MCP response small and lets the client download
         the exact original bytes from ``download_url``.
 
+        The link is always **read-only** (``permissions=1``): a public,
+        anonymously-accessible link with write access would be a security
+        footgun, so it is intentionally not configurable. Use ``nc_share_create``
+        (shareType=3) if you genuinely need a writable public link.
+
         Args:
             path: Path to the file to share (relative to your files, e.g.
                 "/Receipts/receipt.jpg")
@@ -119,7 +123,6 @@ def configure_sharing_tools(mcp: FastMCP):
                 minutes (default: 30). Must be positive — this tool only
                 creates short-lived links, never a permanent one. See the
                 expiry caveat below.
-            permissions: Share permissions (default: 1 = read-only)
 
         Expiry caveat:
             Nextcloud enforces public-link expiry at **date granularity**
@@ -144,7 +147,7 @@ def configure_sharing_tools(mcp: FastMCP):
         client = await get_client(ctx)
         share_data = await client.sharing.create_public_link(
             path=path,
-            permissions=permissions,
+            permissions=1,
             expire_date=expire_date,
         )
 
@@ -162,9 +165,10 @@ def configure_sharing_tools(mcp: FastMCP):
             path=path,
             share_id=int(share_data["id"]),
             url=url,
-            download_url=f"{url}/download" if url else "",
+            # rstrip guards against a double slash if the url ever ends in "/".
+            download_url=f"{url.rstrip('/')}/download" if url else "",
             token=share_data.get("token"),
-            permissions=int(share_data.get("permissions", permissions)),
+            permissions=int(share_data.get("permissions", 1)),
             expires_at=expires_at,
         )
 
