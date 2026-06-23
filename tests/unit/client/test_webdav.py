@@ -700,3 +700,36 @@ def test_build_search_xml_escapes_angle_brackets_in_scope():
     # Escaped forms present in the serialized body; raw angle brackets absent.
     assert "weird <name>" not in body
     assert "&lt;name&gt;" in body
+
+
+@pytest.mark.unit
+async def test_find_by_name_escapes_special_chars_in_pattern(mocker):
+    # The filename pattern is embedded in a <d:literal>; '&'/'<'/'>' must be
+    # escaped or the SEARCH body is malformed and Sabre 400s — the same bug class
+    # as the scope fix. Regression for the find_by_name path.
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mock_search = mocker.patch.object(client, "search_files", return_value=[])
+
+    await client.find_by_name("Costs & Revenue <draft>.pdf")
+
+    where = mock_search.call_args.kwargs["where_conditions"]
+    # Well-formed once wrapped with the DAV namespace (raised ParseError pre-fix).
+    ET.fromstring(f"<root xmlns:d='DAV:'>{where}</root>")
+    assert "&amp;" in where and "&lt;draft&gt;" in where
+    assert "Costs & Revenue" not in where  # no bare ampersand
+
+
+@pytest.mark.unit
+async def test_find_by_tag_escapes_special_chars_in_tag(mocker):
+    # Tag names can contain '&' (e.g. "R&D"); the tag literal must be escaped too.
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mock_search = mocker.patch.object(client, "search_files", return_value=[])
+
+    await client.find_by_tag("R&D")
+
+    where = mock_search.call_args.kwargs["where_conditions"]
+    ET.fromstring(
+        f"<root xmlns:d='DAV:' xmlns:oc='http://owncloud.org/ns'>{where}</root>"
+    )
+    assert "R&amp;D" in where
+    assert "R&D" not in where  # no bare ampersand
