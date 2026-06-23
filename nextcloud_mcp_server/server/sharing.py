@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -43,7 +44,7 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
 
 
 def _build_link_response(
-    path: str, share_data: dict, expires_at: str
+    path: str, share_data: dict[str, Any], expires_at: str
 ) -> PublicDownloadLinkResponse:
     """Assemble the tool response from a raw OCS public-link share payload.
 
