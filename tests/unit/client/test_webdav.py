@@ -697,3 +697,6 @@ def test_build_search_xml_escapes_angle_brackets_in_scope():
     href = root.find(".//{DAV:}href")
     assert href is not None
     assert href.text == f"/files/testuser/{scope}"
+    # Escaped forms present in the serialized body; raw angle brackets absent.
+    assert "weird <name>" not in body
+    assert "&lt;name&gt;" in body
