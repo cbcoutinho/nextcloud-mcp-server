@@ -251,3 +251,41 @@ async def test_processor_parse_failure_returns_success_false(monkeypatch):
     assert result.success is False
     assert result.text == ""
     assert result.metadata["parse_failed_reason"] == "oom"
+
+
+# --- text-layer fallback when pymupdf4llm markdown under-extracts (drawings) ---
+
+
+def _doc_with_text(text: str) -> pymupdf.Document:
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_textbox(pymupdf.Rect(36, 36, 559, 806), text, fontsize=10)
+    return doc
+
+
+def test_recover_replaces_underextracted_page():
+    # A page whose raw text layer is rich, but whose markdown chunk recovered almost
+    # nothing (the pymupdf4llm-on-a-drawing failure): fall back to get_text.
+    full = " ".join(f"word{i}" for i in range(120))  # ~800 clean chars
+    doc = _doc_with_text(full)
+    try:
+        chunks = [{"text": "tiny", "metadata": {}}]
+        _isolation._recover_underextracted_pages(doc, chunks)
+        assert "word100" in chunks[0]["text"]
+        assert len(chunks[0]["text"]) > _isolation._TEXTLAYER_FALLBACK_MIN_CHARS
+    finally:
+        doc.close()
+
+
+def test_recover_keeps_adequate_markdown():
+    # Markdown that already captured the text (>= raw / ratio) is left untouched, so
+    # structured output keeps its markdown structure for normal docs.
+    full = " ".join(f"word{i}" for i in range(120))
+    doc = _doc_with_text(full)
+    try:
+        good_md = "# Heading\n\n" + full
+        chunks = [{"text": good_md, "metadata": {}}]
+        _isolation._recover_underextracted_pages(doc, chunks)
+        assert chunks[0]["text"] == good_md
+    finally:
+        doc.close()
