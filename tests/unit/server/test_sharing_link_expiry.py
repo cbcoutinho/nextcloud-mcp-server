@@ -1,17 +1,25 @@
-"""Unit tests for the public-link expiry computation in nc_share_create_public_link.
+"""Unit tests for the nc_share_create_public_link helpers.
 
-The day-rounding logic is extracted into ``_compute_link_expiry`` so it can be
-tested deterministically (with an injected ``now``) without exercising the full
-MCP tool path. Nextcloud expires public links at midnight (the *start*) of
-``expireDate`` in the owner's timezone, so the date must round up a day to
-guarantee the requested window is covered.
+The side-effect-free logic is extracted into module-level helpers so it can be
+tested without exercising the full MCP tool path (which needs a Context + an
+authenticated client):
+
+- ``_compute_link_expiry`` — day-rounding of the expiry. Nextcloud expires
+  public links at midnight (the *start*) of ``expireDate`` in the owner's
+  timezone, so the date must round up a day to cover the requested window.
+- ``_build_link_response`` — maps a raw OCS ``shareType=3`` payload into the
+  ``PublicDownloadLinkResponse`` (field mapping, ``download_url`` construction,
+  empty-url failure).
 """
 
 from datetime import datetime, timezone
 
 import pytest
 
-from nextcloud_mcp_server.server.sharing import _compute_link_expiry
+from nextcloud_mcp_server.server.sharing import (
+    _build_link_response,
+    _compute_link_expiry,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -48,3 +56,43 @@ def test_compute_link_expiry_rejects_non_positive(minutes):
 
     with pytest.raises(ValueError, match="positive"):
         _compute_link_expiry(minutes, now)
+
+
+def test_build_link_response_maps_fields():
+    """Raw OCS payload fields map onto the response, download_url = url +
+    '/download', and the advisory expires_at is passed through verbatim."""
+    share_data = {
+        "id": "42",  # OCS may serialize the id as a string
+        "url": "https://nc.example.com/s/abc123",
+        "token": "abc123",
+        "permissions": 1,
+    }
+
+    resp = _build_link_response(
+        "/Receipts/receipt.jpg", share_data, "2026-06-02T12:30:00Z"
+    )
+
+    assert resp.path == "/Receipts/receipt.jpg"
+    assert resp.share_id == 42
+    assert resp.url == "https://nc.example.com/s/abc123"
+    assert resp.download_url == "https://nc.example.com/s/abc123/download"
+    assert resp.token == "abc123"
+    assert resp.permissions == 1
+    assert resp.expires_at == "2026-06-02T12:30:00Z"
+
+
+def test_build_link_response_strips_trailing_slash():
+    """A trailing slash on the share url does not produce a double slash."""
+    share_data = {"id": 1, "url": "https://nc.example.com/s/tok/", "token": "tok"}
+
+    resp = _build_link_response("/f.png", share_data, "2026-06-02T12:30:00Z")
+
+    assert resp.download_url == "https://nc.example.com/s/tok/download"
+
+
+@pytest.mark.parametrize("share_data", [{"id": 1, "url": ""}, {"id": 1}])
+def test_build_link_response_raises_on_missing_url(share_data):
+    """A payload without a usable url is a hard error, not a silent empty
+    response — OCS always returns one for shareType=3."""
+    with pytest.raises(RuntimeError, match="no url"):
+        _build_link_response("/f.png", share_data, "2026-06-02T12:30:00Z")

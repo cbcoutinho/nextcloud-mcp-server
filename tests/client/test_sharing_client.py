@@ -86,8 +86,11 @@ async def test_create_public_link_payload(sharing_client, mocker):
         expire_date="2026-06-25",
     )
 
+    # This layer only returns the raw OCS payload; expires_at/download_url are
+    # derived at the tool layer (covered in tests/unit/server).
     assert share["id"] == 7
     assert share["url"] == "https://nc.example.com/s/abc123"
+    assert share["token"] == "abc123"
     sharing_client._client.post.assert_called_once()
     call = sharing_client._client.post.call_args
     assert call.args[0] == "/ocs/v2.php/apps/files_sharing/api/v1/shares"

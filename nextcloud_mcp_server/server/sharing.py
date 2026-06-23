@@ -1,7 +1,6 @@
 """MCP tools for Nextcloud file/folder sharing operations."""
 
 import json
-import logging
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -11,8 +10,6 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
-
-logger = logging.getLogger(__name__)
 
 
 def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, str]:
@@ -38,8 +35,44 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
         raise ValueError("expires_in_minutes must be a positive number of minutes")
     target = now + timedelta(minutes=expires_in_minutes)
     expire_date = (target.date() + timedelta(days=1)).isoformat()
-    expires_at = target.isoformat().replace("+00:00", "Z")
+    # Match BaseResponse.serialize_timestamp: only collapse a *trailing* UTC
+    # offset to "Z", rather than replacing any "+00:00" occurrence.
+    iso = target.isoformat()
+    expires_at = iso[:-6] + "Z" if iso.endswith("+00:00") else iso
     return expire_date, expires_at
+
+
+def _build_link_response(
+    path: str, share_data: dict, expires_at: str
+) -> PublicDownloadLinkResponse:
+    """Assemble the tool response from a raw OCS public-link share payload.
+
+    Args:
+        path: The shared file path (echoed back to the caller).
+        share_data: Raw ``ocs.data`` dict from ``create_public_link``.
+        expires_at: Advisory RFC3339 expiry computed by ``_compute_link_expiry``.
+
+    Raises:
+        RuntimeError: If the payload carries no ``url``. OCS always returns one
+            for ``shareType=3``; its absence means the response shape changed,
+            and a hard error beats handing the caller unusable empty URLs.
+    """
+    url = share_data.get("url", "")
+    if not url:
+        raise RuntimeError(
+            f"Public link share {share_data.get('id')} for {path} returned no "
+            "url — unexpected OCS response shape"
+        )
+    return PublicDownloadLinkResponse(
+        path=path,
+        share_id=int(share_data["id"]),
+        url=url,
+        # rstrip guards against a double slash if the url ever ends in "/".
+        download_url=f"{url.rstrip('/')}/download",
+        token=share_data.get("token"),
+        permissions=int(share_data.get("permissions", 1)),
+        expires_at=expires_at,
+    )
 
 
 def configure_sharing_tools(mcp: FastMCP):
@@ -70,7 +103,9 @@ def configure_sharing_tools(mcp: FastMCP):
         Args:
             path: Path to file/folder to share (relative to your files, e.g., "/document.txt")
             share_with: Username (for user share) or group name (for group share)
-            share_type: Share type - 0 for user (default), 1 for group, 3 for public link
+            share_type: Share type - 0 for user (default), 1 for group, 3 for
+                public link (prefer nc_share_create_public_link for short-lived,
+                read-only download links with managed expiry)
             permissions: Share permissions (default: 1 for read-only):
                 - 1 = read
                 - 2 = update
@@ -150,27 +185,7 @@ def configure_sharing_tools(mcp: FastMCP):
             permissions=1,
             expire_date=expire_date,
         )
-
-        url = share_data.get("url", "")
-        if not url:
-            # OCS always returns a url for TYPE_LINK shares; an empty one means
-            # the response shape changed — surface it rather than silently
-            # handing back an unusable (empty) download link.
-            logger.warning(
-                "Public link share %s for %s returned no url",
-                share_data.get("id"),
-                path,
-            )
-        return PublicDownloadLinkResponse(
-            path=path,
-            share_id=int(share_data["id"]),
-            url=url,
-            # rstrip guards against a double slash if the url ever ends in "/".
-            download_url=f"{url.rstrip('/')}/download" if url else "",
-            token=share_data.get("token"),
-            permissions=int(share_data.get("permissions", 1)),
-            expires_at=expires_at,
-        )
+        return _build_link_response(path, share_data, expires_at)
 
     @mcp.tool(
         title="Delete Share",
