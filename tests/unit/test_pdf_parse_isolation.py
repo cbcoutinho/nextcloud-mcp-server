@@ -251,3 +251,90 @@ async def test_processor_parse_failure_returns_success_false(monkeypatch):
     assert result.success is False
     assert result.text == ""
     assert result.metadata["parse_failed_reason"] == "oom"
+
+
+# --- text-layer fallback when pymupdf4llm markdown under-extracts (drawings) ---
+
+
+def _doc_with_text(text: str) -> pymupdf.Document:
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_textbox(pymupdf.Rect(36, 36, 559, 806), text, fontsize=10)
+    return doc
+
+
+def test_recover_replaces_underextracted_page():
+    # A page whose raw text layer is rich, but whose markdown chunk recovered almost
+    # nothing (the pymupdf4llm-on-a-drawing failure): fall back to get_text.
+    full = " ".join(f"word{i}" for i in range(120))  # ~800 clean chars
+    doc = _doc_with_text(full)
+    try:
+        chunks = [{"text": "tiny", "metadata": {}}]
+        _isolation._recover_underextracted_pages(doc, chunks)
+        assert "word100" in chunks[0]["text"]
+        assert len(chunks[0]["text"]) > _isolation._TEXTLAYER_FALLBACK_MIN_CHARS
+    finally:
+        doc.close()
+
+
+def test_recover_keeps_adequate_markdown():
+    # Markdown that already captured the text (>= raw / ratio) is left untouched, so
+    # structured output keeps its markdown structure for normal docs.
+    full = " ".join(f"word{i}" for i in range(120))
+    doc = _doc_with_text(full)
+    try:
+        good_md = "# Heading\n\n" + full
+        chunks = [{"text": good_md, "metadata": {}}]
+        _isolation._recover_underextracted_pages(doc, chunks)
+        assert chunks[0]["text"] == good_md
+    finally:
+        doc.close()
+
+
+# Lightweight fake doc/page for the edge paths (no pymupdf needed).
+class _FakePage:
+    def __init__(self, text: str, *, raises: bool = False) -> None:
+        self._text = text
+        self._raises = raises
+
+    def get_text(self, _kind: str) -> str:
+        if self._raises:
+            raise RuntimeError("page extraction blew up")
+        return self._text
+
+
+class _FakeDoc:
+    def __init__(self, pages: list[_FakePage]) -> None:
+        self._pages = pages
+        self.page_count = len(pages)
+
+    def __getitem__(self, i: int) -> _FakePage:
+        assert i < self.page_count, "indexed a page beyond page_count"
+        return self._pages[i]
+
+
+def test_recover_skips_page_on_get_text_error():
+    # The per-page best-effort branch: a get_text failure leaves the chunk as-is.
+    chunks = [{"text": "tiny", "metadata": {}}]
+    _isolation._recover_underextracted_pages(
+        _FakeDoc([_FakePage("", raises=True)]), chunks
+    )
+    assert chunks[0]["text"] == "tiny"
+
+
+def test_recover_fires_on_empty_markdown():
+    # Empty markdown (to_markdown returned nothing) + a rich raw layer -> fall back.
+    rich = "x" * 200
+    chunks = [{"text": "", "metadata": {}}]
+    _isolation._recover_underextracted_pages(_FakeDoc([_FakePage(rich)]), chunks)
+    assert chunks[0]["text"] == rich
+
+
+def test_recover_ignores_chunks_beyond_page_count():
+    # The i >= page_count guard: extra chunks (never expected from page_chunks=True)
+    # are left untouched and no out-of-range page is indexed.
+    rich = "y" * 200
+    chunks = [{"text": "tiny", "metadata": {}}, {"text": "extra", "metadata": {}}]
+    _isolation._recover_underextracted_pages(_FakeDoc([_FakePage(rich)]), chunks)
+    assert chunks[0]["text"] == rich  # page 0 recovered
+    assert chunks[1]["text"] == "extra"  # extra chunk untouched (loop broke)

@@ -15,7 +15,7 @@ in its process pool.
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import anyio.to_process
@@ -34,6 +34,42 @@ logger = logging.getLogger(__name__)
 
 # Guard so the address-space limit is applied once per (reused) worker process.
 _MEM_LIMIT_APPLIED = False
+
+# pymupdf4llm reconstructs reading-order markdown, which can DROP most of the text
+# on non-prose layouts (engineering drawings, scattered labels): observed 598 of a
+# 5080-char text layer on an A1 ventilation drawing -- which then mis-escalated to
+# the (paid) OCR tier despite the layer already containing the answer. When a page's
+# markdown recovers far less than its raw text layer, fall back to plain get_text for
+# that page: the text layer is the source of truth; markdown's value is structure,
+# not completeness, and the structured/pymupdf tier exists precisely to re-extract a
+# layer correctly. Trigger only on a CLEAR under-extraction (raw >= ratio x markdown
+# AND raw non-trivial) so clean prose -- whose markdown matches/exceeds get_text -- is
+# untouched.
+_TEXTLAYER_FALLBACK_RATIO = 3.0
+_TEXTLAYER_FALLBACK_MIN_CHARS = 64
+
+
+def _recover_underextracted_pages(doc: Any, chunks: list[dict[str, Any]]) -> None:
+    """Replace a page's markdown with its raw ``get_text`` layer (in place) when
+    ``to_markdown`` dropped most of it -- see ``_TEXTLAYER_FALLBACK_*``.
+
+    page_chunks=True yields one chunk per page in page order, so ``chunks[i]`` maps
+    to ``doc[i]`` (this worker always parses the full doc -- no ``pages=`` subset).
+    Per-page best effort: a get_text failure leaves that page's markdown as-is.
+    """
+    for i, chunk in enumerate(chunks):
+        if i >= doc.page_count:
+            break
+        md = (chunk.get("text") or "").strip()
+        try:
+            raw = doc[i].get_text("text")
+        except Exception:  # noqa: BLE001 -- per-page best effort, never fail the parse
+            continue
+        raw_len = len(raw.strip())
+        if raw_len >= _TEXTLAYER_FALLBACK_MIN_CHARS and raw_len >= (
+            _TEXTLAYER_FALLBACK_RATIO * max(len(md), 1)
+        ):
+            chunk["text"] = raw
 
 
 class PdfParseFailed(Exception):
@@ -95,13 +131,19 @@ def _parse_pdf_worker(
     doc = pymupdf.open("pdf", content)
     try:
         # page_chunks=True makes to_markdown return list[dict], not str.
-        return pymupdf4llm.to_markdown(  # type: ignore[return-value]
-            doc,
-            write_images=write_images,
-            image_path=image_path if write_images else None,
-            page_chunks=True,
-            graphics_limit=graphics_limit,
+        chunks = cast(
+            "list[dict[str, Any]]",
+            pymupdf4llm.to_markdown(
+                doc,
+                write_images=write_images,
+                image_path=image_path if write_images else None,
+                page_chunks=True,
+                graphics_limit=graphics_limit,
+            ),
         )
+        # Recover pages where markdown reconstruction dropped most of the text layer.
+        _recover_underextracted_pages(doc, chunks)
+        return chunks
     finally:
         doc.close()
 
