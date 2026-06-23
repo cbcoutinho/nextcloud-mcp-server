@@ -289,3 +289,52 @@ def test_recover_keeps_adequate_markdown():
         assert chunks[0]["text"] == good_md
     finally:
         doc.close()
+
+
+# Lightweight fake doc/page for the edge paths (no pymupdf needed).
+class _FakePage:
+    def __init__(self, text: str, *, raises: bool = False) -> None:
+        self._text = text
+        self._raises = raises
+
+    def get_text(self, _kind: str) -> str:
+        if self._raises:
+            raise RuntimeError("page extraction blew up")
+        return self._text
+
+
+class _FakeDoc:
+    def __init__(self, pages: list[_FakePage]) -> None:
+        self._pages = pages
+        self.page_count = len(pages)
+
+    def __getitem__(self, i: int) -> _FakePage:
+        assert i < self.page_count, "indexed a page beyond page_count"
+        return self._pages[i]
+
+
+def test_recover_skips_page_on_get_text_error():
+    # The per-page best-effort branch: a get_text failure leaves the chunk as-is.
+    chunks = [{"text": "tiny", "metadata": {}}]
+    _isolation._recover_underextracted_pages(
+        _FakeDoc([_FakePage("", raises=True)]), chunks
+    )
+    assert chunks[0]["text"] == "tiny"
+
+
+def test_recover_fires_on_empty_markdown():
+    # Empty markdown (to_markdown returned nothing) + a rich raw layer -> fall back.
+    rich = "x" * 200
+    chunks = [{"text": "", "metadata": {}}]
+    _isolation._recover_underextracted_pages(_FakeDoc([_FakePage(rich)]), chunks)
+    assert chunks[0]["text"] == rich
+
+
+def test_recover_ignores_chunks_beyond_page_count():
+    # The i >= page_count guard: extra chunks (never expected from page_chunks=True)
+    # are left untouched and no out-of-range page is indexed.
+    rich = "y" * 200
+    chunks = [{"text": "tiny", "metadata": {}}, {"text": "extra", "metadata": {}}]
+    _isolation._recover_underextracted_pages(_FakeDoc([_FakePage(rich)]), chunks)
+    assert chunks[0]["text"] == rich  # page 0 recovered
+    assert chunks[1]["text"] == "extra"  # extra chunk untouched (loop broke)
