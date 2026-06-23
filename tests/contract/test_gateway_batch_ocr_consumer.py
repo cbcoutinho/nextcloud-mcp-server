@@ -78,7 +78,9 @@ async def test_poll_pending(gateway_consumer_pact):
         gateway_consumer_pact.upon_receiving("a poll for a still-running batch OCR job")
         .given("a pending batch OCR job mistral/job-pending exists")
         .with_request("GET", "/v1/ocr/batch/mistral/job-pending")
-        .will_respond_with(200)
+        # 202 Accepted while the batch is still processing (terminal polls are 200);
+        # the client keys off the body status, so it treats either as "keep polling".
+        .will_respond_with(202)
         .with_body({"status": "pending"}, content_type="application/json")
     )
 
