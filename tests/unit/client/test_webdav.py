@@ -1,5 +1,6 @@
 """Unit tests for WebDAV client."""
 
+import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
 
 import pytest
@@ -254,7 +255,7 @@ async def test_get_or_create_tag_creates_new_tag(mocker):
 
     # Mock no existing tag
     mocker.patch.object(client, "get_tag_by_name", return_value=None)
-    mocker.patch.object(
+    mock_create_tag = mocker.patch.object(
         client,
         "create_tag",
         return_value={"id": 42, "name": "vector-index", "userVisible": True},
@@ -265,7 +266,7 @@ async def test_get_or_create_tag_creates_new_tag(mocker):
 
     # Verify tag was created
     assert result["id"] == 42
-    client.create_tag.assert_called_once_with("vector-index", True, True)
+    mock_create_tag.assert_called_once_with("vector-index", True, True)
 
 
 @pytest.mark.unit
@@ -640,3 +641,95 @@ async def test_copy_resource_encodes_destination_header(mocker):
     destination = call.kwargs["headers"]["Destination"]
     assert "%23" in destination
     assert "#" not in destination
+
+
+@pytest.mark.unit
+def test_build_search_xml_escapes_special_chars_in_scope():
+    """A scope folder containing XML-special characters must yield a *well-formed*
+    SEARCH body, not malformed XML that Nextcloud rejects with 400.
+
+    Regression: a tagged folder whose name contains ``&`` (e.g. "Reports &
+    Plans") injected a bare ``&`` into ``<d:href>``, so Nextcloud's Sabre/DAV
+    parser 400'd the SEARCH and the tag-based indexing walk skipped the folder
+    and *all* its descendants (silent indexing gap).
+    """
+    client = WebDAVClient(AsyncMock(), "testuser")
+    scope = "Reports & Plans/2024"
+
+    body = client._build_search_xml(
+        scope=scope,
+        where_conditions=None,
+        properties=["displayname"],
+        order_by=None,
+        limit=None,
+    )
+
+    # 1. Must parse as well-formed XML (raised ParseError on the bare '&' before
+    #    the fix).
+    root = ET.fromstring(body)
+
+    # 2. The href round-trips to the *literal* path — Sabre unescapes ``&amp;``
+    #    back to ``&``, so matching is unchanged for folders without specials.
+    href = root.find(".//{DAV:}href")
+    assert href is not None
+    assert href.text == f"/files/testuser/{scope}"
+
+    # 3. The serialized body escapes the ampersand rather than emitting it raw.
+    assert "& Plans" not in body  # no bare ampersand
+    assert "&amp; Plans" in body  # escaped form present
+
+
+@pytest.mark.unit
+def test_build_search_xml_escapes_angle_brackets_in_scope():
+    """``<`` / ``>`` in a folder name are escaped too (not just ``&``)."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    scope = "weird <name>"
+
+    body = client._build_search_xml(
+        scope=scope,
+        where_conditions=None,
+        properties=["displayname"],
+        order_by=None,
+        limit=None,
+    )
+
+    root = ET.fromstring(body)  # well-formed
+    href = root.find(".//{DAV:}href")
+    assert href is not None
+    assert href.text == f"/files/testuser/{scope}"
+    # Escaped forms present in the serialized body; raw angle brackets absent.
+    assert "weird <name>" not in body
+    assert "&lt;name&gt;" in body
+
+
+@pytest.mark.unit
+async def test_find_by_name_escapes_special_chars_in_pattern(mocker):
+    # The filename pattern is embedded in a <d:literal>; '&'/'<'/'>' must be
+    # escaped or the SEARCH body is malformed and Sabre 400s — the same bug class
+    # as the scope fix. Regression for the find_by_name path.
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mock_search = mocker.patch.object(client, "search_files", return_value=[])
+
+    await client.find_by_name("Costs & Revenue <draft>.pdf")
+
+    where = mock_search.call_args.kwargs["where_conditions"]
+    # Well-formed once wrapped with the DAV namespace (raised ParseError pre-fix).
+    ET.fromstring(f"<root xmlns:d='DAV:'>{where}</root>")
+    assert "&amp;" in where and "&lt;draft&gt;" in where
+    assert "Costs & Revenue" not in where  # no bare ampersand
+
+
+@pytest.mark.unit
+async def test_find_by_tag_escapes_special_chars_in_tag(mocker):
+    # Tag names can contain '&' (e.g. "R&D"); the tag literal must be escaped too.
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mock_search = mocker.patch.object(client, "search_files", return_value=[])
+
+    await client.find_by_tag("R&D")
+
+    where = mock_search.call_args.kwargs["where_conditions"]
+    ET.fromstring(
+        f"<root xmlns:d='DAV:' xmlns:oc='http://owncloud.org/ns'>{where}</root>"
+    )
+    assert "R&amp;D" in where
+    assert "R&D" not in where  # no bare ampersand

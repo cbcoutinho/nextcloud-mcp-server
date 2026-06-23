@@ -22,6 +22,10 @@ from nextcloud_mcp_server.document_processors.base import (
     ProcessingResult,
     ProcessorError,
 )
+from nextcloud_mcp_server.document_processors.ocr import (
+    OCR_BATCH_PENDING_KEY,
+    OCR_BATCH_RETRY_IN_KEY,
+)
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
@@ -148,6 +152,34 @@ class TestRegistryParseInstrumentation:
         mock_record.assert_called_once()
         assert mock_record.call_args.kwargs["status"] == "error"
 
+    async def test_batch_pending_records_pending_not_error(self, mock_tracer):
+        # A batch-OCR poll still in flight returns success=False + the pending
+        # sentinel; _parse_pdf_tier re-queues it via BatchPending. It must record
+        # status="pending", NOT "error" — otherwise every GPU-boot poll inflates
+        # the parse-rate dashboard's error line.
+        result = ProcessingResult(
+            text="",
+            metadata={OCR_BATCH_PENDING_KEY: True, OCR_BATCH_RETRY_IN_KEY: 120},
+            processor="ocr",
+            success=False,
+        )
+        registry = ProcessorRegistry()
+        registry.register(
+            _FakeProcessor(result=result, proc_name="ocr", proc_tier="ocr")
+        )
+
+        with patch(
+            "nextcloud_mcp_server.document_processors.registry.record_document_parse"
+        ) as mock_record:
+            out = await registry.process(
+                b"%PDF-1.7", "application/pdf", filename="x.pdf"
+            )
+
+        assert out is result
+        mock_record.assert_called_once()
+        # Distinct status, not "error" — and not "success" (keeps it out of throughput).
+        assert mock_record.call_args.kwargs["status"] == "pending"
+
 
 class TestParseMetricHelpers:
     def test_success_increments_throughput_counters(self, metric_sample):
@@ -219,6 +251,38 @@ class TestParseMetricHelpers:
         ) == pytest.approx(before_chars)
         assert metric_sample(
             "astrolabe_document_parse_total", {**labels, "status": "error"}
+        ) == pytest.approx(before_total + 1)
+
+    def test_pending_does_not_increment_throughput(self, metric_sample):
+        # A batch-OCR poll still in flight (status="pending") counts the attempt +
+        # duration but, like "error", must NOT bump pages/chars/bytes — only a full
+        # success accrues throughput (the `if status == "success"` gate).
+        labels = {"processor": "uttest-pending", "tier": "ocr"}
+        before_pages = metric_sample("astrolabe_document_pages_processed_total", labels)
+        before_bytes = metric_sample("astrolabe_document_bytes_processed_total", labels)
+        before_total = metric_sample(
+            "astrolabe_document_parse_total", {**labels, "status": "pending"}
+        )
+
+        record_document_parse(
+            "uttest-pending",
+            "ocr",
+            0.05,
+            pages=0,
+            chars=0,
+            byte_size=2500,
+            status="pending",
+        )
+
+        # Pending counts the attempt but NOT throughput.
+        assert metric_sample(
+            "astrolabe_document_pages_processed_total", labels
+        ) == pytest.approx(before_pages)
+        assert metric_sample(
+            "astrolabe_document_bytes_processed_total", labels
+        ) == pytest.approx(before_bytes)
+        assert metric_sample(
+            "astrolabe_document_parse_total", {**labels, "status": "pending"}
         ) == pytest.approx(before_total + 1)
 
     def test_record_document_chunks(self, metric_sample):

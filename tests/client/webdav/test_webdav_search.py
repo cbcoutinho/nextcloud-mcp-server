@@ -266,3 +266,27 @@ async def test_search_properties_returned(
     assert len(present_optional) > 0, f"Should have at least one of {optional_props}"
 
     logger.info("Search returned properties: %s", list(result.keys()))
+
+
+async def test_search_scope_with_ampersand_does_not_400(nc_client: NextcloudClient):
+    """Regression: a folder whose name contains ``&`` must stay searchable.
+
+    Before the scope was XML-escaped, the SEARCH body embedded a bare ``&`` in
+    ``<d:href>``, so Nextcloud's Sabre/DAV parser rejected it with 400 and the
+    tag-based indexing walk skipped the folder and every descendant (a silent
+    indexing gap for any tenant with such a folder).
+    """
+    test_dir = f"mcp_amp_test_{uuid.uuid4().hex[:8]} & co"
+    await nc_client.webdav.create_directory(test_dir)
+    try:
+        await nc_client.webdav.write_file(f"{test_dir}/doc.txt", b"hello", "text/plain")
+        # Must not raise HTTP 400, and must locate the file within the '&' scope.
+        results = await nc_client.webdav.find_by_name("doc.txt", scope=test_dir)
+        assert any(r.get("name") == "doc.txt" for r in results), (
+            f"file in '&'-named folder was not found via SEARCH: {results}"
+        )
+    finally:
+        try:
+            await nc_client.webdav.delete_resource(test_dir)
+        except Exception as e:
+            logger.warning("Failed to cleanup test directory %s: %s", test_dir, e)

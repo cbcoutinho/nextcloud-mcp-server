@@ -719,10 +719,24 @@ class WebDAVClient(BaseNextcloudClient):
             return results
 
         except HTTPStatusError as e:
-            logger.error("HTTP error during search: %s", e)
+            # Surface the server's actual reason: Nextcloud/Sabre returns an XML
+            # error body (e.g. "<s:message>...</s:message>") that pinpoints the
+            # cause — far more actionable than the generic httpx
+            # "Client error '400 Bad Request' for url '.../dav/'" string. A 400
+            # here almost always means a malformed SEARCH body (commonly an
+            # un-escaped character in the scope path).
+            detail = (e.response.text or "").strip().replace("\n", " ")
+            logger.error(
+                "WebDAV SEARCH failed: HTTP %s for scope %r — %s",
+                e.response.status_code,
+                scope or "<user root>",
+                detail[:500] or "(empty response body)",
+            )
             raise e
         except Exception as e:
-            logger.error("Unexpected error during search: %s", e)
+            logger.error(
+                "Unexpected error during WebDAV SEARCH (scope %r): %s", scope, e
+            )
             raise e
 
     async def search_files_all(
@@ -898,6 +912,14 @@ class WebDAVClient(BaseNextcloudClient):
         scope_path = f"/files/{username}"
         if scope:
             scope_path = f"{scope_path}/{scope.lstrip('/')}"
+        # XML-escape before embedding in <d:href>: a folder whose name contains
+        # '&', '<' or '>' (e.g. "Reports & Plans") otherwise produces a malformed
+        # SEARCH body that Nextcloud's Sabre/DAV parser rejects with 400 Bad
+        # Request — silently skipping that folder and all of its descendants
+        # during the tag-based indexing walk. Escaping keeps the path literal
+        # (Sabre unescapes it back), matching how folders without special
+        # characters already resolve.
+        scope_href = xml_escape(scope_path)
 
         # Build property list
         prop_xml = "\n".join([self._property_to_xml(prop) for prop in properties])
@@ -945,7 +967,7 @@ class WebDAVClient(BaseNextcloudClient):
         </d:select>
         <d:from>
             <d:scope>
-                <d:href>{scope_path}</d:href>
+                <d:href>{scope_href}</d:href>
                 <d:depth>infinity</d:depth>
             </d:scope>
         </d:from>
@@ -1128,7 +1150,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:prop>
                     <d:displayname/>
                 </d:prop>
-                <d:literal>{pattern}</d:literal>
+                <d:literal>{xml_escape(pattern)}</d:literal>
             </d:like>
         """
 
@@ -1300,7 +1322,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:prop>
                     <oc:tags/>
                 </d:prop>
-                <d:literal>%{tag_name}%</d:literal>
+                <d:literal>%{xml_escape(tag_name)}%</d:literal>
             </d:like>
         """
 

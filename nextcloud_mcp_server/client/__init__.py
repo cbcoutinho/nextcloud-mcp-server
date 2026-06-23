@@ -294,8 +294,9 @@ class NextcloudClient:
                     )
                 except Exception as e:
                     logger.warning(
-                        "Tag-based directory walk failed for %r (tag %r): %s; "
-                        "skipping descendants",
+                        "Tag-based directory walk failed for %r (tag %r): %s. "
+                        "Skipping this folder and all its descendants — those "
+                        "files will NOT be indexed until the walk succeeds.",
                         dir_path,
                         tag_name,
                         e,
