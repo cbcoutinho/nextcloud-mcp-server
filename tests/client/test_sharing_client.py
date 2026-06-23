@@ -1,9 +1,12 @@
 """Unit tests for SharingClient — wire-format checks for the OCS Sharing API.
 
-These verify the payload shape sent to Nextcloud, particularly for
-``shareType=12`` (``IShare::TYPE_DECK``), which is what powers Deck card
-file attachments. The Deck UI fires this exact request — see
-``~/Software/deck/src/components/card/AttachmentList.vue:223-238``.
+These verify the payload shape sent to Nextcloud. Coverage includes:
+
+- ``shareType=12`` (``IShare::TYPE_DECK``), which powers Deck card file
+  attachments — the Deck UI fires this exact request (see
+  ``~/Software/deck/src/components/card/AttachmentList.vue:223-238``).
+- ``shareType=3`` public download links (``create_public_link``), including
+  the ``expireDate`` passthrough and the OCS error/empty-data branches.
 """
 
 import pytest
@@ -64,6 +67,87 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
     # Nextcloud demands this header on OCS endpoints; without it the request
     # is rejected as a CSRF risk.
     assert call.kwargs["headers"]["OCS-APIRequest"] == "true"
+
+
+async def test_create_public_link_payload(sharing_client, mocker):
+    """create_public_link must POST shareType=3 with no shareWith, and pass
+    through expireDate when supplied. Public link data carries url + token."""
+    sharing_client._client.post.return_value = _ok_share_response(
+        mocker,
+        share_id=7,
+        url="https://nc.example.com/s/abc123",
+        token="abc123",
+        permissions=1,
+    )
+
+    share = await sharing_client.create_public_link(
+        path="/Receipts/receipt.jpg",
+        permissions=1,
+        expire_date="2026-06-25",
+    )
+
+    # This layer only returns the raw OCS payload; expires_at/download_url are
+    # derived at the tool layer (covered in tests/unit/server).
+    assert share["id"] == 7
+    assert share["url"] == "https://nc.example.com/s/abc123"
+    assert share["token"] == "abc123"
+    sharing_client._client.post.assert_called_once()
+    call = sharing_client._client.post.call_args
+    assert call.args[0] == "/ocs/v2.php/apps/files_sharing/api/v1/shares"
+    assert call.kwargs["data"] == {
+        "path": "/Receipts/receipt.jpg",
+        "shareType": 3,
+        "permissions": 1,
+        "expireDate": "2026-06-25",
+    }
+    # Public link: no recipient is sent.
+    assert "shareWith" not in call.kwargs["data"]
+    assert call.kwargs["headers"]["OCS-APIRequest"] == "true"
+
+
+async def test_create_public_link_omits_expire_date_when_none(sharing_client, mocker):
+    """When no expiry is given, expireDate must be absent from the payload."""
+    sharing_client._client.post.return_value = _ok_share_response(
+        mocker, share_id=8, url="https://nc.example.com/s/noexpiry"
+    )
+
+    await sharing_client.create_public_link(path="/doc.pdf")
+
+    call = sharing_client._client.post.call_args
+    assert "expireDate" not in call.kwargs["data"]
+    assert call.kwargs["data"]["shareType"] == 3
+
+
+async def test_create_public_link_raises_on_empty_data(sharing_client, mocker):
+    """An OK status with empty data means the link was not created."""
+    response = mocker.Mock()
+    response.raise_for_status = mocker.Mock()
+    response.json.return_value = {
+        "ocs": {"meta": {"statuscode": 200, "message": "OK"}, "data": []}
+    }
+    sharing_client._client.post.return_value = response
+
+    with pytest.raises(RuntimeError, match="Public link creation failed"):
+        await sharing_client.create_public_link(path="/missing.jpg")
+
+
+async def test_create_public_link_raises_on_ocs_error(sharing_client, mocker):
+    """A non-100/200 OCS statuscode raises RuntimeError with the OCS message."""
+    response = mocker.Mock()
+    response.raise_for_status = mocker.Mock()
+    response.json.return_value = {
+        "ocs": {
+            "meta": {
+                "statuscode": 404,
+                "message": "Wrong path, file/folder doesn't exist",
+            },
+            "data": [],
+        }
+    }
+    sharing_client._client.post.return_value = response
+
+    with pytest.raises(RuntimeError, match="Wrong path"):
+        await sharing_client.create_public_link(path="/nope.jpg")
 
 
 async def test_create_share_raises_on_ocs_failure(sharing_client, mocker):

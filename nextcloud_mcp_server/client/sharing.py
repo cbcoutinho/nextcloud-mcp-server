@@ -82,6 +82,73 @@ class SharingClient(BaseNextcloudClient):
         return share_data
 
     @retry_on_429
+    async def create_public_link(
+        self,
+        path: str,
+        permissions: int = 1,
+        expire_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a public link share (``shareType=3``) for a file or folder.
+
+        Unlike :meth:`create_share`, this targets anonymous public access, so no
+        ``shareWith`` recipient is sent. The returned data carries the public
+        ``url`` and ``token`` for the link.
+
+        Args:
+            path: Path to file/folder to share (relative to the user's files)
+            permissions: Share permissions (default: 1 = read-only). See
+                :meth:`create_share` for the bit values.
+            expire_date: Optional expiry as ``YYYY-MM-DD``. Nextcloud enforces
+                public-link expiry at date granularity — the link expires at
+                midnight (start of this date) in the owner's timezone.
+
+        Returns:
+            Share data including the public ``url`` and ``token``
+
+        Raises:
+            HTTPStatusError: If the request fails
+            RuntimeError: If the OCS API reports an error
+        """
+        data: dict[str, Any] = {
+            "path": path,
+            "shareType": 3,
+            "permissions": permissions,
+        }
+        if expire_date is not None:
+            data["expireDate"] = expire_date
+
+        response = await self._client.post(
+            "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            data=data,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        ocs_status = result["ocs"]["meta"]["statuscode"]
+        if ocs_status not in (100, 200):
+            ocs_message = result["ocs"]["meta"].get("message", "Unknown error")
+            raise RuntimeError(f"OCS API error (code {ocs_status}): {ocs_message}")
+
+        share_data = result["ocs"]["data"]
+
+        # An empty list/dict means the share was not created despite an OK code.
+        if not share_data or (isinstance(share_data, list) and len(share_data) == 0):
+            ocs_message = result["ocs"]["meta"].get("message", "Unknown error")
+            raise RuntimeError(
+                f"Public link creation failed: {ocs_message} (status {ocs_status})"
+            )
+
+        logger.info(
+            "Created public link %s: %s (permissions=%s, expire_date=%s)",
+            share_data["id"],
+            path,
+            permissions,
+            expire_date,
+        )
+        return share_data
+
+    @retry_on_429
     async def delete_share(self, share_id: int) -> None:
         """Delete a share by its ID.
 

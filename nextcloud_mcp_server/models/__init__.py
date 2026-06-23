@@ -48,6 +48,11 @@ from .notes import (
     UpdateNoteResponse,
 )
 
+# Sharing models
+from .sharing import (
+    PublicDownloadLinkResponse,
+)
+
 # Tables models
 from .tables import (
     CreateRowResponse,
@@ -117,6 +122,8 @@ __all__ = [
     "DeleteContactResponse",
     "CreateAddressBookResponse",
     "DeleteAddressBookResponse",
+    # Sharing models
+    "PublicDownloadLinkResponse",
     # Tables models
     "Table",
     "TableColumn",
