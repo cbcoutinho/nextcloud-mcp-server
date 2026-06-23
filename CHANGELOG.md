@@ -5,6 +5,15 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.124.3 (2026-06-23)
+
+### Fix
+
+- **webdav**: XML-escape find_by_name pattern + find_by_tag tag literal
+- address PR #950 review (metric comment, dead test assertion, hoist import)
+- **webdav**: XML-escape SEARCH scope + surface server error on failure
+- **ingest**: record batch-OCR-pending polls as status="pending", not "error"
+
 ## v0.124.2 (2026-06-22)
 
 ### Fix
