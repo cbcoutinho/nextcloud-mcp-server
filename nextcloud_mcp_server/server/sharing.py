@@ -16,10 +16,11 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, str]:
     """Compute ``(expire_date, expires_at)`` for a short-lived public link.
 
-    Nextcloud expires public links at midnight (the *start*) of ``expireDate``
-    in the owner's timezone, so the date is rounded up one day to guarantee the
-    link stays valid for at least the requested window — it may then live until
-    the end of the target's day.
+    Nextcloud expires a public link at 00:00:00 on ``expireDate`` in the owner's
+    timezone (equivalently, the end of the day *before* ``expireDate``). Rounding
+    ``expireDate`` up one day therefore keeps the link valid through the end of
+    the target's day, guaranteeing it outlives the requested window for any
+    realistic server timezone.
 
     Args:
         expires_in_minutes: Requested lifetime in minutes; must be positive.
@@ -161,13 +162,14 @@ def configure_sharing_tools(mcp: FastMCP):
                 expiry caveat below.
 
         Expiry caveat:
-            Nextcloud enforces public-link expiry at **date granularity**
-            (midnight in the owner's timezone), not minute precision. The
-            requested expiry is rounded up so the link stays valid for at least
-            the requested window; ``expires_at`` reports the precise requested
-            instant, but the link may remain valid until the end of that day
-            server-side. To revoke earlier, call ``nc_share_delete`` with the
-            returned ``share_id``.
+            Nextcloud enforces public-link expiry at **date granularity**, not
+            minute precision: a link expires at 00:00:00 on ``expireDate`` in
+            the owner's timezone (i.e. the end of the day before ``expireDate``).
+            The requested window is rounded up so the link stays valid at least
+            that long; ``expires_at`` reports the precise requested instant, but
+            the link may remain valid until the end of that day server-side. To
+            revoke earlier, call ``nc_share_delete`` with the returned
+            ``share_id``.
 
         Returns:
             PublicDownloadLinkResponse with the share URL, download URL, and

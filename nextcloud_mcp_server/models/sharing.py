@@ -29,8 +29,9 @@ class PublicDownloadLinkResponse(BaseResponse):
         None,
         description=(
             "Advisory RFC3339 instant the link was requested to expire. NOTE: "
-            "Nextcloud enforces public-link expiry at date granularity (midnight "
-            "in the owner's timezone), so the link may remain valid until the end "
-            "of that day server-side."
+            "Nextcloud enforces public-link expiry at date granularity — a link "
+            "expires at 00:00:00 on expireDate in the owner's timezone (the end "
+            "of the day before expireDate) — so the link may remain valid until "
+            "the end of that day server-side."
         ),
     )

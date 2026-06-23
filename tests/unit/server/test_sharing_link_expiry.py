@@ -4,9 +4,10 @@ The side-effect-free logic is extracted into module-level helpers so it can be
 tested without exercising the full MCP tool path (which needs a Context + an
 authenticated client):
 
-- ``_compute_link_expiry`` — day-rounding of the expiry. Nextcloud expires
-  public links at midnight (the *start*) of ``expireDate`` in the owner's
-  timezone, so the date must round up a day to cover the requested window.
+- ``_compute_link_expiry`` — day-rounding of the expiry. Nextcloud expires a
+  public link at 00:00:00 on ``expireDate`` in the owner's timezone (the end of
+  the day before ``expireDate``), so the date must round up a day to cover the
+  requested window.
 - ``_build_link_response`` — maps a raw OCS ``shareType=3`` payload into the
   ``PublicDownloadLinkResponse`` (field mapping, ``download_url`` construction,
   empty-url failure).
@@ -31,8 +32,8 @@ def test_compute_link_expiry_rounds_date_up_a_day():
 
     expire_date, expires_at = _compute_link_expiry(30, now)
 
-    # target = 12:30 on 2026-06-02 → rounds up to 2026-06-03 (midnight = end of
-    # the target's day server-side).
+    # target = 12:30 on 2026-06-02 → expireDate rounds up to 2026-06-03, i.e. the
+    # link is valid until 00:00 on 2026-06-03 (the end of the target's day).
     assert expire_date == "2026-06-03"
     assert expires_at == "2026-06-02T12:30:00Z"
 
