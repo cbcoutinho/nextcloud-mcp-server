@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.125.0 (2026-06-23)
+
+### Feat
+
+- **sharing**: add short-lived public download link tool (#829)
+
+### Fix
+
+- **sharing**: parameterize _build_link_response dict annotation (#952)
+- **sharing**: address review round 2 — fail hard on missing url, extract response builder (#952)
+- **sharing**: harden public-link tool per review round 1 (#952)
+
 ## v0.124.4 (2026-06-23)
 
 ### Fix
