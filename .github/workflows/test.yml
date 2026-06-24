@@ -71,7 +71,7 @@ jobs:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
-            nextcloud_image: "docker.io/library/nextcloud:32.0.11@sha256:adf183bfecfaf564a0ab1dba362b3d5bf768d610b297781ab0a2d671ff60746f"
+            nextcloud_image: "docker.io/library/nextcloud:32.0.11@sha256:828cc04eedd9c7139e9a9a7693fb3a5d30f607c912af97e9030ce8cf78f119da"
           - nextcloud_version: "33"
             nextcloud_image: "docker.io/library/nextcloud:33.0.5@sha256:fe5166b04f217c9e3a263bfe76eef5e13de0dd3919966827de1b47bae2308b01"
           # Disabled until all upstream apps support NC 34
