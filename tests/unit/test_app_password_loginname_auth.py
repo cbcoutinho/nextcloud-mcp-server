@@ -1,16 +1,21 @@
-"""Unit tests: stored-app-password client builders authenticate with the
-Nextcloud loginName, not the UID.
+"""Unit tests: stored-app-password client builders use Nextcloud loginName for
+both authentication and DAV/API path construction.
 
-Regression for the OIDC-provisioned-user case where the Nextcloud UID differs
-from the loginName (e.g. UID "Ada Lovelace", loginName "ada@example.com").
-Nextcloud authenticates app passwords against the loginName, so binding the UID
-as the BasicAuth username returns HTTP 401 for every Notes/Files/Shares/CalDAV
-call — which previously stopped the background sync scan loop and degraded
-ACL-aware search to a self-only owner filter.
-
-The builders must split the two identities:
+The Nextcloud loginName (returned by Login Flow v2 and stored in
+``app_data["username"]``) is authoritative for the Nextcloud username.  It must
+be used for:
 - credential username (httpx + CalDAV auth) → loginName
-- DAV/URL path identity (``client.username``)  → UID
+- DAV/URL path identity (``client.username``) → loginName
+
+When Nextcloud itself is the OIDC IdP, loginName == OIDC sub == NC username, so
+there is no behaviour change.  When an external OIDC provider (e.g. Keycloak)
+uses ``preferred_username`` as the user identifier, the OIDC sub is a UUID that
+has no Nextcloud counterpart: using the sub as the DAV path segment produces
+HTTP 404.  Using loginName is always correct.
+
+Background-sync builder (``get_user_client_basic_auth``) intentionally still
+uses the UID for DAV paths because its app-password store is keyed on the UID
+and the sync layer already knows the Nextcloud UID from the provisioning record.
 """
 
 import tempfile
@@ -138,12 +143,19 @@ async def test_basic_auth_builder_unprovisioned_raises(mocker):
         )
 
 
-async def test_login_flow_builder_splits_id_and_loginname(mocker):
-    """Login Flow v2 per-request builder (MCP tool path): same split as the
-    background-sync builder. ``user_id`` (the identity the system is keyed on,
-    == NC UID for NC-as-OIDC-IdP) builds DAV paths; the stored loginName
-    authenticates. Previously the loginName was used for the DAV path too,
-    which is wrong for OIDC users (UID != loginName)."""
+async def test_login_flow_builder_uses_login_name_for_dav_path(mocker):
+    """Login Flow v2 per-request builder: loginName drives both DAV paths and
+    authentication.
+
+    Nextcloud's Login Flow v2 ``loginName`` field is authoritative for the
+    Nextcloud username — it is set by Nextcloud itself during the flow.  When an
+    external OIDC provider (e.g. Keycloak) uses ``preferred_username`` as the
+    user identifier, the OIDC ``sub`` claim is a UUID that does NOT correspond
+    to any Nextcloud username, so using it as the DAV path segment produces a
+    404.  Using ``login_name`` (from ``app_data["username"]``) is always correct:
+    when NC is the OIDC IdP, loginName == sub == NC username (no change); when
+    an external IdP maps preferred_username, loginName is the actual NC username.
+    """
     mock_dav_client = mocker.patch(
         "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
     )
@@ -151,13 +163,13 @@ async def test_login_flow_builder_splits_id_and_loginname(mocker):
 
     mocker.patch(
         "nextcloud_mcp_server.auth.token_utils.extract_user_id_from_token",
-        mocker.AsyncMock(return_value="Ada Lovelace"),  # token sub == NC UID
+        mocker.AsyncMock(return_value="Ada Lovelace"),  # token sub (OIDC identity)
     )
     storage = mocker.MagicMock()
     storage.get_app_password_with_scopes = mocker.AsyncMock(
         return_value={
             "app_password": "app-pw-9999",
-            "username": "ada@example.com",  # loginName
+            "username": "ada@example.com",  # loginName from Login Flow v2
             "scopes": None,
         }
     )
@@ -169,8 +181,8 @@ async def test_login_flow_builder_splits_id_and_loginname(mocker):
         mocker.MagicMock(), "https://cloud.example.org"
     )
 
-    # Path identity → user_id (== UID); credential → loginName
-    assert client.username == "Ada Lovelace"
+    # Both DAV path identity and credential → loginName (not OIDC sub)
+    assert client.username == "ada@example.com"
     assert client._client.auth._auth_header == _basic_auth_header(
         "ada@example.com", "app-pw-9999"
     )

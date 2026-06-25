@@ -191,13 +191,21 @@ async def _get_client_from_login_flow(
             "Call nc_auth_provision_access to complete Login Flow."
         )
 
-    # Authenticate with the stored Nextcloud loginName, but build DAV/API paths
-    # with ``user_id`` — the identity the rest of the system is keyed on (the
-    # app-password store, vector payloads, scopes, and the background-sync
-    # ``get_user_client_basic_auth`` all use it). For OIDC-provisioned users the
-    # loginName (e.g. an email) differs from this identity, and Nextcloud
-    # authenticates app passwords against the loginName. Falls back to
-    # ``user_id`` for legacy rows stored without a loginName.
+    # ``login_name`` is the Nextcloud loginName returned by Login Flow v2
+    # (``app_data["username"]``) — this is the actual Nextcloud username used for
+    # both DAV/API path construction (e.g. ``/remote.php/dav/files/<login_name>/``)
+    # and app-password authentication.  Falls back to ``user_id`` for legacy rows
+    # stored before the loginName column was populated, or when Nextcloud itself is
+    # the OIDC IdP and the sub claim equals the NC username.
+    #
+    # Why ``login_name`` and not ``user_id`` for the DAV path:
+    # When an external OIDC provider (e.g. Keycloak) is configured to use
+    # ``preferred_username`` as the Nextcloud user identifier, the OIDC ``sub``
+    # claim is a UUID (e.g. "a1b2c3d4-…") while the actual Nextcloud username
+    # (e.g. "dmartel") is stored as the Login Flow v2 ``loginName``.  Using
+    # ``user_id`` (the UUID) as the DAV path segment produces a 404; using
+    # ``login_name`` (the NC username) is always correct because Nextcloud itself
+    # sets this field during Login Flow v2.
     login_name = app_data.get("username") or user_id
     app_password = app_data["app_password"]
 
@@ -210,7 +218,7 @@ async def _get_client_from_login_flow(
 
     return NextcloudClient(
         base_url=nextcloud_host,
-        username=user_id,
+        username=login_name,
         auth_username=login_name,
         auth=BasicAuth(login_name, app_password),
         password=app_password,
