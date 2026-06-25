@@ -23,6 +23,16 @@ class TestDecompositionDefaults:
         assert s.collection_metadata_source == "qdrant"
         assert s.embedding_gateway_url is None
         assert s.tenant_id is None
+        # LISTEN/NOTIFY stays on by default — poll-only is opt-in for
+        # transaction-mode poolers (Deck #424).
+        assert s.ingest_listen_notify is True
+
+    def test_listen_notify_toggle(self):
+        # The worker passes this straight to procrastinate's
+        # run_worker_async(listen_notify=...); false = poll-only for a
+        # transaction-mode pooler (PgBouncer).
+        assert Settings(ingest_listen_notify=False).ingest_listen_notify is False
+        assert Settings(ingest_listen_notify=True).ingest_listen_notify is True
 
     def test_enum_values_normalized(self):
         # Mixed case / surrounding whitespace is normalized before validation.

@@ -258,6 +258,16 @@ _DEFAULTS: dict[str, Any] = {
     # queue-depth metric clean). Set false to retain succeeded rows for audit
     # (note: indexing success is also recorded in logs/metrics regardless).
     "ingest_delete_succeeded_jobs": True,
+    # Whether the procrastinate worker uses LISTEN/NOTIFY for job pickup (Deck
+    # #424). True (default) = near-instant wakeup via a long-lived LISTEN
+    # connection. Set false to run POLL-ONLY when DATABASE_URL routes through a
+    # transaction-mode connection pooler (PgBouncer transaction mode), which is
+    # incompatible with LISTEN/NOTIFY — the LISTEN registration is dropped when
+    # the backend returns to the pool. Poll-only trades a few seconds of pickup
+    # latency (fetch_job_polling_interval) for pooler safety; job queries still
+    # multiplex through the pooler. Snapshotted at worker startup; needs a
+    # restart to change.
+    "ingest_listen_notify": True,
     # Per-tier escalation on the procrastinate (postgres) ingest path (Deck
     # #323). When true, a document that a tier cannot parse well is requeued onto
     # the next tier's queue (fast -> structured -> ocr) via a native procrastinate
@@ -941,6 +951,7 @@ class Settings:
     mcp_role: str = "all"  # api | worker | all (Deck #183 two-pod model)
     ingest_stalled_job_seconds: int = 300  # crashed-worker reclaim threshold
     ingest_delete_succeeded_jobs: bool = True  # drop succeeded ingest jobs
+    ingest_listen_notify: bool = True  # False = poll-only (txn-mode pooler, Deck #424)
     ingest_escalation_enabled: bool = True  # per-tier queue-hop (Deck #323)
     ingest_transient_max_attempts: int = 5  # same-tier transient-retry cap
     ingest_reclaim_retry_delay_seconds: int = 30  # stagger reclaimed-job retries
@@ -1583,6 +1594,7 @@ def get_settings() -> Settings:
         "mcp_role": "MCP_ROLE",
         "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",
         "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
+        "ingest_listen_notify": "INGEST_LISTEN_NOTIFY",
         "ingest_escalation_enabled": "INGEST_ESCALATION_ENABLED",
         "ingest_transient_max_attempts": "INGEST_TRANSIENT_MAX_ATTEMPTS",
         "ingest_reclaim_retry_delay_seconds": "INGEST_RECLAIM_RETRY_DELAY_SECONDS",

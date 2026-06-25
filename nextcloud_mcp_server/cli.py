@@ -440,11 +440,12 @@ def worker(concurrency: int | None, tier: str | None):
             # pipeline like every other startup message.
             logger.info(
                 "Ingest worker started: tier=%s queues=%s concurrency=%s "
-                "delete_succeeded=%s",
+                "delete_succeeded=%s listen_notify=%s",
                 tier or "all",
                 queues,
                 workers,
                 settings.ingest_delete_succeeded_jobs,
+                settings.ingest_listen_notify,
             )
             await app.run_worker_async(
                 queues=queues,
@@ -456,6 +457,11 @@ def worker(concurrency: int | None, tier: str | None):
                 delete_jobs="successful"
                 if settings.ingest_delete_succeeded_jobs
                 else "never",
+                # LISTEN/NOTIFY for near-instant job pickup. Set
+                # INGEST_LISTEN_NOTIFY=false to run poll-only when DATABASE_URL
+                # routes through a transaction-mode pooler (PgBouncer), which
+                # drops the LISTEN registration on backend checkin (Deck #424).
+                listen_notify=settings.ingest_listen_notify,
             )
 
     anyio.run(_run)
