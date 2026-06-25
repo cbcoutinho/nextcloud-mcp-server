@@ -85,6 +85,9 @@ jobs:
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
+            # Also start GreenMail (SMTP/IMAP) so the Mail integration tests have
+            # a real backend; the Mail account is provisioned in a step below.
+            extra-compose-profiles: "--profile mail"
             extra-args: >-
               --ignore=tests/integration/test_qdrant_collection_creation.py
               --ignore=tests/rag_evaluation/
@@ -169,7 +172,7 @@ jobs:
         uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
         with:
           compose-file: "./docker-compose.yml"
-          compose-flags: "--profile ${{ matrix.profile }}"
+          compose-flags: "--profile ${{ matrix.profile }} ${{ matrix.extra-compose-profiles }}"
           up-flags: "--build"
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
@@ -201,6 +204,12 @@ jobs:
             sleep 5
           done
           echo "Nextcloud is ready."
+
+      # Provision a GreenMail-backed Mail account for the Mail integration tests
+      # (single-user lane only; the `mail` profile started GreenMail above).
+      - name: Provision GreenMail mail account
+        if: matrix.mode == 'single-user'
+        run: bash scripts/provision-greenmail-account.sh admin admin@example.org
 
       # Wait for the MCP service to be healthy
       - name: Wait for MCP service (${{ matrix.mode }})

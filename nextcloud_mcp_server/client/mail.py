@@ -1,19 +1,18 @@
 """Client for the Nextcloud Mail app API.
 
-Uses three endpoint types:
+Uses two endpoint types:
 
 1. **OCS routes** — ``/ocs/v2.php/apps/mail/message/...`` — for reading full messages
    and attachments. Works with Basic Auth (App Password) via the OCS-APIRequest header.
    These routes are registered in the ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages. These are REST resource routes (from ``'resources'`` in
-   ``routes.php``). They **require** a ``requesttoken`` CSRF header obtained from the
-   ``/index.php/csrftoken`` endpoint.
-
-3. **API v1 routes** — ``/index.php/apps/mail/api/v1/...`` — for sending messages.
-   Registered via ``#[ApiRoute]`` attributes in ``MessageApiController``. These have
-   both ``#[NoAdminRequired]`` and ``#[NoCSRFRequired]``, so Basic Auth works directly.
+   mailboxes, and messages, and for the two-step outbox send. These REST resource
+   routes (from ``'resources'`` in ``routes.php``) are CSRF-gated for browser
+   sessions, but Nextcloud exempts any request carrying the ``OCS-APIRequest: true``
+   header from the CSRF check — so Basic Auth (App Password) + that header is
+   sufficient. No ``requesttoken`` round-trip is needed (verified end-to-end against
+   a live Mail 5.x backend; see the GreenMail integration tests).
 """
 
 import logging
@@ -83,17 +82,15 @@ class MailClient:
     # OCS endpoints — work with Basic Auth + OCS‑APIRequest header alone.
     OCS_BASE = "/ocs/v2.php/apps/mail"
 
-    # Direct API endpoints — need a CSRF token (obtained lazily).
+    # Direct API endpoints — CSRF-exempt via the OCS-APIRequest header.
     API_BASE = "/index.php/apps/mail/api"
-
-    # API v1 endpoints — ``#[NoCSRFRequired]`` + ``#[NoAdminRequired]``, Basic Auth.
-    API_V1_BASE = "/index.php/apps/mail/api/v1"
 
     _OCS_HEADERS = {
         "OCS-APIRequest": "true",
         "Accept": "application/json",
     }
 
+    # The OCS-APIRequest header is what exempts these direct routes from CSRF.
     _DIRECT_HEADERS = {
         "Accept": "application/json",
         "OCS-APIRequest": "true",
@@ -104,7 +101,6 @@ class MailClient:
     def __init__(self, http_client: AsyncClient, username: str) -> None:
         self._client = http_client
         self.username = username
-        self._request_token: str | None = None
 
     # ------------------------------------------------------------------
     # Low‑level request helpers
@@ -124,31 +120,6 @@ class MailClient:
         """
         logger.debug("MailClient %s %s", method, url)
         return await self._client.request(method, url, **kwargs)
-
-    async def _ensure_csrf(self) -> None:
-        """Obtain a CSRF token from the Nextcloud server if not yet cached.
-
-        The token is fetched with Basic Auth (App Password) from
-        ``/index.php/csrftoken`` and stored for the lifetime of this client
-        instance.
-        """
-        if self._request_token is not None:
-            return
-
-        logger.debug("Obtaining CSRF token")
-        response = await self._client.request(
-            "GET",
-            "/index.php/csrftoken",
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        self._request_token = data.get("token")
-
-        if not self._request_token:
-            raise RequestError("Could not obtain CSRF token from Nextcloud")
-
-        logger.debug("CSRF token obtained successfully")
 
     async def _ocs_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET an OCS endpoint and unwrap its envelope.
@@ -174,7 +145,7 @@ class MailClient:
         return _ocs_response(response)
 
     async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """GET a direct API endpoint (needs CSRF token).
+        """GET a direct API endpoint (CSRF-exempt via the OCS-APIRequest header).
 
         Args:
             path: Path relative to :attr:`API_BASE` (e.g. ``/accounts``).
@@ -183,35 +154,11 @@ class MailClient:
         Returns:
             The parsed JSON response body.
         """
-        await self._ensure_csrf()
-
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}{path}",
             params=params,
-            headers={
-                "requesttoken": self._request_token,
-                **self._DIRECT_HEADERS,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def _api_v1_post(self, path: str, data: dict[str, Any] | None = None) -> Any:
-        """POST to an API v1 endpoint (``#[NoCSRFRequired]``, Basic Auth works).
-
-        Args:
-            path: Path relative to :attr:`API_V1_BASE` (e.g. ``/message/send``).
-            data: Form data to send.
-
-        Returns:
-            The parsed JSON response body.
-        """
-        response = await self._make_request(
-            "POST",
-            f"{self.API_V1_BASE}{path}",
-            data=data,
-            headers={"Accept": "application/json"},
+            headers=self._DIRECT_HEADERS,
         )
         response.raise_for_status()
         return response.json()
@@ -219,7 +166,7 @@ class MailClient:
     async def _api_post(
         self, path: str, json_data: dict[str, Any] | None = None
     ) -> Any:
-        """POST to a direct API endpoint (needs CSRF token).
+        """POST to a direct API endpoint (CSRF-exempt via the OCS-APIRequest header).
 
         Args:
             path: Path relative to :attr:`API_BASE` (e.g. ``/outbox``).
@@ -228,17 +175,11 @@ class MailClient:
         Returns:
             The parsed JSON response body.
         """
-        await self._ensure_csrf()
-
         response = await self._make_request(
             "POST",
             f"{self.API_BASE}{path}",
             json=json_data,
-            headers={
-                "requesttoken": self._request_token,
-                "Content-Type": "application/json",
-                **self._DIRECT_HEADERS,
-            },
+            headers={"Content-Type": "application/json", **self._DIRECT_HEADERS},
         )
         response.raise_for_status()
         return response.json()
@@ -263,6 +204,10 @@ class MailClient:
 
         Uses ``GET /index.php/apps/mail/api/mailboxes?accountId=X``.
 
+        Mail 5.x wraps the folders in an account envelope —
+        ``{"id", "email", "mailboxes": [...], "delimiter"}`` — so the list is
+        nested under ``mailboxes`` rather than returned at the top level.
+
         Args:
             account_id: The account ID.
 
@@ -270,6 +215,10 @@ class MailClient:
             List of mailbox dicts.
         """
         data = await self._api_get("/mailboxes", params={"accountId": account_id})
+        if isinstance(data, dict):
+            mailboxes = data.get("mailboxes", [])
+            return mailboxes if isinstance(mailboxes, list) else []
+        # Defensive: tolerate a bare list if a future/older version returns one.
         return data if isinstance(data, list) else []
 
     async def list_messages(

@@ -4,14 +4,16 @@ Mail 5.x exposes two route families (see ``~/Software/mail/appinfo/routes.php``
 and the module docstring of ``client/mail.py``):
 
 - **Direct REST resource routes** under ``/index.php/apps/mail/api`` —
-  ``/accounts``, ``/mailboxes``, ``/messages``, ``/outbox`` — return the payload
-  *unwrapped* (plain JSON list/dict) and require a CSRF ``requesttoken`` header.
+  ``/accounts``, ``/mailboxes``, ``/messages``, ``/outbox`` — return plain JSON
+  (a list, or an account envelope for ``/mailboxes``) and are CSRF-exempt via the
+  ``OCS-APIRequest: true`` header (no ``requesttoken`` round-trip needed).
 - **OCS routes** under ``/ocs/v2.php/apps/mail`` — ``/message/{id}``,
   ``/message/{id}/attachment/{id}``, ``/message/{id}/raw`` — return the standard
   OCS envelope and work with Basic Auth alone.
 
-The ``_api_*`` tests therefore feed plain JSON and stub the CSRF round-trip; the
-OCS tests feed an enveloped payload.
+The ``_api_*`` tests therefore feed plain JSON; the OCS tests feed an enveloped
+payload. Shapes are the real ones verified against a live Mail 5.x backend via
+the GreenMail integration suite.
 """
 
 import logging
@@ -42,24 +44,17 @@ def _ocs_response(data: Any, status_code: int = 200) -> httpx.Response:
     )
 
 
-def _stub_csrf(mocker, client: MailClient) -> None:
-    """Bypass the CSRF round-trip for direct-API tests.
-
-    The direct REST routes call ``_ensure_csrf`` (a live GET to
-    ``/index.php/csrftoken`` via the raw http client) before each request. Unit
-    tests patch ``_make_request`` only, so stub the token acquisition out and
-    pre-seed a token so the ``requesttoken`` header is populated.
-    """
-    mocker.patch.object(MailClient, "_ensure_csrf", new=mocker.AsyncMock())
-    client._request_token = "test-token"
-
-
 async def test_list_accounts_unwraps_direct_payload(mocker):
-    """list_accounts returns the plain JSON list from the direct REST route."""
+    """list_accounts returns the plain JSON list from the direct REST route.
+
+    Mail 5.x's ``/api/accounts`` returns the address as ``emailAddress`` (the
+    real shape verified against a live backend); the client returns the raw
+    dicts and the server layer maps them onto ``MailAccount``.
+    """
     mock_response = create_mock_response(
         json_data=[
-            {"id": 1, "email": "alice@example.com", "isDelegated": False},
-            {"id": 2, "email": "bob@example.com", "isDelegated": False},
+            {"id": 1, "emailAddress": "alice@example.com", "isDelegated": False},
+            {"id": 2, "emailAddress": "bob@example.com", "isDelegated": False},
         ]
     )
     mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
@@ -68,33 +63,42 @@ async def test_list_accounts_unwraps_direct_payload(mocker):
     )
 
     client = MailClient(mock_client, "testuser")
-    _stub_csrf(mocker, client)
     accounts = await client.list_accounts()
 
     assert len(accounts) == 2
     assert accounts[0]["id"] == 1
-    assert accounts[0]["email"] == "alice@example.com"
+    assert accounts[0]["emailAddress"] == "alice@example.com"
 
-    # Direct resource route + CSRF header.
+    # Direct resource route; CSRF-exempt via the OCS-APIRequest header (no token).
     args, kwargs = mock_make_request.call_args
     assert args == ("GET", "/index.php/apps/mail/api/accounts")
-    assert kwargs["headers"]["requesttoken"] == "test-token"
+    assert kwargs["headers"]["OCS-APIRequest"] == "true"
+    assert "requesttoken" not in kwargs["headers"]
 
 
-async def test_get_mailboxes_passes_account_id(mocker):
-    """get_mailboxes sends accountId and unwraps the list."""
+async def test_get_mailboxes_unwraps_account_envelope(mocker):
+    """get_mailboxes unwraps the ``{...,"mailboxes":[...]}`` account envelope.
+
+    Mail 5.x's ``/api/mailboxes`` returns the folders nested under a
+    ``mailboxes`` key (not a bare list); the client must unwrap them.
+    """
     mock_response = create_mock_response(
-        json_data=[
-            {
-                "databaseId": 10,
-                "id": "SU5CT1g=",
-                "name": "INBOX",
-                "displayName": "INBOX",
-                "accountId": 1,
-                "specialUse": ["inbox"],
-                "unread": 3,
-            }
-        ]
+        json_data={
+            "id": 1,
+            "email": "alice@example.com",
+            "delimiter": ".",
+            "mailboxes": [
+                {
+                    "databaseId": 10,
+                    "id": "SU5CT1g=",
+                    "name": "INBOX",
+                    "displayName": "INBOX",
+                    "accountId": 1,
+                    "specialUse": ["inbox"],
+                    "unread": 3,
+                }
+            ],
+        }
     )
     mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mock_make_request = mocker.patch.object(
@@ -102,7 +106,6 @@ async def test_get_mailboxes_passes_account_id(mocker):
     )
 
     client = MailClient(mock_client, "testuser")
-    _stub_csrf(mocker, client)
     mailboxes = await client.get_mailboxes(account_id=1)
 
     assert len(mailboxes) == 1
@@ -134,7 +137,6 @@ async def test_list_messages_builds_params(mocker):
     )
 
     client = MailClient(mock_client, "testuser")
-    _stub_csrf(mocker, client)
     messages = await client.list_messages(
         10, cursor=42, search_filter="hello", limit=50, view="threaded"
     )
@@ -160,7 +162,6 @@ async def test_list_messages_omits_optional_params(mocker):
     )
 
     client = MailClient(mock_client, "testuser")
-    _stub_csrf(mocker, client)
     await client.list_messages(10)
 
     _, kwargs = mock_make_request.call_args
@@ -253,7 +254,6 @@ async def test_empty_data_returns_empty_list(mocker):
     mocker.patch.object(MailClient, "_make_request", return_value=mock_response)
 
     client = MailClient(mock_client, "testuser")
-    _stub_csrf(mocker, client)
     assert await client.list_accounts() == []
 
 
