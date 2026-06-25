@@ -1,122 +1,276 @@
-"""Client for Nextcloud Mail app operations (read-only).
+"""Client for the Nextcloud Mail app API.
 
-Talks to the Mail app's OCS API under ``/ocs/v2.php/apps/mail/api/...``. The
-Mail app's *server* handles the IMAP connection on the user's behalf, so this
-client only ever speaks HTTP to Nextcloud — it never connects to IMAP/POP3
-itself. The read endpoints are ``#[NoCSRFRequired]`` + ``#[NoAdminRequired]``,
-so they are reachable with the same Basic-Auth app-password flow the other app
-clients use, provided the ``OCS-APIRequest`` header is sent.
+Uses three endpoint types:
 
-Prerequisites: the mail account must already be configured inside the Nextcloud
-Mail app (so the server has IMAP credentials), and the Mail app must expose the
-OCS API controllers (Mail 5.x / Nextcloud 32+).
+1. **OCS routes** — ``/ocs/v2.php/apps/mail/message/...`` — for reading full messages
+   and attachments. Works with Basic Auth (App Password) via the OCS-APIRequest header.
+   These routes are registered in the ``'ocs'`` section of the Mail app's ``routes.php``.
+
+2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
+   mailboxes, and messages. These are REST resource routes (from ``'resources'`` in
+   ``routes.php``). They **require** a ``requesttoken`` CSRF header obtained from the
+   ``/index.php/csrftoken`` endpoint.
+
+3. **API v1 routes** — ``/index.php/apps/mail/api/v1/...`` — for sending messages.
+   Registered via ``#[ApiRoute]`` attributes in ``MessageApiController``. These have
+   both ``#[NoAdminRequired]`` and ``#[NoCSRFRequired]``, so Basic Auth works directly.
 """
 
 import logging
 from typing import Any
 from urllib.parse import quote
 
-from httpx import HTTPStatusError, RequestError, Response
+from httpx import AsyncClient, HTTPStatusError, RequestError, Response
 
-from .base import BaseNextcloudClient
+from nextcloud_mcp_server.client.base import retry_on_429
 
 logger = logging.getLogger(__name__)
 
 
-class MailClient(BaseNextcloudClient):
-    """Read-only client for Nextcloud Mail app operations."""
+def _ocs_response(response: Response) -> Any:
+    """Unwrap the OCS envelope from a response and validate the meta status.
+
+    Args:
+        response: The httpx response object from an OCS endpoint.
+
+    Returns:
+        The ``ocs.data`` payload.
+
+    Raises:
+        HTTPStatusError: If the OCS meta indicates failure.
+        RequestError: If the response is not valid JSON.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        raise RequestError(
+            f"Response is not valid JSON: {response.text[:200]}"
+        ) from None
+
+    if not isinstance(body, dict):
+        raise RequestError(
+            f"Unexpected response format: expected dict, got {type(body).__name__}"
+        )
+
+    ocs = body.get("ocs")
+    if not isinstance(ocs, dict):
+        raise RequestError(
+            f"Unexpected OCS format: expected dict, got {type(ocs).__name__}"
+        )
+
+    meta = ocs.get("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    status_code = int(meta.get("statuscode", 200) or 200)
+
+    if status_code >= 400:
+        message = meta.get("message", "Unknown OCS error")
+        # Synthesise a Response-like object so callers can check status_code
+        synthetic = Response(status_code=status_code, text=message)
+        raise HTTPStatusError(message, request=response.request, response=synthetic)
+
+    return ocs.get("data")
+
+
+class MailClient:
+    """Client for the Nextcloud Mail app API.
+
+    Uses a combination of OCS, direct, and API v1 routes to cover the full
+    mail workflow (list accounts → browse mailboxes → list messages → read
+    message → send reply) with the correct authentication for each endpoint.
+    """
+
+    # OCS endpoints — work with Basic Auth + OCS‑APIRequest header alone.
+    OCS_BASE = "/ocs/v2.php/apps/mail"
+
+    # Direct API endpoints — need a CSRF token (obtained lazily).
+    API_BASE = "/index.php/apps/mail/api"
+
+    # API v1 endpoints — ``#[NoCSRFRequired]`` + ``#[NoAdminRequired]``, Basic Auth.
+    API_V1_BASE = "/index.php/apps/mail/api/v1"
+
+    _OCS_HEADERS = {
+        "OCS-APIRequest": "true",
+        "Accept": "application/json",
+    }
+
+    _DIRECT_HEADERS = {
+        "Accept": "application/json",
+        "OCS-APIRequest": "true",
+    }
 
     app_name = "mail"
-    API_BASE = "/ocs/v2.php/apps/mail/api"
 
-    # OCS endpoints require this header; without it Nextcloud rejects the
-    # request (or redirects to a login page). ``format=json`` forces a JSON
-    # envelope rather than XML.
-    _OCS_HEADERS = {"OCS-APIRequest": "true", "Accept": "application/json"}
+    def __init__(self, http_client: AsyncClient, username: str) -> None:
+        self._client = http_client
+        self.username = username
+        self._request_token: str | None = None
 
-    async def _ocs_get(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
-        """GET an OCS endpoint and unwrap the ``ocs.data`` payload.
+    # ------------------------------------------------------------------
+    # Low‑level request helpers
+    # ------------------------------------------------------------------
+
+    @retry_on_429
+    async def _make_request(self, method: str, url: str, **kwargs: Any) -> Response:
+        """Make an HTTP request with retry logic for 429 responses.
 
         Args:
-            path: Path under ``API_BASE`` (e.g. ``/account/list``)
-            params: Optional query params (``format=json`` is added automatically)
+            method: HTTP method (GET, POST, PUT, …).
+            url: Full URL path (e.g. ``/ocs/v2.php/apps/mail/message/1``).
+            **kwargs: Extra arguments forwarded to ``httpx.AsyncClient.request()``.
 
         Returns:
-            The ``data`` payload (a list, dict, or string depending on endpoint)
+            The httpx Response object.
+        """
+        logger.debug("MailClient %s %s", method, url)
+        return await self._client.request(method, url, **kwargs)
+
+    async def _ensure_csrf(self) -> None:
+        """Obtain a CSRF token from the Nextcloud server if not yet cached.
+
+        The token is fetched with Basic Auth (App Password) from
+        ``/index.php/csrftoken`` and stored for the lifetime of this client
+        instance.
+        """
+        if self._request_token is not None:
+            return
+
+        logger.debug("Obtaining CSRF token")
+        response = await self._client.request(
+            "GET",
+            "/index.php/csrftoken",
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        self._request_token = data.get("token")
+
+        if not self._request_token:
+            raise RequestError("Could not obtain CSRF token from Nextcloud")
+
+        logger.debug("CSRF token obtained successfully")
+
+    async def _ocs_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """GET an OCS endpoint and unwrap its envelope.
+
+        Args:
+            path: Path relative to :attr:`OCS_BASE` (e.g. ``/message/1``).
+            params: Optional query-string parameters.
+
+        Returns:
+            The ``ocs.data`` payload (list or dict).
         """
         query: dict[str, Any] = {"format": "json"}
         if params:
             query.update(params)
+
         response = await self._make_request(
             "GET",
-            f"{self.API_BASE}{path}",
+            f"{self.OCS_BASE}{path}",
             params=query,
             headers=self._OCS_HEADERS,
         )
+        response.raise_for_status()
+        return _ocs_response(response)
 
-        # The Mail app being absent (or a misconfigured proxy) can return HTTP
-        # 200 with an HTML body; surface that as a network-style error rather
-        # than letting json() raise an opaque JSONDecodeError to the caller.
-        try:
-            body = response.json()
-        except ValueError as e:
-            raise RequestError(
-                f"Mail OCS returned a non-JSON response for {path}: {e}",
-                request=response.request,
-            ) from e
-
-        # Standard OCS envelope: {"ocs": {"meta": {...}, "data": <payload>}}.
-        # OCS can return HTTP 200 while signalling failure (e.g. 403/404) in
-        # ocs.meta.statuscode; re-raise those as an HTTPStatusError carrying the
-        # OCS code so callers' existing 404/403 handling applies uniformly
-        # instead of silently unwrapping data=null.
-        ocs = body.get("ocs", {}) if isinstance(body, dict) else {}
-        meta = ocs.get("meta", {})
-        # statuscode is spec'd as an int, but harden against a non-numeric value
-        # in a non-spec response rather than letting int() raise ValueError
-        # (which neither MCP-tool handler catches) — treat it as success.
-        try:
-            status_code = int(meta.get("statuscode", 200) or 200)
-        except (TypeError, ValueError):
-            status_code = 200
-        if status_code >= 400:
-            synthetic = Response(
-                status_code=status_code, request=response.request, content=b""
-            )
-            raise HTTPStatusError(
-                f"Mail OCS error {status_code} for {path}: {meta.get('message')}",
-                request=response.request,
-                response=synthetic,
-            )
-        return ocs.get("data")
-
-    # --- Accounts ---
-
-    async def list_accounts(self) -> list[dict[str, Any]]:
-        """List the user's configured mail accounts.
-
-        Returns:
-            List of account objects (keys: id, email, isDelegated, aliases)
-        """
-        data = await self._ocs_get("/account/list")
-        return data or []
-
-    # --- Mailboxes ---
-
-    async def get_mailboxes(self, account_id: int) -> list[dict[str, Any]]:
-        """List the mailboxes (folders) of an account.
+    async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """GET a direct API endpoint (needs CSRF token).
 
         Args:
-            account_id: Account ID (the ``id`` from :meth:`list_accounts`)
+            path: Path relative to :attr:`API_BASE` (e.g. ``/accounts``).
+            params: Optional query-string parameters.
 
         Returns:
-            List of mailbox objects. Note ``databaseId`` is the numeric mailbox
-            id needed by :meth:`list_messages` (``id`` is a base64 string).
+            The parsed JSON response body.
         """
-        data = await self._ocs_get("/mailboxes", params={"accountId": account_id})
-        return data or []
+        await self._ensure_csrf()
 
-    # --- Messages ---
+        response = await self._make_request(
+            "GET",
+            f"{self.API_BASE}{path}",
+            params=params,
+            headers={
+                "requesttoken": self._request_token,
+                **self._DIRECT_HEADERS,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def _api_v1_post(self, path: str, data: dict[str, Any] | None = None) -> Any:
+        """POST to an API v1 endpoint (``#[NoCSRFRequired]``, Basic Auth works).
+
+        Args:
+            path: Path relative to :attr:`API_V1_BASE` (e.g. ``/message/send``).
+            data: Form data to send.
+
+        Returns:
+            The parsed JSON response body.
+        """
+        response = await self._make_request(
+            "POST",
+            f"{self.API_V1_BASE}{path}",
+            data=data,
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def _api_post(
+        self, path: str, json_data: dict[str, Any] | None = None
+    ) -> Any:
+        """POST to a direct API endpoint (needs CSRF token).
+
+        Args:
+            path: Path relative to :attr:`API_BASE` (e.g. ``/outbox``).
+            json_data: JSON body to send.
+
+        Returns:
+            The parsed JSON response body.
+        """
+        await self._ensure_csrf()
+
+        response = await self._make_request(
+            "POST",
+            f"{self.API_BASE}{path}",
+            json=json_data,
+            headers={
+                "requesttoken": self._request_token,
+                "Content-Type": "application/json",
+                **self._DIRECT_HEADERS,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # ------------------------------------------------------------------
+    # Public API methods
+    # ------------------------------------------------------------------
+
+    async def list_accounts(self) -> list[dict[str, Any]]:
+        """List all configured mail accounts.
+
+        Uses ``GET /index.php/apps/mail/api/accounts`` (direct resource route).
+
+        Returns:
+            List of account dicts with keys ``id``, ``email``, ``isDelegated``.
+        """
+        data = await self._api_get("/accounts")
+        return data if isinstance(data, list) else []
+
+    async def get_mailboxes(self, account_id: int) -> list[dict[str, Any]]:
+        """List mailboxes (folders) for a given account.
+
+        Uses ``GET /index.php/apps/mail/api/mailboxes?accountId=X``.
+
+        Args:
+            account_id: The account ID.
+
+        Returns:
+            List of mailbox dicts.
+        """
+        data = await self._api_get("/mailboxes", params={"accountId": account_id})
+        return data if isinstance(data, list) else []
 
     async def list_messages(
         self,
@@ -127,74 +281,151 @@ class MailClient(BaseNextcloudClient):
         limit: int = 20,
         view: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List message envelopes in a mailbox (newest first).
+        """List messages in a mailbox.
 
-        Reads DB-cached envelope metadata, so this is fast and does not hit
-        IMAP per request.
+        Uses ``GET /index.php/apps/mail/api/messages?mailboxId=X``.
 
         Args:
-            mailbox_id: Numeric mailbox id (``databaseId`` from get_mailboxes)
-            cursor: Pagination cursor (timestamp/id from a prior page)
-            search_filter: Optional search/filter query (maps to the OCS
-                ``filter`` query param; named to avoid shadowing ``builtins.filter``)
-            limit: Max messages to return. Clamped server-side to 1..100; a
-                missing limit collapses to 1 server-side, so always pass one.
-            view: ``"singleton"`` or ``"threaded"`` (default threaded)
+            mailbox_id: The mailbox database ID.
+            cursor: Pagination cursor (the ``databaseId`` of the last message
+                    from the previous page).
+            search_filter: Optional search/filter string.
+            limit: Max messages to return (clamped to 1‑100).
+            view: ``"singleton"`` or ``"threaded"`` (default is threaded).
 
         Returns:
-            List of message summary objects (keys include databaseId, subject,
-            from, to, dateInt, flags, previewText, mailboxId).
+            List of message summary dicts.
         """
-        # The Mail OCS API clamps limit to 1..100 server-side; do it here too so
-        # the contract is enforced at the client layer with a predictable value
-        # (a limit of 0 would otherwise collapse to 1 server-side).
-        params: dict[str, Any] = {"limit": min(max(1, limit), 100)}
+        params: dict[str, Any] = {
+            "mailboxId": mailbox_id,
+            "limit": min(max(1, limit), 100),
+        }
         if cursor is not None:
             params["cursor"] = cursor
         if search_filter is not None:
             params["filter"] = search_filter
         if view is not None:
             params["view"] = view
-        data = await self._ocs_get(f"/mailboxes/{mailbox_id}/messages", params=params)
-        return data or []
+
+        data = await self._api_get("/messages", params=params)
+        return data if isinstance(data, list) else []
 
     async def get_message(self, message_id: int) -> dict[str, Any]:
-        """Get a single message with its full body.
+        """Get a single message with full body content and metadata.
 
-        The Mail app fetches the body from IMAP server-side and returns it as a
-        single ``body`` field (sanitized HTML when ``hasHtmlBody`` is true,
-        otherwise plain text). ``body`` may be absent on partial (206) responses
-        when S/MIME decryption fails.
+        Uses the OCS route ``GET /ocs/v2.php/apps/mail/message/{id}``
+        which works with Basic Auth (App Password).
 
         Args:
-            message_id: Numeric message id (``databaseId`` from list_messages)
+            message_id: The message database ID.
 
         Returns:
-            Full message object.
+            Full message dict with ``body``, ``attachments``, ``from``, ``to``,
+            ``subject``, ``flags``, etc.
         """
         data = await self._ocs_get(f"/message/{message_id}")
-        return data or {}
+        return data if isinstance(data, dict) else {}
 
     async def get_attachment(
         self, message_id: int, attachment_id: str
     ) -> dict[str, Any]:
-        """Get a single attachment's metadata and content.
+        """Get an attachment's content from a message.
 
-        The Mail OCS API returns the attachment as a JSON object (not a binary
-        download): keys ``name``, ``mime``, ``size``, ``content``.
+        Uses the OCS route ``GET /ocs/v2.php/apps/mail/message/{id}/attachment/{id}``
+        which works with Basic Auth (App Password).
+
+        The ``attachment_id`` is URL‑encoded to prevent path traversal.
 
         Args:
-            message_id: Numeric message id
-            attachment_id: Attachment id (a string; from the message's
-                ``attachments`` array)
+            message_id: The message database ID.
+            attachment_id: The attachment ID string.
 
         Returns:
-            Attachment object with name, mime, size, content.
+            Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
         """
-        # URL-encode the caller-supplied attachment id (defense-in-depth: keeps
-        # a value like "../.." from being normalised into a different path).
-        safe_attachment_id = quote(attachment_id, safe="")
-        data = await self._ocs_get(
-            f"/message/{message_id}/attachment/{safe_attachment_id}"
-        )
-        return data or {}
+
+        safe_id = quote(attachment_id, safe="")
+        data = await self._ocs_get(f"/message/{message_id}/attachment/{safe_id}")
+        return data if isinstance(data, dict) else {}
+
+    async def send_message(
+        self,
+        account_id: int,
+        from_email: str,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        cc: list[dict[str, str]] | None = None,
+        bcc: list[dict[str, str]] | None = None,
+        references: str | None = None,
+    ) -> dict[str, Any]:
+        """Send an email via the Mail 5.x outbox API.
+
+        Mail 5.x uses a two-step outbox flow:
+        1. POST ``/api/outbox`` to stage the message (needs CSRF token)
+        2. POST ``/api/outbox/{id}`` to send it (needs CSRF token)
+
+        Args:
+            account_id: The mail account ID to send from.
+            from_email: The ``From:`` address (may be an alias).
+            to: List of recipients ``[{"label": "...", "email": "..."}]``.
+            subject: Subject line.
+            body: Message body (plain text or HTML depending on ``is_html``).
+            is_html: Whether ``body`` contains HTML.
+            cc: Optional CC recipients (same format as ``to``).
+            bcc: Optional BCC recipients (same format as ``to``).
+            references: Optional RFC 2822 ``Message-ID`` for reply threading.
+
+        Returns:
+            The response dict from the send step.
+        """
+        create_data: dict[str, Any] = {
+            "accountId": account_id,
+            "subject": subject,
+            "isHtml": is_html,
+            "smimeSign": False,
+            "smimeEncrypt": False,
+            "to": to,
+        }
+        if is_html:
+            create_data["bodyHtml"] = body
+        else:
+            create_data["bodyPlain"] = body
+        if cc:
+            create_data["cc"] = cc
+        if bcc:
+            create_data["bcc"] = bcc
+        if references:
+            create_data["inReplyToMessageId"] = references
+
+        create_result = await self._api_post("/outbox", json_data=create_data)
+        outbox_id = create_result.get("data", {}).get("id")
+        if not outbox_id:
+            return {
+                "error": "Failed to create outbox message",
+                "response": create_result,
+            }
+
+        send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
+
+        return {
+            "success": True,
+            "message": "Message sent successfully",
+            "outbox_id": outbox_id,
+            "response": send_result,
+        }
+
+    async def get_message_raw(self, message_id: int) -> str | None:
+        """Get the raw RFC 2822 source of a message.
+
+        Uses the OCS route ``GET /ocs/v2.php/apps/mail/message/{id}/raw``.
+
+        Args:
+            message_id: The message database ID.
+
+        Returns:
+            The raw email source string, or ``None`` if not found.
+        """
+        data = await self._ocs_get(f"/message/{message_id}/raw")
+        return data if isinstance(data, str) else None

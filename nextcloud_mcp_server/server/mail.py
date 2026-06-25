@@ -1,5 +1,6 @@
-"""MCP tools for Nextcloud Mail app (read-only)."""
+"""MCP tools for Nextcloud Mail app (read, send)."""
 
+import json
 import logging
 
 from httpx import HTTPStatusError, RequestError
@@ -19,6 +20,7 @@ from nextcloud_mcp_server.models.mail import (
     MailMailbox,
     MailMessage,
     MailMessageSummary,
+    SendMessageResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
@@ -50,7 +52,7 @@ def _cap_attachment_content(content: str | None) -> str | None:
 
 
 def configure_mail_tools(mcp: FastMCP):
-    """Configure Mail app MCP tools (read-only)."""
+    """Configure Mail app MCP tools (read, send)."""
 
     @mcp.tool(
         title="List Mail Accounts",
@@ -221,6 +223,82 @@ def configure_mail_tools(mcp: FastMCP):
                     message=f"Failed to get message {message_id}: "
                     f"{e.response.status_code}",
                 )
+            )
+
+    @mcp.tool(
+        title="Send Mail Message",
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+    )
+    @require_scopes("mail.send")
+    @instrument_tool
+    async def nc_mail_send_message(
+        account_id: int,
+        from_email: str,
+        to: str,
+        subject: str,
+        body: str,
+        ctx: Context,
+        is_html: bool = False,
+        cc: str | None = None,
+        bcc: str | None = None,
+        references: str | None = None,
+    ) -> SendMessageResponse:
+        """Send an email through a configured Nextcloud Mail account (requires mail.send scope).
+
+        Recipients are specified as JSON arrays of ``{"label": "...", "email": "..."}``
+        objects.  Example for ``to``::
+
+            [{"label": "John Doe", "email": "john@example.com"}]
+
+        Args:
+            account_id: Mail account ID to send from (from nc_mail_list_accounts)
+            from_email: The ``From:`` email address (must match the account or an alias)
+            to: JSON array of To recipients
+            subject: Email subject
+            body: Email body (plain text unless is_html is true)
+            is_html: Whether body contains HTML (default false)
+            cc: Optional JSON array of CC recipients
+            bcc: Optional JSON array of BCC recipients
+            references: Optional RFC 2822 Message-ID for reply threading
+
+        Returns:
+            SendMessageResponse with success status and optional message
+        """
+        client = await get_client(ctx)
+        try:
+            to_list = json.loads(to) if isinstance(to, str) else to
+            cc_list = json.loads(cc) if isinstance(cc, str) else (cc or [])
+            bcc_list = json.loads(bcc) if isinstance(bcc, str) else (bcc or [])
+
+            await client.mail.send_message(
+                account_id=account_id,
+                from_email=from_email,
+                to=to_list,
+                subject=subject,
+                body=body,
+                is_html=is_html,
+                cc=cc_list or None,
+                bcc=bcc_list or None,
+                references=references or None,
+            )
+            return SendMessageResponse(
+                success=True, message="Message sent successfully"
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error sending message: {str(e)}")
+            )
+        except HTTPStatusError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Failed to send message: {e.response.status_code} "
+                    f"{e.response.text[:500]}",
+                )
+            )
+        except json.JSONDecodeError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
             )
 
     @mcp.tool(
