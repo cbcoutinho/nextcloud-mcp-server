@@ -846,6 +846,162 @@ class CalendarClient:
         )
         return parsed, None
 
+
+    @staticmethod
+    def _decode_ical_value(value: Any) -> str:
+        """Return a JSON-friendly RFC5545 value string."""
+        if value is None:
+            return ""
+        if hasattr(value, "to_ical"):
+            raw = value.to_ical()
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8")
+            return str(raw)
+        return str(value)
+
+    @staticmethod
+    def _parse_alarm_datetime(value: str) -> dt.datetime:
+        """Parse an absolute alarm trigger datetime from ISO or basic iCalendar."""
+        cleaned = value.strip().replace("Z", "+00:00")
+        try:
+            return dt.datetime.fromisoformat(cleaned)
+        except ValueError:
+            # RFC5545 basic format, with optional UTC suffix.
+            utc = value.strip().endswith("Z")
+            basic = value.strip().removesuffix("Z")
+            parsed = dt.datetime.strptime(basic, "%Y%m%dT%H%M%S")
+            if utc:
+                parsed = parsed.replace(tzinfo=dt.UTC)
+            return parsed
+
+    @staticmethod
+    def _format_alarm_datetime(value: dt.datetime, tzid: str | None = None) -> str:
+        """Return an ISO datetime, preserving simple UTC±HH:MM TZIDs as offsets."""
+        if value.tzinfo is not None:
+            return value.isoformat()
+        if tzid and tzid.startswith("UTC") and len(tzid) == 9:
+            sign = 1 if tzid[3] == "+" else -1
+            try:
+                hours = int(tzid[4:6])
+                minutes = int(tzid[7:9])
+            except ValueError:
+                return value.isoformat()
+            offset = dt.timezone(sign * dt.timedelta(hours=hours, minutes=minutes))
+            return value.replace(tzinfo=offset).isoformat()
+        return value.isoformat()
+
+    def _extract_valarms(self, component: Any) -> list[dict[str, Any]]:
+        """Extract VALARM components as ordered, JSON-friendly reminder dicts."""
+        reminders: list[dict[str, Any]] = []
+        for index, alarm in enumerate(
+            sub for sub in component.subcomponents if sub.name == "VALARM"
+        ):
+            trigger = alarm.get("trigger")
+            trigger_dt = getattr(trigger, "dt", None)
+            reminder: dict[str, Any] = {
+                "index": index,
+                "action": str(alarm.get("action", "DISPLAY")),
+            }
+
+            description = alarm.get("description")
+            if description is not None:
+                reminder["description"] = str(description)
+
+            if trigger is not None:
+                reminder["trigger"] = self._decode_ical_value(trigger)
+                params = getattr(trigger, "params", {}) or {}
+                related = params.get("RELATED")
+                if related:
+                    reminder["related"] = str(related)
+                value_param = params.get("VALUE")
+                if value_param:
+                    reminder["value"] = str(value_param)
+                tzid = params.get("TZID")
+                if tzid:
+                    reminder["trigger_tz"] = str(tzid)
+
+                if isinstance(trigger_dt, dt.datetime):
+                    reminder["trigger_at"] = self._format_alarm_datetime(
+                        trigger_dt, str(tzid) if tzid else None
+                    )
+                elif isinstance(trigger_dt, dt.timedelta):
+                    total_seconds = int(trigger_dt.total_seconds())
+                    reminder["offset_seconds"] = total_seconds
+                    if total_seconds < 0 and total_seconds % 60 == 0:
+                        reminder["minutes_before"] = abs(total_seconds) // 60
+
+            reminders.append(reminder)
+        return reminders
+
+    def _build_valarm(self, reminder: dict[str, Any]) -> Alarm:
+        """Build a VALARM component from a reminder dict."""
+        alarm = Alarm()
+        alarm.add("action", reminder.get("action", "DISPLAY"))
+        alarm.add("description", reminder.get("description", "Event reminder"))
+
+        params: dict[str, str] = {}
+        related = reminder.get("related")
+        if related:
+            params["RELATED"] = str(related)
+
+        if reminder.get("trigger_at"):
+            trigger_dt = self._parse_alarm_datetime(str(reminder["trigger_at"]))
+            params["VALUE"] = "DATE-TIME"
+            alarm.add("trigger", trigger_dt, parameters=params)
+        elif reminder.get("trigger"):
+            trigger_value = str(reminder["trigger"])
+            if trigger_value.startswith(("P", "-P", "+P")):
+                alarm.add("trigger", vDDDTypes.from_ical(trigger_value), parameters=params)
+            else:
+                params["VALUE"] = "DATE-TIME"
+                alarm.add("trigger", self._parse_alarm_datetime(trigger_value), parameters=params)
+        elif "minutes_before" in reminder:
+            alarm.add(
+                "trigger",
+                dt.timedelta(minutes=-int(reminder["minutes_before"])),
+                parameters=params,
+            )
+        elif "offset_seconds" in reminder:
+            alarm.add(
+                "trigger",
+                dt.timedelta(seconds=int(reminder["offset_seconds"])),
+                parameters=params,
+            )
+        else:
+            alarm.add("trigger", dt.timedelta(minutes=-15), parameters=params)
+
+        return alarm
+
+    def _sync_valarms_by_index(
+        self, component: Any, reminders: list[dict[str, Any]]
+    ) -> None:
+        """Synchronize VALARM subcomponents as an ordered list."""
+        component.subcomponents = [
+            sub for sub in component.subcomponents if sub.name != "VALARM"
+        ]
+        for reminder in reminders:
+            component.add_component(self._build_valarm(reminder))
+
+    def _add_reminders_or_legacy_alarm(
+        self, component: Any, data: dict[str, Any], default_description: str
+    ) -> None:
+        """Apply explicit reminders, else backward-compatible reminder_minutes."""
+        if "reminders" in data:
+            self._sync_valarms_by_index(component, data.get("reminders") or [])
+            return
+
+        reminder_minutes = data.get("reminder_minutes", 0)
+        if reminder_minutes > 0:
+            component.add_component(
+                self._build_valarm(
+                    {
+                        "action": "DISPLAY",
+                        "description": default_description,
+                        "minutes_before": reminder_minutes,
+                    }
+                )
+            )
+
     def _create_ical_event(self, event_data: dict[str, Any], event_uid: str) -> str:
         """Create iCalendar content from event data."""
         cal = Calendar()
@@ -911,14 +1067,10 @@ class CalendarClient:
             if recurrence_rule:
                 event.add("rrule", vRecur.from_ical(recurrence_rule))
 
-        # Add alarms/reminders
-        reminder_minutes = event_data.get("reminder_minutes", 0)
-        if reminder_minutes > 0:
-            alarm = Alarm()
-            alarm.add("action", "DISPLAY")
-            alarm.add("description", "Event reminder")
-            alarm.add("trigger", dt.timedelta(minutes=-reminder_minutes))
-            event.add_component(alarm)
+        # Add alarms/reminders. Explicit ``reminders`` is the full ordered
+        # VALARM list; ``reminder_minutes`` remains the backward-compatible
+        # shorthand for a single DISPLAY alarm.
+        self._add_reminders_or_legacy_alarm(event, event_data, "Event reminder")
 
         # Add attendees
         attendees = event_data.get("attendees", "")
@@ -996,6 +1148,10 @@ class CalendarClient:
         if attendees:
             event_data["attendees"] = ",".join(attendees)
 
+        reminders = self._extract_valarms(component)
+        if reminders:
+            event_data["reminders"] = reminders
+
         return event_data
 
     def _parse_ical_event(self, ical_text: str) -> dict[str, Any] | None:
@@ -1064,20 +1220,25 @@ class CalendarClient:
                                 if email.strip():
                                     component.add("attendee", f"mailto:{email.strip()}")
 
-                    # Handle reminder (VALARM)
-                    if "reminder_minutes" in event_data:
-                        component.subcomponents = [
-                            sub
-                            for sub in component.subcomponents
-                            if sub.name != "VALARM"
-                        ]
+                    # Handle reminders (VALARM). Omitted reminders preserve
+                    # existing alarms; ``reminders: []`` clears them.
+                    if "reminders" in event_data:
+                        self._sync_valarms_by_index(
+                            component, event_data.get("reminders") or []
+                        )
+                    elif "reminder_minutes" in event_data:
+                        self._sync_valarms_by_index(component, [])
                         minutes = event_data["reminder_minutes"]
                         if minutes > 0:
-                            alarm = Alarm()
-                            alarm.add("action", "DISPLAY")
-                            alarm.add("description", "Event reminder")
-                            alarm.add("trigger", dt.timedelta(minutes=-minutes))
-                            component.add_component(alarm)
+                            component.add_component(
+                                self._build_valarm(
+                                    {
+                                        "action": "DISPLAY",
+                                        "description": "Event reminder",
+                                        "minutes_before": minutes,
+                                    }
+                                )
+                            )
 
                     # Handle dates
                     tz_name = event_data.get("timezone", "")
@@ -1207,6 +1368,9 @@ class CalendarClient:
         if categories:
             todo.add("categories", categories.split(","))
 
+        # Add alarms/reminders
+        self._add_reminders_or_legacy_alarm(todo, todo_data, "Todo reminder")
+
         # Add timestamps
         now = dt.datetime.now(dt.UTC)
         todo.add("created", now)
@@ -1250,6 +1414,10 @@ class CalendarClient:
                     categories = component.get("categories")
                     if categories:
                         todo_data["categories"] = self._extract_categories(categories)
+
+                    reminders = self._extract_valarms(component)
+                    if reminders:
+                        todo_data["reminders"] = reminders
 
                     return todo_data
 
@@ -1319,6 +1487,26 @@ class CalendarClient:
                                 c.strip() for c in categories_str.split(",")
                             ]
                             logger.debug("Set CATEGORIES to %s", categories_str)
+
+                    # Handle reminders (VALARM). Omitted reminders preserve
+                    # existing alarms; ``reminders: []`` clears them.
+                    if "reminders" in todo_data:
+                        self._sync_valarms_by_index(
+                            component, todo_data.get("reminders") or []
+                        )
+                    elif "reminder_minutes" in todo_data:
+                        self._sync_valarms_by_index(component, [])
+                        minutes = todo_data["reminder_minutes"]
+                        if minutes > 0:
+                            component.add_component(
+                                self._build_valarm(
+                                    {
+                                        "action": "DISPLAY",
+                                        "description": "Todo reminder",
+                                        "minutes_before": minutes,
+                                    }
+                                )
+                            )
 
                     # Update timestamps
                     now = dt.datetime.now(dt.UTC)
