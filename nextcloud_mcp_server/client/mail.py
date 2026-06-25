@@ -222,6 +222,33 @@ class MailClient:
         response.raise_for_status()
         return response.json()
 
+    async def _api_post(
+        self, path: str, json_data: dict[str, Any] | None = None
+    ) -> Any:
+        """POST to a direct API endpoint (needs CSRF token).
+
+        Args:
+            path: Path relative to :attr:`API_BASE` (e.g. ``/outbox``).
+            json_data: JSON body to send.
+
+        Returns:
+            The parsed JSON response body.
+        """
+        await self._ensure_csrf()
+
+        response = await self._make_request(
+            "POST",
+            f"{self.API_BASE}{path}",
+            json=json_data,
+            headers={
+                "requesttoken": self._request_token,
+                "Content-Type": "application/json",
+                **self._DIRECT_HEADERS,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
     # ------------------------------------------------------------------
     # Public API methods
     # ------------------------------------------------------------------
@@ -342,10 +369,11 @@ class MailClient:
         bcc: list[dict[str, str]] | None = None,
         references: str | None = None,
     ) -> dict[str, Any]:
-        """Send an email.
+        """Send an email via the Mail 5.x outbox API.
 
-        Uses ``POST /index.php/apps/mail/api/v1/message/send``
-        (``#[ApiRoute]`` with ``#[NoCSRFRequired]``, so Basic Auth works).
+        Mail 5.x uses a two-step outbox flow:
+        1. POST ``/api/outbox`` to stage the message (needs CSRF token)
+        2. POST ``/api/outbox/{id}`` to send it (needs CSRF token)
 
         Args:
             account_id: The mail account ID to send from.
@@ -359,24 +387,40 @@ class MailClient:
             references: Optional RFC 2822 ``Message-ID`` for reply threading.
 
         Returns:
-            The response dict (empty on success, or error info on failure).
+            The response dict from the send step.
         """
-        form_data: dict[str, Any] = {
-            "accountId": str(account_id),
-            "fromEmail": from_email,
+        create_data: dict[str, Any] = {
+            "accountId": account_id,
             "subject": subject,
-            "body": body,
-            "isHtml": str(is_html).lower(),
-            "to": json.dumps(to),
+            "isHtml": is_html,
+            "smimeSign": False,
+            "smimeEncrypt": False,
+            "to": to,
         }
+        if is_html:
+            create_data["bodyHtml"] = body
+        else:
+            create_data["bodyPlain"] = body
         if cc:
-            form_data["cc"] = json.dumps(cc)
+            create_data["cc"] = cc
         if bcc:
-            form_data["bcc"] = json.dumps(bcc)
+            create_data["bcc"] = bcc
         if references:
-            form_data["references"] = references
+            create_data["inReplyToMessageId"] = references
 
-        return await self._api_v1_post("/message/send", data=form_data)
+        create_result = await self._api_post("/outbox", json_data=create_data)
+        outbox_id = create_result.get("data", {}).get("id")
+        if not outbox_id:
+            return {"error": "Failed to create outbox message", "response": create_result}
+
+        send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
+
+        return {
+            "success": True,
+            "message": "Message sent successfully",
+            "outbox_id": outbox_id,
+            "response": send_result,
+        }
 
     async def get_message_raw(self, message_id: int) -> str | None:
         """Get the raw RFC 2822 source of a message.
