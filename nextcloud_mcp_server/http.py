@@ -42,6 +42,11 @@ def nextcloud_httpx_transport(**kwargs: Any) -> httpx.AsyncHTTPTransport:
     silently returning empty bytes on later reads (see #965). A
     caller-supplied ``limits`` kwarg takes precedence.
 
+    Both ``get_nextcloud_ssl_verify()`` and ``get_nextcloud_http_keepalive()``
+    are read eagerly here. That is correct because a transport is built once per
+    client lifetime; a future refactor that builds transports per-request would
+    turn these into per-request ``get_settings()`` calls and should cache them.
+
     Args:
         **kwargs: Forwarded to ``httpx.AsyncHTTPTransport()``.
 

@@ -999,6 +999,16 @@ class Settings:
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
 
+        # Surface the keep-alive opt-out at startup so an operator who set it to
+        # work around #965 gets confirmation it took effect.
+        if not self.nextcloud_http_keepalive:
+            logger.info(
+                "NEXTCLOUD_HTTP_KEEPALIVE is disabled. The Nextcloud HTTP client "
+                "will open a fresh connection per request (no pooled keep-alive "
+                "reuse) — a TLS handshake per call in exchange for immunity to "
+                "poisoned/desynced pooled connections (#965)."
+            )
+
         # Validate Postgres backend TLS configuration (ADR-026)
         if self.database_verify_ssl is False:
             logger.warning(

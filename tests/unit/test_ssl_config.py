@@ -202,7 +202,13 @@ class TestHTTPClientFactory:
 
 
 class TestHTTPKeepalive:
-    """NEXTCLOUD_HTTP_KEEPALIVE wiring into the Nextcloud httpx transport (#965)."""
+    """NEXTCLOUD_HTTP_KEEPALIVE wiring into the Nextcloud httpx transport (#965).
+
+    The assertions reach into ``transport._pool._max_keepalive_connections`` —
+    a private httpcore attribute. It is the most direct way to verify the limit
+    actually reached the pool; httpx/httpcore is pinned, so the breakage risk on
+    a rename is low and would be caught immediately by these tests.
+    """
 
     def test_default_keeps_pooled_connections(self):
         """Default (keep-alive enabled) leaves httpx's default pool limits."""

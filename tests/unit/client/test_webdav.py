@@ -668,6 +668,27 @@ async def test_read_file_skips_check_without_content_length(mocker):
 
 
 @pytest.mark.unit
+async def test_get_note_attachment_raises_on_truncated_body(mocker):
+    """get_note_attachment shares the short-read guard with read_file (#965)."""
+    from httpx import RemoteProtocolError
+
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"abc"  # 3 bytes
+    mock_response.headers = {
+        "content-type": "application/pdf",
+        "content-length": "2048",
+    }
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    with pytest.raises(RemoteProtocolError, match="Truncated download"):
+        await client.get_note_attachment(123, "doc.pdf")
+
+
+@pytest.mark.unit
 async def test_move_resource_encodes_destination_header(mocker):
     """The MOVE Destination header must be percent-encoded too (card 309)."""
     mock_http_client = AsyncMock()

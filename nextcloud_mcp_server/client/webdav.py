@@ -46,8 +46,23 @@ def _read_complete_body(response: Response, label: str) -> bytes:
         # Malformed header — nothing reliable to compare against, so don't
         # raise spuriously; let the (possibly fine) body through.
         return content
+    if expected < 0:
+        # Degenerate header (negative length) — can't be a real short-read
+        # signal and would always trip the check below; ignore it.
+        return content
     if len(content) != expected:
         document_download_truncated_total.inc()
+        # Log here, not just in the message: both callers funnel this through a
+        # generic ``except Exception`` that would otherwise report it as an
+        # opaque "Unexpected error reading file".
+        logger.warning(
+            "Truncated download for %r: expected %d bytes, got %d "
+            "(poisoned keep-alive connection? set NEXTCLOUD_HTTP_KEEPALIVE=false "
+            "— see #965)",
+            label,
+            expected,
+            len(content),
+        )
         raise RemoteProtocolError(
             f"Truncated download for {label!r}: expected {expected} bytes, "
             f"got {len(content)} (poisoned keep-alive connection? see #965)",
