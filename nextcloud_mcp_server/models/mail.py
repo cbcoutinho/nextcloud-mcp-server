@@ -176,6 +176,13 @@ class GetMessageResponse(BaseResponse):
     message: MailMessage = Field(description="Full message details")
 
 
+class SendMessageResponse(BaseResponse):
+    """Response model for sending a message."""
+
+    success: bool = Field(default=True, description="Whether the message was sent successfully")
+    message: str = Field(default="", description="Status or error message")
+
+
 class GetAttachmentResponse(BaseResponse):
     """Response model for getting a single attachment.
 
