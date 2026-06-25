@@ -25,6 +25,7 @@ from nextcloud_mcp_server.config import (
     Settings,
     _reload_config,
     get_database_ssl,
+    get_nextcloud_http_keepalive,
     get_nextcloud_ssl_verify,
     get_settings,
 )
@@ -198,6 +199,57 @@ class TestHTTPClientFactory:
         ):
             client = nextcloud_httpx_client(timeout=5.0, follow_redirects=True)
             assert isinstance(client, httpx.AsyncClient)
+
+
+class TestHTTPKeepalive:
+    """NEXTCLOUD_HTTP_KEEPALIVE wiring into the Nextcloud httpx transport (#965).
+
+    The assertions reach into ``transport._pool._max_keepalive_connections`` —
+    a private httpcore attribute. It is the most direct way to verify the limit
+    actually reached the pool; httpx/httpcore is pinned, so the breakage risk on
+    a rename is low and would be caught immediately by these tests.
+    """
+
+    def test_default_keeps_pooled_connections(self):
+        """Default (keep-alive enabled) leaves httpx's default pool limits."""
+        with patch(
+            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=True
+        ):
+            transport = nextcloud_httpx_transport()
+            assert transport._pool._max_keepalive_connections == 20
+
+    def test_disabled_forces_fresh_connection_per_request(self):
+        """NEXTCLOUD_HTTP_KEEPALIVE=false → max_keepalive_connections=0."""
+        with patch(
+            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=False
+        ):
+            transport = nextcloud_httpx_transport()
+            assert transport._pool._max_keepalive_connections == 0
+
+    def test_caller_supplied_limits_take_precedence(self):
+        """An explicit limits kwarg is not overridden even when keep-alive is off."""
+        with patch(
+            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=False
+        ):
+            transport = nextcloud_httpx_transport(
+                limits=httpx.Limits(max_keepalive_connections=7)
+            )
+            assert transport._pool._max_keepalive_connections == 7
+
+
+class TestGetNextcloudHTTPKeepalive:
+    """get_nextcloud_http_keepalive() reads NEXTCLOUD_HTTP_KEEPALIVE."""
+
+    def test_default_true(self):
+        assert Settings().nextcloud_http_keepalive is True
+
+    def test_env_false(self):
+        with patch.dict(os.environ, {"NEXTCLOUD_HTTP_KEEPALIVE": "false"}):
+            _reload_config()
+            try:
+                assert get_nextcloud_http_keepalive() is False
+            finally:
+                _reload_config()
 
 
 class TestDatabaseSSLSettings:

@@ -439,6 +439,12 @@ document_scan_truncated_total = Counter(
     "Times a folder-expansion SEARCH hit the result ceiling (coverage truncated)",
 )
 
+document_download_truncated_total = Counter(
+    "astrolabe_document_download_truncated_total",
+    "Times a WebDAV GET returned fewer bytes than Content-Length (truncated/"
+    "poisoned connection; raised as a retryable transport error, see #965)",
+)
+
 # =============================================================================
 # Database Metrics
 # =============================================================================
