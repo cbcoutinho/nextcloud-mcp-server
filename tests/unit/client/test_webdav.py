@@ -603,6 +603,71 @@ async def test_read_file_ascii_path_unchanged(mocker):
 
 
 @pytest.mark.unit
+async def test_read_file_raises_on_truncated_body(mocker):
+    """A body shorter than Content-Length is a poisoned/truncated download (#965).
+
+    httpx can hand back empty/short bytes on a healthy-looking 200 when a pooled
+    keep-alive connection is desynced. read_file must raise a retryable transport
+    error (so the vector-sync processor retries/re-queues instead of parsing the
+    empty bytes and dead-lettering the file), not return the truncated content.
+    """
+    from httpx import RemoteProtocolError
+
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b""  # poisoned connection delivered nothing
+    mock_response.headers = {
+        "content-type": "application/pdf",
+        "content-length": "187564",
+    }
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    with pytest.raises(RemoteProtocolError, match="Truncated download"):
+        await client.read_file("Active-Personal/fw9-filled.pdf")
+
+
+@pytest.mark.unit
+async def test_read_file_accepts_matching_content_length(mocker):
+    """A body matching Content-Length is returned unchanged."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    body = b"%PDF-1.7 full body"
+    mock_response = AsyncMock()
+    mock_response.content = body
+    mock_response.headers = {
+        "content-type": "application/pdf",
+        "content-length": str(len(body)),
+    }
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    content, content_type = await client.read_file("Documents/report.pdf")
+    assert content == body
+    assert content_type == "application/pdf"
+
+
+@pytest.mark.unit
+async def test_read_file_skips_check_without_content_length(mocker):
+    """A header-less (e.g. chunked) response must not raise — nothing to compare."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    body = b"chunked body of unknown declared length"
+    mock_response = AsyncMock()
+    mock_response.content = body
+    mock_response.headers = {"content-type": "text/plain"}  # no content-length
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    content, _ = await client.read_file("Documents/stream.txt")
+    assert content == body
+
+
+@pytest.mark.unit
 async def test_move_resource_encodes_destination_header(mocker):
     """The MOVE Destination header must be percent-encoded too (card 309)."""
     mock_http_client = AsyncMock()

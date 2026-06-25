@@ -8,13 +8,53 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
 
-from httpx import HTTPStatusError
+from httpx import HTTPStatusError, RemoteProtocolError, Response
 
-from nextcloud_mcp_server.observability.metrics import document_scan_truncated_total
+from nextcloud_mcp_server.observability.metrics import (
+    document_download_truncated_total,
+    document_scan_truncated_total,
+)
 
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
+
+
+def _read_complete_body(response: Response, label: str) -> bytes:
+    """Return the response body, raising on a short read vs ``Content-Length``.
+
+    A truncated/desynced response on a pooled keep-alive connection can hand
+    back an empty/short body that the document parser then reads as ``0 chars``
+    and the vector-sync processor permanently dead-letters (#965). Compare the
+    received byte count against the declared ``Content-Length`` and raise a
+    retryable :class:`httpx.RemoteProtocolError` on a mismatch: the processor
+    retries/re-queues a raised transport error instead of dead-lettering the
+    document, so a healthy file recovers on the next scan. (httpx already
+    raises on most genuine truncations during the read; this is the
+    belt-and-suspenders guard for the cases it returns intact. The robust
+    mitigation for connection poisoning is ``NEXTCLOUD_HTTP_KEEPALIVE=false``.)
+    A missing or malformed header (e.g. ``Transfer-Encoding: chunked``) skips
+    the check so legitimately header-less responses never raise.
+    """
+    content = response.content
+    declared = response.headers.get("content-length")
+    if declared is None:
+        return content
+    try:
+        expected = int(declared)
+    except ValueError:
+        # Malformed header — nothing reliable to compare against, so don't
+        # raise spuriously; let the (possibly fine) body through.
+        return content
+    if len(content) != expected:
+        document_download_truncated_total.inc()
+        raise RemoteProtocolError(
+            f"Truncated download for {label!r}: expected {expected} bytes, "
+            f"got {len(content)} (poisoned keep-alive connection? see #965)",
+            request=response.request,
+        )
+    return content
+
 
 # Paging defaults for WebDAV SEARCH. Nextcloud's SEARCH returns a server-default
 # page (~100 results) when no ``<d:nresults>`` is sent, silently truncating large
@@ -252,7 +292,7 @@ class WebDAVClient(BaseNextcloudClient):
             response = await self._make_request("GET", attachment_path)
             response.raise_for_status()
 
-            content = response.content
+            content = _read_complete_body(response, filename)
             mime_type = response.headers.get("content-type", "application/octet-stream")
 
             logger.debug(
@@ -392,7 +432,7 @@ class WebDAVClient(BaseNextcloudClient):
             response = await self._make_request("GET", webdav_path)
             response.raise_for_status()
 
-            content = response.content
+            content = _read_complete_body(response, path)
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )

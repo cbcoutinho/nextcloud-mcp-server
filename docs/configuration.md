@@ -242,6 +242,7 @@ NEXTCLOUD_VERIFY_SSL=false
 |----------|----------|---------|-------------|
 | `NEXTCLOUD_VERIFY_SSL` | ⚠️ Optional | `true` | Set to `false` to disable TLS certificate verification |
 | `NEXTCLOUD_CA_BUNDLE` | ⚠️ Optional | - | Path to a PEM CA bundle file for custom certificate authorities |
+| `NEXTCLOUD_HTTP_KEEPALIVE` | ⚠️ Optional | `true` | Reuse pooled keep-alive connections for the Nextcloud httpx client. Set to `false` to open a fresh connection per request (`max_keepalive_connections=0`). Recommended for deployments behind a flaky CDN/WAN path where a truncated response can poison a pooled connection and cause later reads to silently return empty bytes — see [#965](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/965). Mirrors the `DATABASE_POOL_SIZE`→`NullPool` precedent at the HTTP layer. Trade-off: a TLS handshake per request. |
 
 ### Scope
 
