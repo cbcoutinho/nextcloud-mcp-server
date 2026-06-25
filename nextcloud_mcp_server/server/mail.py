@@ -270,7 +270,7 @@ def configure_mail_tools(mcp: FastMCP):
             cc_list = json.loads(cc) if isinstance(cc, str) else (cc or [])
             bcc_list = json.loads(bcc) if isinstance(bcc, str) else (bcc or [])
 
-            result = await client.mail.send_message(
+            await client.mail.send_message(
                 account_id=account_id,
                 from_email=from_email,
                 to=to_list,
@@ -281,7 +281,9 @@ def configure_mail_tools(mcp: FastMCP):
                 bcc=bcc_list or None,
                 references=references or None,
             )
-            return SendMessageResponse(success=True, message="Message sent successfully")
+            return SendMessageResponse(
+                success=True, message="Message sent successfully"
+            )
         except RequestError as e:
             raise McpError(
                 ErrorData(code=-1, message=f"Network error sending message: {str(e)}")

@@ -16,9 +16,9 @@ Uses three endpoint types:
    both ``#[NoAdminRequired]`` and ``#[NoCSRFRequired]``, so Basic Auth works directly.
 """
 
-import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from httpx import AsyncClient, HTTPStatusError, RequestError, Response
 
@@ -150,9 +150,7 @@ class MailClient:
 
         logger.debug("CSRF token obtained successfully")
 
-    async def _ocs_get(
-        self, path: str, params: dict[str, Any] | None = None
-    ) -> Any:
+    async def _ocs_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET an OCS endpoint and unwrap its envelope.
 
         Args:
@@ -175,9 +173,7 @@ class MailClient:
         response.raise_for_status()
         return _ocs_response(response)
 
-    async def _api_get(
-        self, path: str, params: dict[str, Any] | None = None
-    ) -> Any:
+    async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET a direct API endpoint (needs CSRF token).
 
         Args:
@@ -201,9 +197,7 @@ class MailClient:
         response.raise_for_status()
         return response.json()
 
-    async def _api_v1_post(
-        self, path: str, data: dict[str, Any] | None = None
-    ) -> Any:
+    async def _api_v1_post(self, path: str, data: dict[str, Any] | None = None) -> Any:
         """POST to an API v1 endpoint (``#[NoCSRFRequired]``, Basic Auth works).
 
         Args:
@@ -349,12 +343,9 @@ class MailClient:
         Returns:
             Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
         """
-        from urllib.parse import quote
 
         safe_id = quote(attachment_id, safe="")
-        data = await self._ocs_get(
-            f"/message/{message_id}/attachment/{safe_id}"
-        )
+        data = await self._ocs_get(f"/message/{message_id}/attachment/{safe_id}")
         return data if isinstance(data, dict) else {}
 
     async def send_message(
@@ -411,7 +402,10 @@ class MailClient:
         create_result = await self._api_post("/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
         if not outbox_id:
-            return {"error": "Failed to create outbox message", "response": create_result}
+            return {
+                "error": "Failed to create outbox message",
+                "response": create_result,
+            }
 
         send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
 

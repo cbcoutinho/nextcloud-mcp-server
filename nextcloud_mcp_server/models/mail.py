@@ -179,7 +179,9 @@ class GetMessageResponse(BaseResponse):
 class SendMessageResponse(BaseResponse):
     """Response model for sending a message."""
 
-    success: bool = Field(default=True, description="Whether the message was sent successfully")
+    success: bool = Field(
+        default=True, description="Whether the message was sent successfully"
+    )
     message: str = Field(default="", description="Status or error message")
 
 
