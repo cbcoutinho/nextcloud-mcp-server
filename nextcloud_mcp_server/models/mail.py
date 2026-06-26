@@ -15,12 +15,14 @@ class MailAddress(BaseModel):
 
 
 class MailAccount(BaseModel):
-    """A configured mail account (from the account/list endpoint)."""
+    """A configured mail account (from the ``/api/accounts`` endpoint)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     id: int = Field(description="Account ID")
-    email: str = Field(description="Account email address")
+    # Mail 5.x's /api/accounts returns the address as ``emailAddress`` (not
+    # ``email``); ``populate_by_name`` keeps the field accessible as ``email``.
+    email: str = Field(alias="emailAddress", description="Account email address")
     is_delegated: bool = Field(
         False, alias="isDelegated", description="Whether this is a delegated account"
     )

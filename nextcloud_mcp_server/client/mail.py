@@ -1,19 +1,18 @@
 """Client for the Nextcloud Mail app API.
 
-Uses three endpoint types:
+Uses two endpoint types:
 
 1. **OCS routes** — ``/ocs/v2.php/apps/mail/message/...`` — for reading full messages
    and attachments. Works with Basic Auth (App Password) via the OCS-APIRequest header.
    These routes are registered in the ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages. These are REST resource routes (from ``'resources'`` in
-   ``routes.php``). They **require** a ``requesttoken`` CSRF header obtained from the
-   ``/index.php/csrftoken`` endpoint.
-
-3. **API v1 routes** — ``/index.php/apps/mail/api/v1/...`` — for sending messages.
-   Registered via ``#[ApiRoute]`` attributes in ``MessageApiController``. These have
-   both ``#[NoAdminRequired]`` and ``#[NoCSRFRequired]``, so Basic Auth works directly.
+   mailboxes, and messages, and for the two-step outbox send. These REST resource
+   routes (from ``'resources'`` in ``routes.php``) are CSRF-gated for browser
+   sessions, but Nextcloud exempts any request carrying the ``OCS-APIRequest: true``
+   header from the CSRF check — so Basic Auth (App Password) + that header is
+   sufficient. No ``requesttoken`` round-trip is needed (verified end-to-end against
+   a live Mail 5.x backend; see the GreenMail integration tests).
 """
 
 import logging
@@ -75,28 +74,22 @@ def _ocs_response(response: Response) -> Any:
 class MailClient:
     """Client for the Nextcloud Mail app API.
 
-    Uses a combination of OCS, direct, and API v1 routes to cover the full
-    mail workflow (list accounts → browse mailboxes → list messages → read
-    message → send reply) with the correct authentication for each endpoint.
+    Uses a combination of OCS and direct routes to cover the full mail workflow
+    (list accounts → browse mailboxes → list messages → read message → send
+    reply) with the correct authentication for each endpoint.
     """
 
     # OCS endpoints — work with Basic Auth + OCS‑APIRequest header alone.
     OCS_BASE = "/ocs/v2.php/apps/mail"
 
-    # Direct API endpoints — need a CSRF token (obtained lazily).
+    # Direct API endpoints — CSRF-exempt via the OCS-APIRequest header.
     API_BASE = "/index.php/apps/mail/api"
 
-    # API v1 endpoints — ``#[NoCSRFRequired]`` + ``#[NoAdminRequired]``, Basic Auth.
-    API_V1_BASE = "/index.php/apps/mail/api/v1"
-
-    _OCS_HEADERS = {
+    # The OCS-APIRequest header authenticates the OCS routes and exempts the
+    # direct routes from CSRF, so both families use the same headers.
+    _API_HEADERS = {
         "OCS-APIRequest": "true",
         "Accept": "application/json",
-    }
-
-    _DIRECT_HEADERS = {
-        "Accept": "application/json",
-        "OCS-APIRequest": "true",
     }
 
     app_name = "mail"
@@ -104,7 +97,6 @@ class MailClient:
     def __init__(self, http_client: AsyncClient, username: str) -> None:
         self._client = http_client
         self.username = username
-        self._request_token: str | None = None
 
     # ------------------------------------------------------------------
     # Low‑level request helpers
@@ -125,31 +117,6 @@ class MailClient:
         logger.debug("MailClient %s %s", method, url)
         return await self._client.request(method, url, **kwargs)
 
-    async def _ensure_csrf(self) -> None:
-        """Obtain a CSRF token from the Nextcloud server if not yet cached.
-
-        The token is fetched with Basic Auth (App Password) from
-        ``/index.php/csrftoken`` and stored for the lifetime of this client
-        instance.
-        """
-        if self._request_token is not None:
-            return
-
-        logger.debug("Obtaining CSRF token")
-        response = await self._client.request(
-            "GET",
-            "/index.php/csrftoken",
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        self._request_token = data.get("token")
-
-        if not self._request_token:
-            raise RequestError("Could not obtain CSRF token from Nextcloud")
-
-        logger.debug("CSRF token obtained successfully")
-
     async def _ocs_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET an OCS endpoint and unwrap its envelope.
 
@@ -168,13 +135,13 @@ class MailClient:
             "GET",
             f"{self.OCS_BASE}{path}",
             params=query,
-            headers=self._OCS_HEADERS,
+            headers=self._API_HEADERS,
         )
         response.raise_for_status()
         return _ocs_response(response)
 
     async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """GET a direct API endpoint (needs CSRF token).
+        """GET a direct API endpoint (CSRF-exempt via the OCS-APIRequest header).
 
         Args:
             path: Path relative to :attr:`API_BASE` (e.g. ``/accounts``).
@@ -183,35 +150,11 @@ class MailClient:
         Returns:
             The parsed JSON response body.
         """
-        await self._ensure_csrf()
-
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}{path}",
             params=params,
-            headers={
-                "requesttoken": self._request_token,
-                **self._DIRECT_HEADERS,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def _api_v1_post(self, path: str, data: dict[str, Any] | None = None) -> Any:
-        """POST to an API v1 endpoint (``#[NoCSRFRequired]``, Basic Auth works).
-
-        Args:
-            path: Path relative to :attr:`API_V1_BASE` (e.g. ``/message/send``).
-            data: Form data to send.
-
-        Returns:
-            The parsed JSON response body.
-        """
-        response = await self._make_request(
-            "POST",
-            f"{self.API_V1_BASE}{path}",
-            data=data,
-            headers={"Accept": "application/json"},
+            headers=self._API_HEADERS,
         )
         response.raise_for_status()
         return response.json()
@@ -219,7 +162,7 @@ class MailClient:
     async def _api_post(
         self, path: str, json_data: dict[str, Any] | None = None
     ) -> Any:
-        """POST to a direct API endpoint (needs CSRF token).
+        """POST to a direct API endpoint (CSRF-exempt via the OCS-APIRequest header).
 
         Args:
             path: Path relative to :attr:`API_BASE` (e.g. ``/outbox``).
@@ -228,20 +171,16 @@ class MailClient:
         Returns:
             The parsed JSON response body.
         """
-        await self._ensure_csrf()
-
         response = await self._make_request(
             "POST",
             f"{self.API_BASE}{path}",
             json=json_data,
-            headers={
-                "requesttoken": self._request_token,
-                "Content-Type": "application/json",
-                **self._DIRECT_HEADERS,
-            },
+            headers={**self._API_HEADERS, "Content-Type": "application/json"},
         )
         response.raise_for_status()
-        return response.json()
+        # The outbox send step can legitimately return an empty body (e.g. 204);
+        # don't choke trying to JSON-decode it.
+        return response.json() if response.content else {}
 
     # ------------------------------------------------------------------
     # Public API methods
@@ -253,7 +192,9 @@ class MailClient:
         Uses ``GET /index.php/apps/mail/api/accounts`` (direct resource route).
 
         Returns:
-            List of account dicts with keys ``id``, ``email``, ``isDelegated``.
+            List of raw account dicts. Mail 5.x keys the address as
+            ``emailAddress`` (the server layer maps it onto ``MailAccount.email``
+            via the field alias).
         """
         data = await self._api_get("/accounts")
         return data if isinstance(data, list) else []
@@ -263,6 +204,10 @@ class MailClient:
 
         Uses ``GET /index.php/apps/mail/api/mailboxes?accountId=X``.
 
+        Mail 5.x wraps the folders in an account envelope —
+        ``{"id", "email", "mailboxes": [...], "delimiter"}`` — so the list is
+        nested under ``mailboxes`` rather than returned at the top level.
+
         Args:
             account_id: The account ID.
 
@@ -270,6 +215,10 @@ class MailClient:
             List of mailbox dicts.
         """
         data = await self._api_get("/mailboxes", params={"accountId": account_id})
+        if isinstance(data, dict):
+            mailboxes = data.get("mailboxes", [])
+            return mailboxes if isinstance(mailboxes, list) else []
+        # Defensive: tolerate a bare list if a future/older version returns one.
         return data if isinstance(data, list) else []
 
     async def list_messages(
@@ -351,7 +300,6 @@ class MailClient:
     async def send_message(
         self,
         account_id: int,
-        from_email: str,
         to: list[dict[str, str]],
         subject: str,
         body: str,
@@ -362,13 +310,17 @@ class MailClient:
     ) -> dict[str, Any]:
         """Send an email via the Mail 5.x outbox API.
 
-        Mail 5.x uses a two-step outbox flow:
-        1. POST ``/api/outbox`` to stage the message (needs CSRF token)
-        2. POST ``/api/outbox/{id}`` to send it (needs CSRF token)
+        Mail 5.x uses a two-step outbox flow (both CSRF-exempt via the
+        OCS-APIRequest header):
+        1. POST ``/api/outbox`` to stage the message
+        2. POST ``/api/outbox/{id}`` to send it
+
+        The ``From:`` identity is derived by the Mail app from ``account_id``
+        (``OutboxController::create`` has no from/email field), so it is not
+        sent here.
 
         Args:
             account_id: The mail account ID to send from.
-            from_email: The ``From:`` address (may be an alias).
             to: List of recipients ``[{"label": "...", "email": "..."}]``.
             subject: Subject line.
             body: Message body (plain text or HTML depending on ``is_html``).
@@ -402,10 +354,12 @@ class MailClient:
         create_result = await self._api_post("/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
         if not outbox_id:
-            return {
-                "error": "Failed to create outbox message",
-                "response": create_result,
-            }
+            # Raise (don't return an error dict) so the server tool's
+            # ``except RequestError`` surfaces it — otherwise the discarded
+            # return value would let the tool report success on a covert failure.
+            raise RequestError(
+                f"Outbox create returned no id; response: {create_result!r}"
+            )
 
         send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
 
