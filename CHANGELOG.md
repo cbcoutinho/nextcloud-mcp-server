@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.126.3 (2026-06-26)
+
+### Fix
+
+- **mail**: raise on outbox-create failure so the tool can't fake success
+- **mail**: drop the dropped `from_email` param; refresh stale docstrings
+
+### Refactor
+
+- **mail**: drop dead isinstance branch on required `to` arg (round-6)
+- **mail**: merge identical header dicts; guard outbox 204 (round-3)
+
 ## v0.126.2 (2026-06-25)
 
 ### Fix
