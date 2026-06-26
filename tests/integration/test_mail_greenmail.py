@@ -19,6 +19,7 @@ Requires the `mail` + `single-user` compose profiles:
     uv run pytest -m integration tests/integration/test_mail_greenmail.py -v
 """
 
+import base64
 import json
 import smtplib
 import subprocess
@@ -87,6 +88,21 @@ def _seed_inbox_message(subject: str, body: str) -> None:
     msg["Subject"] = subject
     msg.set_content(body)
     msg.add_alternative(f"<p>{body}</p>", subtype="html")
+    with smtplib.SMTP("localhost", 3025, timeout=15) as smtp:
+        smtp.send_message(msg)
+
+
+def _seed_message_with_attachment(
+    subject: str, attachment: bytes, filename: str
+) -> None:
+    """Deliver a multipart/mixed message carrying a file attachment via SMTP."""
+    msg = EmailMessage()
+    msg["From"] = "sender@example.org"
+    msg["To"] = ADMIN_EMAIL
+    msg["Subject"] = subject
+    msg.set_content("see attached")
+    msg.add_alternative("<p>see attached</p>", subtype="html")
+    msg.add_attachment(attachment, maintype="text", subtype="plain", filename=filename)
     with smtplib.SMTP("localhost", 3025, timeout=15) as smtp:
         smtp.send_message(msg)
 
@@ -175,6 +191,57 @@ async def test_list_and_get_message_roundtrip(nc_mcp_client, provisioned_mail_ac
         )
     )["message"]
     assert full["subject"] == subject
+
+
+async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account):
+    """Seed a message with a file attachment, then fetch it through the MCP tools."""
+    subject = "Attachment integration probe"
+    payload = b"hello attachment contents\n"
+    _seed_message_with_attachment(subject, payload, "note.txt")
+
+    account_id = await _first_account_id(nc_mcp_client)
+    _sync_mail_account(account_id)
+
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+
+    messages = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
+        )
+    )["results"]
+    match = next(m for m in messages if m["subject"] == subject)
+
+    full = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_get_message", {"message_id": match["databaseId"]}
+        )
+    )["message"]
+    attachments = full["attachments"]
+    assert attachments, f"no attachments on message {full}"
+    att = attachments[0]
+    assert att["fileName"] == "note.txt"
+
+    fetched = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_get_attachment",
+            {"message_id": match["databaseId"], "attachment_id": att["id"]},
+        )
+    )
+    assert fetched["name"] == "note.txt"
+    # The Mail OCS get-attachment endpoint returns text attachments as raw text
+    # and binary ones base64-encoded; accept either for the seeded text file.
+    content = fetched["content"]
+    decoded = content
+    try:
+        decoded = base64.b64decode(content).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        pass
+    assert payload.decode("utf-8").strip() in (content + decoded)
 
 
 @pytest.mark.xfail(
