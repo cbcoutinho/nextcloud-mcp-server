@@ -234,14 +234,14 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
     )
     assert fetched["name"] == "note.txt"
     # The Mail OCS get-attachment endpoint returns text attachments as raw text
-    # and binary ones base64-encoded; accept either for the seeded text file.
+    # and binary ones base64-encoded. Decode if it's base64, else keep the raw
+    # text, so the assertion covers both shapes.
     content = fetched["content"]
-    decoded = content
     try:
         decoded = base64.b64decode(content).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
-        pass
-    assert payload.decode("utf-8").strip() in (content + decoded)
+        decoded = content
+    assert payload.decode("utf-8").strip() in decoded
 
 
 @pytest.mark.xfail(

@@ -194,7 +194,9 @@ class MailClient:
         Uses ``GET /index.php/apps/mail/api/accounts`` (direct resource route).
 
         Returns:
-            List of account dicts with keys ``id``, ``email``, ``isDelegated``.
+            List of raw account dicts. Mail 5.x keys the address as
+            ``emailAddress`` (the server layer maps it onto ``MailAccount.email``
+            via the field alias).
         """
         data = await self._api_get("/accounts")
         return data if isinstance(data, list) else []

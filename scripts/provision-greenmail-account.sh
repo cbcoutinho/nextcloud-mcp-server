@@ -16,13 +16,19 @@ EMAIL="${2:-${USER_ID}@example.org}"
 GREENMAIL_READINESS_URL="${GREENMAIL_READINESS_URL:-http://localhost:8085/api/service/readiness}"
 
 echo "Waiting for GreenMail readiness at ${GREENMAIL_READINESS_URL} ..."
+ready=0
 for _ in $(seq 1 30); do
     if curl -fsS "${GREENMAIL_READINESS_URL}" >/dev/null 2>&1; then
         echo "GreenMail is ready"
+        ready=1
         break
     fi
     sleep 2
 done
+if [ "${ready}" -ne 1 ]; then
+    echo "WARNING: GreenMail did not become ready in time; mail:account:create" \
+         "may fail to reach the IMAP/SMTP server." >&2
+fi
 
 # Idempotency: mail:account:export prints a human-readable "Account N:" block
 # per existing account (and nothing matching when the user has none).
