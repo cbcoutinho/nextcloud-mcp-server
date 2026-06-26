@@ -140,6 +140,38 @@ async def _first_account_id(nc_mcp_client) -> int:
     return accounts[0]["id"]
 
 
+async def _sync_and_fetch_message(nc_mcp_client, subject: str) -> dict:
+    """Sync the account, locate the seeded message by subject, return its full body.
+
+    Drives list_mailboxes → list_messages → get_message through the MCP tools.
+    """
+    account_id = await _first_account_id(nc_mcp_client)
+    _sync_mail_account(account_id)
+
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+
+    # Newest-first ordering means the just-seeded message is on the first page,
+    # so limit=20 finds it even on a persistent INBOX with >20 older messages.
+    messages = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
+        )
+    )["results"]
+    match = next((m for m in messages if m["subject"] == subject), None)
+    assert match is not None, f"seeded message {subject!r} not found in {messages}"
+
+    return _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_get_message", {"message_id": match["databaseId"]}
+        )
+    )["message"]
+
+
 async def test_list_accounts_returns_provisioned_account(
     nc_mcp_client, provisioned_mail_account
 ):
@@ -173,31 +205,7 @@ async def test_list_and_get_message_roundtrip(nc_mcp_client, provisioned_mail_ac
     subject = "GreenMail integration probe"
     _seed_inbox_message(subject, "hello from greenmail")
 
-    account_id = await _first_account_id(nc_mcp_client)
-    _sync_mail_account(account_id)
-
-    mailboxes = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_mailboxes", {"account_id": account_id}
-        )
-    )["results"]
-    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
-
-    # Newest-first ordering means the just-seeded message is on the first page,
-    # so limit=20 finds it even on a persistent INBOX with >20 older messages.
-    messages = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
-        )
-    )["results"]
-    match = next((m for m in messages if m["subject"] == subject), None)
-    assert match is not None, f"seeded message {subject!r} not found in {messages}"
-
-    full = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_get_message", {"message_id": match["databaseId"]}
-        )
-    )["message"]
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
     assert full["subject"] == subject
 
 
@@ -207,31 +215,7 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
     payload = b"hello attachment contents\n"
     _seed_message_with_attachment(subject, payload, "note.txt")
 
-    account_id = await _first_account_id(nc_mcp_client)
-    _sync_mail_account(account_id)
-
-    mailboxes = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_mailboxes", {"account_id": account_id}
-        )
-    )["results"]
-    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
-
-    messages = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
-        )
-    )["results"]
-    match = next((m for m in messages if m["subject"] == subject), None)
-    assert match is not None, (
-        f"seeded attachment message {subject!r} not found in {messages}"
-    )
-
-    full = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_get_message", {"message_id": match["databaseId"]}
-        )
-    )["message"]
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
     attachments = full["attachments"]
     assert attachments, f"no attachments on message {full}"
     att = attachments[0]
@@ -240,7 +224,7 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
     fetched = _tool_payload(
         await nc_mcp_client.call_tool(
             "nc_mail_get_attachment",
-            {"message_id": match["databaseId"], "attachment_id": att["id"]},
+            {"message_id": full["id"], "attachment_id": att["id"]},
         )
     )
     assert fetched["name"] == "note.txt"
