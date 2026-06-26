@@ -177,6 +177,8 @@ async def test_list_and_get_message_roundtrip(nc_mcp_client, provisioned_mail_ac
     )["results"]
     inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
 
+    # Newest-first ordering means the just-seeded message is on the first page,
+    # so limit=20 finds it even on a persistent INBOX with >20 older messages.
     messages = _tool_payload(
         await nc_mcp_client.call_tool(
             "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}

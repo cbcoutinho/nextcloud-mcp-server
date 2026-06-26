@@ -85,15 +85,11 @@ class MailClient:
     # Direct API endpoints — CSRF-exempt via the OCS-APIRequest header.
     API_BASE = "/index.php/apps/mail/api"
 
-    _OCS_HEADERS = {
+    # The OCS-APIRequest header authenticates the OCS routes and exempts the
+    # direct routes from CSRF, so both families use the same headers.
+    _API_HEADERS = {
         "OCS-APIRequest": "true",
         "Accept": "application/json",
-    }
-
-    # The OCS-APIRequest header is what exempts these direct routes from CSRF.
-    _DIRECT_HEADERS = {
-        "Accept": "application/json",
-        "OCS-APIRequest": "true",
     }
 
     app_name = "mail"
@@ -139,7 +135,7 @@ class MailClient:
             "GET",
             f"{self.OCS_BASE}{path}",
             params=query,
-            headers=self._OCS_HEADERS,
+            headers=self._API_HEADERS,
         )
         response.raise_for_status()
         return _ocs_response(response)
@@ -158,7 +154,7 @@ class MailClient:
             "GET",
             f"{self.API_BASE}{path}",
             params=params,
-            headers=self._DIRECT_HEADERS,
+            headers=self._API_HEADERS,
         )
         response.raise_for_status()
         return response.json()
@@ -179,10 +175,12 @@ class MailClient:
             "POST",
             f"{self.API_BASE}{path}",
             json=json_data,
-            headers={"Content-Type": "application/json", **self._DIRECT_HEADERS},
+            headers={"Content-Type": "application/json", **self._API_HEADERS},
         )
         response.raise_for_status()
-        return response.json()
+        # The outbox send step can legitimately return an empty body (e.g. 204);
+        # don't choke trying to JSON-decode it.
+        return response.json() if response.content else {}
 
     # ------------------------------------------------------------------
     # Public API methods
