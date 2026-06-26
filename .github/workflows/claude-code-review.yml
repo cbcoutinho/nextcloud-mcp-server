@@ -33,7 +33,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@74eedf1a1892082d619c3edb66b9402da6520e7f # v1.0.156
+        uses: anthropics/claude-code-action@521136812280ae7ef256e06045655b9da02793f0 # v1.0.158
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "renovate-bot-cbcoutinho"
