@@ -74,9 +74,9 @@ def _ocs_response(response: Response) -> Any:
 class MailClient:
     """Client for the Nextcloud Mail app API.
 
-    Uses a combination of OCS, direct, and API v1 routes to cover the full
-    mail workflow (list accounts → browse mailboxes → list messages → read
-    message → send reply) with the correct authentication for each endpoint.
+    Uses a combination of OCS and direct routes to cover the full mail workflow
+    (list accounts → browse mailboxes → list messages → read message → send
+    reply) with the correct authentication for each endpoint.
     """
 
     # OCS endpoints — work with Basic Auth + OCS‑APIRequest header alone.
@@ -302,7 +302,6 @@ class MailClient:
     async def send_message(
         self,
         account_id: int,
-        from_email: str,
         to: list[dict[str, str]],
         subject: str,
         body: str,
@@ -313,13 +312,17 @@ class MailClient:
     ) -> dict[str, Any]:
         """Send an email via the Mail 5.x outbox API.
 
-        Mail 5.x uses a two-step outbox flow:
-        1. POST ``/api/outbox`` to stage the message (needs CSRF token)
-        2. POST ``/api/outbox/{id}`` to send it (needs CSRF token)
+        Mail 5.x uses a two-step outbox flow (both CSRF-exempt via the
+        OCS-APIRequest header):
+        1. POST ``/api/outbox`` to stage the message
+        2. POST ``/api/outbox/{id}`` to send it
+
+        The ``From:`` identity is derived by the Mail app from ``account_id``
+        (``OutboxController::create`` has no from/email field), so it is not
+        sent here.
 
         Args:
             account_id: The mail account ID to send from.
-            from_email: The ``From:`` address (may be an alias).
             to: List of recipients ``[{"label": "...", "email": "..."}]``.
             subject: Subject line.
             body: Message body (plain text or HTML depending on ``is_html``).

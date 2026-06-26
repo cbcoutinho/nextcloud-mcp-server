@@ -256,13 +256,12 @@ async def test_send_message_via_outbox(nc_mcp_client, provisioned_mail_account):
     """Send a message through the Mail outbox (create succeeds; SMTP send is env-limited)."""
     account_id = await _first_account_id(nc_mcp_client)
     subject = "Sent from MCP via outbox"
-    # The tool takes `from_email` and `to` as a JSON-array string.
+    # The tool takes `to` as a JSON-array string; From is derived from account_id.
     data = _tool_payload(
         await nc_mcp_client.call_tool(
             "nc_mail_send_message",
             {
                 "account_id": account_id,
-                "from_email": ADMIN_EMAIL,
                 "to": json.dumps(
                     [{"email": "recipient@example.org", "label": "Recipient"}]
                 ),

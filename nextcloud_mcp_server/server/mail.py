@@ -233,7 +233,6 @@ def configure_mail_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_mail_send_message(
         account_id: int,
-        from_email: str,
         to: str,
         subject: str,
         body: str,
@@ -245,6 +244,7 @@ def configure_mail_tools(mcp: FastMCP):
     ) -> SendMessageResponse:
         """Send an email through a configured Nextcloud Mail account (requires mail.send scope).
 
+        The ``From:`` identity is derived by the Mail app from ``account_id``.
         Recipients are specified as JSON arrays of ``{"label": "...", "email": "..."}``
         objects.  Example for ``to``::
 
@@ -252,7 +252,6 @@ def configure_mail_tools(mcp: FastMCP):
 
         Args:
             account_id: Mail account ID to send from (from nc_mail_list_accounts)
-            from_email: The ``From:`` email address (must match the account or an alias)
             to: JSON array of To recipients
             subject: Email subject
             body: Email body (plain text unless is_html is true)
@@ -272,7 +271,6 @@ def configure_mail_tools(mcp: FastMCP):
 
             await client.mail.send_message(
                 account_id=account_id,
-                from_email=from_email,
                 to=to_list,
                 subject=subject,
                 body=body,
