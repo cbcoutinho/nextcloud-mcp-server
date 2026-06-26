@@ -227,7 +227,10 @@ def configure_mail_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Send Mail Message",
-        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Stages a new outbox entry each call (ADR-017)
+            openWorldHint=True,
+        ),
     )
     @require_scopes("mail.send")
     @instrument_tool

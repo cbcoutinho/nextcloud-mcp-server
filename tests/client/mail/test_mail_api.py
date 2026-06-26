@@ -292,3 +292,41 @@ async def test_non_json_response_raises_requesterror(mocker):
     client = MailClient(mock_client, "testuser")
     with pytest.raises(httpx.RequestError):
         await client.get_message(100)
+
+
+async def test_send_message_two_step_flow(mocker):
+    """send_message stages via POST /outbox then sends via POST /outbox/{id}.
+
+    Guards the create-response shape assumption (``data.id``) and the two-step
+    flow that the integration suite can only xfail (the GreenMail outbox send
+    fails before the success path).
+    """
+    create_response = create_mock_response(json_data={"data": {"id": 42}})
+    send_response = create_mock_response(status_code=204, content=b"")
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", side_effect=[create_response, send_response]
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.send_message(
+        1, [{"email": "a@b.com", "label": "A"}], "Hi", "body"
+    )
+
+    assert result["success"] is True
+    assert result["outbox_id"] == 42
+
+    calls = mock_make_request.call_args_list
+    assert calls[0].args == ("POST", "/index.php/apps/mail/api/outbox")
+    assert calls[1].args == ("POST", "/index.php/apps/mail/api/outbox/42")
+
+
+async def test_send_message_missing_outbox_id_returns_error(mocker):
+    """A create response without ``data.id`` yields an error dict, not a crash."""
+    create_response = create_mock_response(json_data={"unexpected": "shape"})
+    mocker.patch.object(MailClient, "_make_request", return_value=create_response)
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.send_message(
+        1, [{"email": "a@b.com", "label": "A"}], "Hi", "body"
+    )
+    assert "error" in result

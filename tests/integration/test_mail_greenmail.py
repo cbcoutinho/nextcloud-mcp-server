@@ -109,7 +109,7 @@ def _seed_message_with_attachment(
 
 def _sync_mail_account(account_id: int) -> None:
     """Force Nextcloud Mail to sync the IMAP account so seeded mail is visible."""
-    subprocess.run(
+    proc = subprocess.run(
         [
             "docker",
             "compose",
@@ -125,6 +125,12 @@ def _sync_mail_account(account_id: int) -> None:
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        # Surface a sync failure so a later "message not found" assertion reads
+        # as a sync problem, not a client bug.
+        print(
+            f"WARNING: mail:account:sync failed (rc={proc.returncode}): {proc.stderr}"
+        )
 
 
 async def _first_account_id(nc_mcp_client) -> int:
