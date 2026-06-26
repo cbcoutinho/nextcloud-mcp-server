@@ -268,7 +268,7 @@ def configure_mail_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         try:
-            to_list = json.loads(to) if isinstance(to, str) else to
+            to_list = json.loads(to)  # `to` is a required JSON-array string
             cc_list = json.loads(cc) if isinstance(cc, str) else (cc or [])
             bcc_list = json.loads(bcc) if isinstance(bcc, str) else (bcc or [])
 
