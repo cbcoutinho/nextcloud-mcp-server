@@ -175,7 +175,7 @@ class MailClient:
             "POST",
             f"{self.API_BASE}{path}",
             json=json_data,
-            headers={"Content-Type": "application/json", **self._API_HEADERS},
+            headers={**self._API_HEADERS, "Content-Type": "application/json"},
         )
         response.raise_for_status()
         # The outbox send step can legitimately return an empty body (e.g. 204);
@@ -354,10 +354,12 @@ class MailClient:
         create_result = await self._api_post("/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
         if not outbox_id:
-            return {
-                "error": "Failed to create outbox message",
-                "response": create_result,
-            }
+            # Raise (don't return an error dict) so the server tool's
+            # ``except RequestError`` surfaces it — otherwise the discarded
+            # return value would let the tool report success on a covert failure.
+            raise RequestError(
+                f"Outbox create returned no id; response: {create_result!r}"
+            )
 
         send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
 

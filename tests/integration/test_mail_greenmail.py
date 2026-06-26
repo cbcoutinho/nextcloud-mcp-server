@@ -222,7 +222,10 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
             "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
         )
     )["results"]
-    match = next(m for m in messages if m["subject"] == subject)
+    match = next((m for m in messages if m["subject"] == subject), None)
+    assert match is not None, (
+        f"seeded attachment message {subject!r} not found in {messages}"
+    )
 
     full = _tool_payload(
         await nc_mcp_client.call_tool(

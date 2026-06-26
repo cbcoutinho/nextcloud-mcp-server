@@ -320,13 +320,15 @@ async def test_send_message_two_step_flow(mocker):
     assert calls[1].args == ("POST", "/index.php/apps/mail/api/outbox/42")
 
 
-async def test_send_message_missing_outbox_id_returns_error(mocker):
-    """A create response without ``data.id`` yields an error dict, not a crash."""
+async def test_send_message_missing_outbox_id_raises(mocker):
+    """A create response without ``data.id`` raises (so the server reports an error).
+
+    Returning an error dict here would be discarded by the server tool, which
+    would then report ``success=True`` on a covert failure.
+    """
     create_response = create_mock_response(json_data={"unexpected": "shape"})
     mocker.patch.object(MailClient, "_make_request", return_value=create_response)
 
     client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    result = await client.send_message(
-        1, [{"email": "a@b.com", "label": "A"}], "Hi", "body"
-    )
-    assert "error" in result
+    with pytest.raises(httpx.RequestError):
+        await client.send_message(1, [{"email": "a@b.com", "label": "A"}], "Hi", "body")
