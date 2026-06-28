@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.126.4 (2026-06-28)
+
+### Fix
+
+- **api**: reject unauthenticated requests before the rate limiter
+- **api**: rate-limit + clearer errors on authenticated management routes
+- **api**: validate credentials on user-management endpoints (GHSA-x88r-fhx7-52h6)
+
+### Refactor
+
+- **api**: route provision through the shared auth helper; fix Sonar gate
+
 ## v0.126.3 (2026-06-26)
 
 ### Fix
