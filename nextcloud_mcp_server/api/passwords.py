@@ -356,8 +356,18 @@ async def _authenticate_request(
     Nextcloud-canonical UID — otherwise ``("", "", error_response)`` with a
     ready-to-return :class:`JSONResponse`.
     """
-    # Throttle before doing any work (mirrors provision_app_password): an
-    # attacker who doesn't know the password is exactly who this guards against.
+    # Extract + name-match FIRST, before touching rate-limit state. A missing,
+    # malformed, or wrong-username Authorization header is rejected immediately
+    # without consuming the victim's rate-limit budget — otherwise an
+    # unauthenticated request flood (no credential needed) could lock a victim
+    # out of their own endpoints (request-flood DoS vs. the brute-force the
+    # limiter is meant to stop).
+    username, password, error_response = _extract_basic_auth(request, path_user_id)
+    if error_response is not None:
+        return "", "", error_response
+
+    # Now throttle: only requests that present the victim's username (a genuine
+    # credential-guess attempt) count toward the per-user brute-force limiter.
     is_allowed, retry_after = _check_rate_limit(path_user_id)
     if not is_allowed:
         logger.warning(
@@ -375,11 +385,6 @@ async def _authenticate_request(
                 headers={"Retry-After": str(retry_after)},
             ),
         )
-
-    username, password, error_response = _extract_basic_auth(request, path_user_id)
-    if error_response is not None:
-        _record_rate_limit_attempt(path_user_id, success=False)
-        return "", "", error_response
 
     if validate_password is not None:
         format_error = validate_password(password)

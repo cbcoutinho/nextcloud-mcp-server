@@ -212,6 +212,34 @@ async def test_repeated_wrong_passwords_are_rate_limited(temp_storage, mocker):
     assert "Retry-After" in resp.headers
 
 
+async def test_unauthenticated_flood_does_not_lock_out_victim(temp_storage, mocker):
+    """Requests with a missing/mismatched Authorization header are rejected
+    before the rate limiter, so an unauthenticated flood can't exhaust a
+    victim's budget and lock them out (request-flood DoS vs. brute-force)."""
+    await _provision_victim(temp_storage, ["notes.read"])
+    _mock_nextcloud_rejects_credentials(mocker)
+
+    client = TestClient(_app(temp_storage))
+    # A flood well past the cap: no header, then wrong username — neither should
+    # consume the victim's rate-limit budget.
+    for _ in range(passwords.RATE_LIMIT_MAX_ATTEMPTS * 2):
+        assert client.get("/api/v1/users/victim/access").status_code == 401
+    for _ in range(passwords.RATE_LIMIT_MAX_ATTEMPTS * 2):
+        resp = client.get(
+            "/api/v1/users/victim/access",
+            headers={"Authorization": _basic_auth("attacker", "x")},
+        )
+        assert resp.status_code == 403  # username != path
+
+    # A genuine credential attempt for the victim is still served (401), not
+    # pre-emptively throttled by the flood above.
+    resp = client.get(
+        "/api/v1/users/victim/access",
+        headers={"Authorization": _basic_auth("victim", "still-wrong")},
+    )
+    assert resp.status_code == 401
+
+
 async def test_correct_password_is_never_rate_limited(temp_storage, mocker):
     """Only *failed* attempts count: a client polling with a valid credential
     is never throttled, even past the failure cap."""
