@@ -25,11 +25,20 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from nextcloud_mcp_server.api import passwords
 from nextcloud_mcp_server.api.access import get_user_access, update_user_scopes
 from nextcloud_mcp_server.api.passwords import get_app_password_status
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limit():
+    """Isolate the module-global rate-limiter state between tests."""
+    passwords._rate_limit_attempts.clear()
+    yield
+    passwords._rate_limit_attempts.clear()
 
 
 @pytest.fixture
@@ -163,3 +172,53 @@ async def test_get_app_password_status_rejects_unvalidated_password(
     )
 
     assert resp.status_code == 401, "wrong password must not disclose status"
+
+
+async def test_repeated_wrong_passwords_are_rate_limited(temp_storage, mocker):
+    """Repeated failed credential attempts on the newly-authenticated read/scope
+    routes hit the shared per-user rate limit (each costs an OCS round-trip), so
+    they cannot be hammered to brute-force a victim's password indefinitely."""
+    await temp_storage.store_app_password_with_scopes(
+        user_id="victim",
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+        scopes=["notes.read"],
+        username="victim",
+    )
+    _mock_nextcloud_rejects_credentials(mocker)
+
+    client = TestClient(_app(temp_storage))
+    # RATE_LIMIT_MAX_ATTEMPTS failed attempts all return 401...
+    for i in range(passwords.RATE_LIMIT_MAX_ATTEMPTS):
+        resp = client.get(
+            "/api/v1/users/victim/access",
+            headers={"Authorization": _basic_auth("victim", "WRONG-guess")},
+        )
+        assert resp.status_code == 401, f"attempt {i + 1} should be 401"
+
+    # ...the next is throttled with 429 + Retry-After.
+    resp = client.get(
+        "/api/v1/users/victim/access",
+        headers={"Authorization": _basic_auth("victim", "WRONG-guess")},
+    )
+    assert resp.status_code == 429
+    assert "Retry-After" in resp.headers
+
+
+async def test_invalid_credentials_error_wording_on_access(temp_storage, mocker):
+    """The access/scope routes report "Invalid credentials", not the
+    app-password-specific default, since they don't deal with app passwords."""
+    await temp_storage.store_app_password_with_scopes(
+        user_id="victim",
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+        scopes=["notes.read"],
+        username="victim",
+    )
+    _mock_nextcloud_rejects_credentials(mocker)
+
+    client = TestClient(_app(temp_storage))
+    resp = client.get(
+        "/api/v1/users/victim/access",
+        headers={"Authorization": _basic_auth("victim", "WRONG-guess")},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "Invalid credentials"

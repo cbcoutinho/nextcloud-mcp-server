@@ -320,11 +320,39 @@ async def _authenticate_request(
     The body is parsed via Starlette's cached ``request.json()``, so a caller
     that reads the body again afterwards is unaffected.
 
-    Returns ``(uid, password, None)`` on success, otherwise
-    ``("", "", error_response)`` with a ready-to-return :class:`JSONResponse`.
+    Each call costs a Nextcloud OCS round-trip, so the per-user sliding-window
+    rate limiter shared with provisioning throttles brute-force. Only *failed*
+    attempts are recorded, so a legitimate client polling these endpoints with a
+    correct credential is never throttled — but repeated wrong passwords for a
+    given user hit the cap (``RATE_LIMIT_MAX_ATTEMPTS``/hour).
+
+    Returns ``(uid, password, None)`` on success — where ``uid`` is the
+    Nextcloud-canonical UID — otherwise ``("", "", error_response)`` with a
+    ready-to-return :class:`JSONResponse`.
     """
+    # Throttle before doing any work (mirrors provision_app_password): an
+    # attacker who doesn't know the password is exactly who this guards against.
+    is_allowed, retry_after = _check_rate_limit(path_user_id)
+    if not is_allowed:
+        logger.warning(
+            "Rate limit exceeded for user-management request: %s", path_user_id
+        )
+        return (
+            "",
+            "",
+            JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Rate limit exceeded. Try again in {retry_after} seconds.",
+                },
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            ),
+        )
+
     username, password, error_response = _extract_basic_auth(request, path_user_id)
     if error_response is not None:
+        _record_rate_limit_attempt(path_user_id, success=False)
         return "", "", error_response
 
     # Optional Nextcloud loginName from the body (OIDC users where UID !=
@@ -359,6 +387,7 @@ async def _authenticate_request(
         invalid_credential_error=invalid_credential_error,
     )
     if error_response is not None:
+        _record_rate_limit_attempt(path_user_id, success=False)
         return "", "", error_response
 
     # The authenticated account must own the path UID. ``_extract_basic_auth``
@@ -367,6 +396,7 @@ async def _authenticate_request(
     # their own loginName (via the body) while targeting another user's path.
     if ocs_user_id != path_user_id:
         logger.warning("User ID mismatch in OCS response")
+        _record_rate_limit_attempt(path_user_id, success=False)
         return (
             "",
             "",
@@ -376,7 +406,10 @@ async def _authenticate_request(
             ),
         )
 
-    return username, password, None
+    # Return the canonical UID. By the checks above it equals
+    # ``ocs_user_id == username == path_user_id``; use ``path_user_id`` as it is
+    # statically ``str`` (``ocs_user_id`` is ``str | None`` from the validator).
+    return path_user_id, password, None
 
 
 async def provision_app_password(request: Request) -> JSONResponse:

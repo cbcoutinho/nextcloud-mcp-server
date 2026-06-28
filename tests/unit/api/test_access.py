@@ -17,6 +17,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from nextcloud_mcp_server.api import passwords
 from nextcloud_mcp_server.api.access import (
     get_user_access,
     list_supported_scopes,
@@ -26,6 +27,14 @@ from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limit():
+    """Isolate the module-global rate-limiter state between tests."""
+    passwords._rate_limit_attempts.clear()
+    yield
+    passwords._rate_limit_attempts.clear()
 
 
 @pytest.fixture(autouse=True)

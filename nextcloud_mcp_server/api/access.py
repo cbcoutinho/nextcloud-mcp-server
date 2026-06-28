@@ -34,7 +34,9 @@ async def get_user_access(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    username, _, error_response = await _authenticate_request(request, path_user_id)
+    username, _, error_response = await _authenticate_request(
+        request, path_user_id, invalid_credential_error="Invalid credentials"
+    )
     if error_response is not None:
         return error_response
 
@@ -95,7 +97,9 @@ async def update_user_scopes(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    username, _, error_response = await _authenticate_request(request, path_user_id)
+    username, _, error_response = await _authenticate_request(
+        request, path_user_id, invalid_credential_error="Invalid credentials"
+    )
     if error_response is not None:
         return error_response
 
