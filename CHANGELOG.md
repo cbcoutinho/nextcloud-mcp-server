@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.126.5 (2026-06-28)
+
+### Refactor
+
+- **config**: drive ALL config through dynaconf; remove os.environ reads
+
 ## v0.126.4 (2026-06-28)
 
 ### Fix
