@@ -5,7 +5,6 @@ MCP's OAuth authentication flow.
 """
 
 import logging
-import os
 
 from starlette.authentication import (
     AuthCredentials,
@@ -13,6 +12,8 @@ from starlette.authentication import (
     SimpleUser,
 )
 from starlette.requests import HTTPConnection
+
+from nextcloud_mcp_server.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class SessionAuthBackend(AuthenticationBackend):
         """
         # BasicAuth mode: Always authenticated as the configured user
         if not self.oauth_enabled:
-            username = os.getenv("NEXTCLOUD_USERNAME", "admin")
+            username = cfg("NEXTCLOUD_USERNAME", "admin")
             return AuthCredentials(["authenticated", "admin"]), SimpleUser(username)
 
         # OAuth mode: opaque random session_id cookie -> user_id mapping.

@@ -21,7 +21,6 @@ Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
 
 import hashlib
 import logging
-import os
 import secrets
 import time
 from base64 import b64decode, urlsafe_b64encode
@@ -41,7 +40,7 @@ from nextcloud_mcp_server.auth.token_utils import (
     get_oidc_discovery,
     verify_id_token,
 )
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import cfg, get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -319,9 +318,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     )
 
     # Use MCP server's own client_id with Nextcloud
-    mcp_server_client_id = os.getenv(
-        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
-    )
+    mcp_server_client_id = cfg("MCP_SERVER_CLIENT_ID", oauth_config.get("client_id"))
     mcp_server_url = oauth_config["mcp_server_url"]
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
@@ -430,9 +427,7 @@ async def oauth_authorize_nextcloud(
     oauth_config = oauth_ctx["config"]
 
     # Get MCP server's OAuth client credentials
-    mcp_server_client_id = os.getenv(
-        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
-    )
+    mcp_server_client_id = cfg("MCP_SERVER_CLIENT_ID", oauth_config.get("client_id"))
     if not mcp_server_client_id:
         return JSONResponse(
             {
@@ -611,10 +606,8 @@ async def oauth_callback_nextcloud(request: Request):
     await storage.delete_oauth_session(state)
 
     # Exchange code for tokens
-    mcp_server_client_id = os.getenv(
-        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
-    )
-    mcp_server_client_secret = os.getenv(
+    mcp_server_client_id = cfg("MCP_SERVER_CLIENT_ID", oauth_config.get("client_id"))
+    mcp_server_client_secret = cfg(
         "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
     )
     mcp_server_url = oauth_config["mcp_server_url"]
@@ -906,10 +899,8 @@ async def _oauth_callback_as_proxy(
     oauth_ctx = request.app.state.oauth_context
     oauth_config = oauth_ctx["config"]
 
-    mcp_server_client_id = os.getenv(
-        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
-    )
-    mcp_server_client_secret = os.getenv(
+    mcp_server_client_id = cfg("MCP_SERVER_CLIENT_ID", oauth_config.get("client_id"))
+    mcp_server_client_secret = cfg(
         "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
     )
 
@@ -1250,10 +1241,8 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
 
     oauth_config = oauth_ctx["config"]
 
-    mcp_server_client_id = os.getenv(
-        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
-    )
-    mcp_server_client_secret = os.getenv(
+    mcp_server_client_id = cfg("MCP_SERVER_CLIENT_ID", oauth_config.get("client_id"))
+    mcp_server_client_secret = cfg(
         "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
     )
 
@@ -1438,7 +1427,7 @@ async def oauth_as_metadata(request: Request) -> JSONResponse:
     MCP clients (e.g., Claude Code) authenticate through the proxy rather
     than directly with Nextcloud.
     """
-    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    mcp_server_url = cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
 
     # Dynamically discover scopes from registered tools if available
     scopes_supported = ["openid", "profile", "email"]

@@ -14,7 +14,6 @@ Key Design Principles:
 
 import hashlib
 import logging
-import os
 import time
 from typing import Any
 
@@ -23,7 +22,7 @@ import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
-from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.config import Settings, cfg
 from nextcloud_mcp_server.observability.metrics import (
     oauth_token_cache_hits_total,
     record_oauth_token_validation,
@@ -111,7 +110,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         # once the deployment story stabilises.
         self._allowed_mgmt_clients: frozenset[str] = frozenset(
             entry.strip()
-            for entry in os.getenv("ALLOWED_MGMT_CLIENT", "").split(",")
+            for entry in cfg("ALLOWED_MGMT_CLIENT", "").split(",")
             if entry.strip()
         )
         if not self._allowed_mgmt_clients:

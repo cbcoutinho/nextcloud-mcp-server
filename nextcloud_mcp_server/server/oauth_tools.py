@@ -6,7 +6,6 @@ Nextcloud access using the Flow 2 (Resource Provisioning) OAuth flow.
 """
 
 import logging
-import os
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -25,7 +24,7 @@ from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 from nextcloud_mcp_server.auth.token_utils import (
     extract_user_id_from_token as extract_user_id_from_token,  # noqa: PLC0414
 )
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import cfg, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +222,7 @@ def generate_oauth_url_for_flow2(
     # - Store code_verifier in session storage
     # - Redirect to Nextcloud with PKCE parameters
     # - Handle the callback with proper code_verifier
-    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    mcp_server_url = cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
     auth_endpoint = f"{mcp_server_url}/oauth/authorize-nextcloud"
 
     # Only pass state parameter - the endpoint handles everything else
@@ -276,7 +275,7 @@ async def _provision_nextcloud_access(ctx: Context, user_id: str) -> Provisionin
             )
 
         # Return Astrolabe settings URL for background sync provisioning
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
+        nextcloud_host = get_settings().nextcloud_host or "http://localhost:8080"
         astrolabe_url = f"{nextcloud_host}/settings/user/astrolabe#background-sync"
 
         return ProvisioningResult(
@@ -358,11 +357,11 @@ async def _revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResu
 
         broker = TokenBrokerService(
             storage=storage,
-            oidc_discovery_url=os.getenv(
+            oidc_discovery_url=cfg(
                 "OIDC_DISCOVERY_URL",
-                f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
+                f"{get_settings().nextcloud_host}/.well-known/openid-configuration",
             ),
-            nextcloud_host=os.getenv("NEXTCLOUD_HOST"),  # type: ignore
+            nextcloud_host=get_settings().nextcloud_host,  # type: ignore
             client_id=client_creds["client_id"],
             client_secret=client_creds["client_secret"],
         )
@@ -455,7 +454,7 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
 
         # Get MCP server's OAuth client credentials
         # Try environment variable first, then fall back to DCR client_id
-        server_client_id = os.getenv("MCP_SERVER_CLIENT_ID")
+        server_client_id = cfg("MCP_SERVER_CLIENT_ID")
         if not server_client_id:
             # Try to get from lifespan context (DCR)
             lifespan_ctx = ctx.request_context.lifespan_context
@@ -469,9 +468,9 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
             )
 
         # Generate OAuth URL for Flow 2
-        oidc_discovery_url = os.getenv(
+        oidc_discovery_url = cfg(
             "OIDC_DISCOVERY_URL",
-            f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
+            f"{get_settings().nextcloud_host}/.well-known/openid-configuration",
         )
 
         # Generate secure state for CSRF protection
@@ -484,7 +483,9 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
         # generate_oauth_url_for_flow2 (keyed by `state`, with the PKCE
         # verifier and nonce); the unified callback looks it up by `state`.
         # No additional row is needed here.
-        redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
+        redirect_uri = (
+            f"{cfg('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
+        )
 
         # Define scopes for Nextcloud access
         # Note: offline_access is only included when enabled in settings.

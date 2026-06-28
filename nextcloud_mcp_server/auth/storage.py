@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from sqlalchemy.pool import NullPool
 
 from nextcloud_mcp_server.config import (
+    cfg,
     get_database_ssl,
     get_database_url,
     is_ephemeral_token_db,
@@ -398,7 +399,7 @@ class RefreshTokenStorage:
             logger.info(
                 "Using centralized token storage at %s", mask_db_password(database_url)
             )
-        encryption_key_b64 = os.getenv("TOKEN_ENCRYPTION_KEY")
+        encryption_key_b64 = cfg("TOKEN_ENCRYPTION_KEY")
 
         encryption_key = None
         if encryption_key_b64:

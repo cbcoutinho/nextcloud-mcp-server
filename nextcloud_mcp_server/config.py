@@ -50,6 +50,19 @@ _DEFAULTS: dict[str, Any] = {
     "introspection_uri": None,
     "userinfo_uri": None,
     "oidc_resource_server_id": None,
+    # M2M / DCR / management — these MUST be declared here (lowercase) so dynaconf
+    # reads the matching UPPERCASE env var; with ignore_unknown_envvars=True an
+    # undeclared key is silently dropped (env value ignored), so they are read
+    # via cfg("ENV_NAME"). Defaults mirror the prior os.getenv(..., default).
+    "mcp_server_client_id": None,
+    "mcp_server_client_secret": None,
+    "allowed_mcp_clients": "",
+    "allowed_mgmt_client": "",
+    "enable_dcr": False,
+    # Container-runtime / webhook self-URL overrides (local-dev docker-compose).
+    "docker_container": False,
+    "nextcloud_mcp_service_name": "mcp",
+    "nextcloud_mcp_port": 8000,
     # Mode flags
     # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` are
     # intentionally absent — they are derived from MCP_DEPLOYMENT_MODE in
@@ -339,6 +352,11 @@ def _resolve_settings_files() -> list[str]:
     and env vars still apply.
     """
     files: list[str] = []
+    # The ONLY legitimate os.environ read in the app: this runs BEFORE the
+    # dynaconf instance is built (it computes the settings_files list passed to
+    # Dynaconf), so it cannot go through dynaconf — you can't read the location
+    # of the settings file from the settings file. This + the MCP_DEPLOYMENT_MODE
+    # env_switcher are dynaconf's own bootstrap. All OTHER config is dynaconf-driven.
     explicit = os.environ.get("NEXTCLOUD_MCP_SETTINGS_FILE")
     if explicit:
         p = Path(explicit)
@@ -1174,6 +1192,11 @@ class Settings:
             ("ENABLE_MULTI_USER_BASIC_AUTH", "multi_user_basic"),
             ("ENABLE_LOGIN_FLOW", "login_flow"),
         ):
+            # Read raw os.environ here, NOT cfg(): these legacy keys are
+            # intentionally NOT in the dynaconf schema (they're derived from
+            # MCP_DEPLOYMENT_MODE, ADR-022), so cfg() would always ignore them.
+            # This is a deprecation *detector* for raw env usage, not config
+            # reading — a deliberate exception to the dynaconf-drives-all rule.
             if os.environ.get(_legacy, "").strip().lower() in _truthy:
                 raise ValueError(
                     f"{_legacy} is no longer read from the environment. "
@@ -1466,6 +1489,35 @@ def _dget(key):
     let the Settings dataclass default apply.
     """
     return _dynaconf[key] if key in _dynaconf else _UNSET
+
+
+def cfg(key: str, default=None):
+    """Dynaconf-driven config accessor for keys NOT modelled on ``Settings``.
+
+    The single supported way for application code to read configuration that
+    isn't a first-class ``Settings`` field — reads from settings.toml, env vars
+    and runtime overrides via dynaconf. Application code MUST use this (or
+    ``get_settings().<field>``) instead of ``os.getenv`` / ``os.environ`` so all
+    config is dynaconf-driven (settings.toml [default]/[<mode>] + env + overrides).
+
+    Mirrors ``os.getenv(key, default)``: returns ``default`` when the value is
+    unset OR ``None``, so a key modelled in ``_DEFAULTS`` with a ``None`` default
+    does NOT shadow a meaningful call-site fallback (e.g.
+    ``cfg("MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret"))``).
+    """
+    value = _dynaconf.get(key)
+    return value if value is not None else default
+
+
+def set_override(key: str, value) -> None:
+    """Set a runtime config override in dynaconf (the documented ``.set`` path).
+
+    Used by the CLI to feed ``--flags`` into dynaconf instead of mutating
+    ``os.environ``. Subsequent ``cfg()`` / ``get_settings()`` reads see it.
+    ``tomlfy=True`` parses the value so typed scalars ("9090" -> int, "true" ->
+    bool) land with the right type, matching settings.toml semantics.
+    """
+    _dynaconf.set(key, value, tomlfy=True)
 
 
 def get_settings() -> Settings:

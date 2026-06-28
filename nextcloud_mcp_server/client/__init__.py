@@ -1,5 +1,4 @@
 import logging
-import os
 from email.utils import parsedate_to_datetime
 
 from httpx import (
@@ -157,11 +156,15 @@ class NextcloudClient:
 
     @classmethod
     def from_env(cls):
-        logger.info("Creating NC Client using env vars")
+        logger.info("Creating NC Client using settings + env vars")
 
-        host = os.environ["NEXTCLOUD_HOST"]
-        username = os.environ["NEXTCLOUD_USERNAME"]
-        password = os.environ["NEXTCLOUD_PASSWORD"]
+        # NEXTCLOUD_HOST is read via settings (dynaconf) so a settings.toml-only
+        # value is honoured; the credentials remain env/Secret-sourced.
+        from nextcloud_mcp_server.config import cfg, get_settings  # noqa: PLC0415
+
+        host = get_settings().nextcloud_host
+        username = cfg("NEXTCLOUD_USERNAME")
+        password = cfg("NEXTCLOUD_PASSWORD")
         # Pass username to constructor
         return cls(
             base_url=host,

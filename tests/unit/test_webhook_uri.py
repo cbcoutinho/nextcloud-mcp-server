@@ -101,6 +101,10 @@ def test_docker_detection_honors_service_name_and_port_overrides(monkeypatch):
     _patch_settings(monkeypatch)
     monkeypatch.setenv("NEXTCLOUD_MCP_SERVICE_NAME", "mcp-login-flow")
     monkeypatch.setenv("NEXTCLOUD_MCP_PORT", "8004")
+    # refresh dynaconf so the env mutation above is seen
+    from nextcloud_mcp_server.config import _reload_config
+
+    _reload_config()
     _docker_markers(monkeypatch)
 
     assert _get_webhook_uri() == "http://mcp-login-flow:8004/webhooks/nextcloud"
@@ -110,6 +114,10 @@ def test_docker_detection_honors_service_name_and_port_overrides(monkeypatch):
 def test_docker_container_env_var_triggers_docker_branch(monkeypatch):
     _patch_settings(monkeypatch)
     monkeypatch.setenv("DOCKER_CONTAINER", "true")
+    # refresh dynaconf so the env mutation above is seen
+    from nextcloud_mcp_server.config import _reload_config
+
+    _reload_config()
     _no_docker_markers(monkeypatch)
 
     assert _get_webhook_uri() == "http://mcp:8000/webhooks/nextcloud"
