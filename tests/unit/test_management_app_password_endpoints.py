@@ -639,6 +639,22 @@ async def test_get_app_password_status_provisioned(temp_storage, mocker):
     # Store an app password
     await temp_storage.store_app_password("testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
 
+    # Status now authenticates the password against Nextcloud
+    # (GHSA-x88r-fhx7-52h6); stub OCS to succeed as the path user.
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}},
+    )
+
     app = create_test_app(temp_storage)
 
     client = TestClient(app)
@@ -660,6 +676,22 @@ async def test_get_app_password_status_provisioned(temp_storage, mocker):
 
 async def test_get_app_password_status_not_provisioned(temp_storage, mocker):
     """Test checking status when app password is not provisioned."""
+    # Status now authenticates the password against Nextcloud
+    # (GHSA-x88r-fhx7-52h6); stub OCS to succeed as the path user.
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}},
+    )
+
     app = create_test_app(temp_storage)
 
     client = TestClient(app)
