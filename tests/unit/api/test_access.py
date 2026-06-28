@@ -9,6 +9,7 @@ Tests the REST API endpoints for user access and scope management:
 import base64
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -16,6 +17,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from nextcloud_mcp_server.api import passwords
 from nextcloud_mcp_server.api.access import (
     get_user_access,
     list_supported_scopes,
@@ -25,6 +27,48 @@ from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limit():
+    """Isolate the module-global rate-limiter state between tests."""
+    passwords._rate_limit_attempts.clear()
+    yield
+    passwords._rate_limit_attempts.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_nextcloud_validation(mocker):
+    """Stub the OCS credential check to succeed as user "alice".
+
+    Every management endpoint now authenticates the BasicAuth password against
+    Nextcloud's ``/cloud/user`` endpoint (GHSA-x88r-fhx7-52h6) — a matching
+    username alone is no longer sufficient. These tests all target "alice", so
+    return HTTP 200 with ``id == "alice"`` to pass the password + UID-ownership
+    checks. Tests asserting 401/403 short-circuit before this stub is reached
+    (missing header / username-path mismatch), so it is safe as autouse.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "ocs": {"meta": {"statuscode": 200}, "data": {"id": "alice"}}
+    }
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
+        return_value=mock_client,
+    )
 
 
 @pytest.fixture
@@ -224,6 +268,19 @@ class TestUpdateUserScopes:
             content=b"not json",
         )
         assert resp.status_code == 400
+
+    async def test_non_dict_json_body(self, temp_storage):
+        """Returns 400 (not 500) for a valid JSON body that isn't an object."""
+        app = create_test_app(temp_storage)
+        client = TestClient(app)
+
+        resp = client.patch(
+            "/api/v1/users/alice/scopes",
+            headers={"Authorization": create_basic_auth_header("alice", "pw")},
+            json=["notes.read"],  # a list, not an object
+        )
+        assert resp.status_code == 400
+        assert resp.json()["success"] is False
 
 
 class TestListSupportedScopes:

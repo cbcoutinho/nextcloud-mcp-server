@@ -15,6 +15,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Callable
 
 import httpx
 from starlette.requests import Request
@@ -78,7 +79,10 @@ def _check_rate_limit(user_id: str) -> tuple[bool, int]:
         if ts > window_start
     ]
 
-    # Count recent attempts (both successful and failed)
+    # Count all recorded attempts in the window. provision_app_password records
+    # both successes and failures; the read/scope/status/delete routes (via
+    # _authenticate_request) record only failures so legitimate polling with a
+    # correct credential is never throttled.
     recent_attempts = len(_rate_limit_attempts[user_id])
 
     if recent_attempts >= RATE_LIMIT_MAX_ATTEMPTS:
@@ -292,6 +296,160 @@ async def _validate_nextcloud_credentials(
     return ocs_user_id, None
 
 
+def _check_app_password_format(app_password: str) -> JSONResponse | None:
+    """Shape guard for a provisioned app password (see ``APP_PASSWORD_PATTERN``).
+
+    Returns a ready-to-return 400 :class:`JSONResponse` when the value isn't a
+    plausible app-password token, else ``None``. The authoritative check is the
+    OCS validation; this only rejects obvious garbage before the round-trip.
+    """
+    if not APP_PASSWORD_PATTERN.match(app_password):
+        return JSONResponse(
+            {"success": False, "error": "Invalid app password format"},
+            status_code=400,
+        )
+    return None
+
+
+async def _authenticate_request(
+    request: Request,
+    path_user_id: str,
+    *,
+    invalid_credential_error: str = "Invalid app password",
+    validate_password: Callable[[str], JSONResponse | None] | None = None,
+) -> tuple[str, str, JSONResponse | None]:
+    """Authenticate a user-management request against Nextcloud.
+
+    Combines every check these endpoints need before touching stored state:
+
+    1. A BasicAuth header is present and its *name* field equals the path
+       ``user_id`` (:func:`_extract_basic_auth`).
+    2. The supplied **password actually authenticates** against Nextcloud — the
+       check GHSA-x88r-fhx7-52h6 found missing on the scope/access/status
+       routes, where a username/path string compare alone was mistaken for
+       authentication, letting anyone who knew a victim's username read or
+       rewrite that victim's stored scopes.
+    3. The authenticated Nextcloud account's UID equals the path ``user_id``,
+       so a caller can only act on their own record (defends against the same
+       cross-user pivot guarded in ``delete_app_password``).
+
+    Nextcloud keys app-password auth on the *loginName*, which can differ from
+    the UID (e.g. OIDC-provisioned users — UID "Ada Lovelace", loginName
+    "ada@example.com"). Callers may pass the loginName in a ``username`` body
+    field; we fall back to the path UID for legacy callers where the two match.
+    The body is parsed via Starlette's cached ``request.json()``, so a caller
+    that reads the body again afterwards is unaffected.
+
+    Unless a ``validate_password`` hook rejects the credential early, each call
+    costs a Nextcloud OCS round-trip, so the per-user sliding-window rate limiter
+    shared with provisioning throttles brute-force. Only *failed* attempts are
+    recorded, so a legitimate client polling these endpoints with a correct
+    credential is never throttled — but repeated wrong passwords for a given user
+    hit the cap (``RATE_LIMIT_MAX_ATTEMPTS``/hour).
+
+    ``validate_password`` is an optional hook run on the extracted password
+    *after* the BasicAuth name check but *before* the OCS round-trip — used by
+    provisioning to reject malformed app passwords (saving a round-trip) without
+    duplicating the rest of the auth flow. It returns an error
+    :class:`JSONResponse` to reject, or ``None`` to proceed.
+
+    Returns ``(uid, password, None)`` on success — where ``uid`` is the
+    Nextcloud-canonical UID — otherwise ``("", "", error_response)`` with a
+    ready-to-return :class:`JSONResponse`.
+    """
+    # Extract + name-match FIRST, before touching rate-limit state. A missing,
+    # malformed, or wrong-username Authorization header is rejected immediately
+    # without consuming the victim's rate-limit budget — otherwise an
+    # unauthenticated request flood (no credential needed) could lock a victim
+    # out of their own endpoints (request-flood DoS vs. the brute-force the
+    # limiter is meant to stop).
+    username, password, error_response = _extract_basic_auth(request, path_user_id)
+    if error_response is not None:
+        return "", "", error_response
+
+    # Now throttle: only requests that present the victim's username (a genuine
+    # credential-guess attempt) count toward the per-user brute-force limiter.
+    is_allowed, retry_after = _check_rate_limit(path_user_id)
+    if not is_allowed:
+        logger.warning(
+            "Rate limit exceeded for user-management request: %s", path_user_id
+        )
+        return (
+            "",
+            "",
+            JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Rate limit exceeded. Try again in {retry_after} seconds.",
+                },
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            ),
+        )
+
+    if validate_password is not None:
+        format_error = validate_password(password)
+        if format_error is not None:
+            _record_rate_limit_attempt(path_user_id, success=False)
+            return "", "", format_error
+
+    # Optional Nextcloud loginName from the body (OIDC users where UID !=
+    # loginName). A missing/malformed body just means "legacy caller" — fall
+    # back to the path UID.
+    nc_username = None
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = None
+    if isinstance(body, dict):
+        nc_username = body.get("username")
+    login_name = nc_username or username
+
+    settings = get_settings()
+    nextcloud_host = settings.nextcloud_host
+    if not nextcloud_host:
+        logger.error("NEXTCLOUD_HOST not configured")
+        return (
+            "",
+            "",
+            JSONResponse(
+                {"success": False, "error": "Server not configured"},
+                status_code=500,
+            ),
+        )
+
+    ocs_user_id, error_response = await _validate_nextcloud_credentials(
+        nextcloud_host,
+        login_name,
+        password,
+        invalid_credential_error=invalid_credential_error,
+    )
+    if error_response is not None:
+        _record_rate_limit_attempt(path_user_id, success=False)
+        return "", "", error_response
+
+    # The authenticated account must own the path UID. ``_extract_basic_auth``
+    # only checks the BasicAuth *name* field, not that the credential
+    # authenticates as that account — without this a user could authenticate as
+    # their own loginName (via the body) while targeting another user's path.
+    if ocs_user_id != path_user_id:
+        logger.warning("User ID mismatch in OCS response")
+        _record_rate_limit_attempt(path_user_id, success=False)
+        return (
+            "",
+            "",
+            JSONResponse(
+                {"success": False, "error": "User ID mismatch"},
+                status_code=403,
+            ),
+        )
+
+    # Return the canonical UID. By the checks above it equals
+    # ``ocs_user_id == username == path_user_id``; use ``path_user_id`` as it is
+    # statically ``str`` (``ocs_user_id`` is ``str | None`` from the validator).
+    return path_user_id, password, None
+
+
 async def provision_app_password(request: Request) -> JSONResponse:
     """POST /api/v1/users/{user_id}/app-password - Store app password for background sync.
 
@@ -319,42 +477,20 @@ async def provision_app_password(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Check rate limit before processing
-    is_allowed, retry_after = _check_rate_limit(path_user_id)
-    if not is_allowed:
-        logger.warning(
-            "Rate limit exceeded for app password provisioning: %s", path_user_id
-        )
-        return JSONResponse(
-            {
-                "success": False,
-                "error": f"Rate limit exceeded. Try again in {retry_after} seconds.",
-            },
-            status_code=429,
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    # Extract and validate BasicAuth credentials
-    username, app_password, error_response = _extract_basic_auth(request, path_user_id)
+    # Full credential gate, shared with the read/scope/delete endpoints: rate
+    # limit → BasicAuth name match → app-password format → OCS validation → UID
+    # ownership. The format guard runs (via ``validate_password``) before the OCS
+    # round-trip so malformed tokens still 400 without hitting Nextcloud.
+    username, app_password, error_response = await _authenticate_request(
+        request, path_user_id, validate_password=_check_app_password_format
+    )
     if error_response is not None:
-        _record_rate_limit_attempt(path_user_id, success=False)
         return error_response
 
-    # Validate app password format
-    if not APP_PASSWORD_PATTERN.match(app_password):
-        _record_rate_limit_attempt(path_user_id, success=False)
-        return JSONResponse(
-            {"success": False, "error": "Invalid app password format"},
-            status_code=400,
-        )
-
-    # Parse optional scopes and the Nextcloud loginName from the request body
-    # up front. Nextcloud authenticates app passwords against the *loginName*,
-    # which can differ from the UID — e.g. OIDC-provisioned users whose UID is
-    # their display name (UID "Ada Lovelace", loginName "ada@example.com").
-    # Use the loginName for the BasicAuth validation below, falling back to the
-    # path user_id for legacy callers that don't send one (where UID ==
-    # loginName).
+    # Re-read the (cached) body for the extras provisioning needs: the optional
+    # scope set, and the Nextcloud loginName for storage — Nextcloud keys
+    # app-password auth on the loginName, which can differ from the UID (e.g.
+    # OIDC users: UID "Ada Lovelace", loginName "ada@example.com").
     scopes = None
     nc_username = None
     try:
@@ -364,40 +500,6 @@ async def provision_app_password(request: Request) -> JSONResponse:
     if isinstance(body, dict):
         scopes = body.get("scopes")  # list[str] | None
         nc_username = body.get("username")  # Nextcloud loginName
-
-    login_name = nc_username or username
-
-    # Get Nextcloud host from settings
-    settings = get_settings()
-    nextcloud_host = settings.nextcloud_host
-
-    if not nextcloud_host:
-        logger.error("NEXTCLOUD_HOST not configured")
-        return JSONResponse(
-            {"success": False, "error": "Server not configured"},
-            status_code=500,
-        )
-
-    # Validate app password against Nextcloud. BasicAuth places the user-id
-    # literally in the header (RFC 7617 — no URL-encoding) and Nextcloud keys
-    # app-password auth on the loginName, so authenticate as the loginName, not
-    # the UID.
-    ocs_user_id, error_response = await _validate_nextcloud_credentials(
-        nextcloud_host, login_name, app_password
-    )
-    if error_response is not None:
-        _record_rate_limit_attempt(path_user_id, success=False)
-        return error_response
-
-    # Verify the authenticated account maps to the path user_id (UID): the
-    # loginName must resolve to the UID claimed in the URL path.
-    if ocs_user_id != path_user_id:
-        logger.warning("User ID mismatch in OCS response")
-        _record_rate_limit_attempt(path_user_id, success=False)
-        return JSONResponse(
-            {"success": False, "error": "User ID mismatch"},
-            status_code=403,
-        )
 
     # Store the validated app password
     try:
@@ -438,7 +540,8 @@ async def get_app_password_status(request: Request) -> JSONResponse:
 
     Returns status of background sync access for multi-user BasicAuth mode.
 
-    Requires BasicAuth with the user's app password for authentication.
+    Requires BasicAuth with the user's app password, validated against Nextcloud
+    (username-equality alone is not authentication — GHSA-x88r-fhx7-52h6).
     """
     # Get user_id from path
     path_user_id = request.path_params.get("user_id")
@@ -448,8 +551,9 @@ async def get_app_password_status(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Extract and validate BasicAuth credentials
-    username, _, error_response = _extract_basic_auth(request, path_user_id)
+    # Authenticate against Nextcloud: BasicAuth name match + password validation
+    # + UID ownership.
+    username, _, error_response = await _authenticate_request(request, path_user_id)
     if error_response is not None:
         return error_response
 
@@ -488,61 +592,18 @@ async def delete_app_password(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Extract and validate BasicAuth credentials
-    username, password, error_response = _extract_basic_auth(request, path_user_id)
-    if error_response is not None:
-        return error_response
-
-    # Nextcloud keys app-password auth on the loginName, which can differ from
-    # the UID (OIDC-provisioned users). Use the loginName from the body when
-    # present, falling back to the path UID for legacy callers — same contract
-    # as provisioning.
-    nc_username = None
-    try:
-        body = await request.json()
-    except (ValueError, UnicodeDecodeError):
-        body = None  # No / malformed JSON body = legacy call without a loginName
-    if isinstance(body, dict):
-        nc_username = body.get("username")
-    login_name = nc_username or username
-
-    # Validate credentials against Nextcloud. Shares the OCS v2 + defensive
-    # parsing path with provisioning (issue #824): OCS v1 always returned HTTP
-    # 200, so the old ``!= 200`` guard never fired and a bad credential could
-    # silently pass — a genuine auth bypass on deletion.
-    settings = get_settings()
-    nextcloud_host = settings.nextcloud_host
-
-    if not nextcloud_host:
-        logger.error("NEXTCLOUD_HOST not configured")
-        return JSONResponse(
-            {"success": False, "error": "Server not configured"},
-            status_code=500,
-        )
-
-    # Keep this route's historical "Invalid credentials" wording via the helper
-    # rather than unwrapping and rebuilding its response.
-    ocs_user_id, error_response = await _validate_nextcloud_credentials(
-        nextcloud_host,
-        login_name,
-        password,
-        invalid_credential_error="Invalid credentials",
+    # Authenticate against Nextcloud: BasicAuth name match + password validation
+    # + UID ownership (shared with the other management endpoints). Validating
+    # the credential here closes the OCS v1 ``!= 200`` bypass (issue #824) and
+    # the cross-user pivot — a wrong password, or a credential that authenticates
+    # as a different account than the path UID, can no longer delete a victim's
+    # stored password. The "Invalid credentials" wording is this route's
+    # historical 401 text.
+    username, _, error_response = await _authenticate_request(
+        request, path_user_id, invalid_credential_error="Invalid credentials"
     )
     if error_response is not None:
         return error_response
-
-    # The authenticated account must be the UID whose password is being deleted.
-    # ``_extract_basic_auth`` only checks the BasicAuth *name* field equals the
-    # path UID, not that the supplied credential authenticates as that account —
-    # without this guard a user could authenticate with their own loginName (via
-    # the body) while targeting another user's path and delete the victim's
-    # stored password.
-    if ocs_user_id != path_user_id:
-        logger.warning("User ID mismatch in OCS response for delete")
-        return JSONResponse(
-            {"success": False, "error": "User ID mismatch"},
-            status_code=403,
-        )
 
     try:
         storage = await _get_app_password_storage(request)

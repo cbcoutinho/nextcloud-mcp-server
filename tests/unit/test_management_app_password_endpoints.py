@@ -634,15 +634,26 @@ async def test_provision_app_password_standard_v2_success(temp_storage, mocker):
     )
 
 
-async def test_get_app_password_status_provisioned(temp_storage, mocker):
-    """Test checking status when app password is provisioned."""
-    # Store an app password
-    await temp_storage.store_app_password("testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
-
-    app = create_test_app(temp_storage)
-
-    client = TestClient(app)
-    response = client.get(
+def _get_status_response(temp_storage, mocker):
+    """Issue an authenticated ``GET /app-password`` for ``testuser`` with the
+    Nextcloud OCS validation stubbed to succeed (the status route now
+    authenticates the password — GHSA-x88r-fhx7-52h6). Shared by the status
+    tests so the mock/request setup isn't duplicated."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}},
+    )
+    client = TestClient(create_test_app(temp_storage))
+    return client.get(
         "/api/v1/users/testuser/app-password",
         headers={
             "Authorization": create_basic_auth_header(
@@ -650,6 +661,13 @@ async def test_get_app_password_status_provisioned(temp_storage, mocker):
             )
         },
     )
+
+
+async def test_get_app_password_status_provisioned(temp_storage, mocker):
+    """Test checking status when app password is provisioned."""
+    await temp_storage.store_app_password("testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+
+    response = _get_status_response(temp_storage, mocker)
 
     assert response.status_code == 200
     data = response.json()
@@ -660,17 +678,7 @@ async def test_get_app_password_status_provisioned(temp_storage, mocker):
 
 async def test_get_app_password_status_not_provisioned(temp_storage, mocker):
     """Test checking status when app password is not provisioned."""
-    app = create_test_app(temp_storage)
-
-    client = TestClient(app)
-    response = client.get(
-        "/api/v1/users/testuser/app-password",
-        headers={
-            "Authorization": create_basic_auth_header(
-                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
-            )
-        },
-    )
+    response = _get_status_response(temp_storage, mocker)
 
     assert response.status_code == 200
     data = response.json()

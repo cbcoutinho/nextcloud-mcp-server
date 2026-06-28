@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.api.management import _sanitize_error_for_client
 from nextcloud_mcp_server.api.passwords import (
-    _extract_basic_auth,
+    _authenticate_request,
     _get_app_password_storage,
 )
 from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
@@ -24,7 +24,8 @@ async def get_user_access(request: Request) -> JSONResponse:
     """GET /api/v1/users/{user_id}/access - Get user's provisioned access and scopes.
 
     Returns the user's current provisioning status, granted scopes, and metadata.
-    Requires BasicAuth with the user's credentials.
+    Requires BasicAuth with the user's credentials, validated against Nextcloud
+    (username-equality alone is not authentication — GHSA-x88r-fhx7-52h6).
     """
     path_user_id = request.path_params.get("user_id")
     if not path_user_id:
@@ -33,7 +34,9 @@ async def get_user_access(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    username, _, error_response = _extract_basic_auth(request, path_user_id)
+    username, _, error_response = await _authenticate_request(
+        request, path_user_id, invalid_credential_error="Invalid credentials"
+    )
     if error_response is not None:
         return error_response
 
@@ -83,8 +86,9 @@ async def update_user_scopes(request: Request) -> JSONResponse:
 
     Security note: This endpoint allows direct scope modification without
     re-authenticating via Login Flow. The caller must authenticate with
-    valid BasicAuth credentials (user_id + app_password), which serves
-    as the authorization check.
+    valid BasicAuth credentials (user_id + app_password) that are verified
+    against Nextcloud, which serves as the authorization check. A matching
+    username alone is not sufficient (GHSA-x88r-fhx7-52h6).
     """
     path_user_id = request.path_params.get("user_id")
     if not path_user_id:
@@ -93,15 +97,25 @@ async def update_user_scopes(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    username, _, error_response = _extract_basic_auth(request, path_user_id)
+    username, _, error_response = await _authenticate_request(
+        request, path_user_id, invalid_credential_error="Invalid credentials"
+    )
     if error_response is not None:
         return error_response
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
         return JSONResponse(
             {"success": False, "error": "Invalid JSON body"},
+            status_code=400,
+        )
+
+    # A valid JSON non-object (e.g. ``[]`` or ``"x"``) parses fine but has no
+    # ``.get`` — reject it as a 400 rather than letting it raise a 500.
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"success": False, "error": "Request body must be a JSON object"},
             status_code=400,
         )
 
