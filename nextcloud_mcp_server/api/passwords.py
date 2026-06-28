@@ -340,11 +340,12 @@ async def _authenticate_request(
     The body is parsed via Starlette's cached ``request.json()``, so a caller
     that reads the body again afterwards is unaffected.
 
-    Each call costs a Nextcloud OCS round-trip, so the per-user sliding-window
-    rate limiter shared with provisioning throttles brute-force. Only *failed*
-    attempts are recorded, so a legitimate client polling these endpoints with a
-    correct credential is never throttled — but repeated wrong passwords for a
-    given user hit the cap (``RATE_LIMIT_MAX_ATTEMPTS``/hour).
+    Unless a ``validate_password`` hook rejects the credential early, each call
+    costs a Nextcloud OCS round-trip, so the per-user sliding-window rate limiter
+    shared with provisioning throttles brute-force. Only *failed* attempts are
+    recorded, so a legitimate client polling these endpoints with a correct
+    credential is never throttled — but repeated wrong passwords for a given user
+    hit the cap (``RATE_LIMIT_MAX_ATTEMPTS``/hour).
 
     ``validate_password`` is an optional hook run on the extracted password
     *after* the BasicAuth name check but *before* the OCS round-trip — used by
