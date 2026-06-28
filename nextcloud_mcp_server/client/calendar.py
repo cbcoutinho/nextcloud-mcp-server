@@ -5,9 +5,11 @@ import inspect
 import logging
 import uuid
 from typing import Any
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
+import httpx
 import recurring_ical_events
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
@@ -56,7 +58,7 @@ class CalendarClient:
 
         Args:
             base_url: Nextcloud base URL
-            username: Nextcloud username (UID) — used for DAV path construction
+            username: Nextcloud username (UID) used as the DAV path fallback
             auth_username: Credential identity (loginName) the app password
                 authenticates against; defaults to ``username``. Differs from
                 the UID for OIDC-provisioned users.
@@ -68,10 +70,11 @@ class CalendarClient:
         """
         self.username = username
         self.base_url = base_url
-        # The UID (``username``) drives DAV path construction; the loginName
-        # (``auth_username``) is the credential the app password authenticates
-        # against. They differ for OIDC-provisioned users. Defaults to the UID
-        # so existing single-user / OAuth callers are unchanged.
+        # The UID (``username``) is the DAV path fallback until principal
+        # discovery succeeds; the loginName (``auth_username``) is the
+        # credential the app password authenticates against. They differ for
+        # OIDC-provisioned users. Defaults to the UID so existing single-user /
+        # OAuth callers are unchanged.
         auth_username = auth_username or username
 
         auth_kwargs: dict[str, Any] = {}
@@ -97,6 +100,85 @@ class CalendarClient:
             **auth_kwargs,
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
+        self._principal_resolved = False
+
+    def _calendar_home_url_from_home_set(self, home_set: Any) -> str | None:
+        """Normalize a caldav CalendarSet or URL into an absolute home URL."""
+        if home_set is None:
+            return None
+
+        home_url = getattr(home_set, "url", home_set)
+        if home_url is None:
+            return None
+
+        home_url = str(home_url)
+        if not home_url:
+            return None
+        if home_url.startswith("/"):
+            home_url = f"{self.base_url}{home_url}"
+        if not home_url.endswith("/"):
+            home_url = f"{home_url}/"
+        return home_url
+
+    async def _calendar_home_url_from_principal(self, principal: Any) -> str | None:
+        """Resolve calendar-home-set without using caldav's async-unsafe property."""
+        get_property = getattr(principal, "get_property", None)
+        if get_property is not None:
+            try:
+                home_set = await _maybe_await(get_property(cdav.CalendarHomeSet()))
+                calendar_home_url = self._calendar_home_url_from_home_set(home_set)
+                if calendar_home_url:
+                    return calendar_home_url
+            except (caldav_error.DAVError, AttributeError, TypeError, ValueError) as e:
+                logger.warning(
+                    "CalDAV calendar-home-set discovery failed; deriving from "
+                    "principal URL: %s",
+                    e,
+                )
+
+        try:
+            home_set = getattr(principal, "calendar_home_set", None)
+            home_set = await _maybe_await(home_set)
+            return self._calendar_home_url_from_home_set(home_set)
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.warning(
+                "CalDAV calendar-home-set property unavailable; deriving from "
+                "principal URL: %s",
+                e,
+            )
+            return None
+
+    async def _ensure_calendar_home(self) -> None:
+        """Discover and cache the authenticated user's CalDAV calendar home."""
+        if self._principal_resolved:
+            return
+
+        try:
+            get_principal = getattr(self._dav_client, "get_principal", None)
+            if get_principal is None:
+                principal = await _maybe_await(self._dav_client.principal())
+            else:
+                principal = await _maybe_await(get_principal())
+
+            calendar_home_url = await self._calendar_home_url_from_principal(principal)
+            if calendar_home_url:
+                self._calendar_home_url = calendar_home_url
+                self._principal_resolved = True
+                return
+
+            principal_url = getattr(principal, "url", None)
+            if principal_url is None:
+                raise ValueError("CalDAV principal discovery returned no URL")
+            principal_id = unquote(str(principal_url).rstrip("/").split("/")[-1])
+            if principal_id:
+                self._calendar_home_url = (
+                    f"{self.base_url}/remote.php/dav/calendars/{principal_id}/"
+                )
+                self._principal_resolved = True
+        except (caldav_error.DAVError, httpx.HTTPError, ValueError) as e:
+            logger.warning(
+                "CalDAV principal discovery failed; using username path: %s", e
+            )
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
@@ -197,6 +279,7 @@ class CalendarClient:
         (webcal/ICS feeds). Subscriptions are reported with ``read_only=True``
         and a ``source`` URL pointing at the upstream feed (issue #830).
         """
+        await self._ensure_calendar_home()
         # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
         # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
         # Apple iCal namespace which Nextcloud doesn't recognize.
@@ -326,13 +409,12 @@ class CalendarClient:
         color: str = "#1976D2",
     ) -> dict[str, Any]:
         """Create a new calendar with retry on 429 errors."""
+        await self._ensure_calendar_home()
         # Use custom MKCALENDAR XML instead of caldav library's make_calendar() due to:
         # 1. Missing CalendarServer namespace (cs:) in caldav's nsmap
         # 2. caldav's CalendarColor uses Apple iCal namespace, not cs:calendar-color
         # 3. make_calendar() doesn't support calendar-description or calendar-color params
-        calendar_url = (
-            f"{self.base_url}/remote.php/dav/calendars/{self.username}/{calendar_name}/"
-        )
+        calendar_url = self._get_calendar_url(calendar_name)
 
         mkcalendar_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <mkcalendar xmlns="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
@@ -372,10 +454,9 @@ class CalendarClient:
 
     async def delete_calendar(self, calendar_name: str) -> dict[str, Any]:
         """Delete a calendar."""
+        await self._ensure_calendar_home()
         # Use absolute URL for deletion
-        calendar_url = (
-            f"{self.base_url}/remote.php/dav/calendars/{self.username}/{calendar_name}/"
-        )
+        calendar_url = self._get_calendar_url(calendar_name)
         await self._dav_client.delete(calendar_url)
 
         logger.debug("Deleted calendar: %s", calendar_name)
@@ -391,6 +472,7 @@ class CalendarClient:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """List events in a calendar within date range."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         if start_datetime or end_datetime:
@@ -531,6 +613,7 @@ class CalendarClient:
         self, calendar_name: str, event_data: dict[str, Any]
     ) -> dict[str, Any]:
         """Create a new calendar event."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         event_uid = str(uuid.uuid4())
@@ -556,6 +639,7 @@ class CalendarClient:
         etag: str = "",
     ) -> dict[str, Any]:
         """Update an existing calendar event."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         # Find the event by UID using caldav library
@@ -580,6 +664,7 @@ class CalendarClient:
 
     async def delete_event(self, calendar_name: str, event_uid: str) -> dict[str, Any]:
         """Delete a calendar event."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         try:
@@ -597,6 +682,7 @@ class CalendarClient:
         self, calendar_name: str, event_uid: str
     ) -> tuple[dict[str, Any], str]:
         """Get detailed information about a specific event."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         event = await self._async_object_by_uid(
@@ -621,6 +707,7 @@ class CalendarClient:
         filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering."""
+        await self._ensure_calendar_home()
         try:
             calendars = await self.list_calendars()
             all_events = []
@@ -661,6 +748,7 @@ class CalendarClient:
         self, calendar_name: str, filters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         """List todos/tasks in a calendar."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         # Get all todos including completed ones (filtering is done client-side)
@@ -690,6 +778,7 @@ class CalendarClient:
         self, calendar_name: str, todo_data: dict[str, Any]
     ) -> dict[str, Any]:
         """Create a new todo/task."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         todo_uid = str(uuid.uuid4())
@@ -715,6 +804,7 @@ class CalendarClient:
         etag: str = "",
     ) -> dict[str, Any]:
         """Update an existing todo/task."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         try:
@@ -754,6 +844,7 @@ class CalendarClient:
 
     async def delete_todo(self, calendar_name: str, todo_uid: str) -> dict[str, Any]:
         """Delete a todo/task."""
+        await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         try:
@@ -771,6 +862,7 @@ class CalendarClient:
         self, filters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         """Search todos across all calendars."""
+        await self._ensure_calendar_home()
         try:
             calendars = await self.list_calendars()
             all_todos = []
@@ -1457,6 +1549,7 @@ class CalendarClient:
         self, filter_criteria: dict[str, Any], update_data: dict[str, Any]
     ) -> dict[str, Any]:
         """Bulk update events matching filter criteria."""
+        await self._ensure_calendar_home()
         try:
             start_datetime = None
             end_datetime = None

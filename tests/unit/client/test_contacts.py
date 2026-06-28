@@ -270,6 +270,7 @@ class TestObjectNameResolution:
         """Regression for #874: delete must hit ``.../default`` not ``.../default.vcf``."""
         client = ContactsClient.__new__(ContactsClient)
         client.username = "testuser"
+        client._principal_discovered = True
         mocker.patch.object(
             client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
         )
@@ -286,6 +287,7 @@ class TestObjectNameResolution:
         """
         client = ContactsClient.__new__(ContactsClient)
         client.username = "testuser"
+        client._principal_discovered = True
         mocker.patch.object(
             client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
         )
@@ -302,6 +304,7 @@ class TestObjectNameResolution:
         """
         client = ContactsClient.__new__(ContactsClient)
         client.username = "testuser"
+        client._principal_discovered = True
         mocker.patch.object(
             client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
         )
@@ -329,6 +332,7 @@ class TestObjectNameResolution:
         """
         client = ContactsClient.__new__(ContactsClient)
         client.username = "testuser"
+        client._principal_discovered = True
         mocker.patch.object(
             client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
         )

@@ -2,11 +2,13 @@
 
 import logging
 import time
+import xml.etree.ElementTree as ET
 from abc import ABC
 from functools import wraps
+from urllib.parse import unquote
 
 import anyio
-from httpx import AsyncClient, HTTPStatusError, RequestError, codes
+from httpx import AsyncClient, HTTPError, HTTPStatusError, RequestError, codes
 
 from nextcloud_mcp_server.observability.metrics import (
     record_nextcloud_api_call,
@@ -104,10 +106,66 @@ class BaseNextcloudClient(ABC):
         """
         self._client = http_client
         self.username = username
+        self._principal_id: str | None = None
+        self._principal_discovered = False
 
     def _get_webdav_base_path(self) -> str:
         """Helper to get the base WebDAV path for the authenticated user."""
-        return f"/remote.php/dav/files/{self.username}"
+        return f"/remote.php/dav/files/{self._principal_or_username()}"
+
+    async def _ensure_principal_id(self) -> None:
+        """Discover the canonical DAV principal id via current-user-principal."""
+        if getattr(self, "_principal_discovered", False):
+            return
+
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:"><d:prop>'
+            "<d:current-user-principal/>"
+            "</d:prop></d:propfind>"
+        )
+
+        try:
+            response = await self._make_request(
+                "PROPFIND",
+                "/remote.php/dav/",
+                content=body,
+                headers={"Depth": "0", "Content-Type": "application/xml"},
+            )
+            root = ET.fromstring(response.content)
+            href = None
+            for element in root.iter():
+                if element.tag.split("}")[-1] != "current-user-principal":
+                    continue
+                for child in element.iter():
+                    if child.tag.split("}")[-1] == "href" and child.text:
+                        href = child.text.strip()
+                        break
+                if href:
+                    break
+
+            if not href:
+                logger.warning(
+                    "DAV principal discovery returned no href; using username path"
+                )
+                return
+
+            principal_id = unquote(href.rstrip("/").split("/")[-1])
+            if not principal_id:
+                logger.warning(
+                    "DAV principal discovery returned an empty principal id; "
+                    "using username path"
+                )
+                return
+
+            self._principal_id = principal_id
+            self._principal_discovered = True
+        except (HTTPError, ET.ParseError, ValueError) as e:
+            logger.warning("DAV principal discovery failed; using username path: %s", e)
+
+    def _principal_or_username(self) -> str:
+        """Return the discovered DAV principal id, falling back to username."""
+        return getattr(self, "_principal_id", None) or self.username
 
     @staticmethod
     def _resolve_url(url: str) -> str:
