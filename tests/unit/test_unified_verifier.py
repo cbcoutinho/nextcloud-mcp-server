@@ -551,6 +551,10 @@ class TestManagementApiAllowlist:
 
     async def test_allowlisted_client_accepted(self, monkeypatch, base_settings):
         monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe, admin-tool")
+        # refresh dynaconf so the env mutation above is seen
+        from nextcloud_mcp_server.config import _reload_config
+
+        _reload_config()
         verifier = UnifiedTokenVerifier(base_settings)
         assert verifier._allowed_mgmt_clients == {"astrolabe", "admin-tool"}
 
@@ -816,6 +820,10 @@ class TestUserinfoFallback:
         self, monkeypatch, userinfo_settings
     ):
         monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        # refresh dynaconf so the env mutation above is seen
+        from nextcloud_mcp_server.config import _reload_config
+
+        _reload_config()
         verifier = UnifiedTokenVerifier(userinfo_settings)
 
         introspection_payload = {

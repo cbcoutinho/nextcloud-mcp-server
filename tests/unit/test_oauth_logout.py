@@ -612,6 +612,10 @@ async def test_session_backend_rejects_when_no_cookie(storage):
 async def test_session_backend_basicauth_mode_short_circuits(monkeypatch, storage):
     """In BasicAuth mode (oauth_enabled=False) the backend never touches storage."""
     monkeypatch.setenv("NEXTCLOUD_USERNAME", "admin-user")
+    # refresh dynaconf so the env mutation above is seen
+    from nextcloud_mcp_server.config import _reload_config
+
+    _reload_config()
     backend = SessionAuthBackend(oauth_enabled=False)
     conn = _build_conn(cookie=None, oauth_context=None)
     result = await backend.authenticate(conn)

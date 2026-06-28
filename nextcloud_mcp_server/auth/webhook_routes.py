@@ -15,7 +15,7 @@ from starlette.responses import HTMLResponse
 
 from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import cfg, get_settings
 from nextcloud_mcp_server.server.webhook_presets import (
     WEBHOOK_PRESETS,
     WebhookPreset,
@@ -104,17 +104,18 @@ def _get_webhook_uri() -> str:
     if settings.nextcloud_mcp_server_url:
         return f"{settings.nextcloud_mcp_server_url}/webhooks/nextcloud"
 
-    # Docker-environment markers stay on os.getenv: they're container-runtime
-    # signals (filesystem markers, optional service-name override) rather
-    # than user-facing config that would belong in settings.toml.
+    # Container-runtime detection. The filesystem markers stay on os.path (they
+    # are not config); the DOCKER_CONTAINER override is read via dynaconf (cfg)
+    # like all other config.
     is_docker = (
         os.path.exists("/.dockerenv")
         or os.path.exists("/run/.containerenv")
-        or os.getenv("DOCKER_CONTAINER") == "true"
+        # str() because dynaconf type-coerces env "true" -> bool True.
+        or str(cfg("DOCKER_CONTAINER")).lower() == "true"
     )
     if is_docker:
-        service_name = os.getenv("NEXTCLOUD_MCP_SERVICE_NAME", "mcp")
-        port = os.getenv("NEXTCLOUD_MCP_PORT", "8000")
+        service_name = cfg("NEXTCLOUD_MCP_SERVICE_NAME", "mcp")
+        port = cfg("NEXTCLOUD_MCP_PORT", "8000")
         logger.debug(
             "Docker environment detected, using internal URL: http://%s:%s",
             service_name,
@@ -212,11 +213,11 @@ async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:
     # Get OAuth context from app state
     oauth_ctx = getattr(request.app.state, "oauth_context", None)
 
-    # BasicAuth mode - use credentials from environment
+    # BasicAuth mode - host from settings (dynaconf), credentials from env/Secret
     if not oauth_ctx:
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-        username = os.getenv("NEXTCLOUD_USERNAME")
-        password = os.getenv("NEXTCLOUD_PASSWORD")
+        nextcloud_host = get_settings().nextcloud_host
+        username = cfg("NEXTCLOUD_USERNAME")
+        password = cfg("NEXTCLOUD_PASSWORD")
 
         if not all([nextcloud_host, username, password]):
             raise RuntimeError("BasicAuth credentials not configured")

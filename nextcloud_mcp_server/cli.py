@@ -1,5 +1,4 @@
 import logging
-import os
 from importlib.metadata import version
 
 import click
@@ -7,9 +6,11 @@ import uvicorn
 
 from nextcloud_mcp_server.config import (
     Settings,
+    cfg,
     get_database_url,
     get_settings,
     is_ephemeral_token_db,
+    set_override,
 )
 from nextcloud_mcp_server.migrations import (
     create_migration,
@@ -173,49 +174,48 @@ def run(
       # stdio transport for local use (e.g. Claude Code)
       $ nextcloud-mcp-server run --transport stdio
     """
-    # Set env vars from CLI options if provided
-    if nextcloud_host:
-        os.environ["NEXTCLOUD_HOST"] = nextcloud_host
-    if nextcloud_username:
-        os.environ["NEXTCLOUD_USERNAME"] = nextcloud_username
-    if nextcloud_password:
-        os.environ["NEXTCLOUD_PASSWORD"] = nextcloud_password
-    if oauth_client_id:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_ID"] = oauth_client_id
-    if oauth_client_secret:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_SECRET"] = oauth_client_secret
-    if oauth_scopes:
-        os.environ["NEXTCLOUD_OIDC_SCOPES"] = oauth_scopes
-    if oauth_token_type:
-        os.environ["NEXTCLOUD_OIDC_TOKEN_TYPE"] = oauth_token_type
-    if mcp_server_url:
-        os.environ["NEXTCLOUD_MCP_SERVER_URL"] = mcp_server_url
-    if public_issuer_url:
-        os.environ["NEXTCLOUD_PUBLIC_ISSUER_URL"] = public_issuer_url
+    # Feed CLI options into dynaconf as runtime overrides (the documented
+    # `.set` path) instead of mutating os.environ, so all config is
+    # dynaconf-driven (settings.toml + env + overrides).
+    for _key, _val in (
+        ("NEXTCLOUD_HOST", nextcloud_host),
+        ("NEXTCLOUD_USERNAME", nextcloud_username),
+        ("NEXTCLOUD_PASSWORD", nextcloud_password),
+        ("NEXTCLOUD_OIDC_CLIENT_ID", oauth_client_id),
+        ("NEXTCLOUD_OIDC_CLIENT_SECRET", oauth_client_secret),
+        ("NEXTCLOUD_OIDC_SCOPES", oauth_scopes),
+        ("NEXTCLOUD_OIDC_TOKEN_TYPE", oauth_token_type),
+        ("NEXTCLOUD_MCP_SERVER_URL", mcp_server_url),
+        ("NEXTCLOUD_PUBLIC_ISSUER_URL", public_issuer_url),
+    ):
+        if _val:
+            set_override(_key, _val)
 
     # Force OAuth mode if explicitly requested
     if oauth is True:
         # Clear username/password to force OAuth mode
-        if "NEXTCLOUD_USERNAME" in os.environ:
+        if cfg("NEXTCLOUD_USERNAME"):
             click.echo(
                 "Warning: --oauth flag set, ignoring NEXTCLOUD_USERNAME", err=True
             )
-            del os.environ["NEXTCLOUD_USERNAME"]
-        if "NEXTCLOUD_PASSWORD" in os.environ:
+            set_override("NEXTCLOUD_USERNAME", None)
+        if cfg("NEXTCLOUD_PASSWORD"):
             click.echo(
                 "Warning: --oauth flag set, ignoring NEXTCLOUD_PASSWORD", err=True
             )
-            del os.environ["NEXTCLOUD_PASSWORD"]
+            set_override("NEXTCLOUD_PASSWORD", None)
 
-        # Validate OAuth configuration
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+        # Validate OAuth configuration. Read via settings (dynaconf) — which is
+        # fed by the generated settings.toml AND env — not os.getenv directly, so
+        # a settings.toml-only NEXTCLOUD_HOST is honoured (helm chart >= 0.90.0).
+        nextcloud_host = get_settings().nextcloud_host
         if not nextcloud_host:
             raise click.ClickException(
-                "OAuth mode requires NEXTCLOUD_HOST environment variable to be set"
+                "OAuth mode requires NEXTCLOUD_HOST to be set (env or settings.toml)"
             )
 
         # Check if we have client credentials OR if dynamic registration is possible
-        has_client_creds = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID") and os.getenv(
+        has_client_creds = cfg("NEXTCLOUD_OIDC_CLIENT_ID") and cfg(
             "NEXTCLOUD_OIDC_CLIENT_SECRET"
         )
 
@@ -239,16 +239,14 @@ def run(
             click.echo("  Mode: Pre-configured Client", err=True)
             click.echo("  Host: " + nextcloud_host, err=True)
             click.echo(
-                "  Client ID: "
-                + os.getenv("NEXTCLOUD_OIDC_CLIENT_ID", "")[:16]
-                + "...",
+                "  Client ID: " + (cfg("NEXTCLOUD_OIDC_CLIENT_ID") or "")[:16] + "...",
                 err=True,
             )
             click.echo("", err=True)
 
     elif oauth is False:
         # Force BasicAuth mode - verify credentials exist
-        if not os.getenv("NEXTCLOUD_USERNAME") or not os.getenv("NEXTCLOUD_PASSWORD"):
+        if not cfg("NEXTCLOUD_USERNAME") or not cfg("NEXTCLOUD_PASSWORD"):
             raise click.ClickException(
                 "--no-oauth flag set but NEXTCLOUD_USERNAME or NEXTCLOUD_PASSWORD not set"
             )

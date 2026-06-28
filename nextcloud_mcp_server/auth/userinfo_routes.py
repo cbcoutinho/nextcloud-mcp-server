@@ -8,7 +8,6 @@ For OAuth mode: Requires browser-based OAuth login to establish session.
 """
 
 import logging
-import os
 import traceback
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
 from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import cfg, get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -51,9 +50,9 @@ async def _get_authenticated_client_for_userinfo(request: Request) -> NextcloudC
 
     # BasicAuth mode - use credentials from environment
     if not oauth_ctx:
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-        username = os.getenv("NEXTCLOUD_USERNAME")
-        password = os.getenv("NEXTCLOUD_PASSWORD")
+        nextcloud_host = get_settings().nextcloud_host
+        username = cfg("NEXTCLOUD_USERNAME")
+        password = cfg("NEXTCLOUD_PASSWORD")
 
         if not all([nextcloud_host, username, password]):
             raise RuntimeError("BasicAuth credentials not configured")
@@ -345,7 +344,7 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         return {
             "username": username,
             "auth_mode": "basic",
-            "nextcloud_host": os.getenv("NEXTCLOUD_HOST", "unknown"),
+            "nextcloud_host": get_settings().nextcloud_host or "unknown",
         }
 
     # OAuth mode - read cached profile from browser session

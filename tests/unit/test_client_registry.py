@@ -23,6 +23,11 @@ def _get_registry(monkeypatch, value: str | None = None):
         monkeypatch.setenv("ALLOWED_MCP_CLIENTS", value)
     else:
         monkeypatch.delenv("ALLOWED_MCP_CLIENTS", raising=False)
+    # Config is read via dynaconf (cfg), which loads once — refresh so the env
+    # mutation above is reflected before the registry reads it.
+    from nextcloud_mcp_server.config import _reload_config
+
+    _reload_config()
     return registry_mod.get_client_registry()
 
 

@@ -7,10 +7,11 @@ via Flow 1. In production, this would integrate with Dynamic Client Registration
 """
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+
+from nextcloud_mcp_server.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class ClientRegistry:
         # env vars to keep the MCP-route and management-API auth surfaces
         # independent. These may be consolidated into a single env var later
         # once the deployment story stabilises.
-        allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").strip()
+        allowed_clients = cfg("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
             for entry in allowed_clients.split(","):
@@ -296,7 +297,8 @@ def get_client_registry() -> ClientRegistry:
     """Get the global client registry instance."""
     global _registry
     if _registry is None:
-        # Check if DCR is enabled
-        allow_dcr = os.getenv("ENABLE_DCR", "false").lower() == "true"
+        # Check if DCR is enabled. str() wraps it because dynaconf type-coerces
+        # env "true" -> bool True (which has no .lower()).
+        allow_dcr = str(cfg("ENABLE_DCR", "false")).lower() == "true"
         _registry = ClientRegistry(allow_dynamic_registration=allow_dcr)
     return _registry
