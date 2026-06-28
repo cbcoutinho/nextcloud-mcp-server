@@ -105,7 +105,7 @@ async def update_user_scopes(request: Request) -> JSONResponse:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
         return JSONResponse(
             {"success": False, "error": "Invalid JSON body"},
             status_code=400,

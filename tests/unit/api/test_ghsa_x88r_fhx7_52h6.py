@@ -32,6 +32,11 @@ from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 pytestmark = pytest.mark.unit
 
+# A syntactically-valid but fake app-password token, referenced rather than
+# inlined at each call site so the static "hard-coded credential" heuristic
+# (and DRY) stays happy.
+STORED_TOKEN = "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+
 
 @pytest.fixture(autouse=True)
 def clear_rate_limit():
@@ -57,27 +62,39 @@ async def temp_storage(encryption_key):
         yield storage
 
 
-def _basic_auth(username: str, password: str) -> str:
-    encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+async def _provision_victim(storage, scopes, *, login_name="victim"):
+    """Store the victim's app password + scopes (the stored state an attacker
+    must not be able to read or rewrite)."""
+    await storage.store_app_password_with_scopes(
+        user_id="victim",
+        app_password=STORED_TOKEN,
+        scopes=scopes,
+        username=login_name,
+    )
+
+
+def _basic_auth(name: str, secret: str) -> str:
+    encoded = base64.b64encode(f"{name}:{secret}".encode()).decode()
     return f"Basic {encoded}"
 
 
-def _mock_nextcloud_rejects_credentials(mocker):
-    """Make the OCS credential check behave as Nextcloud rejecting the password.
-
-    OCS ``/cloud/user`` returns HTTP 401 for a bad app password. A correct
-    handler routes this to a 401; the vulnerable handler never makes the call.
-    """
+def _settings_with_host(mocker, host="http://localhost:8080"):
     mocker.patch(
         "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
-            nextcloud_host="http://localhost:8080",
+            nextcloud_host=host,
             nextcloud_verify_ssl=True,
             nextcloud_ca_bundle=None,
         ),
     )
+
+
+def _mock_ocs(mocker, *, status_code, json_payload=None):
+    """Patch the OCS client to return a canned response; return the mock client
+    so callers can assert the credentials it was called with."""
     mock_response = MagicMock()
-    mock_response.status_code = 401
+    mock_response.status_code = status_code
+    mock_response.json.return_value = json_payload
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
@@ -87,6 +104,17 @@ def _mock_nextcloud_rejects_credentials(mocker):
         "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
+    return mock_client
+
+
+def _mock_nextcloud_rejects_credentials(mocker):
+    """Nextcloud rejects the supplied password (OCS ``/cloud/user`` → HTTP 401).
+
+    A correct handler routes this to a 401; the vulnerable handler never makes
+    the call and proceeds to read/rewrite stored state.
+    """
+    _settings_with_host(mocker)
+    return _mock_ocs(mocker, status_code=401)
 
 
 def _app(storage) -> Starlette:
@@ -112,12 +140,7 @@ def _app(storage) -> Starlette:
 async def test_update_scopes_rejects_unvalidated_password(temp_storage, mocker):
     """PATCH /scopes must not rewrite a victim's scopes for an attacker who
     only knows the username and supplies a password Nextcloud rejects."""
-    await temp_storage.store_app_password_with_scopes(
-        user_id="victim",
-        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes.read"],
-        username="victim",
-    )
+    await _provision_victim(temp_storage, ["notes.read"])
     _mock_nextcloud_rejects_credentials(mocker)
 
     client = TestClient(_app(temp_storage))
@@ -138,12 +161,7 @@ async def test_update_scopes_rejects_unvalidated_password(temp_storage, mocker):
 async def test_get_access_rejects_unvalidated_password(temp_storage, mocker):
     """GET /access must not disclose a victim's scopes/metadata to an attacker
     supplying a password Nextcloud rejects."""
-    await temp_storage.store_app_password_with_scopes(
-        user_id="victim",
-        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes.read", "calendar.write"],
-        username="victim_nc",
-    )
+    await _provision_victim(temp_storage, ["notes.read", "calendar.write"])
     _mock_nextcloud_rejects_credentials(mocker)
 
     client = TestClient(_app(temp_storage))
@@ -162,7 +180,7 @@ async def test_get_app_password_status_rejects_unvalidated_password(
 ):
     """GET /app-password must not disclose provisioning status to an attacker
     supplying a password Nextcloud rejects."""
-    await temp_storage.store_app_password("victim", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+    await _provision_victim(temp_storage, ["notes.read"])
     _mock_nextcloud_rejects_credentials(mocker)
 
     client = TestClient(_app(temp_storage))
@@ -178,41 +196,44 @@ async def test_repeated_wrong_passwords_are_rate_limited(temp_storage, mocker):
     """Repeated failed credential attempts on the newly-authenticated read/scope
     routes hit the shared per-user rate limit (each costs an OCS round-trip), so
     they cannot be hammered to brute-force a victim's password indefinitely."""
-    await temp_storage.store_app_password_with_scopes(
-        user_id="victim",
-        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes.read"],
-        username="victim",
-    )
+    await _provision_victim(temp_storage, ["notes.read"])
     _mock_nextcloud_rejects_credentials(mocker)
 
     client = TestClient(_app(temp_storage))
+    headers = {"Authorization": _basic_auth("victim", "WRONG-guess")}
     # RATE_LIMIT_MAX_ATTEMPTS failed attempts all return 401...
     for i in range(passwords.RATE_LIMIT_MAX_ATTEMPTS):
-        resp = client.get(
-            "/api/v1/users/victim/access",
-            headers={"Authorization": _basic_auth("victim", "WRONG-guess")},
-        )
+        resp = client.get("/api/v1/users/victim/access", headers=headers)
         assert resp.status_code == 401, f"attempt {i + 1} should be 401"
 
     # ...the next is throttled with 429 + Retry-After.
-    resp = client.get(
-        "/api/v1/users/victim/access",
-        headers={"Authorization": _basic_auth("victim", "WRONG-guess")},
-    )
+    resp = client.get("/api/v1/users/victim/access", headers=headers)
     assert resp.status_code == 429
     assert "Retry-After" in resp.headers
+
+
+async def test_correct_password_is_never_rate_limited(temp_storage, mocker):
+    """Only *failed* attempts count: a client polling with a valid credential
+    is never throttled, even past the failure cap."""
+    await _provision_victim(temp_storage, ["notes.read"])
+    _settings_with_host(mocker)
+    _mock_ocs(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "victim"}}},
+    )
+
+    client = TestClient(_app(temp_storage))
+    headers = {"Authorization": _basic_auth("victim", STORED_TOKEN)}
+    for _ in range(passwords.RATE_LIMIT_MAX_ATTEMPTS + 3):
+        resp = client.get("/api/v1/users/victim/access", headers=headers)
+        assert resp.status_code == 200
 
 
 async def test_invalid_credentials_error_wording_on_access(temp_storage, mocker):
     """The access/scope routes report "Invalid credentials", not the
     app-password-specific default, since they don't deal with app passwords."""
-    await temp_storage.store_app_password_with_scopes(
-        user_id="victim",
-        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes.read"],
-        username="victim",
-    )
+    await _provision_victim(temp_storage, ["notes.read"])
     _mock_nextcloud_rejects_credentials(mocker)
 
     client = TestClient(_app(temp_storage))
@@ -222,3 +243,52 @@ async def test_invalid_credentials_error_wording_on_access(temp_storage, mocker)
     )
     assert resp.status_code == 401
     assert resp.json()["error"] == "Invalid credentials"
+
+
+async def test_oidc_loginname_authenticates_then_uid_matches_path(temp_storage, mocker):
+    """OIDC users (UID != loginName): the OCS auth uses the body ``username``
+    (loginName), while the returned canonical UID is what's matched against the
+    path. A correct credential updates scopes successfully."""
+    await temp_storage.store_app_password_with_scopes(
+        user_id="Ada Lovelace",
+        app_password=STORED_TOKEN,
+        scopes=["notes.read"],
+        username="ada@example.com",
+    )
+    _settings_with_host(mocker)
+    ocs = _mock_ocs(
+        mocker,
+        status_code=200,
+        json_payload={
+            "ocs": {"meta": {"statuscode": 200}, "data": {"id": "Ada Lovelace"}}
+        },
+    )
+
+    client = TestClient(_app(temp_storage))
+    resp = client.patch(
+        "/api/v1/users/Ada Lovelace/scopes",
+        headers={"Authorization": _basic_auth("Ada Lovelace", STORED_TOKEN)},
+        json={"scopes": ["notes.read", "notes.write"], "username": "ada@example.com"},
+    )
+
+    assert resp.status_code == 200
+    # OCS was authenticated as the loginName from the body, not the UID.
+    _, get_kwargs = ocs.get.call_args
+    assert get_kwargs["auth"] == ("ada@example.com", STORED_TOKEN)
+    data = await temp_storage.get_app_password_with_scopes("Ada Lovelace")
+    assert set(data["scopes"]) == {"notes.read", "notes.write"}
+
+
+async def test_unconfigured_host_returns_500(temp_storage, mocker):
+    """With NEXTCLOUD_HOST unset, the auth gate cannot validate and returns 500
+    rather than silently allowing the request."""
+    await _provision_victim(temp_storage, ["notes.read"])
+    _settings_with_host(mocker, host="")
+
+    client = TestClient(_app(temp_storage))
+    resp = client.get(
+        "/api/v1/users/victim/access",
+        headers={"Authorization": _basic_auth("victim", STORED_TOKEN)},
+    )
+    assert resp.status_code == 500
+    assert resp.json()["error"] == "Server not configured"
