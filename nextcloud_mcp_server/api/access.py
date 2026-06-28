@@ -111,6 +111,14 @@ async def update_user_scopes(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # A valid JSON non-object (e.g. ``[]`` or ``"x"``) parses fine but has no
+    # ``.get`` — reject it as a 400 rather than letting it raise a 500.
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"success": False, "error": "Request body must be a JSON object"},
+            status_code=400,
+        )
+
     scopes = body.get("scopes")
     if scopes is None or not isinstance(scopes, list):
         return JSONResponse(

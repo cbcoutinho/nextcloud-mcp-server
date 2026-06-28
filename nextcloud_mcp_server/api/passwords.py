@@ -79,7 +79,10 @@ def _check_rate_limit(user_id: str) -> tuple[bool, int]:
         if ts > window_start
     ]
 
-    # Count recent attempts (both successful and failed)
+    # Count all recorded attempts in the window. provision_app_password records
+    # both successes and failures; the read/scope/status/delete routes (via
+    # _authenticate_request) record only failures so legitimate polling with a
+    # correct credential is never throttled.
     recent_attempts = len(_rate_limit_attempts[user_id])
 
     if recent_attempts >= RATE_LIMIT_MAX_ATTEMPTS:

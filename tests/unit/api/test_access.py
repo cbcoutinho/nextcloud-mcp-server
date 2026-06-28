@@ -269,6 +269,19 @@ class TestUpdateUserScopes:
         )
         assert resp.status_code == 400
 
+    async def test_non_dict_json_body(self, temp_storage):
+        """Returns 400 (not 500) for a valid JSON body that isn't an object."""
+        app = create_test_app(temp_storage)
+        client = TestClient(app)
+
+        resp = client.patch(
+            "/api/v1/users/alice/scopes",
+            headers={"Authorization": create_basic_auth_header("alice", "pw")},
+            json=["notes.read"],  # a list, not an object
+        )
+        assert resp.status_code == 400
+        assert resp.json()["success"] is False
+
 
 class TestListSupportedScopes:
     """Tests for GET /api/v1/scopes."""
