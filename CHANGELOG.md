@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.127.0 (2026-06-30)
+
+### Feat
+
+- **api**: advertise supported_search_types on /api/v1/status
+- **search**: add SEARCH_MODE=keyword for airgapped, embedding-free search
+
+### Fix
+
+- mode-accurate search logs + skip PCA embed in keyword mode (round-6)
+- **api**: drop score_threshold upper bound on /api/v1/search (ADR-030)
+- **search**: address round-3 review (mode-aware algorithm gate, log casing)
+- **search**: address round-1 review on SEARCH_MODE keyword mode
+
+### Refactor
+
+- address round-5 review nits (DRY, coercion log, typing, ADR)
+- **search**: address round-2 review (dedup, complexity, log, docs)
+
 ## v0.126.5 (2026-06-28)
 
 ### Refactor
