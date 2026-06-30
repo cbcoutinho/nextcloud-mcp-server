@@ -29,12 +29,10 @@ class SemanticSearchResult(BaseModel):
     excerpt: str = Field(description="Excerpt from matching chunk")
     score: float = Field(
         description=(
-            "Relevance score (≥ 0.0, higher is better). "
-            "Score range depends on search mode/fusion: "
-            "RRF produces scores in [0.0, 1.0], "
-            "DBSF can exceed 1.0 (sum of normalized scores from multiple systems); "
-            "under SEARCH_MODE=keyword (ADR-030) this is a raw BM25 score "
-            "(unbounded, not normalized)"
+            "Relevance score (≥ 0.0, higher is better). Range depends on search "
+            "mode (ADR-030): in hybrid mode it is a normalized fusion score — RRF "
+            "in [0.0, 1.0], DBSF can exceed 1.0; in keyword mode it is a raw BM25 "
+            "score that is unbounded (commonly well above 1.0), not normalized."
         )
     )
     chunk_index: int = Field(description="Index of matching chunk in document")

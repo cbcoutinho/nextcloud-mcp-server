@@ -791,16 +791,36 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
                 # Validate dimension matches
                 if actual_dimension != expected_dimension:
-                    embedding_model = settings.get_embedding_model_name()
+                    # In keyword mode the expected dense size is
+                    # SIMPLE_EMBEDDING_DIMENSION (no embedding model), so a
+                    # mismatch almost always means an explicit QDRANT_COLLECTION
+                    # is pointed at a hybrid collection — not a model change.
+                    if settings.dense_enabled:
+                        expected_source = (
+                            f"from embedding model "
+                            f"'{settings.get_embedding_model_name()}'"
+                        )
+                        likely_cause = (
+                            "This usually means you changed the embedding model."
+                        )
+                    else:
+                        expected_source = (
+                            "from SIMPLE_EMBEDDING_DIMENSION; SEARCH_MODE=keyword"
+                        )
+                        likely_cause = (
+                            "This usually means QDRANT_COLLECTION points at a "
+                            "hybrid-mode collection; keyword and hybrid indexes "
+                            "are not interchangeable (ADR-030)."
+                        )
                     raise ValueError(
                         f"Dimension mismatch for collection '{collection_name}':\n"
-                        f"  Expected: {expected_dimension} (from embedding model '{embedding_model}')\n"
+                        f"  Expected: {expected_dimension} ({expected_source})\n"
                         f"  Found: {actual_dimension}\n"
-                        f"This usually means you changed the embedding model.\n"
+                        f"{likely_cause}\n"
                         f"Solutions:\n"
                         f"  1. Delete the old collection: Collection will be recreated with new dimensions\n"
                         f"  2. Set QDRANT_COLLECTION to use a different collection name\n"
-                        f"  3. Revert to the original embedding model"
+                        f"  3. Revert to the original embedding model / SEARCH_MODE"
                     )
 
                 logger.info(

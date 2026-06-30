@@ -1542,14 +1542,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     if settings.vector_sync_enabled:
-        logger.info(
-            "Configuring search tools (vector sync enabled, SEARCH_MODE=%s)",
-            settings.search_mode,
-        )
-        if not settings.dense_enabled:
+        if settings.dense_enabled:
             logger.info(
-                "SEARCH_MODE=keyword: dense embeddings disabled; BM25 keyword "
-                "search only — no embedding endpoint required (ADR-030)"
+                "Configuring search tools (vector sync enabled, SEARCH_MODE=hybrid)"
+            )
+        else:
+            logger.info(
+                "Configuring search tools (vector sync enabled, SEARCH_MODE=keyword):"
+                " dense embeddings disabled; BM25 keyword search only — no embedding"
+                " endpoint required (ADR-030)"
             )
         configure_semantic_tools(mcp)
     else:

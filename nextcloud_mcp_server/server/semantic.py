@@ -151,7 +151,7 @@ def configure_semantic_tools(mcp: FastMCP):
         ctx: Context,
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
         doc_types: list[str] | None = None,
-        score_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
         fusion: str = "rrf",
         include_context: bool = False,
         context_chars: Annotated[int, Field(ge=0)] = 300,
@@ -714,7 +714,7 @@ def configure_semantic_tools(mcp: FastMCP):
         query: str,
         ctx: Context,
         limit: int = 5,
-        score_threshold: float = 0.7,
+        score_threshold: float | None = None,
         max_answer_tokens: int = 500,
         fusion: str = "rrf",
         include_context: bool = False,
@@ -741,11 +741,11 @@ def configure_semantic_tools(mcp: FastMCP):
             query: Natural language question to answer (e.g., "What are my Q1 objectives?" or "When is my next dentist appointment?")
             ctx: MCP context for session access
             limit: Maximum number of documents to retrieve (default: 5)
-            score_threshold: Minimum similarity score 0-1 (default: 0.7). This
-                default is tuned for hybrid fusion scores; under SEARCH_MODE=keyword
-                the score is a raw BM25 value (unbounded) for which 0.7 is not
-                meaningful, so the default 0.7 is treated as 0.0 in keyword mode.
-                Pass an explicit value to override.
+            score_threshold: Minimum relevance score. None (default) selects a
+                mode-appropriate default: 0.7 in hybrid mode (tuned for normalized
+                fusion scores) and 0.0 in keyword mode (raw BM25 scores are
+                unbounded, so a 0.7 cutoff would drop most matches). Pass an
+                explicit value (including 0.7) to override in either mode.
             max_answer_tokens: Maximum tokens for generated answer (default: 500)
             fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion). Ignored when SEARCH_MODE=keyword.
             include_context: Whether to expand results with surrounding context (default: False)
@@ -770,12 +770,13 @@ def configure_semantic_tools(mcp: FastMCP):
         cost roughly linearly. File / news / deck results do not pay this
         cost — they reuse the verified excerpt.
         """
-        # The 0.7 default is calibrated for normalized hybrid-fusion scores. In
-        # keyword mode (ADR-030) the retrieval score is a raw, unbounded BM25
-        # value, so a 0.7 cutoff would silently drop most/all matches. Treat the
-        # untouched default as 0.0 there; an explicit caller value still wins.
-        if not get_settings().dense_enabled and score_threshold == 0.7:
-            score_threshold = 0.0
+        # Resolve the mode-appropriate default when the caller didn't specify
+        # one. The 0.7 default is calibrated for normalized hybrid-fusion scores;
+        # keyword mode (ADR-030) scores raw, unbounded BM25, where 0.7 would drop
+        # most/all matches — so default to 0.0 there. A None sentinel (rather than
+        # a magic 0.7 compare) lets a caller pass 0.7 explicitly in either mode.
+        if score_threshold is None:
+            score_threshold = 0.0 if not get_settings().dense_enabled else 0.7
 
         # 1. Retrieve relevant documents via existing semantic search
         search_response = await nc_semantic_search(
