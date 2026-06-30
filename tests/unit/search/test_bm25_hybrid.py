@@ -56,10 +56,11 @@ def test_bm25_hybrid_requires_vector_db():
     assert algo.requires_vector_db is True
 
 
-@pytest.fixture
-def patched_search(monkeypatch):
-    """Stub the embedding / BM25 / Qdrant deps of search() and return the
-    embed_with_usage mock so tests can assert how often the query was embedded."""
+def _make_search_deps(monkeypatch, *, dense_enabled: bool):
+    """Stub the embedding / BM25 / Qdrant / settings deps of ``search()`` and
+    return ``(embed, qdrant)`` mocks. ``dense_enabled`` selects hybrid (True) vs
+    keyword (False) mode; everything else is identical, so both fixtures below
+    share this one builder."""
     embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7))
     svc = MagicMock()
     svc.embed_with_usage = embed
@@ -84,7 +85,7 @@ def patched_search(monkeypatch):
     )
 
     settings = MagicMock()
-    settings.dense_enabled = True  # hybrid mode (dense + sparse fusion)
+    settings.dense_enabled = dense_enabled
     settings.get_collection_name.return_value = "test_collection"
     settings.get_embedding_provider_family.return_value = "mistral"
     monkeypatch.setattr(
@@ -94,6 +95,14 @@ def patched_search(monkeypatch):
         "nextcloud_mcp_server.search.bm25_hybrid.build_base_filter_conditions",
         lambda **kwargs: [],
     )
+    return embed, qdrant
+
+
+@pytest.fixture
+def patched_search(monkeypatch):
+    """Hybrid-mode deps; returns the embed mock so tests can assert how often the
+    query was embedded."""
+    embed, _ = _make_search_deps(monkeypatch, dense_enabled=True)
     return embed
 
 
@@ -152,40 +161,7 @@ def patched_keyword_search(monkeypatch):
     """Keyword mode (ADR-030): dense disabled. Returns (embed, qdrant) so tests
     can assert the embedding service is never called and the Qdrant call is a
     direct sparse query with no fusion."""
-    embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7))
-    svc = MagicMock()
-    svc.embed_with_usage = embed
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.get_embedding_service", lambda: svc
-    )
-
-    bm25 = MagicMock()
-    bm25.encode_async = AsyncMock(return_value={"indices": [1], "values": [0.5]})
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.get_bm25_service",
-        AsyncMock(return_value=bm25),
-    )
-
-    qdrant = MagicMock()
-    empty = MagicMock()
-    empty.points = []
-    qdrant.query_points = AsyncMock(return_value=empty)
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
-        AsyncMock(return_value=qdrant),
-    )
-
-    settings = MagicMock()
-    settings.dense_enabled = False  # keyword mode
-    settings.get_collection_name.return_value = "test_collection"
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.get_settings", lambda: settings
-    )
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.build_base_filter_conditions",
-        lambda **kwargs: [],
-    )
-    return embed, qdrant
+    return _make_search_deps(monkeypatch, dense_enabled=False)
 
 
 @pytest.mark.unit

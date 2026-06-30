@@ -261,9 +261,17 @@ def configure_semantic_tools(mcp: FastMCP):
         client = await get_client(ctx)
         username = client.username
 
+        # Self-describing method label, mirroring BM25HybridSearchAlgorithm:
+        # keyword mode (ADR-030) runs a sparse-only query, hybrid mode fuses.
+        # Used in the log line below and on every response so logs/results say
+        # "bm25_keyword" in keyword mode rather than the misleading "hybrid".
+        search_method = (
+            f"bm25_hybrid_{fusion}" if settings.dense_enabled else "bm25_keyword"
+        )
+
         logger.info(
-            "BM25 hybrid search: query=%r, user=%s, "
-            "limit=%d, score_threshold=%s, fusion=%s",
+            "%s: query=%r, user=%s, limit=%d, score_threshold=%s, fusion=%s",
+            search_method,
             query,
             username,
             limit,
@@ -280,12 +288,6 @@ def configure_semantic_tools(mcp: FastMCP):
                     message="Cross-app search requires VECTOR_SYNC_ENABLED=true",
                 )
             )
-
-        # Self-describing method label, mirroring BM25HybridSearchAlgorithm:
-        # keyword mode (ADR-030) runs a sparse-only query, hybrid mode fuses.
-        search_method = (
-            f"bm25_hybrid_{fusion}" if settings.dense_enabled else "bm25_keyword"
-        )
 
         # Normalize the RFC 3339 / Unix-seconds date bounds to int Unix seconds
         # for the numeric ``modified_at`` Range filter (ADR-027). A bad format
