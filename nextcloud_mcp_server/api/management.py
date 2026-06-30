@@ -23,7 +23,7 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
 from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -36,6 +36,61 @@ __version__ = version("nextcloud-mcp-server")
 
 # Track server start time for uptime calculation
 _server_start_time = time.time()
+
+# The search algorithms astrolabe's McpServerClient understands (the ``algorithm``
+# request param to /api/v1/search and /api/v1/vector-viz/search): ``semantic``
+# (dense only), ``bm25`` (sparse/keyword only), ``hybrid`` (dense+sparse fusion).
+# Single source of truth, also consumed by api/visualization.py for validation.
+SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
+
+
+def supported_search_types(settings: Settings) -> list[str]:
+    """Search algorithms this server can actually serve, given its config.
+
+    Advertised via /api/v1/status (ADR-030) so the astrolabe UI can gate which
+    query types it offers, without having to know the server's SEARCH_MODE:
+
+    - vector sync disabled → ``[]`` (no Qdrant-backed search at all)
+    - SEARCH_MODE=keyword  → ``["bm25"]`` (dense embeddings are off, so
+      ``semantic`` and the dense half of ``hybrid`` are unavailable)
+    - SEARCH_MODE=hybrid   → all three (``semantic``, ``bm25``, ``hybrid``)
+
+    Order follows ``SUPPORTED_SEARCH_ALGORITHMS`` for a stable contract.
+    """
+    if not settings.vector_sync_enabled:
+        return []
+    if settings.dense_enabled:
+        return list(SUPPORTED_SEARCH_ALGORITHMS)
+    return ["bm25"]
+
+
+def resolve_search_algorithm(algorithm: str, settings: Settings) -> str:
+    """Coerce a requested search algorithm to one this server can serve now.
+
+    Falls back to a supported algorithm when the request is unknown OR
+    unavailable in the current SEARCH_MODE (ADR-030) — notably ``semantic`` while
+    ``SEARCH_MODE=keyword``, which would otherwise route a dense query at a
+    sparse-only index and fail. Prefers ``hybrid`` when available (the historical
+    default), else the first supported type. Keeps the search endpoints lenient
+    (no new 4xx) while keeping the accepted set in lockstep with the
+    ``supported_search_types`` that /api/v1/status advertises.
+    """
+    supported = supported_search_types(settings)
+    if algorithm in supported:
+        return algorithm
+    # Empty (vector sync off) preserves the prior default of "hybrid".
+    resolved = "hybrid" if "hybrid" in supported else (supported or ["hybrid"])[0]
+    # Log the rewrite so operators debugging "why did I get bm25 results for an
+    # algorithm=semantic request" can see the coercion (the response
+    # search_method reflects the algorithm actually run, not the request).
+    logger.debug(
+        "resolve_search_algorithm: %r unavailable in current SEARCH_MODE "
+        "(supported=%r); coercing to %r",
+        algorithm,
+        supported,
+        resolved,
+    )
+    return resolved
 
 
 def extract_bearer_token(request: Request) -> str | None:
@@ -248,6 +303,11 @@ async def get_server_status(request: Request) -> JSONResponse:
         # not mounted, so the Astrolabe UI can show webhooks as unavailable and
         # vector sync falls back to the polling scanner.
         "webhooks_enabled": bool(settings.webhook_secret),
+        # Query types the astrolabe UI may offer for this server (ADR-030).
+        # Empty when vector sync is off; ["bm25"] in keyword mode; all three in
+        # hybrid mode. Lets the UI gate its algorithm picker without knowing
+        # SEARCH_MODE.
+        "supported_search_types": supported_search_types(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }

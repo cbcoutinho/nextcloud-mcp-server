@@ -84,8 +84,39 @@ def _state_admin_can_purge() -> None:
     # Intentionally empty: no live-stack state to set up yet (phase 4).
 
 
+def _state_search_mode_hybrid() -> None:
+    """Provider state for astrolabe's status pact when it expects hybrid search
+    support (``supported_search_types == ["semantic", "bm25", "hybrid"]``).
+
+    The integration stack runs in the default SEARCH_MODE=hybrid, so the running
+    server already advertises all three types — no setup needed. Registered (not
+    relying on the no-op fallback) so the dispatcher recognises the state by name
+    and a future config-injection hook has a home. See ADR-030.
+    """
+    # Default integration server is already hybrid; nothing to set up.
+
+
+def _state_search_mode_keyword() -> None:
+    """Provider state for astrolabe's status pact when it expects keyword-only
+    search support (``supported_search_types == ["bm25"]``).
+
+    Verifying this against a live server needs the server started with
+    SEARCH_MODE=keyword (a dedicated provider instance / the ADR-029 phase-4
+    config-injection hook); until then the interaction rides the broker's pending
+    flow. Registered so the state is recognised by name rather than warned about.
+    See ADR-030.
+    """
+    # No in-process injection into the separate provider yet (phase 4).
+
+
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
     "an admin can purge indexed documents": _state_admin_can_purge,
+    # Search-mode advertisement states for GET /api/v1/status (ADR-030); the
+    # astrolabe UI consumer pact declares one of these to assert
+    # supported_search_types. Keys must match the consumer ``given(...)`` strings
+    # in test_mcp_status_search_types_consumer.py / astrolabe's published pact.
+    "the server advertises hybrid search support": _state_search_mode_hybrid,
+    "the server advertises keyword-only search support": _state_search_mode_keyword,
     # "a webhook is registered for user alice": _state_webhook_registered,
     # "vector sync has indexed documents": _state_vector_sync_ran,
     # "the search index returns a hit for 'budget'": _state_search_has_hit,

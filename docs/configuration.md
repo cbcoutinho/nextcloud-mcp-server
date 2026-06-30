@@ -332,6 +332,44 @@ OLLAMA_BASE_URL=http://ollama:11434
 
 > **Note:** In multi-user modes (Login Flow v2, Multi-User BasicAuth), enabling `ENABLE_SEMANTIC_SEARCH` automatically enables background operations and refresh token storage. You don't need to set `ENABLE_BACKGROUND_OPERATIONS` separately!
 
+### Search Mode: Keyword-Only (Airgapped) — `SEARCH_MODE`
+
+`SEARCH_MODE` selects how indexed content is searched (ADR-030):
+
+| Value | Behavior | Embedding endpoint |
+|-------|----------|--------------------|
+| `hybrid` (default) | Dense semantic vectors **+** BM25 sparse vectors, fused in Qdrant | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
+| `keyword` | BM25 sparse (full-text/keyword) only — no dense embeddings | **None** |
+
+Use `SEARCH_MODE=keyword` for fully **airgapped** deployments that cannot (or
+do not want to) run a text-embedding endpoint. You still get the unified
+cross-app Qdrant index (notes, files, OCR'd PDFs, deck cards, news, mail) and
+verify-on-read ACLs — just lexical (keyword) matching instead of conceptual
+similarity. BM25 sparse vectors are computed in-process, so no embedding service
+is contacted at ingestion or query time.
+
+```dotenv
+# Airgapped, no embedding endpoint:
+ENABLE_SEMANTIC_SEARCH=true   # keyword mode still uses the Qdrant pipeline
+SEARCH_MODE=keyword
+QDRANT_URL=http://qdrant:6333
+# (no OLLAMA_BASE_URL / Bedrock / OpenAI / gateway needed)
+```
+
+Notes:
+
+- `keyword` **still requires `ENABLE_SEMANTIC_SEARCH=true`** — it uses the Qdrant
+  index. With vector sync off the search tools don't register.
+- The `nc_semantic_search` / `nc_semantic_search_answer` tools stay available;
+  results carry `search_method="bm25_keyword"`. The RAG answer tool still works
+  airgapped (retrieval via BM25, answer generated client-side via MCP sampling).
+- **Score caveat:** in keyword mode `score` is a raw BM25 value (unbounded), not
+  a normalized [0,1] fusion score, so a non-zero `score_threshold` filters very
+  differently. The `fusion` parameter is ignored.
+- **Switching modes** uses a different collection (keyword collections are named
+  `…-bm25-keyword`). Keyword and hybrid indexes are not interchangeable — to
+  switch, use a fresh collection and let background sync re-ingest.
+
 ### Qdrant Vector Database Modes
 
 The server supports three Qdrant deployment modes:
@@ -871,6 +909,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
+| `SEARCH_MODE` | ⚠️ Optional | `hybrid` | `hybrid` (dense+sparse) or `keyword` (BM25 sparse only, no embedding endpoint — airgapped, ADR-030). `keyword` still requires `ENABLE_SEMANTIC_SEARCH=true` |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |

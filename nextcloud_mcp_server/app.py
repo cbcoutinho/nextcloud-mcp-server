@@ -1542,10 +1542,28 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     if settings.vector_sync_enabled:
-        logger.info("Configuring semantic search tools (vector sync enabled)")
+        if settings.dense_enabled:
+            logger.info(
+                "Configuring search tools (vector sync enabled, SEARCH_MODE=hybrid)"
+            )
+        else:
+            logger.info(
+                "Configuring search tools (vector sync enabled, SEARCH_MODE=keyword):"
+                " dense embeddings disabled; BM25 keyword search only — no embedding"
+                " endpoint required (ADR-030)"
+            )
         configure_semantic_tools(mcp)
     else:
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
+        if not settings.dense_enabled:
+            # keyword mode is meaningless without the Qdrant pipeline it queries;
+            # the tools just won't register. Warn rather than crash, matching the
+            # codebase's gate-don't-crash posture for search enablement.
+            logger.warning(
+                "SEARCH_MODE=keyword has no effect while VECTOR_SYNC_ENABLED is "
+                "off: keyword search uses the Qdrant index, so enable vector sync "
+                "to use it (ADR-030)"
+            )
 
     # Register OAuth provisioning tools (only when offline access is enabled)
     enable_offline_access_for_tools = settings.enable_offline_access

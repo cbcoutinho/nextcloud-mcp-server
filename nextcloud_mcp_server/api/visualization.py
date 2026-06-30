@@ -23,6 +23,7 @@ from nextcloud_mcp_server.api.management import (
     _parse_int_param,
     _sanitize_error_for_client,
     _validate_query_string,
+    resolve_search_algorithm,
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import get_settings
@@ -197,11 +198,15 @@ async def unified_search(request: Request) -> JSONResponse:
                 "offset",
             )
 
+            # No upper bound: hybrid DBSF fusion can exceed 1.0 and, under
+            # SEARCH_MODE=keyword (ADR-030), scores are raw BM25 (unbounded). A
+            # le=1.0 cap would 400 a legitimate keyword threshold like 3.0 —
+            # mirrors the round-1 Field(ge=0.0) fix on the nc_semantic_search tool.
             score_threshold = _parse_float_param(
                 body.get("score_threshold"),
                 0.0,
                 0.0,
-                1.0,
+                float("inf"),
                 "score_threshold",
             )
 
@@ -243,10 +248,11 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Validate algorithm
-        valid_algorithms = {"semantic", "bm25", "hybrid"}
-        if algorithm not in valid_algorithms:
-            algorithm = "hybrid"
+        # Coerce to an algorithm this server can actually serve in its current
+        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
+        # query at a sparse-only index, so it falls back to "bm25". Keeps the
+        # accepted set in lockstep with what /api/v1/status advertises.
+        algorithm = resolve_search_algorithm(algorithm, settings)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
@@ -377,7 +383,11 @@ async def unified_search(request: Request) -> JSONResponse:
         }
 
         # Optional PCA coordinates
-        if include_pca and len(paginated_results) >= 2:
+        # PCA plots the result chunks around the query's dense embedding, so it
+        # only applies in hybrid mode. In keyword mode (ADR-030) there is no dense
+        # query embedding — skip PCA rather than calling the embedding service,
+        # keeping the airgapped path free of any embed attempt.
+        if include_pca and settings.dense_enabled and len(paginated_results) >= 2:
             try:
                 if search_algo.query_embedding is not None:
                     query_embedding = search_algo.query_embedding
@@ -491,10 +501,11 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Validate algorithm
-        valid_algorithms = {"semantic", "bm25", "hybrid"}
-        if algorithm not in valid_algorithms:
-            algorithm = "hybrid"
+        # Coerce to an algorithm this server can actually serve in its current
+        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
+        # query at a sparse-only index, so it falls back to "bm25". Keeps the
+        # accepted set in lockstep with what /api/v1/status advertises.
+        algorithm = resolve_search_algorithm(algorithm, settings)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
@@ -580,8 +591,12 @@ async def vector_search(request: Request) -> JSONResponse:
             "total_documents": len(formatted_results),
         }
 
-        # Compute PCA coordinates for visualization using shared function
-        if include_pca and len(all_results) >= 2:
+        # Compute PCA coordinates for visualization using shared function. PCA
+        # plots chunks around the query's dense embedding, so it only applies in
+        # hybrid mode; keyword mode (ADR-030) has no dense query embedding, so
+        # fall through to the empty-coordinates branch without calling the
+        # embedding service (airgapped-safe).
+        if include_pca and settings.dense_enabled and len(all_results) >= 2:
             try:
                 # Get query embedding from search algorithm or generate it
                 if search_algo.query_embedding is not None:

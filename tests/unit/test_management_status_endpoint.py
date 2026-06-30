@@ -40,6 +40,7 @@ def create_mock_settings(
     nextcloud_url: str = "http://localhost",
     mcp_client_id: str | None = None,
     mcp_client_secret: str | None = None,
+    dense_enabled: bool = True,
 ):
     """Create mock settings with specified auth configuration."""
     settings = MagicMock()
@@ -48,6 +49,9 @@ def create_mock_settings(
     settings.oidc_discovery_url = oidc_discovery_url
     settings.oidc_issuer = oidc_issuer
     settings.vector_sync_enabled = vector_sync_enabled
+    # dense_enabled is False only in SEARCH_MODE=keyword (ADR-030); drives the
+    # supported_search_types advertised by /api/v1/status.
+    settings.dense_enabled = dense_enabled
     # Explicit so bool(settings.webhook_secret) is deterministic (a bare
     # MagicMock attribute is truthy, which would always report webhooks on).
     settings.webhook_secret = webhook_secret
@@ -391,3 +395,94 @@ class TestStatusEndpointBasicResponse:
 
             assert response.status_code == 200
             assert response.json()["webhooks_enabled"] is False
+
+
+class TestSupportedSearchTypesHelper:
+    """Pure helper: supported_search_types(settings) (ADR-030)."""
+
+    def test_vector_sync_disabled_is_empty(self):
+        from nextcloud_mcp_server.api.management import supported_search_types
+
+        s = create_mock_settings(vector_sync_enabled=False, dense_enabled=True)
+        assert supported_search_types(s) == []
+
+    def test_hybrid_mode_advertises_all_three(self):
+        from nextcloud_mcp_server.api.management import supported_search_types
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        assert supported_search_types(s) == ["semantic", "bm25", "hybrid"]
+
+    def test_keyword_mode_advertises_bm25_only(self):
+        from nextcloud_mcp_server.api.management import supported_search_types
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        assert supported_search_types(s) == ["bm25"]
+
+
+class TestResolveSearchAlgorithm:
+    """resolve_search_algorithm coerces requests to a mode-serviceable one."""
+
+    def test_hybrid_mode_passes_through_valid(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        for algo in ("semantic", "bm25", "hybrid"):
+            assert resolve_search_algorithm(algo, s) == algo
+
+    def test_unknown_algorithm_falls_back_to_hybrid(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        assert resolve_search_algorithm("nonsense", s) == "hybrid"
+
+    def test_keyword_mode_redirects_dense_requests_to_bm25(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        # "semantic" would route a dense query at a sparse-only index → bm25.
+        assert resolve_search_algorithm("semantic", s) == "bm25"
+        assert resolve_search_algorithm("hybrid", s) == "bm25"
+        assert resolve_search_algorithm("bm25", s) == "bm25"
+
+    def test_vector_sync_off_preserves_hybrid_default(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=False)
+        assert resolve_search_algorithm("semantic", s) == "hybrid"
+
+
+class TestStatusEndpointSearchTypes:
+    """The /api/v1/status response advertises supported_search_types so the
+    astrolabe UI can gate its query-type picker (ADR-030)."""
+
+    def _get_status(self, mock_settings):
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
+                return_value=AuthMode.SINGLE_USER_BASIC,
+            ),
+        ):
+            client = TestClient(create_test_app())
+            response = client.get("/api/v1/status")
+        assert response.status_code == 200
+        return response.json()
+
+    def test_hybrid_mode(self):
+        data = self._get_status(
+            create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        )
+        assert data["supported_search_types"] == ["semantic", "bm25", "hybrid"]
+
+    def test_keyword_mode(self):
+        data = self._get_status(
+            create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        )
+        assert data["supported_search_types"] == ["bm25"]
+
+    def test_vector_sync_off(self):
+        data = self._get_status(create_mock_settings(vector_sync_enabled=False))
+        assert data["supported_search_types"] == []

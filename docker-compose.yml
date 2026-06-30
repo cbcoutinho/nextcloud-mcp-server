@@ -99,6 +99,11 @@ services:
 
       # Semantic search configuration (ADR-007, ADR-021)
       - ENABLE_SEMANTIC_SEARCH=true
+      # Search mode (ADR-030): hybrid (default, dense+sparse) | keyword (BM25
+      # sparse only). Set keyword for fully airgapped deployments with NO
+      # embedding endpoint (no Ollama/Bedrock/gateway) — still gives cross-app
+      # Qdrant full-text search. keyword still needs ENABLE_SEMANTIC_SEARCH=true.
+      #- SEARCH_MODE=keyword
       # The sync scanner runs an initial scan immediately on startup, so the
       # corpus is indexed without waiting for the first periodic re-scan. A very
       # short re-scan interval (was 5s) just re-queues the whole corpus faster
