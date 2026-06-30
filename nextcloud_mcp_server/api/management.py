@@ -64,6 +64,26 @@ def supported_search_types(settings) -> list[str]:
     return ["bm25"]
 
 
+def resolve_search_algorithm(algorithm: str, settings) -> str:
+    """Coerce a requested search algorithm to one this server can serve now.
+
+    Falls back to a supported algorithm when the request is unknown OR
+    unavailable in the current SEARCH_MODE (ADR-030) — notably ``semantic`` while
+    ``SEARCH_MODE=keyword``, which would otherwise route a dense query at a
+    sparse-only index and fail. Prefers ``hybrid`` when available (the historical
+    default), else the first supported type. Keeps the search endpoints lenient
+    (no new 4xx) while keeping the accepted set in lockstep with the
+    ``supported_search_types`` that /api/v1/status advertises.
+    """
+    supported = supported_search_types(settings)
+    if algorithm in supported:
+        return algorithm
+    if "hybrid" in supported:
+        return "hybrid"
+    # Empty (vector sync off) preserves the prior default of "hybrid".
+    return supported[0] if supported else "hybrid"
+
+
 def extract_bearer_token(request: Request) -> str | None:
     """Extract OAuth bearer token from Authorization header.
 

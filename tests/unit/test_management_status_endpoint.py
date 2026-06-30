@@ -419,6 +419,38 @@ class TestSupportedSearchTypesHelper:
         assert supported_search_types(s) == ["bm25"]
 
 
+class TestResolveSearchAlgorithm:
+    """resolve_search_algorithm coerces requests to a mode-serviceable one."""
+
+    def test_hybrid_mode_passes_through_valid(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        for algo in ("semantic", "bm25", "hybrid"):
+            assert resolve_search_algorithm(algo, s) == algo
+
+    def test_unknown_algorithm_falls_back_to_hybrid(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        assert resolve_search_algorithm("nonsense", s) == "hybrid"
+
+    def test_keyword_mode_redirects_dense_requests_to_bm25(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        # "semantic" would route a dense query at a sparse-only index → bm25.
+        assert resolve_search_algorithm("semantic", s) == "bm25"
+        assert resolve_search_algorithm("hybrid", s) == "bm25"
+        assert resolve_search_algorithm("bm25", s) == "bm25"
+
+    def test_vector_sync_off_preserves_hybrid_default(self):
+        from nextcloud_mcp_server.api.management import resolve_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=False)
+        assert resolve_search_algorithm("semantic", s) == "hybrid"
+
+
 class TestStatusEndpointSearchTypes:
     """The /api/v1/status response advertises supported_search_types so the
     astrolabe UI can gate its query-type picker (ADR-030)."""

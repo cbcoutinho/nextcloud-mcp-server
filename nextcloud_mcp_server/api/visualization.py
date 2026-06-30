@@ -19,11 +19,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.api.management import (
-    SUPPORTED_SEARCH_ALGORITHMS,
     _parse_float_param,
     _parse_int_param,
     _sanitize_error_for_client,
     _validate_query_string,
+    resolve_search_algorithm,
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import get_settings
@@ -244,10 +244,11 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Validate algorithm (single source of truth shared with /api/v1/status,
-        # which advertises the same vocabulary via supported_search_types).
-        if algorithm not in SUPPORTED_SEARCH_ALGORITHMS:
-            algorithm = "hybrid"
+        # Coerce to an algorithm this server can actually serve in its current
+        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
+        # query at a sparse-only index, so it falls back to "bm25". Keeps the
+        # accepted set in lockstep with what /api/v1/status advertises.
+        algorithm = resolve_search_algorithm(algorithm, settings)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
@@ -492,10 +493,11 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Validate algorithm (single source of truth shared with /api/v1/status,
-        # which advertises the same vocabulary via supported_search_types).
-        if algorithm not in SUPPORTED_SEARCH_ALGORITHMS:
-            algorithm = "hybrid"
+        # Coerce to an algorithm this server can actually serve in its current
+        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
+        # query at a sparse-only index, so it falls back to "bm25". Keeps the
+        # accepted set in lockstep with what /api/v1/status advertises.
+        algorithm = resolve_search_algorithm(algorithm, settings)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}

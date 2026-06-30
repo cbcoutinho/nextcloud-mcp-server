@@ -298,9 +298,17 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             record_qdrant_operation("search", "error")
             raise
 
+        # Use the same label as ``search_method`` ("bm25_keyword" /
+        # "bm25_hybrid_<fusion>") so operators can grep one token across logs and
+        # response metadata.
+        method_label = (
+            f"bm25_hybrid_{self.fusion_name}"
+            if settings.dense_enabled
+            else "bm25_keyword"
+        )
         logger.info(
             "Qdrant %s returned %s results (before deduplication)",
-            self.fusion_name.upper() if settings.dense_enabled else "BM25 keyword",
+            method_label,
             len(search_response.points),
         )
 
@@ -309,11 +317,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             # these are normalized fusion scores; in keyword mode they are raw
             # BM25 scores (unbounded — see ADR-030).
             top_scores = [p.score for p in search_response.points[:3]]
-            logger.debug(
-                "Top 3 %s scores: %s",
-                self.fusion_name.upper() if settings.dense_enabled else "BM25 keyword",
-                top_scores,
-            )
+            logger.debug("Top 3 %s scores: %s", method_label, top_scores)
 
         # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
         # This allows multiple chunks from same doc, but removes duplicate chunks
