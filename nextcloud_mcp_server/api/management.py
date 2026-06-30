@@ -37,6 +37,32 @@ __version__ = version("nextcloud-mcp-server")
 # Track server start time for uptime calculation
 _server_start_time = time.time()
 
+# The search algorithms astrolabe's McpServerClient understands (the ``algorithm``
+# request param to /api/v1/search and /api/v1/vector-viz/search): ``semantic``
+# (dense only), ``bm25`` (sparse/keyword only), ``hybrid`` (dense+sparse fusion).
+# Single source of truth, also consumed by api/visualization.py for validation.
+SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
+
+
+def supported_search_types(settings) -> list[str]:
+    """Search algorithms this server can actually serve, given its config.
+
+    Advertised via /api/v1/status (ADR-030) so the astrolabe UI can gate which
+    query types it offers, without having to know the server's SEARCH_MODE:
+
+    - vector sync disabled → ``[]`` (no Qdrant-backed search at all)
+    - SEARCH_MODE=keyword  → ``["bm25"]`` (dense embeddings are off, so
+      ``semantic`` and the dense half of ``hybrid`` are unavailable)
+    - SEARCH_MODE=hybrid   → all three (``semantic``, ``bm25``, ``hybrid``)
+
+    Order follows ``SUPPORTED_SEARCH_ALGORITHMS`` for a stable contract.
+    """
+    if not settings.vector_sync_enabled:
+        return []
+    if settings.dense_enabled:
+        return list(SUPPORTED_SEARCH_ALGORITHMS)
+    return ["bm25"]
+
 
 def extract_bearer_token(request: Request) -> str | None:
     """Extract OAuth bearer token from Authorization header.
@@ -248,6 +274,11 @@ async def get_server_status(request: Request) -> JSONResponse:
         # not mounted, so the Astrolabe UI can show webhooks as unavailable and
         # vector sync falls back to the polling scanner.
         "webhooks_enabled": bool(settings.webhook_secret),
+        # Query types the astrolabe UI may offer for this server (ADR-030).
+        # Empty when vector sync is off; ["bm25"] in keyword mode; all three in
+        # hybrid mode. Lets the UI gate its algorithm picker without knowing
+        # SEARCH_MODE.
+        "supported_search_types": supported_search_types(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }

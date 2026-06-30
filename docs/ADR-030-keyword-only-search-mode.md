@@ -105,6 +105,32 @@ MCP-server-local.)
 **To switch modes:** use a new collection (or clear the old one) and let
 background vector sync re-ingest. No in-place migration is supported.
 
+### Advertising supported query types to the astrolabe UI
+
+So the astrolabe UI can gate which query types it offers without knowing the
+server's `SEARCH_MODE`, `GET /api/v1/status` advertises a
+`supported_search_types` array (`api/management.py` `supported_search_types`):
+
+- vector sync disabled → `[]`
+- `SEARCH_MODE=keyword` → `["bm25"]`
+- `SEARCH_MODE=hybrid` → `["semantic", "bm25", "hybrid"]`
+
+The vocabulary (`semantic` | `bm25` | `hybrid`) is the same `algorithm` the
+astrolabe `McpServerClient` already passes to `/api/v1/search`; it lives in the
+single constant `SUPPORTED_SEARCH_ALGORITHMS`, reused by the
+`/api/v1/vector-viz/search` validation so the advertised set and the accepted
+set cannot drift.
+
+Astrolabe is the **consumer** of `/api/v1/status` and this server is the
+**provider** (ADR-029). The contract is pinned both ways: a contract-first
+consumer pact (`tests/contract/test_mcp_status_search_types_consumer.py`,
+written to the unpublished `provider_contracts/` dir) and the matching
+provider-state handlers in `tests/contract/test_mcp_provider_verification.py`
+(`the server advertises hybrid search support` /
+`… keyword-only search support`). The real response is verified per mode by
+`tests/unit/test_management_status_endpoint.py`. A follow-up astrolabe PR
+consumes `supported_search_types` to gate its query-type picker.
+
 ## Consequences
 
 - Fully airgapped deployments gain cross-app full-text search with no embedding

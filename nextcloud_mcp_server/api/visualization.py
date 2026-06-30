@@ -19,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.api.management import (
+    SUPPORTED_SEARCH_ALGORITHMS,
     _parse_float_param,
     _parse_int_param,
     _sanitize_error_for_client,
@@ -243,9 +244,9 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Validate algorithm
-        valid_algorithms = {"semantic", "bm25", "hybrid"}
-        if algorithm not in valid_algorithms:
+        # Validate algorithm (single source of truth shared with /api/v1/status,
+        # which advertises the same vocabulary via supported_search_types).
+        if algorithm not in SUPPORTED_SEARCH_ALGORITHMS:
             algorithm = "hybrid"
 
         # Validate fusion method
@@ -491,9 +492,9 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Validate algorithm
-        valid_algorithms = {"semantic", "bm25", "hybrid"}
-        if algorithm not in valid_algorithms:
+        # Validate algorithm (single source of truth shared with /api/v1/status,
+        # which advertises the same vocabulary via supported_search_types).
+        if algorithm not in SUPPORTED_SEARCH_ALGORITHMS:
             algorithm = "hybrid"
 
         # Validate fusion method
