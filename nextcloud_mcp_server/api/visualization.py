@@ -198,11 +198,15 @@ async def unified_search(request: Request) -> JSONResponse:
                 "offset",
             )
 
+            # No upper bound: hybrid DBSF fusion can exceed 1.0 and, under
+            # SEARCH_MODE=keyword (ADR-030), scores are raw BM25 (unbounded). A
+            # le=1.0 cap would 400 a legitimate keyword threshold like 3.0 —
+            # mirrors the round-1 Field(ge=0.0) fix on the nc_semantic_search tool.
             score_threshold = _parse_float_param(
                 body.get("score_threshold"),
                 0.0,
                 0.0,
-                1.0,
+                float("inf"),
                 "score_threshold",
             )
 
