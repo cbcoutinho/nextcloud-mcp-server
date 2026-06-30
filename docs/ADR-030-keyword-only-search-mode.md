@@ -96,9 +96,11 @@ collection by default and removes keyword mode's dependency on the (phantom)
 embedding model name. Reusing an explicit `QDRANT_COLLECTION` across modes trips
 the existing "Dimension mismatch" guard.
 
-Keyword-only points are stamped with `EMBEDDING_IDENTITY = "bm25-keyword"`
-(`vector/payload_keys.py`), so mixed-mode contamination of a collection is
-auditable by scrolling that payload key. (Note: the external processor — sibling
+Keyword-only points are stamped with the value `"bm25-keyword"` on the
+`EMBEDDING_IDENTITY` payload key (the key name is defined in
+`vector/payload_keys.py`; the sentinel value is written in
+`vector/processor.py`), so mixed-mode contamination of a collection is auditable
+by scrolling that payload key. (Note: the external processor — sibling
 repo — also writes `EMBEDDING_IDENTITY`; this sentinel value is additive and
 MCP-server-local.)
 

@@ -327,13 +327,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         ):
             seen_chunks: set[tuple[str, str, Any, Any]] = set()
             results: list[SearchResult] = []
-            metadata_extras = {
-                "search_method": (
-                    f"bm25_hybrid_{self.fusion_name}"
-                    if settings.dense_enabled
-                    else "bm25_keyword"
-                ),
-            }
+            # Reuse the label already computed for the logs above so the two
+            # never drift (and to avoid the duplicate expression).
+            metadata_extras = {"search_method": method_label}
 
             for point in search_response.points:
                 sr = build_search_result_from_point(

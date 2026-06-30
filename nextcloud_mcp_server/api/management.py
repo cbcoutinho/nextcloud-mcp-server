@@ -23,7 +23,7 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
 from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -44,7 +44,7 @@ _server_start_time = time.time()
 SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
 
 
-def supported_search_types(settings) -> list[str]:
+def supported_search_types(settings: Settings) -> list[str]:
     """Search algorithms this server can actually serve, given its config.
 
     Advertised via /api/v1/status (ADR-030) so the astrolabe UI can gate which
@@ -64,7 +64,7 @@ def supported_search_types(settings) -> list[str]:
     return ["bm25"]
 
 
-def resolve_search_algorithm(algorithm: str, settings) -> str:
+def resolve_search_algorithm(algorithm: str, settings: Settings) -> str:
     """Coerce a requested search algorithm to one this server can serve now.
 
     Falls back to a supported algorithm when the request is unknown OR
@@ -78,10 +78,19 @@ def resolve_search_algorithm(algorithm: str, settings) -> str:
     supported = supported_search_types(settings)
     if algorithm in supported:
         return algorithm
-    if "hybrid" in supported:
-        return "hybrid"
     # Empty (vector sync off) preserves the prior default of "hybrid".
-    return supported[0] if supported else "hybrid"
+    resolved = "hybrid" if "hybrid" in supported else (supported or ["hybrid"])[0]
+    # Log the rewrite so operators debugging "why did I get bm25 results for an
+    # algorithm=semantic request" can see the coercion (the response
+    # search_method reflects the algorithm actually run, not the request).
+    logger.debug(
+        "resolve_search_algorithm: %r unavailable in current SEARCH_MODE "
+        "(supported=%r); coercing to %r",
+        algorithm,
+        supported,
+        resolved,
+    )
+    return resolved
 
 
 def extract_bearer_token(request: Request) -> str | None:
