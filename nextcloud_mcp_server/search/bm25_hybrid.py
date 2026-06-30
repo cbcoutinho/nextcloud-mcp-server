@@ -144,30 +144,38 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # N redundant API calls and bill the query's tokens N times (Deck #67).
         # Reuse the first call's embedding + token count so the query is embedded
         # — and metered — exactly once.
-        with trace_operation("search.get_embedding_service"):
-            embedding_service = get_embedding_service()
-        with trace_operation("search.dense_embedding"):
-            if self.query_embedding is not None and self._embedded_query == query:
-                dense_embedding = self.query_embedding
-            else:
-                (
-                    dense_embedding,
-                    query_tokens,
-                ) = await embedding_service.embed_with_usage(query)
-                # Store for reuse by callers (e.g., viz_routes PCA
-                # visualization) and for the usage-metering hook in
-                # server/semantic.py (token count).
-                self.query_embedding = dense_embedding
-                self.query_token_count = query_tokens
-                self._embedded_query = query
-                # Export query-embedding token cost to Prometheus
-                # (operation=query), mirroring the per-search billing record in
-                # server/semantic.py. Inside the cache-miss branch so a reused
-                # embedding isn't double-counted.
-                record_embedding_tokens(
-                    settings.get_embedding_provider_family(), "query", query_tokens
-                )
-        logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
+        #
+        # Keyword mode (ADR-030) skips this entirely: no embedding endpoint is
+        # contacted, ``dense_embedding`` stays None, and query_embedding /
+        # query_token_count remain None so the metering hook records 0 tokens.
+        dense_embedding = None
+        if settings.dense_enabled:
+            with trace_operation("search.get_embedding_service"):
+                embedding_service = get_embedding_service()
+            with trace_operation("search.dense_embedding"):
+                if self.query_embedding is not None and self._embedded_query == query:
+                    dense_embedding = self.query_embedding
+                else:
+                    (
+                        dense_embedding,
+                        query_tokens,
+                    ) = await embedding_service.embed_with_usage(query)
+                    # Store for reuse by callers (e.g., viz_routes PCA
+                    # visualization) and for the usage-metering hook in
+                    # server/semantic.py (token count).
+                    self.query_embedding = dense_embedding
+                    self.query_token_count = query_tokens
+                    self._embedded_query = query
+                    # Export query-embedding token cost to Prometheus
+                    # (operation=query), mirroring the per-search billing record
+                    # in server/semantic.py. Inside the cache-miss branch so a
+                    # reused embedding isn't double-counted.
+                    record_embedding_tokens(
+                        settings.get_embedding_provider_family(), "query", query_tokens
+                    )
+            logger.debug(
+                "Generated dense embedding (dimension=%s)", len(dense_embedding)
+            )
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):
@@ -198,57 +206,86 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation("search.get_qdrant_client"):
             qdrant_client = await get_qdrant_client()
 
+        sparse_query = models.SparseVector(
+            indices=sparse_embedding["indices"],
+            values=sparse_embedding["values"],
+        )
         try:
-            # Use prefetch to run both dense and sparse searches
-            # Qdrant will automatically merge results using RRF
-            with trace_operation(
-                "search.qdrant_query",
-                attributes={"query.limit": limit * 2, "query.fusion": self.fusion_name},
-            ):
-                search_response = await qdrant_client.query_points(
-                    collection_name=settings.get_collection_name(),
-                    prefetch=[
-                        # Dense semantic search
-                        models.Prefetch(
-                            query=dense_embedding,
-                            using="dense",
-                            limit=limit * 2,  # Get extra for deduplication
-                            filter=query_filter,
-                        ),
-                        # Sparse BM25 search
-                        models.Prefetch(
-                            query=models.SparseVector(
-                                indices=sparse_embedding["indices"],
-                                values=sparse_embedding["values"],
+            if settings.dense_enabled:
+                # Hybrid: run both dense and sparse searches and let Qdrant merge
+                # them with native fusion (RRF or DBSF).
+                with trace_operation(
+                    "search.qdrant_query",
+                    attributes={
+                        "query.limit": limit * 2,
+                        "query.fusion": self.fusion_name,
+                    },
+                ):
+                    search_response = await qdrant_client.query_points(
+                        collection_name=settings.get_collection_name(),
+                        prefetch=[
+                            # Dense semantic search
+                            models.Prefetch(
+                                query=dense_embedding,
+                                using="dense",
+                                limit=limit * 2,  # Get extra for deduplication
+                                filter=query_filter,
                             ),
-                            using="sparse",
-                            limit=limit * 2,  # Get extra for deduplication
-                            filter=query_filter,
-                        ),
-                    ],
-                    # Fusion query (RRF or DBSF based on initialization)
-                    query=models.FusionQuery(fusion=self.fusion),
-                    limit=limit * 2,  # Get extra for deduplication
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                    with_vectors=False,  # Don't return vectors to save bandwidth
-                )
+                            # Sparse BM25 search
+                            models.Prefetch(
+                                query=sparse_query,
+                                using="sparse",
+                                limit=limit * 2,  # Get extra for deduplication
+                                filter=query_filter,
+                            ),
+                        ],
+                        # Fusion query (RRF or DBSF based on initialization)
+                        query=models.FusionQuery(fusion=self.fusion),
+                        limit=limit * 2,  # Get extra for deduplication
+                        score_threshold=score_threshold,
+                        with_payload=True,
+                        with_vectors=False,  # Don't return vectors to save bandwidth
+                    )
+            else:
+                # Keyword mode (ADR-030): a direct sparse query, no fusion. RRF
+                # over a single source is a rank-identity transform that would
+                # only rescale the score; querying the sparse vector directly
+                # returns the raw BM25 similarity, which is what ``score_threshold``
+                # is interpreted against. The ``fusion`` param is ignored here.
+                with trace_operation(
+                    "search.qdrant_query",
+                    attributes={"query.limit": limit * 2, "query.mode": "keyword"},
+                ):
+                    search_response = await qdrant_client.query_points(
+                        collection_name=settings.get_collection_name(),
+                        query=sparse_query,
+                        using="sparse",
+                        query_filter=query_filter,
+                        limit=limit * 2,  # Get extra for deduplication
+                        score_threshold=score_threshold,
+                        with_payload=True,
+                        with_vectors=False,  # Don't return vectors to save bandwidth
+                    )
             record_qdrant_operation("search", "success")
         except Exception:
             record_qdrant_operation("search", "error")
             raise
 
         logger.info(
-            "Qdrant %s fusion returned %s results (before deduplication)",
-            self.fusion_name.upper(),
+            "Qdrant %s returned %s results (before deduplication)",
+            self.fusion_name.upper() if settings.dense_enabled else "BM25 keyword",
             len(search_response.points),
         )
 
         if search_response.points:
-            # Log top 3 fusion scores to help with threshold tuning
+            # Log top 3 scores to help with threshold tuning. In hybrid mode
+            # these are normalized fusion scores; in keyword mode they are raw
+            # BM25 scores (unbounded — see ADR-030).
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug(
-                "Top 3 %s fusion scores: %s", self.fusion_name.upper(), top_scores
+                "Top 3 %s scores: %s",
+                self.fusion_name.upper() if settings.dense_enabled else "BM25 keyword",
+                top_scores,
             )
 
         # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
@@ -260,7 +297,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             seen_chunks: set[tuple[str, str, Any, Any]] = set()
             results: list[SearchResult] = []
             metadata_extras = {
-                "search_method": f"bm25_hybrid_{self.fusion_name}",
+                "search_method": (
+                    f"bm25_hybrid_{self.fusion_name}"
+                    if settings.dense_enabled
+                    else "bm25_keyword"
+                ),
             }
 
             for point in search_response.points:

@@ -50,6 +50,23 @@ def test_ingested_byte_size_text_uses_utf8_length():
 
 
 @pytest.mark.unit
+def test_build_point_vector_hybrid_carries_dense_and_sparse():
+    """Hybrid mode (ADR-030) upserts both named vectors for the chunk."""
+    dense = [[0.1, 0.2], [0.3, 0.4]]
+    v = processor.build_point_vector("sparse-1", dense, 1, dense_enabled=True)
+    assert v == {"sparse": "sparse-1", "dense": [0.3, 0.4]}
+
+
+@pytest.mark.unit
+def test_build_point_vector_keyword_is_sparse_only():
+    """Keyword mode carries only the sparse vector and never indexes into the
+    empty dense list (the silent zero-points bug guard)."""
+    v = processor.build_point_vector("sparse-1", [], 0, dense_enabled=False)
+    assert v == {"sparse": "sparse-1"}
+    assert "dense" not in v
+
+
+@pytest.mark.unit
 def test_ingested_byte_size_mail_message_uses_utf8():
     """mail_message has no binary (content_bytes=None) → same UTF-8 arm as text."""
     # mail_message sets content_bytes=None in the processor, so it must measure

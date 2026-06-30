@@ -203,27 +203,32 @@ def configure_semantic_tools(mcp: FastMCP):
         ] = None,
     ) -> SemanticSearchResponse:
         """
-        Search Nextcloud content using BM25 hybrid search with cross-app support.
+        Search Nextcloud content across apps, indexed in Qdrant.
 
-        Uses Qdrant's native hybrid search combining:
-        - Dense semantic vectors: For conceptual similarity and natural language queries
-        - BM25 sparse vectors: For precise keyword matching, acronyms, and specific terms
+        Behavior depends on the server's SEARCH_MODE (ADR-030):
+        - hybrid (default): Qdrant native hybrid search combining dense semantic
+          vectors (conceptual similarity, natural language) and BM25 sparse
+          vectors (precise keyword/acronym matching), fused in the database for
+          optimal relevance.
+        - keyword: BM25 sparse (full-text/keyword) search only. No dense
+          embeddings are generated or queried, so the deployment needs no text-
+          embedding endpoint (airgapped). The ``fusion`` arg is ignored and
+          ``score`` is a raw BM25 score (unbounded), not a 0-1 fusion score.
 
-        Results are automatically fused using the selected fusion algorithm in the
-        database for optimal relevance. This provides the best of both semantic
-        understanding and keyword precision.
-
-        Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
-        news items, deck cards, and mail messages.
+        Requires VECTOR_SYNC_ENABLED=true in both modes. Supports indexing of
+        notes, files, news items, deck cards, and mail messages.
 
         Args:
             query: Natural language or keyword search query
             limit: Maximum number of results to return (default: 10)
             doc_types: Document types to search (e.g., ["note", "file", "deck_card", "news_item", "mail_message"]). None = search all indexed types (default)
-            score_threshold: Minimum fusion score (0-1, default: 0.0)
+            score_threshold: Minimum score (default: 0.0). In hybrid mode this is
+                a normalized fusion score (0-1); in keyword mode it is a raw BM25
+                score (unbounded), so a >0 threshold filters very differently.
             fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
                    RRF: Good general-purpose fusion using reciprocal ranks
                    DBSF: Uses distribution-based normalization, may better balance different score ranges
+                   Ignored when SEARCH_MODE=keyword (no fusion happens).
             include_context: Whether to expand results with surrounding context (default: False)
             context_chars: Number of characters to include before/after matched chunk (default: 300)
             modified_after: Only return documents whose last-modified time is at or after this
@@ -266,14 +271,21 @@ def configure_semantic_tools(mcp: FastMCP):
             fusion,
         )
 
-        # Check that vector sync is enabled
+        # Check that vector sync is enabled. Both hybrid and keyword (ADR-030)
+        # modes use the Qdrant index, so this gate applies regardless of mode.
         if not settings.vector_sync_enabled:
             raise McpError(
                 ErrorData(
                     code=-1,
-                    message="BM25 hybrid search requires VECTOR_SYNC_ENABLED=true",
+                    message="Cross-app search requires VECTOR_SYNC_ENABLED=true",
                 )
             )
+
+        # Self-describing method label, mirroring BM25HybridSearchAlgorithm:
+        # keyword mode (ADR-030) runs a sparse-only query, hybrid mode fuses.
+        search_method = (
+            f"bm25_hybrid_{fusion}" if settings.dense_enabled else "bm25_keyword"
+        )
 
         # Normalize the RFC 3339 / Unix-seconds date bounds to int Unix seconds
         # for the numeric ``modified_at`` Range filter (ADR-027). A bad format
@@ -346,7 +358,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     results=[],
                     query=query,
                     total_found=0,
-                    search_method=f"bm25_hybrid_{fusion}",
+                    search_method=search_method,
                     verified_chunk_count=0,
                     dropped_document_count=0,
                 )
@@ -664,7 +676,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 results=results,
                 query=query,
                 total_found=len(results),
-                search_method=f"bm25_hybrid_{fusion}",
+                search_method=search_method,
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )
@@ -729,9 +741,13 @@ def configure_semantic_tools(mcp: FastMCP):
             query: Natural language question to answer (e.g., "What are my Q1 objectives?" or "When is my next dentist appointment?")
             ctx: MCP context for session access
             limit: Maximum number of documents to retrieve (default: 5)
-            score_threshold: Minimum similarity score 0-1 (default: 0.7)
+            score_threshold: Minimum similarity score 0-1 (default: 0.7). This
+                default is tuned for hybrid fusion scores; under SEARCH_MODE=keyword
+                the score is a raw BM25 value (unbounded) for which 0.7 is not
+                meaningful, so the default 0.7 is treated as 0.0 in keyword mode.
+                Pass an explicit value to override.
             max_answer_tokens: Maximum tokens for generated answer (default: 500)
-            fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
+            fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion). Ignored when SEARCH_MODE=keyword.
             include_context: Whether to expand results with surrounding context (default: False)
             context_chars: Number of characters to include before/after matched chunk (default: 300)
 
@@ -754,6 +770,13 @@ def configure_semantic_tools(mcp: FastMCP):
         cost roughly linearly. File / news / deck results do not pay this
         cost — they reuse the verified excerpt.
         """
+        # The 0.7 default is calibrated for normalized hybrid-fusion scores. In
+        # keyword mode (ADR-030) the retrieval score is a raw, unbounded BM25
+        # value, so a 0.7 cutoff would silently drop most/all matches. Treat the
+        # untouched default as 0.0 there; an explicit caller value still wins.
+        if not get_settings().dense_enabled and score_threshold == 0.7:
+            score_threshold = 0.0
+
         # 1. Retrieve relevant documents via existing semantic search
         search_response = await nc_semantic_search(
             query=query,

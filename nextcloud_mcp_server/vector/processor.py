@@ -326,6 +326,28 @@ def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
     return len(content.encode("utf-8"))
 
 
+def build_point_vector(
+    sparse_emb: Any,
+    dense_embeddings: list[Any],
+    index: int,
+    *,
+    dense_enabled: bool,
+) -> dict[str, Any]:
+    """Build the Qdrant named-vector dict for one chunk's point (ADR-030).
+
+    Hybrid mode carries both ``dense`` and ``sparse``. Keyword mode carries only
+    ``sparse``: dense embeddings are never generated (``dense_embeddings`` is
+    empty), so the point is upserted with a subset of the collection's named
+    vectors — valid against the unchanged dense+sparse schema. Indexing into an
+    empty ``dense_embeddings`` here would be the silent zero-points bug, so the
+    dense slot is only read when dense is enabled.
+    """
+    point_vector: dict[str, Any] = {"sparse": sparse_emb}
+    if dense_enabled:
+        point_vector["dense"] = dense_embeddings[index]
+    return point_vector
+
+
 async def record_indexing_usage(
     *,
     enabled: bool,
@@ -1673,7 +1695,13 @@ async def _index_document(
         },
     ):
         async with anyio.create_task_group() as tg:
-            tg.start_soon(generate_dense_embeddings)
+            # Keyword mode (ADR-030) skips dense embeddings entirely so airgapped
+            # deployments need no embedding endpoint; only BM25 sparse vectors are
+            # generated and indexed. ``dense_embeddings`` stays [] in that case,
+            # and the token-metering block lives inside generate_dense_embeddings,
+            # so it is correctly skipped (no embedding tokens to meter).
+            if settings.dense_enabled:
+                tg.start_soon(generate_dense_embeddings)
             tg.start_soon(generate_sparse_embeddings)
             tg.start_soon(generate_highlights)
 
@@ -1687,7 +1715,16 @@ async def _index_document(
     # PIPELINE_TIER is "fast"; ACL hash records at least the owner principal
     # (full share enumeration is a follow-up — a missing/partial acl_hash is
     # safe because the query-side pre-filter only applies when present + enabled).
-    _embedding_identity = settings.get_embedding_model_name()
+    # Keyword mode (ADR-030) writes no dense vector, so stamping a real
+    # embedding model name would be misleading (and in airgapped deployments it
+    # would be the bogus ``simple-{dim}`` fallback). Use a fixed sentinel so
+    # keyword-only points are self-describing and any mixed-mode contamination of
+    # a collection is auditable by scrolling this payload key.
+    _embedding_identity = (
+        settings.get_embedding_model_name()
+        if settings.dense_enabled
+        else "bm25-keyword"
+    )
     _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
 
     # Observed-access ACL principals (computed once per document, not per chunk).
@@ -1729,21 +1766,23 @@ async def _index_document(
                 missing_deck_fields,
             )
 
-    for i, (chunk, dense_emb, sparse_emb) in enumerate(
-        zip(chunks, dense_embeddings, sparse_embeddings)
-    ):
+    for i, (chunk, sparse_emb) in enumerate(zip(chunks, sparse_embeddings)):
         # Generate deterministic UUID for point ID
         # Using uuid5 with DNS namespace and combining doc info
         point_name = f"{doc_task.doc_type}:{doc_task.doc_id}:chunk:{i}"
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, point_name))
 
+        # Keyword mode (ADR-030) upserts sparse-only points; the loop is driven
+        # off ``sparse_embeddings`` so the chunk count stays correct when
+        # ``dense_embeddings`` is empty. See build_point_vector for the rationale.
+        point_vector = build_point_vector(
+            sparse_emb, dense_embeddings, i, dense_enabled=settings.dense_enabled
+        )
+
         points.append(
             PointStruct(
                 id=point_id,
-                vector={
-                    "dense": dense_emb,
-                    "sparse": sparse_emb,
-                },
+                vector=point_vector,
                 payload={
                     "user_id": doc_task.user_id,
                     # owner_id is the UID of the file's owner — what

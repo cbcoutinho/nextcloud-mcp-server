@@ -719,13 +719,24 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # Get collection name (auto-generated from deployment ID + model)
             collection_name = settings.get_collection_name()
 
-            embedding_service = get_embedding_service()
+            # Keyword mode (ADR-030) indexes BM25 sparse vectors only and may run
+            # fully airgapped with no embedding endpoint. Skip the embedding
+            # service entirely so collection creation never touches the network —
+            # even if a stray OLLAMA_BASE_URL is set, the Ollama
+            # ``_detect_dimension`` probe must not fire here. The dense named
+            # vector still has to be sized (the schema keeps a dense slot the
+            # keyword points simply never populate), so use the fixed local
+            # SimpleProvider dimension as the placeholder.
+            if settings.dense_enabled:
+                embedding_service = get_embedding_service()
 
-            # Detect dimension dynamically (for OllamaEmbeddingProvider)
-            if hasattr(embedding_service.provider, "_detect_dimension"):
-                await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
+                # Detect dimension dynamically (for OllamaEmbeddingProvider)
+                if hasattr(embedding_service.provider, "_detect_dimension"):
+                    await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
 
-            expected_dimension = embedding_service.get_dimension()
+                expected_dimension = embedding_service.get_dimension()
+            else:
+                expected_dimension = settings.simple_embedding_dimension
 
             # Existence check folded into the get_collection() call.
             #

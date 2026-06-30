@@ -30,9 +30,11 @@ class SemanticSearchResult(BaseModel):
     score: float = Field(
         description=(
             "Relevance score (≥ 0.0, higher is better). "
-            "Score range depends on fusion method: "
+            "Score range depends on search mode/fusion: "
             "RRF produces scores in [0.0, 1.0], "
-            "DBSF can exceed 1.0 (sum of normalized scores from multiple systems)"
+            "DBSF can exceed 1.0 (sum of normalized scores from multiple systems); "
+            "under SEARCH_MODE=keyword (ADR-030) this is a raw BM25 score "
+            "(unbounded, not normalized)"
         )
     )
     chunk_index: int = Field(description="Index of matching chunk in document")
@@ -80,7 +82,12 @@ class SemanticSearchResponse(BaseResponse):
     query: str = Field(description="The search query used")
     total_found: int = Field(description="Total number of documents found")
     search_method: str = Field(
-        default="semantic", description="Search method used (semantic or hybrid)"
+        default="semantic",
+        description=(
+            "Search method used: 'bm25_hybrid_<fusion>' (dense+sparse) in hybrid "
+            "mode, or 'bm25_keyword' (BM25 sparse only) under SEARCH_MODE=keyword "
+            "(ADR-030)"
+        ),
     )
     verified_chunk_count: int = Field(
         default=0,
