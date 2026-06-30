@@ -648,7 +648,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     len(results),
                 )
 
-            logger.info("Returning %d results from BM25 hybrid search", len(results))
+            logger.info("Returning %d results from %s", len(results), search_method)
 
             # Usage metering (Deck #67): record the query embedding's token
             # count as a billable 'tokens_embedded' event. query_token_count

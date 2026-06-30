@@ -237,14 +237,24 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         settings = get_settings()
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
+        # Self-describing label reused across every log line below and the result
+        # metadata: "bm25_keyword" in keyword mode (no fusion happens),
+        # "bm25_hybrid_<fusion>" otherwise. Computed up front so even the entry
+        # log is mode-accurate (keyword deployments must not see "hybrid"/fusion).
+        method_label = (
+            f"bm25_hybrid_{self.fusion_name}"
+            if settings.dense_enabled
+            else "bm25_keyword"
+        )
+
         logger.info(
-            "BM25 hybrid search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s, fusion=%s",
+            "%s: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",
+            method_label,
             query,
             user_id,
             limit,
             score_threshold,
             doc_type,
-            self.fusion_name,
         )
 
         # Dense query embedding (hybrid only; None in keyword mode — ADR-030).
@@ -298,14 +308,6 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             record_qdrant_operation("search", "error")
             raise
 
-        # Use the same label as ``search_method`` ("bm25_keyword" /
-        # "bm25_hybrid_<fusion>") so operators can grep one token across logs and
-        # response metadata.
-        method_label = (
-            f"bm25_hybrid_{self.fusion_name}"
-            if settings.dense_enabled
-            else "bm25_keyword"
-        )
         logger.info(
             "Qdrant %s returned %s results (before deduplication)",
             method_label,

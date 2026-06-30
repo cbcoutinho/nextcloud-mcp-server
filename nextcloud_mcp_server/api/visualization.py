@@ -383,7 +383,11 @@ async def unified_search(request: Request) -> JSONResponse:
         }
 
         # Optional PCA coordinates
-        if include_pca and len(paginated_results) >= 2:
+        # PCA plots the result chunks around the query's dense embedding, so it
+        # only applies in hybrid mode. In keyword mode (ADR-030) there is no dense
+        # query embedding — skip PCA rather than calling the embedding service,
+        # keeping the airgapped path free of any embed attempt.
+        if include_pca and settings.dense_enabled and len(paginated_results) >= 2:
             try:
                 if search_algo.query_embedding is not None:
                     query_embedding = search_algo.query_embedding
@@ -587,8 +591,12 @@ async def vector_search(request: Request) -> JSONResponse:
             "total_documents": len(formatted_results),
         }
 
-        # Compute PCA coordinates for visualization using shared function
-        if include_pca and len(all_results) >= 2:
+        # Compute PCA coordinates for visualization using shared function. PCA
+        # plots chunks around the query's dense embedding, so it only applies in
+        # hybrid mode; keyword mode (ADR-030) has no dense query embedding, so
+        # fall through to the empty-coordinates branch without calling the
+        # embedding service (airgapped-safe).
+        if include_pca and settings.dense_enabled and len(all_results) >= 2:
             try:
                 # Get query embedding from search algorithm or generate it
                 if search_algo.query_embedding is not None:
