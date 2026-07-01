@@ -106,15 +106,15 @@ class NextcloudClient:
         password: str | None = None,
         token: str | None = None,
     ):
-        # ``username`` is the Nextcloud UID — it drives DAV/API path
-        # construction (e.g. ``/remote.php/dav/files/<uid>/``). ``auth_username``
-        # is the credential identity Nextcloud authenticates the app password
-        # against (the loginName), which differs from the UID for
-        # OIDC-provisioned users. Defaults to ``username`` so single-user and
-        # OAuth modes (where UID == loginName) are unchanged. Callers pass the
-        # matching ``auth=BasicAuth(auth_username, ...)`` for the httpx leg;
-        # ``auth_username`` is threaded to the CalDAV client, which builds its
-        # own auth object from the raw credential.
+        # ``username`` is the Nextcloud UID and DAV path fallback. Discovery can
+        # replace that fallback with the canonical principal id when Nextcloud
+        # exposes a different DAV identity. ``auth_username`` is the credential
+        # identity Nextcloud authenticates the app password against (the
+        # loginName), which differs from the UID for OIDC-provisioned users.
+        # Defaults to ``username`` so single-user and OAuth modes are unchanged.
+        # Callers pass the matching ``auth=BasicAuth(auth_username, ...)`` for
+        # the httpx leg; ``auth_username`` is threaded to the CalDAV client,
+        # which builds its own auth object from the raw credential.
         self.username = username
         auth_username = auth_username or username
         self._client = AsyncClient(
@@ -348,7 +348,7 @@ class NextcloudClient:
 
     def _get_webdav_base_path(self) -> str:
         """Helper to get the base WebDAV path for the authenticated user."""
-        return f"/remote.php/dav/files/{self.username}"
+        return self.webdav._get_webdav_base_path()
 
     async def __aenter__(self):
         """Async context manager entry."""

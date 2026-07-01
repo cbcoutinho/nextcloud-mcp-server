@@ -561,6 +561,7 @@ async def test_read_file_encodes_special_chars(mocker):
     """
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
 
     mock_response = AsyncMock()
     mock_response.content = b"%PDF-1.4 data"
@@ -587,6 +588,7 @@ async def test_read_file_ascii_path_unchanged(mocker):
     """A plain ASCII path must pass through unchanged (no spurious encoding)."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
 
     mock_response = AsyncMock()
     mock_response.content = b"data"
@@ -693,6 +695,7 @@ async def test_move_resource_encodes_destination_header(mocker):
     """The MOVE Destination header must be percent-encoded too (card 309)."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
 
     mock_response = AsyncMock()
     mock_response.status_code = 201
@@ -714,6 +717,7 @@ async def test_copy_resource_encodes_destination_header(mocker):
     """The COPY Destination header must be percent-encoded too (card 309)."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
 
     mock_response = AsyncMock()
     mock_response.status_code = 201

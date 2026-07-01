@@ -99,12 +99,12 @@ def test_password_takes_precedence_over_token(mocker):
     assert call_kwargs["auth_type"] == "basic"
 
 
-def test_auth_username_used_for_credential_uid_for_path(mocker):
-    """OIDC users: the loginName authenticates, the UID builds the DAV path.
+def test_auth_username_used_for_credential_uid_for_fallback_path(mocker):
+    """OIDC users: the loginName authenticates, the UID seeds DAV fallback paths.
 
     Nextcloud keys app-password auth on the loginName (which can differ from
-    the UID), but ``/remote.php/dav/calendars/<uid>/`` must use the UID. The
-    two must not be conflated.
+    the UID), but discovery starts from a UID-based calendar home fallback. The
+    two identities must not be conflated.
     """
     mock_dav_client = mocker.patch(
         "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
@@ -121,7 +121,7 @@ def test_auth_username_used_for_credential_uid_for_path(mocker):
 
     # Credential identity → loginName
     assert mock_dav_client.call_args.kwargs["username"] == "ada@example.com"
-    # Path identity → UID
+    # Fallback path identity -> UID
     assert client.username == "Ada Lovelace"
     assert (
         client._calendar_home_url

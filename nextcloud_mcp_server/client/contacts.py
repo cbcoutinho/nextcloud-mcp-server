@@ -215,7 +215,7 @@ class ContactsClient(BaseNextcloudClient):
 
     def _get_carddav_base_path(self) -> str:
         """Helper to get the base CardDAV path for contacts."""
-        return f"/remote.php/dav/addressbooks/users/{self.username}"
+        return f"/remote.php/dav/addressbooks/users/{self._principal_or_username()}"
 
     async def _list_object_names(self, addressbook: str) -> list[str]:
         """Return the CardDAV object filenames stored in ``addressbook``.
@@ -226,6 +226,7 @@ class ContactsClient(BaseNextcloudClient):
         issue #874 — so callers that need to address a specific object must
         discover its real name rather than constructing one.
         """
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
         <d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"""
@@ -278,6 +279,7 @@ class ContactsClient(BaseNextcloudClient):
     async def list_addressbooks(self):
         """List all available addressbooks for the user."""
 
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
 
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -314,7 +316,10 @@ class ContactsClient(BaseNextcloudClient):
 
             # Extract addressbook name from href
             addressbook_name = href_text.rstrip("/").split("/")[-1]
-            if not addressbook_name or addressbook_name == self.username:
+            if (
+                not addressbook_name
+                or addressbook_name == self._principal_or_username()
+            ):
                 continue
 
             # Get properties
@@ -349,6 +354,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def create_addressbook(self, *, name: str, display_name: str):
         """Create a new addressbook."""
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
 
@@ -373,6 +379,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def delete_addressbook(self, *, name: str):
         """Delete an addressbook."""
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
         await self._make_request("DELETE", url)
@@ -381,6 +388,7 @@ class ContactsClient(BaseNextcloudClient):
         self, *, addressbook: str, uid: str, contact_data: dict[str, Any]
     ):
         """Create a new contact."""
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
@@ -404,6 +412,7 @@ class ContactsClient(BaseNextcloudClient):
         ``<uid>.vcf`` (issue #874). Falls back to the conventional name when no
         object matches so a genuinely missing contact still surfaces a 404.
         """
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
         url = f"{carddav_path}/{addressbook}/{object_name}"
@@ -418,6 +427,7 @@ class ContactsClient(BaseNextcloudClient):
         etag: str = "",
     ):
         """Update an existing contact while preserving all existing properties."""
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         # Resolve the real object filename (may differ from ``<uid>.vcf``) so the
         # GET and the PUT target the same resource — see issue #874.
@@ -462,6 +472,7 @@ class ContactsClient(BaseNextcloudClient):
     async def list_contacts(self, *, addressbook: str):
         """List all available contacts for addressbook."""
 
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
 
         report_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -588,6 +599,7 @@ class ContactsClient(BaseNextcloudClient):
         must resolve it first via ``_resolve_object_name`` — see issue #874.
         ``update_contact`` does exactly that and passes the resolved name here.
         """
+        await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{object_name}"
 

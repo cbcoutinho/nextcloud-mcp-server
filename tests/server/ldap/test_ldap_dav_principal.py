@@ -2,24 +2,20 @@
 
 The LDAP user `alice` logs in as `alice` but Nextcloud's `user_ldap` backend
 maps her to a canonical internal UID (the LDAP UUID). The multi-user BasicAuth
-MCP server builds DAV paths from the loginName, so every WebDAV operation
+MCP server would build DAV paths from the loginName, so a naive WebDAV operation
 targets ``/remote.php/dav/files/alice/`` — which does NOT resolve to her real
 home at ``/remote.php/dav/files/<uid>/`` (unlike login-by-email, an LDAP login
 is not a files-path alias, so it 404s rather than silently resolving).
 
-* **Without** the #980 client fix → the round-trip targets the non-existent
-  ``/files/alice/`` home and fails → the test below **fails** (RED). It is
-  therefore marked ``xfail(strict=True)``: on ``master`` (no fix) it xfails, so
-  CI stays green while still asserting the bug is present.
-* **With** #980's ``BaseNextcloudClient._ensure_principal_id`` (a
-  ``PROPFIND /remote.php/dav/`` for ``current-user-principal``) the real UID is
-  discovered and the paths are rewritten → the round-trip succeeds → the test
-  **xpasses**. ``strict=True`` then turns the unexpected pass into a CI failure,
-  which is the signal to drop the ``xfail`` marker once #980 lands.
+This is the regression guard for that bug: ``BaseNextcloudClient._ensure_principal_id``
+issues a ``PROPFIND /remote.php/dav/`` for ``current-user-principal``, discovers
+the real UID, and rewrites the base path — so the WebDAV round-trip below lands
+in alice's real home and **passes**. Before that fix (GH #980) it failed: the
+round-trip targeted the non-existent ``/files/alice/`` home.
 
-This is the live RED→GREEN reproduction that the Keycloak lane (PR #993) could
-not provide, because email/`user_oidc` logins don't produce a non-resolvable
-divergent path on the CI Nextcloud versions.
+It is the live reproduction that the Keycloak lane (PR #993) could not provide,
+because email/`user_oidc` logins don't produce a non-resolvable divergent path
+on the CI Nextcloud versions.
 """
 
 import json
@@ -30,22 +26,15 @@ from mcp import ClientSession
 pytestmark = [pytest.mark.integration, pytest.mark.ldap]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Reproduces GH #980: DAV paths built from the LDAP loginName miss the "
-        "canonical-UID home. Fixed by BaseNextcloudClient._ensure_principal_id "
-        "(PR #980) — drop this marker once that lands."
-    ),
-)
 async def test_webdav_round_trip_resolves_ldap_principal(
     nc_mcp_ldap_alice_client: ClientSession,
 ):
     """A full WebDAV cycle as the divergent LDAP user must hit her real home.
 
-    create → write → read → list → delete, all as `alice`. Without #980 the
-    paths are built from the loginName `alice` and the very first operation
-    fails against the non-existent ``/files/alice/`` home.
+    create → write → read → list → delete, all as `alice`. Principal discovery
+    resolves the loginName `alice` to her canonical UID so every operation lands
+    in her real home; before GH #980's fix the first operation failed against
+    the non-existent ``/files/alice/`` home.
     """
     dir_path = "/LdapPrincipalTest"
     file_path = f"{dir_path}/ldap_principal.txt"
