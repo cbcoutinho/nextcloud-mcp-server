@@ -15,8 +15,8 @@ from nextcloud_mcp_server.config import get_settings
 logger = logging.getLogger(__name__)
 
 # Path of the Astrolabe Nextcloud app's settings UI. The full URL is
-# reconstructed at elicitation time from settings.nextcloud_public_issuer_url
-# / settings.nextcloud_host so the user gets a browser-reachable link without
+# reconstructed at elicitation time from settings.nextcloud_browser_url (the
+# browser-reachable Nextcloud base URL) so the user gets a working link without
 # needing a separate config knob. If the Astrolabe app is not installed this
 # path will 404, and the user falls back to the nc_auth_provision_access tool
 # path mentioned in the same message.
