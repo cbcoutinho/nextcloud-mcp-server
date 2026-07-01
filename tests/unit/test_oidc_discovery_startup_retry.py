@@ -130,6 +130,30 @@ async def test_raises_after_exhausting_attempts():
     assert sleep.await_count == 2  # no sleep after the final failed attempt
 
 
+async def test_negative_backoff_is_clamped_not_crashing():
+    """A directly-constructed Settings can bypass the gte=0 validators; a
+    negative backoff must clamp to 0 rather than feed random.uniform a
+    reversed range."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise httpx.ConnectTimeout("egress not ready", request=request)
+        return httpx.Response(200, json=DISCOVERY_DOC)
+
+    with _patched_client(handler):
+        with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
+            result = await _perform_oidc_discovery(
+                DISCOVERY_URL, _settings(backoff_base=-5.0, backoff_max=-1.0)
+            )
+
+    assert result == DISCOVERY_DOC
+    # Clamped to 0 → a single non-negative sleep before the retry.
+    sleep.assert_awaited_once()
+    assert sleep.await_args.args[0] == 0.0
+
+
 async def test_max_attempts_one_restores_fail_fast():
     attempts = {"n": 0}
 

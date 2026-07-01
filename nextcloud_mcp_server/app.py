@@ -870,9 +870,12 @@ async def _perform_oidc_discovery(
     responses are treated as transient and retried. A 4xx response is a
     configuration error, not a transient condition, so it is raised immediately.
     """
+    # Clamp defensively: Settings can be constructed directly (e.g. in tests),
+    # bypassing the gte=1/gte=0 dynaconf validators. A negative backoff would
+    # otherwise flip random.uniform(0, delay) into a reversed range.
     max_attempts = max(1, settings.oidc_discovery_max_attempts)
-    backoff_base = settings.oidc_discovery_backoff_base
-    backoff_max = settings.oidc_discovery_backoff_max
+    backoff_base = max(0.0, settings.oidc_discovery_backoff_base)
+    backoff_max = max(0.0, settings.oidc_discovery_backoff_max)
 
     for attempt in range(1, max_attempts + 1):
         try:
