@@ -22,6 +22,7 @@ payload. Shapes are the real ones verified against a live Mail 5.x backend via
 the GreenMail integration suite.
 """
 
+import base64
 import logging
 from typing import Any
 
@@ -220,8 +221,6 @@ async def test_get_attachment_returns_base64_bytes(mocker):
     The filename is recovered from the Content-Disposition header, the mime from
     Content-Type, and the size from the byte length (GH #989).
     """
-    import base64
-
     raw = b"%PDF-1.4 fake pdf bytes"
     mock_response = create_mock_response(
         content=raw,
