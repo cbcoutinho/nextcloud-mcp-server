@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.127.3 (2026-07-01)
+
+### Fix
+
+- **app**: preserve hybrid path's 30s discovery timeout via optional kwarg
+- **app**: extend discovery retry to hybrid mode; broaden catch; clear Sonar smells
+- **app**: retry malformed-200 discovery responses; fix Sonar float-eq bugs
+- **app**: clamp discovery backoff and document new retry knobs
+- **app**: retry OIDC discovery at startup with backoff instead of crashlooping
+
 ## v0.127.2 (2026-07-01)
 
 ### Fix
