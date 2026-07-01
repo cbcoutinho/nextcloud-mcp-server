@@ -49,6 +49,7 @@ from procrastinate import (
 from procrastinate.connector import BaseConnector
 from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
 from procrastinate.jobs import Job, Status
+from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
 from ...config import get_procrastinate_conninfo, get_settings
 from ..scanner import DocumentTask
@@ -251,7 +252,16 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
         try:
             await manager.retry_job_by_id_async(job_id=job.id, retry_at=retry_at)
             reclaimed += 1
-        except UniqueViolation:
+        except UniqueViolation as exc:
+            if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
+                # Only a queueing_lock collision proves a live duplicate that's
+                # safe to discard. The retry UPDATE can't trip any OTHER unique
+                # constraint today, but guard the assumption explicitly rather
+                # than deleting an unrelated job if procrastinate ever adds one:
+                # log + count it like any unexpected per-job error, don't delete.
+                logger.exception("ingest.reclaim_retry_failed job_id=%s", job.id)
+                errored += 1
+                continue
             # A live ``todo`` sibling with the same queueing_lock already exists
             # (the scanner re-queued this doc), so the orphan is redundant: drop
             # it (delete_job) to free it from ``doing`` and let the sibling run.
