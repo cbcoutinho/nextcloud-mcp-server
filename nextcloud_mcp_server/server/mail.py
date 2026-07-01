@@ -26,11 +26,11 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
-# Hard cap on inlined attachment content. The Mail OCS API returns the full
-# attachment body in the JSON response, which then has to fit in the host LLM's
-# context window; replace anything larger with a sentinel so a 20 MB design file
-# can't blow up the MCP response. Callers can still see the real size via the
-# message's attachment list.
+# Hard cap on inlined attachment content. The Mail attachment endpoint returns
+# the full attachment body (base64-encoded) in the response, which then has to
+# fit in the host LLM's context window; replace anything larger with a sentinel
+# so a 20 MB design file can't blow up the MCP response. Callers can still see
+# the real size via the message's attachment list.
 MAX_ATTACHMENT_CONTENT_BYTES = 5 * 1024 * 1024
 
 
@@ -319,9 +319,9 @@ def configure_mail_tools(mcp: FastMCP):
 
         Returns:
             GetAttachmentResponse with name, mime, size, and content. ``content``
-            is the attachment body as returned by the Mail OCS API; large
-            attachments produce a correspondingly large response, so prefer the
-            ``size`` from the message's attachment list before fetching.
+            is the attachment body base64-encoded; large attachments produce a
+            correspondingly large response, so prefer the ``size`` from the
+            message's attachment list before fetching.
         """
         client = await get_client(ctx)
         try:

@@ -131,7 +131,8 @@ class MailClient(BaseNextcloudClient):
             params=query,
             headers=self._API_HEADERS,
         )
-        response.raise_for_status()
+        # ``_make_request`` (base) already raised on any non-2xx status; an OCS
+        # meta failure arrives as HTTP 200 and is handled by ``_ocs_response``.
         return _ocs_response(response)
 
     async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -150,7 +151,7 @@ class MailClient(BaseNextcloudClient):
             params=params,
             headers=self._API_HEADERS,
         )
-        response.raise_for_status()
+        # ``_make_request`` (base) already raised on any non-2xx status.
         return response.json()
 
     async def _api_post(
@@ -171,8 +172,8 @@ class MailClient(BaseNextcloudClient):
             json=json_data,
             headers={**self._API_HEADERS, "Content-Type": "application/json"},
         )
-        response.raise_for_status()
-        # The outbox send step can legitimately return an empty body (e.g. 204);
+        # ``_make_request`` (base) already raised on any non-2xx status. The
+        # outbox send step can legitimately return an empty body (e.g. 204);
         # don't choke trying to JSON-decode it.
         return response.json() if response.content else {}
 
@@ -297,8 +298,7 @@ class MailClient(BaseNextcloudClient):
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
             headers=self._API_HEADERS,
         )
-        response.raise_for_status()
-
+        # ``_make_request`` (base) already raised on any non-2xx status.
         raw = response.content
         ctype = (response.headers.get("content-type", "") or "").split(";")[0].strip()
 

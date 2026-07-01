@@ -190,13 +190,13 @@ class SendMessageResponse(BaseResponse):
 class GetAttachmentResponse(BaseResponse):
     """Response model for getting a single attachment.
 
-    Intentionally does NOT nest ``MailAttachment``: the Mail OCS *get-attachment*
-    endpoint returns a different shape (``name``/``mime``/``size``/``content``)
-    than the attachment entries on a message listing, which ``MailAttachment``
-    models (``id``/``fileName``/``cid``/``disposition``, and no ``content``).
+    Intentionally does NOT nest ``MailAttachment``: the get-attachment path
+    returns a different shape (``name``/``mime``/``size``/``content``) than the
+    attachment entries on a message listing, which ``MailAttachment`` models
+    (``id``/``fileName``/``cid``/``disposition``, and no ``content``).
     """
 
     name: str | None = Field(None, description="Attachment file name")
     mime: str | None = Field(None, description="MIME type")
     size: int | None = Field(None, description="Size in bytes")
-    content: str | None = Field(None, description="Attachment content")
+    content: str | None = Field(None, description="Attachment content, base64-encoded")
