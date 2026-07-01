@@ -82,7 +82,7 @@ jobs:
           # Mode-specific properties
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic) or (integration and not keycloak and not login_flow and not multi_user_basic)"
+            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap)"
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
@@ -253,7 +253,10 @@ jobs:
           echo "=== user_ldap enabled? ==="
           docker compose exec -T app php occ app:list 2>/dev/null | grep -i ldap || echo "user_ldap NOT enabled"
           echo "=== user_ldap connection ==="
-          docker compose exec -T app php occ ldap:test-config s01 2>&1 || echo "ldap:test-config failed"
+          # Re-derive the config id the same way the app-hook does, rather than
+          # assuming s01, so the diagnostic stays accurate if discovery differs.
+          config_id=$(docker compose exec -T app php occ ldap:show-config 2>/dev/null | grep -E '^\| Configuration' | grep -oE 's[0-9]+' | head -n1)
+          docker compose exec -T app php occ ldap:test-config "${config_id:-s01}" 2>&1 || echo "ldap:test-config failed"
 
       - name: Wait for Keycloak
         if: matrix.mode == 'keycloak'
