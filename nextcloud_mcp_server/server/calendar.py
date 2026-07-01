@@ -1,6 +1,6 @@
 import datetime as dt
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -48,6 +48,7 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
         calendar_name=event.get("calendar_name"),
         calendar_display_name=event.get("calendar_display_name")
         or event.get("calendar_name"),
+        reminders=event.get("reminders", []),
     )
 
 
@@ -95,6 +96,7 @@ def configure_calendar_tools(mcp: FastMCP):
         url: str = "",
         color: str = "",
         timezone: str = "",
+        reminders: list[dict[str, Any]] | None = None,
     ):
         """Create a comprehensive calendar event with full feature support.
 
@@ -132,6 +134,10 @@ def configure_calendar_tools(mcp: FastMCP):
                 Applied only when ``start_datetime``/``end_datetime`` are naive
                 (no offset, no ``Z``). Ignored — with a warning — when the
                 inputs already carry an explicit offset.
+            reminders: Optional ordered VALARM list. Each item may use
+                ``trigger`` (RFC5545 duration/date-time), ``trigger_at`` (ISO
+                absolute date-time), ``minutes_before``, ``offset_seconds``,
+                plus ``action``, ``description``, and ``related``.
 
         Returns:
             Dict with event creation result
@@ -159,6 +165,8 @@ def configure_calendar_tools(mcp: FastMCP):
             "color": color,
             "timezone": timezone,
         }
+        if reminders is not None:
+            event_data["reminders"] = reminders
 
         return await client.calendar.create_event(calendar_name, event_data)
 
@@ -330,6 +338,7 @@ def configure_calendar_tools(mcp: FastMCP):
         url: str | None = None,
         color: str | None = None,
         timezone: str | None = None,
+        reminders: list[dict[str, Any]] | None = None,
         etag: str = "",
     ):
         """Update any aspect of an existing event.
@@ -379,6 +388,8 @@ def configure_calendar_tools(mcp: FastMCP):
             event_data["color"] = color
         if timezone is not None:
             event_data["timezone"] = timezone
+        if reminders is not None:
+            event_data["reminders"] = reminders
 
         return await client.calendar.update_event(
             calendar_name, event_uid, event_data, etag
@@ -1009,6 +1020,7 @@ def configure_calendar_tools(mcp: FastMCP):
         due: str = "",
         dtstart: str = "",
         categories: str = "",
+        reminders: list[dict[str, Any]] | None = None,
     ):
         """Create a new todo/task in a calendar.
 
@@ -1022,6 +1034,8 @@ def configure_calendar_tools(mcp: FastMCP):
             due: Due date/time (ISO format, e.g., "2025-01-15T14:00:00")
             dtstart: Start date/time (ISO format)
             categories: Comma-separated categories (e.g., "work,urgent")
+            reminders: Optional ordered VALARM list. Omit to create no VALARMs;
+                pass [] to explicitly create no VALARMs.
 
         Returns:
             Dict with todo creation result
@@ -1037,6 +1051,8 @@ def configure_calendar_tools(mcp: FastMCP):
             "dtstart": dtstart,
             "categories": categories,
         }
+        if reminders is not None:
+            todo_data["reminders"] = reminders
 
         return await client.calendar.create_todo(calendar_name, todo_data)
 
@@ -1059,6 +1075,7 @@ def configure_calendar_tools(mcp: FastMCP):
         dtstart: Optional[str] = None,
         completed: Optional[str] = None,
         categories: Optional[str] = None,
+        reminders: list[dict[str, Any]] | None = None,
     ):
         """Update an existing todo/task.
 
@@ -1075,6 +1092,8 @@ def configure_calendar_tools(mcp: FastMCP):
             dtstart: New start date/time (ISO format)
             completed: Completion timestamp (ISO format)
             categories: New categories (comma-separated)
+            reminders: Optional ordered VALARM list. Omitted preserves existing
+                VALARMs; [] clears them.
 
         Returns:
             Dict with todo update result
@@ -1101,6 +1120,8 @@ def configure_calendar_tools(mcp: FastMCP):
             todo_data["completed"] = completed
         if categories is not None:
             todo_data["categories"] = categories
+        if reminders is not None:
+            todo_data["reminders"] = reminders
 
         return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
 
