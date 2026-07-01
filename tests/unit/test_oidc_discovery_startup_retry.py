@@ -97,6 +97,34 @@ async def test_retries_5xx_then_succeeds():
     assert attempts["n"] == 2
 
 
+async def test_timeout_is_forwarded_to_client_when_set():
+    """The hybrid multi-user-basic path passes an explicit per-attempt timeout;
+    it must reach the httpx client factory (a default call omits it so httpx
+    keeps its own default rather than disabling the timeout)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=DISCOVERY_DOC)
+
+    with _patched_client(handler) as factory:
+        result = await _perform_oidc_discovery(DISCOVERY_URL, _settings(), timeout=30.0)
+
+    assert result == DISCOVERY_DOC
+    assert factory.call_args.kwargs.get("timeout") == pytest.approx(30.0)
+
+
+async def test_default_call_omits_timeout_kwarg():
+    """Without an explicit timeout the factory is called without a timeout
+    kwarg, so httpx applies its own default instead of an infinite timeout."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=DISCOVERY_DOC)
+
+    with _patched_client(handler) as factory:
+        await _perform_oidc_discovery(DISCOVERY_URL, _settings())
+
+    assert "timeout" not in factory.call_args.kwargs
+
+
 async def test_retries_malformed_json_200_then_succeeds():
     """A 200 with a non-JSON body (e.g. a proxy 'warming up' placeholder page
     served during cold start) is retried like a transient failure, not crashed

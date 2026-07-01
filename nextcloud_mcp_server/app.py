@@ -854,7 +854,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 async def _perform_oidc_discovery(
-    discovery_url: str, settings: Settings
+    discovery_url: str, settings: Settings, timeout: float | None = None
 ) -> dict[str, Any]:
     """Fetch the OIDC discovery document, retrying transient failures.
 
@@ -869,6 +869,11 @@ async def _perform_oidc_discovery(
     Transport errors (connect/read timeouts, connection resets) and 5xx
     responses are treated as transient and retried. A 4xx response is a
     configuration error, not a transient condition, so it is raised immediately.
+
+    ``timeout`` overrides the per-attempt httpx timeout (seconds); ``None`` keeps
+    httpx's default. The hybrid multi-user-basic path passes an explicit,
+    longer budget here so it keeps its original per-attempt timeout while also
+    gaining the retries.
     """
     # Clamp defensively: Settings can be constructed directly (e.g. in tests),
     # bypassing the gte=1/gte=0 dynaconf validators. A negative backoff would
@@ -877,9 +882,15 @@ async def _perform_oidc_discovery(
     backoff_base = max(0.0, settings.oidc_discovery_backoff_base)
     backoff_max = max(0.0, settings.oidc_discovery_backoff_max)
 
+    # Pass timeout through only when set — httpx treats an explicit
+    # timeout=None as "disable timeout" rather than "use the default".
+    client_kwargs: dict[str, Any] = {"follow_redirects": True}
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
+
     for attempt in range(1, max_attempts + 1):
         try:
-            async with nextcloud_httpx_client(follow_redirects=True) as client:
+            async with nextcloud_httpx_client(**client_kwargs) as client:
                 response = await client.get(discovery_url)
                 response.raise_for_status()
                 return response.json()
@@ -1217,7 +1228,7 @@ async def setup_oauth_config_for_multi_user_basic(
     # (HTTPStatusError / RequestError / JSONDecodeError — the last a ValueError
     # subclass) all fall through to the handlers below.
     try:
-        discovery = await _perform_oidc_discovery(discovery_url, settings)
+        discovery = await _perform_oidc_discovery(discovery_url, settings, timeout=30.0)
     except httpx.HTTPStatusError as e:
         logger.error(
             "OIDC discovery failed: HTTP %s from %s",
