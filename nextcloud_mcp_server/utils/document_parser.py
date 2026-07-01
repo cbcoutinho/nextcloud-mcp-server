@@ -42,6 +42,7 @@ async def parse_document(
     progress_callback: Optional[
         Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
     ] = None,
+    processor_name: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """Parse a document using registered processors.
 
@@ -53,6 +54,10 @@ async def parse_document(
         content_type: The MIME type of the document
         filename: Optional filename to help with format detection
         progress_callback: Optional async callback for progress updates during long operations
+        processor_name: Force a specific registered processor by name (e.g.
+            "docling"), bypassing MIME/tier auto-selection. Use to parse a
+            text-layer PDF with docling (tables / partial text). ``None`` =
+            auto-select.
 
     Returns:
         Tuple of (parsed_text, metadata) where:
@@ -72,14 +77,19 @@ async def parse_document(
 
     registry = get_registry()
 
-    logger.debug("Parsing document of type '%s'", content_type)
+    logger.debug(
+        "Parsing document of type '%s'%s",
+        content_type,
+        f" with forced processor '{processor_name}'" if processor_name else "",
+    )
 
     try:
-        # Process using registry (auto-selects processor based on MIME type)
+        # Process using registry (auto-selects by MIME, or forces processor_name)
         result = await registry.process(
             content=content,
             content_type=content_type,
             filename=filename,
+            processor_name=processor_name,
             progress_callback=progress_callback,
         )
 

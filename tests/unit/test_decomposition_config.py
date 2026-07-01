@@ -95,6 +95,12 @@ class TestEnumValidation:
         with pytest.raises(ValueError, match="INGEST_QUEUE"):
             Settings(ingest_queue="kafka")
 
+    def test_docling_ocr_provider_accepted(self):
+        # docling is a valid (explicit-only) OCR provider, ADR-031.
+        assert (
+            Settings(document_ocr_provider="docling").document_ocr_provider == "docling"
+        )
+
 
 class TestIngestQueueResolution:
     def test_postgres_requires_postgres_url(self):

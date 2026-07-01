@@ -178,8 +178,10 @@ _DEFAULTS: dict[str, Any] = {
     "document_tier1_engine": "pypdfium2",
     "document_ocr_enabled": False,
     # OCR backend: "auto" picks gateway (if EMBEDDING_GATEWAY_URL) else mistral
-    # (if MISTRAL_API_KEY); "gateway"/"mistral" force one; "none" disables. The
-    # gateway routes on the model's "<provider>/" prefix, so it serves Mistral,
+    # (if MISTRAL_API_KEY); "gateway"/"mistral" force one; "docling" routes scanned
+    # PDFs to a docling-serve instance (DOCLING_API_URL); "none" disables. "auto"
+    # never selects docling (it needs a self-hosted URL, so it must be explicit).
+    # The gateway routes on the model's "<provider>/" prefix, so it serves Mistral,
     # surya (in-cluster GPU over the tailnet), etc. — one configurable OCR tier.
     "document_ocr_provider": "auto",
     # Provider-namespaced OCR model id (gateway routes on the prefix; the direct
@@ -253,6 +255,21 @@ _DEFAULTS: dict[str, Any] = {
     "custom_processor_name": "custom",
     "custom_processor_api_key": None,
     "custom_processor_timeout": 60,
+    # Docling document-parsing backend (docling-serve HTTP API). One docling-serve
+    # instance feeds two touchpoints: the images-only DoclingProcessor
+    # (find_processor path, priority 20) and — when DOCUMENT_OCR_PROVIDER=docling —
+    # the PDF OCR backend for scanned/no-text-layer PDFs. The same processor can be
+    # force-selected per call to parse a text-layer PDF (tables/partial text). URL
+    # unset -> the image processor is not registered and the OCR backend resolves to
+    # None. See ADR-031.
+    "enable_docling": False,
+    "docling_api_url": None,
+    "docling_timeout": 120,
+    # docling-serve OCR language codes. The default engine (EasyOCR) uses 2-letter
+    # codes ("en","de"); a Tesseract-backed instance wants "eng","deu". Engine-
+    # dependent, so keep it operator-tunable (see ADR-031).
+    "docling_ocr_lang": "en,de",
+    "docling_do_ocr": True,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
@@ -712,6 +729,23 @@ def get_document_processor_config() -> dict[str, Any]:
                 "supported_types": supported_types,
             }
 
+    # Docling configuration (docling-serve HTTP API). Registered only when a URL is
+    # set, so a bare ENABLE_DOCLING doesn't shadow other image processors with a
+    # dead endpoint (mirrors the custom_url guard above). The standalone processor
+    # auto-serves images; PDFs go through the OCR backend (provider=docling) or an
+    # explicit per-call force_processor override.
+    if _dynaconf.get("ENABLE_DOCLING"):
+        docling_url = _dynaconf.get("DOCLING_API_URL")
+        if docling_url:
+            lang_str = _dynaconf.get("DOCLING_OCR_LANG") or ""
+            config["processors"]["docling"] = {
+                "api_url": docling_url,
+                "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
+                "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
+                "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
+                "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
+            }
+
     return config
 
 
@@ -995,6 +1029,14 @@ class Settings:
     # fast->structured (pymupdf). 0 disables. See classifier._control_char_ratio.
     document_glyph_corruption_ratio: float = 0.02
 
+    # Docling backend (docling-serve HTTP API). Shared by the images-only
+    # DoclingProcessor (find_processor path) and the PDF OCR backend
+    # (document_ocr_provider="docling"). docling_api_url unset -> the OCR backend
+    # resolves to None (docling OCR off) and the image processor is not registered.
+    docling_api_url: str | None = None
+    docling_ocr_lang: str = "en,de"
+    docling_do_ocr: bool = True
+
     # Observability settings
     metrics_enabled: bool = True
     metrics_port: int = 9090
@@ -1162,7 +1204,7 @@ class Settings:
             "mcp_role": {"api", "worker", "all"},
             "collection_metadata_source": {"qdrant", "api"},
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
-            "document_ocr_provider": {"auto", "gateway", "mistral", "none"},
+            "document_ocr_provider": {"auto", "gateway", "mistral", "docling", "none"},
             "document_ocr_mode": {"sync", "batch"},
         }
         for _field, _allowed in _enum_fields.items():
@@ -1738,6 +1780,10 @@ def get_settings() -> Settings:
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
         "document_ocr_detect_scanned": "DOCUMENT_OCR_DETECT_SCANNED",
         "document_glyph_corruption_ratio": "DOCUMENT_GLYPH_CORRUPTION_RATIO",
+        # Docling backend (shared by the OCR backend + images processor)
+        "docling_api_url": "DOCLING_API_URL",
+        "docling_ocr_lang": "DOCLING_OCR_LANG",
+        "docling_do_ocr": "DOCLING_DO_OCR",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",
