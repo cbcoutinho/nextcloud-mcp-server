@@ -38,6 +38,12 @@ _DEFAULTS: dict[str, Any] = {
     "cookie_secure": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
+    # Startup OIDC-discovery retry/backoff. Declared here (lowercase) so
+    # dynaconf reads the UPPERCASE env vars under ignore_unknown_envvars=True;
+    # defaults mirror the Settings dataclass fields.
+    "oidc_discovery_max_attempts": 10,
+    "oidc_discovery_backoff_base": 1.0,
+    "oidc_discovery_backoff_max": 15.0,
     # Keys must uppercase to the env var dynaconf reads (ignore_unknown_envvars):
     # NEXTCLOUD_OIDC_TOKEN_TYPE / NEXTCLOUD_OIDC_SCOPES, matching _field_map.
     "nextcloud_oidc_token_type": "Bearer",
@@ -400,6 +406,9 @@ _dynaconf = Dynaconf(
         Validator("INGEST_STALLED_JOB_SECONDS", gte=1),
         Validator("INGEST_TRANSIENT_MAX_ATTEMPTS", gte=1),
         Validator("INGEST_RECLAIM_RETRY_DELAY_SECONDS", gte=0),
+        Validator("OIDC_DISCOVERY_MAX_ATTEMPTS", gte=1),
+        Validator("OIDC_DISCOVERY_BACKOFF_BASE", gte=0),
+        Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
@@ -723,6 +732,17 @@ class Settings:
     oidc_resource_server_id: str | None = None
     oidc_token_type: str = "Bearer"  # NEXTCLOUD_OIDC_TOKEN_TYPE
     oidc_scopes: str = ""  # NEXTCLOUD_OIDC_SCOPES (space-separated)
+
+    # OIDC discovery startup resilience. Discovery runs synchronously at boot
+    # and is fatal on failure; on a freshly-scheduled pod the egress path (e.g.
+    # Cilium toFQDN allow + egress-gateway SNAT programming) can take a few
+    # seconds to converge, during which the request is dropped and times out.
+    # Retry with capped exponential backoff + jitter so a cold-start race
+    # doesn't crashloop the backend. Set OIDC_DISCOVERY_MAX_ATTEMPTS=1 to
+    # restore the original fail-fast behavior.
+    oidc_discovery_max_attempts: int = 10  # OIDC_DISCOVERY_MAX_ATTEMPTS
+    oidc_discovery_backoff_base: float = 1.0  # OIDC_DISCOVERY_BACKOFF_BASE (s)
+    oidc_discovery_backoff_max: float = 15.0  # OIDC_DISCOVERY_BACKOFF_MAX (s)
     port: int = 8000  # Server port (PORT); used to build fallback URLs
 
     # Nextcloud settings
@@ -1581,6 +1601,9 @@ def get_settings() -> Settings:
         "oidc_resource_server_id": "OIDC_RESOURCE_SERVER_ID",
         "oidc_token_type": "NEXTCLOUD_OIDC_TOKEN_TYPE",
         "oidc_scopes": "NEXTCLOUD_OIDC_SCOPES",
+        "oidc_discovery_max_attempts": "OIDC_DISCOVERY_MAX_ATTEMPTS",
+        "oidc_discovery_backoff_base": "OIDC_DISCOVERY_BACKOFF_BASE",
+        "oidc_discovery_backoff_max": "OIDC_DISCOVERY_BACKOFF_MAX",
         "port": "PORT",
         # Nextcloud settings
         "nextcloud_host": "NEXTCLOUD_HOST",

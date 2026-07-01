@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import random
 import time
 import traceback
 from collections.abc import AsyncIterator
@@ -852,6 +853,62 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             logger.warning("Error disposing storage: %s", e)
 
 
+async def _perform_oidc_discovery(
+    discovery_url: str, settings: Settings
+) -> dict[str, Any]:
+    """Fetch the OIDC discovery document, retrying transient failures.
+
+    OIDC discovery runs synchronously at startup and is fatal on failure. On a
+    freshly-scheduled pod the network egress path (e.g. Cilium ``toFQDNs`` allow
+    + egress-gateway SNAT programming) can take a few seconds to converge, during
+    which the request is silently dropped and times out. Without retries a
+    cold-start race crashloops the backend on the very first attempt; retrying
+    with capped exponential backoff + full jitter lets startup ride out that
+    window instead.
+
+    Transport errors (connect/read timeouts, connection resets) and 5xx
+    responses are treated as transient and retried. A 4xx response is a
+    configuration error, not a transient condition, so it is raised immediately.
+    """
+    max_attempts = max(1, settings.oidc_discovery_max_attempts)
+    backoff_base = settings.oidc_discovery_backoff_base
+    backoff_max = settings.oidc_discovery_backoff_max
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with nextcloud_httpx_client(follow_redirects=True) as client:
+                response = await client.get(discovery_url)
+                response.raise_for_status()
+                return response.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            # 4xx is a misconfiguration (wrong URL, no OIDC app) — fail fast so
+            # the operator sees the real error instead of a retry storm.
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and not 500 <= exc.response.status_code < 600
+            ):
+                raise
+            if attempt >= max_attempts:
+                logger.error(
+                    "OIDC discovery failed after %d attempt(s): %s", attempt, exc
+                )
+                raise
+            # Full jitter over a capped exponential backoff.
+            delay = min(backoff_max, backoff_base * 2 ** (attempt - 1))
+            sleep_for = random.uniform(0, delay)
+            logger.warning(
+                "OIDC discovery attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+                sleep_for,
+            )
+            await anyio.sleep(sleep_for)
+
+    # Unreachable: the loop always returns a document or raises above.
+    raise RuntimeError("OIDC discovery retry loop exited without a result")
+
+
 async def setup_oauth_config():
     """
     Setup OAuth configuration by performing OIDC discovery and client registration.
@@ -892,11 +949,8 @@ async def setup_oauth_config():
     )
     logger.info("Performing OIDC discovery: %s", discovery_url)
 
-    # Perform OIDC discovery
-    async with nextcloud_httpx_client(follow_redirects=True) as client:
-        response = await client.get(discovery_url)
-        response.raise_for_status()
-        discovery = response.json()
+    # Perform OIDC discovery (retries transient failures — see helper docstring)
+    discovery = await _perform_oidc_discovery(discovery_url, settings)
 
     logger.info("✓ OIDC discovery successful")
 

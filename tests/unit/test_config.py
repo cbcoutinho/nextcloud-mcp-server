@@ -511,6 +511,40 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="METRICS_PORT"):
             _reload_config()
 
+    @patch.dict(os.environ, {"OIDC_DISCOVERY_MAX_ATTEMPTS": "0"}, clear=True)
+    def test_oidc_discovery_max_attempts_zero_rejected(self):
+        """OIDC_DISCOVERY_MAX_ATTEMPTS must be >= 1 (0 disables discovery)."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="OIDC_DISCOVERY_MAX_ATTEMPTS"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"OIDC_DISCOVERY_BACKOFF_BASE": "-1"}, clear=True)
+    def test_oidc_discovery_backoff_base_negative_rejected(self):
+        """OIDC_DISCOVERY_BACKOFF_BASE must be non-negative."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="OIDC_DISCOVERY_BACKOFF_BASE"):
+            _reload_config()
+
+    @patch.dict(
+        os.environ,
+        {
+            "OIDC_DISCOVERY_MAX_ATTEMPTS": "3",
+            "OIDC_DISCOVERY_BACKOFF_BASE": "0.5",
+            "OIDC_DISCOVERY_BACKOFF_MAX": "10",
+        },
+        clear=True,
+    )
+    def test_oidc_discovery_retry_settings_valid(self):
+        """Valid OIDC discovery retry knobs load and coerce to numbers."""
+        _reload_config()
+        settings = get_settings()
+
+        assert settings.oidc_discovery_max_attempts == 3
+        assert settings.oidc_discovery_backoff_base == 0.5
+        assert settings.oidc_discovery_backoff_max == 10
+
     @patch.dict(os.environ, {"LOG_FORMAT": "xml"}, clear=True)
     def test_invalid_log_format(self):
         """Test invalid LOG_FORMAT raises ValidationError."""
