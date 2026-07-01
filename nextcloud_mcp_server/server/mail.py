@@ -26,19 +26,25 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
-# Hard cap on inlined attachment content. The Mail OCS API returns the full
-# attachment body in the JSON response, which then has to fit in the host LLM's
-# context window; replace anything larger with a sentinel so a 20 MB design file
-# can't blow up the MCP response. Callers can still see the real size via the
-# message's attachment list.
+# Hard cap on inlined attachment content. The Mail attachment endpoint returns
+# the full attachment body (base64-encoded) in the response, which then has to
+# fit in the host LLM's context window; replace anything larger with a sentinel
+# so a 20 MB design file can't blow up the MCP response. Callers can still see
+# the real size via the message's attachment list.
+#
+# NOTE: the cap is deliberately measured against the *base64-encoded* string —
+# that encoded footprint (~1.33x the raw file) is exactly what lands in the MCP
+# response, which is the thing we're bounding. Sizing off the raw byte count
+# would let a correspondingly larger payload through into the response.
 MAX_ATTACHMENT_CONTENT_BYTES = 5 * 1024 * 1024
 
 
 def _cap_attachment_content(content: str | None) -> str | None:
     """Replace oversized attachment content with a size sentinel.
 
-    Measures UTF-8 byte length (what actually lands in the MCP response/LLM
-    context), not character count. Non-string content is returned unchanged.
+    Measures the UTF-8 byte length of the (base64-encoded) content — i.e. the
+    footprint that actually lands in the MCP response / LLM context — not the
+    raw file size or character count. Non-string content is returned unchanged.
     """
     if not isinstance(content, str):
         return content
@@ -319,9 +325,9 @@ def configure_mail_tools(mcp: FastMCP):
 
         Returns:
             GetAttachmentResponse with name, mime, size, and content. ``content``
-            is the attachment body as returned by the Mail OCS API; large
-            attachments produce a correspondingly large response, so prefer the
-            ``size`` from the message's attachment list before fetching.
+            is the attachment body base64-encoded; large attachments produce a
+            correspondingly large response, so prefer the ``size`` from the
+            message's attachment list before fetching.
         """
         client = await get_client(ctx)
         try:

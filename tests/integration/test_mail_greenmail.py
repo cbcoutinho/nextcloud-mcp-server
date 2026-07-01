@@ -93,18 +93,55 @@ def _seed_inbox_message(subject: str, body: str) -> None:
 
 
 def _seed_message_with_attachment(
-    subject: str, attachment: bytes, filename: str
+    subject: str,
+    attachment: bytes,
+    filename: str,
+    *,
+    maintype: str = "text",
+    subtype: str = "plain",
 ) -> None:
-    """Deliver a multipart/mixed message carrying a file attachment via SMTP."""
+    """Deliver a multipart/mixed message carrying a file attachment via SMTP.
+
+    ``maintype``/``subtype`` default to ``text/plain``; pass e.g.
+    ``application``/``pdf`` to attach a binary file.
+    """
     msg = EmailMessage()
     msg["From"] = "sender@example.org"
     msg["To"] = ADMIN_EMAIL
     msg["Subject"] = subject
     msg.set_content("see attached")
     msg.add_alternative("<p>see attached</p>", subtype="html")
-    msg.add_attachment(attachment, maintype="text", subtype="plain", filename=filename)
+    msg.add_attachment(
+        attachment, maintype=maintype, subtype=subtype, filename=filename
+    )
     with smtplib.SMTP("localhost", 3025, timeout=15) as smtp:
         smtp.send_message(msg)
+
+
+def _minimal_pdf_bytes() -> bytes:
+    """A tiny but structurally valid single-page PDF (with a ``%PDF`` signature).
+
+    Built inline (no fixture file) so the binary-attachment roundtrip test is
+    self-contained. Exercises the non-text path that base64-encodes raw bytes.
+    """
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+    ]
+    pdf = b"%PDF-1.4\n"
+    offsets = []
+    for obj in objects:
+        offsets.append(len(pdf))
+        pdf += obj
+    xref_pos = len(pdf)
+    pdf += b"xref\n0 %d\n" % (len(objects) + 1)
+    pdf += b"0000000000 65535 f \n"
+    for off in offsets:
+        pdf += b"%010d 00000 n \n" % off
+    pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\n" % (len(objects) + 1)
+    pdf += b"startxref\n%d\n%%%%EOF\n" % xref_pos
+    return pdf
 
 
 def _sync_mail_account(account_id: int) -> None:
@@ -228,15 +265,47 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
         )
     )
     assert fetched["name"] == "note.txt"
-    # The Mail OCS get-attachment endpoint returns text attachments as raw text
-    # and binary ones base64-encoded. Decode if it's base64, else keep the raw
-    # text, so the assertion covers both shapes.
-    content = fetched["content"]
-    try:
-        decoded = base64.b64decode(content).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        decoded = content
+    # The direct attachment route returns raw bytes, which the client always
+    # base64-encodes (GH #989), so decode the base64 to recover the payload.
+    decoded = base64.b64decode(fetched["content"]).decode("utf-8")
     assert payload.decode("utf-8").strip() in decoded
+
+
+async def test_get_pdf_attachment_roundtrip(nc_mcp_client, provisioned_mail_account):
+    """Fetch a binary (PDF) attachment end-to-end via the direct route (GH #989).
+
+    Complements the text-attachment test: PDF bytes are not valid UTF-8, so this
+    proves the direct route + base64 encoding round-trips arbitrary binary data
+    (not just text) and preserves it byte-for-byte, including the ``%PDF``
+    signature. Runs against the single-user / BasicAuth MCP server — the same
+    deployment mode as the original bug report.
+    """
+    subject = "PDF attachment integration probe"
+    payload = _minimal_pdf_bytes()
+    assert payload.startswith(b"%PDF")
+    _seed_message_with_attachment(
+        subject, payload, "sample.pdf", maintype="application", subtype="pdf"
+    )
+
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
+    attachments = full["attachments"]
+    assert attachments, f"no attachments on message {full}"
+    att = attachments[0]
+    assert att["fileName"] == "sample.pdf"
+
+    fetched = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_get_attachment",
+            {"message_id": full["id"], "attachment_id": att["id"]},
+        )
+    )
+    assert fetched["name"] == "sample.pdf"
+    assert (fetched["mime"] or "").lower() == "application/pdf"
+    # Decode base64 and confirm the raw bytes survived intact (binary-safe).
+    decoded = base64.b64decode(fetched["content"])
+    assert decoded == payload
+    assert decoded.startswith(b"%PDF")
+    assert fetched["size"] == len(payload)
 
 
 @pytest.mark.xfail(

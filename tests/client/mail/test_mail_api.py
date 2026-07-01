@@ -3,19 +3,26 @@
 Mail 5.x exposes two route families (see ``~/Software/mail/appinfo/routes.php``
 and the module docstring of ``client/mail.py``):
 
-- **Direct REST resource routes** under ``/index.php/apps/mail/api`` —
-  ``/accounts``, ``/mailboxes``, ``/messages``, ``/outbox`` — return plain JSON
-  (a list, or an account envelope for ``/mailboxes``) and are CSRF-exempt via the
-  ``OCS-APIRequest: true`` header (no ``requesttoken`` round-trip needed).
-- **OCS routes** under ``/ocs/v2.php/apps/mail`` — ``/message/{id}``,
-  ``/message/{id}/attachment/{id}``, ``/message/{id}/raw`` — return the standard
-  OCS envelope and work with Basic Auth alone.
+- **Direct REST resource routes** under ``/apps/mail/api`` — ``/accounts``,
+  ``/mailboxes``, ``/messages``, ``/messages/{id}/attachment/{id}``, ``/outbox``
+  — return plain JSON or raw bytes and are CSRF-exempt via the
+  ``OCS-APIRequest: true`` header (no ``requesttoken`` round-trip needed). These
+  bare ``/apps/...`` paths are normalised to ``/index.php/apps/...`` by
+  ``BaseNextcloudClient._resolve_url`` inside ``MailClient._make_request`` (which
+  the assertions below capture pre-normalisation, since ``_make_request`` is
+  mocked).
+- **OCS routes** under ``/ocs/v2.php/apps/mail`` — ``/message/{id}`` and
+  ``/message/{id}/raw`` — return the standard OCS envelope and work with Basic
+  Auth alone. (Attachment downloads use the direct ``/api/messages/{id}/attachment/{id}``
+  route, which returns raw file bytes; the OCS attachment route is unreliable —
+  see GH #989.)
 
 The ``_api_*`` tests therefore feed plain JSON; the OCS tests feed an enveloped
 payload. Shapes are the real ones verified against a live Mail 5.x backend via
 the GreenMail integration suite.
 """
 
+import base64
 import logging
 from typing import Any
 
@@ -71,7 +78,7 @@ async def test_list_accounts_unwraps_direct_payload(mocker):
 
     # Direct resource route; CSRF-exempt via the OCS-APIRequest header (no token).
     args, kwargs = mock_make_request.call_args
-    assert args == ("GET", "/index.php/apps/mail/api/accounts")
+    assert args == ("GET", "/apps/mail/api/accounts")
     assert kwargs["headers"]["OCS-APIRequest"] == "true"
     assert "requesttoken" not in kwargs["headers"]
 
@@ -113,7 +120,7 @@ async def test_get_mailboxes_unwraps_account_envelope(mocker):
     assert mailboxes[0]["specialUse"] == ["inbox"]
 
     args, kwargs = mock_make_request.call_args
-    assert args == ("GET", "/index.php/apps/mail/api/mailboxes")
+    assert args == ("GET", "/apps/mail/api/mailboxes")
     assert kwargs["params"]["accountId"] == 1
 
 
@@ -145,7 +152,7 @@ async def test_list_messages_builds_params(mocker):
     assert messages[0]["databaseId"] == 100
 
     args, kwargs = mock_make_request.call_args
-    assert args == ("GET", "/index.php/apps/mail/api/messages")
+    assert args == ("GET", "/apps/mail/api/messages")
     assert kwargs["params"]["mailboxId"] == 10
     assert kwargs["params"]["limit"] == 50
     assert kwargs["params"]["cursor"] == 42
@@ -208,10 +215,19 @@ async def test_get_message_unwraps_full_message(mocker):
     assert args == ("GET", "/ocs/v2.php/apps/mail/message/100")
 
 
-async def test_get_attachment_unwraps_json(mocker):
-    """get_attachment returns the JSON attachment object from the OCS route."""
-    mock_response = _ocs_response(
-        {"name": "doc.pdf", "mime": "application/pdf", "size": 1024, "content": "abc"}
+async def test_get_attachment_returns_base64_bytes(mocker):
+    """get_attachment fetches the direct route and base64-encodes the raw bytes.
+
+    The filename is recovered from the Content-Disposition header, the mime from
+    Content-Type, and the size from the byte length (GH #989).
+    """
+    raw = b"%PDF-1.4 fake pdf bytes"
+    mock_response = create_mock_response(
+        content=raw,
+        headers={
+            "content-type": "application/pdf; charset=binary",
+            "content-disposition": 'attachment; filename="doc.pdf"',
+        },
     )
     mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mock_make_request = mocker.patch.object(
@@ -222,15 +238,34 @@ async def test_get_attachment_unwraps_json(mocker):
     attachment = await client.get_attachment(100, "1.2")
 
     assert attachment["name"] == "doc.pdf"
-    assert attachment["content"] == "abc"
+    assert attachment["mime"] == "application/pdf"
+    assert attachment["size"] == len(raw)
+    assert attachment["content"] == base64.b64encode(raw).decode("ascii")
+    assert base64.b64decode(attachment["content"]) == raw
 
     args, _ = mock_make_request.call_args
-    assert args == ("GET", "/ocs/v2.php/apps/mail/message/100/attachment/1.2")
+    assert args == ("GET", "/apps/mail/api/messages/100/attachment/1.2")
+
+
+async def test_get_attachment_synthesizes_name_without_disposition(mocker):
+    """Without a Content-Disposition filename, a synthetic name is used."""
+    mock_response = create_mock_response(
+        content=b"data",
+        headers={"content-type": "application/octet-stream"},
+    )
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mocker.patch.object(MailClient, "_make_request", return_value=mock_response)
+
+    client = MailClient(mock_client, "testuser")
+    attachment = await client.get_attachment(100, "1.2")
+
+    assert attachment["name"] == "attachment_100_1.2"
+    assert attachment["mime"] == "application/octet-stream"
 
 
 async def test_get_attachment_url_encodes_attachment_id(mocker):
     """A traversal-style attachment_id is percent-encoded in the URL path."""
-    mock_response = _ocs_response({"name": "x", "content": "y"})
+    mock_response = create_mock_response(content=b"y")
     mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mock_make_request = mocker.patch.object(
         MailClient, "_make_request", return_value=mock_response
@@ -243,7 +278,7 @@ async def test_get_attachment_url_encodes_attachment_id(mocker):
     # The "/" and ".." are encoded, so they can't escape the attachment path.
     assert args == (
         "GET",
-        "/ocs/v2.php/apps/mail/message/100/attachment/..%2F..%2Fevil",
+        "/apps/mail/api/messages/100/attachment/..%2F..%2Fevil",
     )
 
 
@@ -316,8 +351,8 @@ async def test_send_message_two_step_flow(mocker):
     assert result["outbox_id"] == 42
 
     calls = mock_make_request.call_args_list
-    assert calls[0].args == ("POST", "/index.php/apps/mail/api/outbox")
-    assert calls[1].args == ("POST", "/index.php/apps/mail/api/outbox/42")
+    assert calls[0].args == ("POST", "/apps/mail/api/outbox")
+    assert calls[1].args == ("POST", "/apps/mail/api/outbox/42")
 
 
 async def test_send_message_missing_outbox_id_raises(mocker):

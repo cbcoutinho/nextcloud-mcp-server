@@ -27,7 +27,7 @@ class TablesClient(BaseNextcloudClient):
         """Get the schema/structure of a specific table including columns and views."""
         # Using v1 API as v2 schema endpoint had issues during testing
         response = await self._make_request(
-            "GET", f"/index.php/apps/tables/api/1/tables/{table_id}/scheme"
+            "GET", f"/apps/tables/api/1/tables/{table_id}/scheme"
         )
         return response.json()
 
@@ -42,7 +42,7 @@ class TablesClient(BaseNextcloudClient):
             params["offset"] = offset
 
         response = await self._make_request(
-            "GET", f"/index.php/apps/tables/api/1/tables/{table_id}/rows", params=params
+            "GET", f"/apps/tables/api/1/tables/{table_id}/rows", params=params
         )
         return response.json()
 
@@ -77,7 +77,7 @@ class TablesClient(BaseNextcloudClient):
 
         response = await self._make_request(
             "PUT",
-            f"/index.php/apps/tables/api/1/rows/{row_id}",
+            f"/apps/tables/api/1/rows/{row_id}",
             json={"data": api_data},
         )
         return response.json()
@@ -85,7 +85,7 @@ class TablesClient(BaseNextcloudClient):
     async def delete_row(self, row_id: int) -> Dict[str, Any]:
         """Delete a row from a table."""
         response = await self._make_request(
-            "DELETE", f"/index.php/apps/tables/api/1/rows/{row_id}"
+            "DELETE", f"/apps/tables/api/1/rows/{row_id}"
         )
         return response.json()
 

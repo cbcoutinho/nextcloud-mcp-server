@@ -3,27 +3,33 @@
 Uses two endpoint types:
 
 1. **OCS routes** — ``/ocs/v2.php/apps/mail/message/...`` — for reading full messages
-   and attachments. Works with Basic Auth (App Password) via the OCS-APIRequest header.
-   These routes are registered in the ``'ocs'`` section of the Mail app's ``routes.php``.
+   (body + metadata) and the raw RFC 2822 source. Works with Basic Auth (App
+   Password) via the OCS-APIRequest header. These routes are registered in the
+   ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages, and for the two-step outbox send. These REST resource
-   routes (from ``'resources'`` in ``routes.php``) are CSRF-gated for browser
-   sessions, but Nextcloud exempts any request carrying the ``OCS-APIRequest: true``
-   header from the CSRF check — so Basic Auth (App Password) + that header is
-   sufficient. No ``requesttoken`` round-trip is needed (verified end-to-end against
-   a live Mail 5.x backend; see the GreenMail integration tests).
+   mailboxes, and messages, downloading attachments, and the two-step outbox send.
+   These REST resource routes (from ``'resources'`` in ``routes.php``) are
+   CSRF-gated for browser sessions, but Nextcloud exempts any request carrying the
+   ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
+   Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
+   (verified end-to-end against a live Mail 5.x backend; see the GreenMail
+   integration tests).
+
+Attachment downloads use the direct route ``/api/messages/{id}/attachment/{id}``,
+which returns the raw file bytes (via core's ``DownloadResponse``). The OCS
+``/message/{id}/attachment/{id}`` route is unreliable across Mail versions — on
+some setups it returns HTTP 200 with an empty, non-JSON body (see GH #989).
 """
 
-import logging
+import base64
+from email.message import Message
 from typing import Any
 from urllib.parse import quote
 
-from httpx import AsyncClient, HTTPStatusError, RequestError, Response
+from httpx import HTTPStatusError, RequestError, Response
 
-from nextcloud_mcp_server.client.base import retry_on_429
-
-logger = logging.getLogger(__name__)
+from nextcloud_mcp_server.client.base import BaseNextcloudClient
 
 
 def _ocs_response(response: Response) -> Any:
@@ -71,19 +77,26 @@ def _ocs_response(response: Response) -> Any:
     return ocs.get("data")
 
 
-class MailClient:
+class MailClient(BaseNextcloudClient):
     """Client for the Nextcloud Mail app API.
 
     Uses a combination of OCS and direct routes to cover the full mail workflow
     (list accounts → browse mailboxes → list messages → read message → send
     reply) with the correct authentication for each endpoint.
+
+    Requests go through :meth:`BaseNextcloudClient._make_request`, which routes
+    bare ``/apps/...`` paths through ``_resolve_url`` (prepending ``/index.php``,
+    the universal entry point that works without pretty-URL rewriting — issue
+    #732), applies 429 retry, tracing, and ``raise_for_status``. ``/ocs/...``
+    paths pass through ``_resolve_url`` unchanged.
     """
 
     # OCS endpoints — work with Basic Auth + OCS‑APIRequest header alone.
     OCS_BASE = "/ocs/v2.php/apps/mail"
 
-    # Direct API endpoints — CSRF-exempt via the OCS-APIRequest header.
-    API_BASE = "/index.php/apps/mail/api"
+    # Direct API endpoints — CSRF-exempt via the OCS-APIRequest header. Written
+    # as bare ``/apps/...`` paths (``_resolve_url`` prepends ``/index.php``).
+    API_BASE = "/apps/mail/api"
 
     # The OCS-APIRequest header authenticates the OCS routes and exempts the
     # direct routes from CSRF, so both families use the same headers.
@@ -94,28 +107,9 @@ class MailClient:
 
     app_name = "mail"
 
-    def __init__(self, http_client: AsyncClient, username: str) -> None:
-        self._client = http_client
-        self.username = username
-
     # ------------------------------------------------------------------
     # Low‑level request helpers
     # ------------------------------------------------------------------
-
-    @retry_on_429
-    async def _make_request(self, method: str, url: str, **kwargs: Any) -> Response:
-        """Make an HTTP request with retry logic for 429 responses.
-
-        Args:
-            method: HTTP method (GET, POST, PUT, …).
-            url: Full URL path (e.g. ``/ocs/v2.php/apps/mail/message/1``).
-            **kwargs: Extra arguments forwarded to ``httpx.AsyncClient.request()``.
-
-        Returns:
-            The httpx Response object.
-        """
-        logger.debug("MailClient %s %s", method, url)
-        return await self._client.request(method, url, **kwargs)
 
     async def _ocs_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET an OCS endpoint and unwrap its envelope.
@@ -137,7 +131,8 @@ class MailClient:
             params=query,
             headers=self._API_HEADERS,
         )
-        response.raise_for_status()
+        # ``_make_request`` (base) already raised on any non-2xx status; an OCS
+        # meta failure arrives as HTTP 200 and is handled by ``_ocs_response``.
         return _ocs_response(response)
 
     async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -156,7 +151,7 @@ class MailClient:
             params=params,
             headers=self._API_HEADERS,
         )
-        response.raise_for_status()
+        # ``_make_request`` (base) already raised on any non-2xx status.
         return response.json()
 
     async def _api_post(
@@ -177,8 +172,8 @@ class MailClient:
             json=json_data,
             headers={**self._API_HEADERS, "Content-Type": "application/json"},
         )
-        response.raise_for_status()
-        # The outbox send step can legitimately return an empty body (e.g. 204);
+        # ``_make_request`` (base) already raised on any non-2xx status. The
+        # outbox send step can legitimately return an empty body (e.g. 204);
         # don't choke trying to JSON-decode it.
         return response.json() if response.content else {}
 
@@ -280,8 +275,12 @@ class MailClient:
     ) -> dict[str, Any]:
         """Get an attachment's content from a message.
 
-        Uses the OCS route ``GET /ocs/v2.php/apps/mail/message/{id}/attachment/{id}``
-        which works with Basic Auth (App Password).
+        Uses the direct route
+        ``GET /index.php/apps/mail/api/messages/{id}/attachment/{id}``
+        (CSRF-exempt via the OCS-APIRequest header), which returns the raw file
+        bytes. The OCS ``/message/{id}/attachment/{id}`` route is unreliable
+        across Mail versions — on some setups it returns HTTP 200 with an empty,
+        non-JSON body (GH #989).
 
         The ``attachment_id`` is URL‑encoded to prevent path traversal.
 
@@ -291,11 +290,49 @@ class MailClient:
 
         Returns:
             Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
+            ``content`` is the raw attachment bytes base64-encoded.
         """
-
         safe_id = quote(attachment_id, safe="")
-        data = await self._ocs_get(f"/message/{message_id}/attachment/{safe_id}")
-        return data if isinstance(data, dict) else {}
+        # Binary download: unlike the JSON helpers, don't send
+        # ``Accept: application/json`` (mirrors ``DeckClient.get_attachment_file``).
+        # The ``OCS-APIRequest`` header still CSRF-exempts this direct route.
+        response = await self._make_request(
+            "GET",
+            f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
+            headers={"OCS-APIRequest": "true"},
+        )
+        # ``_make_request`` (base) already raised on any non-2xx status.
+        raw = response.content
+        ctype = (response.headers.get("content-type", "") or "").split(";")[0].strip()
+
+        # Recover the real filename from the Content-Disposition header (core's
+        # DownloadResponse sets ``attachment; filename="..."``); fall back to a
+        # synthetic name when the header is absent or has no filename.
+        name = (
+            self._filename_from_disposition(response.headers.get("content-disposition"))
+            or f"attachment_{message_id}_{attachment_id}"
+        )
+
+        return {
+            "name": name,
+            "mime": ctype or "application/octet-stream",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode("ascii"),
+        }
+
+    @staticmethod
+    def _filename_from_disposition(header: str | None) -> str | None:
+        """Extract the filename from a Content-Disposition header, if present.
+
+        Uses ``email.message.Message`` so quoted and RFC 2231-encoded filenames
+        are handled without the deprecated ``cgi`` module. Returns ``None`` when
+        the header is missing or carries no filename.
+        """
+        if not header:
+            return None
+        msg = Message()
+        msg["content-disposition"] = header
+        return msg.get_filename()
 
     async def send_message(
         self,

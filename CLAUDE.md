@@ -57,7 +57,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
 ### Architectural Patterns
-- **Base classes**: `BaseNextcloudClient` for all API clients
+- **Base classes**: **All app API clients MUST extend `BaseNextcloudClient`** and
+  issue requests through its `_make_request`. That method centralizes `_resolve_url`
+  (prepends `/index.php` to bare `/apps/...` paths — the universal entry point that
+  works without pretty-URL rewriting, issue #732), `@retry_on_429`, tracing, and
+  `raise_for_status`. Consequences:
+  - **Write bare `/apps/<app>/...` paths — never hardcode `/index.php`.** The base
+    class adds it; `/ocs/...` and `/remote.php/dav/...` paths pass through unchanged.
+  - Don't reimplement `_make_request` in a subclass — a private copy silently skips
+    `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
+    retry). Override only for a genuinely different transport.
+  - **Known exception**: `CalendarClient` talks CalDAV via its own `caldav` session,
+    not the shared Nextcloud HTTP client, so it does not extend `BaseNextcloudClient`.
+    This is intentional — do not "fix" it.
 - **Pydantic responses**: All MCP tools return Pydantic models inheriting from `BaseResponse`
 - **Decorators**: `@require_scopes`, `@require_provisioning` for access control
 - **Context pattern**: `await get_client(ctx)` to access authenticated NextcloudClient (async!)
