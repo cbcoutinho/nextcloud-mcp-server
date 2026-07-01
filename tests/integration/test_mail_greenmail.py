@@ -228,14 +228,9 @@ async def test_get_attachment_roundtrip(nc_mcp_client, provisioned_mail_account)
         )
     )
     assert fetched["name"] == "note.txt"
-    # The Mail OCS get-attachment endpoint returns text attachments as raw text
-    # and binary ones base64-encoded. Decode if it's base64, else keep the raw
-    # text, so the assertion covers both shapes.
-    content = fetched["content"]
-    try:
-        decoded = base64.b64decode(content).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        decoded = content
+    # The direct attachment route returns raw bytes, which the client always
+    # base64-encodes (GH #989), so decode the base64 to recover the payload.
+    decoded = base64.b64decode(fetched["content"]).decode("utf-8")
     assert payload.decode("utf-8").strip() in decoded
 
 
