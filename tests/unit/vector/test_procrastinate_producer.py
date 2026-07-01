@@ -225,6 +225,52 @@ class TestReclaimStalledJobs:
         # retried at now(), so a systemic outage doesn't thundering-herd.
         assert all((ra - before).total_seconds() >= 25 for ra in retry_ats)
 
+    async def test_queueing_lock_collision_discards_orphan_and_continues(self):
+        """A retry that trips the ``queueing_lock`` unique index (the scanner
+        already re-queued the doc) must NOT abort the sweep: the orphan is
+        dropped and the remaining stalled jobs are still reclaimed."""
+        from procrastinate.exceptions import UniqueViolation
+        from procrastinate.jobs import Status
+
+        retried: list[int] = []
+        finished: list[tuple[int, Status, bool]] = []
+
+        class Job:
+            def __init__(self, id):
+                self.id = id
+
+        class FakeManager:
+            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+                return [Job(1), Job(2), Job(3)]
+
+            async def retry_job_by_id_async(self, job_id, retry_at):
+                retried.append(job_id)
+                # Jobs 1 and 3 collide with a live todo sibling; 2 reclaims fine.
+                if job_id in (1, 3):
+                    raise UniqueViolation(
+                        constraint_name="procrastinate_jobs_queueing_lock_idx_v1",
+                        queueing_lock=f"user:file:{job_id}",
+                    )
+
+            async def finish_job_by_id_async(self, job_id, status, delete_job):
+                finished.append((job_id, status, delete_job))
+
+        class FakeApp:
+            job_manager = FakeManager()
+
+        class Ctx:
+            app = FakeApp()
+
+        # Must not raise even though two of three jobs collide.
+        await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
+
+        assert retried == [1, 2, 3]  # every job attempted; sweep never aborted
+        # Colliding orphans are deleted (delete_job=True) so they leave `doing`.
+        assert finished == [
+            (1, Status.FAILED, True),
+            (3, Status.FAILED, True),
+        ]
+
 
 class TestGetIngestJobCounts:
     async def test_aggregates_stats_rows(self):
