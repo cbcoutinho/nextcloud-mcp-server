@@ -482,13 +482,12 @@ async def user_info_html(request: Request) -> HTMLResponse:
             str(request.url_for("oauth_logout")) if oauth_ctx else "/oauth/logout"
         )
 
-    # Get Nextcloud host for generating links to apps (used by viz tab)
-    # Use public issuer URL if available (for browser-accessible links),
-    # otherwise fall back to NEXTCLOUD_HOST from settings
+    # Get Nextcloud host for generating browser-accessible links to apps (viz
+    # tab). Use nextcloud_browser_url so the links point at Nextcloud even in
+    # external-IdP mode, where nextcloud_public_issuer_url is the IdP, not
+    # Nextcloud (falls back to public_issuer_url → nextcloud_host).
     settings = get_settings()
-    nextcloud_host_for_links = (
-        settings.nextcloud_public_issuer_url or settings.nextcloud_host
-    )
+    nextcloud_host_for_links = settings.nextcloud_browser_url
 
     # Build host info HTML (BasicAuth only)
     host_info_html = ""
