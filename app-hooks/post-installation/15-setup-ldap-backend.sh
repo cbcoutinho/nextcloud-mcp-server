@@ -28,6 +28,9 @@ fi
 php /var/www/html/occ app:enable user_ldap
 
 # Reuse an existing config id (idempotent re-run), else create a fresh one.
+# The trailing `|| true` guards the whole command substitution under `set -e`
+# (grep exits non-zero when no config exists yet on a fresh install); keep it on
+# this pipeline if refactoring.
 CONFIG_ID=$(php /var/www/html/occ ldap:show-config 2>/dev/null \
     | grep -E '^\| Configuration' | grep -oE 's[0-9]+' | head -n1 || true)
 if [ -z "$CONFIG_ID" ]; then

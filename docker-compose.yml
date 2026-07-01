@@ -466,6 +466,8 @@ services:
       - ./ldap/bootstrap.ldif:/opt/ldifs/init_org_entries.ldif:ro
     ports:
       - 127.0.0.1:1389:389
+    # Searching for the seeded `alice` entry (not just a port probe) means
+    # "healthy" == "bootstrap LDIF applied" — the app-hook can rely on that.
     healthcheck:
       test:
         [
