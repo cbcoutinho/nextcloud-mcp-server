@@ -62,14 +62,16 @@ KEYCLOAK_REALM = "nextcloud-mcp"
 # mappers for both `nextcloud-mcp-server` (MCP validation) and `nextcloud`
 # (user_oidc validation).
 KEYCLOAK_CLIENT_ID = "nextcloud-mcp-server"
-KEYCLOAK_CLIENT_SECRET = "mcp-secret-change-in-production"
+# Dev-only value mirrored from keycloak/realm-export.json + docker-compose.yml,
+# not a real secret. NOSONAR suppresses the hardcoded-credentials hotspot.
+KEYCLOAK_CLIENT_SECRET = "mcp-secret-change-in-production"  # NOSONAR(S2068)
 
 # Keycloak user used only for the OAuth leg (session identity key). It does not
 # have to match the Nextcloud data user — the app password minted by the Login
 # Flow leg is what authenticates DAV requests. Direct Access Grants (ROPC) are
 # enabled for the `nextcloud-mcp-server` client in realm-export.json.
 KEYCLOAK_OAUTH_USER = "admin"
-KEYCLOAK_OAUTH_PASSWORD = "admin"
+KEYCLOAK_OAUTH_PASSWORD = "admin"  # NOSONAR(S2068) - dev-only Keycloak bootstrap creds
 
 # Scopes registered on the Keycloak `nextcloud-mcp-server` client
 # (realm-export.json optionalClientScopes). This deliberately EXCLUDES
@@ -114,7 +116,7 @@ async def divergent_email_user(
     user = {
         "uid": uid,
         "email": f"{uid}@example.com",
-        "password": "DivergentPrincipalPass123!",
+        "password": "DivergentPrincipalPass123!",  # NOSONAR(S2068) - ephemeral test user
         "display_name": f"Divergent Principal {suffix}",
     }
 
