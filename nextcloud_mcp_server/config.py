@@ -35,6 +35,7 @@ _DEFAULTS: dict[str, Any] = {
     "nextcloud_mcp_server_url": None,
     "nextcloud_resource_uri": None,
     "nextcloud_public_issuer_url": None,
+    "nextcloud_public_url": None,
     "cookie_secure": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
@@ -734,7 +735,24 @@ class Settings:
     # Browser-reachable public URL for OAuth/Login-Flow-v2 redirects when
     # NEXTCLOUD_HOST is an internal Docker hostname. Falls back to
     # nextcloud_host when unset.
+    #
+    # NOTE: this doubles as the OAuth *issuer* URL used for JWT ``iss``
+    # validation. In external-IdP mode (e.g. Keycloak) the issuer is the IdP,
+    # NOT Nextcloud — so this value points at the IdP, not the browser-reachable
+    # Nextcloud host. Use ``nextcloud_public_url`` / ``nextcloud_browser_url``
+    # for anything that must resolve to Nextcloud itself (Login Flow v2 login
+    # URLs, elicitation links).
     nextcloud_public_issuer_url: str | None = None
+
+    # Browser-reachable public URL of the *Nextcloud* instance, used to rewrite
+    # Login Flow v2 login URLs and elicitation links when NEXTCLOUD_HOST is an
+    # internal Docker hostname. Distinct from ``nextcloud_public_issuer_url``
+    # because, in external-IdP (Keycloak/OIDC) deployments, the OAuth issuer is
+    # the IdP while Login Flow v2 must still point the browser at Nextcloud.
+    # Falls back to ``nextcloud_public_issuer_url`` then ``nextcloud_host`` (see
+    # ``nextcloud_browser_url``) so single-IdP (login-flow) deployments that set
+    # only NEXTCLOUD_PUBLIC_ISSUER_URL keep working unchanged.
+    nextcloud_public_url: str | None = None
 
     # Browser cookie Secure flag. None = auto-detect from nextcloud_host
     # scheme (https → True, else False). Set COOKIE_SECURE=true/false to
@@ -1005,6 +1023,26 @@ class Settings:
     # record best-effort rows into the app-DB usage_events table for the
     # control plane to pull. See nextcloud_mcp_server/usage/store.py.
     usage_metering_enabled: bool = False
+
+    @property
+    def nextcloud_browser_url(self) -> str | None:
+        """Browser-reachable base URL of the Nextcloud instance.
+
+        Resolves the URL the *user's browser* must use to reach Nextcloud for
+        Login Flow v2 login pages and elicitation links. Prefers the dedicated
+        ``nextcloud_public_url``; falls back to ``nextcloud_public_issuer_url``
+        (correct in single-IdP / login-flow deployments where the OAuth issuer
+        IS Nextcloud) and finally the internal ``nextcloud_host``.
+
+        In external-IdP mode (e.g. Keycloak) set ``NEXTCLOUD_PUBLIC_URL`` so this
+        does not fall back to the IdP issuer URL, which would send the browser to
+        the IdP instead of Nextcloud.
+        """
+        return (
+            self.nextcloud_public_url
+            or self.nextcloud_public_issuer_url
+            or self.nextcloud_host
+        )
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
@@ -1588,6 +1626,7 @@ def get_settings() -> Settings:
         "nextcloud_password": "NEXTCLOUD_PASSWORD",
         "nextcloud_app_password": "NEXTCLOUD_APP_PASSWORD",
         "nextcloud_public_issuer_url": "NEXTCLOUD_PUBLIC_ISSUER_URL",
+        "nextcloud_public_url": "NEXTCLOUD_PUBLIC_URL",
         "cookie_secure": "COOKIE_SECURE",
         # Nextcloud SSL/TLS settings
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",

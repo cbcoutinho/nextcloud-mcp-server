@@ -264,6 +264,10 @@ services:
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
       - NEXTCLOUD_RESOURCE_URI=nextcloud  # ADR-005: Keycloak uses client IDs as audiences, not URLs
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
+      # External-IdP mode: the OAuth issuer (above) is Keycloak, but Login Flow
+      # v2 must send the browser to *Nextcloud*. NEXTCLOUD_HOST is the internal
+      # Docker hostname, so give the browser-reachable Nextcloud URL explicitly.
+      - NEXTCLOUD_PUBLIC_URL=http://localhost:8080
 
       # Refresh token storage (ADR-002 Tier 1 & 2). Source from .env.
       - ENABLE_BACKGROUND_OPERATIONS=true
