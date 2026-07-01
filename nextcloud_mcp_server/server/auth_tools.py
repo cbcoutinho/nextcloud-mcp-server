@@ -113,7 +113,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             flow_client = LoginFlowV2Client(
                 nextcloud_host=nextcloud_host,
                 verify_ssl=get_nextcloud_ssl_verify(),
-                public_host=settings.nextcloud_public_issuer_url,
+                public_host=settings.nextcloud_browser_url,
             )
             init_response = await flow_client.initiate()
         except Exception as e:
@@ -259,7 +259,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             flow_client = LoginFlowV2Client(
                 nextcloud_host=nextcloud_host,
                 verify_ssl=get_nextcloud_ssl_verify(),
-                public_host=settings.nextcloud_public_issuer_url,
+                public_host=settings.nextcloud_browser_url,
             )
             poll_result = await flow_client.poll(
                 poll_endpoint=session["poll_endpoint"],
@@ -441,7 +441,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             flow_client = LoginFlowV2Client(
                 nextcloud_host=nextcloud_host,
                 verify_ssl=get_nextcloud_ssl_verify(),
-                public_host=settings.nextcloud_public_issuer_url,
+                public_host=settings.nextcloud_browser_url,
             )
             init_response = await flow_client.initiate()
         except Exception as e:

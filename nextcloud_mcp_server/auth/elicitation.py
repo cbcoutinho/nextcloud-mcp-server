@@ -15,8 +15,8 @@ from nextcloud_mcp_server.config import get_settings
 logger = logging.getLogger(__name__)
 
 # Path of the Astrolabe Nextcloud app's settings UI. The full URL is
-# reconstructed at elicitation time from settings.nextcloud_public_issuer_url
-# / settings.nextcloud_host so the user gets a browser-reachable link without
+# reconstructed at elicitation time from settings.nextcloud_browser_url (the
+# browser-reachable Nextcloud base URL) so the user gets a working link without
 # needing a separate config knob. If the Astrolabe app is not installed this
 # path will 404, and the user falls back to the nc_auth_provision_access tool
 # path mentioned in the same message.
@@ -44,17 +44,16 @@ class ProvisioningRequiredConfirmation(BaseModel):
 def _astrolabe_settings_url() -> str | None:
     """Construct the Astrolabe settings page URL from settings.
 
-    Prefers ``nextcloud_public_issuer_url`` (the browser-reachable public URL)
-    over ``nextcloud_host`` (which may be an internal hostname in Docker
-    deployments). Returns None if neither is set (or set to the empty
-    string), or if the configured base URL is missing an http:// or
-    https:// scheme — in the latter case the caller renders the tool-only
-    fallback message instead of a broken link.
+    Uses ``nextcloud_browser_url`` (the browser-reachable Nextcloud base URL:
+    ``nextcloud_public_url`` → ``nextcloud_public_issuer_url`` → ``nextcloud_host``)
+    so the link points at Nextcloud even in external-IdP deployments where the
+    OAuth issuer URL is the IdP, not Nextcloud. Returns None if none is set (or
+    set to the empty string), or if the configured base URL is missing an
+    http:// or https:// scheme — in the latter case the caller renders the
+    tool-only fallback message instead of a broken link.
     """
     settings = get_settings()
-    base = (
-        settings.nextcloud_public_issuer_url or settings.nextcloud_host or ""
-    ).strip()
+    base = (settings.nextcloud_browser_url or "").strip()
     if not base:
         return None
     if not base.startswith(("http://", "https://")):
@@ -182,8 +181,7 @@ async def present_provisioning_required(ctx: Context) -> str:
     has to translate.
 
     The Astrolabe settings URL is reconstructed from
-    ``settings.nextcloud_public_issuer_url`` /
-    ``settings.nextcloud_host``; if Astrolabe is not installed the link
+    ``settings.nextcloud_browser_url``; if Astrolabe is not installed the link
     404s and the user falls back to the tool path suggested in the same
     message.
 

@@ -391,7 +391,11 @@ The MCP server cannot reach Nextcloud at `NEXTCLOUD_HOST`. Verify network connec
 
 ### "Login URL points to localhost in browser"
 
-`NEXTCLOUD_PUBLIC_ISSUER_URL` is missing or wrong. Set it to the public URL of Nextcloud as the user's browser sees it. The server rewrites the login URL's origin from the internal `NEXTCLOUD_HOST` to `NEXTCLOUD_PUBLIC_ISSUER_URL` before redirecting the browser.
+`NEXTCLOUD_PUBLIC_ISSUER_URL` is missing or wrong. Set it to the public URL of Nextcloud as the user's browser sees it. The server rewrites the login URL's origin from the internal `NEXTCLOUD_HOST` to the browser-reachable Nextcloud URL before redirecting the browser.
+
+### Login page 404s / lands on the IdP (external IdP, e.g. Keycloak)
+
+With an **external** IdP, `NEXTCLOUD_PUBLIC_ISSUER_URL` points at the IdP (it doubles as the OAuth issuer for JWT validation), so the Login Flow v2 login URL gets rewritten onto the IdP's origin — which has no `/login/v2` endpoint and 404s. Set **`NEXTCLOUD_PUBLIC_URL`** to Nextcloud's own browser-reachable URL; it takes precedence over `NEXTCLOUD_PUBLIC_ISSUER_URL` for the login-page and elicitation-link rewrites while leaving JWT issuer validation on the IdP. Single-IdP (Nextcloud-is-the-IdP) deployments don't need it — the issuer URL already resolves to Nextcloud.
 
 ### Stored app password rejected by Nextcloud (401)
 

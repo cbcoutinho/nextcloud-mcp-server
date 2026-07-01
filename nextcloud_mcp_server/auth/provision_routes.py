@@ -74,7 +74,7 @@ async def _poll_and_store(provision_id: str) -> None:
     flow_client = LoginFlowV2Client(
         nextcloud_host=nextcloud_host,
         verify_ssl=get_nextcloud_ssl_verify(),
-        public_host=settings.nextcloud_public_issuer_url,
+        public_host=settings.nextcloud_browser_url,
     )
 
     poll_endpoint = session["poll_endpoint"]
@@ -214,7 +214,7 @@ async def provision_page(
         flow_client = LoginFlowV2Client(
             nextcloud_host=nextcloud_host,
             verify_ssl=get_nextcloud_ssl_verify(),
-            public_host=settings.nextcloud_public_issuer_url,
+            public_host=settings.nextcloud_browser_url,
         )
         init_response = await flow_client.initiate()
     except Exception as e:
@@ -262,12 +262,14 @@ async def provision_page(
     # The login_url may use the internal Docker hostname (http://app/...).
     # Replace with the public Nextcloud URL for the browser.
     # Note: poll_endpoint is rewritten to NEXTCLOUD_HOST (server-side, in
-    # LoginFlowV2Client) while login_url is rewritten to the public issuer
-    # URL here because the browser needs a publicly-reachable address.
+    # LoginFlowV2Client) while login_url is rewritten to the public *Nextcloud*
+    # URL here because the browser needs a publicly-reachable address. This must
+    # use nextcloud_browser_url (not the OAuth issuer URL): in external-IdP mode
+    # the issuer is the IdP, which has no Login Flow v2 endpoint.
     login_url = init_response.login_url
-    public_issuer = settings.nextcloud_public_issuer_url or ""
-    if public_issuer and nextcloud_host:
-        login_url = rewrite_url_origin(login_url, public_issuer.rstrip("/"))
+    public_browser_url = settings.nextcloud_browser_url or ""
+    if public_browser_url and nextcloud_host:
+        login_url = rewrite_url_origin(login_url, public_browser_url.rstrip("/"))
 
     return RedirectResponse(login_url)
 

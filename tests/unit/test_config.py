@@ -630,3 +630,34 @@ class TestDynaconfValidators:
         _reload_config()
         settings = get_settings()
         assert settings.log_format == "json"
+
+
+class TestNextcloudBrowserUrl:
+    """Test the ``nextcloud_browser_url`` resolver property (Login Flow v2 rewrite)."""
+
+    def test_prefers_public_url(self):
+        """nextcloud_public_url wins — the external-IdP (Keycloak) case."""
+        settings = Settings(
+            nextcloud_public_url="https://nc.example.com",
+            nextcloud_public_issuer_url="https://keycloak.example.com/realms/x",
+            nextcloud_host="https://app.internal",
+        )
+        assert settings.nextcloud_browser_url == "https://nc.example.com"
+
+    def test_falls_back_to_public_issuer(self):
+        """Without public_url, the OAuth issuer URL is used (single-IdP case)."""
+        settings = Settings(
+            nextcloud_public_issuer_url="https://nc.example.com",
+            nextcloud_host="https://app.internal",
+        )
+        assert settings.nextcloud_browser_url == "https://nc.example.com"
+
+    def test_falls_back_to_host(self):
+        """With neither public URL set, the internal host is used."""
+        settings = Settings(nextcloud_host="https://app.internal")
+        assert settings.nextcloud_browser_url == "https://app.internal"
+
+    def test_none_when_nothing_set(self):
+        """Returns None when no Nextcloud URL is configured at all."""
+        settings = Settings()
+        assert settings.nextcloud_browser_url is None

@@ -15,13 +15,35 @@ pytestmark = pytest.mark.unit
 
 
 def _fake_settings(
-    public_issuer_url: str | None = None, host: str | None = None
+    public_issuer_url: str | None = None,
+    host: str | None = None,
+    public_url: str | None = None,
 ) -> SimpleNamespace:
-    """Build a Settings-shaped object exposing only the fields elicitation reads."""
+    """Build a Settings-shaped object exposing only the fields elicitation reads.
+
+    ``nextcloud_browser_url`` mirrors the real ``Settings`` property's fallback
+    chain (public_url → public_issuer_url → host).
+    """
     return SimpleNamespace(
+        nextcloud_public_url=public_url,
         nextcloud_public_issuer_url=public_issuer_url,
         nextcloud_host=host,
+        nextcloud_browser_url=public_url or public_issuer_url or host,
     )
+
+
+def test_astrolabe_settings_url_prefers_public_url():
+    """nextcloud_public_url wins over the OAuth issuer URL (external-IdP mode)."""
+    fake = _fake_settings(
+        public_url="https://nc.example.com",
+        public_issuer_url="https://keycloak.example.com/realms/x",
+        host="https://internal.example",
+    )
+    with patch("nextcloud_mcp_server.auth.elicitation.get_settings", return_value=fake):
+        assert (
+            _astrolabe_settings_url()
+            == f"https://nc.example.com{ASTROLABE_SETTINGS_PATH}"
+        )
 
 
 def test_astrolabe_settings_url_prefers_public_issuer():
