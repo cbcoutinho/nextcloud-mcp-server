@@ -41,6 +41,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 
+#### SonarCloud quality gate (the `sonar` CLI)
+
+CI runs a **required `SonarCloud Code Analysis` check** with a Quality Gate
+(new-code **Reliability Rating ≥ A**, etc.). It catches issues `ruff`/`ty`
+never will — e.g. `python:S1244` (float `==`, use `pytest.approx`),
+`python:S5778` (a `pytest.raises` block with more than one statement that can
+throw — hoist setup calls out of the `with`), `python:S8572`
+(`logging.error(..., exc)` in an `except` → `logging.exception(...)`). **A green
+`ruff`/`ty` says nothing about the Sonar gate**, so check it explicitly rather
+than guessing (a wrong guess cost a review round on PR #996).
+
+Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
+`~/.local/share/sonarqube-cli/bin`; confirm with `sonar auth status` → org
+`cbcoutinho`). Project key: **`cbcoutinho_nextcloud-mcp-server`**.
+
+- **Pre-push (local, no network gate):** scan changed files for hardcoded
+  secrets — the one local scan available on our plan:
+  ```bash
+  sonar analyze secrets $(git diff --name-only origin/master...HEAD)
+  ```
+  `sonar verify --file` / `sonar analyze sqaa` (server-side Agentic Analysis)
+  are a **paid feature not enabled** on this org — they 403, so don't rely on
+  them for a local quality scan.
+
+- **After pushing a PR (SonarCloud analyzes in CI):** list exactly what Sonar
+  flagged on the PR's new code and read the gate — do this *inside the review
+  loop*, before merge, and fix the findings:
+  ```bash
+  sonar list issues --project cbcoutinho_nextcloud-mcp-server \
+    --pull-request <PR#> --statuses OPEN --format table
+  sonar api GET "/api/qualitygates/project_status?projectKey=cbcoutinho_nextcloud-mcp-server&pullRequest=<PR#>"
+  ```
+  (`sonar api` endpoints **must start with `/`**.) This is faster and more
+  precise than reading the SonarCloud dashboard or the reviewer's guess at
+  which line tripped the gate.
+
 ### Error Handling
 - **Use custom decorators**: `@retry_on_429` for rate limiting (see base_client.py)
 - **Standard exceptions**: `HTTPStatusError` from httpx, `McpError` for MCP-specific errors
