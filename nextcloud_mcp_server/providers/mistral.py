@@ -27,6 +27,25 @@ MISTRAL_EMBEDDING_DIMENSIONS: dict[str, int] = {
 # but we keep this in line with sibling providers (OpenAI=100, Ollama=32).
 BATCH_SIZE = 64
 
+# Per-request timeout (milliseconds) applied to embedding calls.
+#
+# NOTE: We pass this explicitly on every request instead of configuring a
+# timeout on an injected httpx client, because the mistralai SDK ignores
+# client-level timeouts for embeddings. Its generated ``embeddings.create*``
+# methods hard-default ``timeout_ms`` (60_000) and feed that scalar straight
+# into ``httpx.build_request(timeout=...)``, which *replaces* any
+# ``httpx.Timeout`` configured on the client. Consequently an injected
+# ``AsyncClient(timeout=...)`` is silently dropped, and a distinct ``connect``
+# timeout cannot be expressed at all (the SDK exposes only a single scalar).
+#   - Upstream: mistralai/client-python#449 (the original "SDK passes
+#     timeout=None and overrides the client" hang; fixed in v2.3.0) plus the
+#     residual per-method-default override discussed there and tracked via
+#     #474.
+#   - We pin mistralai 2.4.5 on purpose (2.4.6 was a supply-chain compromise,
+#     #523), so setting the bound explicitly here keeps it intentional and
+#     independent of the SDK's internal default.
+_EMBED_TIMEOUT_MS = 60_000
+
 _NO_EMBEDDING_MODEL_MSG = "Embedding not supported - no embedding_model configured"
 
 
@@ -112,6 +131,7 @@ class MistralProvider(Provider):
         response = await self.client.embeddings.create_async(
             model=self.embedding_model,
             inputs=[text],
+            timeout_ms=_EMBED_TIMEOUT_MS,
         )
 
         if not response.data or response.data[0].embedding is None:
@@ -195,6 +215,7 @@ class MistralProvider(Provider):
         response = await self.client.embeddings.create_async(
             model=self.embedding_model,
             inputs=batch,
+            timeout_ms=_EMBED_TIMEOUT_MS,
         )
 
         # Defensive: response.data items have Optional fields. Sort by index
