@@ -11,6 +11,9 @@ from nextcloud_mcp_server.client.webdav import WebDAVClient
 
 pytestmark = pytest.mark.unit
 
+# Dev-only fixture credential passed to CalendarClient in the tests below.
+_APP_PW = "app-pw"  # NOSONAR(S2068)
+
 
 def _http_response(content: bytes = b"", status_code: int = 207) -> httpx.Response:
     return httpx.Response(
@@ -287,7 +290,7 @@ def _calendar_client_with_principal(
 
     from nextcloud_mcp_server.client.calendar import CalendarClient
 
-    client = CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+    client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
     return client, dav_client
 
 
@@ -343,7 +346,7 @@ async def test_caldav_uses_async_safe_calendar_home_property_lookup(mocker):
 
     from nextcloud_mcp_server.client.calendar import CalendarClient
 
-    client = CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+    client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
 
     await client.list_calendars()
 
@@ -378,7 +381,7 @@ async def test_caldav_falls_back_to_calendar_home_property_when_lookup_empty(moc
 
     from nextcloud_mcp_server.client.calendar import CalendarClient
 
-    client = CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+    client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
 
     await client.list_calendars()
 
