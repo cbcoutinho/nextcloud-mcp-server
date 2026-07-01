@@ -293,10 +293,13 @@ class MailClient(BaseNextcloudClient):
             ``content`` is the raw attachment bytes base64-encoded.
         """
         safe_id = quote(attachment_id, safe="")
+        # Binary download: unlike the JSON helpers, don't send
+        # ``Accept: application/json`` (mirrors ``DeckClient.get_attachment_file``).
+        # The ``OCS-APIRequest`` header still CSRF-exempts this direct route.
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
-            headers=self._API_HEADERS,
+            headers={"OCS-APIRequest": "true"},
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
         raw = response.content
