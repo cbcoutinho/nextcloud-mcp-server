@@ -67,6 +67,7 @@ jobs:
           - "multi-user-basic"
           - "login-flow"
           - "keycloak"
+          - "ldap"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
@@ -81,7 +82,7 @@ jobs:
           # Mode-specific properties
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic) or (integration and not keycloak and not login_flow and not multi_user_basic)"
+            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap)"
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
@@ -114,6 +115,19 @@ jobs:
             wait-port: 8002
             mcp-internal-url: "http://mcp-keycloak:8002"
             needs-playwright: true
+            extra-args: ""
+
+          # LDAP-backend lane (GH #980 reproduction). Reuses the multi-user
+          # BasicAuth MCP service (port 8003) and adds the `ldap` profile
+          # (OpenLDAP). user_ldap is configured automatically by the app-hook
+          # post-installation/15-setup-ldap-backend.sh. No browser needed.
+          - mode: ldap
+            profile: multi-user-basic
+            extra-compose-profiles: "--profile ldap"
+            markers: "ldap"
+            wait-port: 8003
+            mcp-internal-url: "http://mcp-multi-user-basic:8000"
+            needs-playwright: false
             extra-args: ""
 
     name: integration (${{ matrix.mode }} / nc${{ matrix.nextcloud_version }})
@@ -229,6 +243,21 @@ jobs:
           done
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
+      # user_ldap is configured automatically by the app-hook
+      # app-hooks/post-installation/15-setup-ldap-backend.sh (gated on the
+      # openldap service). This step just surfaces the resulting config for
+      # debugging, mirroring the keycloak verify step below.
+      - name: Verify LDAP backend
+        if: matrix.mode == 'ldap'
+        run: |
+          echo "=== user_ldap enabled? ==="
+          docker compose exec -T app php occ app:list 2>/dev/null | grep -i ldap || echo "user_ldap NOT enabled"
+          echo "=== user_ldap connection ==="
+          # Re-derive the config id the same way the app-hook does, rather than
+          # assuming s01, so the diagnostic stays accurate if discovery differs.
+          config_id=$(docker compose exec -T app php occ ldap:show-config 2>/dev/null | grep -E '^\| Configuration' | grep -oE 's[0-9]+' | head -n1)
+          docker compose exec -T app php occ ldap:test-config "${config_id:-s01}" 2>&1 || echo "ldap:test-config failed"
+
       - name: Wait for Keycloak
         if: matrix.mode == 'keycloak'
         run: |
@@ -279,7 +308,7 @@ jobs:
       - name: Collect service logs on failure
         if: failure()
         run: |
-          docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+          docker compose --profile ${{ matrix.profile }} ${{ matrix.extra-compose-profiles }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
           docker compose exec -T app cat /var/www/html/data/nextcloud.log 2>/dev/null | tail -100 > /tmp/nextcloud-app.log 2>&1 || true
 
       - name: Upload debug artifacts

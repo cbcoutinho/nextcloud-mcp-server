@@ -549,6 +549,41 @@ docker compose exec app php occ user_oidc:provider keycloak
 - `docs/ADR-002-vector-sync-authentication.md` - Offline access architecture
 - `docs/keycloak-multi-client-validation.md` - Realm-level validation
 
+### LDAP Testing (GH #980 reproduction)
+
+The `ldap` lane reproduces GH #980 (DAV paths built from the loginName instead
+of the canonical Nextcloud UID). It runs an OpenLDAP server (`vegardit/openldap`)
+whose user `alice` logs in as `alice` but is mapped by `user_ldap` to a UID
+derived from the LDAP `entryUUID` — so `loginName != UID` **and**
+`/remote.php/dav/files/alice/` does not resolve to her real home. This is the
+only backend that reproduces #980 live: login-by-email resolves to the real home
+(email is a path alias) and `user_oidc` hardcodes `loginName == UID`.
+
+The reproduction test drives the **multi-user BasicAuth** MCP service (port 8003)
+as `alice`, so no browser is needed.
+
+**Setup**:
+```bash
+# openldap (ldap profile) + the multi-user-basic MCP service (port 8003).
+# user_ldap is auto-configured by app-hooks/post-installation/15-setup-ldap-backend.sh
+# (gated on the openldap service; a no-op for every other profile).
+docker compose --profile ldap --profile multi-user-basic up --build -d
+uv run pytest -m ldap -v             # xfails until #980's client fix lands
+```
+
+> The post-installation hook only runs on a **fresh** Nextcloud install. If you
+> add the `ldap` profile to an already-installed dev stack, run the hook by hand:
+> `docker compose exec app bash /docker-entrypoint-hooks.d/post-installation/15-setup-ldap-backend.sh`
+
+**Credentials**: LDAP admin `uid=admin,dc=example,dc=org` / `ldap_admin_pw`;
+user `alice` / `AlicePass123!` (see `ldap/bootstrap.ldif`).
+
+**xfail note**: `tests/server/ldap/test_ldap_dav_principal.py` is
+`xfail(strict=True)` — it fails (RED) on `master` because the bug is present, and
+xpasses (GREEN) once #980's `BaseNextcloudClient._ensure_principal_id` discovery
+lands. `strict=True` turns the unexpected pass into a failure, signalling that
+the marker should be dropped when #980 merges.
+
 ## Integration Testing with Docker
 
 **Nextcloud**: `docker compose exec app php occ ...` for occ commands

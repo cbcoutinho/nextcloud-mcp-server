@@ -445,6 +445,50 @@ services:
     profiles:
       - mail
 
+  # OpenLDAP backend for the `ldap` lane — reproduces GH #980 (DAV paths built
+  # from loginName instead of the canonical Nextcloud UID). Nextcloud's
+  # user_ldap backend derives an internal UID from the LDAP UUID that differs
+  # from the login (`alice`), which single-user / user_oidc / login-by-email
+  # backends can't produce. Bootstrapped fresh on every `up` (no data volume),
+  # so the custom LDIF is always applied.
+  openldap:
+    image: vegardit/openldap:2.6.10@sha256:f722617af8118ea9a740ebc138bdc188fd8d5e963c88e3eacf6e07e3456c88f4
+    environment:
+      - LDAP_INIT_ORG_DN=dc=example,dc=org
+      - LDAP_INIT_ORG_NAME=Example Org
+      - LDAP_INIT_ROOT_USER_PW=ldap_admin_pw
+      # Plain LDAP on 389 is enough for the internal test network; skip the
+      # self-signed LDAPS setup so user_ldap can connect without TLS fuss.
+      - LDAP_LDAPS_ENABLED=false
+    volumes:
+      # Seed ou=people + the divergent `alice` user (evaluated on first launch;
+      # no data volume, so it re-seeds fresh on every `up`).
+      - ./ldap/bootstrap.ldif:/opt/ldifs/init_org_entries.ldif:ro
+    ports:
+      - 127.0.0.1:1389:389
+    # Searching for the seeded `alice` entry (not just a port probe) means
+    # "healthy" == "bootstrap LDIF applied" — the app-hook can rely on that.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "ldapsearch",
+          "-x",
+          "-H",
+          "ldap://localhost",
+          "-b",
+          "uid=alice,ou=people,dc=example,dc=org",
+          "-D",
+          "uid=admin,dc=example,dc=org",
+          "-w",
+          "ldap_admin_pw",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    profiles:
+      - ldap
+
 volumes:
   nextcloud:
   db:
