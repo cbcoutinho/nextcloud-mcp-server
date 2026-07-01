@@ -255,9 +255,15 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
             # A live ``todo`` sibling with the same queueing_lock already exists
             # (the scanner re-queued this doc), so the orphan is redundant: drop
             # it (delete_job) to free it from ``doing`` and let the sibling run.
+            # ``delete_job=True`` DELETEs the row, so the end_status is only
+            # validated, never persisted — no ``failed`` job/gauge inflation. We
+            # pass ABORTED (not FAILED) to name the intent honestly: this is an
+            # intentional dedup discard, not a genuine failure. (CANCELLED is not
+            # a valid finish_job end_status in procrastinate — only succeeded /
+            # failed / aborted.)
             try:
                 await manager.finish_job_by_id_async(
-                    job_id=job.id, status=Status.FAILED, delete_job=True
+                    job_id=job.id, status=Status.ABORTED, delete_job=True
                 )
                 discarded += 1
             except Exception:

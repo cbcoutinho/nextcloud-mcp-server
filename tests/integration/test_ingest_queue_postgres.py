@@ -16,17 +16,22 @@ from __future__ import annotations
 
 import os
 import socket
+import types
+from typing import cast
 from urllib.parse import urlparse
 
 import pytest
+from procrastinate import JobContext
 
 import nextcloud_mcp_server.config as config_module
+import nextcloud_mcp_server.vector.queue.procrastinate as pq
 from nextcloud_mcp_server.vector.queue.procrastinate import (
     INGEST_QUEUE_NAME,
     ProcrastinateTaskProducer,
     apply_ingest_queue_schema,
     build_app_for_url,
     get_ingest_job_counts,
+    reclaim_stalled_ingest_jobs,
 )
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
@@ -137,3 +142,58 @@ async def test_ingest_queue_end_to_end(fresh_app):
             queue=INGEST_QUEUE_NAME, seconds_since_heartbeat=0
         )
         assert list(stalled) == []
+
+
+async def test_reclaim_discards_real_queueing_lock_collision(fresh_app, monkeypatch):
+    """The reclaim fix, end-to-end against real Postgres (PR #999).
+
+    Confirms the exact production path the unit test can only simulate: that
+    ``retry_job_by_id_async``'s UPDATE raises ``procrastinate.exceptions.
+    UniqueViolation`` (not a bare ``psycopg`` error that would slip past the
+    ``except UniqueViolation`` branch) when a reclaimed orphan collides with a
+    live ``todo`` sibling — and that the orphan is then discarded, not stranded.
+    """
+    # Threshold 0 so the manually-orphaned ``doing`` job is immediately stalled;
+    # reclaim only reads these two settings.
+    monkeypatch.setattr(
+        pq,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            ingest_stalled_job_seconds=0, ingest_reclaim_retry_delay_seconds=0
+        ),
+    )
+
+    async with fresh_app.open_async():
+        producer = ProcrastinateTaskProducer(fresh_app)
+
+        # Job A for doc "1" → todo, then orphan it into ``doing`` (worker crashed
+        # mid-job) so its queueing_lock no longer occupies the todo partial-index.
+        await producer.send(_task("1"))
+        await fresh_app.connector.execute_query_async(
+            "UPDATE procrastinate_jobs SET status = 'doing' WHERE queue_name = %(q)s",
+            q=INGEST_QUEUE_NAME,
+        )
+        # The scanner re-queues the same doc → fresh todo sibling B holding the
+        # identical queueing_lock (allowed: A is 'doing', not 'todo').
+        await producer.send(_task("1"))
+
+        by_status = {
+            r["status"]: r["n"]
+            for r in await fresh_app.connector.execute_query_all_async(
+                "SELECT status, count(*) AS n FROM procrastinate_jobs GROUP BY status"
+            )
+        }
+        assert by_status == {"doing": 1, "todo": 1}  # A doing + B todo, same lock
+
+        # Reclaim: retry(A) → 'todo' collides with B → UniqueViolation → A is
+        # discarded (deleted). Must not raise, and must leave exactly B as todo.
+        ctx = cast(JobContext, types.SimpleNamespace(app=fresh_app))
+        await reclaim_stalled_ingest_jobs(ctx, timestamp=0)
+
+        by_status = {
+            r["status"]: r["n"]
+            for r in await fresh_app.connector.execute_query_all_async(
+                "SELECT status, count(*) AS n FROM procrastinate_jobs GROUP BY status"
+            )
+        }
+        assert by_status == {"todo": 1}  # orphan gone; the live sibling survives

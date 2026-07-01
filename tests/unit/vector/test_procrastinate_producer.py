@@ -265,10 +265,11 @@ class TestReclaimStalledJobs:
         await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
 
         assert retried == [1, 2, 3]  # every job attempted; sweep never aborted
-        # Colliding orphans are deleted (delete_job=True) so they leave `doing`.
+        # Colliding orphans are deleted (delete_job=True) so they leave `doing`;
+        # ABORTED names the intentional dedup discard (delete makes it non-persisted).
         assert finished == [
-            (1, Status.FAILED, True),
-            (3, Status.FAILED, True),
+            (1, Status.ABORTED, True),
+            (3, Status.ABORTED, True),
         ]
 
 
