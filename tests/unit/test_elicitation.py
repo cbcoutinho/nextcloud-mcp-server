@@ -37,7 +37,7 @@ def test_astrolabe_settings_url_prefers_public_url():
     fake = _fake_settings(
         public_url="https://nc.example.com",
         public_issuer_url="https://keycloak.example.com/realms/x",
-        host="http://internal:8080",
+        host="https://internal.example",
     )
     with patch("nextcloud_mcp_server.auth.elicitation.get_settings", return_value=fake):
         assert (

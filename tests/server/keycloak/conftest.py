@@ -225,7 +225,10 @@ async def _complete_login_flow_v2_with_email(
             await grant_btn.click()
         except Exception as e:
             logger.warning("No Grant access button: %s", e)
-            await page.screenshot(path="/tmp/keycloak_login_flow_no_grant.png")
+            # Debug artifact uploaded by CI on failure (test.yml collects
+            # /tmp/*.png). NOSONAR suppresses the world-writable-dir hotspot.
+            shot_path = "/tmp/keycloak_login_flow_no_grant.png"  # NOSONAR(S5443)
+            await page.screenshot(path=shot_path)
 
         # Step 4: password confirmation dialog.
         confirm_password = page.get_by_role("dialog").get_by_role(

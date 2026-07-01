@@ -640,7 +640,7 @@ class TestNextcloudBrowserUrl:
         settings = Settings(
             nextcloud_public_url="https://nc.example.com",
             nextcloud_public_issuer_url="https://keycloak.example.com/realms/x",
-            nextcloud_host="http://app:80",
+            nextcloud_host="https://app.internal",
         )
         assert settings.nextcloud_browser_url == "https://nc.example.com"
 
@@ -648,14 +648,14 @@ class TestNextcloudBrowserUrl:
         """Without public_url, the OAuth issuer URL is used (single-IdP case)."""
         settings = Settings(
             nextcloud_public_issuer_url="https://nc.example.com",
-            nextcloud_host="http://app:80",
+            nextcloud_host="https://app.internal",
         )
         assert settings.nextcloud_browser_url == "https://nc.example.com"
 
     def test_falls_back_to_host(self):
         """With neither public URL set, the internal host is used."""
-        settings = Settings(nextcloud_host="http://app:80")
-        assert settings.nextcloud_browser_url == "http://app:80"
+        settings = Settings(nextcloud_host="https://app.internal")
+        assert settings.nextcloud_browser_url == "https://app.internal"
 
     def test_none_when_nothing_set(self):
         """Returns None when no Nextcloud URL is configured at all."""
