@@ -76,7 +76,7 @@ jobs:
             nextcloud_image: "docker.io/library/nextcloud:33.0.6@sha256:6a3d5b0c511aae8e725087cf2cb55067b295cc48f76cb219f10e1a7bcebeecf2"
           # Disabled until all upstream apps support NC 34
           # - nextcloud_version: "34"
-          #   nextcloud_image: "docker.io/library/nextcloud:34.0.1@sha256:1d82066dd471ade1351f474bf85205477015297f1dc5b04b5645c8a0694b0b82"
+          #   nextcloud_image: "docker.io/library/nextcloud:34.0.1@sha256:e74a21b3d94e016831f06a6cdb3891f48ee981f6679df0bbd29af6e6f890e7c4"
 
           # Mode-specific properties
           - mode: single-user
