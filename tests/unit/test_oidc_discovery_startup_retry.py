@@ -97,6 +97,26 @@ async def test_retries_5xx_then_succeeds():
     assert attempts["n"] == 2
 
 
+async def test_retries_malformed_json_200_then_succeeds():
+    """A 200 with a non-JSON body (e.g. a proxy 'warming up' placeholder page
+    served during cold start) is retried like a transient failure, not crashed
+    on — otherwise it reintroduces the crashloop via a different status code."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            return httpx.Response(200, text="<html>warming up</html>")
+        return httpx.Response(200, json=DISCOVERY_DOC)
+
+    with _patched_client(handler):
+        with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()):
+            result = await _perform_oidc_discovery(DISCOVERY_URL, _settings())
+
+    assert result == DISCOVERY_DOC
+    assert attempts["n"] == 2
+
+
 async def test_4xx_raises_immediately_without_retry():
     """A 4xx is a misconfiguration, not a transient error — fail fast."""
     attempts = {"n": 0}
@@ -151,7 +171,7 @@ async def test_negative_backoff_is_clamped_not_crashing():
     assert result == DISCOVERY_DOC
     # Clamped to 0 → a single non-negative sleep before the retry.
     sleep.assert_awaited_once()
-    assert sleep.await_args.args[0] == 0.0
+    assert sleep.await_args.args[0] == pytest.approx(0.0)
 
 
 async def test_max_attempts_one_restores_fail_fast():

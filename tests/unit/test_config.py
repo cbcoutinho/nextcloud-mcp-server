@@ -527,6 +527,14 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="OIDC_DISCOVERY_BACKOFF_BASE"):
             _reload_config()
 
+    @patch.dict(os.environ, {"OIDC_DISCOVERY_BACKOFF_MAX": "-1"}, clear=True)
+    def test_oidc_discovery_backoff_max_negative_rejected(self):
+        """OIDC_DISCOVERY_BACKOFF_MAX must be non-negative."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="OIDC_DISCOVERY_BACKOFF_MAX"):
+            _reload_config()
+
     @patch.dict(
         os.environ,
         {
@@ -542,8 +550,8 @@ class TestDynaconfValidators:
         settings = get_settings()
 
         assert settings.oidc_discovery_max_attempts == 3
-        assert settings.oidc_discovery_backoff_base == 0.5
-        assert settings.oidc_discovery_backoff_max == 10
+        assert settings.oidc_discovery_backoff_base == pytest.approx(0.5)
+        assert settings.oidc_discovery_backoff_max == pytest.approx(10.0)
 
     @patch.dict(os.environ, {"LOG_FORMAT": "xml"}, clear=True)
     def test_invalid_log_format(self):

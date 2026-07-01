@@ -883,7 +883,15 @@ async def _perform_oidc_discovery(
                 response = await client.get(discovery_url)
                 response.raise_for_status()
                 return response.json()
-        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+        except (
+            httpx.TransportError,
+            httpx.HTTPStatusError,
+            json.JSONDecodeError,
+        ) as exc:
+            # A malformed 200 body (e.g. a proxy/gateway "warming up" HTML
+            # placeholder served during cold start) raises JSONDecodeError —
+            # treat it as transient like a 5xx, otherwise it reintroduces the
+            # very crashloop this retry loop exists to prevent.
             # 4xx is a misconfiguration (wrong URL, no OIDC app) — fail fast so
             # the operator sees the real error instead of a retry storm.
             if (
