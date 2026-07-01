@@ -884,14 +884,16 @@ async def _perform_oidc_discovery(
                 response.raise_for_status()
                 return response.json()
         except (
-            httpx.TransportError,
+            httpx.RequestError,
             httpx.HTTPStatusError,
             json.JSONDecodeError,
         ) as exc:
-            # A malformed 200 body (e.g. a proxy/gateway "warming up" HTML
-            # placeholder served during cold start) raises JSONDecodeError —
-            # treat it as transient like a 5xx, otherwise it reintroduces the
-            # very crashloop this retry loop exists to prevent.
+            # httpx.RequestError is the broad network-layer base (transport
+            # timeouts/connection errors plus TooManyRedirects, DecodingError,
+            # …); a malformed 200 body (e.g. a proxy/gateway "warming up" HTML
+            # placeholder served during cold start) raises JSONDecodeError.
+            # Treat all of these as transient like a 5xx, otherwise they
+            # reintroduce the very crashloop this retry loop exists to prevent.
             # 4xx is a misconfiguration (wrong URL, no OIDC app) — fail fast so
             # the operator sees the real error instead of a retry storm.
             if (
@@ -900,9 +902,7 @@ async def _perform_oidc_discovery(
             ):
                 raise
             if attempt >= max_attempts:
-                logger.error(
-                    "OIDC discovery failed after %d attempt(s): %s", attempt, exc
-                )
+                logger.exception("OIDC discovery failed after %d attempt(s)", attempt)
                 raise
             # Full jitter over a capped exponential backoff.
             delay = min(backoff_max, backoff_base * 2 ** (attempt - 1))
@@ -1209,14 +1209,15 @@ async def setup_oauth_config_for_multi_user_basic(
         discovery_url,
     )
 
-    # Perform OIDC discovery
+    # Perform OIDC discovery with the same cold-start retry/backoff as the
+    # LOGIN_FLOW path (see _perform_oidc_discovery). This call degrades
+    # gracefully at the caller rather than crashlooping, but without retry the
+    # cold-start egress race would still disable hybrid-mode management APIs on
+    # every pod restart until the next scan. The helper's exhaustion exceptions
+    # (HTTPStatusError / RequestError / JSONDecodeError — the last a ValueError
+    # subclass) all fall through to the handlers below.
     try:
-        async with nextcloud_httpx_client(
-            timeout=30.0, follow_redirects=True
-        ) as http_client:
-            response = await http_client.get(discovery_url)
-            response.raise_for_status()
-            discovery = response.json()
+        discovery = await _perform_oidc_discovery(discovery_url, settings)
     except httpx.HTTPStatusError as e:
         logger.error(
             "OIDC discovery failed: HTTP %s from %s",

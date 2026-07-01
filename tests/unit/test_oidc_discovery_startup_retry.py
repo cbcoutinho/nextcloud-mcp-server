@@ -125,10 +125,11 @@ async def test_4xx_raises_immediately_without_retry():
         attempts["n"] += 1
         return httpx.Response(404)
 
+    settings = _settings()
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
             with pytest.raises(httpx.HTTPStatusError):
-                await _perform_oidc_discovery(DISCOVERY_URL, _settings())
+                await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 1
     sleep.assert_not_awaited()
@@ -141,10 +142,11 @@ async def test_raises_after_exhausting_attempts():
         attempts["n"] += 1
         raise httpx.ConnectTimeout("still not ready", request=request)
 
+    settings = _settings(max_attempts=3)
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
             with pytest.raises(httpx.ConnectTimeout):
-                await _perform_oidc_discovery(DISCOVERY_URL, _settings(max_attempts=3))
+                await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 3
     assert sleep.await_count == 2  # no sleep after the final failed attempt
@@ -181,10 +183,11 @@ async def test_max_attempts_one_restores_fail_fast():
         attempts["n"] += 1
         raise httpx.ConnectTimeout("boom", request=request)
 
+    settings = _settings(max_attempts=1)
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
             with pytest.raises(httpx.ConnectTimeout):
-                await _perform_oidc_discovery(DISCOVERY_URL, _settings(max_attempts=1))
+                await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 1
     sleep.assert_not_awaited()
