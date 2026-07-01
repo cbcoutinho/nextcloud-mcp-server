@@ -1,0 +1,27 @@
+# Custom bootstrap entries for the OpenLDAP `ldap` compose profile.
+# Loaded by osixia/openldap into the seeded dc=example,dc=org tree.
+#
+# The single user `alice` is the divergent-principal fixture for reproducing
+# GH #980: her LDAP login is `alice`, but Nextcloud's user_ldap backend derives
+# a DIFFERENT canonical internal UID (from the UUID attribute), so DAV paths
+# built from the loginName (`/remote.php/dav/files/alice/`) miss her real home
+# at `/remote.php/dav/files/<internal-uid>/`.
+#
+# userPassword is a deterministic SSHA hash of "AlicePass123!" (salt "ncmcp980")
+# so this file stays reproducible across rebuilds.
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=alice,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+objectClass: posixAccount
+cn: Alice Example
+sn: Example
+uid: alice
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/alice
+mail: alice@ldap.example.org
+userPassword: {SSHA}PD7foplU4ZMYi7ENTdbi3i+sG79uY21jcDk4MA==
