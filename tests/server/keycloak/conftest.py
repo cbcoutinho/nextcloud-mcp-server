@@ -3,37 +3,40 @@
 The ``mcp-keycloak`` service uses Keycloak as the external OAuth IdP but reaches
 Nextcloud via Login Flow v2 **app passwords** (``MCP_DEPLOYMENT_MODE=login_flow``),
 exactly like the ``mcp-login-flow`` service — the only difference is the OAuth
-IdP (Keycloak vs Nextcloud's built-in ``oidc`` app). The keycloak lane currently
-only has DCR/authorize tests; the Login Flow v2 app-password integration tests
-are missing.
+IdP (Keycloak vs Nextcloud's built-in ``oidc`` app). The keycloak lane previously
+only had DCR/authorize tests; it never provisioned a Login Flow v2 app password or
+issued a real Nextcloud API call. These fixtures fill that gap end-to-end:
 
-These fixtures fill that gap AND set up the divergent-principal condition fixed
-by PR #980:
-
-* **OAuth leg** — a Keycloak auth-code flow (browser) obtains an access token
-  that the ``mcp-keycloak`` session accepts. This exercises the keycloak service.
+* **OAuth leg** — a Keycloak direct-grant (ROPC) obtains an access token that the
+  ``mcp-keycloak`` session accepts. This exercises the keycloak service without
+  driving Keycloak's browser login form (its identity is irrelevant here — the
+  Login Flow v2 app password is what authenticates DAV requests).
 * **Login Flow v2 leg** — the browser completes Nextcloud Login Flow v2 by logging
   in as a *local* Nextcloud user using its **email address**. Nextcloud keys the
   resulting app password on the *loginName* (the email), which differs from the
-  user's canonical UID. ``context.py`` then builds DAV paths from the email
-  (``/remote.php/dav/files/<email>/``) instead of the UID — the exact wrong-path
-  bug PR #980 fixes via ``current-user-principal`` discovery.
+  user's canonical UID (loginName != UID).
 
-A plain Keycloak/user_oidc login can NOT reproduce this: ``user_oidc``'s
-``LoginController`` sets ``loginName == UID`` (the sha256 hash), so its DAV paths
-are already correct. Login-by-email of a local user is the reliable divergence
-generator (and matches PR #980's own ``alice@example.com`` unit tests).
+Getting these fixtures to provision at all is the regression guard for
+``NEXTCLOUD_PUBLIC_URL``: in external-IdP mode the OAuth issuer URL is Keycloak,
+so without a dedicated browser-reachable Nextcloud URL the Login Flow v2
+``login_url`` is rewritten to Keycloak's origin and 404s.
+
+Relation to PR #980: the login-by-email leg produces the same ``loginName != UID``
+identity shape as #980's client fix, but it does NOT reproduce #980's wrong-path
+failure on the CI Nextcloud versions — Nextcloud resolves
+``/remote.php/dav/files/<email>/`` to the user's real home (email is a valid path
+alias), so the WebDAV round-trip succeeds with or without the principal-discovery
+fix. Neither can a plain Keycloak/``user_oidc`` login: ``user_oidc``'s
+``LoginController`` hardcodes ``loginName == UID`` (the sha256 hash), so its DAV
+paths are already correct. #980's failure mode needs a backend (e.g. LDAP) where
+the loginName is not a valid files-path alias; it is covered by #980's own mocked
+unit tests.
 """
 
-import base64
-import hashlib
 import json
 import logging
-import secrets
-import time
 import uuid
 from typing import Any, AsyncGenerator
-from urllib.parse import quote
 
 import anyio
 import httpx
@@ -43,7 +46,6 @@ from mcp.types import ElicitRequestParams, ElicitResult
 
 from nextcloud_mcp_server.client import NextcloudClient
 from tests.conftest import (
-    DEFAULT_FULL_SCOPES,
     create_mcp_client_session,
 )
 from tests.server.login_flow.conftest import _rewrite_login_flow_url
@@ -64,12 +66,32 @@ KEYCLOAK_CLIENT_SECRET = "mcp-secret-change-in-production"
 
 # Keycloak user used only for the OAuth leg (session identity key). It does not
 # have to match the Nextcloud data user — the app password minted by the Login
-# Flow leg is what authenticates DAV requests.
+# Flow leg is what authenticates DAV requests. Direct Access Grants (ROPC) are
+# enabled for the `nextcloud-mcp-server` client in realm-export.json.
 KEYCLOAK_OAUTH_USER = "admin"
 KEYCLOAK_OAUTH_PASSWORD = "admin"
 
+# Scopes registered on the Keycloak `nextcloud-mcp-server` client
+# (realm-export.json optionalClientScopes). This deliberately EXCLUDES
+# ``talk.read``/``talk.write``: those are part of ``DEFAULT_FULL_SCOPES`` but are
+# NOT registered on the Keycloak client, so requesting them makes Keycloak reject
+# the whole token request with ``invalid_scope``. ``files.read``/``files.write``
+# are what the WebDAV reproduction test actually needs.
+KEYCLOAK_SUPPORTED_SCOPES = (
+    "openid profile email "
+    "notes.read notes.write "
+    "calendar.read calendar.write "
+    "todo.read todo.write "
+    "contacts.read contacts.write "
+    "cookbook.read cookbook.write "
+    "deck.read deck.write "
+    "tables.read tables.write "
+    "files.read files.write "
+    "sharing.read sharing.write"
+)
 
-@pytest.fixture()
+
+@pytest.fixture(scope="session")
 async def divergent_email_user(
     anyio_backend, nc_client: NextcloudClient
 ) -> AsyncGenerator[dict[str, str], Any]:
@@ -79,6 +101,13 @@ async def divergent_email_user(
     The user is deleted on teardown. Nextcloud login-by-email is enabled by
     default, so logging in with the email during Login Flow v2 produces an app
     password whose stored loginName is the email — not the UID.
+
+    Session-scoped: the ``mcp-keycloak`` app-password store is keyed by the
+    Keycloak OAuth identity (a single shared ``admin``), so all tests share one
+    provisioned app password. The divergent user must therefore stay alive for
+    the whole session — a per-test user would be deleted while its app password
+    is still cached server-side, turning the WebDAV reproduction into a spurious
+    401-on-deleted-user instead of the #980 wrong-path failure.
     """
     suffix = uuid.uuid4().hex[:8]
     uid = f"divprincipal_{suffix}"
@@ -107,26 +136,18 @@ async def divergent_email_user(
             logger.warning("Failed to delete divergent-principal user %s: %s", uid, e)
 
 
-def _pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) for a PKCE S256 exchange."""
-    verifier = secrets.token_urlsafe(64)
-    digest = hashlib.sha256(verifier.encode()).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-    return verifier, challenge
-
-
-@pytest.fixture()
-async def keycloak_service_oauth_token(
-    anyio_backend, browser, oauth_callback_server
-) -> str:
+@pytest.fixture(scope="session")
+async def keycloak_service_oauth_token(anyio_backend) -> str:
     """Obtain a Keycloak access token accepted by the ``mcp-keycloak`` session.
 
-    Drives the OAuth auth-code flow (with PKCE) against Keycloak using the
-    static ``nextcloud-mcp-server`` client and the test OAuth callback server.
-    Logs into Keycloak (not Nextcloud) via its native login form.
+    Uses the OAuth 2.0 Resource Owner Password Credentials (direct access)
+    grant against the static ``nextcloud-mcp-server`` client. The OAuth leg's
+    identity is irrelevant to the reproduction — the Login Flow v2 app password
+    is what authenticates DAV requests — so there is no need to drive Keycloak's
+    browser login form here. Direct grant is faster and avoids the flakiness of
+    the auth-code + Playwright flow (whose native ``#username`` login page also
+    breaks when the request carries scopes the client does not know about).
     """
-    auth_states, callback_url = oauth_callback_server
-
     async with httpx.AsyncClient(timeout=30.0) as http:
         discovery = await http.get(
             f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
@@ -136,64 +157,23 @@ async def keycloak_service_oauth_token(
             discovery.raise_for_status()
         except httpx.HTTPStatusError as e:
             pytest.skip(f"Keycloak realm not available: {e}")
-        oidc = discovery.json()
+        token_endpoint = discovery.json()["token_endpoint"]
 
-    authorization_endpoint = oidc["authorization_endpoint"]
-    token_endpoint = oidc["token_endpoint"]
-
-    state = secrets.token_urlsafe(32)
-    verifier, challenge = _pkce_pair()
-    auth_url = (
-        f"{authorization_endpoint}?"
-        f"response_type=code&"
-        f"client_id={KEYCLOAK_CLIENT_ID}&"
-        f"redirect_uri={quote(callback_url, safe='')}&"
-        f"state={state}&"
-        f"scope={quote(DEFAULT_FULL_SCOPES, safe='')}&"
-        f"code_challenge={challenge}&"
-        f"code_challenge_method=S256"
-    )
-
-    context = await browser.new_context(ignore_https_errors=True)
-    page = await context.new_page()
-    try:
-        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
-
-        # Keycloak login form (native). Field ids are stable across KC 26.x.
-        await page.wait_for_selector("#username", timeout=15000)
-        await page.fill("#username", KEYCLOAK_OAUTH_USER)
-        await page.fill("#password", KEYCLOAK_OAUTH_PASSWORD)
-        await page.click("#kc-login")
-        await page.wait_for_load_state("networkidle", timeout=60000)
-
-        start = time.time()
-        while state not in auth_states:
-            if time.time() - start > 45:
-                await page.screenshot(path="/tmp/keycloak_oauth_timeout.png")
-                raise TimeoutError(
-                    f"Timeout waiting for Keycloak OAuth callback (url={page.url})"
-                )
-            await anyio.sleep(0.5)
-        auth_code = auth_states[state]
-    finally:
-        await context.close()
-
-    async with httpx.AsyncClient(timeout=30.0) as http:
         token_resp = await http.post(
             token_endpoint,
             data={
-                "grant_type": "authorization_code",
-                "code": auth_code,
-                "redirect_uri": callback_url,
+                "grant_type": "password",
                 "client_id": KEYCLOAK_CLIENT_ID,
                 "client_secret": KEYCLOAK_CLIENT_SECRET,
-                "code_verifier": verifier,
+                "username": KEYCLOAK_OAUTH_USER,
+                "password": KEYCLOAK_OAUTH_PASSWORD,
+                "scope": KEYCLOAK_SUPPORTED_SCOPES,
             },
         )
         token_resp.raise_for_status()
         access_token = token_resp.json()["access_token"]
 
-    logger.info("Obtained Keycloak OAuth token for mcp-keycloak session")
+    logger.info("Obtained Keycloak OAuth token (direct grant) for mcp-keycloak session")
     return access_token
 
 
@@ -204,8 +184,8 @@ async def _complete_login_flow_v2_with_email(
 
     Identical to the login_flow helper, but fills the Nextcloud login form's
     user field with the *email* address so the resulting app password's stored
-    loginName is the email (not the UID). This is what creates the divergent
-    principal path that PR #980 fixes.
+    loginName is the email (not the UID) — the ``loginName != UID`` identity
+    shape exercised by this lane.
     """
     login_url = _rewrite_login_flow_url(login_url)
 
@@ -273,7 +253,7 @@ async def _complete_login_flow_v2_with_email(
         await context.close()
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 async def nc_mcp_keycloak_email_client(
     anyio_backend,
     keycloak_service_oauth_token: str,
@@ -281,6 +261,12 @@ async def nc_mcp_keycloak_email_client(
     divergent_email_user: dict[str, str],
 ) -> AsyncGenerator[ClientSession, Any]:
     """Provisioned ``mcp-keycloak`` session whose app password loginName is an email.
+
+    Session-scoped so a single Login Flow v2 provisioning (one browser login)
+    serves every test in the keycloak lane. This is both faster and correct:
+    the app password is keyed by the shared Keycloak ``admin`` identity, so
+    re-provisioning per test would just hit ``already_provisioned`` and reuse the
+    same stored password anyway (see ``divergent_email_user``).
 
     1. Connects to mcp-keycloak (8002) with a Keycloak OAuth token.
     2. Calls ``nc_auth_provision_access`` to start Login Flow v2.
