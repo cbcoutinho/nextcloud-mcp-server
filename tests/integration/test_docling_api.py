@@ -24,6 +24,12 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
+# These tests drive the single-user MCP service (port 8000) against a live
+# docling-serve instance started via the docker-compose "docling" profile. The
+# CI "docling" lane selects them with ``-m docling``; the skipif keeps them out
+# of a local full-suite run where docling isn't configured.
+pytestmark = [pytest.mark.integration, pytest.mark.docling]
+
 _DOCLING_ENABLED = os.getenv("ENABLE_DOCLING", "false").lower() == "true"
 
 
