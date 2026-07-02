@@ -180,7 +180,10 @@ def test_home_set_absolute_path_resolves_against_origin_not_subpath(mocker):
 
     from nextcloud_mcp_server.client.calendar import CalendarClient
 
-    client = CalendarClient("https://host/nextcloud", "David", password="app-pw")
+    # No credentials needed: the method under test derives the URL purely from
+    # base_url, and constructing without auth keeps this free of S2068 (hard-
+    # coded credential) noise.
+    client = CalendarClient("https://host/nextcloud", "David")
 
     home_url = client._calendar_home_url_from_home_set(
         "/nextcloud/remote.php/dav/calendars/David/"
@@ -195,7 +198,7 @@ def test_home_set_absolute_path_resolves_against_root_origin(mocker):
 
     from nextcloud_mcp_server.client.calendar import CalendarClient
 
-    client = CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+    client = CalendarClient("https://cloud.example.org", "alice")
 
     home_url = client._calendar_home_url_from_home_set(
         "/remote.php/dav/calendars/alice/"
