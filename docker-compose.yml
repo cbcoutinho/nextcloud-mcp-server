@@ -74,6 +74,19 @@ services:
     profiles:
       - unstructured
 
+  # docling-serve: OCR-strong document parsing (photographed / scanned /
+  # handwritten text). Opt-in via the "docling" profile. Point the MCP server at
+  # it with ENABLE_DOCLING=true + DOCLING_API_URL=http://docling:5001 (and/or
+  # DOCUMENT_OCR_PROVIDER=docling for scanned-PDF OCR). CPU image; the first run
+  # downloads models and CPU OCR is slow.
+  docling:
+    image: quay.io/docling-project/docling-serve:latest@sha256:56189f190892cc03a4a5c10ba9e56c421ac2524554aa2d36f0f4bb6564132524
+    restart: always
+    ports:
+      - 127.0.0.1:5001:5001
+    profiles:
+      - docling
+
   mcp:
     build: .
     restart: always

@@ -321,6 +321,47 @@ class _MistralOcrBackend(_OcrBackend):
         return _pages_to_text(pages)
 
 
+class _DoclingServeBackend(_OcrBackend):
+    """Routes scanned/no-text-layer PDFs to a docling-serve instance
+    (``DOCLING_API_URL``), for self-hosters who prefer docling's OCR over the
+    gateway/Mistral backends (esp. photographed/handwritten text)."""
+
+    def __init__(self, api_url: str, ocr_lang: list[str] | None) -> None:
+        self._api_url = api_url
+        self._ocr_lang = ocr_lang or None
+
+    async def ocr(
+        self, content: bytes, mime_type: str
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        # Lazy import keeps docling_serve off the ocr module-load path.
+        from .docling_serve import convert_file, docling_pages  # noqa: PLC0415
+
+        # Resolved per call (get_settings builds fresh) so test monkeypatching of
+        # the timeout is honoured, matching _GatewayOcrBackend.
+        ocr_timeout = get_settings().document_ocr_timeout_seconds
+        document = await convert_file(
+            self._api_url,
+            content,
+            mime_type,
+            to_formats=["md", "json"],
+            # This IS the OCR tier -- always OCR. (DOCLING_DO_OCR tunes only the
+            # image processor; honoring it here would silently no-OCR scanned PDFs.)
+            do_ocr=True,
+            ocr_lang=self._ocr_lang,
+            timeout=ocr_timeout,
+        )
+        pages = docling_pages(document.get("json_content"))
+        if not pages:
+            # No per-page provenance in the DoclingDocument: fall back to a single
+            # whole-text page. convert_file guarantees non-empty text, so this
+            # still satisfies the _pages_to_text contract (end_offset == len(text)).
+            whole = document.get("md_content") or document.get("text_content") or ""
+            pages = [(0, whole)]
+        # docling has no normalized [0,1] block bbox contract, so block_spans stays
+        # empty (like the Mistral backend) and highlighting falls back to pymupdf.
+        return _pages_to_text(pages)
+
+
 def _build_gateway_token_provider(settings: Settings) -> Any:
     """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
     client-id is configured (unauthenticated gateway). Shared by the sync OCR
@@ -413,6 +454,14 @@ def build_ocr_backend(
             settings.mistral_base_url,
         )
 
+    # docling is explicit-only: "auto" never selects it (it needs a self-hosted
+    # URL that auto can't presume), so this branch omits "auto" deliberately.
+    if provider == "docling" and settings.docling_api_url:
+        lang = [
+            s.strip() for s in (settings.docling_ocr_lang or "").split(",") if s.strip()
+        ]
+        return _DoclingServeBackend(settings.docling_api_url, lang or None)
+
     # An EXPLICIT provider that's missing its config is an operator error -- warn
     # loudly (once, since the backend is resolved+cached) rather than silently
     # disabling OCR. "auto"/"none" fall through to None quietly by design.
@@ -424,6 +473,11 @@ def build_ocr_backend(
     elif provider == "mistral":
         logger.warning(
             "DOCUMENT_OCR_PROVIDER=mistral but MISTRAL_API_KEY is unset; "
+            "OCR is disabled"
+        )
+    elif provider == "docling":
+        logger.warning(
+            "DOCUMENT_OCR_PROVIDER=docling but DOCLING_API_URL is unset; "
             "OCR is disabled"
         )
     return None

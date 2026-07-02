@@ -155,7 +155,8 @@ def initialize_document_processors():
     """Initialize and register document processors based on configuration.
 
     This function reads the environment configuration and registers available
-    processors (Unstructured, Tesseract, Custom HTTP) with the global registry.
+    processors (Unstructured, Tesseract, Custom HTTP, Docling) with the global
+    registry.
     """
     config = get_document_processor_config()
 
@@ -255,6 +256,29 @@ def initialize_document_processors():
             registered_count += 1
         except Exception as e:
             logger.warning("Failed to register Custom processor: %s", e)
+
+    # Register Docling processor (docling-serve HTTP). High priority so images
+    # always route to docling when enabled; images-only for auto-selection, but
+    # force-selectable by name (e.g. to re-parse a text-layer PDF with tables).
+    if "docling" in config["processors"]:
+        docling_config = config["processors"]["docling"]
+        try:
+            from nextcloud_mcp_server.document_processors.docling_serve import (  # noqa: PLC0415
+                DoclingProcessor,
+            )
+
+            processor = DoclingProcessor(
+                api_url=docling_config["api_url"],
+                timeout=docling_config["timeout"],
+                ocr_lang=docling_config["ocr_lang"],
+                do_ocr=docling_config["do_ocr"],
+                progress_interval=docling_config.get("progress_interval", 10),
+            )
+            registry.register(processor, priority=20)  # Above unstructured (10)
+            logger.info("Registered Docling processor: %s", docling_config["api_url"])
+            registered_count += 1
+        except Exception as e:
+            logger.warning("Failed to register Docling processor: %s", e)
 
     if registered_count > 0:
         logger.info(

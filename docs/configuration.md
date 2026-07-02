@@ -633,19 +633,68 @@ model, and execution mode:
 
 ```dotenv
 DOCUMENT_OCR_ENABLED=true              # route scanned/no-text-layer PDFs to OCR (default: false)
-DOCUMENT_OCR_PROVIDER=auto            # "auto" | "gateway" | "mistral" | "none"
+DOCUMENT_OCR_PROVIDER=auto            # "auto" | "gateway" | "mistral" | "docling" | "none"
 DOCUMENT_OCR_MODEL=mistral/mistral-ocr-latest  # provider-namespaced model id
 ```
 
 - **`DOCUMENT_OCR_PROVIDER`** selects the backend: `gateway` posts to the Astrolabe
   Cloud model gateway's `POST /v1/ocr` (no provider keys in the pod; the gateway
   routes on the model's `<provider>/` prefix, so it serves Mistral, surya, etc.);
-  `mistral` calls the Mistral OCR API directly (`MISTRAL_API_KEY`); `auto` prefers
-  the gateway (if `EMBEDDING_GATEWAY_URL` is set) then direct Mistral; `none`
-  disables OCR.
+  `mistral` calls the Mistral OCR API directly (`MISTRAL_API_KEY`); `docling`
+  posts scanned/no-text-layer PDFs to a self-hosted docling-serve instance
+  (`DOCLING_API_URL`); `auto` prefers the gateway (if `EMBEDDING_GATEWAY_URL` is
+  set) then direct Mistral (`auto` never selects docling — it needs an explicit
+  self-hosted URL); `none` disables OCR.
 - **`DOCUMENT_OCR_MODEL`** is the provider-namespaced model id — e.g.
   `mistral/mistral-ocr-latest` (Mistral) or `surya/surya-ocr-2` (surya, via the
   gateway). The gateway routes on the prefix; the direct Mistral backend strips it.
+  (Ignored by the `docling` backend, which uses the docling-serve instance's own
+  OCR engine.)
+
+#### Docling (docling-serve) — photographed / scanned / handwritten text
+
+[docling](https://github.com/docling-project/docling) has notably stronger OCR
+than `unstructured` for photographed, scanned and **handwritten** documents. The
+MCP server talks to an external
+[docling-serve](https://github.com/docling-project/docling-serve) instance over
+HTTP — no ML dependencies are added to the server image. Run one via the
+`docling` docker-compose profile (`docker compose --profile docling up -d`).
+
+```dotenv
+ENABLE_DOCLING=false                  # master switch for the docling touchpoints
+DOCLING_API_URL=http://docling:5001   # docling-serve base URL (required)
+DOCLING_TIMEOUT=120                   # image/force conversion timeout (seconds)
+DOCLING_OCR_LANG=en,de                # engine-dependent codes (EasyOCR: en,de; Tesseract: eng,deu)
+DOCLING_DO_OCR=true                   # run OCR (vs. text-layer extraction only)
+```
+
+Docling plugs in at three points:
+
+- **Images (automatic).** With `ENABLE_DOCLING=true` + `DOCLING_API_URL` set,
+  image files (`image/jpeg`, `image/png`, `image/tiff`, `image/bmp`, `image/gif`,
+  `image/webp`) always route to docling — it registers at a higher priority than
+  `unstructured`. `DOCLING_DO_OCR` toggles OCR on this image path only (the scanned-PDF
+  OCR backend always OCRs). Requires
+  `ENABLE_DOCUMENT_PROCESSING=true`. If `DOCLING_API_URL` is unset the processor is
+  not registered, so a bare `ENABLE_DOCLING` never shadows other image processors
+  with a dead endpoint.
+- **Scanned PDFs (automatic).** Set `DOCUMENT_OCR_ENABLED=true` +
+  `DOCUMENT_OCR_PROVIDER=docling`. PDFs whose text layer the tier-0 classifier
+  finds missing/unusable escalate to the OCR tier and are transcribed by docling.
+  Born-digital (text-layer) PDFs still use the cheap local `fast`/`structured`
+  tiers — docling is only paid for genuine scans.
+- **Text-layer PDFs (on demand).** Pass `force_processor="docling"` to the
+  `nc_webdav_read_file` MCP tool to re-parse *any* file with docling even when it
+  already has a text layer — useful when that layer misses tables/figures or is
+  incomplete. Docling returns markdown, preserving table structure. An unknown or
+  unconfigured processor name returns a clear tool error.
+
+Office formats (DOCX/PPTX/XLSX) deliberately stay with `unstructured` — docling
+is scoped to the image/scan/handwriting use case here. OCR language codes are
+engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
+codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
+convert endpoint has a server-side ceiling (~2 min); very large scans are future
+work (async submit/poll). See `docs/ADR-031-docling-document-parsing-backend.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 

@@ -99,6 +99,45 @@ class TestDocumentProcessorConfig:
             os.environ.pop("CUSTOM_PROCESSOR_TIMEOUT", None)
             os.environ.pop("CUSTOM_PROCESSOR_TYPES", None)
 
+    def test_docling_processor_config(self):
+        """Docling registers only when a URL is set; values are parsed correctly."""
+        os.environ["ENABLE_DOCLING"] = "true"
+        os.environ["DOCLING_API_URL"] = "https://docling:5001"
+        os.environ["DOCLING_OCR_LANG"] = "en,de"
+        os.environ["DOCLING_TIMEOUT"] = "90"
+        os.environ["DOCLING_DO_OCR"] = "true"
+
+        try:
+            _reload_config()
+            config = get_document_processor_config()
+            assert "docling" in config["processors"]
+            dcfg = config["processors"]["docling"]
+            assert dcfg["api_url"] == "https://docling:5001"
+            assert dcfg["ocr_lang"] == ["en", "de"]
+            assert dcfg["timeout"] == 90
+            assert dcfg["do_ocr"] is True
+        finally:
+            for key in (
+                "ENABLE_DOCLING",
+                "DOCLING_API_URL",
+                "DOCLING_OCR_LANG",
+                "DOCLING_TIMEOUT",
+                "DOCLING_DO_OCR",
+            ):
+                os.environ.pop(key, None)
+
+    def test_docling_absent_without_url(self):
+        """A bare ENABLE_DOCLING (no URL) must NOT register the processor, so it
+        can't shadow other image processors with a dead endpoint."""
+        os.environ["ENABLE_DOCLING"] = "true"
+        os.environ.pop("DOCLING_API_URL", None)
+        try:
+            _reload_config()
+            config = get_document_processor_config()
+            assert "docling" not in config["processors"]
+        finally:
+            os.environ.pop("ENABLE_DOCLING", None)
+
     def test_multiple_processors(self):
         """Test configuration with multiple processors enabled."""
         os.environ["ENABLE_DOCUMENT_PROCESSING"] = "true"

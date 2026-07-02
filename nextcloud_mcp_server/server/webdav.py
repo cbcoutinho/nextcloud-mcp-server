@@ -87,7 +87,9 @@ def configure_webdav_tools(mcp: FastMCP):
     )
     @require_scopes("files.read")
     @instrument_tool
-    async def nc_webdav_read_file(path: str, ctx: Context):
+    async def nc_webdav_read_file(
+        path: str, ctx: Context, force_processor: str | None = None
+    ):
         """Read the content of a file from NextCloud.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
@@ -95,6 +97,12 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Args:
             path: Full path to the file to read
+            force_processor: Force a specific document processor by name instead of
+                auto-selecting. Set to ``"docling"`` to parse the file with a
+                docling-serve instance even when it is a PDF that already has a text
+                layer -- useful when the text layer misses tables/figures or is
+                incomplete. Requires that processor to be enabled/registered;
+                raises ``ToolError`` otherwise. ``None`` = auto-select.
 
         Returns:
             Dict with path, content, content_type, size, and optional parsing metadata
@@ -116,21 +124,47 @@ def configure_webdav_tools(mcp: FastMCP):
         # ingest-layer concern and, before this, broke Windows startup via a
         # Unix-only ``import resource`` (#877). It is only needed when a file is
         # actually read and parsed.
+        from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+            get_registry,
+        )
         from nextcloud_mcp_server.utils.document_parser import (  # noqa: PLC0415
             is_parseable_document,
             parse_document,
         )
 
-        # Check if this is a parseable document (PDF, DOCX, etc.)
-        # is_parseable_document() checks if document processing is enabled
-        if is_parseable_document(content_type):
+        # force_processor is client/LLM-controlled: validate it against the
+        # registered-processor allowlist (a dict-key lookup, never interpolated
+        # into a URL/path) and surface a clear error with the available names
+        # rather than the opaque base64 fallback parse_document would otherwise
+        # return for an unknown/unconfigured processor.
+        if force_processor is not None:
+            registry = get_registry()
+            if registry.get_processor(force_processor) is None:
+                available = ", ".join(registry.list_processors()) or "none"
+                raise ToolError(
+                    f"Unknown document processor {force_processor!r}. Ensure it is "
+                    f"enabled (e.g. ENABLE_DOCLING + DOCLING_API_URL for 'docling'). "
+                    f"Available: {available}"
+                )
+
+        # Parse when the type is auto-parseable OR the caller forced a processor.
+        # is_parseable_document() also checks that document processing is enabled.
+        if force_processor is not None or is_parseable_document(content_type):
             try:
-                logger.info("Parsing document %r of type %r", path, content_type)
+                logger.info(
+                    "Parsing document %r of type %r%s",
+                    path,
+                    content_type,
+                    f" with forced processor {force_processor!r}"
+                    if force_processor
+                    else "",
+                )
                 parsed_text, metadata = await parse_document(
                     content,
                     content_type,
                     filename=path,
                     progress_callback=ctx.report_progress,
+                    processor_name=force_processor,
                 )
                 return {
                     "path": path,
