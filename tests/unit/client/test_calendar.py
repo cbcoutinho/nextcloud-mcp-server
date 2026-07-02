@@ -163,6 +163,50 @@ def test_webcal_caching_header_enabled_on_client(mocker):
     assert headers["X-NC-CalDAV-Webcal-Caching"] == "On"
 
 
+# --- calendar-home-set absolute-path normalization (issue #1007) ---
+
+
+def test_home_set_absolute_path_resolves_against_origin_not_subpath(mocker):
+    """An absolute calendar-home-set path resolves against the origin.
+
+    When Nextcloud is served under a subpath, calendar-home-set returns an
+    absolute path that already includes that subpath (e.g.
+    ``/nextcloud/remote.php/dav/calendars/David/``). Resolving it against the
+    full base URL would double the subpath and yield an unroutable URL, which
+    then hits Apache's default routing and 405s with an HTML body that fails
+    CalDAV XML parsing (issue #1007). It must resolve against the origin only.
+    """
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    # No credentials needed: the method under test derives the URL purely from
+    # base_url, and constructing without auth keeps this free of S2068 (hard-
+    # coded credential) noise.
+    client = CalendarClient("https://host/nextcloud", "David")
+
+    home_url = client._calendar_home_url_from_home_set(
+        "/nextcloud/remote.php/dav/calendars/David/"
+    )
+
+    assert home_url == "https://host/nextcloud/remote.php/dav/calendars/David/"
+
+
+def test_home_set_absolute_path_resolves_against_root_origin(mocker):
+    """Root-hosted deployments keep resolving absolute paths correctly."""
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+
+    home_url = client._calendar_home_url_from_home_set(
+        "/remote.php/dav/calendars/alice/"
+    )
+
+    assert home_url == "https://cloud.example.org/remote.php/dav/calendars/alice/"
+
+
 # --- list_calendars: regular + external subscription parsing (issue #830) ---
 
 # A multistatus body with the calendar home, one regular calendar, and one
