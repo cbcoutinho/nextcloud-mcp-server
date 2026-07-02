@@ -143,12 +143,17 @@ async def test_docling_unknown_force_processor_errors(
         await nc_client.webdav.write_file(
             test_file, create_text_pdf("hello"), content_type="application/pdf"
         )
-        with pytest.raises(Exception) as exc_info:
-            await nc_mcp_client.call_tool(
-                "nc_webdav_read_file",
-                arguments={"path": test_file, "force_processor": "does-not-exist"},
-            )
-        assert "does-not-exist" in str(exc_info.value)
+        # The MCP client surfaces a tool failure as an ``isError`` result, not a
+        # raised exception (matches the repo convention, e.g. _search_helpers.py),
+        # so assert on the result rather than pytest.raises.
+        mcp_result = await nc_mcp_client.call_tool(
+            "nc_webdav_read_file",
+            arguments={"path": test_file, "force_processor": "does-not-exist"},
+        )
+        assert mcp_result.isError
+        content = mcp_result.content[0]
+        error_text = str(getattr(content, "text", content))
+        assert "does-not-exist" in error_text
     finally:
         try:
             await nc_client.webdav.delete_resource(test_file)

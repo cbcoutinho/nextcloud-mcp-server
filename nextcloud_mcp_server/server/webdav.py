@@ -142,9 +142,10 @@ def configure_webdav_tools(mcp: FastMCP):
             if registry.get_processor(force_processor) is None:
                 available = ", ".join(registry.list_processors()) or "none"
                 raise ToolError(
-                    f"Unknown document processor {force_processor!r}. Ensure it is "
-                    f"enabled (e.g. ENABLE_DOCLING + DOCLING_API_URL for 'docling'). "
-                    f"Available: {available}"
+                    f"Unknown document processor {force_processor!r}. Ensure document "
+                    f"processing is enabled (ENABLE_DOCUMENT_PROCESSING) and the "
+                    f"processor is configured (e.g. ENABLE_DOCLING + DOCLING_API_URL "
+                    f"for 'docling'). Available: {available}"
                 )
 
         # Parse when the type is auto-parseable OR the caller forced a processor.

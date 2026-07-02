@@ -352,6 +352,9 @@ jobs:
           up-flags: "--build"
         env:
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          # Master switch: without it initialize_document_processors() no-ops and
+          # docling never registers on the webdav read_file path.
+          ENABLE_DOCUMENT_PROCESSING: "true"
           # Enable the docling backend in the single-user mcp service and point it
           # at the docling-serve container on the compose network.
           ENABLE_DOCLING: "true"
