@@ -188,7 +188,11 @@ async def test_write_placeholder_payload_includes_instance_id(monkeypatch):
     monkeypatch.setattr(placeholder_module, "_INSTANCE_ID", "pod-pinned")
 
     fake_qdrant = AsyncMock()
-    fake_settings = SimpleNamespace(get_collection_name=lambda: "nextcloud_content")
+    fake_settings = SimpleNamespace(
+        get_collection_name=lambda: "nextcloud_content",
+        dense_enabled=True,
+        simple_embedding_dimension=384,
+    )
     fake_embedding = SimpleNamespace(get_dimension=lambda: 4)
 
     async def fake_get_qdrant_client():
@@ -214,3 +218,50 @@ async def test_write_placeholder_payload_includes_instance_id(monkeypatch):
     # Sanity: the other contract-pinning fields are still emitted.
     assert upserted_point.payload["is_placeholder"] is True
     assert upserted_point.payload["status"] == "pending"
+    # Hybrid mode: dense slot sized from the embedding provider (dim=4 here).
+    assert len(upserted_point.vector["dense"]) == 4
+
+
+@pytest.mark.unit
+async def test_keyword_mode_sizes_dense_from_simple_dimension_without_embedding(
+    monkeypatch,
+):
+    """Regression (Deck #495): in keyword mode (SEARCH_MODE=keyword,
+    dense_enabled=False) the collection's dense slot is sized to
+    SIMPLE_EMBEDDING_DIMENSION, not the provider dimension, and there may be no
+    embedding endpoint. ``write_placeholder_point`` MUST size its zero-vector to
+    simple_embedding_dimension and NEVER call the embedding service — otherwise a
+    Mistral-sized (1024) placeholder is rejected by the 384-dim slot and the
+    pre-enqueue placeholder write aborts the whole scan (keyword tenant indexes
+    NOTHING)."""
+    monkeypatch.setattr(placeholder_module, "_INSTANCE_ID", "pod-kw")
+
+    fake_qdrant = AsyncMock()
+    fake_settings = SimpleNamespace(
+        get_collection_name=lambda: "nextcloud_content",
+        dense_enabled=False,
+        simple_embedding_dimension=384,
+    )
+
+    async def fake_get_qdrant_client():
+        return fake_qdrant
+
+    def _boom():
+        raise AssertionError("embedding service must not be built in keyword mode")
+
+    monkeypatch.setattr(placeholder_module, "get_qdrant_client", fake_get_qdrant_client)
+    monkeypatch.setattr(placeholder_module, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(placeholder_module, "get_embedding_service", _boom)
+
+    await placeholder_module.write_placeholder_point(
+        doc_id="d-99",
+        doc_type="file",
+        user_id="alice",
+        modified_at=1700000000,
+        etag="xyz",
+    )
+
+    fake_qdrant.upsert.assert_awaited_once()
+    upserted_point = fake_qdrant.upsert.await_args.kwargs["points"][0]
+    # Sized to the keyword-mode dense slot (384), never the provider dimension.
+    assert len(upserted_point.vector["dense"]) == 384

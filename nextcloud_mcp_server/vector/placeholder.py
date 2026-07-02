@@ -80,10 +80,20 @@ async def write_placeholder_point(
     try:
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
-        embedding_service = get_embedding_service()
 
-        # Get dimension dynamically (never hardcode)
-        dimension = embedding_service.get_dimension()
+        # Size the dense zero-vector to match the collection's dense slot. In
+        # keyword mode (SEARCH_MODE=keyword, dense_enabled=False) the collection's
+        # dense slot is created sized to SIMPLE_EMBEDDING_DIMENSION — NOT the
+        # embedding provider's dimension (see qdrant_client collection creation) —
+        # and the deployment may have no text-embedding endpoint at all. So gate on
+        # dense_enabled and never touch the embedding service in keyword mode;
+        # otherwise a Mistral-sized (e.g. 1024) placeholder vector is rejected by
+        # the 384-dim slot and the pre-enqueue placeholder write aborts the whole
+        # scan (no document ever gets indexed).
+        if settings.dense_enabled:
+            dimension = get_embedding_service().get_dimension()
+        else:
+            dimension = settings.simple_embedding_dimension
 
         # Create zero vectors
         zero_dense = [0.0] * dimension
