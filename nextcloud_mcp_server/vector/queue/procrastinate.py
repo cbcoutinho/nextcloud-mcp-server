@@ -47,8 +47,9 @@ from procrastinate import (
     RetryDecision,
 )
 from procrastinate.connector import BaseConnector
-from procrastinate.exceptions import AlreadyEnqueued
-from procrastinate.jobs import Job
+from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
+from procrastinate.jobs import Job, Status
+from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
 from ...config import get_procrastinate_conninfo, get_settings
 from ..scanner import DocumentTask
@@ -233,17 +234,62 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     )
     stalled_after = settings.ingest_stalled_job_seconds
     reclaimed = 0
+    discarded = 0
+    errored = 0
     # queue=None sweeps every queue, so an orphaned job on any tier queue is
     # reclaimed regardless of which tier's worker happens to run this periodic.
     # retry_job_by_id_async keeps the job on its own queue, so a stalled ``ocr``
     # job re-runs on ``ingest-ocr`` (the ocr fleet), not the reclaiming worker's.
+    #
+    # Each job is isolated: the retry UPDATE sets status='todo', which trips the
+    # partial-unique ``queueing_lock`` index if the scanner already re-queued the
+    # doc while it sat orphaned in ``doing`` (a fresh ``todo`` sibling holds the
+    # lock). Without per-job isolation the FIRST such UniqueViolation aborted the
+    # whole sweep, so every later orphan stayed in ``doing`` forever.
     for job in await manager.get_stalled_jobs(seconds_since_heartbeat=stalled_after):
         if job.id is None:
             continue
-        await manager.retry_job_by_id_async(job_id=job.id, retry_at=retry_at)
-        reclaimed += 1
-    if reclaimed:
-        logger.warning("ingest.reclaimed_stalled_jobs count=%d", reclaimed)
+        try:
+            await manager.retry_job_by_id_async(job_id=job.id, retry_at=retry_at)
+            reclaimed += 1
+        except UniqueViolation as exc:
+            if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
+                # Only a queueing_lock collision proves a live duplicate that's
+                # safe to discard. The retry UPDATE can't trip any OTHER unique
+                # constraint today, but guard the assumption explicitly rather
+                # than deleting an unrelated job if procrastinate ever adds one:
+                # log + count it like any unexpected per-job error, don't delete.
+                logger.exception("ingest.reclaim_retry_failed job_id=%s", job.id)
+                errored += 1
+                continue
+            # A live ``todo`` sibling with the same queueing_lock already exists
+            # (the scanner re-queued this doc), so the orphan is redundant: drop
+            # it (delete_job) to free it from ``doing`` and let the sibling run.
+            # ``delete_job=True`` DELETEs the row, so the end_status is only
+            # validated, never persisted — no ``failed`` job/gauge inflation. We
+            # pass ABORTED (not FAILED) to name the intent honestly: this is an
+            # intentional dedup discard, not a genuine failure. (CANCELLED is not
+            # a valid finish_job end_status in procrastinate — only succeeded /
+            # failed / aborted.)
+            try:
+                await manager.finish_job_by_id_async(
+                    job_id=job.id, status=Status.ABORTED, delete_job=True
+                )
+                discarded += 1
+            except Exception:
+                logger.exception("ingest.reclaim_discard_failed job_id=%s", job.id)
+                errored += 1
+        except Exception:
+            # Never let one bad job abort the sweep; the rest still get reclaimed.
+            logger.exception("ingest.reclaim_retry_failed job_id=%s", job.id)
+            errored += 1
+    if reclaimed or discarded or errored:
+        logger.warning(
+            "ingest.reclaimed_stalled_jobs reclaimed=%d discarded=%d errored=%d",
+            reclaimed,
+            discarded,
+            errored,
+        )
     else:
         # Visible heartbeat under verbose logging when debugging a suspected
         # reclaim failure, without noising up production logs.

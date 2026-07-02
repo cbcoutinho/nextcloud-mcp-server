@@ -225,6 +225,119 @@ class TestReclaimStalledJobs:
         # retried at now(), so a systemic outage doesn't thundering-herd.
         assert all((ra - before).total_seconds() >= 25 for ra in retry_ats)
 
+    async def test_queueing_lock_collision_discards_orphan_and_continues(self):
+        """A retry that trips the ``queueing_lock`` unique index (the scanner
+        already re-queued the doc) must NOT abort the sweep: the orphan is
+        dropped and the remaining stalled jobs are still reclaimed."""
+        from procrastinate.exceptions import UniqueViolation
+        from procrastinate.jobs import Status
+
+        retried: list[int] = []
+        finished: list[tuple[int, Status, bool]] = []
+
+        class Job:
+            def __init__(self, id):
+                self.id = id
+
+        class FakeManager:
+            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+                return [Job(1), Job(2), Job(3)]
+
+            async def retry_job_by_id_async(self, job_id, retry_at):
+                retried.append(job_id)
+                # Jobs 1 and 3 collide with a live todo sibling; 2 reclaims fine.
+                if job_id in (1, 3):
+                    raise UniqueViolation(
+                        constraint_name="procrastinate_jobs_queueing_lock_idx_v1",
+                        queueing_lock=f"user:file:{job_id}",
+                    )
+
+            async def finish_job_by_id_async(self, job_id, status, delete_job):
+                finished.append((job_id, status, delete_job))
+
+        class FakeApp:
+            job_manager = FakeManager()
+
+        class Ctx:
+            app = FakeApp()
+
+        # Must not raise even though two of three jobs collide.
+        await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
+
+        assert retried == [1, 2, 3]  # every job attempted; sweep never aborted
+        # Colliding orphans are deleted (delete_job=True) so they leave `doing`;
+        # ABORTED names the intentional dedup discard (delete makes it non-persisted).
+        assert finished == [
+            (1, Status.ABORTED, True),
+            (3, Status.ABORTED, True),
+        ]
+
+    async def test_non_queueing_lock_unique_violation_is_not_discarded(self):
+        """A UniqueViolation from a DIFFERENT constraint is not a proven duplicate,
+        so the orphan must NOT be deleted — it's isolated + counted like any other
+        error, and the sweep continues."""
+        from procrastinate.exceptions import UniqueViolation
+
+        retried: list[int] = []
+        finished: list[int] = []
+
+        class Job:
+            def __init__(self, id):
+                self.id = id
+
+        class FakeManager:
+            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+                return [Job(1), Job(2)]
+
+            async def retry_job_by_id_async(self, job_id, retry_at):
+                retried.append(job_id)
+                if job_id == 1:
+                    raise UniqueViolation(
+                        constraint_name="some_other_constraint", queueing_lock=None
+                    )
+
+            async def finish_job_by_id_async(self, job_id, status, delete_job):
+                finished.append(job_id)
+
+        class FakeApp:
+            job_manager = FakeManager()
+
+        class Ctx:
+            app = FakeApp()
+
+        await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
+
+        assert retried == [1, 2]  # sweep continued past the unrelated violation
+        assert finished == []  # job 1 NOT deleted — its constraint wasn't the lock idx
+
+    async def test_generic_error_on_one_job_does_not_abort_sweep(self):
+        """An arbitrary per-job error (e.g. a transient connector error) is logged
+        and counted, never aborting the sweep or the other jobs' reclaim."""
+        retried: list[int] = []
+
+        class Job:
+            def __init__(self, id):
+                self.id = id
+
+        class FakeManager:
+            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+                return [Job(1), Job(2), Job(3)]
+
+            async def retry_job_by_id_async(self, job_id, retry_at):
+                retried.append(job_id)
+                if job_id == 2:
+                    raise RuntimeError("transient connector error")
+
+        class FakeApp:
+            job_manager = FakeManager()
+
+        class Ctx:
+            app = FakeApp()
+
+        # Must not raise; jobs 1 and 3 still get reclaimed despite 2 erroring.
+        await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
+        assert retried == [1, 2, 3]
+
 
 class TestGetIngestJobCounts:
     async def test_aggregates_stats_rows(self):
