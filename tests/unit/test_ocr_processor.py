@@ -32,7 +32,6 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
         mistral_base_url=None,
         docling_api_url=None,
         docling_ocr_lang="en,de",
-        docling_do_ocr=True,
     )
     base.update(kw)
     return SimpleNamespace(**base)

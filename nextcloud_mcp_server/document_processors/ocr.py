@@ -326,12 +326,9 @@ class _DoclingServeBackend(_OcrBackend):
     (``DOCLING_API_URL``), for self-hosters who prefer docling's OCR over the
     gateway/Mistral backends (esp. photographed/handwritten text)."""
 
-    def __init__(
-        self, api_url: str, ocr_lang: list[str] | None, do_ocr: bool = True
-    ) -> None:
+    def __init__(self, api_url: str, ocr_lang: list[str] | None) -> None:
         self._api_url = api_url
         self._ocr_lang = ocr_lang or None
-        self._do_ocr = do_ocr
 
     async def ocr(
         self, content: bytes, mime_type: str
@@ -347,7 +344,9 @@ class _DoclingServeBackend(_OcrBackend):
             content,
             mime_type,
             to_formats=["md", "json"],
-            do_ocr=self._do_ocr,
+            # This IS the OCR tier -- always OCR. (DOCLING_DO_OCR tunes only the
+            # image processor; honoring it here would silently no-OCR scanned PDFs.)
+            do_ocr=True,
             ocr_lang=self._ocr_lang,
             timeout=ocr_timeout,
         )
@@ -461,11 +460,7 @@ def build_ocr_backend(
         lang = [
             s.strip() for s in (settings.docling_ocr_lang or "").split(",") if s.strip()
         ]
-        return _DoclingServeBackend(
-            settings.docling_api_url,
-            lang or None,
-            settings.docling_do_ocr,
-        )
+        return _DoclingServeBackend(settings.docling_api_url, lang or None)
 
     # An EXPLICIT provider that's missing its config is an operator error -- warn
     # loudly (once, since the backend is resolved+cached) rather than silently

@@ -671,8 +671,10 @@ DOCLING_DO_OCR=true                   # run OCR (vs. text-layer extraction only)
 Docling plugs in at three points:
 
 - **Images (automatic).** With `ENABLE_DOCLING=true` + `DOCLING_API_URL` set,
-  image files (`image/jpeg`, `image/png`, `image/tiff`, `image/bmp`) always route
-  to docling — it registers at a higher priority than `unstructured`. Requires
+  image files (`image/jpeg`, `image/png`, `image/tiff`, `image/bmp`, `image/gif`,
+  `image/webp`) always route to docling — it registers at a higher priority than
+  `unstructured`. `DOCLING_DO_OCR` toggles OCR on this image path only (the scanned-PDF
+  OCR backend always OCRs). Requires
   `ENABLE_DOCUMENT_PROCESSING=true`. If `DOCLING_API_URL` is unset the processor is
   not registered, so a bare `ENABLE_DOCLING` never shadows other image processors
   with a dead endpoint.

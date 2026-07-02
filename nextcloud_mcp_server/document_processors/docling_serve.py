@@ -151,6 +151,19 @@ async def convert_file(
     except httpx.HTTPError as e:
         logger.error("docling-serve HTTP error: %s", e)
         raise ProcessorError(f"HTTP error: {e}") from e
+    except ValueError as e:
+        # response.json() raises ValueError (JSONDecodeError) on a non-JSON body --
+        # e.g. an HTML error page from an intermediary proxy. Honor the documented
+        # single-failure-type (ProcessorError) contract rather than leaking it.
+        logger.error("docling-serve returned a non-JSON body: %s", e)
+        raise ProcessorError(f"invalid JSON response: {e}") from e
+
+    # A valid-JSON but non-object body (a bare list/string from a misbehaving proxy)
+    # would make the .get() calls below raise AttributeError; fail as ProcessorError.
+    if not isinstance(body, dict):
+        raise ProcessorError(
+            f"unexpected docling response shape: {type(body).__name__}"
+        )
 
     status = str(body.get("status") or "").lower()
     document = body.get("document") or {}
@@ -236,7 +249,6 @@ class DoclingProcessor(DocumentProcessor):
             metadata={
                 "parsing_method": "docling",
                 "text_length": len(text),
-                "docling_status": "success",
             },
             processor=self.name,
         )

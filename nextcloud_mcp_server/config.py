@@ -269,6 +269,8 @@ _DEFAULTS: dict[str, Any] = {
     # codes ("en","de"); a Tesseract-backed instance wants "eng","deu". Engine-
     # dependent, so keep it operator-tunable (see ADR-031).
     "docling_ocr_lang": "en,de",
+    # Run OCR on IMAGES routed to the DoclingProcessor (find_processor path). The
+    # docling OCR *backend* (scanned PDFs) always OCRs regardless of this flag.
     "docling_do_ocr": True,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
@@ -1035,7 +1037,6 @@ class Settings:
     # resolves to None (docling OCR off) and the image processor is not registered.
     docling_api_url: str | None = None
     docling_ocr_lang: str = "en,de"
-    docling_do_ocr: bool = True
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1780,10 +1781,11 @@ def get_settings() -> Settings:
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
         "document_ocr_detect_scanned": "DOCUMENT_OCR_DETECT_SCANNED",
         "document_glyph_corruption_ratio": "DOCUMENT_GLYPH_CORRUPTION_RATIO",
-        # Docling backend (shared by the OCR backend + images processor)
+        # Docling backend (shared by the OCR backend + images processor). Note:
+        # DOCLING_DO_OCR is intentionally NOT here -- it's read via dynaconf for the
+        # image processor only (the OCR backend always OCRs), like the unstructured_* keys.
         "docling_api_url": "DOCLING_API_URL",
         "docling_ocr_lang": "DOCLING_OCR_LANG",
-        "docling_do_ocr": "DOCLING_DO_OCR",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

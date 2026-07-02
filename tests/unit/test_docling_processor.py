@@ -143,6 +143,36 @@ async def test_convert_file_empty_text_raises(mocker, monkeypatch):
         )
 
 
+async def test_convert_file_non_dict_body_raises(mocker, monkeypatch):
+    """A valid-JSON but non-object body (bare list from a misbehaving proxy) must
+    become a ProcessorError, not an AttributeError on body.get(...)."""
+    client = _mock_client(mocker, json=["unexpected"])
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    with pytest.raises(ProcessorError):
+        await docling_serve.convert_file(
+            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+        )
+
+
+async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
+    """A non-JSON body (response.json() raises ValueError) must become a
+    ProcessorError, honoring the single-failure-type contract."""
+    resp = mocker.Mock()
+    resp.raise_for_status = mocker.Mock()
+    resp.json = mocker.Mock(side_effect=ValueError("Expecting value"))
+    client = mocker.MagicMock()
+    client.__aenter__ = mocker.AsyncMock(return_value=client)
+    client.__aexit__ = mocker.AsyncMock(return_value=False)
+    client.post = mocker.AsyncMock(return_value=resp)
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    with pytest.raises(ProcessorError):
+        await docling_serve.convert_file(
+            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+        )
+
+
 # --- DoclingProcessor --------------------------------------------------------
 
 
@@ -185,6 +215,25 @@ async def test_process_pdf_when_forced(mocker, monkeypatch):
     assert "| a | b |" in result.text
     _, kwargs = client.post.call_args
     assert kwargs["data"]["from_formats"] == ["pdf"]
+
+
+async def test_process_with_progress_callback_returns_text(mocker, monkeypatch):
+    """The concurrent progress-poller path (always taken via nc_webdav_read_file,
+    which passes ctx.report_progress) still returns the converted text."""
+    client = _mock_client(
+        mocker, json={"status": "success", "document": {"md_content": "ocr text"}}
+    )
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    async def progress_cb(progress, total, message):
+        pass
+
+    proc = DoclingProcessor("http://docling:5001", progress_interval=1)
+    result = await proc.process(
+        b"\x89PNG", "image/png", filename="n.png", progress_callback=progress_cb
+    )
+    assert result.processor == "docling"
+    assert result.text == "ocr text"
 
 
 async def test_process_http_error_raises(mocker, monkeypatch):
