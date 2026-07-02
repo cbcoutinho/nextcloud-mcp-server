@@ -83,6 +83,7 @@ markers = [
     "ldap: LDAP-backend tests reproducing divergent loginName/UID DAV paths (GH #980)",
     "postgres: Tests requiring the docker-compose postgres-test service (ADR-026)",
     "contract: Pact consumer/provider contract tests (ADR-029)",
+    "docling: Tests requiring the docker-compose docling-serve backend (ADR-031)",
 ]
 testpaths = [
     "tests",

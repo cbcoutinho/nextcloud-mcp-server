@@ -322,3 +322,127 @@ jobs:
             /tmp/nextcloud-app.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # Docling OCR backend lane (ADR-031). Starts the single-user MCP service plus
+  # the docker-compose `docling` profile (docling-serve-cpu container) and runs
+  # the gated `-m docling` suite: an image auto-routes to docling and its text is
+  # OCR'd back out, a text-layer PDF is force-parsed, and an unknown forced
+  # processor errors cleanly. Kept as its own job (not a matrix mode) because the
+  # docling-serve-cpu image is large, CPU OCR is slow, and it needs no Nextcloud
+  # version matrix — a single NC image (the compose default) is enough.
+  docling-integration:
+    name: integration (docling)
+    runs-on: ubuntu-latest
+    needs: [linting]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # docker-compose.yml requires TOKEN_ENCRYPTION_KEY; generate an ephemeral
+      # one (the CI tokens.db is destroyed with the job). See the integration job.
+      - name: Generate ephemeral TOKEN_ENCRYPTION_KEY
+        run: |
+          KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
+
+      - name: Run docker compose (single-user + docling)
+        uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
+        with:
+          compose-file: "./docker-compose.yml"
+          compose-flags: "--profile single-user --profile docling"
+          up-flags: "--build"
+        env:
+          TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          # Master switch: without it initialize_document_processors() no-ops and
+          # docling never registers on the webdav read_file path.
+          ENABLE_DOCUMENT_PROCESSING: "true"
+          # Enable the docling backend in the single-user mcp service and point it
+          # at the docling-serve container on the compose network.
+          ENABLE_DOCLING: "true"
+          DOCLING_API_URL: "http://docling:5001"
+          # CPU OCR is slow; give the sync convert call generous headroom.
+          DOCLING_TIMEOUT: "300"
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Wait for Nextcloud
+        run: |
+          echo "Waiting for Nextcloud at http://localhost:8080..."
+          max_attempts=60
+          attempt=0
+          until curl -sSf http://localhost:8080/status.php 2>/dev/null | grep -q '"installed":true'; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "Nextcloud did not become ready in time."
+              docker compose logs app
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "Nextcloud is ready."
+
+      - name: Wait for docling-serve
+        run: |
+          echo "Waiting for docling-serve /health on http://localhost:5001..."
+          max_attempts=60
+          attempt=0
+          until curl -sf http://localhost:5001/health > /dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "docling-serve did not become ready in time."
+              docker compose --profile docling logs docling
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "docling-serve is ready."
+
+      - name: Wait for MCP service (single-user)
+        run: |
+          echo "Waiting for MCP service on port 8000..."
+          max_attempts=30
+          attempt=0
+          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8000/health 2>/dev/null | grep -qE "200|404|405"; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "MCP service did not become ready in time."
+              docker compose --profile single-user logs mcp
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "MCP service is ready on port 8000."
+
+      - name: Run docling tests
+        env:
+          NEXTCLOUD_HOST: "http://localhost:8080"
+          NEXTCLOUD_USERNAME: "admin"
+          NEXTCLOUD_PASSWORD: "admin"
+          # Selects the skipif-gated assertions in tests/integration/test_docling_api.py.
+          ENABLE_DOCLING: "true"
+        run: |
+          uv run pytest -v \
+            --log-cli-level=WARN \
+            -m docling \
+            -o "addopts=-p no:asyncio" \
+            --timeout=600
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          docker compose --profile single-user --profile docling logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+          docker compose exec -T app cat /var/www/html/data/nextcloud.log 2>/dev/null | tail -100 > /tmp/nextcloud-app.log 2>&1 || true
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debug-docling
+          path: |
+            /tmp/docker-compose-logs.txt
+            /tmp/nextcloud-app.log
+          retention-days: 7
+          if-no-files-found: ignore

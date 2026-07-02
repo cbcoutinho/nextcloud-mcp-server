@@ -74,6 +74,34 @@ services:
     profiles:
       - unstructured
 
+  # docling-serve: OCR-strong document parsing (photographed / scanned /
+  # handwritten text). Opt-in via the "docling" profile. Point the MCP server at
+  # it with ENABLE_DOCLING=true + DOCLING_API_URL=http://docling:5001 (and/or
+  # DOCUMENT_OCR_PROVIDER=docling for scanned-PDF OCR). Uses the CPU-only image
+  # variant (docling-serve-cpu) — no CUDA runtime, OCR models baked in — so it
+  # runs on plain GitHub-hosted runners. CPU OCR is slow; give it a generous
+  # DOCLING_TIMEOUT.
+  docling:
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.7.0@sha256:a24ccbf84e188d987bef39b931ac9650285fc36cdc105748b779351a6006e723
+    restart: always
+    ports:
+      - 127.0.0.1:5001:5001
+    # docling-serve is a Python app (no curl in the image), so probe /health via
+    # the stdlib. Gives local `--profile docling` users a readiness signal and
+    # lets a future `depends_on: condition: service_healthy` gate on it.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:5001/health").read()
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    profiles:
+      - docling
+
   mcp:
     build: .
     restart: always
@@ -149,6 +177,20 @@ services:
       # Tune these based on your embedding model and content type
       # - DOCUMENT_CHUNK_SIZE=512      # Words per chunk (default: 512)
       # - DOCUMENT_CHUNK_OVERLAP=50    # Overlapping words (default: 50, recommended: 10-20% of chunk size)
+
+      # Docling OCR-strong parsing backend (docling-serve HTTP API, ADR-031).
+      # Off by default so the normal single-user lane is unchanged. The CI
+      # "docling" lane starts the `docling` profile and sets
+      # ENABLE_DOCUMENT_PROCESSING=true + ENABLE_DOCLING=true +
+      # DOCLING_API_URL=http://docling:5001 to exercise the gated
+      # tests/integration/test_docling_api.py suite. DOCLING_TIMEOUT is bumped in
+      # CI because CPU OCR is slow. ENABLE_DOCUMENT_PROCESSING is the master
+      # switch: initialize_document_processors() no-ops without it, so docling
+      # never registers on the webdav read_file path if it is unset.
+      - ENABLE_DOCUMENT_PROCESSING=${ENABLE_DOCUMENT_PROCESSING:-false}
+      - ENABLE_DOCLING=${ENABLE_DOCLING:-false}
+      - DOCLING_API_URL=${DOCLING_API_URL:-}
+      - DOCLING_TIMEOUT=${DOCLING_TIMEOUT:-120}
     profiles:
       - single-user
 
