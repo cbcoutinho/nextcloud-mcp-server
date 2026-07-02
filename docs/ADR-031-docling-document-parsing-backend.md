@@ -81,8 +81,12 @@ multipart) is the client; `GET /health` is the probe.
   Mistral backend).
 - **Office formats stay with `unstructured`** — intentional non-goal; docling is
   scoped to images/scans/handwriting here.
-- **Synchronous only.** docling-serve's sync convert has a ~2 min server ceiling;
-  async submit/poll (`/v1/convert/file/async`) is future work for very large scans.
+- **Synchronous only.** docling-serve's sync convert has an observed ~2 min
+  practical ceiling (from our testing — not a hard, server-enforced contract), so
+  a larger client `DOCLING_TIMEOUT` (e.g. 300s for slow CPU OCR) is harmless: it
+  just lets a genuinely slow conversion finish rather than capping it below the
+  server's own limit. Async submit/poll (`/v1/convert/file/async`) is future work
+  for very large scans.
 
 ## Consequences
 

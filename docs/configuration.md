@@ -609,6 +609,35 @@ DOCUMENT_CHUNK_OVERLAP=200            # Overlapping characters between chunks (d
 
 > **Note:** The `VECTOR_SYNC_*` tuning parameters keep their names as they're implementation details. Only the user-facing feature flag was renamed to `ENABLE_SEMANTIC_SEARCH`.
 
+#### Enabling document parsing — `ENABLE_DOCUMENT_PROCESSING` (master switch)
+
+`ENABLE_DOCUMENT_PROCESSING` is the master switch for the parsing subsystem and
+is **off by default**. Set it *before* configuring `unstructured`, the OCR tier,
+or docling below — otherwise those processors are never registered and parsing
+silently no-ops (a common first-run trip-up):
+
+```dotenv
+ENABLE_DOCUMENT_PROCESSING=true       # register optional processors + on-demand parsing (default: false)
+```
+
+What it controls:
+
+- **Registers the optional processors** — `unstructured`, `tesseract`, `custom`,
+  and **docling** — into the shared registry at startup
+  (`initialize_document_processors()`). The built-in PDF tiers
+  (`pypdfium2_fast` → `fast`, `pymupdf` → `structured`, and the `ocr` tier) are
+  always registered independently of this flag.
+- **Gates on-demand parsing in `nc_webdav_read_file`.** With it **off** the tool
+  returns the raw file (base64) and a `force_processor=…` argument is rejected as
+  an unknown processor (the parse registry is empty). With it **on**, the tool
+  parses the file inline and honours `force_processor`.
+
+Consequently the docling **image** and **force-PDF** touchpoints (which flow
+through the registry / `nc_webdav_read_file`) require this flag; the automatic
+**scanned-PDF OCR** touchpoint rides the always-registered `ocr` tier, so it needs
+only `DOCUMENT_OCR_ENABLED` + `DOCUMENT_OCR_PROVIDER` (see the recipe table under
+_Docling_ below).
+
 #### Document parsing robustness (PDF)
 
 These guard the parse/OCR tiers against pathological PDFs. Defaults are safe;
@@ -668,6 +697,20 @@ DOCLING_OCR_LANG=en,de                # engine-dependent codes (EasyOCR: en,de; 
 DOCLING_DO_OCR=true                   # run OCR (vs. text-layer extraction only)
 ```
 
+**Required configuration per use case** (`auto` never selects docling — it needs
+an explicit self-hosted URL):
+
+| Use case | Minimal env |
+|---|---|
+| Images auto-route to docling | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
+| Force docling on a text-layer PDF (`force_processor="docling"`) | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
+| Scanned / no-text-layer PDFs auto-OCR via docling | `DOCUMENT_OCR_ENABLED=true` + `DOCUMENT_OCR_PROVIDER=docling` + `DOCLING_API_URL` |
+
+The scanned-PDF row deliberately omits `ENABLE_DOCLING`/`ENABLE_DOCUMENT_PROCESSING`:
+that path rides the always-registered `ocr` tier during **indexing** (so it also
+needs `ENABLE_SEMANTIC_SEARCH=true`), not the on-demand registry. The image and
+force-PDF rows need the `ENABLE_DOCUMENT_PROCESSING` master switch (see above).
+
 Docling plugs in at three points:
 
 - **Images (automatic).** With `ENABLE_DOCLING=true` + `DOCLING_API_URL` set,
@@ -693,8 +736,10 @@ Office formats (DOCX/PPTX/XLSX) deliberately stay with `unstructured` — doclin
 is scoped to the image/scan/handwriting use case here. OCR language codes are
 engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
 codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
-convert endpoint has a server-side ceiling (~2 min); very large scans are future
-work (async submit/poll). See `docs/ADR-031-docling-document-parsing-backend.md`.
+convert endpoint has an observed ~2 min practical ceiling (from our testing, not a
+hard server-enforced limit), so a larger `DOCLING_TIMEOUT` (e.g. 300s for slow CPU
+OCR) simply lets a slow conversion finish; very large scans are future work (async
+submit/poll). See `docs/ADR-031-docling-document-parsing-backend.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 

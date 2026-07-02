@@ -52,6 +52,11 @@ DOCLING_IMAGE_TYPES = {
 # docling-serve conversion statuses treated as usable output.
 _OK_STATUSES = {"success", "partial_success"}
 
+# Cap the connect phase separately from the (long) read timeout so an unreachable
+# docling-serve host fails fast instead of hanging for the full DOCLING_TIMEOUT.
+# Mirrors ocr._OCR_CONNECT_TIMEOUT_SECONDS for the sibling gateway/Mistral backends.
+_CONNECT_TIMEOUT_SECONDS = 10.0
+
 
 def _from_format_for_mime(content_type: str | None) -> str | None:
     """docling ``from_formats`` hint for a MIME type, or ``None`` to let docling
@@ -144,7 +149,9 @@ async def convert_file(
 
     url = f"{api_url.rstrip('/')}/v1/convert/file"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)
+        ) as client:
             response = await client.post(url, files=files, data=data)
             response.raise_for_status()
             body = response.json()
