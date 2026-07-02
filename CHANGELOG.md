@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.127.5 (2026-07-02)
+
+### Fix
+
+- **ingest**: make stalled-job reclaim resilient to queueing_lock collisions
+
+### Refactor
+
+- **ingest**: guard reclaim discard on queueing_lock constraint; test isolation
+
 ## v0.127.4 (2026-07-01)
 
 ### Fix
