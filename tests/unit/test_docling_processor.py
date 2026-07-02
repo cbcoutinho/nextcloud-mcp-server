@@ -70,7 +70,7 @@ async def test_convert_file_sends_multipart_options(mocker, monkeypatch):
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
 
     document = await docling_serve.convert_file(
-        "http://docling:5001/",
+        "https://docling:5001/",
         b"\x89PNG...",
         "image/png",
         filename="scan.png",
@@ -82,7 +82,7 @@ async def test_convert_file_sends_multipart_options(mocker, monkeypatch):
 
     # URL is normalized (no double slash) and options are form fields.
     args, kwargs = client.post.call_args
-    assert args[0] == "http://docling:5001/v1/convert/file"
+    assert args[0] == "https://docling:5001/v1/convert/file"
     data = kwargs["data"]
     assert data["to_formats"] == ["md"]
     assert data["from_formats"] == ["image"]  # derived from image/png
@@ -98,7 +98,7 @@ async def test_convert_file_pdf_from_format(mocker, monkeypatch):
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
 
     await docling_serve.convert_file(
-        "http://docling:5001",
+        "https://docling:5001",
         b"%PDF-1.7",
         "application/pdf",
         to_formats=["md", "json"],
@@ -115,7 +115,7 @@ async def test_convert_file_http_error_raises_processor_error(mocker, monkeypatc
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
-            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+            "https://docling:5001", b"x", "image/png", to_formats=["md"]
         )
 
 
@@ -127,7 +127,7 @@ async def test_convert_file_failure_status_raises(mocker, monkeypatch):
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
-            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+            "https://docling:5001", b"x", "image/png", to_formats=["md"]
         )
 
 
@@ -139,7 +139,7 @@ async def test_convert_file_empty_text_raises(mocker, monkeypatch):
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
-            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+            "https://docling:5001", b"x", "image/png", to_formats=["md"]
         )
 
 
@@ -151,7 +151,7 @@ async def test_convert_file_non_dict_body_raises(mocker, monkeypatch):
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
-            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+            "https://docling:5001", b"x", "image/png", to_formats=["md"]
         )
 
 
@@ -169,7 +169,7 @@ async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
-            "http://docling:5001", b"x", "image/png", to_formats=["md"]
+            "https://docling:5001", b"x", "image/png", to_formats=["md"]
         )
 
 
@@ -177,7 +177,7 @@ async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
 
 
 def test_supported_mime_types_images_only():
-    proc = DoclingProcessor("http://docling:5001")
+    proc = DoclingProcessor("https://docling:5001")
     assert "image/png" in proc.supported_mime_types
     # PDFs are deliberately excluded from auto-selection (handled by the OCR
     # backend or an explicit force_processor), so it never hijacks PDF tiering.
@@ -193,7 +193,7 @@ async def test_process_image_returns_markdown(mocker, monkeypatch):
     )
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
 
-    proc = DoclingProcessor("http://docling:5001", ocr_lang=["en", "de"])
+    proc = DoclingProcessor("https://docling:5001", ocr_lang=["en", "de"])
     result = await proc.process(b"\x89PNG", "image/png", filename="note.png")
     assert isinstance(result, ProcessingResult)
     assert result.processor == "docling"
@@ -210,7 +210,7 @@ async def test_process_pdf_when_forced(mocker, monkeypatch):
     )
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
 
-    proc = DoclingProcessor("http://docling:5001")
+    proc = DoclingProcessor("https://docling:5001")
     result = await proc.process(b"%PDF-1.7", "application/pdf", filename="tables.pdf")
     assert "| a | b |" in result.text
     _, kwargs = client.post.call_args
@@ -228,7 +228,7 @@ async def test_process_with_progress_callback_returns_text(mocker, monkeypatch):
     async def progress_cb(progress, total, message):
         pass
 
-    proc = DoclingProcessor("http://docling:5001", progress_interval=1)
+    proc = DoclingProcessor("https://docling:5001", progress_interval=1)
     result = await proc.process(
         b"\x89PNG", "image/png", filename="n.png", progress_callback=progress_cb
     )
@@ -241,7 +241,7 @@ async def test_process_http_error_raises(mocker, monkeypatch):
     client = _mock_client(mocker, raise_http=err)
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
 
-    proc = DoclingProcessor("http://docling:5001")
+    proc = DoclingProcessor("https://docling:5001")
     with pytest.raises(ProcessorError):
         await proc.process(b"x", "image/png")
 
@@ -249,7 +249,7 @@ async def test_process_http_error_raises(mocker, monkeypatch):
 async def test_health_check_ok(mocker, monkeypatch):
     ok = _mock_client(mocker, status_code=200)
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: ok)
-    assert await DoclingProcessor("http://docling:5001").health_check() is True
+    assert await DoclingProcessor("https://docling:5001").health_check() is True
 
 
 async def test_health_check_error_is_false(mocker, monkeypatch):
@@ -258,7 +258,7 @@ async def test_health_check_error_is_false(mocker, monkeypatch):
     client.__aexit__ = mocker.AsyncMock(return_value=False)
     client.get = mocker.AsyncMock(side_effect=httpx.ConnectError("down"))
     monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
-    assert await DoclingProcessor("http://docling:5001").health_check() is False
+    assert await DoclingProcessor("https://docling:5001").health_check() is False
 
 
 # --- registry routing --------------------------------------------------------
@@ -287,7 +287,7 @@ class _FakeImageProc(DocumentProcessor):
 def test_docling_wins_image_routing_but_not_pdf():
     registry = ProcessorRegistry()
     registry.register(_FakeImageProc(), priority=10)  # unstructured-like
-    registry.register(DoclingProcessor("http://docling:5001"), priority=20)
+    registry.register(DoclingProcessor("https://docling:5001"), priority=20)
 
     # Images route to docling (higher priority).
     assert registry.find_processor("image/png").name == "docling"
@@ -301,7 +301,7 @@ def test_docling_wins_image_routing_but_not_pdf():
 
 def test_docling_force_selectable_by_name():
     registry = ProcessorRegistry()
-    registry.register(DoclingProcessor("http://docling:5001"), priority=20)
+    registry.register(DoclingProcessor("https://docling:5001"), priority=20)
     # get_processor("docling") is what the forced-processor path resolves; it must
     # be found even for a PDF (supports() is bypassed on the forced path).
     assert registry.get_processor("docling") is not None

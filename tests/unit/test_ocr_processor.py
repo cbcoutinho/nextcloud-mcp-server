@@ -244,11 +244,11 @@ def test_build_backend_auto_none_configured():
 def test_build_backend_docling():
     b = ocr.build_ocr_backend(
         _settings(
-            document_ocr_provider="docling", docling_api_url="http://docling:5001"
+            document_ocr_provider="docling", docling_api_url="https://docling:5001"
         )
     )
     assert isinstance(b, ocr._DoclingServeBackend)
-    assert b._api_url == "http://docling:5001"
+    assert b._api_url == "https://docling:5001"
     assert b._ocr_lang == ["en", "de"]
 
 
@@ -263,7 +263,7 @@ def test_build_backend_auto_never_selects_docling():
     assert (
         ocr.build_ocr_backend(
             _settings(
-                document_ocr_provider="auto", docling_api_url="http://docling:5001"
+                document_ocr_provider="auto", docling_api_url="https://docling:5001"
             )
         )
         is None
@@ -290,7 +290,7 @@ async def test_docling_backend_builds_page_boundaries(monkeypatch):
     monkeypatch.setattr(docling_serve, "convert_file", _fake_convert)
     monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
 
-    backend = ocr._DoclingServeBackend("http://docling:5001", ["en", "de"])
+    backend = ocr._DoclingServeBackend("https://docling:5001", ["en", "de"])
     text, boundaries, spans = await backend.ocr(b"%PDF-1.7", "application/pdf")
     assert text == "Page one\n\nPage two"
     assert [b["page"] for b in boundaries] == [1, 2]
@@ -310,7 +310,7 @@ async def test_docling_backend_single_page_fallback(monkeypatch):
     monkeypatch.setattr(docling_serve, "convert_file", _fake_convert)
     monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
 
-    backend = ocr._DoclingServeBackend("http://docling:5001", None)
+    backend = ocr._DoclingServeBackend("https://docling:5001", None)
     text, boundaries, spans = await backend.ocr(b"%PDF", "application/pdf")
     assert text == "whole doc text"
     assert len(boundaries) == 1

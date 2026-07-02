@@ -102,7 +102,7 @@ class TestDocumentProcessorConfig:
     def test_docling_processor_config(self):
         """Docling registers only when a URL is set; values are parsed correctly."""
         os.environ["ENABLE_DOCLING"] = "true"
-        os.environ["DOCLING_API_URL"] = "http://docling:5001"
+        os.environ["DOCLING_API_URL"] = "https://docling:5001"
         os.environ["DOCLING_OCR_LANG"] = "en,de"
         os.environ["DOCLING_TIMEOUT"] = "90"
         os.environ["DOCLING_DO_OCR"] = "true"
@@ -112,7 +112,7 @@ class TestDocumentProcessorConfig:
             config = get_document_processor_config()
             assert "docling" in config["processors"]
             dcfg = config["processors"]["docling"]
-            assert dcfg["api_url"] == "http://docling:5001"
+            assert dcfg["api_url"] == "https://docling:5001"
             assert dcfg["ocr_lang"] == ["en", "de"]
             assert dcfg["timeout"] == 90
             assert dcfg["do_ocr"] is True
