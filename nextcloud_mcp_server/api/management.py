@@ -72,7 +72,7 @@ class UnsupportedSearchType(Exception):
     (ADR-030), so a client (astrolabe) that requests ``semantic`` against a
     keyword-only server gets a hard, self-correcting error instead of silent BM25
     results. Only *explicit* requests are strict — an absent ``algorithm`` still
-    defaults gracefully via :func:`resolve_search_algorithm`.
+    defaults gracefully (see :func:`select_search_algorithm`).
     """
 
     def __init__(self, requested: str, supported: list[str]) -> None:
@@ -85,70 +85,38 @@ class UnsupportedSearchType(Exception):
 
 
 def select_search_algorithm(requested: str | None, settings: Settings) -> str:
-    """Pick the algorithm to run for a search request (ADR-030, strict variant).
+    """Pick the algorithm to run for a search request (ADR-030).
 
-    The search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`) call this
-    with the raw ``body.get("algorithm")`` — ``None`` when the client sent no
-    ``algorithm`` field:
+    Single source of truth for the two search endpoints (`/api/v1/search`,
+    `/api/v1/vector-viz/search`), called with the raw ``body.get("algorithm")`` —
+    ``None`` when the client sent no ``algorithm`` field:
 
-    - ``requested is None`` → graceful default via
-      :func:`resolve_search_algorithm` (coerces the historical ``hybrid`` default
-      to a serviceable type, e.g. ``bm25`` in keyword mode). Callers that don't
-      pin an algorithm keep working across modes.
+    - ``requested is None`` → graceful default: ``hybrid`` when available, else the
+      first supported type (``bm25`` in keyword mode). Never errors, so callers
+      that don't pin an algorithm keep working across modes. (An explicit JSON
+      ``"algorithm": null`` is indistinguishable from an omitted key — both surface
+      as ``None`` — so it takes this default path rather than being rejected.)
     - explicit ``requested`` in ``supported_search_types`` → returned unchanged.
     - explicit ``requested`` NOT in ``supported_search_types`` → raise
       :class:`UnsupportedSearchType` (→ 422). This is the strict half of the
-      contract that /api/v1/status advertises; the lenient
-      :func:`resolve_search_algorithm` remains for the implicit-default path.
-
-    Caveat: an explicit JSON ``"algorithm": null`` is indistinguishable from an
-    omitted key (both surface as ``None`` from ``body.get``), so it takes the
-    graceful-default path rather than being rejected.
+      contract that /api/v1/status advertises: an explicit ``semantic`` while
+      ``SEARCH_MODE=keyword`` is rejected rather than silently coerced, so the
+      accepted set stays in lockstep with the advertised one.
     """
-    if requested is None:
-        return resolve_search_algorithm("hybrid", settings)
     supported = supported_search_types(settings)
+    if requested is None:
+        # Empty (vector sync off) preserves the prior default of "hybrid".
+        return "hybrid" if "hybrid" in supported else (supported or ["hybrid"])[0]
     if requested in supported:
         return requested
-    # Log the hard reject (mirrors resolve_search_algorithm's coercion log) so
-    # operators can see why an explicit algorithm got a 422 rather than results.
+    # Log the hard reject so operators can see why an explicit algorithm got a 422
+    # rather than results (the response search_method reflects what actually ran).
     logger.debug(
         "select_search_algorithm: rejecting explicit %r (supported=%r)",
         requested,
         supported,
     )
     raise UnsupportedSearchType(requested, supported)
-
-
-def resolve_search_algorithm(algorithm: str, settings: Settings) -> str:
-    """Coerce a requested search algorithm to one this server can serve now.
-
-    Falls back to a supported algorithm when the request is unknown OR
-    unavailable in the current SEARCH_MODE (ADR-030) — notably ``semantic`` while
-    ``SEARCH_MODE=keyword``, which would otherwise route a dense query at a
-    sparse-only index and fail. Prefers ``hybrid`` when available (the historical
-    default), else the first supported type. Backs the **implicit-default** path
-    (no ``algorithm`` in the request); an *explicit* unsupported algorithm is
-    rejected by :func:`select_search_algorithm` (422) rather than coerced, keeping
-    the accepted set in lockstep with the ``supported_search_types`` that
-    /api/v1/status advertises.
-    """
-    supported = supported_search_types(settings)
-    if algorithm in supported:
-        return algorithm
-    # Empty (vector sync off) preserves the prior default of "hybrid".
-    resolved = "hybrid" if "hybrid" in supported else (supported or ["hybrid"])[0]
-    # Log the rewrite so operators debugging "why did I get bm25 results for an
-    # algorithm=semantic request" can see the coercion (the response
-    # search_method reflects the algorithm actually run, not the request).
-    logger.debug(
-        "resolve_search_algorithm: %r unavailable in current SEARCH_MODE "
-        "(supported=%r); coercing to %r",
-        algorithm,
-        supported,
-        resolved,
-    )
-    return resolved
 
 
 def extract_bearer_token(request: Request) -> str | None:

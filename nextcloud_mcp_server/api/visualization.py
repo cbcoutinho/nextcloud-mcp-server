@@ -27,10 +27,11 @@ from nextcloud_mcp_server.api.management import (
     select_search_algorithm,
     validate_token_and_get_user,
 )
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.embedding.service import get_embedding_service
 from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
+    SearchAlgorithm,
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.search.access_filter import (
@@ -70,6 +71,35 @@ def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
             "supported_search_types": e.supported,
         },
         status_code=422,
+    )
+
+
+def _build_search_algorithm(
+    requested_algorithm: str | None,
+    settings: Settings,
+    *,
+    score_threshold: float,
+    fusion: str,
+) -> tuple[SearchAlgorithm, str]:
+    """Resolve + instantiate the search algorithm for a request (ADR-030).
+
+    Shared by both search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`)
+    so their selection logic can't drift. Raises :class:`UnsupportedSearchType`
+    for an *explicit* unsupported algorithm (the caller maps it to a 422 via
+    :func:`_unsupported_search_type_response`); an absent algorithm defaults
+    gracefully. Invalid fusion is normalized to ``"rrf"``. Returns the
+    ``(algorithm instance, resolved algorithm name)``.
+    """
+    algorithm = select_search_algorithm(requested_algorithm, settings)
+    if algorithm == "semantic":
+        return SemanticSearchAlgorithm(score_threshold=score_threshold), algorithm
+    # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it combines dense
+    # semantic + sparse BM25 in hybrid mode, and issues a sparse-only query in
+    # keyword mode (it branches on dense_enabled internally).
+    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
+    return (
+        BM25HybridSearchAlgorithm(score_threshold=score_threshold, fusion=fusion),
+        algorithm,
     )
 
 
@@ -265,28 +295,20 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Pick the algorithm to run (ADR-030, strict variant): an *explicit*
+        # Resolve + build the search algorithm (ADR-030): an *explicit*
         # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
-        # rejected with 422 carrying the advertised supported_search_types, so
-        # the client can correct it rather than silently receive BM25 results. An
+        # rejected with 422 carrying the advertised supported_search_types, so the
+        # client can correct it rather than silently receive BM25 results. An
         # absent algorithm still defaults gracefully across modes.
         try:
-            algorithm = select_search_algorithm(requested_algorithm, settings)
+            search_algo, algorithm = _build_search_algorithm(
+                requested_algorithm,
+                settings,
+                score_threshold=score_threshold,
+                fusion=fusion,
+            )
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
-
-        # Validate fusion method
-        valid_fusions = {"rrf", "dbsf"}
-        if fusion not in valid_fusions:
-            fusion = "rrf"
-
-        # Select search algorithm
-        if algorithm == "semantic":
-            search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
-        else:
-            search_algo = BM25HybridSearchAlgorithm(
-                score_threshold=score_threshold, fusion=fusion
-            )
 
         # Request extra results to handle offset
         search_limit = limit + offset
@@ -522,30 +544,20 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Pick the algorithm to run (ADR-030, strict variant): an *explicit*
+        # Resolve + build the search algorithm (ADR-030): an *explicit*
         # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
-        # rejected with 422 carrying the advertised supported_search_types, so
-        # the client can correct it rather than silently receive BM25 results. An
+        # rejected with 422 carrying the advertised supported_search_types, so the
+        # client can correct it rather than silently receive BM25 results. An
         # absent algorithm still defaults gracefully across modes.
         try:
-            algorithm = select_search_algorithm(requested_algorithm, settings)
+            search_algo, algorithm = _build_search_algorithm(
+                requested_algorithm,
+                settings,
+                score_threshold=score_threshold,
+                fusion=fusion,
+            )
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
-
-        # Validate fusion method
-        valid_fusions = {"rrf", "dbsf"}
-        if fusion not in valid_fusions:
-            fusion = "rrf"
-
-        # Select search algorithm
-        if algorithm == "semantic":
-            search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
-        else:
-            # Both "hybrid" and "bm25" use the BM25HybridSearchAlgorithm
-            # which combines dense semantic and sparse BM25 vectors
-            search_algo = BM25HybridSearchAlgorithm(
-                score_threshold=score_threshold, fusion=fusion
-            )
 
         async def _execute(owners: list[str] | None) -> list:
             """Run the search across requested doc_types with the given owner

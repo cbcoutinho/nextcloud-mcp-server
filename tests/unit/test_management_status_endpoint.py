@@ -419,42 +419,11 @@ class TestSupportedSearchTypesHelper:
         assert supported_search_types(s) == ["bm25"]
 
 
-class TestResolveSearchAlgorithm:
-    """resolve_search_algorithm coerces requests to a mode-serviceable one."""
-
-    def test_hybrid_mode_passes_through_valid(self):
-        from nextcloud_mcp_server.api.management import resolve_search_algorithm
-
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
-        for algo in ("semantic", "bm25", "hybrid"):
-            assert resolve_search_algorithm(algo, s) == algo
-
-    def test_unknown_algorithm_falls_back_to_hybrid(self):
-        from nextcloud_mcp_server.api.management import resolve_search_algorithm
-
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
-        assert resolve_search_algorithm("nonsense", s) == "hybrid"
-
-    def test_keyword_mode_redirects_dense_requests_to_bm25(self):
-        from nextcloud_mcp_server.api.management import resolve_search_algorithm
-
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        # "semantic" would route a dense query at a sparse-only index → bm25.
-        assert resolve_search_algorithm("semantic", s) == "bm25"
-        assert resolve_search_algorithm("hybrid", s) == "bm25"
-        assert resolve_search_algorithm("bm25", s) == "bm25"
-
-    def test_vector_sync_off_preserves_hybrid_default(self):
-        from nextcloud_mcp_server.api.management import resolve_search_algorithm
-
-        s = create_mock_settings(vector_sync_enabled=False)
-        assert resolve_search_algorithm("semantic", s) == "hybrid"
-
-
 class TestSelectSearchAlgorithm:
-    """select_search_algorithm is the strict variant backing the search
-    endpoints (ADR-030): an *explicit* unsupported algorithm raises
-    UnsupportedSearchType (→ 422); an absent algorithm defaults gracefully."""
+    """select_search_algorithm backs the search endpoints (ADR-030): an absent
+    algorithm defaults gracefully across modes, an explicit supported algorithm
+    passes through, and an explicit unsupported one raises UnsupportedSearchType
+    (→ 422)."""
 
     def test_none_defaults_gracefully_in_hybrid(self):
         from nextcloud_mcp_server.api.management import select_search_algorithm
@@ -469,6 +438,13 @@ class TestSelectSearchAlgorithm:
         s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
         # No explicit algorithm → coerced to the one serviceable type.
         assert select_search_algorithm(None, s) == "bm25"
+
+    def test_none_defaults_to_hybrid_when_vector_sync_off(self):
+        from nextcloud_mcp_server.api.management import select_search_algorithm
+
+        # supported_search_types == [] ⇒ preserve the prior "hybrid" default.
+        s = create_mock_settings(vector_sync_enabled=False)
+        assert select_search_algorithm(None, s) == "hybrid"
 
     def test_explicit_supported_passes_through(self):
         from nextcloud_mcp_server.api.management import select_search_algorithm

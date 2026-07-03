@@ -140,9 +140,10 @@ This is deliberately stricter than the earlier behaviour (which silently coerced
 semantic answer; a 422 lets astrolabe *and* any other client fail loud and
 self-correct from the advertised set. The strictness applies only to an
 **explicit** request: a call that omits `algorithm` still defaults gracefully
-across modes. `api/management.py` splits the two paths — `select_search_algorithm`
-(explicit → raise `UnsupportedSearchType`; absent → default) wraps the retained
-`resolve_search_algorithm` (the lenient default-coercion helper).
+across modes. `api/management.py`'s `select_search_algorithm` is the single entry
+point for both paths — explicit unsupported → raise `UnsupportedSearchType`;
+absent → default to a serviceable type (`hybrid` when available, else the first
+supported, i.e. `bm25` in keyword mode).
 
 Astrolabe is the **consumer** of `/api/v1/status` and `/api/v1/search`, and this
 server is the **provider** (ADR-029). The contract is pinned both ways: a
