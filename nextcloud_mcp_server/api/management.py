@@ -64,6 +64,51 @@ def supported_search_types(settings: Settings) -> list[str]:
     return ["bm25"]
 
 
+class UnsupportedSearchType(Exception):
+    """A client *explicitly* asked for a search algorithm this server can't serve.
+
+    Raised by :func:`select_search_algorithm` and translated by the search
+    endpoints into **HTTP 422** carrying the advertised ``supported_search_types``
+    (ADR-030), so a client (astrolabe) that requests ``semantic`` against a
+    keyword-only server gets a hard, self-correcting error instead of silent BM25
+    results. Only *explicit* requests are strict — an absent ``algorithm`` still
+    defaults gracefully via :func:`resolve_search_algorithm`.
+    """
+
+    def __init__(self, requested: str, supported: list[str]) -> None:
+        self.requested = requested
+        self.supported = supported
+        super().__init__(
+            f"search algorithm {requested!r} is not supported by this server "
+            f"(supported: {supported or 'none'})"
+        )
+
+
+def select_search_algorithm(requested: str | None, settings: Settings) -> str:
+    """Pick the algorithm to run for a search request (ADR-030, strict variant).
+
+    The search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`) call this
+    with the raw ``body.get("algorithm")`` — ``None`` when the client sent no
+    ``algorithm`` field:
+
+    - ``requested is None`` → graceful default via
+      :func:`resolve_search_algorithm` (coerces the historical ``hybrid`` default
+      to a serviceable type, e.g. ``bm25`` in keyword mode). Callers that don't
+      pin an algorithm keep working across modes.
+    - explicit ``requested`` in ``supported_search_types`` → returned unchanged.
+    - explicit ``requested`` NOT in ``supported_search_types`` → raise
+      :class:`UnsupportedSearchType` (→ 422). This is the strict half of the
+      contract that /api/v1/status advertises; the lenient
+      :func:`resolve_search_algorithm` remains for the implicit-default path.
+    """
+    if requested is None:
+        return resolve_search_algorithm("hybrid", settings)
+    supported = supported_search_types(settings)
+    if requested in supported:
+        return requested
+    raise UnsupportedSearchType(requested, supported)
+
+
 def resolve_search_algorithm(algorithm: str, settings: Settings) -> str:
     """Coerce a requested search algorithm to one this server can serve now.
 
@@ -71,9 +116,11 @@ def resolve_search_algorithm(algorithm: str, settings: Settings) -> str:
     unavailable in the current SEARCH_MODE (ADR-030) — notably ``semantic`` while
     ``SEARCH_MODE=keyword``, which would otherwise route a dense query at a
     sparse-only index and fail. Prefers ``hybrid`` when available (the historical
-    default), else the first supported type. Keeps the search endpoints lenient
-    (no new 4xx) while keeping the accepted set in lockstep with the
-    ``supported_search_types`` that /api/v1/status advertises.
+    default), else the first supported type. Backs the **implicit-default** path
+    (no ``algorithm`` in the request); an *explicit* unsupported algorithm is
+    rejected by :func:`select_search_algorithm` (422) rather than coerced, keeping
+    the accepted set in lockstep with the ``supported_search_types`` that
+    /api/v1/status advertises.
     """
     supported = supported_search_types(settings)
     if algorithm in supported:

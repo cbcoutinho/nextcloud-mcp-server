@@ -19,11 +19,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.api.management import (
+    UnsupportedSearchType,
     _parse_float_param,
     _parse_int_param,
     _sanitize_error_for_client,
     _validate_query_string,
-    resolve_search_algorithm,
+    select_search_algorithm,
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import get_settings
@@ -228,7 +229,7 @@ async def unified_search(request: Request) -> JSONResponse:
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
-        algorithm = body.get("algorithm", "hybrid")
+        requested_algorithm = body.get("algorithm")  # None ⇒ graceful default
         fusion = body.get("fusion", "rrf")
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
@@ -248,11 +249,22 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Coerce to an algorithm this server can actually serve in its current
-        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
-        # query at a sparse-only index, so it falls back to "bm25". Keeps the
-        # accepted set in lockstep with what /api/v1/status advertises.
-        algorithm = resolve_search_algorithm(algorithm, settings)
+        # Pick the algorithm to run (ADR-030, strict variant): an *explicit*
+        # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
+        # rejected with 422 carrying the advertised supported_search_types, so
+        # the client can correct it rather than silently receive BM25 results. An
+        # absent algorithm still defaults gracefully across modes.
+        try:
+            algorithm = select_search_algorithm(requested_algorithm, settings)
+        except UnsupportedSearchType as e:
+            return JSONResponse(
+                {
+                    "error": "unsupported_search_type",
+                    "requested": e.requested,
+                    "supported_search_types": e.supported,
+                },
+                status_code=422,
+            )
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
@@ -456,7 +468,7 @@ async def vector_search(request: Request) -> JSONResponse:
         # Parse request body
         body = await request.json()
         query = body.get("query", "")
-        algorithm = body.get("algorithm", "hybrid")
+        requested_algorithm = body.get("algorithm")  # None ⇒ graceful default
         fusion = body.get("fusion", "rrf")
         score_threshold = body.get("score_threshold", 0.0)
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
@@ -501,11 +513,22 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Coerce to an algorithm this server can actually serve in its current
-        # SEARCH_MODE (ADR-030): in keyword mode "semantic" would route a dense
-        # query at a sparse-only index, so it falls back to "bm25". Keeps the
-        # accepted set in lockstep with what /api/v1/status advertises.
-        algorithm = resolve_search_algorithm(algorithm, settings)
+        # Pick the algorithm to run (ADR-030, strict variant): an *explicit*
+        # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
+        # rejected with 422 carrying the advertised supported_search_types, so
+        # the client can correct it rather than silently receive BM25 results. An
+        # absent algorithm still defaults gracefully across modes.
+        try:
+            algorithm = select_search_algorithm(requested_algorithm, settings)
+        except UnsupportedSearchType as e:
+            return JSONResponse(
+                {
+                    "error": "unsupported_search_type",
+                    "requested": e.requested,
+                    "supported_search_types": e.supported,
+                },
+                status_code=422,
+            )
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}

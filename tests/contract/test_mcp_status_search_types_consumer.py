@@ -115,3 +115,54 @@ async def test_status_advertises_bm25_only_in_keyword_mode(status_pact):
         types = await _fetch_supported_search_types(str(srv.url))
 
     assert types == ["bm25"]
+
+
+async def _post_search_algorithm(base_url: str, algorithm: str) -> httpx.Response:
+    """Stand-in for astrolabe's McpServerClient.search(): POST /api/v1/search with
+    an explicit ``algorithm``. Returns the raw response so the caller can assert
+    on the (strict, ADR-030) 422 the server sends for an unsupported algorithm."""
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        return await client.post(
+            "/api/v1/search",
+            json={"query": "torch leadership award", "algorithm": algorithm},
+        )
+
+
+async def test_search_rejects_unsupported_algorithm_in_keyword_mode(status_pact):
+    """Explicitly requesting ``semantic`` on a keyword-only server → 422 (ADR-030).
+
+    This is the strict half of the contract: rather than silently degrading a
+    ``semantic`` request to BM25, the server rejects it with the advertised
+    ``supported_search_types`` so astrolabe can surface/guard the error. astrolabe
+    also gates the request client-side from ``/api/v1/status``, but this pins the
+    server-side backstop the client relies on.
+    """
+    (
+        status_pact.upon_receiving(
+            "a semantic search request when the server is in keyword mode"
+        )
+        .given("the server advertises keyword-only search support")
+        .with_request("POST", "/api/v1/search")
+        .with_body(
+            {"query": "torch leadership award", "algorithm": "semantic"},
+            content_type="application/json",
+        )
+        .will_respond_with(422)
+        .with_body(
+            {
+                "error": "unsupported_search_type",
+                "requested": "semantic",
+                "supported_search_types": ["bm25"],
+            },
+            content_type="application/json",
+        )
+    )
+
+    with status_pact.serve() as srv:
+        resp = await _post_search_algorithm(str(srv.url), "semantic")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"] == "unsupported_search_type"
+    assert body["requested"] == "semantic"
+    assert body["supported_search_types"] == ["bm25"]
