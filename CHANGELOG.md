@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.129.1 (2026-07-03)
+
+### Refactor
+
+- **search**: consolidate the keyword-mode query-path gate (ADR-030)
+
 ## v0.129.0 (2026-07-03)
 
 ### Feat
