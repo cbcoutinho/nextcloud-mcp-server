@@ -553,10 +553,12 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
     Qdrant can be briefly unreachable during a rolling deploy (pod ordering,
     network-policy convergence), which is worth retrying. A genuine
     misconfiguration (bad URL/API key surfacing as a 4xx) is not transient and
-    should fail fast. qdrant-client wraps transport failures (connection
-    refused/timeout) in ``ResponseHandlingException``; ``httpx.TransportError``
-    is the raw signal. Walks the ``__cause__``/``__context__`` chain since the
-    real cause is nested under the qdrant wrapper.
+    should fail fast. Transient signals, mirroring the OIDC-discovery split:
+    connection-level failures — ``httpx.TransportError`` (raw) or qdrant's
+    ``ResponseHandlingException`` (wrapper) — and a ``5xx`` from a reachable but
+    overloaded/starting Qdrant (qdrant's ``UnexpectedResponse.status_code``). A
+    ``4xx`` (auth/URL) is not transient. Walks the ``__cause__``/``__context__``
+    chain since the real cause is nested under the qdrant wrapper.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -564,6 +566,15 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
         seen.add(id(current))
         if type(current).__name__ == "ResponseHandlingException" or isinstance(
             current, httpx.TransportError
+        ):
+            return True
+        # qdrant's UnexpectedResponse carries the HTTP status: 5xx is a transient
+        # server-side blip (overloaded/starting), 4xx is a genuine misconfig.
+        status = getattr(current, "status_code", None)
+        if (
+            type(current).__name__ == "UnexpectedResponse"
+            and isinstance(status, int)
+            and 500 <= status < 600
         ):
             return True
         current = current.__cause__ or current.__context__

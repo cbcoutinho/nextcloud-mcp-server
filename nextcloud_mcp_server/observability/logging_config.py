@@ -77,7 +77,11 @@ class ExpectedExceptionFilter(logging.Filter):
     untouched, so genuinely unexpected exceptions keep their traceback.
     """
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    # This is a mutation-only filter: it always keeps the record (returns True)
+    # and only ever clears exc_info. The invariant return is intentional — a
+    # logging.Filter that never drops a record is a standard pattern — so the
+    # bare ``# NOSONAR`` silences python:S3516 (invariant return value).
+    def filter(self, record: logging.LogRecord) -> bool:  # NOSONAR
         exc_info = record.exc_info
         if not exc_info or exc_info[1] is None:
             return True

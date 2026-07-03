@@ -20,7 +20,7 @@ def _exc_record(exc: BaseException, name: str = "procrastinate.worker"):
     """Build a LogRecord carrying ``exc`` as exc_info, like ``logger.error(..., exc_info=exc)``."""
     try:
         raise exc
-    except BaseException as raised:  # noqa: BLE001 - populate __traceback__
+    except Exception as raised:  # noqa: BLE001 - populate __traceback__
         return logging.LogRecord(
             name=name,
             level=logging.ERROR,
@@ -129,7 +129,7 @@ class TestExpectedExceptionFilter:
             httpx.ReadTimeout("timed out"),
             httpx.HTTPStatusError(
                 "404",
-                request=httpx.Request("GET", "http://embedding-gateway/ocr"),
+                request=httpx.Request("GET", "https://embedding-gateway/ocr"),
                 response=httpx.Response(404),
             ),
         ],

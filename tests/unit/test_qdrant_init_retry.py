@@ -36,7 +36,7 @@ class TestQdrantInitErrorIsTransient:
     def test_config_error_is_not_transient(self):
         assert _qdrant_init_error_is_transient(ValueError("bad url")) is False
 
-    def test_http_status_error_is_not_transient(self):
+    def test_4xx_status_error_is_not_transient(self):
         # A 4xx (auth/config) surfaces as UnexpectedResponse — fail fast.
         exc = UnexpectedResponse(
             status_code=403,
@@ -45,6 +45,16 @@ class TestQdrantInitErrorIsTransient:
             headers=httpx.Headers(),
         )
         assert _qdrant_init_error_is_transient(exc) is False
+
+    def test_5xx_status_error_is_transient(self):
+        # A 5xx from a reachable-but-overloaded/starting Qdrant is transient.
+        exc = UnexpectedResponse(
+            status_code=503,
+            reason_phrase="Service Unavailable",
+            content=b"",
+            headers=httpx.Headers(),
+        )
+        assert _qdrant_init_error_is_transient(exc) is True
 
 
 def _settings(max_attempts: int):
