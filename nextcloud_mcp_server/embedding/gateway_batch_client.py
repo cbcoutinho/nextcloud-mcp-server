@@ -151,8 +151,10 @@ class GatewayBatchOcrClient:
         return job_id
 
     async def poll(self, job_id: str) -> BatchPollResult:
-        """Poll a batch job. Raises on transport / non-2xx; maps a terminal job's
-        single-document result into :class:`BatchPollResult`.
+        """Poll a batch job. Maps a terminal job's single-document result into
+        :class:`BatchPollResult`. A ``404`` (the gateway has no record of this job —
+        row purged/orphaned) raises :class:`OcrBatchJobNotFound` so the caller can
+        re-submit; any other non-2xx / transport error propagates as a hard failure.
 
         ``job_id`` is the gateway's namespaced id (``<provider>/<batch_job_id>``),
         so it embeds a ``/`` and the request path is multi-segment
