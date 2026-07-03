@@ -27,11 +27,27 @@ _MODEL = "model-x"
 
 
 class _Settings:
+    # Hybrid mode: the dedup identity is the dense embedding model name.
+    dense_enabled = True
+
     def get_collection_name(self) -> str:
         return _COLLECTION
 
     def get_embedding_model_name(self) -> str:
         return _MODEL
+
+
+class _KeywordSettings:
+    # Keyword mode (ADR-030): no dense vectors. The dedup identity must be the
+    # fixed ``bm25-keyword`` marker, NOT the ``simple-{dim}`` model-name fallback,
+    # so it matches what the chunk-point writer stamps (Deck #509).
+    dense_enabled = False
+
+    def get_collection_name(self) -> str:
+        return _COLLECTION
+
+    def get_embedding_model_name(self) -> str:
+        return "simple-384"
 
 
 def _point(payload: dict) -> SimpleNamespace:
@@ -265,6 +281,30 @@ class TestClaimExistingIndex:
             None,
         )
         # alice already present -> claim still True (skip reprocess) but no write.
+        assert await ss.claim_existing_index("42", "file", "abc", "alice") is True
+        client.set_payload.assert_not_called()
+
+    async def test_keyword_mode_hit_matches_bm25_marker(
+        self, client, monkeypatch
+    ) -> None:
+        # Regression (Deck #509): in keyword mode the dedup identity is the fixed
+        # ``bm25-keyword`` marker the writer stamps — NOT get_embedding_model_name()'s
+        # ``simple-{dim}`` fallback. With the pre-fix code these disagreed, so the
+        # claim always missed and an unchanged shared doc was re-processed + re-OCR'd
+        # every scan. A point stamped ``bm25-keyword`` must register as a HIT.
+        monkeypatch.setattr(ss, "get_settings", lambda: _KeywordSettings())
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: "bm25-keyword",
+                        ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+                    }
+                )
+            ],
+            None,
+        )
+        # alice already listed -> HIT (skip reprocess), no write.
         assert await ss.claim_existing_index("42", "file", "abc", "alice") is True
         client.set_payload.assert_not_called()
 

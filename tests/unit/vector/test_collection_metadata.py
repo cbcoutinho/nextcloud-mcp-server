@@ -42,6 +42,26 @@ async def test_qdrant_error_falls_back_to_env(mocker):
     assert meta == cm.env_default_metadata(settings)
 
 
+def test_build_embedding_identity_hybrid_is_model_name():
+    # Hybrid mode: the identity is the active dense embedding model name.
+    settings = Settings()
+    assert settings.dense_enabled is True
+    assert cm.build_embedding_identity(settings) == settings.get_embedding_model_name()
+
+
+def test_build_embedding_identity_keyword_is_bm25_marker():
+    # Regression (Deck #509): keyword mode must return the fixed ``bm25-keyword``
+    # marker, NOT get_embedding_model_name()'s ``simple-{dim}`` fallback — the value
+    # the chunk-point writer stamps and the dedup lookup compares must agree, or an
+    # unchanged shared doc is re-processed + re-OCR'd every scan.
+    settings = Settings(search_mode="keyword")
+    assert settings.dense_enabled is False
+    assert cm.build_embedding_identity(settings) == cm.KEYWORD_EMBEDDING_IDENTITY
+    assert cm.build_embedding_identity(settings) == "bm25-keyword"
+    # The sentinel/env-fallback metadata carries the same marker.
+    assert cm.env_default_metadata(settings)["embedding_identity"] == "bm25-keyword"
+
+
 async def test_api_source(mocker):
     settings = Settings(
         collection_metadata_source="api",
