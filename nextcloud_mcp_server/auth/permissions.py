@@ -53,5 +53,5 @@ async def is_nextcloud_admin(request: Request, http_client: AsyncClient) -> bool
         return is_admin
 
     except Exception as e:
-        logger.error("Error checking admin permissions: %s", e, exc_info=True)
+        logger.error("Error checking admin permissions: %s", e)
         return False

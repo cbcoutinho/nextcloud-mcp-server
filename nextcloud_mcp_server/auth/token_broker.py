@@ -326,7 +326,6 @@ class TokenBrokerService:
                     "Failed to get background token for user %s: %s",
                     user_id,
                     e,
-                    exc_info=True,
                 )
                 await self.cache.invalidate(cache_key)
                 return None

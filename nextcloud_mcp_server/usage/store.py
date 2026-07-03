@@ -145,14 +145,14 @@ class UsageEventStore:
             record_db_operation(
                 self._storage.dialect, "insert", time.time() - start, "success"
             )
-        except Exception:
+        except Exception as exc:
             # Best-effort: never surface a metering failure to the user op.
             record_db_operation(
                 self._storage.dialect, "insert", time.time() - start, "error"
             )
             logger.warning(
-                "usage metering write dropped (metric=%s, value=%s)",
+                "usage metering write dropped (metric=%s, value=%s): %s",
                 metric,
                 value,
-                exc_info=True,
+                exc,
             )

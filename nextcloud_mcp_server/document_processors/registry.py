@@ -469,7 +469,6 @@ class ProcessorRegistry:
                     logger.warning(
                         "Scan detection failed for %s; using text-only signals",
                         filename or "<bytes>",
-                        exc_info=True,
                     )
             classification = classify_from_text(
                 result.text,
@@ -484,7 +483,6 @@ class ProcessorRegistry:
             logger.warning(
                 "Tier-0 classification failed for %s",
                 filename or "<bytes>",
-                exc_info=True,
             )
             return None
         if record:

@@ -1012,6 +1012,9 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
 | `QDRANT_COLLECTION` | ⚠️ Optional | Auto-generated | Qdrant collection name |
+| `QDRANT_INIT_MAX_ATTEMPTS` | ⚠️ Optional | `30` | Attempts for the startup Qdrant-collection init. Transient connection failures (Qdrant briefly unreachable during a rolling deploy) are retried with capped exponential backoff + jitter instead of crashlooping with a full traceback; genuine errors (auth/config, e.g. a 4xx) fail immediately. Set to `1` to restore fail-fast. |
+| `QDRANT_INIT_BACKOFF_BASE` | ⚠️ Optional | `1.0` | Base delay (seconds) for the first Qdrant-init retry; subsequent retries grow exponentially (`base * 2**n`) with full jitter. |
+| `QDRANT_INIT_BACKOFF_MAX` | ⚠️ Optional | `10.0` | Per-retry cap (seconds) for the Qdrant-init backoff. Size your k8s `startupProbe` accordingly (worst case ≈ `max_attempts × backoff_max` of waiting on a persistently-down Qdrant before startup finally fails). |
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |

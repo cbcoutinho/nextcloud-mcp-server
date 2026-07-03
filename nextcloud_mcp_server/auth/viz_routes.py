@@ -622,7 +622,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         )
 
     except Exception as e:
-        logger.error("Viz search error: %s", e, exc_info=True)
+        logger.error("Viz search error: %s", e)
         return JSONResponse(
             {"success": False, "error": str(e)},
             status_code=500,
@@ -810,7 +810,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             status_code=400,
         )
     except Exception as e:
-        logger.error("Chunk context error: %s", e, exc_info=True)
+        logger.error("Chunk context error: %s", e)
         return JSONResponse(
             {"success": False, "error": str(e)},
             status_code=500,

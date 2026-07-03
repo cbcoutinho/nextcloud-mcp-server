@@ -335,7 +335,6 @@ async def user_scanner_task(
                     e,
                     consecutive_errors,
                     max_consecutive_errors,
-                    exc_info=True,
                 )
 
         except Exception as e:
@@ -346,7 +345,6 @@ async def user_scanner_task(
                 format_exception_group(e),
                 consecutive_errors,
                 max_consecutive_errors,
-                exc_info=True,
             )
 
         finally:
@@ -434,14 +432,12 @@ async def multi_user_processor_task(
                     doc_task.doc_type,
                     doc_task.doc_id,
                     format_exception_group(e),
-                    exc_info=True,
                 )
             else:
                 logger.error(
                     "[BasicAuth] Processor %s error: %s",
                     worker_id,
                     format_exception_group(e),
-                    exc_info=True,
                 )
 
         finally:
@@ -647,7 +643,6 @@ async def user_manager_task(
             logger.error(
                 "[BasicAuth] User manager error: %s",
                 format_exception_group(e),
-                exc_info=True,
             )
 
         # Sleep until the next poll tick, but wake early on shutdown or a

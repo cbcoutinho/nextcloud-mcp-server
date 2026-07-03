@@ -719,7 +719,6 @@ async def verify_search_results(
                 doc_type,
                 e,
                 len(unique_results),
-                exc_info=True,
             )
             accessible_by_type[doc_type] = {r.id for r in unique_results}
 

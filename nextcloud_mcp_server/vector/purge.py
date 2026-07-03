@@ -66,9 +66,10 @@ async def purge_doc_types(doc_types: list[str]) -> dict[str, int]:
             )
         except Exception as exc:  # noqa: BLE001 — record and continue
             last_error = exc
-            logger.exception(
-                "Failed to purge indexed points for doc_type=%s",
+            logger.error(
+                "Failed to purge indexed points for doc_type=%s: %s",
                 doc_type,
+                exc,
             )
 
     if not purged and last_error is not None:

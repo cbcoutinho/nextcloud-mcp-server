@@ -269,7 +269,7 @@ async def _create_one_payload_index(
             body_text,
         )
         return False
-    except Exception:
+    except Exception as exc:
         # Raw network / timeout failures (httpx.ConnectError,
         # asyncio.TimeoutError, etc.) reach here — outside the HTTP-status
         # taxonomy that UnexpectedResponse covers. Same containment
@@ -279,9 +279,9 @@ async def _create_one_payload_index(
         # holding a usable client with the migration silently incomplete.
         logger.error(
             "Network error creating payload index on '%s'; "
-            "field will remain unindexed until next successful restart",
+            "field will remain unindexed until next successful restart: %s",
             field,
-            exc_info=True,
+            exc,
         )
         return False
 
@@ -315,16 +315,17 @@ async def _ensure_payload_indexes(
     # runs, so a transient `get_collection` failure (timeout, DNS blip)
     # propagating out would leave the process holding a usable client with
     # the migration silently skipped on every subsequent call. Log ERROR
-    # with exc_info and return; the next process restart retries from scratch.
+    # (no traceback — this is an expected transient) and return; the next
+    # process restart retries from scratch.
     if existing_schema is None:
         try:
             collection_info = await client.get_collection(collection_name)
-        except Exception:
+        except Exception as exc:
             logger.error(
                 "Failed to fetch collection info for '%s'; payload indexes not "
-                "created. Will retry on next restart.",
+                "created. Will retry on next restart: %s",
                 collection_name,
-                exc_info=True,
+                exc,
             )
             return
         existing_schema = collection_info.payload_schema or {}
@@ -526,8 +527,9 @@ async def _backfill_doc_id_to_string(
     # crash startup. The singleton in get_qdrant_client is already assigned
     # by the time this runs, so re-raising here would leave the process in
     # a half-initialized state where the next call returns the cached
-    # client and skips this migration entirely. Catch broadly, log with
-    # exc_info, and return without writing the sentinel — the next process
+    # client and skips this migration entirely. Catch broadly, log the error
+    # (no traceback — expected transient), and return without writing the
+    # sentinel — the next process
     # restart will retry from scratch. The sentinel write is NOT covered by
     # this try/except: a failure there means the data migration succeeded
     # and only the short-circuit marker is missing, which is a different
@@ -560,11 +562,11 @@ async def _backfill_doc_id_to_string(
 
             if next_offset is None:
                 break
-    except Exception:
+    except Exception as exc:
         logger.error(
-            "doc_id backfill scroll failed on '%s'; will retry on next restart",
+            "doc_id backfill scroll failed on '%s'; will retry on next restart: %s",
             collection_name,
-            exc_info=True,
+            exc,
         )
         return
 
@@ -594,12 +596,12 @@ async def _backfill_doc_id_to_string(
             points=[sentinel_point],
             wait=True,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "doc_id backfill data succeeded on '%s' but sentinel write failed; "
-            "next restart will re-scroll (idempotent zero-write on clean collection)",
+            "next restart will re-scroll (idempotent zero-write on clean collection): %s",
             collection_name,
-            exc_info=True,
+            exc,
         )
         return
 

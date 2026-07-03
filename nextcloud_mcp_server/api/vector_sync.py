@@ -142,7 +142,7 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
             status_code=428,
         )
     except Exception as e:
-        logger.exception("Error purging doc types for user %s", user_id)
+        logger.error("Error purging doc types for user %s: %s", user_id, e)
         return JSONResponse(
             {
                 "error": "Internal error",

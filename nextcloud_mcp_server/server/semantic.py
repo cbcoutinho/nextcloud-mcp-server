@@ -131,7 +131,7 @@ async def record_search_usage(
         # (record_usage_event swallows its own write failures). Metering is on,
         # so warn — a silent DEBUG line would hide "operator enabled metering
         # but gets no data".
-        logger.warning("usage metering hook (tokens_embedded) skipped", exc_info=True)
+        logger.warning("usage metering hook (tokens_embedded) skipped")
 
 
 def configure_semantic_tools(mcp: FastMCP):
@@ -700,7 +700,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error("Search error: %s", e, exc_info=True)
+            logger.error("Search error: %s", e)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool(
@@ -1073,13 +1073,13 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         except Exception as e:
-            # Truly unexpected errors - these SHOULD have tracebacks
+            # Unexpected sampling error. Logged concisely (no traceback) with the
+            # exception type + message; the tool degrades gracefully below.
             logger.error(
                 "Unexpected error during sampling for query %r: %s: %s",
                 query,
                 type(e).__name__,
                 e,
-                exc_info=True,
             )
 
             return SamplingSearchResponse(

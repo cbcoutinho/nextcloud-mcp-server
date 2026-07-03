@@ -259,7 +259,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
                 # constraint today, but guard the assumption explicitly rather
                 # than deleting an unrelated job if procrastinate ever adds one:
                 # log + count it like any unexpected per-job error, don't delete.
-                logger.exception("ingest.reclaim_retry_failed job_id=%s", job.id)
+                logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job.id, exc)
                 errored += 1
                 continue
             # A live ``todo`` sibling with the same queueing_lock already exists
@@ -276,12 +276,12 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
                     job_id=job.id, status=Status.ABORTED, delete_job=True
                 )
                 discarded += 1
-            except Exception:
-                logger.exception("ingest.reclaim_discard_failed job_id=%s", job.id)
+            except Exception as exc:
+                logger.error("ingest.reclaim_discard_failed job_id=%s: %s", job.id, exc)
                 errored += 1
-        except Exception:
+        except Exception as exc:
             # Never let one bad job abort the sweep; the rest still get reclaimed.
-            logger.exception("ingest.reclaim_retry_failed job_id=%s", job.id)
+            logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job.id, exc)
             errored += 1
     if reclaimed or discarded or errored:
         logger.warning(

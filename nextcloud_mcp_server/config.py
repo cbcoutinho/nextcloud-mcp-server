@@ -45,6 +45,10 @@ _DEFAULTS: dict[str, Any] = {
     "oidc_discovery_max_attempts": 10,
     "oidc_discovery_backoff_base": 1.0,
     "oidc_discovery_backoff_max": 15.0,
+    # Startup Qdrant-collection-init retry/backoff (same rationale as OIDC).
+    "qdrant_init_max_attempts": 30,
+    "qdrant_init_backoff_base": 1.0,
+    "qdrant_init_backoff_max": 10.0,
     # Keys must uppercase to the env var dynaconf reads (ignore_unknown_envvars):
     # NEXTCLOUD_OIDC_TOKEN_TYPE / NEXTCLOUD_OIDC_SCOPES, matching _field_map.
     "nextcloud_oidc_token_type": "Bearer",
@@ -429,6 +433,9 @@ _dynaconf = Dynaconf(
         Validator("OIDC_DISCOVERY_MAX_ATTEMPTS", gte=1),
         Validator("OIDC_DISCOVERY_BACKOFF_BASE", gte=0),
         Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
+        Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
+        Validator("QDRANT_INIT_BACKOFF_BASE", gte=0),
+        Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
@@ -780,6 +787,15 @@ class Settings:
     oidc_discovery_max_attempts: int = 10  # OIDC_DISCOVERY_MAX_ATTEMPTS
     oidc_discovery_backoff_base: float = 1.0  # OIDC_DISCOVERY_BACKOFF_BASE (s)
     oidc_discovery_backoff_max: float = 15.0  # OIDC_DISCOVERY_BACKOFF_MAX (s)
+    # Startup Qdrant-collection-init retry/backoff. Qdrant may be briefly
+    # unreachable during a rolling deploy (pod ordering, network-policy
+    # convergence); retry transient connection failures with capped exponential
+    # backoff + jitter instead of crashlooping with a full traceback. Genuine
+    # errors (auth/config, e.g. a 4xx) still fail fast. Set
+    # QDRANT_INIT_MAX_ATTEMPTS=1 to restore fail-fast.
+    qdrant_init_max_attempts: int = 30  # QDRANT_INIT_MAX_ATTEMPTS
+    qdrant_init_backoff_base: float = 1.0  # QDRANT_INIT_BACKOFF_BASE (s)
+    qdrant_init_backoff_max: float = 10.0  # QDRANT_INIT_BACKOFF_MAX (s)
     port: int = 8000  # Server port (PORT); used to build fallback URLs
 
     # Nextcloud settings
@@ -1685,6 +1701,9 @@ def get_settings() -> Settings:
         "oidc_discovery_max_attempts": "OIDC_DISCOVERY_MAX_ATTEMPTS",
         "oidc_discovery_backoff_base": "OIDC_DISCOVERY_BACKOFF_BASE",
         "oidc_discovery_backoff_max": "OIDC_DISCOVERY_BACKOFF_MAX",
+        "qdrant_init_max_attempts": "QDRANT_INIT_MAX_ATTEMPTS",
+        "qdrant_init_backoff_base": "QDRANT_INIT_BACKOFF_BASE",
+        "qdrant_init_backoff_max": "QDRANT_INIT_BACKOFF_MAX",
         "port": "PORT",
         # Nextcloud settings
         "nextcloud_host": "NEXTCLOUD_HOST",

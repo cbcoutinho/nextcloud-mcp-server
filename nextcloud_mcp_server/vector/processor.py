@@ -486,9 +486,7 @@ async def record_indexing_usage(
         # Reached only when shared()/store construction itself raises
         # (record_usage_event swallows its own write failures). Metering is on,
         # so warn rather than hide the "enabled but no billing data" case.
-        logger.warning(
-            "usage metering hook (indexing embeddings) skipped", exc_info=True
-        )
+        logger.warning("usage metering hook (indexing embeddings) skipped")
 
 
 async def processor_task(
@@ -566,14 +564,12 @@ async def processor_task(
                     doc_task.doc_type,
                     doc_task.doc_id,
                     format_exception_group(e),
-                    exc_info=True,
                 )
             else:
                 logger.error(
                     "Processor %s error: %s",
                     worker_id,
                     format_exception_group(e),
-                    exc_info=True,
                 )
             # Continue to next document (no task_done() needed with streams)
 
@@ -1309,7 +1305,6 @@ async def _index_document(
                             logger.warning(
                                 "Could not delete placeholder for dead-lettered %s",
                                 doc_task.doc_id,
-                                exc_info=True,
                             )
                     else:
                         # Either a higher tier exists (parse failures don't
@@ -1336,7 +1331,6 @@ async def _index_document(
                             logger.debug(
                                 "Could not mark placeholder failed for %s",
                                 doc_task.doc_id,
-                                exc_info=True,
                             )
                     return False
 

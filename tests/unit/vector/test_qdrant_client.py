@@ -325,8 +325,8 @@ async def test_ensure_payload_indexes_continues_past_raw_network_error(mocker, c
     bare Exceptions. Without a broad catch, the first network blip
     propagates, leaves _qdrant_client assigned, and silently skips every
     remaining field. The fix is per-field containment matching the 5xx
-    behaviour: log at ERROR with exc_info, append to failed_fields, and
-    continue.
+    behaviour: log at ERROR (message names the cause, no traceback), append to
+    failed_fields, and continue.
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = _empty_collection_info()
@@ -344,9 +344,10 @@ async def test_ensure_payload_indexes_continues_past_raw_network_error(mocker, c
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
     assert "Network error creating payload index" in errors[0].getMessage()
-    # exc_info is preserved so operators can see the underlying cause.
-    assert errors[0].exc_info is not None
-    assert errors[0].exc_info[0] is ConnectionError
+    # No traceback for this handled/expected condition, but the underlying
+    # cause is named in the message so operators can still see it.
+    assert errors[0].exc_info is None
+    assert "Connection refused" in errors[0].getMessage()
     # The partial-failure summary surfaces the field as missing.
     summary_warnings = [
         r
@@ -392,8 +393,9 @@ async def test_ensure_payload_indexes_logs_and_returns_when_get_collection_raise
     msg = errors[0].getMessage()
     assert "Failed to fetch collection info for 'test-collection'" in msg
     assert "Will retry on next restart" in msg
-    assert errors[0].exc_info is not None
-    assert errors[0].exc_info[0] is RuntimeError
+    # No traceback; the cause is named in the message instead.
+    assert errors[0].exc_info is None
+    assert "connection refused" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -655,9 +657,9 @@ async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
     assert len(errors) == 1
     assert "doc_id backfill scroll failed" in errors[0].getMessage()
     assert "test-collection" in errors[0].getMessage()
-    # exc_info=True attaches the original exception to the log record.
-    assert errors[0].exc_info is not None
-    assert errors[0].exc_info[0] is RuntimeError
+    # No traceback; the cause is named in the message instead.
+    assert errors[0].exc_info is None
+    assert "boom" in errors[0].getMessage()
 
 
 @pytest.mark.unit
@@ -692,8 +694,9 @@ async def test_backfill_logs_warning_when_sentinel_upsert_fails(mocker, caplog):
     assert len(warnings) == 1
     assert "sentinel write failed" in warnings[0].getMessage()
     assert "test-collection" in warnings[0].getMessage()
-    assert warnings[0].exc_info is not None
-    assert warnings[0].exc_info[0] is RuntimeError
+    # No traceback; the cause is named in the message instead.
+    assert warnings[0].exc_info is None
+    assert "sentinel write blip" in warnings[0].getMessage()
     # No ERROR — data state is correct, not a backfill failure.
     assert not [r for r in caplog.records if r.levelname == "ERROR"]
 

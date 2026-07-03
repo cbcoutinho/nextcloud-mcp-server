@@ -130,7 +130,6 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                 "Request failed: %s %s",
                 method,
                 path,
-                exc_info=True,
                 extra={
                     "method": method,
                     "path": path,

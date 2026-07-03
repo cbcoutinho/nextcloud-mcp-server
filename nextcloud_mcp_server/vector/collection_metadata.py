@@ -203,7 +203,6 @@ async def read_collection_metadata(
             "Collection metadata read failed for '%s' (source=%s); using env defaults",
             collection_name,
             s.collection_metadata_source,
-            exc_info=True,
         )
 
     if not meta or not meta.get("embedding_identity"):

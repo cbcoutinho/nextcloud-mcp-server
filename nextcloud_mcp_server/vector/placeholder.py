@@ -156,7 +156,6 @@ async def write_placeholder_point(
             doc_type,
             doc_id,
             e,
-            exc_info=True,
         )
         raise
 
@@ -258,7 +257,6 @@ async def delete_placeholder_point(
             doc_type,
             doc_id,
             e,
-            exc_info=True,
         )
         raise
 

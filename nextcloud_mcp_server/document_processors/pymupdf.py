@@ -237,7 +237,7 @@ class PyMuPDFProcessor(DocumentProcessor):
 
         except Exception as e:
             error_msg = f"Failed to process PDF {filename or '<bytes>'}: {e}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(error_msg)
             raise ProcessorError(error_msg) from e
 
     def _extract_metadata(
