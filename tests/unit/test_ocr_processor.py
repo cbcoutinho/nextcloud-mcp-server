@@ -698,6 +698,37 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
     assert client.submitted == []  # did NOT resubmit
 
 
+async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
+    # Incident 2026-07-03: a 404 on poll means the gateway lost the job (row purged
+    # by retention or orphaned by a pod move). The processor must DROP its tracking
+    # row and return the pending sentinel so the NEXT cycle re-submits a fresh job —
+    # NOT re-poll the dead id forever (which flapped the burst GPU).
+    from nextcloud_mcp_server.embedding.gateway_batch_client import OcrBatchJobNotFound
+
+    preset = SimpleNamespace(job_id="surya/dead", submitted_at=1000)
+    client = _FakeBatchClient()
+
+    async def _poll_404(job_id):
+        client.polled.append(job_id)
+        raise OcrBatchJobNotFound(job_id)
+
+    client.poll = _poll_404  # type: ignore[method-assign]
+    store = _FakeStore(preset=preset)
+    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert client.polled == ["surya/dead"]
+    # tracking row dropped -> store.get is None next cycle -> fresh submit
+    assert ("u1", "d1", "file", "v1") in store.deleted
+    # returned the pending sentinel (re-poll → resubmit); did NOT resubmit inline
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
+    assert client.submitted == []
+
+
 async def test_batch_succeeded_returns_indexed_result(monkeypatch):
     preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(

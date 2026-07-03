@@ -95,6 +95,19 @@ async def test_poll_missing_status_is_failed(monkeypatch):
     assert result.is_failed
 
 
+async def test_poll_404_raises_job_not_found(monkeypatch):
+    # A 404 means the gateway has no record of this job (row purged by retention or
+    # orphaned by a pod move). Surface a TYPED OcrBatchJobNotFound — distinct from a
+    # transport/5xx — so the caller drops the id and re-submits instead of re-polling
+    # a dead id forever (incident 2026-07-03: a doc polled a purged id for ~2.5 days).
+    _patch_transport(
+        monkeypatch, lambda r: httpx.Response(404, json={"detail": "gone"})
+    )
+    with pytest.raises(gbc.OcrBatchJobNotFound) as exc:
+        await gbc.GatewayBatchOcrClient("https://gw", "m").poll("surya/deadbeef")
+    assert exc.value.job_id == "surya/deadbeef"
+
+
 async def test_poll_pending(monkeypatch):
     _patch_transport(
         monkeypatch,
