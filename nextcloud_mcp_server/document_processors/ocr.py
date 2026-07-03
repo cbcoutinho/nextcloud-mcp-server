@@ -737,8 +737,29 @@ class OcrProcessor(DocumentProcessor):
             )
             return self._pending(poll_seconds)
 
-        # Existing job — poll the gateway.
-        result = await client.poll(job.job_id)
+        # Existing job — poll the gateway. Lazy import (mirrors the client import
+        # above) to keep document_processors off the embedding import path.
+        from ..embedding import gateway_batch_client as _gbc  # noqa: PLC0415
+
+        try:
+            result = await client.poll(job.job_id)
+        except _gbc.OcrBatchJobNotFound:
+            # The gateway lost this job — its row was purged (retention) or
+            # orphaned by a gateway pod move. Polling it 404s forever. Drop our
+            # tracking row so the NEXT cycle re-submits a fresh job (store.get →
+            # None → new submission) instead of looping on a dead id. Bounded by
+            # the same document_ocr_batch_max_wait budget as any submit; a genuine
+            # poison-pill still terminalises via the failed/timeout paths below and
+            # is dead-lettered by the scanner (incident 2026-07-03).
+            logger.warning(
+                "batch OCR job %s not found on gateway (404); re-submitting %s",
+                job.job_id,
+                filename or doc_id,
+            )
+            await store.delete(
+                user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+            )
+            return self._pending(poll_seconds)
         if result.is_pending:
             elapsed = int(time.time()) - job.submitted_at
             if elapsed >= settings.document_ocr_batch_max_wait_seconds:

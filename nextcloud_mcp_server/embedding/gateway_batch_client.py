@@ -46,6 +46,19 @@ _SUCCEEDED = "succeeded"
 _FAILED = "failed"
 
 
+class OcrBatchJobNotFound(Exception):
+    """The gateway returned ``404`` for a poll — it has no record of this batch
+    job. Its durable row was purged (retention) or lost/orphaned (e.g. a gateway
+    pod move mid-flight). Distinct from a transport/5xx error: the caller must
+    DROP the persisted job id and re-submit a fresh job, not keep polling a dead
+    id forever (incident 2026-07-03 — one doc polled a purged id from 2026-07-01
+    for ~2.5 days, flapping the burst GPU)."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"gateway has no record of batch OCR job {job_id!r}")
+        self.job_id = job_id
+
+
 @dataclass(frozen=True)
 class BatchPollResult:
     """One poll of a batch OCR job.
@@ -138,8 +151,10 @@ class GatewayBatchOcrClient:
         return job_id
 
     async def poll(self, job_id: str) -> BatchPollResult:
-        """Poll a batch job. Raises on transport / non-2xx; maps a terminal job's
-        single-document result into :class:`BatchPollResult`.
+        """Poll a batch job. Maps a terminal job's single-document result into
+        :class:`BatchPollResult`. A ``404`` (the gateway has no record of this job —
+        row purged/orphaned) raises :class:`OcrBatchJobNotFound` so the caller can
+        re-submit; any other non-2xx / transport error propagates as a hard failure.
 
         ``job_id`` is the gateway's namespaced id (``<provider>/<batch_job_id>``),
         so it embeds a ``/`` and the request path is multi-segment
@@ -155,6 +170,12 @@ class GatewayBatchOcrClient:
             resp = await client.get(
                 f"{self._base}/ocr/batch/{job_id}", headers=await self._headers()
             )
+            if resp.status_code == 404:
+                # The gateway has no record of this job (a store-backed provider
+                # 404s an unknown id). Raise a typed error so the caller re-submits
+                # instead of treating it as a generic failure and re-polling the
+                # dead id forever.
+                raise OcrBatchJobNotFound(job_id)
             resp.raise_for_status()
             body = resp.json()
         status = body.get("status")
