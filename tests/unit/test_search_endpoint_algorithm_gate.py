@@ -39,7 +39,12 @@ def _app() -> Starlette:
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
-def test_explicit_semantic_in_keyword_mode_returns_422(path: str):
+# Both dense-requiring algorithms are unsupported in keyword mode (supported is
+# ["bm25"]), so each must be rejected — not just "semantic".
+@pytest.mark.parametrize("algorithm", ["semantic", "hybrid"])
+def test_explicit_dense_algorithm_in_keyword_mode_returns_422(
+    path: str, algorithm: str
+):
     """An explicit unsupported algorithm is rejected before any Qdrant call."""
     with (
         patch(
@@ -53,13 +58,13 @@ def test_explicit_semantic_in_keyword_mode_returns_422(path: str):
     ):
         client = TestClient(_app())
         resp = client.post(
-            path, json={"query": "torch leadership award", "algorithm": "semantic"}
+            path, json={"query": "torch leadership award", "algorithm": algorithm}
         )
 
     assert resp.status_code == 422
     body = resp.json()
     assert body["error"] == "unsupported_search_type"
-    assert body["requested"] == "semantic"
+    assert body["requested"] == algorithm
     assert body["supported_search_types"] == ["bm25"]
 
 

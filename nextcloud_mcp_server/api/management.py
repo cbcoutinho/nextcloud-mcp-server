@@ -100,12 +100,23 @@ def select_search_algorithm(requested: str | None, settings: Settings) -> str:
       :class:`UnsupportedSearchType` (→ 422). This is the strict half of the
       contract that /api/v1/status advertises; the lenient
       :func:`resolve_search_algorithm` remains for the implicit-default path.
+
+    Caveat: an explicit JSON ``"algorithm": null`` is indistinguishable from an
+    omitted key (both surface as ``None`` from ``body.get``), so it takes the
+    graceful-default path rather than being rejected.
     """
     if requested is None:
         return resolve_search_algorithm("hybrid", settings)
     supported = supported_search_types(settings)
     if requested in supported:
         return requested
+    # Log the hard reject (mirrors resolve_search_algorithm's coercion log) so
+    # operators can see why an explicit algorithm got a 422 rather than results.
+    logger.debug(
+        "select_search_algorithm: rejecting explicit %r (supported=%r)",
+        requested,
+        supported,
+    )
     raise UnsupportedSearchType(requested, supported)
 
 

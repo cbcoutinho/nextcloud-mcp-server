@@ -484,11 +484,13 @@ class TestSelectSearchAlgorithm:
         )
 
         s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        with pytest.raises(UnsupportedSearchType) as excinfo:
-            select_search_algorithm("semantic", s)
-        # Error carries the request + the advertised set for a self-correcting 422.
-        assert excinfo.value.requested == "semantic"
-        assert excinfo.value.supported == ["bm25"]
+        # Both dense-requiring algorithms are unsupported in keyword mode.
+        for algo in ("semantic", "hybrid"):
+            with pytest.raises(UnsupportedSearchType) as excinfo:
+                select_search_algorithm(algo, s)
+            # Error carries the request + advertised set for a self-correcting 422.
+            assert excinfo.value.requested == algo
+            assert excinfo.value.supported == ["bm25"]
         # bm25 is still accepted in keyword mode.
         assert select_search_algorithm("bm25", s) == "bm25"
 
