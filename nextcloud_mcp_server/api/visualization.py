@@ -57,6 +57,22 @@ logger = logging.getLogger(__name__)
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
 
 
+def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
+    """Uniform 422 for an explicit unsupported search algorithm (ADR-030).
+
+    Shared by both search endpoints so the ``unsupported_search_type`` payload
+    shape (error / requested / supported_search_types) can't drift between them.
+    """
+    return JSONResponse(
+        {
+            "error": "unsupported_search_type",
+            "requested": e.requested,
+            "supported_search_types": e.supported,
+        },
+        status_code=422,
+    )
+
+
 async def _search_with_acl(
     request: Request,
     user_id: str,
@@ -257,14 +273,7 @@ async def unified_search(request: Request) -> JSONResponse:
         try:
             algorithm = select_search_algorithm(requested_algorithm, settings)
         except UnsupportedSearchType as e:
-            return JSONResponse(
-                {
-                    "error": "unsupported_search_type",
-                    "requested": e.requested,
-                    "supported_search_types": e.supported,
-                },
-                status_code=422,
-            )
+            return _unsupported_search_type_response(e)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
@@ -521,14 +530,7 @@ async def vector_search(request: Request) -> JSONResponse:
         try:
             algorithm = select_search_algorithm(requested_algorithm, settings)
         except UnsupportedSearchType as e:
-            return JSONResponse(
-                {
-                    "error": "unsupported_search_type",
-                    "requested": e.requested,
-                    "supported_search_types": e.supported,
-                },
-                status_code=422,
-            )
+            return _unsupported_search_type_response(e)
 
         # Validate fusion method
         valid_fusions = {"rrf", "dbsf"}
