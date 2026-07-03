@@ -123,15 +123,39 @@ single constant `SUPPORTED_SEARCH_ALGORITHMS`, reused by the
 `/api/v1/vector-viz/search` validation so the advertised set and the accepted
 set cannot drift.
 
-Astrolabe is the **consumer** of `/api/v1/status` and this server is the
-**provider** (ADR-029). The contract is pinned both ways: a contract-first
-consumer pact (`tests/contract/test_mcp_status_search_types_consumer.py`,
-written to the unpublished `provider_contracts/` dir) and the matching
-provider-state handlers in `tests/contract/test_mcp_provider_verification.py`
-(`the server advertises hybrid search support` /
-`… keyword-only search support`). The real response is verified per mode by
-`tests/unit/test_management_status_endpoint.py`. A follow-up astrolabe PR
-consumes `supported_search_types` to gate its query-type picker.
+#### Strict rejection of an explicit unsupported algorithm
+
+Advertising is only half the contract — the search endpoints enforce it. When a
+client sends an **explicit** `algorithm` that is not in `supported_search_types`
+(the paradigm case: `algorithm: "semantic"` while `SEARCH_MODE=keyword`), both
+`/api/v1/search` and `/api/v1/vector-viz/search` return **HTTP 422**:
+
+```json
+{ "error": "unsupported_search_type", "requested": "semantic",
+  "supported_search_types": ["bm25"] }
+```
+
+This is deliberately stricter than the earlier behaviour (which silently coerced
+`semantic` → `bm25`). A silent downgrade returns lexical results dressed up as a
+semantic answer; a 422 lets astrolabe *and* any other client fail loud and
+self-correct from the advertised set. The strictness applies only to an
+**explicit** request: a call that omits `algorithm` still defaults gracefully
+across modes. `api/management.py` splits the two paths — `select_search_algorithm`
+(explicit → raise `UnsupportedSearchType`; absent → default) wraps the retained
+`resolve_search_algorithm` (the lenient default-coercion helper).
+
+Astrolabe is the **consumer** of `/api/v1/status` and `/api/v1/search`, and this
+server is the **provider** (ADR-029). The contract is pinned both ways: a
+contract-first consumer pact
+(`tests/contract/test_mcp_status_search_types_consumer.py`, written to the
+unpublished `provider_contracts/` dir) covering the status advertisement in each
+mode **and** the keyword-mode 422, plus the matching provider-state handlers in
+`tests/contract/test_mcp_provider_verification.py` (`the server advertises hybrid
+search support` / `… keyword-only search support`). The real status response is
+verified per mode by `tests/unit/test_management_status_endpoint.py`, and the
+`select_search_algorithm` gate is unit-tested there too. The astrolabe PR
+consumes `supported_search_types` to gate its query-type picker client-side and
+surfaces the 422 as its server-side backstop.
 
 ## Consequences
 

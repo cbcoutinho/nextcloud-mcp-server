@@ -451,6 +451,61 @@ class TestResolveSearchAlgorithm:
         assert resolve_search_algorithm("semantic", s) == "hybrid"
 
 
+class TestSelectSearchAlgorithm:
+    """select_search_algorithm is the strict variant backing the search
+    endpoints (ADR-030): an *explicit* unsupported algorithm raises
+    UnsupportedSearchType (→ 422); an absent algorithm defaults gracefully."""
+
+    def test_none_defaults_gracefully_in_hybrid(self):
+        from nextcloud_mcp_server.api.management import select_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        # No explicit algorithm → historical "hybrid" default.
+        assert select_search_algorithm(None, s) == "hybrid"
+
+    def test_none_defaults_to_bm25_in_keyword_mode(self):
+        from nextcloud_mcp_server.api.management import select_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        # No explicit algorithm → coerced to the one serviceable type.
+        assert select_search_algorithm(None, s) == "bm25"
+
+    def test_explicit_supported_passes_through(self):
+        from nextcloud_mcp_server.api.management import select_search_algorithm
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        for algo in ("semantic", "bm25", "hybrid"):
+            assert select_search_algorithm(algo, s) == algo
+
+    def test_explicit_semantic_in_keyword_mode_raises(self):
+        from nextcloud_mcp_server.api.management import (
+            UnsupportedSearchType,
+            select_search_algorithm,
+        )
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
+        # Both dense-requiring algorithms are unsupported in keyword mode.
+        for algo in ("semantic", "hybrid"):
+            with pytest.raises(UnsupportedSearchType) as excinfo:
+                select_search_algorithm(algo, s)
+            # Error carries the request + advertised set for a self-correcting 422.
+            assert excinfo.value.requested == algo
+            assert excinfo.value.supported == ["bm25"]
+        # bm25 is still accepted in keyword mode.
+        assert select_search_algorithm("bm25", s) == "bm25"
+
+    def test_explicit_unknown_algorithm_raises(self):
+        from nextcloud_mcp_server.api.management import (
+            UnsupportedSearchType,
+            select_search_algorithm,
+        )
+
+        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        # Unknown values are a client bug — fail loud rather than coerce.
+        with pytest.raises(UnsupportedSearchType):
+            select_search_algorithm("nonsense", s)
+
+
 class TestStatusEndpointSearchTypes:
     """The /api/v1/status response advertises supported_search_types so the
     astrolabe UI can gate its query-type picker (ADR-030)."""
