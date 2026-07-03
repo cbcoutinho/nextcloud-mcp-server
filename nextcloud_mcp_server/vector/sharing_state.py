@@ -33,6 +33,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector import payload_keys
+from nextcloud_mcp_server.vector.collection_metadata import build_embedding_identity
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -244,7 +245,11 @@ async def claim_existing_index(
     after a confirmed hit is non-fatal (logged, not raised): verify-on-read still
     gates access and the user's next scan re-claims it.
     """
-    embedding_identity = get_settings().get_embedding_model_name()
+    # Must match what the chunk-point WRITER stamps (processor.py), which is the
+    # shared helper — NOT get_embedding_model_name(), whose ``simple-{dim}`` keyword
+    # fallback never equals the writer's ``bm25-keyword`` marker, so dedup would
+    # always miss and unchanged docs re-process every scan (Deck #509).
+    embedding_identity = build_embedding_identity(get_settings())
     try:
         existing = await find_indexed_content(
             doc_id, doc_type, etag, embedding_identity
