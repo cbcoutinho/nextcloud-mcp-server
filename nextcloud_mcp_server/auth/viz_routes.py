@@ -204,7 +204,23 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             auth_client_ctx = await _get_authenticated_client_for_userinfo(request)
 
         async with auth_client_ctx as nc_client:
-            # Create search algorithm (no client needed - verification removed)
+            # Create search algorithm (no client needed - verification removed).
+            # ADR-030: the pure-dense "semantic" algorithm queries the dense
+            # vector slot, which a keyword-only collection (SEARCH_MODE=keyword)
+            # does not have — reject it here rather than letting the query fail
+            # against the sparse-only index. "bm25_hybrid" stays valid in both
+            # modes (it issues a sparse-only query in keyword mode internally).
+            if algorithm == "semantic" and not settings.dense_enabled:
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "semantic search is unavailable in keyword-only mode "
+                            "(SEARCH_MODE=keyword)"
+                        ),
+                    },
+                    status_code=400,
+                )
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
             elif algorithm == "bm25_hybrid":

@@ -117,32 +117,44 @@ async def test_status_advertises_bm25_only_in_keyword_mode(status_pact):
     assert types == ["bm25"]
 
 
-async def _post_search_algorithm(base_url: str, algorithm: str) -> httpx.Response:
-    """Stand-in for astrolabe's McpServerClient.search(): POST /api/v1/search with
-    an explicit ``algorithm``. Returns the raw response so the caller can assert
-    on the (strict, ADR-030) 422 the server sends for an unsupported algorithm."""
+async def _post_search_algorithm(
+    base_url: str, path: str, algorithm: str
+) -> httpx.Response:
+    """Stand-in for astrolabe's McpServerClient search calls: POST ``path`` with an
+    explicit ``algorithm``. Returns the raw response so the caller can assert on
+    the (strict, ADR-030) 422 the server sends for an unsupported algorithm.
+
+    Both astrolabe search entry points are exercised — ``searchForUnifiedSearch``
+    (POST /api/v1/search) and ``search`` (POST /api/v1/vector-viz/search) — which
+    on the server share one ``_build_search_algorithm`` gate, so both must reject
+    an explicit unsupported algorithm identically.
+    """
     async with httpx.AsyncClient(base_url=base_url) as client:
         return await client.post(
-            "/api/v1/search",
+            path,
             json={"query": "torch leadership award", "algorithm": algorithm},
         )
 
 
-async def test_search_rejects_unsupported_algorithm_in_keyword_mode(status_pact):
+@pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
+async def test_search_rejects_unsupported_algorithm_in_keyword_mode(
+    status_pact, path: str
+):
     """Explicitly requesting ``semantic`` on a keyword-only server → 422 (ADR-030).
 
     This is the strict half of the contract: rather than silently degrading a
     ``semantic`` request to BM25, the server rejects it with the advertised
     ``supported_search_types`` so astrolabe can surface/guard the error. astrolabe
     also gates the request client-side from ``/api/v1/status``, but this pins the
-    server-side backstop the client relies on.
+    server-side backstop the client relies on — on **both** search endpoints,
+    which share one ``_build_search_algorithm`` gate.
     """
     (
         status_pact.upon_receiving(
-            "a semantic search request when the server is in keyword mode"
+            f"a semantic search request to {path} when the server is in keyword mode"
         )
         .given("the server advertises keyword-only search support")
-        .with_request("POST", "/api/v1/search")
+        .with_request("POST", path)
         .with_body(
             {"query": "torch leadership award", "algorithm": "semantic"},
             content_type="application/json",
@@ -159,7 +171,7 @@ async def test_search_rejects_unsupported_algorithm_in_keyword_mode(status_pact)
     )
 
     with status_pact.serve() as srv:
-        resp = await _post_search_algorithm(str(srv.url), "semantic")
+        resp = await _post_search_algorithm(str(srv.url), path, "semantic")
 
     assert resp.status_code == 422
     body = resp.json()
