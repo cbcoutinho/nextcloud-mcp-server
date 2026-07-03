@@ -10,11 +10,115 @@ This module provides:
 
 import logging
 import sys
+from collections.abc import Iterator
 from typing import Any
 
 from pythonjsonlogger.json import JsonFormatter
 
 from nextcloud_mcp_server.observability.tracing import get_trace_context
+
+# Exception types whose traceback is noise on the noisy library loggers that
+# re-log every propagated exception with ``exc_info`` (``procrastinate.worker``
+# in particular). They are either control-flow signals our pipeline raises on
+# purpose (tier escalation, batch-pending) or expected transient/handled
+# infrastructure failures (network blips to Qdrant / Nextcloud / the
+# embedding-gateway, a deduped duplicate job). For these the multi-frame
+# traceback adds nothing over the one-line message, and there are thousands a
+# day in production. Matched by class name so optional deps (psycopg, qdrant)
+# needn't be importable. Genuinely unexpected exceptions are NOT listed here, so
+# they keep their traceback and real bugs stay debuggable.
+_EXPECTED_EXCEPTION_NAMES: frozenset[str] = frozenset(
+    {
+        # Tier-escalation control-flow signals (document_processors.escalation).
+        "EscalateError",
+        "BatchPending",
+        # Transient HTTP failures to Qdrant / Nextcloud / embedding-gateway.
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "ReadError",
+        "WriteError",
+        "RemoteProtocolError",
+        "HTTPStatusError",
+        # qdrant-client wraps transport errors in this.
+        "ResponseHandlingException",
+        # procrastinate queueing_lock dedup (psycopg): a live duplicate job.
+        "UniqueViolation",
+    }
+)
+
+
+def _iter_leaf_exceptions(exc: BaseException) -> Iterator[BaseException]:
+    """Yield the leaf exceptions of ``exc``, descending ``BaseExceptionGroup``s.
+
+    Vector-sync work runs inside anyio task groups, so a failure can surface as
+    a (possibly nested) ``BaseExceptionGroup``; flatten it so the filter can
+    inspect the real causes.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            yield from _iter_leaf_exceptions(sub)
+    else:
+        yield exc
+
+
+class ExpectedExceptionFilter(logging.Filter):
+    """Strip the traceback from records whose exception is expected/handled.
+
+    Attached to library loggers we cannot edit at the call site (notably
+    ``procrastinate.worker``, which re-logs every propagated task exception with
+    ``exc_info`` — including our tier-escalation control-flow signals and
+    transient network blips — as a full multi-frame traceback). The record is
+    always kept; only ``exc_info`` is cleared so the formatter emits the
+    one-line message without the traceback. Records whose exception (or any leaf
+    of its exception group) is NOT in ``_EXPECTED_EXCEPTION_NAMES`` are left
+    untouched, so genuinely unexpected exceptions keep their traceback.
+    """
+
+    # This is a mutation-only filter: it always keeps the record (returns True)
+    # and only ever clears exc_info. The invariant return is intentional — a
+    # logging.Filter that never drops a record is a standard pattern — so the
+    # bare ``# NOSONAR`` silences python:S3516 (invariant return value).
+    def filter(self, record: logging.LogRecord) -> bool:  # NOSONAR
+        exc_info = record.exc_info
+        if not exc_info or exc_info[1] is None:
+            return True
+        leaves = list(_iter_leaf_exceptions(exc_info[1]))
+        if leaves and all(
+            type(leaf).__name__ in _EXPECTED_EXCEPTION_NAMES for leaf in leaves
+        ):
+            # Expected/handled condition: drop the traceback, keep the message.
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
+# Library loggers that re-log expected/handled exceptions with ``exc_info``.
+# The filter is type-gated, so listing a logger here only suppresses tracebacks
+# for the expected exception types above — never a genuine unhandled bug.
+#
+# - ``procrastinate.worker``: re-logs every propagated task exception (tier
+#   escalation, transient HTTP) as a full traceback, even at INFO ("to retry").
+# - ``asyncio``: the event loop's default handler logs "Task exception was never
+#   retrieved" with a traceback when procrastinate's internal escalation re-defer
+#   trips the ``queueing_lock`` partial-unique index (a benign live-duplicate
+#   dedup). Type-gating means a real unhandled-task bug still keeps its traceback.
+_EXPECTED_EXCEPTION_LOGGERS: tuple[str, ...] = ("procrastinate.worker", "asyncio")
+
+
+def install_expected_exception_filter() -> None:
+    """Attach :class:`ExpectedExceptionFilter` to the noisy library loggers.
+
+    Used by the imperative :func:`setup_logging` path (the standalone ingest
+    worker); the uvicorn ``dictConfig`` path wires the same filter declaratively.
+    """
+    exc_filter = ExpectedExceptionFilter()
+    for name in _EXPECTED_EXCEPTION_LOGGERS:
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, ExpectedExceptionFilter) for f in logger.filters):
+            logger.addFilter(exc_filter)
 
 
 class HealthCheckFilter(logging.Filter):
@@ -176,6 +280,11 @@ def setup_logging(
     # Configure specific logger levels
     configure_component_loggers(log_level)
 
+    # Suppress tracebacks for expected/handled exceptions re-logged by noisy
+    # library loggers (e.g. procrastinate.worker). This is the worker path; the
+    # uvicorn dictConfig wires the same filter declaratively.
+    install_expected_exception_filter()
+
     root_logger.info(
         "Logging configured: format=%s, level=%s, trace_context=%s",
         log_format,
@@ -283,6 +392,9 @@ def get_uvicorn_logging_config(
             "health_check_filter": {
                 "()": "nextcloud_mcp_server.observability.logging_config.HealthCheckFilter",
             },
+            "expected_exception_filter": {
+                "()": "nextcloud_mcp_server.observability.logging_config.ExpectedExceptionFilter",
+            },
         },
         "handlers": {
             "default": {
@@ -301,6 +413,24 @@ def get_uvicorn_logging_config(
             "": {
                 "handlers": ["default"],
                 "level": log_level.upper(),
+            },
+            # procrastinate re-logs every propagated task exception (including our
+            # tier-escalation control-flow signals and transient network blips)
+            # with a full traceback; strip those, keeping genuine bugs' tracebacks.
+            "procrastinate.worker": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "filters": ["expected_exception_filter"],
+                "propagate": False,
+            },
+            # asyncio logs "Task exception was never retrieved" with a traceback
+            # when procrastinate's escalation re-defer trips queueing_lock (benign
+            # dedup); the type-gated filter strips only that, not real bugs.
+            "asyncio": {
+                "handlers": ["default"],
+                "level": "WARNING",
+                "filters": ["expected_exception_filter"],
+                "propagate": False,
             },
             "uvicorn": {
                 "handlers": ["default"],

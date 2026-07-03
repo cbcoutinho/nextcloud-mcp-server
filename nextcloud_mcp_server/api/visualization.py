@@ -986,7 +986,7 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
             status_code=400,
         )
     except Exception as e:
-        logger.error("PDF preview error: %s", e, exc_info=True)
+        logger.error("PDF preview error: %s", e)
         error_msg = _sanitize_error_for_client(e, "get_pdf_preview")
         return JSONResponse(
             {"success": False, "error": error_msg},

@@ -752,7 +752,7 @@ class PDFHighlighter:
             return (png_bytes, page_num, highlight_count)
 
         except Exception as e:
-            logger.error("Error highlighting chunk: %s", e, exc_info=True)
+            logger.error("Error highlighting chunk: %s", e)
             return None
 
         finally:
@@ -865,7 +865,7 @@ class PDFHighlighter:
             return results
 
         except Exception as e:
-            logger.error("Error computing chunk bboxes: %s", e, exc_info=True)
+            logger.error("Error computing chunk bboxes: %s", e)
             return results
 
         finally:
@@ -1071,7 +1071,7 @@ class PDFHighlighter:
             return results
 
         except Exception as e:
-            logger.error("Error in batch highlighting: %s", e, exc_info=True)
+            logger.error("Error in batch highlighting: %s", e)
             return results
 
         finally:

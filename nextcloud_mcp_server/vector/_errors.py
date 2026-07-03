@@ -5,8 +5,9 @@ surfaces as a ``BaseExceptionGroup`` whose default ``str()`` is the useless
 ``"unhandled errors in a TaskGroup (N sub-exception)"`` -- it hides the real
 ``ConnectError`` / ``APIConnectionError`` that operators need to triage embed
 drops (card 309). ``format_exception_group`` flattens the group to the leaf
-exceptions so log lines name the actual cause; pair it with ``exc_info=True`` to
-keep the full traceback.
+exceptions so log lines name the actual cause in a single concise line -- no
+``exc_info``/traceback. Tracebacks are reserved for genuinely unhandled
+exceptions; handled errors log the leaf cause only.
 """
 
 

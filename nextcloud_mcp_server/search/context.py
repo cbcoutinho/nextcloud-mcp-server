@@ -101,7 +101,6 @@ async def _get_chunk_from_qdrant(
         logger.error(
             "Error querying Qdrant for chunk: %s. Falling back to document fetch.",
             e,
-            exc_info=True,
         )
         return None
 
@@ -843,9 +842,7 @@ async def _fetch_document_text(
             logger.warning("Unsupported doc_type for context expansion: %s", doc_type)
             return None
     except Exception as e:
-        logger.error(
-            "Error fetching document %s %s: %s", doc_type, doc_id, e, exc_info=True
-        )
+        logger.error("Error fetching document %s %s: %s", doc_type, doc_id, e)
         return None
 
 

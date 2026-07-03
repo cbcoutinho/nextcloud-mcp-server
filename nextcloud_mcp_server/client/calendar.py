@@ -847,7 +847,7 @@ class CalendarClient:
                 "status_code": 200,
             }
         except Exception as e:
-            logger.error("Error updating todo %s: %s", todo_uid, e, exc_info=True)
+            logger.error("Error updating todo %s: %s", todo_uid, e)
             raise
 
     async def delete_todo(self, calendar_name: str, todo_uid: str) -> dict[str, Any]:
@@ -1430,7 +1430,7 @@ class CalendarClient:
             return cal.to_ical().decode("utf-8")
 
         except Exception as e:
-            logger.error("Error merging iCal todo properties: %s", e, exc_info=True)
+            logger.error("Error merging iCal todo properties: %s", e)
             return self._create_ical_todo(todo_data, todo_uid)
 
     # ============= Helper Methods - Filtering =============

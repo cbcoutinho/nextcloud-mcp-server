@@ -131,7 +131,7 @@ async def record_search_usage(
         # (record_usage_event swallows its own write failures). Metering is on,
         # so warn — a silent DEBUG line would hide "operator enabled metering
         # but gets no data".
-        logger.warning("usage metering hook (tokens_embedded) skipped", exc_info=True)
+        logger.warning("usage metering hook (tokens_embedded) skipped")
 
 
 def configure_semantic_tools(mcp: FastMCP):
@@ -700,7 +700,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error("Search error: %s", e, exc_info=True)
+            # Genuinely-unexpected bucket (after the ValueError / RequestError
+            # cases above). We convert it to a client-facing McpError, which
+            # FastMCP returns as a structured protocol error without logging a
+            # server-side traceback — so, like the sampling catch-all below, keep
+            # the stack here (logger.exception) for triage.
+            logger.exception("Search error: %s", e)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool(
@@ -1073,13 +1078,17 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         except Exception as e:
-            # Truly unexpected errors - these SHOULD have tracebacks
-            logger.error(
-                "Unexpected error during sampling for query %r: %s: %s",
+            # Truly unexpected sampling error — the catch-all after the
+            # TimeoutError / McpError special-casing above. Unlike the rest of
+            # this PR's exc_info removals (expected/handled conditions), this is
+            # the "genuinely unexpected" bucket AND it swallows the exception
+            # (returns a degraded response below), so this is the only place the
+            # stack trace can ever be captured. Keep the traceback here for
+            # triage — via logger.exception (Sonar S8572-compliant).
+            logger.exception(
+                "Unexpected error during sampling for query %r: %s",
                 query,
                 type(e).__name__,
-                e,
-                exc_info=True,
             )
 
             return SamplingSearchResponse(

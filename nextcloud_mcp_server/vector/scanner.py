@@ -195,7 +195,7 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
         logger.info("No indexed notes found for user %s", user_id)
         return None
     except Exception as e:
-        logger.warning("Failed to get last indexed timestamp: %s", e, exc_info=True)
+        logger.warning("Failed to get last indexed timestamp: %s", e)
         return None
 
 
@@ -238,7 +238,7 @@ async def scanner_task(
                 )
 
             except Exception as e:
-                logger.error("Scanner error: %s", e, exc_info=True)
+                logger.error("Scanner error: %s", e)
 
             # Sleep until next interval or wake event
             try:

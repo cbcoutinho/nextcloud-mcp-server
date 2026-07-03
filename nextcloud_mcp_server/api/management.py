@@ -210,7 +210,7 @@ def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
         Generic error message safe for client consumption
     """
     # Log detailed error for debugging
-    logger.error("Error in %s: %s", context, error, exc_info=True)
+    logger.error("Error in %s: %s", context, error)
 
     # Return generic message
     return "An internal error occurred. Please contact your administrator."
