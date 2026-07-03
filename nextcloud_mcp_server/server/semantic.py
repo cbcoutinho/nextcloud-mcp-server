@@ -1073,13 +1073,17 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         except Exception as e:
-            # Unexpected sampling error. Logged concisely (no traceback) with the
-            # exception type + message; the tool degrades gracefully below.
-            logger.error(
-                "Unexpected error during sampling for query %r: %s: %s",
+            # Truly unexpected sampling error — the catch-all after the
+            # TimeoutError / McpError special-casing above. Unlike the rest of
+            # this PR's exc_info removals (expected/handled conditions), this is
+            # the "genuinely unexpected" bucket AND it swallows the exception
+            # (returns a degraded response below), so this is the only place the
+            # stack trace can ever be captured. Keep the traceback here for
+            # triage — via logger.exception (Sonar S8572-compliant).
+            logger.exception(
+                "Unexpected error during sampling for query %r: %s",
                 query,
                 type(e).__name__,
-                e,
             )
 
             return SamplingSearchResponse(
