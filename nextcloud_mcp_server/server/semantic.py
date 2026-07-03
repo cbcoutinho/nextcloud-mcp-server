@@ -700,7 +700,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error("Search error: %s", e)
+            # Genuinely-unexpected bucket (after the ValueError / RequestError
+            # cases above). We convert it to a client-facing McpError, which
+            # FastMCP returns as a structured protocol error without logging a
+            # server-side traceback — so, like the sampling catch-all below, keep
+            # the stack here (logger.exception) for triage.
+            logger.exception("Search error: %s", e)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool(
