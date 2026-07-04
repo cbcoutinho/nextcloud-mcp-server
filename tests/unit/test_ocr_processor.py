@@ -656,6 +656,9 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: client)
+    # Drop the module-level poll-client cache so poll_pending_batch_ocr rebuilds via
+    # the just-monkeypatched build_gateway_batch_client rather than a stale fake.
+    ocr._reset_poll_batch_client()
 
     async def _shared(cls):
         return store

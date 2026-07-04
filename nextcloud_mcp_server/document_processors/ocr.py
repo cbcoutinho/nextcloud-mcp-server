@@ -420,6 +420,38 @@ def build_gateway_batch_client(
     )
 
 
+# Module-level cached batch client for the poll fast-path (Deck #518). Built once
+# and reused so the GatewayTokenProvider's M2M token cache survives across the many
+# ~5s poll retries — mirrors OcrProcessor._get_batch_client (per-instance cache).
+# Without it, rebuilding the client on every poll forces a fresh OAuth
+# client_credentials fetch each retry, trading the skipped WebDAV download for a
+# token round-trip on M2M-auth gateways.
+_poll_batch_client: "GatewayBatchOcrClient | None" = None
+_poll_batch_client_resolved: bool = False
+_poll_batch_client_lock: "anyio.Lock | None" = None
+
+
+async def _get_poll_batch_client(settings: Settings) -> "GatewayBatchOcrClient | None":
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    if not _poll_batch_client_resolved:
+        if _poll_batch_client_lock is None:
+            _poll_batch_client_lock = anyio.Lock()
+        async with _poll_batch_client_lock:
+            if not _poll_batch_client_resolved:  # double-checked
+                _poll_batch_client = build_gateway_batch_client(settings)
+                _poll_batch_client_resolved = True
+    return _poll_batch_client
+
+
+def _reset_poll_batch_client() -> None:
+    """Test hook: drop the cached poll client so a monkeypatched
+    ``build_gateway_batch_client`` (or fresh settings) takes effect on the next call."""
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    _poll_batch_client = None
+    _poll_batch_client_resolved = False
+    _poll_batch_client_lock = None
+
+
 async def poll_pending_batch_ocr(
     *, user_id: str, doc_id: str, etag: str, settings: Settings
 ) -> int | None:
@@ -445,7 +477,7 @@ async def poll_pending_batch_ocr(
     job = await store.get(user_id=user_id, doc_id=doc_id, doc_type="file", etag=etag)
     if job is None:
         return None
-    client = build_gateway_batch_client(settings)
+    client = await _get_poll_batch_client(settings)
     if client is None:
         return None
     from ..embedding.gateway_batch_client import OcrBatchJobNotFound  # noqa: PLC0415

@@ -1139,10 +1139,12 @@ async def _index_document(
             # (~half the OCR worker's single-slot wall-time; the GPU starved while the
             # worker re-fetched files). Only a TERMINAL poll falls through to the
             # download + index path below (which re-polls and needs the real bytes for
-            # the post-parse quality gate). Gated on ``tier`` (batch OCR is the
-            # per-tier worker path only, where ``BatchPending`` is a handled signal).
+            # the post-parse quality gate). Gated on ``tier == "ocr"``: only the OCR
+            # tier ever writes rows to BatchOcrJobStore, so fast/structured tiers skip
+            # the store lookup entirely, and it's the per-tier worker path where
+            # ``BatchPending`` is a handled control-flow signal.
             if (
-                tier is not None
+                tier == "ocr"
                 and settings.document_ocr_mode == "batch"
                 and doc_task.etag
             ):
