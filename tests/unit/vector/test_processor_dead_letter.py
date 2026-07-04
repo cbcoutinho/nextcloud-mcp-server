@@ -31,6 +31,9 @@ pytestmark = pytest.mark.unit
 def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
     return SimpleNamespace(
         document_ocr_enabled=ocr_enabled,
+        # A real Settings always carries this; "sync" keeps the Deck #516
+        # skip-redownload guard in process_document inert on these non-batch paths.
+        document_ocr_mode="sync",
         document_tier1_engine="pypdfium2",
         get_collection_name=lambda: "c",
     )
