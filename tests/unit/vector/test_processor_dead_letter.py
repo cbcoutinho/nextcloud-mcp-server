@@ -21,7 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nextcloud_mcp_server.document_processors.base import ProcessingResult
-from nextcloud_mcp_server.document_processors.escalation import EscalateError
+from nextcloud_mcp_server.document_processors.escalation import (
+    BatchPending,
+    EscalateError,
+)
 from nextcloud_mcp_server.vector import processor
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
@@ -31,6 +34,9 @@ pytestmark = pytest.mark.unit
 def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
     return SimpleNamespace(
         document_ocr_enabled=ocr_enabled,
+        # A real Settings always carries this; "sync" keeps the Deck #516
+        # skip-redownload guard in process_document inert on these non-batch paths.
+        document_ocr_mode="sync",
         document_tier1_engine="pypdfium2",
         get_collection_name=lambda: "c",
     )
@@ -282,3 +288,58 @@ async def test_delete_clears_dead_letter_marker(mocker):
     await processor.process_document(task, MagicMock(), max_retries=1)
 
     clear.assert_awaited_once_with("520189", "file")
+
+
+async def test_batch_ocr_pending_defers_before_download(mocker):
+    """Deck #518: a still-pending batch OCR job defers via BatchPending BEFORE the
+    WebDAV fetch — the whole point of the change (no re-download on poll retries).
+
+    Guards the call ordering at the integration point: ``poll_pending_batch_ocr``
+    returning a non-None interval must short-circuit to ``BatchPending`` without ever
+    reaching ``nc_client.webdav.read_file``."""
+    settings = _settings(ocr_enabled=True)
+    settings.document_ocr_mode = "batch"  # activate the pre-read poll fast-path
+    mocker.patch.object(processor, "get_settings", lambda: settings)
+    mocker.patch.object(
+        processor, "claim_existing_index", AsyncMock(return_value=False)
+    )
+    # The poll fast-path reports the job is still pending -> defer for 120s.
+    poll = mocker.patch(
+        "nextcloud_mcp_server.document_processors.ocr.poll_pending_batch_ocr",
+        AsyncMock(return_value=120),
+    )
+    nc = _nc_client()
+
+    with pytest.raises(BatchPending) as ei:
+        await processor._index_document(_file_task(), nc, MagicMock(), tier="ocr")
+
+    assert ei.value.retry_in == 120
+    poll.assert_awaited_once()
+    nc.webdav.read_file.assert_not_awaited()  # the win: no re-download on a poll
+
+
+async def test_batch_ocr_no_pending_job_still_downloads(mocker):
+    """The inverse guard: when poll_pending_batch_ocr returns None (no in-flight
+    job), _index_document falls through to the normal fetch (read_file IS called)."""
+    settings = _settings(ocr_enabled=True)
+    settings.document_ocr_mode = "batch"
+    mocker.patch.object(processor, "get_settings", lambda: settings)
+    mocker.patch.object(
+        processor, "claim_existing_index", AsyncMock(return_value=False)
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.document_processors.ocr.poll_pending_batch_ocr",
+        AsyncMock(return_value=None),
+    )
+    # Stop after the fetch so we only assert the download happened, not full indexing.
+    mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(side_effect=BatchPending(retry_in=99)),
+    )
+    nc = _nc_client()
+
+    with pytest.raises(BatchPending):
+        await processor._index_document(_file_task(), nc, MagicMock(), tier="ocr")
+
+    nc.webdav.read_file.assert_awaited_once()  # no in-flight job -> fetched normally

@@ -420,6 +420,85 @@ def build_gateway_batch_client(
     )
 
 
+# Module-level cached batch client for the poll fast-path (Deck #518). Built once
+# and reused so the GatewayTokenProvider's M2M token cache survives across the many
+# ~5s poll retries — mirrors OcrProcessor._get_batch_client (per-instance cache).
+# Without it, rebuilding the client on every poll forces a fresh OAuth
+# client_credentials fetch each retry, trading the skipped WebDAV download for a
+# token round-trip on M2M-auth gateways.
+_poll_batch_client: "GatewayBatchOcrClient | None" = None
+_poll_batch_client_resolved: bool = False
+_poll_batch_client_lock: "anyio.Lock | None" = None
+
+
+async def _get_poll_batch_client(settings: Settings) -> "GatewayBatchOcrClient | None":
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    if not _poll_batch_client_resolved:
+        if _poll_batch_client_lock is None:
+            _poll_batch_client_lock = anyio.Lock()
+        async with _poll_batch_client_lock:
+            if not _poll_batch_client_resolved:  # double-checked
+                _poll_batch_client = build_gateway_batch_client(settings)
+                _poll_batch_client_resolved = True
+    return _poll_batch_client
+
+
+def _reset_poll_batch_client() -> None:
+    """Test hook: drop the cached poll client so a monkeypatched
+    ``build_gateway_batch_client`` (or fresh settings) takes effect on the next call."""
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    _poll_batch_client = None
+    _poll_batch_client_resolved = False
+    _poll_batch_client_lock = None
+
+
+async def poll_pending_batch_ocr(
+    *, user_id: str, doc_id: str, etag: str, settings: Settings
+) -> int | None:
+    """Fast-path the OCR poll loop (Deck #516): if a batch OCR job is already in
+    flight for this exact content (same ``etag``), poll it by ``job_id`` and return
+    how many seconds to defer while it is still PENDING — so the ingest worker can
+    re-defer WITHOUT re-downloading the file. A poll needs only the ``job_id``; the
+    file bytes are needed only to SUBMIT, and indexing uses the gateway's OCR text,
+    not the original bytes. Re-fetching the file over WebDAV on every poll retry was
+    ~half the OCR worker's single-slot wall-time, starving the co-resident GPU.
+
+    Returns ``None`` — meaning "fall through to the normal download + parse path" —
+    when: there is no in-flight job (nothing submitted yet); batch OCR isn't
+    configured; the gateway has no record of the job (re-submit, #1019); the poll is
+    TERMINAL (succeeded/failed — the pipeline re-polls and indexes the result, and
+    its post-parse quality gate needs the real bytes); or the give-up deadline has
+    passed (the pipeline marks it failed). Only a still-PENDING, within-deadline job
+    returns an int, and that is the ONLY case in which the caller may skip the fetch.
+    """
+    from ..vector.batch_ocr_store import BatchOcrJobStore  # noqa: PLC0415
+
+    store = await BatchOcrJobStore.shared()
+    job = await store.get(user_id=user_id, doc_id=doc_id, doc_type="file", etag=etag)
+    if job is None:
+        return None
+    client = await _get_poll_batch_client(settings)
+    if client is None:
+        return None
+    from ..embedding.gateway_batch_client import OcrBatchJobNotFound  # noqa: PLC0415
+
+    try:
+        result = await client.poll(job.job_id)
+    except OcrBatchJobNotFound:
+        # Gateway purged/orphaned the job — fall through so the normal path re-hits
+        # the same 404 and re-submits (#1019), which needs the file bytes anyway.
+        return None
+    if not result.is_pending:
+        return None  # terminal — fall through to index the result via the pipeline
+    # Honour the same give-up deadline as _process_batch so a stuck job isn't polled
+    # forever without ever re-fetching; past it, fall through so the normal path
+    # fails it (deletes the tracking row + records the metric).
+    elapsed = int(time.time()) - job.submitted_at
+    if elapsed >= settings.document_ocr_batch_max_wait_seconds:
+        return None
+    return settings.document_ocr_batch_poll_seconds
+
+
 def build_ocr_backend(
     settings: Settings, *, model: str | None = None
 ) -> _OcrBackend | None:

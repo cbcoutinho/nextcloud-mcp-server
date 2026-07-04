@@ -1131,6 +1131,39 @@ async def _index_document(
                 )
                 return
 
+            # Deck #516: the file bytes are needed only to SUBMIT an OCR job — a
+            # poll uses the gateway job_id and indexing uses the OCR text the gateway
+            # returns, not the original bytes. When a batch OCR job is already in
+            # flight for this content, poll it FIRST and, while it is still pending,
+            # defer WITHOUT the WebDAV re-download that otherwise ran on EVERY retry
+            # (~half the OCR worker's single-slot wall-time; the GPU starved while the
+            # worker re-fetched files). Only a TERMINAL poll falls through to the
+            # download + index path below (which re-polls and needs the real bytes for
+            # the post-parse quality gate). Gated on ``tier == "ocr"``: only the OCR
+            # tier ever writes rows to BatchOcrJobStore, so fast/structured tiers skip
+            # the store lookup entirely, and it's the per-tier worker path where
+            # ``BatchPending`` is a handled control-flow signal.
+            if (
+                tier == "ocr"
+                and settings.document_ocr_mode == "batch"
+                and doc_task.etag
+            ):
+                from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                    BatchPending,
+                )
+                from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
+                    poll_pending_batch_ocr,
+                )
+
+                retry_in = await poll_pending_batch_ocr(
+                    user_id=doc_task.user_id,
+                    doc_id=doc_task.doc_id,
+                    etag=doc_task.etag,
+                    settings=settings,
+                )
+                if retry_in is not None:
+                    raise BatchPending(retry_in=retry_in)
+
             # Read file content via WebDAV
             content_bytes, content_type = await nc_client.webdav.read_file(file_path)
         else:
