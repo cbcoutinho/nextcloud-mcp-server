@@ -89,6 +89,10 @@ async def test_convert_file_sends_multipart_options(mocker, monkeypatch):
     assert data["do_ocr"] == "true"
     assert data["ocr_lang"] == ["en", "de"]
     assert "files" in kwargs
+    # Backward-compat guard: no VLM fields on the default (standard) path.
+    assert "pipeline" not in data
+    assert "vlm_pipeline_preset" not in data
+    assert "image_export_mode" not in data
 
 
 async def test_convert_file_pdf_from_format(mocker, monkeypatch):
@@ -106,6 +110,53 @@ async def test_convert_file_pdf_from_format(mocker, monkeypatch):
     )
     _, kwargs = client.post.call_args
     assert kwargs["data"]["from_formats"] == ["pdf"]
+
+
+async def test_convert_file_vlm_pipeline(mocker, monkeypatch):
+    """pipeline='vlm' sends pipeline + preset + image_export_mode and OMITS the
+    classic do_ocr/ocr_lang (inert in VLM)."""
+    client = _mock_client(
+        mocker, json={"status": "success", "document": {"md_content": "vlm text"}}
+    )
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    await docling_serve.convert_file(
+        "https://docling:5001",
+        b"\x89PNG",
+        "image/png",
+        to_formats=["md"],
+        do_ocr=True,
+        ocr_lang=["en", "de"],
+        pipeline="vlm",
+        vlm_pipeline_preset="glm_ocr",
+    )
+    data = client.post.call_args.kwargs["data"]
+    assert data["pipeline"] == "vlm"
+    assert data["vlm_pipeline_preset"] == "glm_ocr"
+    assert data["image_export_mode"] == "placeholder"
+    # classic-OCR fields are inert in VLM -> omitted
+    assert "do_ocr" not in data
+    assert "ocr_lang" not in data
+
+
+async def test_convert_file_vlm_without_preset(mocker, monkeypatch):
+    """pipeline='vlm' with no preset omits vlm_pipeline_preset (docling-serve picks
+    its own default)."""
+    client = _mock_client(
+        mocker, json={"status": "success", "document": {"md_content": "vlm text"}}
+    )
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    await docling_serve.convert_file(
+        "https://docling:5001",
+        b"\x89PNG",
+        "image/png",
+        to_formats=["md"],
+        pipeline="vlm",
+    )
+    data = client.post.call_args.kwargs["data"]
+    assert data["pipeline"] == "vlm"
+    assert "vlm_pipeline_preset" not in data
 
 
 async def test_convert_file_http_error_raises_processor_error(mocker, monkeypatch):
@@ -199,6 +250,34 @@ async def test_process_image_returns_markdown(mocker, monkeypatch):
     assert result.processor == "docling"
     assert result.text == "handwritten text"
     assert result.metadata["parsing_method"] == "docling"
+    # Default (standard) pipeline is recorded in metadata; no VLM fields sent.
+    assert result.metadata["docling_pipeline"] == "standard"
+    data = client.post.call_args.kwargs["data"]
+    assert "pipeline" not in data
+
+
+async def test_process_image_vlm_pipeline(mocker, monkeypatch):
+    """A DoclingProcessor built with pipeline='vlm' forwards the VLM fields to
+    docling-serve and records the pipeline in parsing_metadata."""
+    client = _mock_client(
+        mocker,
+        json={"status": "success", "document": {"md_content": "vlm markdown"}},
+    )
+    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+
+    proc = DoclingProcessor(
+        "https://docling:5001", pipeline="vlm", vlm_preset="glm_ocr"
+    )
+    result = await proc.process(b"\x89PNG", "image/png", filename="note.png")
+    assert result.text == "vlm markdown"
+    assert result.metadata["docling_pipeline"] == "vlm"
+    # parsing_method stays "docling" -- pipeline is a sub-detail (D5).
+    assert result.metadata["parsing_method"] == "docling"
+    data = client.post.call_args.kwargs["data"]
+    assert data["pipeline"] == "vlm"
+    assert data["vlm_pipeline_preset"] == "glm_ocr"
+    assert data["image_export_mode"] == "placeholder"
+    assert "do_ocr" not in data
 
 
 async def test_process_pdf_when_forced(mocker, monkeypatch):
