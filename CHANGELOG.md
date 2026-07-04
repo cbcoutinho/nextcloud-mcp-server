@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.129.2 (2026-07-04)
+
+### Fix
+
+- **ingest**: cache the poll batch-client + narrow gate + integration tests (Deck #518 review)
+- **ingest**: skip WebDAV re-download on batch-OCR poll retries (Deck #516/#518)
+
 ## v0.129.1 (2026-07-03)
 
 ### Refactor
