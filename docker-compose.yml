@@ -191,6 +191,11 @@ services:
       - ENABLE_DOCLING=${ENABLE_DOCLING:-false}
       - DOCLING_API_URL=${DOCLING_API_URL:-}
       - DOCLING_TIMEOUT=${DOCLING_TIMEOUT:-120}
+      # Opt-in VLM pipeline (ADR-032): point docling-serve at its VLM presets
+      # instead of classic OCR. Default "standard" is byte-identical to the
+      # pre-VLM request. VLM needs a much larger DOCLING_TIMEOUT (600-900s).
+      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
+      - DOCLING_VLM_PRESET=${DOCLING_VLM_PRESET:-}
     profiles:
       - single-user
 

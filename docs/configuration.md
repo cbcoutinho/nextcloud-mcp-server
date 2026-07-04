@@ -695,6 +695,8 @@ DOCLING_API_URL=http://docling:5001   # docling-serve base URL (required)
 DOCLING_TIMEOUT=120                   # image/force conversion timeout (seconds)
 DOCLING_OCR_LANG=en,de                # engine-dependent codes (EasyOCR: en,de; Tesseract: eng,deu)
 DOCLING_DO_OCR=true                   # run OCR (vs. text-layer extraction only)
+DOCLING_PIPELINE=standard             # "standard" (classic OCR) | "vlm" (vision-language model)
+DOCLING_VLM_PRESET=                   # VLM preset name when DOCLING_PIPELINE=vlm (unset = docling-serve default)
 ```
 
 **Required configuration per use case** (`auto` never selects docling — it needs
@@ -705,6 +707,7 @@ an explicit self-hosted URL):
 | Images auto-route to docling | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
 | Force docling on a text-layer PDF (`force_processor="docling"`) | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
 | Scanned / no-text-layer PDFs auto-OCR via docling | `DOCUMENT_OCR_ENABLED=true` + `DOCUMENT_OCR_PROVIDER=docling` + `DOCLING_API_URL` |
+| Drive docling-serve's **VLM** presets instead of classic OCR | any docling row above + `DOCLING_PIPELINE=vlm` (+ `DOCLING_VLM_PRESET`, `DOCLING_TIMEOUT=600`–`900`) |
 
 The scanned-PDF row deliberately omits `ENABLE_DOCLING`/`ENABLE_DOCUMENT_PROCESSING`:
 that path rides the always-registered `ocr` tier during **indexing** (so it also
@@ -740,6 +743,22 @@ convert endpoint has an observed ~2 min practical ceiling (from our testing, not
 hard server-enforced limit), so a larger `DOCLING_TIMEOUT` (e.g. 300s for slow CPU
 OCR) simply lets a slow conversion finish; very large scans are future work (async
 submit/poll). See `docs/ADR-031-docling-document-parsing-backend.md`.
+
+**VLM pipeline (opt-in).** docling-serve can also transcribe with a
+vision-language model instead of classic OCR — often markedly better on messy
+scans, handwriting and complex layouts. The pipeline is **client-selected**: set
+`DOCLING_PIPELINE=vlm` and the docling client sends `pipeline=vlm` (plus
+`DOCLING_VLM_PRESET`, if set, and a lean `image_export_mode=placeholder`) on
+**both** the image and scanned-PDF touchpoints. Presets are defined by the
+docling-serve instance (e.g. `glm_ocr` backed by a local Ollama), so the client
+does not validate the name — an unknown preset surfaces as a docling error. Under
+`vlm` the classic `DOCLING_DO_OCR`/`DOCLING_OCR_LANG` knobs are inert and not sent.
+The default `standard` is byte-identical to the pre-VLM request, so leaving it
+unset changes nothing. **VLM inference is much slower than classic OCR** — raise
+`DOCLING_TIMEOUT` to 600–900s (the server warns if `vlm` is set with a timeout
+below 300s). The chosen pipeline is recorded in `parsing_metadata.docling_pipeline`
+while `parsing_method` stays `docling`. See
+`docs/ADR-032-docling-vlm-pipeline.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 
