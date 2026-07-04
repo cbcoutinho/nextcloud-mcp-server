@@ -272,6 +272,8 @@ def initialize_document_processors():
                 timeout=docling_config["timeout"],
                 ocr_lang=docling_config["ocr_lang"],
                 do_ocr=docling_config["do_ocr"],
+                pipeline=docling_config.get("pipeline", "standard"),
+                vlm_preset=docling_config.get("vlm_preset"),
                 progress_interval=docling_config.get("progress_interval", 10),
             )
             registry.register(processor, priority=20)  # Above unstructured (10)

@@ -276,6 +276,13 @@ _DEFAULTS: dict[str, Any] = {
     # Run OCR on IMAGES routed to the DoclingProcessor (find_processor path). The
     # docling OCR *backend* (scanned PDFs) always OCRs regardless of this flag.
     "docling_do_ocr": True,
+    # Which docling-serve pipeline to request: "standard" (classic layout+OCR,
+    # default, unchanged) or "vlm" (Vision-LLM OCR). "vlm" needs a docling-serve
+    # instance configured with VLM presets (see ADR-032).
+    "docling_pipeline": "standard",
+    # VLM preset name sent when docling_pipeline == "vlm". None -> docling-serve
+    # picks its own DOCLING_SERVE_DEFAULT_VLM_PRESET. Preset names are server-defined.
+    "docling_vlm_preset": None,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
@@ -752,6 +759,15 @@ def get_document_processor_config() -> dict[str, Any]:
                 "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
                 "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
                 "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
+                # Normalize like Settings.__post_init__ does (.strip().lower()) so the
+                # image path matches convert_file()'s ``pipeline == "vlm"`` check --
+                # otherwise DOCLING_PIPELINE=VLM would silently fall back to standard
+                # here while the OCR-backend path (Settings-validated) uses vlm.
+                # vlm_preset is server-defined and case-sensitive, so it stays raw.
+                "pipeline": (_dynaconf.get("DOCLING_PIPELINE") or "standard")
+                .strip()
+                .lower(),
+                "vlm_preset": _dynaconf.get("DOCLING_VLM_PRESET"),
                 "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
             }
 
@@ -1053,6 +1069,8 @@ class Settings:
     # resolves to None (docling OCR off) and the image processor is not registered.
     docling_api_url: str | None = None
     docling_ocr_lang: str = "en,de"
+    docling_pipeline: str = "standard"
+    docling_vlm_preset: str | None = None
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1223,6 +1241,7 @@ class Settings:
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
             "document_ocr_provider": {"auto", "gateway", "mistral", "docling", "none"},
             "document_ocr_mode": {"sync", "batch"},
+            "docling_pipeline": {"standard", "vlm"},
         }
         for _field, _allowed in _enum_fields.items():
             _val = (getattr(self, _field) or "").strip().lower()
@@ -1805,6 +1824,8 @@ def get_settings() -> Settings:
         # image processor only (the OCR backend always OCRs), like the unstructured_* keys.
         "docling_api_url": "DOCLING_API_URL",
         "docling_ocr_lang": "DOCLING_OCR_LANG",
+        "docling_pipeline": "DOCLING_PIPELINE",
+        "docling_vlm_preset": "DOCLING_VLM_PRESET",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

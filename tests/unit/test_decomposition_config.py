@@ -85,6 +85,7 @@ class TestEnumValidation:
             ("document_tier1_engine", "mupdf"),
             ("document_ocr_provider", "gatway"),
             ("search_mode", "fulltext"),
+            ("docling_pipeline", "vllm"),
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
@@ -100,6 +101,10 @@ class TestEnumValidation:
         assert (
             Settings(document_ocr_provider="docling").document_ocr_provider == "docling"
         )
+
+    def test_docling_pipeline_vlm_accepted(self):
+        # vlm is the opt-in pipeline that drives docling-serve's VLM presets, ADR-032.
+        assert Settings(docling_pipeline="vlm").docling_pipeline == "vlm"
 
 
 class TestIngestQueueResolution:
