@@ -773,7 +773,9 @@ there.
 Mechanics: the OCR tier submits the job, records its id in the `batch_ocr_jobs`
 app-DB table (keyed on the document + its etag), and raises a re-poll deferral so
 procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` (or the
-gateway's `Retry-After` when longer, so a large pending backlog can't storm it) —
+gateway's `Retry-After` when longer, so a large pending backlog can't storm it —
+capped at an internal 1h ceiling, `_BATCH_POLL_MAX_DEFER_SECONDS`, so a
+malformed/absurd header can't stall a poll unboundedly) —
 releasing the worker slot between polls (a long batch never pins a worker or is
 reclaimed as stalled). On completion the per-page markdown is indexed exactly like
 the sync path. A pending job is polled **indefinitely**: once the gateway accepts a
