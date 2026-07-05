@@ -73,6 +73,10 @@ def _batch_defer_seconds(poll_seconds: int, retry_after: int | None) -> int:
     ``_BATCH_POLL_MAX_DEFER_SECONDS`` (a malformed header can't stall a document absurdly
     long). No give-up — this only paces re-polls (Deck #523)."""
     raw = retry_after or poll_seconds
+    # ceiling = max(poll_seconds, cap): the cap must never clamp BELOW the operator's
+    # configured floor (poll_seconds has no upper-bound validator), else a re-poll
+    # could fire faster than they asked. So an interval above the 1h cap raises the
+    # effective ceiling to that interval — floor and ceiling coincide, still bounded.
     ceiling = max(poll_seconds, _BATCH_POLL_MAX_DEFER_SECONDS)
     return min(max(raw, poll_seconds), ceiling)
 
