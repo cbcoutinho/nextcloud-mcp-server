@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.129.5 (2026-07-05)
+
+### Refactor
+
+- **config**: drop redundant local `import re` in mask_db_password
+- **db**: pass DATABASE_URL through to psycopg verbatim; drop asyncpg
+
 ## v0.129.4 (2026-07-05)
 
 ### Fix
