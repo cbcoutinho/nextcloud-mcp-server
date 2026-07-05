@@ -59,6 +59,24 @@ _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 OCR_BATCH_PENDING_KEY = "ocr_batch_pending"
 OCR_BATCH_RETRY_IN_KEY = "ocr_batch_retry_in"
 
+# Ceiling on how long one batch-OCR poll may defer. The gateway's Retry-After is
+# honoured (floored at the poll interval), but capped here so a malformed header
+# (e.g. an accidental extra zero) can't stall a document for an absurd duration.
+# This is NOT a give-up deadline — the job keeps polling forever, just never slower
+# than this ceiling (Deck #523).
+_BATCH_POLL_MAX_DEFER_SECONDS = 3600
+
+
+def _batch_defer_seconds(poll_seconds: int, retry_after: int | None) -> int:
+    """Seconds to wait before the next batch poll. Honour the gateway's ``Retry-After``,
+    floored at ``poll_seconds`` (a tiny value can't busy-loop the gateway) and capped at
+    ``_BATCH_POLL_MAX_DEFER_SECONDS`` (a malformed header can't stall a document absurdly
+    long). No give-up — this only paces re-polls (Deck #523)."""
+    raw = retry_after or poll_seconds
+    ceiling = max(poll_seconds, _BATCH_POLL_MAX_DEFER_SECONDS)
+    return min(max(raw, poll_seconds), ceiling)
+
+
 # Metadata key carrying per-block geometry from a layout-aware OCR backend (surya
 # via the gateway). A list of ``{"page", "bbox", "start_offset", "end_offset"}``:
 # the block's normalized [0,1] ``bbox`` plus its char span in the document text,
@@ -494,9 +512,10 @@ async def poll_pending_batch_ocr(
     # document (Deck #523), so a pending job is NEVER abandoned on a worker-side
     # deadline — it re-defers until the gateway completes it (the gateway never fails
     # an item for a GPU outage). Back off by the gateway's Retry-After, floored at our
-    # poll interval so a tiny value can't busy-loop it; fall back when absent.
-    poll_seconds = settings.document_ocr_batch_poll_seconds
-    return max(result.retry_after or poll_seconds, poll_seconds)
+    # poll interval (no busy-loop) and capped (no absurd stall); fall back when absent.
+    return _batch_defer_seconds(
+        settings.document_ocr_batch_poll_seconds, result.retry_after
+    )
 
 
 def build_ocr_backend(
@@ -843,9 +862,9 @@ class OcrProcessor(DocumentProcessor):
             # accepted document (Deck #523), so a pending job is NEVER abandoned on a
             # worker-side deadline — it re-defers until the gateway completes it (the
             # gateway never fails an item for a GPU outage). Back off by the gateway's
-            # Retry-After, floored at our poll interval so a tiny value can't busy-loop
-            # it; fall back to poll_seconds when absent.
-            return self._pending(max(result.retry_after or poll_seconds, poll_seconds))
+            # Retry-After, floored at our poll interval (no busy-loop) and capped (no
+            # absurd stall); fall back to poll_seconds when absent.
+            return self._pending(_batch_defer_seconds(poll_seconds, result.retry_after))
 
         # Terminal — drop the tracking row either way.
         await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)

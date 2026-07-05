@@ -698,6 +698,25 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
     assert client.submitted == []  # did NOT resubmit
 
 
+async def test_batch_existing_pending_honours_retry_after(monkeypatch):
+    # The submit/poll path (OcrProcessor.process -> _submit_and_poll) forwards the
+    # gateway's Retry-After into the pending sentinel's retry_in, same as the fast
+    # poll_pending path — 200 is above the 120s floor and below the cap (Deck #523).
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=200)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
+    assert r.metadata[ocr.OCR_BATCH_RETRY_IN_KEY] == 200
+    assert client.submitted == []  # polled the existing job, did NOT resubmit
+
+
 async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
     # Incident 2026-07-03: a 404 on poll means the gateway lost the job (row purged
     # by retention or orphaned by a pod move). The processor must DROP its tracking
@@ -983,20 +1002,60 @@ async def test_poll_pending_polls_forever_no_deadline(monkeypatch):
 
 
 async def test_poll_pending_honours_retry_after(monkeypatch):
-    """The gateway's Retry-After sets the poll cadence (anti-storm), floored at the
-    configured interval (Deck #523)."""
+    """The gateway's Retry-After sets the poll cadence (anti-storm) when it's above
+    the configured floor — passed through, not clamped (Deck #523)."""
     preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
     client = _FakeBatchClient(
-        poll=BatchPollResult(status="pending", pages=[], retry_after=120)
+        poll=BatchPollResult(status="pending", pages=[], retry_after=200)
     )
     _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
     got = await ocr.poll_pending_batch_ocr(
         user_id="u1",
         doc_id="d1",
         etag="v1",
-        settings=_settings(document_ocr_mode="batch"),
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
     )
-    assert got == 120  # honours Retry-After (well above the poll-interval floor)
+    assert got == 200  # honoured verbatim (above the 120s floor, below the cap)
+
+
+async def test_poll_pending_floors_retry_after(monkeypatch):
+    """A Retry-After BELOW the poll interval is raised to the floor so a tiny value
+    can't busy-loop the gateway (Deck #523)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=5)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == 120  # floored up from 5
+
+
+async def test_poll_pending_caps_retry_after(monkeypatch):
+    """An absurd Retry-After (e.g. a malformed header with an extra zero) is capped
+    so one document can't stall for an absurd duration — still no give-up (Deck #523)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=999_999)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == ocr._BATCH_POLL_MAX_DEFER_SECONDS  # capped at the ceiling
 
 
 async def test_poll_pending_job_gone_falls_through(monkeypatch):
