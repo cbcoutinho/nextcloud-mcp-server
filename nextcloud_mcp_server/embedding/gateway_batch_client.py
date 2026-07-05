@@ -77,6 +77,10 @@ class BatchPollResult:
     # which turns blocks into per-block char spans.
     pages: list[tuple[int, str, list[dict[str, Any]] | None]]
     error: str | None = None
+    # Seconds the gateway asked us to wait before polling again (its Retry-After on
+    # a pending 202). None if absent/unparseable; the caller falls back to its own
+    # configured poll interval and applies a floor. Deck #523.
+    retry_after: int | None = None
 
     @property
     def is_pending(self) -> bool:
@@ -89,6 +93,19 @@ class BatchPollResult:
     @property
     def is_failed(self) -> bool:
         return self.status == _FAILED
+
+
+def _parse_retry_after(value: str | None) -> int | None:
+    """Parse a Retry-After header as delta-seconds. The gateway sends an integer
+    number of seconds (never an HTTP-date), so a non-integer / non-positive / absent
+    value yields None and the caller falls back to its configured poll interval."""
+    if value is None:
+        return None
+    try:
+        seconds = int(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 class GatewayBatchOcrClient:
@@ -188,8 +205,16 @@ class GatewayBatchOcrClient:
                 status=_FAILED, pages=[], error="gateway returned no status"
             )
         if status != _SUCCEEDED:
-            # pending: nothing to read yet. failed: surface the job-level error.
-            return BatchPollResult(status=status, pages=[], error=body.get("error"))
+            # pending: nothing to read yet — honour the gateway's Retry-After so a
+            # large pending backlog doesn't storm it (Deck #523). failed: surface
+            # the job-level error. resp.headers stays valid after the client closes
+            # (the response is fully read).
+            return BatchPollResult(
+                status=status,
+                pages=[],
+                error=body.get("error"),
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+            )
         return _result_from_success(body)
 
 

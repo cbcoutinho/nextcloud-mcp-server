@@ -120,7 +120,6 @@ class TestGetSettings:
         {
             "DOCUMENT_OCR_MODE": "batch",
             "DOCUMENT_OCR_BATCH_POLL_SECONDS": "45",
-            "DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS": "3600",
             # batch routes through the gateway, so it requires a gateway URL
             # (validated in __post_init__).
             "EMBEDDING_GATEWAY_URL": "https://gw",
@@ -138,7 +137,6 @@ class TestGetSettings:
         settings = get_settings()
         assert settings.document_ocr_mode == "batch"
         assert settings.document_ocr_batch_poll_seconds == 45
-        assert settings.document_ocr_batch_max_wait_seconds == 3600
 
     @patch.dict(
         os.environ,

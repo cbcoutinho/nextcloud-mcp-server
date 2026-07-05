@@ -2,9 +2,10 @@
 
 When ``DOCUMENT_OCR_MODE=batch`` the OCR tier submits a document to the gateway's
 async batch route and then re-polls across procrastinate retries. procrastinate
-job args are immutable, so the gateway ``job_id`` (and submit time, for the poll
-deadline) live in the ``batch_ocr_jobs`` app-DB table, keyed on the document +
-its content version (``etag``).
+job args are immutable, so the gateway ``job_id`` (and submit time, for job-age
+observability) live in the ``batch_ocr_jobs`` app-DB table, keyed on the document +
+its content version (``etag``). A pending job is polled indefinitely — the gateway
+owns the OCR lifecycle, so there is no worker-side give-up deadline (Deck #523).
 
 Engine reuse mirrors :class:`~nextcloud_mcp_server.usage.store.UsageEventStore`:
 rather than open its own engine this store borrows the process-wide
@@ -30,7 +31,9 @@ logger = logging.getLogger(__name__)
 class BatchOcrJob:
     """A tracked in-flight batch OCR job. A row exists only while pending (terminal
     jobs are deleted), so there's no stored status — the live status comes from a
-    fresh ``GatewayBatchOcrClient.poll``. ``submitted_at`` anchors the deadline."""
+    fresh ``GatewayBatchOcrClient.poll``. ``submitted_at`` records the submit time
+    (observability / job age); a pending job is polled indefinitely, so it no longer
+    anchors a give-up deadline (Deck #523)."""
 
     job_id: str
     submitted_at: int

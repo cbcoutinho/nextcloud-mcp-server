@@ -413,10 +413,11 @@ class TieredEscalationStrategy(BaseRetryStrategy):
             # Batch OCR job still in flight (Deck #332): defer a re-poll on the
             # SAME queue after retry_in seconds. Deliberately exempt from the
             # transient cap below — a batch job can take minutes-hours, so the
-            # poll count is unbounded here; the OCR processor's own deadline
-            # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS) is what terminates a stuck job.
-            # Releasing the worker between polls keeps the job out of `doing`, so
-            # it's never stall-reclaimed.
+            # poll count is unbounded here. A pending job is polled indefinitely:
+            # once the gateway accepts a document it owns the OCR lifecycle (Deck
+            # #523), so there is no worker-side give-up deadline; only a job-level
+            # failure terminalises it. Releasing the worker between polls keeps the
+            # job out of `doing`, so it's never stall-reclaimed.
             return RetryDecision(retry_in={"seconds": exc.retry_in})
 
         if isinstance(exc, EscalateError):
