@@ -748,7 +748,6 @@ The OCR tier has two execution modes, selected by `DOCUMENT_OCR_MODE`:
 ```dotenv
 DOCUMENT_OCR_MODE=sync                 # "sync" (default) | "batch"
 DOCUMENT_OCR_BATCH_POLL_SECONDS=120    # re-poll cadence for a batch job (default: 120)
-DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS=86400  # give up + mark timeout after this (default: 24h)
 ```
 
 - **`sync`** (default) — transcribe the document inline via the backend's
@@ -773,11 +772,15 @@ there.
 
 Mechanics: the OCR tier submits the job, records its id in the `batch_ocr_jobs`
 app-DB table (keyed on the document + its etag), and raises a re-poll deferral so
-procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` — releasing
-the worker slot between polls (a long batch never pins a worker or is reclaimed as
-stalled). On completion the per-page markdown is indexed exactly like the sync
-path; a failure or a job exceeding `DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS` marks the
-document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
+procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` (or the
+gateway's `Retry-After` when longer, so a large pending backlog can't storm it) —
+releasing the worker slot between polls (a long batch never pins a worker or is
+reclaimed as stalled). On completion the per-page markdown is indexed exactly like
+the sync path. A pending job is polled **indefinitely**: once the gateway accepts a
+document it owns the OCR lifecycle (Deck #523), so there is no worker-side give-up
+deadline — a transient backend/GPU outage only delays completion, never fails the
+document. Only a job-level failure (or a per-document error inside a succeeded job)
+marks the document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
 inefficiency, bounded by the poll cadence); one batch job is submitted per
 document (coalescing many documents per job is a planned follow-up).
 

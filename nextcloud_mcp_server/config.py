@@ -223,10 +223,6 @@ _DEFAULTS: dict[str, Any] = {
     # Seconds between batch-job polls (the procrastinate re-enqueue delay). Each
     # poll re-runs the tier; keep it well above a few seconds.
     "document_ocr_batch_poll_seconds": 120,
-    # Hard deadline (seconds from submit) after which a still-pending batch job is
-    # abandoned and the document marked parse-failed (timeout). Matches the
-    # gateway's 24h Batch timeout default.
-    "document_ocr_batch_max_wait_seconds": 86400,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -451,10 +447,8 @@ _dynaconf = Dynaconf(
         # Settings.__post_init__ via _enum_fields (case-insensitive, like
         # DOCUMENT_OCR_PROVIDER) — no strict dynaconf Validator here, so
         # "Batch"/"SYNC" normalise instead of erroring.
-        # Poll cadence well above a few seconds (each poll re-runs the tier);
-        # deadline at least one poll interval.
+        # Poll cadence well above a few seconds (each poll re-runs the tier).
         Validator("DOCUMENT_OCR_BATCH_POLL_SECONDS", gte=5),
-        Validator("DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS", gte=60),
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
         # 0 disables the pre-parse PDF size cap; otherwise it must be positive.
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
@@ -1031,9 +1025,10 @@ class Settings:
     # It requires a gateway: with no EMBEDDING_GATEWAY_URL, __post_init__ rejects
     # mode=batch at startup rather than silently downgrading to sync.
     document_ocr_mode: str = "sync"
-    # Batch-job poll cadence (procrastinate re-enqueue delay) and hard deadline.
+    # Batch-job poll cadence (procrastinate re-enqueue delay). A pending job is
+    # polled indefinitely — the gateway owns the OCR lifecycle (Deck #523), so
+    # there is no worker-side give-up deadline.
     document_ocr_batch_poll_seconds: int = 120
-    document_ocr_batch_max_wait_seconds: int = 86400
     # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
     # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
     # OR (when detect_scanned, image-analysis only runs when OCR is enabled)
@@ -1794,7 +1789,6 @@ def get_settings() -> Settings:
         "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
         "document_ocr_mode": "DOCUMENT_OCR_MODE",
         "document_ocr_batch_poll_seconds": "DOCUMENT_OCR_BATCH_POLL_SECONDS",
-        "document_ocr_batch_max_wait_seconds": "DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS",
         "document_ocr_min_text_quality": "DOCUMENT_OCR_MIN_TEXT_QUALITY",
         "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",

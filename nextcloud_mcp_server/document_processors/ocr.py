@@ -29,7 +29,6 @@ import base64
 import html as _html
 import logging
 import re
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
@@ -490,13 +489,13 @@ async def poll_pending_batch_ocr(
         return None
     if not result.is_pending:
         return None  # terminal — fall through to index the result via the pipeline
-    # Honour the same give-up deadline as _process_batch so a stuck job isn't polled
-    # forever without ever re-fetching; past it, fall through so the normal path
-    # fails it (deletes the tracking row + records the metric).
-    elapsed = int(time.time()) - job.submitted_at
-    if elapsed >= settings.document_ocr_batch_max_wait_seconds:
-        return None
-    return settings.document_ocr_batch_poll_seconds
+    # Poll forever: in batch mode the gateway owns the OCR lifecycle for an accepted
+    # document (Deck #523), so a pending job is NEVER abandoned on a worker-side
+    # deadline — it re-defers until the gateway completes it (the gateway never fails
+    # an item for a GPU outage). Back off by the gateway's Retry-After, floored at our
+    # poll interval so a tiny value can't busy-loop it; fall back when absent.
+    poll_seconds = settings.document_ocr_batch_poll_seconds
+    return max(result.retry_after or poll_seconds, poll_seconds)
 
 
 def build_ocr_backend(
@@ -826,10 +825,9 @@ class OcrProcessor(DocumentProcessor):
             # The gateway lost this job — its row was purged (retention) or
             # orphaned by a gateway pod move. Polling it 404s forever. Drop our
             # tracking row so the NEXT cycle re-submits a fresh job (store.get →
-            # None → new submission) instead of looping on a dead id. Bounded by
-            # the same document_ocr_batch_max_wait budget as any submit; a genuine
-            # poison-pill still terminalises via the failed/timeout paths below and
-            # is dead-lettered by the scanner (incident 2026-07-03).
+            # None → new submission) instead of looping on a dead id. A genuine
+            # poison-pill still terminalises via the failed paths below and is
+            # dead-lettered by the scanner (incident 2026-07-03).
             logger.warning(
                 "batch OCR job %s not found on gateway (404); re-submitting %s",
                 job.job_id,
@@ -840,27 +838,13 @@ class OcrProcessor(DocumentProcessor):
             )
             return self._pending(poll_seconds)
         if result.is_pending:
-            elapsed = int(time.time()) - job.submitted_at
-            if elapsed >= settings.document_ocr_batch_max_wait_seconds:
-                await store.delete(
-                    user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
-                )
-                # We don't cancel the gateway-side job (there's no cancel endpoint
-                # at this layer) — it keeps running and is reaped by the gateway's
-                # own file purge. Dropping the row just stops us polling it.
-                logger.warning(
-                    "batch OCR job %s exceeded max wait (%ss); marking failed",
-                    job.job_id,
-                    settings.document_ocr_batch_max_wait_seconds,
-                )
-                return ProcessingResult(
-                    text="",
-                    metadata={"parse_failed_reason": "timeout"},
-                    processor=self.name,
-                    success=False,
-                    error="batch OCR timed out",
-                )
-            return self._pending(poll_seconds)
+            # Poll forever: in batch mode the gateway owns the OCR lifecycle for an
+            # accepted document (Deck #523), so a pending job is NEVER abandoned on a
+            # worker-side deadline — it re-defers until the gateway completes it (the
+            # gateway never fails an item for a GPU outage). Back off by the gateway's
+            # Retry-After, floored at our poll interval so a tiny value can't busy-loop
+            # it; fall back to poll_seconds when absent.
+            return self._pending(max(result.retry_after or poll_seconds, poll_seconds))
 
         # Terminal — drop the tracking row either way.
         await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)
