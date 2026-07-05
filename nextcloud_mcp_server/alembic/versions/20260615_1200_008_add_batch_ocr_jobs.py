@@ -4,8 +4,9 @@ Deck #332 / embedding-gateway batch OCR (astrolabe-cloud-website#372). When
 ``DOCUMENT_OCR_MODE=batch`` the OCR tier submits a document to the gateway's
 async ``POST /v1/ocr/batch`` and must re-poll ``GET /v1/ocr/batch/{job_id}``
 across procrastinate retries. procrastinate job args are immutable, so the
-gateway ``job_id`` (and submit time, for the poll deadline) are persisted here,
-keyed on the document + its content version (``etag``).
+gateway ``job_id`` (and submit time, for job-age observability) are persisted
+here, keyed on the document + its content version (``etag``). A pending job is
+polled indefinitely — no worker-side give-up deadline (Deck #523).
 
 One row per in-flight job; the row is deleted once the job reaches a terminal
 state. Empty + unused unless batch mode is enabled (gateway-only), so OSS/SQLite
@@ -48,8 +49,9 @@ def upgrade() -> None:
         # The gateway's namespaced batch job id ("<provider>/<batch_job_id>") —
         # the only handle for polling (the gateway is stateless).
         sa.Column("job_id", sa.Text(), nullable=False),
-        # Unix-epoch seconds. ``submitted_at`` anchors the poll deadline
-        # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS). No status/updated_at column: a row
+        # Unix-epoch seconds. ``submitted_at`` records when the job was submitted
+        # (observability / job age); a pending job is polled indefinitely, so it no
+        # longer anchors a give-up deadline (Deck #523). No status/updated_at column: a row
         # only ever exists in the pending state (terminal jobs are deleted), and
         # the live status always comes from a fresh poll — a stored mirror would
         # be permanently "pending" and carry no information.

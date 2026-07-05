@@ -464,11 +464,12 @@ async def poll_pending_batch_ocr(
 
     Returns ``None`` — meaning "fall through to the normal download + parse path" —
     when: there is no in-flight job (nothing submitted yet); batch OCR isn't
-    configured; the gateway has no record of the job (re-submit, #1019); the poll is
-    TERMINAL (succeeded/failed — the pipeline re-polls and indexes the result, and
-    its post-parse quality gate needs the real bytes); or the give-up deadline has
-    passed (the pipeline marks it failed). Only a still-PENDING, within-deadline job
-    returns an int, and that is the ONLY case in which the caller may skip the fetch.
+    configured; the gateway has no record of the job (re-submit, #1019); or the poll
+    is TERMINAL (succeeded/failed — the pipeline re-polls and indexes the result, and
+    its post-parse quality gate needs the real bytes). A still-PENDING job ALWAYS
+    returns a positive int (Deck #523: no give-up deadline — the gateway owns the OCR
+    lifecycle and never fails an item for a GPU outage), and that is the ONLY case in
+    which the caller may skip the fetch.
     """
     from ..vector.batch_ocr_store import BatchOcrJobStore  # noqa: PLC0415
 
