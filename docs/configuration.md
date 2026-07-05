@@ -151,7 +151,7 @@ database via `DATABASE_URL`.
 
 ```env
 # Centralized Postgres backend (HA k8s deployments)
-DATABASE_URL=postgresql+psycopg://mcp:secret@postgres.svc.cluster.local:5432/mcp?sslmode=require
+DATABASE_URL=postgresql+psycopg://mcp:secret@postgres.svc.cluster.local:5432/mcp?sslmode=require&connect_timeout=10
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 ```
 
@@ -168,6 +168,12 @@ hands `DATABASE_URL` through untouched, so add libpq parameters directly to
 the URL: `?sslmode=require` (encrypt), `?sslmode=verify-full&sslrootcert=/path/ca.pem`
 (verify against a private CA). Omitting `sslmode` leaves libpq's default
 (`prefer`). There are no `DATABASE_VERIFY_SSL` / `DATABASE_CA_BUNDLE` settings.
+
+**Set `connect_timeout` for production.** Because the server passes
+`DATABASE_URL` through verbatim, it no longer injects a default connect
+timeout. Add `?...&connect_timeout=10` (seconds) to a production `DATABASE_URL`
+so worker/API startup fails fast against an unreachable Postgres instead of
+hanging indefinitely — libpq reads it directly (as it does `sslmode`).
 
 The psycopg engine is `NullPool`-only: each `engine.connect()` opens
 and tears down a fresh psycopg connection in the caller's current

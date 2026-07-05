@@ -440,7 +440,7 @@ services:
 
   # Centralized Postgres backend for token storage. Used by:
   #   1. Integration tests gated on @pytest.mark.postgres — they read
-  #      TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp.
+  #      TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp.
   #   2. Manual smoke testing of the HA (multi-replica) deployment story.
   # Bring up with:  docker compose --profile postgres up -d postgres-test
   # See ADR-026 for the pluggable-database-backend design.

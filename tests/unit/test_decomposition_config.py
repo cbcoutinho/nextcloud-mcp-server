@@ -184,6 +184,19 @@ class TestProcrastinateConninfo:
         assert parsed["dbname"] == "mcp"
         assert parsed["sslmode"] == "require"
 
+    def test_conninfo_strips_driver_tag_case_insensitively(self, monkeypatch):
+        # The scheme guard is case-insensitive; the driver-tag strip must match,
+        # so an unconventional-cased scheme can't slip through unstripped.
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "Postgresql+psycopg://mcp:s@db/mcp?sslmode=require",
+        )
+        assert (
+            config_module.get_procrastinate_conninfo()
+            == "postgresql://mcp:s@db/mcp?sslmode=require"
+        )
+
     def test_conninfo_no_injected_connect_timeout(self, monkeypatch):
         # The server injects nothing — a URL without connect_timeout stays that
         # way (the CP/gitops-generated DSN owns the default, not the server).

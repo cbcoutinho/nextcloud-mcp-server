@@ -1874,5 +1874,10 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
         )
 
     # Strip only the SQLAlchemy driver tag (``postgresql+psycopg`` →
-    # ``postgresql``); libpq consumes the rest of the URL unchanged.
-    return re.sub(r"^postgresql\+\w+://", "postgresql://", url, count=1)
+    # ``postgresql``); libpq consumes the rest of the URL unchanged. Match
+    # case-insensitively so the strip stays consistent with the scheme guard
+    # above (``url.lower().startswith``) — a ``Postgresql+psycopg://`` that
+    # passed the guard must not slip through unstripped into an invalid conninfo.
+    return re.sub(
+        r"^postgresql\+\w+://", "postgresql://", url, count=1, flags=re.IGNORECASE
+    )
