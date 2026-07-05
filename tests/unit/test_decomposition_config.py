@@ -115,7 +115,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings().ingest_queue == "memory"
 
@@ -124,7 +124,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings(ingest_queue="postgres").ingest_queue == "postgres"
 
@@ -132,7 +132,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings(ingest_queue="memory").ingest_queue == "memory"
 
@@ -159,68 +159,67 @@ class TestTenantId:
 
 
 class TestProcrastinateConninfo:
-    @pytest.mark.parametrize(
-        "url,expected_sslmode",
-        [
-            ("postgresql+asyncpg://mcp:p%40ss@db:5432/mcp", None),
-        ],
-    )
-    def test_conninfo_round_trips_password(self, monkeypatch, url, expected_sslmode):
+    """Model A (ADR-026): DATABASE_URL is passed through verbatim — the only
+    transform is stripping the SQLAlchemy ``+<driver>`` tag so libpq accepts
+    the URL. No decomposition, no injected defaults, no env-var TLS."""
+
+    def test_conninfo_strips_only_driver_tag(self, monkeypatch):
+        # sslmode, connect_timeout, and the (percent-encoded) password all pass
+        # through byte-for-byte; only ``+psycopg`` is removed.
+        url = "postgresql+psycopg://mcp:p%40ss@db:5432/mcp?sslmode=require&connect_timeout=7"
+        monkeypatch.setattr(config_module, "get_database_url", lambda: url)
+        assert (
+            config_module.get_procrastinate_conninfo()
+            == "postgresql://mcp:p%40ss@db:5432/mcp?sslmode=require&connect_timeout=7"
+        )
+
+    def test_conninfo_parses_to_expected_libpq_params(self, monkeypatch):
         from psycopg.conninfo import conninfo_to_dict
 
+        url = "postgresql+psycopg://mcp:p%40ss@db:5432/mcp?sslmode=require"
         monkeypatch.setattr(config_module, "get_database_url", lambda: url)
-        # No SSL settings → sslmode omitted (libpq default ``prefer``).
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
         parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
         assert parsed["password"] == "p@ss"
         assert parsed["host"] == "db"
         assert parsed["dbname"] == "mcp"
-        assert parsed.get("sslmode") == expected_sslmode
+        assert parsed["sslmode"] == "require"
 
-    def test_conninfo_connect_timeout_defaults_to_10(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
+    def test_conninfo_strips_driver_tag_case_insensitively(self, monkeypatch):
+        # The scheme guard is case-insensitive; the driver-tag strip must match,
+        # so an unconventional-cased scheme can't slip through unstripped.
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
+            lambda: "Postgresql+psycopg://mcp:s@db/mcp?sslmode=require",
         )
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
-        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
-        assert parsed["connect_timeout"] == "10"
-
-    def test_conninfo_honors_url_connect_timeout(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
-        monkeypatch.setattr(
-            config_module,
-            "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp?connect_timeout=3",
-        )
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
-        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
-        assert parsed["connect_timeout"] == "3"
-
-    def test_conninfo_ssl_mapping(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
-        monkeypatch.setattr(
-            config_module,
-            "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
-        )
-        # verify off → encrypt without verifying.
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: False)
         assert (
-            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
-            == "require"
+            config_module.get_procrastinate_conninfo()
+            == "postgresql://mcp:s@db/mcp?sslmode=require"
         )
-        # verify on → verify-full.
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: True)
-        assert (
-            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
-            == "verify-full"
+
+    def test_conninfo_no_injected_connect_timeout(self, monkeypatch):
+        # The server injects nothing — a URL without connect_timeout stays that
+        # way (the CP/gitops-generated DSN owns the default, not the server).
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+psycopg://mcp:s@db/mcp",
         )
+        assert config_module.get_procrastinate_conninfo() == "postgresql://mcp:s@db/mcp"
+
+    def test_conninfo_no_warning_on_query_params(self, monkeypatch, caplog):
+        # The old decomposition dropped unknown query params with a warning;
+        # passthrough must emit no such warning.
+        import logging
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+psycopg://mcp:s@db/mcp?sslmode=require&application_name=x",
+        )
+        with caplog.at_level(logging.WARNING):
+            config_module.get_procrastinate_conninfo()
+        assert "Dropping DATABASE_URL query parameters" not in caplog.text
 
     def test_conninfo_rejects_non_postgres(self, monkeypatch):
         monkeypatch.setattr(

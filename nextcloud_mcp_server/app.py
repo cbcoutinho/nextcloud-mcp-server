@@ -941,7 +941,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Shutting down BasicAuth session")
         if client is not None:
             await client.close()
-        # Dispose the storage engine so pooled asyncpg connections drain
+        # Dispose the storage engine so pooled psycopg connections drain
         # cleanly on SIGTERM (ADR-026, PR #798 round-4).
         try:
             await storage.close()
@@ -1652,7 +1652,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             finally:
                 logger.info("Shutting down MCP server")
                 # Dispose the RefreshTokenStorage engine so pooled
-                # asyncpg connections drain cleanly on SIGTERM instead
+                # psycopg connections drain cleanly on SIGTERM instead
                 # of leaking server-side slots until the Postgres
                 # idle-timeout fires (ADR-026, PR #798 round-4).
                 if refresh_token_storage is not None:

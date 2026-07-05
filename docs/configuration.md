@@ -151,21 +151,32 @@ database via `DATABASE_URL`.
 
 ```env
 # Centralized Postgres backend (HA k8s deployments)
-DATABASE_URL=postgresql+asyncpg://mcp:secret@postgres.svc.cluster.local:5432/mcp
+DATABASE_URL=postgresql+psycopg://mcp:secret@postgres.svc.cluster.local:5432/mcp?sslmode=require&connect_timeout=10
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+asyncpg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). |
+| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+psycopg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). **Passed through verbatim** — the server never rewrites it. |
 | `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
-| `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
-| `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
-| `DATABASE_POOL_SIZE` | Deprecated, no-op | Was per-pod SQLAlchemy pool size for the Postgres backend. The engine now uses `NullPool` (one fresh asyncpg connection per checkout) to avoid cross-event-loop crashes under anyio TaskGroups — see [ADR-026 § Connection pool](ADR-026-pluggable-database-backend.md) and [#799](https://github.com/cbcoutinho/nextcloud-mcp-server/pull/799). Still accepted for backward compatibility; setting it has no effect. |
+| `DATABASE_POOL_SIZE` | Deprecated, no-op | Was per-pod SQLAlchemy pool size for the Postgres backend. The engine now uses `NullPool` (one fresh psycopg connection per checkout) to avoid cross-event-loop crashes under anyio TaskGroups — see [ADR-026 § Connection pool](ADR-026-pluggable-database-backend.md) and [#799](https://github.com/cbcoutinho/nextcloud-mcp-server/pull/799). Still accepted for backward compatibility; setting it has no effect. |
 | `DATABASE_MAX_OVERFLOW` | Deprecated, no-op | Was per-pod burst connection cap on top of `DATABASE_POOL_SIZE`. Now ignored (see above). |
 
-The asyncpg engine is `NullPool`-only: each `engine.connect()` opens
-and tears down a fresh asyncpg connection in the caller's current
+**TLS is configured in the URL, not via env vars.** The server uses
+psycopg3 (libpq) for both the app engine and the procrastinate queue and
+hands `DATABASE_URL` through untouched, so add libpq parameters directly to
+the URL: `?sslmode=require` (encrypt), `?sslmode=verify-full&sslrootcert=/path/ca.pem`
+(verify against a private CA). Omitting `sslmode` leaves libpq's default
+(`prefer`). There are no `DATABASE_VERIFY_SSL` / `DATABASE_CA_BUNDLE` settings.
+
+**Set `connect_timeout` for production.** Because the server passes
+`DATABASE_URL` through verbatim, it no longer injects a default connect
+timeout. Add `?...&connect_timeout=10` (seconds) to a production `DATABASE_URL`
+so worker/API startup fails fast against an unreachable Postgres instead of
+hanging indefinitely — libpq reads it directly (as it does `sslmode`).
+
+The psycopg engine is `NullPool`-only: each `engine.connect()` opens
+and tears down a fresh psycopg connection in the caller's current
 event loop. On LAN-local Postgres the per-connection overhead is a
 single round-trip (~5 ms), so the throughput cost is negligible for
 the MCP server's traffic shape (low concurrency, bursty per-user
@@ -174,18 +185,17 @@ requests).
 Homelab example (self-signed Postgres with a private CA):
 
 ```env
-DATABASE_URL=postgresql+asyncpg://mcp:secret@pg.lan:5432/mcp
-DATABASE_CA_BUNDLE=/etc/ssl/certs/homelab-ca.pem
+DATABASE_URL=postgresql+psycopg://mcp:secret@pg.lan:5432/mcp?sslmode=verify-full&sslrootcert=/etc/ssl/certs/homelab-ca.pem
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 ```
 
 Notes:
 
-- **PyPI extra required.** The `asyncpg` driver is an optional extra so
+- **PyPI extra required.** The `psycopg` driver is an optional extra so
   the default `pip install nextcloud-mcp-server` stays lean. Install
   with `pip install 'nextcloud-mcp-server[postgres]'` when using a
   Postgres URL. The Docker image bundles it by default. When
-  `DATABASE_URL=postgresql+asyncpg://...` is set without the extra,
+  `DATABASE_URL=postgresql+psycopg://...` is set without the extra,
   the server fails fast with a clear actionable error.
 - **Bring-your-own DB.** The MCP server doesn't provision the database;
   it just consumes the URL. Use CNPG, RDS, your existing Helm chart's
@@ -201,7 +211,7 @@ Notes:
   re-register on the next sync tick.
 - **Testing a Postgres backend locally:** `docker compose --profile
   postgres up -d postgres-test` then export
-  `DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp`.
+  `DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp`.
 
 See [ADR-026 Pluggable database backend](ADR-026-pluggable-database-backend.md)
 for the architecture rationale.

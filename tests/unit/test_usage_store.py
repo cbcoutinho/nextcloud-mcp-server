@@ -4,7 +4,7 @@ Parametrized over both supported backends via the shared ``storage_backend``
 fixture: SQLite (default, always runs) and Postgres (opt-in, gated on
 ``TEST_DATABASE_URL`` — bring up ``docker compose --profile postgres up -d
 postgres-test`` and export
-``TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp``).
+``TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp``).
 
 Covers the recording contract: flag-gated no-op, insert roundtrip, ON CONFLICT
 dedup, JSON metadata roundtrip, NULL metadata, and the best-effort guarantee
@@ -168,7 +168,7 @@ async def test_metadata_json_roundtrip(storage, monkeypatch):
     )
     row = await _fetch(storage, eid)
     raw = row[4]
-    # Depending on the asyncpg/SQLAlchemy JSONB codec in play, Postgres may
+    # Depending on the psycopg/SQLAlchemy JSONB codec in play, Postgres may
     # return JSONB as a Python dict or as a JSON str; SQLite stores TEXT.
     # Handle both so the test is robust across driver/codec versions.
     loaded = raw if isinstance(raw, dict) else json.loads(raw)

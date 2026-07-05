@@ -6,7 +6,7 @@ Validates the queue mechanics the in-memory connector can't: real
 ``test_storage_postgres.py``::
 
     docker compose --profile postgres up -d postgres-test
-    export TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp
+    export TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp
     uv run pytest tests/integration/test_ingest_queue_postgres.py -v -m postgres
 
 Skipped when ``TEST_DATABASE_URL`` is unset or the service is unreachable.
@@ -23,7 +23,6 @@ from urllib.parse import urlparse
 import pytest
 from procrastinate import JobContext
 
-import nextcloud_mcp_server.config as config_module
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
 from nextcloud_mcp_server.vector.queue.procrastinate import (
     INGEST_QUEUE_NAME,
@@ -60,7 +59,7 @@ def postgres_url() -> str:
         pytest.skip(
             "TEST_DATABASE_URL not set — run "
             "`docker compose --profile postgres up -d postgres-test` and export "
-            "TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp"
+            "TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp"
         )
     # pytest.skip raises, but ty doesn't model it as NoReturn — narrow explicitly.
     assert url is not None
@@ -70,7 +69,7 @@ def postgres_url() -> str:
 
 
 @pytest.fixture
-async def fresh_app(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
+async def fresh_app(postgres_url: str):
     """Drop+recreate the public schema, then apply procrastinate's schema."""
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -83,10 +82,8 @@ async def fresh_app(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     finally:
         await engine.dispose()
 
-    # build_app_for_url passes the URL explicitly to get_procrastinate_conninfo,
-    # so only the ssl lookup (which reads settings) needs pinning here.
-    monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
-
+    # get_procrastinate_conninfo passes the URL through verbatim (only strips
+    # the +psycopg driver tag), so there is no settings/ssl lookup to pin.
     app = build_app_for_url(postgres_url)
     await apply_ingest_queue_schema(app)
     return app

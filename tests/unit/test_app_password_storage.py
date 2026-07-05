@@ -7,7 +7,7 @@ BasicAuth mode background sync.
 These tests are parametrized over both supported backends so the storage
 layer is exercised against SQLite (default, always runs) and Postgres (gated
 on ``TEST_DATABASE_URL``; bring up ``docker compose --profile postgres up
--d postgres-test`` and export ``TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp``
+-d postgres-test`` and export ``TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp``
 to opt in).
 """
 
@@ -241,7 +241,7 @@ async def test_decryption_with_wrong_key(encryption_key):
         await storage1.store_app_password("testuser", "JHWzB-ZYgLZ-3qBDj-ZQe5o-LdKpB")
 
         # Try to read with different key
-        wrong_key = Fernet.generate_key().decode()
+        wrong_key = Fernet.generate_key()
         storage2 = RefreshTokenStorage(db_path=str(db_path), encryption_key=wrong_key)
         await storage2.initialize()
 

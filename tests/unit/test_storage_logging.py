@@ -28,7 +28,7 @@ SENTINEL_PASSWORD_FRAGMENT = "uniqueSecretSentinel123"  # NOSONAR
 def test_mask_db_password_postgres():
     """Postgres URL passwords are replaced with the SQLAlchemy ``***`` token."""
     url = (
-        f"postgresql+asyncpg://mcp:{SENTINEL_PASSWORD_FRAGMENT}@db.example.com:5432/mcp"
+        f"postgresql+psycopg://mcp:{SENTINEL_PASSWORD_FRAGMENT}@db.example.com:5432/mcp"
     )
     masked = mask_db_password(url)
     assert SENTINEL_PASSWORD_FRAGMENT not in masked

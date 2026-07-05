@@ -139,7 +139,6 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 
 [project.optional-dependencies]
 postgres = [
-    "asyncpg>=0.29",
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
 ]

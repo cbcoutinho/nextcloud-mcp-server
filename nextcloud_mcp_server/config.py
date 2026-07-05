@@ -2,6 +2,7 @@ import atexit
 import logging
 import logging.config
 import os
+import re
 import socket
 import ssl
 import tempfile
@@ -88,19 +89,14 @@ _DEFAULTS: dict[str, Any] = {
     # Set TOKEN_STORAGE_DB to persist tokens across restarts.
     "token_storage_db": None,
     # Centralized backend (any SQLAlchemy URL). Wins over TOKEN_STORAGE_DB
-    # when set. Use postgresql+asyncpg://user:pw@host/db for HA k8s
-    # deployments so pods can be stateless. See ADR-026.
+    # when set. Use postgresql+psycopg://user:pw@host/db for HA k8s
+    # deployments so pods can be stateless. The URL is passed through
+    # verbatim — TLS (e.g. ?sslmode=require) and every other parameter are
+    # read from it by libpq/psycopg; the server never rewrites it. See ADR-026.
     "database_url": None,
-    # TLS for the Postgres backend (mirror NEXTCLOUD_VERIFY_SSL pattern).
-    # Default is None — preserve asyncpg's `prefer` mode so cluster-local
-    # Postgres without TLS works out of the box. Set to True for full
-    # verification or False to silence cert errors against self-signed
-    # homelab servers. DATABASE_CA_BUNDLE points at a private-CA PEM.
-    "database_verify_ssl": None,
-    "database_ca_bundle": None,
     # Postgres connection pool sizing (ADR-026 → "Concurrency model and
     # pool sizing"). Per-pod defaults to 2 + 5 overflow = 7 max
-    # connections. asyncpg connections are single-flight, so the pool
+    # connections. psycopg connections are single-flight, so the pool
     # only needs to cover typical multi-user MCP burst — not every
     # potential in-flight tool call. Tune up with DATABASE_POOL_SIZE /
     # DATABASE_MAX_OVERFLOW for high-traffic prod fleets.
@@ -562,7 +558,7 @@ def get_database_url() -> str:
 
     Priority:
     1. ``DATABASE_URL`` if set — any SQLAlchemy URL is accepted; the primary
-       supported backends are ``postgresql+asyncpg://...`` for HA k8s
+       supported backends are ``postgresql+psycopg://...`` for HA k8s
        deployments and ``sqlite+aiosqlite:///...`` for development.
     2. Otherwise build ``sqlite+aiosqlite:///{get_token_db_path()}`` so the
        legacy ``TOKEN_STORAGE_DB`` env var and the ephemeral-tempfile
@@ -590,7 +586,7 @@ def mask_db_password(url: str) -> str:
     """Return a logger-safe rendering of a SQLAlchemy URL.
 
     DATABASE_URL routinely carries a password (e.g.
-    ``postgresql+asyncpg://mcp:secret@db/mcp``); logging it raw leaks the
+    ``postgresql+psycopg://mcp:secret@db/mcp``); logging it raw leaks the
     secret to stdout/stderr and any aggregator. SQLAlchemy's
     :func:`make_url` + ``render_as_string(hide_password=True)`` substitutes
     a fixed ``***`` placeholder while keeping the rest of the URL intact
@@ -604,8 +600,6 @@ def mask_db_password(url: str) -> str:
         # If parsing fails (e.g. an explicit ssl-disable test URL with an
         # exotic shape), fall back to a regex that scrubs any
         # ``://user:password@`` pattern. Never raise from a logging path.
-        import re  # noqa: PLC0415
-
         return re.sub(r"(://[^:/]+):[^@]*@", r"\1:***@", url)
 
 
@@ -837,15 +831,8 @@ class Settings:
     # pooled connection on flaky CDN/WAN paths (see #965).
     nextcloud_http_keepalive: bool = True
 
-    # Postgres backend TLS settings (ADR-026). Default verify_ssl is None,
-    # not True: when DATABASE_URL is unset there's nothing to verify, and
-    # when it is set we don't want to break cluster-internal Postgres that
-    # commonly runs without TLS. Operators opt in to verify-full with True
-    # or supply a private-CA bundle.
-    database_verify_ssl: bool | None = None
-    database_ca_bundle: str | None = None
     # Postgres connection pool sizing — DEPRECATED, retained for
-    # backward compatibility. The asyncpg engine switched to NullPool
+    # backward compatibility. The psycopg engine switched to NullPool
     # in #799 (cross-event-loop crashes under anyio TaskGroups made
     # the original QueuePool + pool_pre_ping setup unsafe). These
     # fields no longer affect the Postgres engine; the validators
@@ -1145,23 +1132,9 @@ class Settings:
                 "poisoned/desynced pooled connections (#965)."
             )
 
-        # Validate Postgres backend TLS configuration (ADR-026)
-        if self.database_verify_ssl is False:
-            logger.warning(
-                "DATABASE_VERIFY_SSL is disabled. "
-                "TLS certificate verification is turned off for the Postgres "
-                "backend. Only acceptable for homelab / self-signed setups; "
-                "prefer DATABASE_CA_BUNDLE for production."
-            )
-        if self.database_ca_bundle:
-            if not os.path.isfile(self.database_ca_bundle):
-                raise ValueError(
-                    f"DATABASE_CA_BUNDLE path does not exist: {self.database_ca_bundle}"
-                )
-            logger.info(
-                "Using custom CA bundle for Postgres backend: %s",
-                self.database_ca_bundle,
-            )
+        # Postgres backend TLS is configured entirely in DATABASE_URL (e.g.
+        # ?sslmode=require&sslrootcert=/path) and read by libpq/psycopg — the
+        # server neither parses nor validates it (ADR-026, Model A).
 
         # Pool sizing must be sensible — guard against operators accidentally
         # setting 0 / negative via env (would deadlock at first request).
@@ -1712,9 +1685,6 @@ def get_settings() -> Settings:
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
         "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
         "nextcloud_http_keepalive": "NEXTCLOUD_HTTP_KEEPALIVE",
-        # Postgres backend TLS (ADR-026)
-        "database_verify_ssl": "DATABASE_VERIFY_SSL",
-        "database_ca_bundle": "DATABASE_CA_BUNDLE",
         # Postgres backend pool sizing (ADR-026)
         "database_pool_size": "DATABASE_POOL_SIZE",
         "database_max_overflow": "DATABASE_MAX_OVERFLOW",
@@ -1878,143 +1848,34 @@ def get_nextcloud_http_keepalive() -> bool:
     return get_settings().nextcloud_http_keepalive
 
 
-def get_database_ssl() -> bool | ssl.SSLContext | None:
-    """Return the asyncpg ``ssl`` arg for the Postgres backend (ADR-026).
-
-    Returns:
-        - ``None`` when both DATABASE_VERIFY_SSL and DATABASE_CA_BUNDLE are
-          unset — caller skips passing ``ssl`` so asyncpg keeps its default
-          (``prefer``). Preserves PR #798 behavior for cluster-local
-          Postgres without TLS.
-        - ``False`` if DATABASE_VERIFY_SSL=false (silence cert errors).
-        - ``ssl.SSLContext`` if DATABASE_CA_BUNDLE is set (custom private
-          CA, implies verify-full).
-        - ``True`` if DATABASE_VERIFY_SSL=true and no bundle (verify-full
-          against system trust store).
-
-    DATABASE_VERIFY_SSL=false wins over DATABASE_CA_BUNDLE so an operator
-    can quickly silence cert errors during incident response without
-    having to delete the bundle path from their secret store. Matches the
-    Nextcloud-pattern precedence for symmetry with
-    :func:`get_nextcloud_ssl_verify`.
-    """
-    settings = get_settings()
-    if settings.database_verify_ssl is False:
-        # Operator-explicit opt-out (DATABASE_VERIFY_SSL=false) — semantics
-        # are documented in the docstring above and ADR-026 TLS section.
-        # Bare NOSONAR silences any cert-verification-required rule that
-        # may fire on this branch (defensive; no such rule fires today).
-        return False  # NOSONAR
-    if settings.database_ca_bundle:
-        # ``ssl.create_default_context()`` on Python 3.10+ already negotiates
-        # the strongest available protocol (TLS 1.2+ with secure ciphers);
-        # we pin Python 3.11+ in pyproject.toml. ``purpose=SERVER_AUTH`` is
-        # the default but spelt out here so the intent is visible to
-        # static analysers and human readers alike.
-        return ssl.create_default_context(  # NOSONAR
-            purpose=ssl.Purpose.SERVER_AUTH,
-            cafile=settings.database_ca_bundle,
-        )
-    if settings.database_verify_ssl is True:
-        return True
-    return None
-
-
-def _pg_ssl_params() -> dict[str, str]:
-    """Map the DATABASE_VERIFY_SSL / DATABASE_CA_BUNDLE settings to libpq
-    keyword params for psycopg3 (used by procrastinate, Deck #183).
-
-    psycopg/libpq takes ``sslmode`` (and ``sslrootcert``) rather than an
-    ``ssl.SSLContext`` like asyncpg, so we translate :func:`get_database_ssl`'s
-    intent into the equivalent libpq settings:
-
-    - ``None``  (both unset)        → ``{}`` (omit; libpq default ``prefer``,
-      matching the asyncpg default for cluster-local Postgres without TLS).
-    - ``False`` (DATABASE_VERIFY_SSL=false) → ``sslmode=require`` (encrypt but
-      do not verify the certificate).
-    - CA bundle set                → ``sslmode=verify-full`` + ``sslrootcert``.
-    - ``True``  (verify, no bundle) → ``sslmode=verify-full`` (system trust).
-    """
-    ssl_setting = get_database_ssl()
-    if ssl_setting is None:
-        return {}
-    if ssl_setting is False:
-        return {"sslmode": "require"}
-    settings = get_settings()
-    if settings.database_ca_bundle:
-        return {"sslmode": "verify-full", "sslrootcert": settings.database_ca_bundle}
-    return {"sslmode": "verify-full"}
-
-
 def get_procrastinate_conninfo(database_url: str | None = None) -> str:
-    """Build a libpq conninfo string for procrastinate's psycopg3 connector.
+    """Return the libpq conninfo for procrastinate's psycopg3 connector.
 
-    Derives the connection from ``DATABASE_URL`` (a SQLAlchemy URL such as
-    ``postgresql+asyncpg://user:pass@host/db``): the SQLAlchemy driver suffix
-    (``+asyncpg``/``+psycopg``) is stripped and the parts are rendered via
-    :func:`psycopg.conninfo.make_conninfo`, which quotes values correctly (never
-    f-string the password). TLS settings are appended from :func:`_pg_ssl_params`.
+    ``DATABASE_URL`` is passed through **verbatim** — never decomposed or
+    rewritten (ADR-026, Model A). procrastinate speaks raw libpq (psycopg3),
+    which wants the URL *without* SQLAlchemy's ``+psycopg`` driver tag, so the
+    only transform is a lossless strip of that tag. libpq then reads
+    ``sslmode``, ``connect_timeout``, the password, and every other parameter
+    straight from the URL. TLS therefore lives entirely in the DSN; there is no
+    separate env-var TLS mechanism.
 
-    This is driver-agnostic on purpose: procrastinate uses psycopg3 regardless of
-    which SQLAlchemy driver the app's own engine uses, so it works whether
-    ``DATABASE_URL`` carries ``+asyncpg`` or ``+psycopg``.
-
-    TODO(Deck #183 follow-up, out-of-tree): unify the app's SQLAlchemy engine on
-    psycopg3 too (``postgresql+psycopg://``) and drop asyncpg, so the deployment
-    ships a single Postgres driver. This belongs in the rendered Helm chart
-    (set ``DATABASE_URL`` to a ``+psycopg`` URL) rather than rewriting the driver
-    in code — see charts repo, not this repo.
-
-    Only the host/port/dbname/user/password components are forwarded, plus
-    ``connect_timeout`` (a libpq keyword) honored from the URL query string or
-    defaulted to 10s so a slow/unreachable DB can't hang worker/API startup
-    indefinitely. Any *other* ``?key=value`` query parameters are **dropped**
-    (TLS is set separately via :func:`_pg_ssl_params`, and SQLAlchemy-specific
-    options don't map cleanly to libpq keywords); a warning lists them.
-
-    Raises ``ValueError`` for a non-Postgres URL — procrastinate is Postgres-only.
+    Raises ``ValueError`` for a non-Postgres URL — procrastinate is
+    Postgres-only — rather than silently coercing it.
     """
-    from psycopg.conninfo import make_conninfo  # noqa: PLC0415
-    from sqlalchemy.engine.url import make_url  # noqa: PLC0415
-
-    url = make_url(database_url or get_database_url())
-    if not url.drivername.startswith("postgresql"):
+    url = database_url or get_database_url()
+    if not url.lower().startswith("postgresql"):
+        # Show only the scheme (no credentials) — the URL is not parsed.
+        scheme = url.split("://", 1)[0]
         raise ValueError(
             "get_procrastinate_conninfo requires a PostgreSQL DATABASE_URL; "
-            f"got driver {url.drivername!r}"
+            f"got driver {scheme!r}"
         )
 
-    # ``connect_timeout`` is forwarded (libpq keyword); everything else in the
-    # query string is dropped with a warning.
-    dropped = sorted(k for k in url.query if k != "connect_timeout")
-    if dropped:
-        logger.warning(
-            "Dropping DATABASE_URL query parameters not forwarded to the "
-            "procrastinate connector: %s",
-            ", ".join(dropped),
-        )
-
-    params: dict[str, str] = {}
-    if url.host:
-        params["host"] = url.host
-    if url.port:
-        params["port"] = str(url.port)
-    if url.database:
-        params["dbname"] = url.database
-    if url.username:
-        params["user"] = url.username
-    if url.password:
-        params["password"] = url.password
-    # Honor an operator-supplied connect_timeout, else default to 10s. (make_url
-    # query values are str or a tuple of strs when repeated; take the last.)
-    # ``connect_timeout=0`` (disable) is preserved — only a missing/empty value
-    # falls back to the default, and an explicit-but-empty value is flagged.
-    _ct = url.query.get("connect_timeout")
-    if isinstance(_ct, (list, tuple)):
-        _ct = _ct[-1] if _ct else None
-    if _ct == "":
-        logger.warning("DATABASE_URL has an empty connect_timeout=; using default 10s")
-    params["connect_timeout"] = _ct if _ct else "10"
-    params.update(_pg_ssl_params())
-
-    return make_conninfo(**params)
+    # Strip only the SQLAlchemy driver tag (``postgresql+psycopg`` →
+    # ``postgresql``); libpq consumes the rest of the URL unchanged. Match
+    # case-insensitively so the strip stays consistent with the scheme guard
+    # above (``url.lower().startswith``) — a ``Postgresql+psycopg://`` that
+    # passed the guard must not slip through unstripped into an invalid conninfo.
+    return re.sub(
+        r"^postgresql\+\w+://", "postgresql://", url, count=1, flags=re.IGNORECASE
+    )
