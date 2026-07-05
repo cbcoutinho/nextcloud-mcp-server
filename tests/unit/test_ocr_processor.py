@@ -792,6 +792,56 @@ async def test_batch_failed_marks_parse_error(monkeypatch):
     assert ("u1", "d1", "file", "v1") in store.deleted
 
 
+async def test_batch_failed_transient_backend_requeues(monkeypatch):
+    # A batch job that FAILED because the OCR backend was transiently unavailable
+    # (GPU offline/booting, gateway unreachable) must NOT terminalize — it returns
+    # the pending sentinel so the document re-queues and stays queued until the
+    # backend recovers, instead of being dead-lettered + permanently dropped from
+    # every future re-index (Deck #523).
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(
+            status="failed",
+            pages=[],
+            error="surya OCR unavailable: GPU did not become ready within 1800s",
+        )
+    )
+    store = _FakeStore(preset=preset)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    # Pending sentinel (re-queue), NOT a terminal parse failure → no dead-letter.
+    assert r.success is False
+    assert r.metadata.get(ocr.OCR_BATCH_PENDING_KEY) is True
+    assert "parse_failed_reason" not in r.metadata
+    # Tracking row is dropped either way, so the next cycle re-submits a fresh job.
+    assert ("u1", "d1", "file", "v1") in store.deleted
+
+
+@pytest.mark.parametrize(
+    "error, transient",
+    [
+        ("surya OCR unavailable: GPU did not become ready within 1800s", True),
+        ("OCR unavailable", True),
+        ("503 Service Unavailable", True),
+        ("Connection refused", True),
+        ("502 Bad Gateway", True),
+        ("gateway timeout", True),
+        ("read timeout", True),
+        (None, False),
+        ("", False),
+        ("invalid PDF: xref table broken", False),
+        ("unsupported image colorspace", False),
+        ("x", False),
+    ],
+)
+def test_is_transient_ocr_backend_error(error, transient):
+    assert ocr._is_transient_ocr_backend_error(error) is transient
+
+
 async def test_batch_unexpected_status_marks_failed_not_empty_success(monkeypatch):
     # A terminal status that isn't succeeded/failed (gateway skew) must NOT
     # produce a 0-chunk "success" that silently indexes empty text + loops.

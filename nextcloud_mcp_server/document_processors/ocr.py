@@ -60,6 +60,38 @@ _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 OCR_BATCH_PENDING_KEY = "ocr_batch_pending"
 OCR_BATCH_RETRY_IN_KEY = "ocr_batch_retry_in"
 
+# Substrings (matched case-insensitively) on a FAILED batch OCR job's error that
+# mark a TRANSIENT OCR-backend/infra outage — the OCR service (GPU / gateway) was
+# unreachable or not yet ready — as opposed to a genuine per-document parse error.
+# A backend outage MUST NOT dead-letter the document: retrying once the backend is
+# back succeeds, whereas a real parse error never improves on retry. Treating a GPU
+# outage as terminal permanently dropped scanned docs from the index (Deck #523 —
+# "surya OCR unavailable: GPU did not become ready within 1800s" → dead-lettered).
+_TRANSIENT_OCR_BACKEND_MARKERS: tuple[str, ...] = (
+    "did not become ready",  # gateway GPU boot-wait expired: GPU offline/booting/slow
+    "ocr unavailable",  # surya provider: backend not ready/reachable
+    "unavailable",  # service/backend/temporarily unavailable (incl. HTTP 503)
+    "not ready",
+    "connection refused",
+    "connection error",
+    "connection reset",
+    "bad gateway",  # HTTP 502
+    "gateway timeout",  # HTTP 504
+    "read timeout",  # httpx transport timeout reaching the gateway/GPU
+)
+
+
+def _is_transient_ocr_backend_error(error: str | None) -> bool:
+    """Whether a failed batch OCR job's error is a TRANSIENT backend/infra outage
+    (GPU offline/booting, gateway unreachable) rather than a genuine per-document
+    parse failure. Transient errors must re-queue (never dead-letter) so the
+    document waits for the OCR backend to recover (Deck #523)."""
+    if not error:
+        return False
+    haystack = error.lower()
+    return any(marker in haystack for marker in _TRANSIENT_OCR_BACKEND_MARKERS)
+
+
 # Metadata key carrying per-block geometry from a layout-aware OCR backend (surya
 # via the gateway). A list of ``{"page", "bbox", "start_offset", "end_offset"}``:
 # the block's normalized [0,1] ``bbox`` plus its char span in the document text,
@@ -865,15 +897,30 @@ class OcrProcessor(DocumentProcessor):
         # Terminal — drop the tracking row either way.
         await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)
         if result.is_failed:
-            logger.warning(
-                "batch OCR job %s failed: %s", job.job_id, result.error or "unknown"
-            )
+            err = result.error or "unknown"
+            if _is_transient_ocr_backend_error(result.error):
+                # A TRANSIENT OCR-backend/infra outage (GPU offline/booting, gateway
+                # unreachable) is NOT a document failure — terminalizing it here lets
+                # the processor dead-letter a perfectly parseable scan, permanently
+                # dropping it from every future re-index (Deck #523). The tracking
+                # row is already dropped above, so return the pending sentinel: the
+                # doc re-queues and re-submits a fresh job next cycle, staying queued
+                # until the OCR backend recovers. Only GENUINE per-document parse
+                # errors fall through to the terminal failure below.
+                logger.warning(
+                    "batch OCR job %s hit a transient OCR-backend outage (%s); "
+                    "re-queuing (NOT dead-lettering) until the backend recovers",
+                    job.job_id,
+                    err,
+                )
+                return self._pending(poll_seconds)
+            logger.warning("batch OCR job %s failed: %s", job.job_id, err)
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "error"},
                 processor=self.name,
                 success=False,
-                error=f"batch OCR failed: {result.error or 'unknown'}",
+                error=f"batch OCR failed: {err}",
             )
         if not result.is_succeeded:
             # Defensive: poll() maps anything that isn't "succeeded" to its raw
