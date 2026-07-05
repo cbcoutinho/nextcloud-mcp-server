@@ -5,7 +5,7 @@ Uses procrastinate's in-memory connector so no live Postgres is required.
 
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from procrastinate import App, JobContext, testing
@@ -394,3 +394,25 @@ class TestGetIngestJobCounts:
         assert set(by_queue) == {"ingest-fast", "ingest-ocr"}
         assert by_queue["ingest-fast"]["todo"] == 3
         assert by_queue["ingest-ocr"]["failed"] == 2
+
+
+def test_build_app_for_url_disables_psycopg_prepared_statements():
+    """The procrastinate connector MUST disable psycopg auto-prepared statements
+    (``prepare_threshold=None``) so it is safe behind the pgbouncer transaction-mode
+    pooler (Deck #424): per-client ``_pg3_N`` statement names otherwise collide over
+    the shared server connections, abort transactions, and exhaust the server pool."""
+    with patch.object(pq, "PsycopgConnector") as mock_conn:
+        pq.build_app_for_url("postgresql+psycopg://u:p@h:5432/db")
+    mock_conn.assert_called_once()
+    assert mock_conn.call_args.kwargs["kwargs"] == {"prepare_threshold": None}
+
+
+def test_get_procrastinate_app_disables_psycopg_prepared_statements(monkeypatch):
+    """The process-wide App builds the same prepared-statement-safe connector."""
+    monkeypatch.setattr(pq, "_app", None)  # reset the module singleton before/after
+    monkeypatch.setattr(pq, "get_procrastinate_conninfo", lambda: "host=h dbname=db")
+    with patch.object(pq, "PsycopgConnector") as mock_conn:
+        pq.get_procrastinate_app()
+    monkeypatch.setattr(pq, "_app", None)  # don't leak a mock-backed singleton
+    mock_conn.assert_called_once()
+    assert mock_conn.call_args.kwargs["kwargs"] == {"prepare_threshold": None}
