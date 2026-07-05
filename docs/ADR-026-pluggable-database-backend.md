@@ -63,10 +63,14 @@ the fly. The seven `INSERT OR REPLACE` statements were rewritten as
 portable `INSERT ... ON CONFLICT (...) DO UPDATE` (SQLite ≥ 3.24, Postgres
 ≥ 9.5; we already require SQLite ≥ 3.35 elsewhere).
 
-### Distribution: asyncpg is an optional extra, bundled in Docker
+### Distribution: psycopg is an optional extra, bundled in Docker
 
-`asyncpg` carries a compiled C extension (~5 MB plus a build toolchain on
-source installs) — too heavy a default for the
+> **Amendment (Model A):** the backend now uses **psycopg3** for every
+> Postgres connection (app engine *and* the procrastinate queue); `asyncpg`
+> has been dropped. `DATABASE_URL` is consumed **verbatim** and TLS is
+> configured in the URL (`?sslmode=...`) — see the TLS section below.
+
+`psycopg[binary]` carries a compiled component — too heavy a default for the
 `pip install nextcloud-mcp-server` audience, the majority of whom run the
 SQLite path. It is shipped as a PyPI optional dependency::
 
@@ -74,11 +78,11 @@ SQLite path. It is shipped as a PyPI optional dependency::
 
 The published Docker image runs `uv sync --extra postgres` so the
 container always has the driver, matching the HA-deployment audience
-that exercises the Postgres backend. When `DATABASE_URL=postgresql+asyncpg://...`
+that exercises the Postgres backend. When `DATABASE_URL=postgresql+psycopg://...`
 is set on a venv without the extra installed, `RefreshTokenStorage`
 raises a clear actionable error before the engine is built — operators
 see "install with `[postgres]` extra" rather than a generic
-`ModuleNotFoundError: No module named 'asyncpg'`.
+`ModuleNotFoundError: No module named 'psycopg'`.
 
 ### Alembic env.py runs the async engine inside a worker thread
 
@@ -104,7 +108,7 @@ round-2 default) was: *isn't 1 connection enough for an MCP server?*
 This subsection records why a small pool is right, why 1 is not the
 target default, and what the workload actually looks like.
 
-**asyncpg connection semantics.** Each asyncpg connection is
+**psycopg connection semantics.** Each psycopg connection is
 **single-flight** — only one query can be in flight at a time on a
 given connection. SQLAlchemy serializes additional requests in the
 pool queue. So the question is never "how many requests does the MCP
@@ -162,33 +166,40 @@ sees the migrated schema. Covered by
 
 ### TLS for the Postgres backend
 
-Two settings mirror the existing `NEXTCLOUD_VERIFY_SSL` /
-`NEXTCLOUD_CA_BUNDLE` pattern: `DATABASE_VERIFY_SSL` and
-`DATABASE_CA_BUNDLE`. `get_database_ssl()` (in `nextcloud_mcp_server/config.py`)
-returns the value to pass to asyncpg via SQLAlchemy's `connect_args={"ssl": ...}`.
+> **Amendment (Model A):** TLS is configured **entirely in `DATABASE_URL`**
+> and read by libpq/psycopg. The earlier `DATABASE_VERIFY_SSL` /
+> `DATABASE_CA_BUNDLE` env vars and the `get_database_ssl()` helper have been
+> removed. The text below records the superseded design.
 
-The default is deliberately **less strict than the Nextcloud HTTPS
-default**: `DATABASE_VERIFY_SSL` defaults to `None` rather than `True`.
-When both env vars are unset we omit the `ssl` kwarg entirely and asyncpg's
-default (`prefer`) applies — TLS if the server offers it, no certificate
-validation. The reasoning:
+Because the server now uses psycopg3 (libpq) for both the app engine and the
+procrastinate connector and passes `DATABASE_URL` through verbatim, TLS is
+expressed with standard libpq query parameters on the URL:
 
-- Cluster-internal Postgres (CNPG via a Service, RDS over a private VPC,
-  PgBouncer sidecar) is the common HA pattern and frequently runs without
-  TLS or with cert hostnames asyncpg wouldn't match anyway.
-- The HTTPS analogy doesn't carry over: the Nextcloud client talks to
-  *external* hostnames over public networks where verify-full is the
-  right default. The database client talks to a controlled peer.
-- Just-shipped PR #798 had no TLS knobs and worked against cluster-local
-  Postgres-test; flipping the default to `True` here would break that
-  flow on upgrade.
+- `?sslmode=require` — encrypt, do not verify the certificate (the common
+  cluster-internal posture; matches the historical default below).
+- `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` — verify against a
+  private CA (homelab / managed Postgres with a known CA).
+- Omit `sslmode` entirely → libpq's default (`prefer`): TLS if offered, no
+  verification.
 
-Operators in production with a managed Postgres opt in with
-`DATABASE_VERIFY_SSL=true`. Homelab operators with a private CA set
-`DATABASE_CA_BUNDLE=/path/to/ca.pem` (which implies `verify=true`).
-`DATABASE_VERIFY_SSL=false` is the escape hatch for incident response —
-it wins over `DATABASE_CA_BUNDLE` so an operator can quickly silence
-cert errors without editing the secret store.
+There is no separate env-var TLS mechanism and the server neither parses nor
+validates the URL — a bad value fails fast at the driver. This keeps a single
+source of truth (the DSN) shared by the app engine and the queue, and was the
+fix for the `Dropping DATABASE_URL query parameters ... sslmode` warning that
+the old decomposition emitted.
+
+<details><summary>Superseded env-var TLS design</summary>
+
+Two settings mirrored the existing `NEXTCLOUD_VERIFY_SSL` /
+`NEXTCLOUD_CA_BUNDLE` pattern: `DATABASE_VERIFY_SSL` and `DATABASE_CA_BUNDLE`,
+resolved by `get_database_ssl()` and passed to asyncpg via
+`connect_args={"ssl": ...}`. The default was deliberately less strict than the
+Nextcloud HTTPS default (`None`, i.e. asyncpg's `prefer`) because
+cluster-internal Postgres frequently ran without TLS. This mechanism was
+asyncpg-shaped and inert for the psycopg engine, so it was removed in favour of
+the in-URL `sslmode` above.
+
+</details>
 
 ### Encryption stays in Python (Fernet), not the DB
 
@@ -261,8 +272,9 @@ existing `--database-path / -d` (env `TOKEN_STORAGE_DB`). `-u` wins over
 
 - One more thing operators have to think about for HA deployments
   (Postgres connection string, credentials secret, network policies).
-- Adds SQLAlchemy + asyncpg to the runtime dependency set. SQLAlchemy was
-  already transitively present via Alembic; asyncpg is genuinely new.
+- Adds SQLAlchemy + psycopg to the runtime dependency set. SQLAlchemy was
+  already transitively present via Alembic; psycopg (also required by the
+  procrastinate queue) is the single Postgres driver.
 - The compatibility shim in `storage.py` is a small piece of bespoke code
   that future contributors need to understand. The alternative — rewriting
   every method body to SQLAlchemy idioms — was rejected as too risky for
@@ -287,7 +299,7 @@ existing `--database-path / -d` (env `TOKEN_STORAGE_DB`). `-u` wins over
 
 1. `uv run pytest tests/unit/` — SQLite path unchanged (1012 tests).
 2. `docker compose --profile postgres up -d postgres-test` then
-   `TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp uv run pytest tests/unit/test_app_password_storage.py tests/unit/test_webhook_storage.py`
+   `TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp uv run pytest tests/unit/test_app_password_storage.py tests/unit/test_webhook_storage.py`
    — every test runs once per backend.
 3. Manual end-to-end smoke against `mcp-login-flow` with a Postgres URL
    (commands in `/home/chris/.claude/plans/spicy-enchanting-flurry.md` →

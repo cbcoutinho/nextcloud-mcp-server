@@ -1,6 +1,6 @@
 """End-to-end Postgres backend smoke for RefreshTokenStorage (ADR-026).
 
-Exercises every storage method touched by the SQLAlchemy / asyncpg port
+Exercises every storage method touched by the SQLAlchemy / psycopg port
 against a fresh Postgres schema. The test is opt-in: it requires the
 ``postgres-test`` docker-compose service to be running and
 ``TEST_DATABASE_URL`` to be exported.
@@ -8,7 +8,7 @@ against a fresh Postgres schema. The test is opt-in: it requires the
 Bring up the dependency once::
 
     docker compose --profile postgres up -d postgres-test
-    export TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp
+    export TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp
 
 Then run::
 
@@ -54,8 +54,10 @@ def postgres_url() -> str:
         pytest.skip(
             "TEST_DATABASE_URL not set — run "
             "`docker compose --profile postgres up -d postgres-test` and export "
-            "TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp"
+            "TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp"
         )
+    # pytest.skip raises, but ty doesn't model it as NoReturn — narrow explicitly.
+    assert url is not None
     if not _reachable(url):
         pytest.skip(f"Postgres at {url} is not reachable")
     return url
@@ -238,7 +240,7 @@ async def test_browser_session_delete_returning(storage: RefreshTokenStorage):
     needed SQLite ≥ 3.35 specifically because of RETURNING. Bot review
     on PR #798 round 2 flagged that the existing cleanup test didn't
     actually exercise this path. Asserts both the present and absent
-    cases so the asyncpg result-handling for RETURNING is covered.
+    cases so the psycopg result-handling for RETURNING is covered.
     """
     await storage.create_browser_session(
         session_id="bs-returning", user_id="alice", ttl_seconds=600
@@ -254,7 +256,7 @@ async def test_browser_session_delete_returning(storage: RefreshTokenStorage):
 
 
 async def test_close_disposes_engine(postgres_url: str, reset_schema):
-    """``close()`` releases pooled asyncpg connections and is idempotent.
+    """``close()`` releases pooled psycopg connections and is idempotent.
 
     PR #798 round-4 review (bot #4): the engine wasn't being disposed on
     shutdown, leaking server-side connection slots until the Postgres
@@ -319,7 +321,9 @@ async def test_concurrent_initialize_serialized_by_advisory_lock(
     try:
         async with engine.connect() as conn:
             result = await conn.execute(text("SELECT count(*) FROM alembic_version"))
-            (count,) = result.fetchone()
+            row = result.fetchone()
+            assert row is not None
+            (count,) = row
             assert count == 1, f"expected 1 alembic_version row, got {count}"
     finally:
         await engine.dispose()

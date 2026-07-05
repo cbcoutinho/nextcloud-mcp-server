@@ -363,7 +363,7 @@ def worker(concurrency: int | None, tier: str | None):
 
     \b
     Example:
-      $ export DATABASE_URL=postgresql+asyncpg://mcp:mcp@db/mcp
+      $ export DATABASE_URL=postgresql+psycopg://mcp:mcp@db/mcp
       $ nextcloud-mcp-server worker -c 4 --tier fast
     """
     import anyio  # noqa: PLC0415
@@ -525,7 +525,7 @@ def _db_target_options(fn):
         "-u",
         envvar="DATABASE_URL",
         default=None,
-        help="SQLAlchemy URL (e.g. postgresql+asyncpg://...). Wins over --database-path.",
+        help="SQLAlchemy URL (e.g. postgresql+psycopg://...). Wins over --database-path.",
     )(fn)
     return fn
 
@@ -548,7 +548,7 @@ def upgrade(database_url: str | None, database_path: str | None, revision: str):
       $ nextcloud-mcp-server db upgrade
 
       # Upgrade a Postgres backend
-      $ nextcloud-mcp-server db upgrade -u postgresql+asyncpg://mcp:mcp@db/mcp
+      $ nextcloud-mcp-server db upgrade -u postgresql+psycopg://mcp:mcp@db/mcp
 
       # Use custom SQLite path
       $ nextcloud-mcp-server db upgrade -d /path/to/tokens.db
