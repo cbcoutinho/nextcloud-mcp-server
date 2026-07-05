@@ -600,8 +600,6 @@ def mask_db_password(url: str) -> str:
         # If parsing fails (e.g. an explicit ssl-disable test URL with an
         # exotic shape), fall back to a regex that scrubs any
         # ``://user:password@`` pattern. Never raise from a logging path.
-        import re  # noqa: PLC0415
-
         return re.sub(r"(://[^:/]+):[^@]*@", r"\1:***@", url)
 
 
