@@ -243,12 +243,19 @@ class DoclingProcessor(DocumentProcessor):
             self.ocr_lang,
             do_ocr,
         )
-        # VLM OCR is ~30-150s per page; the 120s default is often too low. Warn
-        # (don't override) so the operator raises DOCLING_TIMEOUT deliberately (D3).
-        if pipeline == "vlm" and timeout < 300:
+        # DoclingProcessor is the INTERACTIVE path (nc_webdav_read_file on images /
+        # force_processor="docling"). Under VLM a convert is slow (~30-150s/page) and
+        # blocks the tool call for up to DOCLING_TIMEOUT, which can exceed an MCP
+        # client's own timeout. Don't inflate DOCLING_TIMEOUT to "fix" this: for bulk
+        # VLM use the async ingest path (DOCUMENT_OCR_PROVIDER=docling, its own
+        # DOCUMENT_OCR_TIMEOUT_SECONDS), and set DOCUMENT_READ_TIMEOUT_SECONDS for a
+        # graceful base64 fallback on interactive reads (ADR-032).
+        if pipeline == "vlm":
             logger.warning(
-                "DOCLING_PIPELINE=vlm but DOCLING_TIMEOUT=%ss is low for Vision-LLM "
-                "OCR; consider raising it (e.g. >= 600)",
+                "DOCLING_PIPELINE=vlm makes nc_webdav_read_file a slow synchronous "
+                "convert (VLM ~30-150s/page, up to DOCLING_TIMEOUT=%ss) that can "
+                "exceed MCP client timeouts; prefer the async ingest path for bulk "
+                "and set DOCUMENT_READ_TIMEOUT_SECONDS to bound interactive reads",
                 timeout,
             )
 
