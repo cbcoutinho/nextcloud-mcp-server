@@ -44,6 +44,7 @@ from nextcloud_mcp_server.search.context import (
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import (
+    is_safe_webdav_file_path,
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
 )
@@ -919,7 +920,7 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
             )
 
         # Validate no path traversal sequences
-        if ".." in file_path:
+        if not is_safe_webdav_file_path(file_path):
             return JSONResponse(
                 {"success": False, "error": "Invalid file path"},
                 status_code=400,
