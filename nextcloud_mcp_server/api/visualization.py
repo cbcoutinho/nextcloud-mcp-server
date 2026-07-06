@@ -891,14 +891,14 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
     # Log incoming request
     file_path_param = request.query_params.get("file_path", "<not provided>")
     page_param = request.query_params.get("page", "1")
-    logger.info(
+    logger.debug(
         "PDF preview request: file_path=%s, page=%s", file_path_param, page_param
     )
 
     try:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
-        logger.info("PDF preview authenticated for user: %s", user_id)
+        logger.debug("PDF preview authenticated for user: %s", user_id)
     except Exception as e:
         logger.warning("Unauthorized access to /api/v1/pdf-preview: %s", e)
         return JSONResponse(
