@@ -528,6 +528,8 @@ class TestPdfPreviewSecurityValidation:
                 "/Documents/../../../etc/passwd",
                 "/../secret.pdf",
                 "/folder/..%2F..%2Fetc/passwd",  # URL-encoded
+                "/folder/%252e%252e%252Fsecret.pdf",  # Double URL-encoded
+                "/folder/%2e%2e%5Csecret.pdf",  # Encoded Windows separator
                 "/test/../secret.pdf",
             ]
 
