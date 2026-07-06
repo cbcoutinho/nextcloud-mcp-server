@@ -12,9 +12,11 @@ are transparent under our mocked ``Context`` (no ``access_token`` set →
 BasicAuth pass-through path).
 """
 
+import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -398,3 +400,78 @@ async def test_list_favorites_raises_when_scope_excluded(
         await fn(ctx=_mock_ctx(fake_client), scope="/Private")
 
     fake_client.webdav.list_favorites.assert_not_called()
+
+
+# ── Interactive read-parse cap (ADR-032) ────────────────────────────────
+
+
+async def test_read_file_interactive_cap_falls_back_to_base64(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+):
+    """With DOCUMENT_READ_TIMEOUT_SECONDS set, a slow synchronous parse is aborted
+    at the cap and the tool returns base64 fast instead of blocking past the MCP
+    client's own timeout (ADR-032)."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.read_file = AsyncMock(return_value=(b"\x89PNG", "image/png"))
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings",
+        return_value=SimpleNamespace(document_read_timeout_seconds=0.05),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.utils.document_parser.is_parseable_document",
+        return_value=True,
+    )
+
+    async def slow_parse(*_a, **_k):
+        await anyio.sleep(5)  # far beyond the 0.05s cap; fail_after cancels it
+
+    mocker.patch(
+        "nextcloud_mcp_server.utils.document_parser.parse_document",
+        side_effect=slow_parse,
+    )
+
+    ctx = _mock_ctx(fake_client)
+    ctx.report_progress = AsyncMock()
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/scan.png", ctx=ctx)
+
+    # Graceful base64 fallback, not the parsed-document shape.
+    assert result["encoding"] == "base64"
+    assert result["content"] == base64.b64encode(b"\x89PNG").decode("ascii")
+    assert "parsed" not in result
+
+
+async def test_read_file_no_cap_returns_parsed(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+):
+    """With the cap disabled (None, the default), a normal parse is returned
+    unchanged -- the nullcontext path adds no behavior."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.read_file = AsyncMock(
+        return_value=(b"%PDF-1.7", "application/pdf")
+    )
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings",
+        return_value=SimpleNamespace(document_read_timeout_seconds=None),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.utils.document_parser.is_parseable_document",
+        return_value=True,
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.utils.document_parser.parse_document",
+        return_value=("parsed text", {"parsing_method": "docling"}),
+    )
+
+    ctx = _mock_ctx(fake_client)
+    ctx.report_progress = AsyncMock()
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=ctx)
+
+    assert result["parsed"] is True
+    assert result["content"] == "parsed text"
+    assert result["parsing_metadata"]["parsing_method"] == "docling"

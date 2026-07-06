@@ -107,6 +107,37 @@ class TestEnumValidation:
         assert Settings(docling_pipeline="vlm").docling_pipeline == "vlm"
 
 
+class TestReadTimeoutCap:
+    """Opt-in interactive read-parse cap (DOCUMENT_READ_TIMEOUT_SECONDS, ADR-032)."""
+
+    def test_default_is_disabled(self):
+        assert Settings().document_read_timeout_seconds is None
+
+    def test_numeric_string_coerced_to_float(self):
+        # dynaconf may hand the env value through as a string -> coerce for fail_after.
+        s = Settings(document_read_timeout_seconds="60")
+        assert s.document_read_timeout_seconds == pytest.approx(60.0)
+
+    def test_empty_string_disables(self):
+        # A bare DOCUMENT_READ_TIMEOUT_SECONDS= (compose passthrough) means "unset".
+        assert (
+            Settings(document_read_timeout_seconds="").document_read_timeout_seconds
+            is None
+        )
+        assert (
+            Settings(document_read_timeout_seconds="  ").document_read_timeout_seconds
+            is None
+        )
+
+    def test_below_one_rejected(self):
+        with pytest.raises(ValueError, match="DOCUMENT_READ_TIMEOUT_SECONDS"):
+            Settings(document_read_timeout_seconds=0)
+
+    def test_non_numeric_rejected(self):
+        with pytest.raises(ValueError, match="DOCUMENT_READ_TIMEOUT_SECONDS"):
+            Settings(document_read_timeout_seconds="abc")
+
+
 class TestIngestQueueResolution:
     def test_postgres_requires_postgres_url(self):
         # Explicit postgres against the default SQLite DATABASE_URL is a
