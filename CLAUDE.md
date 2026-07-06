@@ -246,6 +246,9 @@ uv run pytest -m "integration and not oauth" -v # Without OAuth (~2-3min)
 uv run pytest -m oauth -v                       # OAuth only (~3min)
 uv run pytest                                   # Full suite (~4-5min)
 
+# Contract tests (Pact — ADR-029; broker-gated, skip without PACT_BROKER)
+uv run pytest -m contract tests/contract/ -v
+
 # Coverage
 uv run pytest --cov
 
@@ -511,6 +514,44 @@ async def nc_notes_semantic_search_answer(
 - **Run tests to completion** before considering any task complete
 - **Rebuild the correct container** after code changes (see Development Commands above)
 - **If tests require modifications**, ask for permission before proceeding
+
+### End-to-end + contract coverage for API surface (MANDATORY — review gate)
+
+Any PR that **adds or changes API surface** — an MCP tool, an HTTP `/api/v1/*`
+route, or a cross-service provider/consumer boundary — MUST ship, in the same PR,
+with:
+
+- **End-to-end** coverage exercising the real flow against a running stack
+  (`tests/integration/` full-stack Docker tests, or `tests/smoke/`; there is no
+  dedicated `e2e` marker yet — extend the integration tier), and
+- **Contract (Pact)** coverage for every cross-service boundary it touches.
+
+This service participates in Pact contract tests (ADR-029) under
+`tests/contract/` — run `uv run pytest -m contract tests/contract/`. It is:
+
+- a **consumer** of `astrolabe-cloud-gateway` (sync `POST /v1/ocr` and batch
+  `POST /v1/ocr/batch` + `GET /v1/ocr/batch/{job_id}`) and of `astrolabe` (OCS
+  capabilities + credentials-status), and
+- a **provider** of the `/api/v1/*` API that the `astrolabe` Nextcloud app
+  consumes (verified via `test_mcp_provider_verification.py`).
+
+**Reviewers (including the Claude review bot) must flag any API-surface PR that
+lacks e2e + contract coverage** as a required change under "Test coverage". If a
+tier does not exist yet, say so explicitly in the PR and open/track a follow-up
+card (Deck board 11) — never leave the gap silent.
+
+Known gaps (tracked on board 11):
+
+- Provider verification currently covers only the **public** endpoints
+  (`/api/v1/status`, `/api/v1/vector-sync/status`). The authenticated surface
+  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`, `/pdf-preview`,
+  `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
+  pending the ADR-029 phase-4 Bearer-token/provider-state hook.
+- The gateway **embeddings** consumer pact (`/v1/embeddings` + `/v1/models`) is
+  not yet written — only OCR is pacted.
+- There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
+  is spread across `tests/integration/` + `tests/smoke/`.
+- `can-i-deploy` runs in non-blocking **shadow mode**.
 
 ### Use Existing Fixtures
 See `tests/conftest.py` for 2888 lines of test infrastructure:
