@@ -1729,6 +1729,7 @@ async def _index_document(
     # int subclass, so exclude it explicitly.
     _meter_total_chars = sum(len(t) for t in chunk_texts)
     _meter_raw_page_count = file_metadata.get("page_count")
+    _meter_pipeline_tier = file_metadata.get("pipeline_tier")
     await record_indexing_usage(
         enabled=settings.usage_metering_enabled,
         provider=settings.get_embedding_provider_family(),
@@ -1755,7 +1756,7 @@ async def _index_document(
         # Tier that produced the parsed pages (registry stamps it on the result
         # metadata); text doc types stay "fast". Narrow defensively to str|None.
         pipeline_tier=(
-            pt if isinstance(pt := file_metadata.get("pipeline_tier"), str) else None
+            _meter_pipeline_tier if isinstance(_meter_pipeline_tier, str) else None
         ),
     )
 

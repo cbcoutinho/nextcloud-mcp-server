@@ -27,9 +27,10 @@ def _client_for(tag_files: dict[str, list[dict]]) -> MagicMock:
     """A client whose find_files_by_tag returns per-tag file lists."""
     nc = MagicMock()
 
-    async def _find(tag_name, mime_type_filter=None):
+    def _find(tag_name, mime_type_filter=None):
         # Return a shallow copy so the helper's ``_index_mode`` stamping does not
-        # mutate the fixture across calls.
+        # mutate the fixture across calls. Plain sync side_effect — AsyncMock
+        # wraps the return value in the awaitable the helper awaits.
         return [dict(f) for f in tag_files.get(tag_name, [])]
 
     nc.find_files_by_tag = AsyncMock(side_effect=_find)
