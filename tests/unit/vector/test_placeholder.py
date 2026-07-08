@@ -190,8 +190,6 @@ async def test_write_placeholder_payload_includes_instance_id(monkeypatch):
     fake_qdrant = AsyncMock()
     fake_settings = SimpleNamespace(
         get_collection_name=lambda: "nextcloud_content",
-        dense_enabled=True,
-        simple_embedding_dimension=384,
     )
     fake_embedding = SimpleNamespace(get_dimension=lambda: 4)
 

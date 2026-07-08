@@ -384,7 +384,11 @@ Notes:
 - **Fully airgapped:** leave `VECTOR_SYNC_KEYWORD_TAG=keyword-index`, configure
   **no** embedding provider, and tag everything `keyword-index` — nothing ever
   contacts an embedding endpoint (the local `SimpleProvider` only sizes the
-  dense slot the keyword points never populate).
+  dense slot the keyword points never populate). Note the collection is always
+  dense-sized from the *configured* provider, so if you set e.g. `OLLAMA_BASE_URL`
+  while intending to use only the keyword tag, collection creation still probes
+  that provider's dimension at startup — leave the provider env unset for a truly
+  offline stack.
 - **Retagging** a file between the two tags (unchanged content) reprocesses it:
   keyword→`vector-index` adds a dense vector; the reverse is absorbed by the
   dedup no-downgrade rule while any user still holds `vector-index`.
