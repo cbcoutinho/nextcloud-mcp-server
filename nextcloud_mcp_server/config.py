@@ -122,10 +122,17 @@ _DEFAULTS: dict[str, Any] = {
     # leave work stuck behind the 5x-scan-interval staleness gate.
     # Escape hatch only — leave on by default.
     "vector_sync_orphan_sweep_enabled": True,
-    # System tag that marks files for vector indexing. The scanner indexes
-    # files carrying this tag; verify-on-read gates results on current
-    # membership of this tag (ADR-019).
+    # System tag that marks files for hybrid (dense + BM25 sparse) indexing.
+    # The scanner indexes files carrying this tag; verify-on-read gates results
+    # on current membership of this tag (ADR-019).
     "vector_sync_pdf_tag": "vector-index",
+    # System tag that marks files for keyword-only (BM25 sparse) indexing.
+    # Empty (default) disables the second tag entirely — files are then only
+    # discovered via ``vector_sync_pdf_tag`` (hybrid). When set, files carrying
+    # this tag are indexed sparse-only (no dense embedding, no embedding cost)
+    # into the SAME collection as hybrid files; ``vector-index`` wins if a file
+    # carries both. See the per-document index-mode design.
+    "vector_sync_keyword_tag": "",
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -276,11 +283,6 @@ _DEFAULTS: dict[str, Any] = {
     # the current monolithic behavior; self-hosters who set none are
     # unaffected. See docs/architecture/mcp-decomposition.md (sibling repo).
     "embedding_provider": "autodetect",  # autodetect | gateway
-    # Search mode (ADR-030). ``hybrid`` (default) generates + queries dense
-    # embeddings AND BM25 sparse vectors. ``keyword`` skips dense entirely:
-    # BM25 sparse only, so fully airgapped deployments need no embedding
-    # endpoint. ``keyword`` still requires vector sync enabled (it uses Qdrant).
-    "search_mode": "hybrid",  # hybrid (dense+sparse) | keyword (BM25 sparse only)
     # Ingest queue backend (Deck #183). None → ``memory`` (the in-process anyio
     # queue): procrastinate is strictly opt-in, even on a Postgres DATABASE_URL.
     # Set ``postgres`` explicitly to split ingest into a procrastinate worker;
@@ -460,6 +462,8 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
+        # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
+        # discovery), so no len_min — but when set it must be a usable tag name.
         # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
         # but when set it must be long enough to resist guessing. Surfaces a
         # weak/placeholder secret at startup rather than in a later audit.
@@ -909,10 +913,17 @@ class Settings:
     # (app.py): keeps the Nextcloud/Qdrant snapshot warm off the probe path so
     # /health/ready never does external I/O (Deck #302).
     health_ready_refresh_interval: int = 15  # seconds
-    # System tag marking files for vector indexing. The scanner indexes files
-    # carrying this tag and verify-on-read gates results on current membership
-    # (ADR-019), so an untagged file drops out of search immediately.
+    # System tag marking files for hybrid (dense + BM25 sparse) indexing. The
+    # scanner indexes files carrying this tag and verify-on-read gates results
+    # on current membership (ADR-019), so an untagged file drops out of search
+    # immediately.
     vector_sync_pdf_tag: str = "vector-index"
+
+    # System tag marking files for keyword-only (BM25 sparse) indexing. Empty
+    # (default) disables it. When set, tagged files are indexed sparse-only into
+    # the same collection as hybrid files (no dense embedding). ``vector-index``
+    # takes precedence when a file carries both tags.
+    vector_sync_keyword_tag: str = ""
 
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the
@@ -1056,7 +1067,6 @@ class Settings:
     # MCP decomposition hook points (design §10, opt-in). All defaults
     # reproduce the current monolith; validated in __post_init__.
     embedding_provider: str = "autodetect"  # autodetect | gateway
-    search_mode: str = "hybrid"  # hybrid | keyword (BM25 sparse only) — ADR-030
     # Ingest queue backend (Deck #183). None → resolved in __post_init__ to
     # ``postgres`` when DATABASE_URL is Postgres, else ``memory``.
     ingest_queue: str | None = None  # memory | postgres
@@ -1185,7 +1195,6 @@ class Settings:
         # the monolith, so deployments that set none of these pass through.
         _enum_fields = {
             "embedding_provider": {"autodetect", "gateway"},
-            "search_mode": {"hybrid", "keyword"},
             "mcp_role": {"api", "worker", "all"},
             "collection_metadata_source": {"qdrant", "api"},
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
@@ -1430,15 +1439,11 @@ class Settings:
         # Sanitize deployment ID
         deployment_id = deployment_id.lower().replace(" ", "-").replace("_", "-")
 
-        # Keyword mode (ADR-030) indexes BM25 sparse vectors only and may run
-        # with no embedding provider configured, so the embedding model name is
-        # a meaningless ``simple-{dim}`` fallback. Use a fixed mode marker
-        # instead: this guarantees keyword and hybrid indexes never share a
-        # collection (their point schemas are not interchangeable — see ADR-030)
-        # and removes keyword mode's dependency on the phantom model name.
-        if self.search_mode == "keyword":
-            return f"{deployment_id}-bm25-keyword"
-
+        # The collection always carries a real dense slot sized from the
+        # embedding model. Keyword-only documents (``keyword-index`` tag) simply
+        # omit the dense vector per-point — they share this collection with
+        # hybrid documents (per-document index mode), so the name is always
+        # keyed on the embedding model.
         model_name = self.get_embedding_model_name().replace("/", "-").replace(":", "-")
 
         return f"{deployment_id}-{model_name}"
@@ -1450,17 +1455,6 @@ class Settings:
     def enable_semantic_search(self) -> bool:
         """Semantic search enabled (ADR-021 alias for vector_sync_enabled)."""
         return self.vector_sync_enabled
-
-    @property
-    def dense_enabled(self) -> bool:
-        """Dense embeddings generated + queried.
-
-        False in ``keyword`` mode (ADR-030), where ingestion and search use BM25
-        sparse vectors only — no external embedding endpoint is contacted. Single
-        source of truth for the processor, the search algorithm, and the Qdrant
-        client so the three subsystems stay consistent.
-        """
-        return self.search_mode != "keyword"
 
     @property
     def enable_background_operations(self) -> bool:
@@ -1714,6 +1708,7 @@ def get_settings() -> Settings:
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
         "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",
+        "vector_sync_keyword_tag": "VECTOR_SYNC_KEYWORD_TAG",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings
@@ -1783,7 +1778,6 @@ def get_settings() -> Settings:
         "excluded_tags": "EXCLUDED_TAGS",
         # MCP decomposition hook points (design §10)
         "embedding_provider": "EMBEDDING_PROVIDER",
-        "search_mode": "SEARCH_MODE",
         "ingest_queue": "INGEST_QUEUE",
         "mcp_role": "MCP_ROLE",
         "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",

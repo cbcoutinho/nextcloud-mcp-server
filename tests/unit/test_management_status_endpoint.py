@@ -40,7 +40,6 @@ def create_mock_settings(
     nextcloud_url: str = "http://localhost",
     mcp_client_id: str | None = None,
     mcp_client_secret: str | None = None,
-    dense_enabled: bool = True,
 ):
     """Create mock settings with specified auth configuration."""
     settings = MagicMock()
@@ -49,9 +48,6 @@ def create_mock_settings(
     settings.oidc_discovery_url = oidc_discovery_url
     settings.oidc_issuer = oidc_issuer
     settings.vector_sync_enabled = vector_sync_enabled
-    # dense_enabled is False only in SEARCH_MODE=keyword (ADR-030); drives the
-    # supported_search_types advertised by /api/v1/status.
-    settings.dense_enabled = dense_enabled
     # Explicit so bool(settings.webhook_secret) is deterministic (a bare
     # MagicMock attribute is truthy, which would always report webhooks on).
     settings.webhook_secret = webhook_secret
@@ -398,25 +394,25 @@ class TestStatusEndpointBasicResponse:
 
 
 class TestSupportedSearchTypesHelper:
-    """Pure helper: supported_search_types(settings) (ADR-030)."""
+    """Pure helper: supported_search_types(settings).
+
+    Per-document index mode replaced the old global keyword switch: the
+    collection is always dense-capable, so when vector sync is on the server
+    advertises all three algorithms; keyword-only documents simply contribute to
+    ``bm25``/``hybrid`` via their sparse vector.
+    """
 
     def test_vector_sync_disabled_is_empty(self):
         from nextcloud_mcp_server.api.management import supported_search_types
 
-        s = create_mock_settings(vector_sync_enabled=False, dense_enabled=True)
+        s = create_mock_settings(vector_sync_enabled=False)
         assert supported_search_types(s) == []
 
-    def test_hybrid_mode_advertises_all_three(self):
+    def test_vector_sync_enabled_advertises_all_three(self):
         from nextcloud_mcp_server.api.management import supported_search_types
 
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        s = create_mock_settings(vector_sync_enabled=True)
         assert supported_search_types(s) == ["semantic", "bm25", "hybrid"]
-
-    def test_keyword_mode_advertises_bm25_only(self):
-        from nextcloud_mcp_server.api.management import supported_search_types
-
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        assert supported_search_types(s) == ["bm25"]
 
 
 class TestSelectSearchAlgorithm:
@@ -428,16 +424,9 @@ class TestSelectSearchAlgorithm:
     def test_none_defaults_gracefully_in_hybrid(self):
         from nextcloud_mcp_server.api.management import select_search_algorithm
 
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        s = create_mock_settings(vector_sync_enabled=True)
         # No explicit algorithm → historical "hybrid" default.
         assert select_search_algorithm(None, s) == "hybrid"
-
-    def test_none_defaults_to_bm25_in_keyword_mode(self):
-        from nextcloud_mcp_server.api.management import select_search_algorithm
-
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        # No explicit algorithm → coerced to the one serviceable type.
-        assert select_search_algorithm(None, s) == "bm25"
 
     def test_none_defaults_to_hybrid_when_vector_sync_off(self):
         from nextcloud_mcp_server.api.management import select_search_algorithm
@@ -449,26 +438,25 @@ class TestSelectSearchAlgorithm:
     def test_explicit_supported_passes_through(self):
         from nextcloud_mcp_server.api.management import select_search_algorithm
 
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        s = create_mock_settings(vector_sync_enabled=True)
         for algo in ("semantic", "bm25", "hybrid"):
             assert select_search_algorithm(algo, s) == algo
 
-    def test_explicit_semantic_in_keyword_mode_raises(self):
+    def test_explicit_algorithm_rejected_when_vector_sync_off(self):
         from nextcloud_mcp_server.api.management import (
             UnsupportedSearchType,
             select_search_algorithm,
         )
 
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        # Both dense-requiring algorithms are unsupported in keyword mode.
-        for algo in ("semantic", "hybrid"):
+        # Vector sync off ⇒ supported is empty ⇒ every explicit algorithm is a
+        # hard, self-correcting 422 (no Qdrant-backed search exists to serve).
+        s = create_mock_settings(vector_sync_enabled=False)
+        for algo in ("semantic", "bm25", "hybrid"):
             with pytest.raises(UnsupportedSearchType) as excinfo:
                 select_search_algorithm(algo, s)
             # Error carries the request + advertised set for a self-correcting 422.
             assert excinfo.value.requested == algo
-            assert excinfo.value.supported == ["bm25"]
-        # bm25 is still accepted in keyword mode.
-        assert select_search_algorithm("bm25", s) == "bm25"
+            assert excinfo.value.supported == []
 
     def test_explicit_unknown_algorithm_raises(self):
         from nextcloud_mcp_server.api.management import (
@@ -476,7 +464,7 @@ class TestSelectSearchAlgorithm:
             select_search_algorithm,
         )
 
-        s = create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
+        s = create_mock_settings(vector_sync_enabled=True)
         # Unknown values are a client bug — fail loud rather than coerce.
         with pytest.raises(UnsupportedSearchType):
             select_search_algorithm("nonsense", s)
@@ -502,17 +490,9 @@ class TestStatusEndpointSearchTypes:
         assert response.status_code == 200
         return response.json()
 
-    def test_hybrid_mode(self):
-        data = self._get_status(
-            create_mock_settings(vector_sync_enabled=True, dense_enabled=True)
-        )
+    def test_vector_sync_on_advertises_all_three(self):
+        data = self._get_status(create_mock_settings(vector_sync_enabled=True))
         assert data["supported_search_types"] == ["semantic", "bm25", "hybrid"]
-
-    def test_keyword_mode(self):
-        data = self._get_status(
-            create_mock_settings(vector_sync_enabled=True, dense_enabled=False)
-        )
-        assert data["supported_search_types"] == ["bm25"]
 
     def test_vector_sync_off(self):
         data = self._get_status(create_mock_settings(vector_sync_enabled=False))

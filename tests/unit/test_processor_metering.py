@@ -1,14 +1,16 @@
 """Unit tests for the indexing-path usage-metering helper (Deck #67 / #401).
 
 ``record_indexing_usage`` records the billable events after a document's chunks
-are embedded: ``tokens_embedded`` for every document, and ``pages_embedded``
-only for parsed files (real ``page_count``). Text content (no ``page_count``)
-meters tokens only — ``pages_embedded`` is a charge for parsing, not content
-size (card #282). The byte-volume dimensions ``bytes_ingested`` /
-``bytes_stored`` (card #401) are recorded for every document, skipped only on a
-non-positive count. These cover the value mapping, the flag/zero-chunk no-ops,
-the text-only path, and the best-effort failure path without standing up the
-full document pipeline. (The call site's raw-binary-vs-UTF-8 source selection
+are indexed: ``tokens_embedded`` for hybrid documents (skipped when
+``token_count`` is 0, i.e. keyword-only docs), and ``pages_embedded`` only for
+parsed files (real ``page_count``). Text content (no ``page_count``) meters
+tokens only — ``pages_embedded`` is a charge for parsing, not content size (card
+#282). The byte-volume dimensions ``bytes_ingested`` / ``bytes_stored`` (card
+#401) are recorded for every document, skipped only on a non-positive count, and
+carry an ``index_mode`` metadata dimension (card #609) so the CP rollup can slice
+hybrid vs keyword ingestion. These cover the value mapping, the flag/zero-chunk
+no-ops, the text-only path, and the best-effort failure path without standing up
+the full document pipeline. (The call site's raw-binary-vs-UTF-8 source selection
 for ``bytes_ingested`` lives in the document pipeline and is exercised by the
 integration smoke path, not these helper-level tests.)
 """
@@ -51,7 +53,7 @@ def test_ingested_byte_size_text_uses_utf8_length():
 
 @pytest.mark.unit
 def test_build_point_vector_hybrid_carries_dense_and_sparse():
-    """Hybrid mode (ADR-030) upserts both named vectors for the chunk."""
+    """A hybrid document upserts both named vectors for the chunk."""
     dense = [[0.1, 0.2], [0.3, 0.4]]
     v = processor.build_point_vector("sparse-1", dense, 1, dense_enabled=True)
     assert v == {"sparse": "sparse-1", "dense": [0.3, 0.4]}
@@ -59,8 +61,8 @@ def test_build_point_vector_hybrid_carries_dense_and_sparse():
 
 @pytest.mark.unit
 def test_build_point_vector_keyword_is_sparse_only():
-    """Keyword mode carries only the sparse vector and never indexes into the
-    empty dense list (the silent zero-points bug guard)."""
+    """A keyword document carries only the sparse vector and never indexes into
+    the empty dense list (the silent zero-points bug guard)."""
     v = processor.build_point_vector("sparse-1", [], 0, dense_enabled=False)
     assert v == {"sparse": "sparse-1"}
     assert "dense" not in v
@@ -84,6 +86,7 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=110,
         token_count=4242,
         total_chars=170826,
@@ -115,6 +118,9 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
         assert c.kwargs["metadata"]["model"] == "mistral-embed"
         assert c.kwargs["metadata"]["user_id"] == "alice"
         assert c.kwargs["metadata"]["doc_type"] == "file"
+        # index_mode is threaded onto every event so the CP rollup can slice
+        # hybrid vs keyword ingestion (card #609).
+        assert c.kwargs["metadata"]["index_mode"] == "hybrid"
 
 
 @pytest.mark.unit
@@ -126,6 +132,7 @@ async def test_text_doc_records_tokens_and_bytes_no_pages(store_spy):
         model="mistral-embed",
         doc_type="note",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=4,
         token_count=512,
         total_chars=7000,
@@ -154,6 +161,7 @@ async def test_zero_pages_skips_pages(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=4,
         token_count=99,
         total_chars=1000,
@@ -180,6 +188,7 @@ async def test_negative_pages_skips_pages(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=4,
         token_count=99,
         total_chars=1000,
@@ -206,6 +215,7 @@ async def test_nonpositive_bytes_skip_byte_rows(store_spy):
         model="mistral-embed",
         doc_type="note",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=4,
         token_count=99,
         total_chars=0,
@@ -229,6 +239,7 @@ async def test_disabled_is_noop(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=10,
         token_count=20,
         total_chars=5,
@@ -248,6 +259,7 @@ async def test_zero_chunks_is_noop(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=0,
         token_count=0,
         total_chars=0,
@@ -274,6 +286,7 @@ async def test_store_failure_is_swallowed(monkeypatch):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=3,
         token_count=7,
         total_chars=9,
@@ -292,6 +305,7 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=20,
         token_count=900,
         total_chars=40000,
@@ -326,6 +340,7 @@ async def test_fast_tier_does_not_record_pages_ocr(store_spy):
         model="mistral-embed",
         doc_type="file",
         user_id="alice",
+        index_mode="hybrid",
         chunk_count=10,
         token_count=500,
         total_chars=20000,
@@ -342,3 +357,61 @@ async def test_fast_tier_does_not_record_pages_ocr(store_spy):
         "bytes_ingested",
         "bytes_stored",
     }
+
+
+@pytest.mark.unit
+async def test_keyword_mode_meters_bytes_not_tokens(store_spy):
+    """A keyword-only file (index_mode='keyword', token_count=0) meters the byte
+    dimensions tagged index_mode='keyword' but emits NO tokens_embedded row —
+    keyword docs never embed, so there is no embedding-token cost (card #609)."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="mistral",
+        model="mistral-embed",
+        doc_type="file",
+        user_id="alice",
+        index_mode="keyword",
+        chunk_count=12,
+        token_count=0,  # keyword docs skip dense embedding → zero embed tokens
+        total_chars=30000,
+        page_count=5,
+        bytes_ingested=40960,
+        bytes_stored=30500,
+    )
+
+    calls = store_spy.record_usage_event.await_args_list
+    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    # No tokens_embedded row; parsing (pages) + byte volume still bill.
+    assert by_metric == {
+        "pages_embedded": 5,
+        "bytes_ingested": 40960,
+        "bytes_stored": 30500,
+    }
+    assert "tokens_embedded" not in by_metric
+    # Every event carries the keyword mode so the CP can attribute it separately.
+    for c in calls:
+        assert c.kwargs["metadata"]["index_mode"] == "keyword"
+
+
+@pytest.mark.unit
+async def test_hybrid_zero_tokens_still_skips_tokens_row(store_spy):
+    """Guard the token gate independently of mode: a 0 token_count never writes a
+    tokens_embedded row even for a hybrid doc (defensive — a real hybrid embed
+    always reports > 0, but a zero must not emit a bogus billing row)."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="mistral",
+        model="mistral-embed",
+        doc_type="note",
+        user_id="alice",
+        index_mode="hybrid",
+        chunk_count=3,
+        token_count=0,
+        total_chars=100,
+        page_count=None,
+        bytes_ingested=200,
+        bytes_stored=250,
+    )
+    metrics = {c.kwargs["metric"] for c in store_spy.record_usage_event.await_args_list}
+    assert "tokens_embedded" not in metrics
+    assert metrics == {"bytes_ingested", "bytes_stored"}

@@ -8,7 +8,7 @@ import random
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import anyio
 from anyio.abc import TaskStatus
@@ -19,7 +19,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import record_vector_sync_scan
 from nextcloud_mcp_server.observability.tracing import trace_operation
@@ -27,6 +27,7 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
 from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
 from nextcloud_mcp_server.vector.placeholder import (
@@ -35,6 +36,10 @@ from nextcloud_mcp_server.vector.placeholder import (
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.search.algorithms import NextcloudClientProtocol
+
 from nextcloud_mcp_server.vector.sharing_state import (
     claim_existing_index,
     reconcile_document_path,
@@ -127,6 +132,11 @@ class DocumentTask:
     # shared-with-me crawl can pass through the actual owner without
     # reshaping the payload contract.
     owner_id: str | None = None
+    # Per-document index mode: "hybrid" (dense + BM25 sparse, the default and what
+    # every non-file producer emits) or "keyword" (BM25 sparse only). Set to
+    # "keyword" for files discovered via the ``keyword-index`` tag so the
+    # processor skips dense embedding for them. See payload_keys.INDEX_MODE_*.
+    index_mode: str = payload_keys.INDEX_MODE_HYBRID
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -134,6 +144,45 @@ class DocumentTask:
 # part of the key so the same numeric id under different doc types (a note 42
 # and a mail_message 42 for one user) tracks grace periods independently.
 _potentially_deleted: dict[tuple[str, str, str], float] = {}
+
+
+async def _discover_tagged_files(
+    nc_client: "NextcloudClientProtocol", settings: Settings
+) -> list[dict]:
+    """Discover tagged PDFs for both index modes, stamping ``_index_mode``.
+
+    ``vector_sync_pdf_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
+    → keyword (BM25 sparse only). Hybrid wins precedence: a file carrying both tags
+    is hybrid (a superset of keyword), so it is discovered once with
+    ``_index_mode="hybrid"`` and its keyword listing is dropped. The keyword tag is
+    only queried when ``vector_sync_keyword_tag`` is non-empty (empty = disabled),
+    so single-tag deployments issue exactly one OCS Tags query as before.
+
+    Each returned dict is a ``find_files_by_tag`` row (id/path/etag/...) plus an
+    ``_index_mode`` key consumed by the enqueue loop.
+    """
+    hybrid_files = await nc_client.find_files_by_tag(
+        settings.vector_sync_pdf_tag, mime_type_filter="application/pdf"
+    )
+    for f in hybrid_files:
+        f["_index_mode"] = payload_keys.INDEX_MODE_HYBRID
+
+    keyword_tag = settings.vector_sync_keyword_tag
+    if not keyword_tag:
+        return hybrid_files
+
+    hybrid_ids = {str(f["id"]) for f in hybrid_files}
+    keyword_files = await nc_client.find_files_by_tag(
+        keyword_tag, mime_type_filter="application/pdf"
+    )
+    # Hybrid precedence: drop keyword rows for files already tagged hybrid.
+    extra_keyword_files = []
+    for f in keyword_files:
+        if str(f["id"]) in hybrid_ids:
+            continue
+        f["_index_mode"] = payload_keys.INDEX_MODE_KEYWORD
+        extra_keyword_files.append(f)
+    return hybrid_files + extra_keyword_files
 
 
 async def get_last_indexed_timestamp(user_id: str) -> int | None:
@@ -614,16 +663,18 @@ async def scan_user_documents(
         nextcloud_file_ids = set()
 
         try:
-            # Find files with vector-index tag using OCS Tags API.
-            # find_files_by_tag also expands tagged directories into their
-            # PDF descendants (Depth: infinity SEARCH), so a tag on a
-            # folder applies to every PDF beneath it.
+            # Find tagged PDFs via the OCS Tags API. find_files_by_tag also
+            # expands tagged directories into their PDF descendants (Depth:
+            # infinity SEARCH), so a tag on a folder applies to every PDF beneath
+            # it. Two tags feed one pipeline: ``vector_sync_pdf_tag`` →
+            # hybrid (dense + sparse), ``vector_sync_keyword_tag`` → keyword
+            # (sparse only). Each file dict is stamped with ``_index_mode`` so the
+            # per-document processor knows which to apply; hybrid wins when a file
+            # carries both (it is a superset of keyword). ``vector_sync_keyword_tag``
+            # empty (default) disables the second tag entirely.
             settings = get_settings()
-            tag_name = settings.vector_sync_pdf_tag
             if is_doc_type_allowed("file", allowed):
-                tagged_files = await nc_client.find_files_by_tag(
-                    tag_name, mime_type_filter="application/pdf"
-                )
+                tagged_files = await _discover_tagged_files(nc_client, settings)
             else:
                 # Files disabled by admin: discover nothing so no new file is
                 # indexed. The deletion-reconcile below then sees every indexed
@@ -685,6 +736,12 @@ async def scan_user_documents(
                 # and producers across doc_types must agree on a single type.
                 file_id = str(file_info["id"])
                 file_path = file_info["path"]  # Keep path for logging
+                # Which index mode this file's tag selected (hybrid default;
+                # keyword for keyword-index-tagged files). Threaded into the dedup
+                # claim and the DocumentTask so the processor embeds accordingly.
+                index_mode = file_info.get(
+                    "_index_mode", payload_keys.INDEX_MODE_HYBRID
+                )
                 nextcloud_file_ids.add(file_id)
 
                 # Use last_modified timestamp if available, otherwise use current time
@@ -705,7 +762,12 @@ async def scan_user_documents(
                 # because chunk point IDs are user-agnostic (note 386945 #5).
                 etag = str(file_info.get("etag") or "")
                 if etag and await claim_existing_index(
-                    file_id, "file", etag, user_id, current_path=file_path
+                    file_id,
+                    "file",
+                    etag,
+                    user_id,
+                    index_mode=index_mode,
+                    current_path=file_path,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
@@ -754,6 +816,7 @@ async def scan_user_documents(
                             modified_at=modified_at,
                             file_path=file_path,
                             etag=etag,
+                            index_mode=index_mode,
                         )
                     )
                     file_queued += 1
@@ -817,6 +880,29 @@ async def scan_user_documents(
                                 format(placeholder_age, ".1f"),
                                 format(stale_threshold, ".1f"),
                             )
+                    elif (
+                        # Default hybrid: points indexed before INDEX_MODE existed
+                        # carry no key and were dense+sparse, so they read as
+                        # hybrid and don't spuriously reindex under a hybrid scan.
+                        existing_metadata.get(
+                            payload_keys.INDEX_MODE, payload_keys.INDEX_MODE_HYBRID
+                        )
+                        != index_mode
+                    ):
+                        # Real point whose index mode changed at unchanged content
+                        # (a retag). In practice this is the keyword→hybrid upgrade:
+                        # the modified_at gate above is stable, and the dedup claim
+                        # can't reuse sparse-only points for a hybrid request, so
+                        # reprocess to add the dense vector. (The hybrid→keyword
+                        # downgrade is absorbed by the dedup no-downgrade rule and
+                        # never reaches here.)
+                        logger.info(
+                            "File %s (ID: %s) index mode changed to %s; reindexing",
+                            file_path,
+                            file_id,
+                            index_mode,
+                        )
+                        needs_indexing = True
 
                     if needs_indexing:
                         # Write placeholder before queuing
@@ -837,6 +923,7 @@ async def scan_user_documents(
                                 modified_at=modified_at,
                                 file_path=file_path,
                                 etag=etag,
+                                index_mode=index_mode,
                             )
                         )
                         file_queued += 1

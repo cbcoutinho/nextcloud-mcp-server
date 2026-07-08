@@ -65,7 +65,7 @@ from nextcloud_mcp_server.vector.placeholder import (
     update_placeholder_status,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.scanner import DocumentTask
+from nextcloud_mcp_server.vector.scanner import DocumentTask, _discover_tagged_files
 from nextcloud_mcp_server.vector.sharing_state import (
     claim_existing_index,
     existing_principals,
@@ -334,14 +334,14 @@ def build_point_vector(
     *,
     dense_enabled: bool,
 ) -> dict[str, Any]:
-    """Build the Qdrant named-vector dict for one chunk's point (ADR-030).
+    """Build the Qdrant named-vector dict for one chunk's point.
 
-    Hybrid mode carries both ``dense`` and ``sparse``. Keyword mode carries only
+    Hybrid docs carry both ``dense`` and ``sparse``. Keyword docs carry only
     ``sparse``: dense embeddings are never generated (``dense_embeddings`` is
     empty), so the point is upserted with a subset of the collection's named
-    vectors — valid against the unchanged dense+sparse schema. Indexing into an
-    empty ``dense_embeddings`` here would be the silent zero-points bug, so the
-    dense slot is only read when dense is enabled.
+    vectors — valid against the dense+sparse schema. Indexing into an empty
+    ``dense_embeddings`` here would be the silent zero-points bug, so the dense
+    slot is only read when dense is enabled for this document.
     """
     point_vector: dict[str, Any] = {"sparse": sparse_emb}
     if dense_enabled:
@@ -356,6 +356,7 @@ async def record_indexing_usage(
     model: str,
     doc_type: str,
     user_id: str,
+    index_mode: str,
     chunk_count: int,
     token_count: int,
     total_chars: int,
@@ -364,14 +365,21 @@ async def record_indexing_usage(
     bytes_stored: int,
     pipeline_tier: str | None = None,
 ) -> None:
-    """Record the billable usage events for one embedded document.
+    """Record the billable usage events for one indexed document.
+
+    ``index_mode`` (``"hybrid"`` | ``"keyword"``) is stamped on every event's
+    metadata so the CP rollup can slice ingestion cost by mode without new metric
+    names — a keyword doc (sparse-only, no embedding) and a hybrid doc bill the
+    same ``bytes_ingested`` / ``bytes_stored`` metrics, distinguished only by this
+    dimension. ``tokens_embedded`` is naturally hybrid-only: keyword docs pass
+    ``token_count=0`` and the row is skipped.
 
     Metered dimensions (Deck #67 / #401), recorded independently:
 
     - ``tokens_embedded`` — the embedding request's token count, recorded for
-      *every* embedded document. The same metric search records, so the meter
-      bills embedding tokens whether they were incurred indexing a document or
-      embedding a query.
+      every *hybrid* document (skipped when ``token_count`` is 0, i.e. keyword
+      docs). The same metric search records, so the meter bills embedding tokens
+      whether they were incurred indexing a document or embedding a query.
     - ``pages_embedded`` — a charge for **parsing** (PDF page extraction / OCR),
       not a normalized content size. ``page_count`` is the real number of pages
       the document processor parsed. Text content (notes, deck cards, news
@@ -417,6 +425,10 @@ async def record_indexing_usage(
         "model": model,
         "doc_type": doc_type,
         "user_id": user_id,
+        # Per-document index mode (card #609): lets the CP rollup slice ingestion
+        # cost into hybrid (dense+sparse) vs keyword (sparse-only) without new
+        # metric names.
+        "index_mode": index_mode,
         "total_chars": total_chars,
         # Which extraction tier produced the parsed pages (Deck #323). Carried so
         # the CP rollup / a future per-tier price can attribute parsing cost to
@@ -432,15 +444,17 @@ async def record_indexing_usage(
         # independent; one raising never blocks the other — acceptable under the
         # (day, metric) SUM-aggregation billing model.
 
-        # tokens_embedded first (intentional ordering): it is recorded for every
-        # embedded document, so the embedding cost is always captured before the
-        # conditional parsing cost — don't reverse this in a refactor.
-        await store.record_usage_event(
-            metric="tokens_embedded",
-            value=token_count,
-            metadata=metadata,
-            enabled=True,
-        )
+        # tokens_embedded first (intentional ordering): captured before the
+        # conditional parsing/byte costs — don't reverse this in a refactor.
+        # Skipped for keyword docs (token_count == 0), which never embed, so no
+        # zero-value embedding row is written.
+        if token_count > 0:
+            await store.record_usage_event(
+                metric="tokens_embedded",
+                value=token_count,
+                metadata=metadata,
+                enabled=True,
+            )
         # pages_embedded: parsed pages only, and only a strictly positive count.
         # Text content has no page_count; a zero/negative count is skipped rather
         # than writing a row that would misrepresent a no-parse document as
@@ -582,23 +596,21 @@ async def _reconcile_tag_event(
     """Resolve a tag-webhook file task into a concrete index or delete.
 
     A SystemTag ``MapperEvent`` only tells us a fileid's tags changed — not the
-    path, nor whether our ``vector-index`` tag is (still) on it. Look up the
-    user's current ``vector-index`` PDFs (the same call the scanner uses, which
-    also expands tagged folders into their PDF descendants) and reconcile the
-    task in place:
+    path, nor which of our index tags is (still) on it. Look up the user's current
+    tagged PDFs across BOTH tags (the same discovery the scanner uses, which
+    applies hybrid precedence and expands tagged folders into their PDF
+    descendants) and reconcile the task in place:
 
-    - fileid present -> index it; fill path/etag/mtime from the tag listing.
-    - fileid absent  -> it isn't a tagged PDF (anymore); flip ``operation`` to
+    - fileid present -> index it; fill path/etag/mtime and set ``index_mode`` from
+      whichever tag matched (``vector-index`` → hybrid wins over ``keyword-index``).
+    - fileid absent  -> it carries neither tag (anymore); flip ``operation`` to
       ``delete`` so any existing points are released for this user.
 
     A tagged *folder*'s own fileid won't appear in the file-level listing, so it
     resolves to a harmless no-op delete here; the hourly scanner still expands
     tagged folders into their descendants.
     """
-    tag_name = get_settings().vector_sync_pdf_tag
-    tagged = await nc_client.find_files_by_tag(
-        tag_name, mime_type_filter="application/pdf"
-    )
+    tagged = await _discover_tagged_files(nc_client, get_settings())
     match = next(
         (f for f in tagged if str(f.get("id")) == str(doc_task.doc_id)),
         None,
@@ -607,13 +619,13 @@ async def _reconcile_tag_event(
     if match is None:
         doc_task.operation = "delete"
         logger.info(
-            "Tag reconcile: file %s is not a %r PDF; releasing for %s",
+            "Tag reconcile: file %s carries no index tag; releasing for %s",
             doc_task.doc_id,
-            tag_name,
             doc_task.user_id,
         )
         return
 
+    doc_task.index_mode = match.get("_index_mode", payload_keys.INDEX_MODE_HYBRID)
     doc_task.file_path = match["path"]
     if not doc_task.etag:
         doc_task.etag = match.get("etag")
@@ -621,9 +633,10 @@ async def _reconcile_tag_event(
     if last_modified:
         doc_task.modified_at = int(last_modified)
     logger.info(
-        "Tag reconcile: indexing %s (file %s) for %s",
+        "Tag reconcile: indexing %s (file %s, mode=%s) for %s",
         doc_task.file_path,
         doc_task.doc_id,
+        doc_task.index_mode,
         doc_task.user_id,
     )
 
@@ -1111,6 +1124,7 @@ async def _index_document(
                 "file",
                 doc_task.etag,
                 doc_task.user_id,
+                index_mode=doc_task.index_mode,
                 current_path=doc_task.file_path,
             ):
                 await delete_placeholder_point(
@@ -1482,9 +1496,19 @@ async def _index_document(
     # Extract chunk texts for embedding
     chunk_texts = [chunk.text for chunk in chunks]
 
+    # Per-document index mode (per-document keyword vs hybrid). Keyword docs
+    # (``keyword-index`` tag) skip dense embeddings entirely and upsert
+    # sparse-only points into the shared collection; hybrid docs (default) carry
+    # both dense and sparse. This replaces the removed global ``dense_enabled``.
+    dense_for_doc = doc_task.index_mode != payload_keys.INDEX_MODE_KEYWORD
+
     # Initialize results containers
     dense_embeddings: list = []
     sparse_embeddings: list = []
+    # Embedding-token count from the dense pass (0 for keyword docs, which never
+    # embed). Captured as a nonlocal so the post-task-group metering can record
+    # ``tokens_embedded`` for hybrid docs while byte/page metering covers both.
+    dense_embed_tokens: int = 0
     # chunk_index -> list[(x0, y0, x1, y1)] of normalized rectangles
     # in [0, 1] relative to page width/height. The page is taken from
     # `chunk.page_number` (offset-based) and stored as `page_number`
@@ -1500,7 +1524,7 @@ async def _index_document(
     # Define async tasks for parallel execution
     async def generate_dense_embeddings():
         """Generate dense embeddings (I/O bound - external API call)."""
-        nonlocal dense_embeddings
+        nonlocal dense_embeddings, dense_embed_tokens
         provider = settings.get_embedding_provider_family()
         total_chars = sum(len(t) for t in chunk_texts)
         with trace_operation(
@@ -1535,51 +1559,10 @@ async def _index_document(
             # Export token consumption to Prometheus (always-on, independent of
             # the billing flag) so Grafana sees indexing token cost.
             record_embedding_tokens(provider, "index", embed_tokens)
-            # Usage metering (Deck #67): record the embedding-token count (all
-            # docs) and, for parsed files, the real parsed-page count. Best-
-            # effort and flag-gated; placed after the embedding succeeds so it
-            # can never affect the indexing path. ``page_count`` is set by the
-            # document processors for PDFs and absent for text types, so text
-            # content meters tokens only. See record_indexing_usage for the
-            # metric/privacy details.
-            #
-            # Narrow defensively: file_metadata values are loosely typed, so a
-            # malformed page_count meters as "no pages" rather than erroring on
-            # the indexing path.
-            # bool is an int subclass, so exclude it explicitly — a stray
-            # page_count=True in metadata must not slip through as pages=1.
-            raw_page_count = file_metadata.get("page_count")
-            await record_indexing_usage(
-                enabled=settings.usage_metering_enabled,
-                provider=provider,
-                model=settings.get_embedding_model_name(),
-                doc_type=doc_task.doc_type,
-                user_id=doc_task.user_id,
-                chunk_count=len(chunk_texts),
-                token_count=embed_tokens,
-                total_chars=total_chars,
-                page_count=(
-                    raw_page_count
-                    if isinstance(raw_page_count, int)
-                    and not isinstance(raw_page_count, bool)
-                    else None
-                ),
-                # bytes_ingested: raw source size at ingestion (raw WebDAV binary
-                # for files, UTF-8 text size for text doc types — note,
-                # deck_card, news_item, mail_message). See helper.
-                bytes_ingested=ingested_byte_size(content_bytes, content),
-                # bytes_stored: UTF-8 size of the chunk texts persisted as Qdrant
-                # payload excerpts (includes chunk-overlap duplication).
-                bytes_stored=sum(len(t.encode("utf-8")) for t in chunk_texts),
-                # Tier that produced the parsed pages (registry stamps it on the
-                # result metadata); text doc types stay "fast". Narrow defensively
-                # to str|None — file_metadata is loosely typed (Any values).
-                pipeline_tier=(
-                    pt
-                    if isinstance(pt := file_metadata.get("pipeline_tier"), str)
-                    else None
-                ),
-            )
+            # Hand the token count to the post-task-group usage metering (byte +
+            # page dimensions are recorded there for BOTH modes; embedding tokens
+            # are hybrid-only, so keyword docs keep the initialised 0).
+            dense_embed_tokens = embed_tokens
 
     async def generate_sparse_embeddings():
         """Generate sparse embeddings (BM25 for keyword matching)."""
@@ -1723,15 +1706,59 @@ async def _index_document(
         },
     ):
         async with anyio.create_task_group() as tg:
-            # Keyword mode (ADR-030) skips dense embeddings entirely so airgapped
-            # deployments need no embedding endpoint; only BM25 sparse vectors are
-            # generated and indexed. ``dense_embeddings`` stays [] in that case,
-            # and the token-metering block lives inside generate_dense_embeddings,
-            # so it is correctly skipped (no embedding tokens to meter).
-            if settings.dense_enabled:
+            # Keyword-only documents (``keyword-index`` tag → index_mode
+            # "keyword") skip dense embeddings entirely: no embedding endpoint is
+            # contacted and the point is upserted sparse-only. ``dense_embeddings``
+            # stays [] in that case. Hybrid documents (default) always embed — a
+            # failed/unavailable embedding endpoint raises out of
+            # generate_dense_embeddings into process_document's retry/dead-letter
+            # path rather than silently degrading to sparse-only.
+            if dense_for_doc:
                 tg.start_soon(generate_dense_embeddings)
             tg.start_soon(generate_sparse_embeddings)
             tg.start_soon(generate_highlights)
+
+    # Usage metering (Deck #67), recorded once per document AFTER the embedding/
+    # sparse task group so it covers BOTH modes (byte + page dimensions for
+    # keyword and hybrid alike; embedding tokens are hybrid-only via
+    # dense_embed_tokens, which stays 0 for keyword docs). Best-effort and
+    # flag-gated; placed after processing succeeds so it can never affect the
+    # indexing path. ``page_count`` is set by the document processors for PDFs
+    # and absent for text types. Narrow defensively: file_metadata values are
+    # loosely typed, so a malformed page_count meters as "no pages"; bool is an
+    # int subclass, so exclude it explicitly.
+    _meter_total_chars = sum(len(t) for t in chunk_texts)
+    _meter_raw_page_count = file_metadata.get("page_count")
+    _meter_pipeline_tier = file_metadata.get("pipeline_tier")
+    await record_indexing_usage(
+        enabled=settings.usage_metering_enabled,
+        provider=settings.get_embedding_provider_family(),
+        model=settings.get_embedding_model_name(),
+        doc_type=doc_task.doc_type,
+        user_id=doc_task.user_id,
+        index_mode=doc_task.index_mode,
+        chunk_count=len(chunk_texts),
+        token_count=dense_embed_tokens,
+        total_chars=_meter_total_chars,
+        page_count=(
+            _meter_raw_page_count
+            if isinstance(_meter_raw_page_count, int)
+            and not isinstance(_meter_raw_page_count, bool)
+            else None
+        ),
+        # bytes_ingested: raw source size at ingestion (raw WebDAV binary for
+        # files, UTF-8 text size for text doc types — note, deck_card,
+        # news_item, mail_message). See helper.
+        bytes_ingested=ingested_byte_size(content_bytes, content),
+        # bytes_stored: UTF-8 size of the chunk texts persisted as Qdrant payload
+        # excerpts (includes chunk-overlap duplication).
+        bytes_stored=sum(len(t.encode("utf-8")) for t in chunk_texts),
+        # Tier that produced the parsed pages (registry stamps it on the result
+        # metadata); text doc types stay "fast". Narrow defensively to str|None.
+        pipeline_tier=(
+            _meter_pipeline_tier if isinstance(_meter_pipeline_tier, str) else None
+        ),
+    )
 
     # Prepare Qdrant points
     indexed_at = int(time.time())
@@ -1745,8 +1772,11 @@ async def _index_document(
     # safe because the query-side pre-filter only applies when present + enabled).
     # Embedding identity stamped on every chunk point. Via the shared helper so it
     # is IDENTICAL to what the collection sentinel and the cross-user dedup lookup
-    # produce — keyword mode returns a fixed marker (not the bogus ``simple-{dim}``
-    # model-name fallback), which is what makes dedup match (Deck #509).
+    # produce (Deck #509). It records the dense embedding MODEL (so a model switch
+    # forces a re-embed); it is orthogonal to keyword-vs-hybrid, which is tracked
+    # separately by INDEX_MODE. Keyword points carry the model identity too — they
+    # simply omit the dense vector — so a keyword doc dedups against the same
+    # model-identity space (see claim_existing_index's monotonic rule).
     _embedding_identity = build_embedding_identity(settings)
     _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
 
@@ -1795,11 +1825,11 @@ async def _index_document(
         point_name = f"{doc_task.doc_type}:{doc_task.doc_id}:chunk:{i}"
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, point_name))
 
-        # Keyword mode (ADR-030) upserts sparse-only points; the loop is driven
-        # off ``sparse_embeddings`` so the chunk count stays correct when
+        # Keyword docs upsert sparse-only points; the loop is driven off
+        # ``sparse_embeddings`` so the chunk count stays correct when
         # ``dense_embeddings`` is empty. See build_point_vector for the rationale.
         point_vector = build_point_vector(
-            sparse_emb, dense_embeddings, i, dense_enabled=settings.dense_enabled
+            sparse_emb, dense_embeddings, i, dense_enabled=dense_for_doc
         )
 
         points.append(
@@ -1847,6 +1877,10 @@ async def _index_document(
                         "pipeline_tier", "fast"
                     ),
                     payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
+                    # Per-document index mode: "hybrid" (this point carries a
+                    # dense vector) or "keyword" (sparse-only). Drives verify-on-
+                    # read tag selection, the dedup monotonic rule, and billing.
+                    payload_keys.INDEX_MODE: doc_task.index_mode,
                     payload_keys.ACL_HASH: _acl_hash,
                     # File-specific metadata (PDF, etc.)
                     **(

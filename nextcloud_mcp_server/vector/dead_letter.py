@@ -106,13 +106,9 @@ async def mark_dead_letter(
     try:
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
-        # Match the collection's dense slot; in keyword mode (dense_enabled=False)
-        # it's sized to SIMPLE_EMBEDDING_DIMENSION and there may be no embedding
-        # endpoint — so don't call the embedding service (mirrors placeholder.py).
-        if settings.dense_enabled:
-            dimension = get_embedding_service().get_dimension()
-        else:
-            dimension = settings.simple_embedding_dimension
+        # Match the collection's dense slot, which is always sized from the
+        # embedding service (mirrors placeholder.py / collection creation).
+        dimension = get_embedding_service().get_dimension()
 
         payload: dict[str, Any] = {
             "doc_id": doc_id,

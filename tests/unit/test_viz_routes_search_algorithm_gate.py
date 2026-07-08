@@ -1,12 +1,11 @@
-"""Keyword-mode gate for the OAuth-session PCA-viz search endpoint
+"""Algorithm selection for the OAuth-session PCA-viz search endpoint
 (`nextcloud_mcp_server.auth.viz_routes.vector_visualization_search`).
 
-The pure-dense ``semantic`` algorithm queries the dense vector slot, which a
-keyword-only collection (SEARCH_MODE=keyword) does not have. Unlike the
-management API endpoints, this route selects the algorithm from a raw query
-param, so it must guard ``semantic`` explicitly (ADR-030) rather than letting the
-query fail against the sparse-only index. ``bm25_hybrid`` stays valid in keyword
-mode (it issues a sparse-only query internally), so it must NOT be rejected.
+The old global keyword switch is gone: keyword-vs-hybrid is now per-document and
+the collection is always dense-capable, so ``semantic`` (pure dense) is always
+valid — the route no longer rejects it. This pins that an explicit
+``algorithm=semantic`` now builds the dense ``SemanticSearchAlgorithm`` and
+proceeds, rather than being 400'd by the removed "keyword-only" gate.
 
 Auth harness mirrors ``tests/unit/test_viz_routes_chunk_context.py``.
 """
@@ -53,12 +52,12 @@ def _make_app() -> Starlette:
     )
 
 
-def _keyword_mode_settings() -> MagicMock:
-    """Vector sync on, dense off → SEARCH_MODE=keyword (supported = ["bm25"])."""
+def _vector_sync_on_settings() -> MagicMock:
+    """Vector sync on. The collection is always dense-capable, so ``semantic`` is
+    always a valid algorithm (no keyword-only gate)."""
     settings = MagicMock()
     settings.vector_sync_enabled = True
-    settings.dense_enabled = False
-    settings.get_collection_name.return_value = "test-bm25-keyword"
+    settings.get_collection_name.return_value = "test-collection"
     return settings
 
 
@@ -70,13 +69,16 @@ def _mock_auth_client_ctx() -> MagicMock:
     return client
 
 
-def test_semantic_rejected_in_keyword_mode_without_building_dense_algo():
-    """An explicit ``algorithm=semantic`` on a keyword-only server → 400, and the
-    dense SemanticSearchAlgorithm is never constructed (no dead dense query)."""
+def test_semantic_is_built_and_not_rejected():
+    """An explicit ``algorithm=semantic`` now builds the dense
+    SemanticSearchAlgorithm and proceeds — the removed keyword-only gate no longer
+    400s it. We stop the handler right after construction (the algorithm's
+    ``search`` raises) so the assertion is purely about the gate: the dense algo
+    IS constructed, and the response is never the old "keyword-only" 400."""
     with (
         patch(
             "nextcloud_mcp_server.auth.viz_routes.get_settings",
-            return_value=_keyword_mode_settings(),
+            return_value=_vector_sync_on_settings(),
         ),
         patch(
             "nextcloud_mcp_server.auth.viz_routes._get_authenticated_client_for_userinfo",
@@ -84,7 +86,8 @@ def test_semantic_rejected_in_keyword_mode_without_building_dense_algo():
             return_value=_mock_auth_client_ctx(),
         ),
         patch(
-            "nextcloud_mcp_server.auth.viz_routes.SemanticSearchAlgorithm"
+            "nextcloud_mcp_server.auth.viz_routes.SemanticSearchAlgorithm",
+            side_effect=RuntimeError("stop after the gate"),
         ) as mock_semantic,
     ):
         with TestClient(_make_app()) as client:
@@ -92,8 +95,8 @@ def test_semantic_rejected_in_keyword_mode_without_building_dense_algo():
                 "/app/vector-viz/search?query=leadership&algorithm=semantic"
             )
 
-    assert resp.status_code == 400
-    body = resp.json()
-    assert body["success"] is False
-    assert "keyword-only" in body["error"]
-    mock_semantic.assert_not_called()
+    # The dense algorithm IS constructed now (the keyword-only gate is gone).
+    mock_semantic.assert_called_once()
+    # And the response is never the removed "keyword-only" rejection.
+    if resp.status_code == 400:
+        assert "keyword-only" not in resp.json().get("error", "")

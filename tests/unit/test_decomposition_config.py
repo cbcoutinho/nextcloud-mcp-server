@@ -41,38 +41,27 @@ class TestDecompositionDefaults:
             mcp_role=" API ",
             document_tier1_engine=" PyPDFium2 ",
             document_ocr_provider=" Gateway ",
-            search_mode=" KEYWORD ",
         )
         assert s.collection_metadata_source == "qdrant"
         assert s.mcp_role == "api"
         assert s.document_tier1_engine == "pypdfium2"
         assert s.document_ocr_provider == "gateway"
-        assert s.search_mode == "keyword"
 
 
-class TestSearchMode:
-    """SEARCH_MODE = hybrid (default) | keyword (BM25 sparse only), ADR-030."""
+class TestKeywordTag:
+    """VECTOR_SYNC_KEYWORD_TAG selects files to index keyword-only (BM25 sparse,
+    no dense vector), mirroring VECTOR_SYNC_PDF_TAG. Empty by default (disabled)."""
 
-    def test_default_is_hybrid_with_dense_enabled(self):
-        s = Settings()
-        assert s.search_mode == "hybrid"
-        assert s.dense_enabled is True
+    def test_default_is_empty(self):
+        assert Settings().vector_sync_keyword_tag == ""
 
-    def test_keyword_disables_dense(self):
-        s = Settings(search_mode="keyword")
-        assert s.dense_enabled is False
-
-    def test_keyword_collection_name_is_mode_marked(self, monkeypatch):
-        # Keyword collections must not collide with hybrid ones and must not
-        # depend on the (phantom) embedding model name.
-        monkeypatch.setattr("socket.gethostname", lambda: "mcp-host", raising=True)
-        s = Settings(search_mode="keyword")
-        assert s.get_collection_name() == "mcp-host-bm25-keyword"
-
-    def test_explicit_collection_override_wins(self):
-        # An explicit QDRANT_COLLECTION still takes precedence in keyword mode.
-        s = Settings(search_mode="keyword", qdrant_collection="my_collection")
-        assert s.get_collection_name() == "my_collection"
+    def test_explicit_value_round_trips(self):
+        # Mirrors VECTOR_SYNC_PDF_TAG: a configured tag is passed through verbatim
+        # (an explicit value takes precedence over the empty default).
+        assert (
+            Settings(vector_sync_keyword_tag="keyword-index").vector_sync_keyword_tag
+            == "keyword-index"
+        )
 
 
 class TestEnumValidation:
@@ -84,7 +73,6 @@ class TestEnumValidation:
             ("collection_metadata_source", "redis"),
             ("document_tier1_engine", "mupdf"),
             ("document_ocr_provider", "gatway"),
-            ("search_mode", "fulltext"),
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
