@@ -37,9 +37,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
     The fusion happens efficiently in the database using the prefetch mechanism,
     eliminating the need for application-layer result merging.
 
-    In SEARCH_MODE=keyword (ADR-030) the class skips dense embeddings entirely
-    and issues a direct BM25 sparse query with no fusion (the ``fusion``
-    parameter is ignored), so the deployment needs no embedding endpoint.
+    The collection may hold a mix of hybrid documents (dense + sparse) and
+    keyword-only documents (sparse only, ``keyword-index`` tag). The dense
+    prefetch simply never returns keyword-only points (they carry no dense
+    vector); they surface via the sparse prefetch and are merged by fusion — so a
+    single unified query covers both without any mode branch.
     """
 
     def __init__(self, score_threshold: float = 0.0, fusion: str = "rrf"):
@@ -51,7 +53,6 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                            Note: Both RRF and DBSF produce normalized scores
             fusion: Fusion algorithm to use: "rrf" (Reciprocal Rank Fusion, default)
                    or "dbsf" (Distribution-Based Score Fusion).
-                   Ignored when SEARCH_MODE=keyword (no fusion happens).
 
         Raises:
             ValueError: If fusion is not "rrf" or "dbsf"
@@ -81,21 +82,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         return True
 
     async def _embed_query_dense(self, query: str, settings: Any) -> list | None:
-        """Embed the query for dense search, or return None in keyword mode.
+        """Embed the query for the dense prefetch.
 
         Cached per query on this (per-request) instance: nc_semantic_search calls
         search() once per doc_type with the same query, so re-embedding each time
         would make N redundant API calls and bill the query's tokens N times
         (Deck #67). Reuse the first call's embedding + token count so the query is
         embedded — and metered — exactly once.
-
-        Keyword mode (ADR-030) returns None without contacting any embedding
-        endpoint; query_embedding / query_token_count stay None so the metering
-        hook records 0 tokens.
         """
-        if not settings.dense_enabled:
-            return None
-
         with trace_operation("search.get_embedding_service"):
             embedding_service = get_embedding_service()
         with trace_operation("search.dense_embedding"):
@@ -128,32 +122,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         limit: int,
         score_threshold: float,
     ) -> Any:
-        """Execute the Qdrant query for the active search mode (ADR-030).
+        """Execute the Qdrant query: dense + sparse prefetches merged by native
+        fusion (RRF or DBSF).
 
-        Hybrid mode runs dense + sparse prefetches merged by native fusion (RRF or
-        DBSF). Keyword mode issues a direct sparse query with no fusion: RRF over a
-        single source is a rank-identity transform that only rescales the score,
-        whereas the direct query returns the raw BM25 similarity that
-        ``score_threshold`` is interpreted against. The ``fusion`` param is unused
-        in keyword mode.
+        Keyword-only documents (``keyword-index`` tag) carry no dense vector, so
+        the dense prefetch never returns them; they surface via the sparse
+        prefetch and are merged in by fusion. No mode branch is needed.
         """
         collection_name = settings.get_collection_name()
-        if not settings.dense_enabled:
-            with trace_operation(
-                "search.qdrant_query",
-                attributes={"query.limit": limit * 2, "query.mode": "keyword"},
-            ):
-                return await qdrant_client.query_points(
-                    collection_name=collection_name,
-                    query=sparse_query,
-                    using="sparse",
-                    query_filter=query_filter,
-                    limit=limit * 2,  # Get extra for deduplication
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                    with_vectors=False,  # Don't return vectors to save bandwidth
-                )
-
         with trace_operation(
             "search.qdrant_query",
             attributes={"query.limit": limit * 2, "query.fusion": self.fusion_name},
@@ -238,14 +214,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
         # Self-describing label reused across every log line below and the result
-        # metadata: "bm25_keyword" in keyword mode (no fusion happens),
-        # "bm25_hybrid_<fusion>" otherwise. Computed up front so even the entry
-        # log is mode-accurate (keyword deployments must not see "hybrid"/fusion).
-        method_label = (
-            f"bm25_hybrid_{self.fusion_name}"
-            if settings.dense_enabled
-            else "bm25_keyword"
-        )
+        # metadata: always "bm25_hybrid_<fusion>" — the query fuses dense + sparse
+        # prefetches; keyword-only documents simply contribute via the sparse side.
+        method_label = f"bm25_hybrid_{self.fusion_name}"
 
         logger.info(
             "%s: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",
@@ -257,7 +228,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             doc_type,
         )
 
-        # Dense query embedding (hybrid only; None in keyword mode — ADR-030).
+        # Dense query embedding (fused with the sparse prefetch below).
         dense_embedding = await self._embed_query_dense(query, settings)
 
         # Generate sparse embedding for BM25 keyword search
@@ -315,9 +286,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         )
 
         if search_response.points:
-            # Log top 3 scores to help with threshold tuning. In hybrid mode
-            # these are normalized fusion scores; in keyword mode they are raw
-            # BM25 scores (unbounded — see ADR-030).
+            # Log top 3 scores to help with threshold tuning — normalized fusion
+            # scores (RRF in [0,1]; DBSF can exceed 1).
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug("Top 3 %s scores: %s", method_label, top_scores)
 

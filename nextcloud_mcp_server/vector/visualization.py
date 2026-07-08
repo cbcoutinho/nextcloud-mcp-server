@@ -101,9 +101,13 @@ async def compute_pca_coordinates(
         if chunk_key in chunk_vectors_map:
             chunk_vectors.append(chunk_vectors_map[chunk_key])
         else:
-            # Chunk not found in vectors (shouldn't happen)
-            logger.warning(
-                "Chunk %s not found in fetched vectors, using zero vector", chunk_key
+            # No dense vector for this chunk — expected for keyword-only results
+            # (``keyword-index`` tag), which carry a sparse vector only and so
+            # can't be positioned by PCA. Placed at the origin; hybrid chunks are
+            # unaffected.
+            logger.debug(
+                "Chunk %s has no dense vector (keyword-only?); placing at origin",
+                chunk_key,
             )
             chunk_vectors.append(np.zeros(embedding_dim))
 

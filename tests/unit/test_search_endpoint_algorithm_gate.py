@@ -21,11 +21,14 @@ from nextcloud_mcp_server.api.visualization import unified_search, vector_search
 pytestmark = pytest.mark.unit
 
 
-def _keyword_mode_settings() -> MagicMock:
-    """Vector sync on, dense off → SEARCH_MODE=keyword advertises only ["bm25"]."""
+def _vector_sync_on_settings() -> MagicMock:
+    """Vector sync on → the collection is always dense-capable, so all three
+    algorithms are supported. The old per-instance keyword switch is gone, so a
+    dense-requiring algorithm is never rejected on dense grounds; the only
+    endpoint-level 422 left is an *unknown* algorithm value.
+    """
     settings = MagicMock()
     settings.vector_sync_enabled = True
-    settings.dense_enabled = False
     return settings
 
 
@@ -39,17 +42,15 @@ def _app() -> Starlette:
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
-# Both dense-requiring algorithms are unsupported in keyword mode (supported is
-# ["bm25"]), so each must be rejected — not just "semantic".
-@pytest.mark.parametrize("algorithm", ["semantic", "hybrid"])
-def test_explicit_dense_algorithm_in_keyword_mode_returns_422(
-    path: str, algorithm: str
-):
-    """An explicit unsupported algorithm is rejected before any Qdrant call."""
+def test_explicit_unknown_algorithm_returns_422(path: str):
+    """An explicit *unknown* algorithm is rejected at the gate before any Qdrant
+    call, carrying the advertised supported set for a self-correcting 422. (Vector
+    sync off short-circuits to 404 earlier, so this is the only reachable 422 at
+    the endpoint level now that semantic/bm25/hybrid are always supported.)"""
     with (
         patch(
             "nextcloud_mcp_server.api.visualization.get_settings",
-            return_value=_keyword_mode_settings(),
+            return_value=_vector_sync_on_settings(),
         ),
         patch(
             "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
@@ -58,24 +59,26 @@ def test_explicit_dense_algorithm_in_keyword_mode_returns_422(
     ):
         client = TestClient(_app())
         resp = client.post(
-            path, json={"query": "torch leadership award", "algorithm": algorithm}
+            path, json={"query": "torch leadership award", "algorithm": "fulltext"}
         )
 
     assert resp.status_code == 422
     body = resp.json()
     assert body["error"] == "unsupported_search_type"
-    assert body["requested"] == algorithm
-    assert body["supported_search_types"] == ["bm25"]
+    assert body["requested"] == "fulltext"
+    assert body["supported_search_types"] == ["semantic", "bm25", "hybrid"]
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
-def test_supported_bm25_in_keyword_mode_is_not_rejected(path: str):
-    """A supported algorithm passes the gate (it fails later, at the real search,
-    which is patched out here — the point is it is NOT a 422 gate rejection)."""
+@pytest.mark.parametrize("algorithm", ["semantic", "bm25", "hybrid"])
+def test_supported_algorithm_is_not_rejected(path: str, algorithm: str):
+    """When vector sync is on, every advertised algorithm passes the gate (it
+    fails later, at the real search, which is patched out here — the point is it
+    is NOT a 422 gate rejection)."""
     with (
         patch(
             "nextcloud_mcp_server.api.visualization.get_settings",
-            return_value=_keyword_mode_settings(),
+            return_value=_vector_sync_on_settings(),
         ),
         patch(
             "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
@@ -85,10 +88,14 @@ def test_supported_bm25_in_keyword_mode_is_not_rejected(path: str):
             "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
             side_effect=RuntimeError("stop after the gate"),
         ),
+        patch(
+            "nextcloud_mcp_server.api.visualization.SemanticSearchAlgorithm",
+            side_effect=RuntimeError("stop after the gate"),
+        ),
     ):
         client = TestClient(_app())
         resp = client.post(
-            path, json={"query": "leadership award", "algorithm": "bm25"}
+            path, json={"query": "leadership award", "algorithm": algorithm}
         )
 
     # Not a 422 from the algorithm gate — the request got past it to the search.

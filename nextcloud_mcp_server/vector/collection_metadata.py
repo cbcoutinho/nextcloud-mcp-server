@@ -41,33 +41,21 @@ CHUNKING_CONFIG = "chunking_config"
 IS_SENTINEL = "is_sentinel"
 
 
-# ADR-030 keyword-mode embedding identity. Keyword collections carry only BM25
-# sparse vectors, so the dense model name is a meaningless ``simple-{dim}``
-# fallback; a fixed marker is stamped instead. This MUST be produced identically
-# everywhere the identity is written OR compared — chunk points, the collection
-# sentinel, the admin backfill, and the cross-user dedup lookup. A keyword-mode
-# mismatch here (the chunk-point writer stamped this marker while the dedup lookup
-# compared the model name) made the dedup ALWAYS miss, so unchanged shared docs
-# were re-processed + re-OCR'd on every scan and the run never converged, pinning
-# the burst GPU (Deck #509).
-KEYWORD_EMBEDDING_IDENTITY = "bm25-keyword"
-
-
 def build_embedding_identity(settings: Settings | None = None) -> str:
     """The embedding identity for locally-produced vectors — the single source of
     truth for the identity stamped on chunk points, the collection sentinel, the
     admin backfill, and the cross-user dedup comparison, so all four agree.
 
-    - Hybrid mode: the active dense embedding model name. The gateway and query
-      path route on it, matching the collection-name derivation.
-    - Keyword mode (ADR-030, ``dense_enabled`` False): the fixed
-      ``KEYWORD_EMBEDDING_IDENTITY`` marker — the collection has no dense vectors
-      and ``get_embedding_model_name()`` would return the bogus ``simple-{dim}``
-      fallback. Using the marker keeps the dedup comparison correct (Deck #509).
+    It is the active dense embedding MODEL name: the gateway and query path route
+    on it, matching the collection-name derivation, and a model switch changes it
+    so the dedup lookup misses and forces a re-embed. It is orthogonal to
+    keyword-vs-hybrid — keyword documents share this collection and carry the same
+    model identity (they simply omit the dense vector), so both modes dedup in one
+    identity space. The keyword/hybrid distinction is tracked separately by
+    ``payload_keys.INDEX_MODE``. This MUST be produced identically everywhere the
+    identity is written OR compared (Deck #509).
     """
     s = settings or get_settings()
-    if not s.dense_enabled:
-        return KEYWORD_EMBEDDING_IDENTITY
     return s.get_embedding_model_name()
 
 

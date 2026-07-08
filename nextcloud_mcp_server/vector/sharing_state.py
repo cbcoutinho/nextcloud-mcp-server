@@ -73,6 +73,7 @@ async def find_indexed_content(
     doc_type: str,
     etag: str,
     embedding_identity: str,
+    index_mode: str = payload_keys.INDEX_MODE_HYBRID,
 ) -> dict | None:
     """Return a real point's payload if this exact content is already indexed.
 
@@ -83,6 +84,13 @@ async def find_indexed_content(
     overwrites the same points, so all live points for a doc share one identity —
     a mismatch means the existing vectors were produced by a different model and
     must be re-embedded, so we report "not indexed".
+
+    ``index_mode`` applies the monotonic keyword→hybrid rule so a mixed collection
+    never re-embeds in a loop: a **hybrid** claim against an existing **keyword**
+    (sparse-only) point reports "not indexed" so the doc is reprocessed and gains
+    a dense vector (upgrade); a **keyword** claim against an existing **hybrid**
+    point is a hit (hybrid ⊇ keyword — never downgrade/strip the dense vector
+    while any user holds the hybrid tag). Same-mode is a hit as before.
 
     Returns the payload dict (including ``acl_principals``) on a hit, else None.
     """
@@ -110,6 +118,18 @@ async def find_indexed_content(
     if payload.get(payload_keys.EMBEDDING_IDENTITY) != embedding_identity:
         # Existing vectors were produced by a different embedding model — a
         # re-embed is required, so this content is not reusable as-is.
+        return None
+    # Monotonic keyword→hybrid upgrade: a hybrid claim cannot reuse sparse-only
+    # keyword points (they lack the dense vector), so force a reprocess. Every
+    # other combination reuses the existing points (same mode, or a keyword claim
+    # against hybrid points — hybrid satisfies keyword). Existing points written
+    # before INDEX_MODE existed have no key; treat them as hybrid (the prior
+    # dense+sparse default) so a hybrid claim still dedups against them.
+    existing_mode = payload.get(payload_keys.INDEX_MODE, payload_keys.INDEX_MODE_HYBRID)
+    if (
+        index_mode == payload_keys.INDEX_MODE_HYBRID
+        and existing_mode == payload_keys.INDEX_MODE_KEYWORD
+    ):
         return None
     return payload
 
@@ -223,6 +243,7 @@ async def claim_existing_index(
     doc_type: str,
     etag: str,
     user_id: str,
+    index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     current_path: str | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
@@ -245,14 +266,14 @@ async def claim_existing_index(
     after a confirmed hit is non-fatal (logged, not raised): verify-on-read still
     gates access and the user's next scan re-claims it.
     """
-    # Must match what the chunk-point WRITER stamps (processor.py), which is the
-    # shared helper — NOT get_embedding_model_name(), whose ``simple-{dim}`` keyword
-    # fallback never equals the writer's ``bm25-keyword`` marker, so dedup would
-    # always miss and unchanged docs re-process every scan (Deck #509).
+    # Must match what the chunk-point WRITER stamps (processor.py) via the shared
+    # helper so the dedup comparison agrees (Deck #509). The identity is the
+    # embedding model; the keyword-vs-hybrid mode is applied separately by
+    # ``index_mode`` (monotonic keyword→hybrid — see find_indexed_content).
     embedding_identity = build_embedding_identity(get_settings())
     try:
         existing = await find_indexed_content(
-            doc_id, doc_type, etag, embedding_identity
+            doc_id, doc_type, etag, embedding_identity, index_mode
         )
     except Exception as exc:  # noqa: BLE001 — degrade to "process normally"
         logger.warning(

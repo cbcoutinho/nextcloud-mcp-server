@@ -24,6 +24,14 @@ PROCESSOR_VERSION = "processor_version"
 PARSED_AT = "parsed_at"
 PIPELINE_TIER = "pipeline_tier"
 
+# Per-document index mode: "hybrid" (dense + BM25 sparse) or "keyword" (BM25
+# sparse only). Drives whether a point carries a dense vector, gates verify-on-
+# read to the right tag, and slices ingestion billing. See INDEX_MODE_HYBRID /
+# INDEX_MODE_KEYWORD.
+INDEX_MODE = "index_mode"
+INDEX_MODE_HYBRID = "hybrid"
+INDEX_MODE_KEYWORD = "keyword"
+
 # Fixed platform namespace for deterministic chunk point IDs (design §2.2).
 # Derived once from ``uuid5(NAMESPACE_DNS, "astrolabe.cloud/mcp/point-id/v1")``
 # and pinned here as a literal so neither repo recomputes it. DO NOT CHANGE —

@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted — 2026-06-30
+**Superseded by ADR-031 — 2026-07-08.** The global `SEARCH_MODE` /
+`Settings.dense_enabled` switch and the separate `{deployment_id}-bm25-keyword`
+collection described here have been **removed**. Keyword-only vs hybrid is now a
+**per-document** choice driven by a Nextcloud tag (`keyword-index` vs
+`vector-index`), stored in one shared collection. See
+[ADR-031](./ADR-031-per-document-index-mode.md). This document is retained for
+historical context only; do not implement against it.
+
+Accepted — 2026-06-30 (superseded)
 
 ## Context
 

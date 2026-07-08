@@ -26,10 +26,8 @@ _COLLECTION = "test_collection"
 
 
 class _Settings:
-    # Hybrid mode by default (dense slot sized from the embedding provider).
-    dense_enabled = True
-    simple_embedding_dimension = 384
-
+    # The dense slot is always sized from the embedding provider (no keyword
+    # branch anymore); the embedding service stub in the fixture returns dim=4.
     def get_collection_name(self) -> str:
         return _COLLECTION
 
@@ -98,32 +96,9 @@ class TestMarkDeadLetter:
         assert payload["reason"] == "timeout"
         assert payload["doc_id"] == "520189"
         assert payload["file_path"] == "/Plans/big.pdf"
-        # Hybrid mode: dense slot sized from the embedding provider (dim=4 here).
+        # Dense slot is always sized from the embedding provider (dim=4 here) —
+        # the keyword/simple-dimension branch is gone (per-document index mode).
         assert len(point.vector["dense"]) == 4
-
-    async def test_keyword_mode_sizes_dense_from_simple_dimension(
-        self, client, monkeypatch
-    ) -> None:
-        """Regression (Deck #495): in keyword mode (dense_enabled=False) the dead-
-        letter marker's dense slot must be sized to simple_embedding_dimension and
-        the embedding service must NOT be built — mirrors the placeholder fix."""
-        kw = SimpleNamespace(
-            get_collection_name=lambda: _COLLECTION,
-            dense_enabled=False,
-            simple_embedding_dimension=384,
-        )
-        monkeypatch.setattr(dl, "get_settings", lambda: kw)
-
-        def _boom():
-            raise AssertionError("embedding service must not be built in keyword mode")
-
-        monkeypatch.setattr(dl, "get_embedding_service", _boom)
-
-        await dl.mark_dead_letter("520189", "file", "etag-1", "sig", "timeout")
-
-        client.upsert.assert_awaited_once()
-        point = client.upsert.await_args.kwargs["points"][0]
-        assert len(point.vector["dense"]) == 384
 
     async def test_failure_is_swallowed(self, client) -> None:
         client.upsert.side_effect = RuntimeError("qdrant down")
