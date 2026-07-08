@@ -360,8 +360,8 @@ by a single unified search.
 
 Tag a PDF `keyword-index` to lexically index it **without** paying embedding
 cost; tag it `vector-index` to also get conceptual/semantic matching. **Hybrid
-wins** if a file carries both tags. Files applies PDF-only, mirroring the
-`vector-index` discovery (tagged folders expand to their PDF descendants).
+wins** if a file carries both tags. Discovery is PDF-only, mirroring the
+`vector-index` path (tagged folders expand to their PDF descendants).
 
 ```dotenv
 ENABLE_SEMANTIC_SEARCH=true
