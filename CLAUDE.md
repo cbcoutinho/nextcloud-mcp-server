@@ -636,16 +636,32 @@ derived from the LDAP `entryUUID` — so `loginName != UID` **and**
 only backend that reproduces #980 live: login-by-email resolves to the real home
 (email is a path alias) and `user_oidc` hardcodes `loginName == UID`.
 
-The reproduction test drives the **multi-user BasicAuth** MCP service (port 8003)
-as `alice`, so no browser is needed.
+The bug is exercised in **two deployment modes**, each its own CI lane and
+marker (the markers are mutually exclusive so the lanes don't overlap):
+
+- **`ldap`** (`-m ldap`) — drives the **multi-user BasicAuth** MCP service
+  (port 8003) as `alice`; no browser needed.
+- **`login_flow_ldap`** (`-m login_flow_ldap`) — drives the **login-flow** MCP
+  service (port 8004): identity via OIDC, API access via a per-user app password
+  obtained by completing Login Flow v2 as `alice` (Playwright). Proves the same
+  principal resolution holds when the username comes from the OIDC/app-password
+  path rather than a BasicAuth header.
+
+Both assert the same WebDAV round-trip lands in alice's real home via
+`BaseNextcloudClient._ensure_principal_id` (`current-user-principal` discovery).
 
 **Setup**:
 ```bash
-# openldap (ldap profile) + the multi-user-basic MCP service (port 8003).
+# ldap lane: openldap + the multi-user-basic MCP service (port 8003).
 # user_ldap is auto-configured by app-hooks/post-installation/15-setup-ldap-backend.sh
 # (gated on the openldap service; a no-op for every other profile).
 docker compose --profile ldap --profile multi-user-basic up --build -d
-uv run pytest -m ldap -v             # xfails until #980's client fix lands
+uv run pytest -m ldap -v
+
+# login_flow_ldap lane: openldap + the login-flow MCP service (port 8004).
+docker compose --profile ldap --profile login-flow up --build -d
+uv run playwright install chromium --with-deps
+uv run pytest -m login_flow_ldap -v
 ```
 
 > The post-installation hook only runs on a **fresh** Nextcloud install. If you
@@ -655,11 +671,11 @@ uv run pytest -m ldap -v             # xfails until #980's client fix lands
 **Credentials**: LDAP admin `uid=admin,dc=example,dc=org` / `ldap_admin_pw`;
 user `alice` / `AlicePass123!` (see `ldap/bootstrap.ldif`).
 
-**xfail note**: `tests/server/ldap/test_ldap_dav_principal.py` is
-`xfail(strict=True)` — it fails (RED) on `master` because the bug is present, and
-xpasses (GREEN) once #980's `BaseNextcloudClient._ensure_principal_id` discovery
-lands. `strict=True` turns the unexpected pass into a failure, signalling that
-the marker should be dropped when #980 merges.
+**Status**: #980's fix (`BaseNextcloudClient._ensure_principal_id`) has landed, so
+both `tests/server/ldap/test_ldap_dav_principal.py` and
+`tests/server/login_flow/test_ldap_dav_principal.py` are **passing regression
+guards** (not xfail) — a failure means the principal-discovery fix regressed in
+that deployment mode.
 
 ## Integration Testing with Docker
 

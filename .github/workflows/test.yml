@@ -68,6 +68,7 @@ jobs:
           - "login-flow"
           - "keycloak"
           - "ldap"
+          - "login-flow-ldap"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
@@ -128,6 +129,21 @@ jobs:
             wait-port: 8003
             mcp-internal-url: "http://mcp-multi-user-basic:8000"
             needs-playwright: false
+            extra-args: ""
+
+          # Login-flow mode against the LDAP backend: proves the #980 principal
+          # resolution holds in login-flow mode too (identity via OIDC, API
+          # access via a per-user app password). login-flow MCP (8004) +
+          # openldap; user_ldap is auto-configured by the post-installation
+          # hook. Dedicated `login_flow_ldap` marker keeps it out of the plain
+          # `login_flow` and `ldap` lanes. Needs a browser for Login Flow v2.
+          - mode: login-flow-ldap
+            profile: login-flow
+            extra-compose-profiles: "--profile ldap"
+            markers: "login_flow_ldap"
+            wait-port: 8004
+            mcp-internal-url: "http://mcp-login-flow:8004"
+            needs-playwright: true
             extra-args: ""
 
     name: integration (${{ matrix.mode }} / nc${{ matrix.nextcloud_version }})
@@ -248,7 +264,7 @@ jobs:
       # openldap service). This step just surfaces the resulting config for
       # debugging, mirroring the keycloak verify step below.
       - name: Verify LDAP backend
-        if: matrix.mode == 'ldap'
+        if: matrix.mode == 'ldap' || matrix.mode == 'login-flow-ldap'
         run: |
           echo "=== user_ldap enabled? ==="
           docker compose exec -T app php occ app:list 2>/dev/null | grep -i ldap || echo "user_ldap NOT enabled"
@@ -277,7 +293,7 @@ jobs:
           echo "Keycloak is ready."
 
       - name: Verify OIDC configuration
-        if: matrix.mode == 'login-flow' || matrix.mode == 'keycloak'
+        if: matrix.mode == 'login-flow' || matrix.mode == 'keycloak' || matrix.mode == 'login-flow-ldap'
         run: |
           echo "=== OIDC Discovery ==="
           curl -s http://localhost:8080/.well-known/openid-configuration | jq .
