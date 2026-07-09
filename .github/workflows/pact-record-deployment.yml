@@ -65,7 +65,7 @@ jobs:
       - name: Record deployment to production
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          pact-broker record-deployment \
+          pact broker record-deployment \
             --broker-base-url "$PACT_BROKER" \
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \
