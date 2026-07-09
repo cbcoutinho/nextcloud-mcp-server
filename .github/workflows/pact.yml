@@ -60,7 +60,8 @@ jobs:
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the broker steps below.
           curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
-          "$HOME/.pact/bin/pact" --version
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
 
       # Guard the migration: only `publish` runs on a PR (can-i-deploy is
       # master-only, record-deployment is tag-only), so assert here that the
@@ -175,7 +176,8 @@ jobs:
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the broker steps below.
           curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
-          "$HOME/.pact/bin/pact" --version
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
 
       # SHADOW MODE: run can-i-deploy for signal but never fail the workflow.
       # The broker's `production` environment is populated by the

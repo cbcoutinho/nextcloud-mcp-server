@@ -65,7 +65,8 @@ jobs:
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the record-deployment step below.
           curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
-          "$HOME/.pact/bin/pact" --version
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
 
       - name: Record deployment to production
         if: ${{ env.PACT_BROKER != '' }}
