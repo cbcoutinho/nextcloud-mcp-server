@@ -83,7 +83,7 @@ jobs:
           # Mode-specific properties
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap)"
+            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap and not login_flow_ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap and not login_flow_ldap)"
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
