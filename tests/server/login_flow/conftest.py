@@ -54,6 +54,8 @@ async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_serv
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Login Flow tests require NEXTCLOUD_HOST")
+    # ty doesn't treat pytest.skip as NoReturn, so narrow explicitly.
+    assert nextcloud_host is not None
 
     auth_states, callback_url = oauth_callback_server
 
@@ -124,6 +126,8 @@ async def login_flow_oauth_token(
         pytest.skip(
             "Login Flow OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD"
         )
+    # ty doesn't treat pytest.skip as NoReturn, so narrow explicitly.
+    assert nextcloud_host is not None and username is not None and password is not None
 
     auth_states, _ = oauth_callback_server
     client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
@@ -951,6 +955,58 @@ async def diana_login_flow_mcp_client(
         yield session
 
 
+# ---------------------------------------------------------------------------
+# Login Flow v2 against the LDAP backend (GH #980 cross-mode guard)
+# ---------------------------------------------------------------------------
+
+# The divergent LDAP user seeded by ``ldap/bootstrap.ldif`` — logs in as `alice`
+# but user_ldap maps her to a canonical UID (loginName != UID). Unlike the
+# `test_users_setup` users above, she is NOT Nextcloud-native: she is provisioned
+# on first login by the user_ldap backend (the `ldap` compose profile + the
+# post-installation hook). Only available on the login-flow + ldap CI lane.
+LDAP_LOGIN_FLOW_USERNAME = "alice"
+LDAP_LOGIN_FLOW_PASSWORD = (
+    "AlicePass123!"  # NOSONAR(S2068) - dev-only LDAP fixture credential
+)
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_login_flow_ldap_alice_client(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    oauth_callback_server,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client provisioned as the divergent LDAP user `alice` via login-flow.
+
+    Drives the same Login Flow v2 grant as the per-user fixtures above, but the
+    identity is the LDAP-backed `alice` (`AlicePass123!`) rather than a
+    Nextcloud-native `test_users_setup` user — so it does NOT depend on
+    ``test_users_setup``. The OIDC login and Login Flow v2 grant both authenticate
+    her against user_ldap; the MCP server then holds an app password for her and
+    builds DAV paths from her loginName, which principal discovery
+    (``BaseNextcloudClient._ensure_principal_id``) rewrites to her canonical UID.
+    Requires the login-flow MCP service (8004) plus the `ldap` compose profile.
+    """
+    auth_states, _ = oauth_callback_server
+
+    token = await _get_login_flow_token_for_user(
+        browser,
+        login_flow_oauth_client_credentials,
+        auth_states,
+        LDAP_LOGIN_FLOW_USERNAME,
+        LDAP_LOGIN_FLOW_PASSWORD,
+    )
+
+    async for session in _provision_login_flow_mcp_client(
+        token=token,
+        browser=browser,
+        username=LDAP_LOGIN_FLOW_USERNAME,
+        password=LDAP_LOGIN_FLOW_PASSWORD,
+    ):
+        yield session
+
+
 # Static OIDC client used by the management API integration tests.
 # Matches the `mcp-login-flow` allowlist
 # (`ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000`) — i.e. the same
@@ -1097,6 +1153,8 @@ async def login_flow_static_client_token(
         pytest.skip(
             "Static client OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD"
         )
+    # ty doesn't treat pytest.skip as NoReturn, so narrow explicitly.
+    assert nextcloud_host is not None and username is not None and password is not None
 
     auth_states, _ = oauth_callback_server
     client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
