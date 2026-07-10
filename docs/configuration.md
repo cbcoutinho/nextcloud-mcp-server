@@ -355,7 +355,7 @@ by a single unified search.
 
 | Tag | Env var (override the tag name) | Mode | Embedding endpoint |
 |-----|---------|------|--------------------|
-| `vector-index` | `VECTOR_SYNC_PDF_TAG` (default `vector-index`) | hybrid (dense + BM25 sparse) | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
+| `vector-index` | `VECTOR_SYNC_TAG` (default `vector-index`) | hybrid (dense + BM25 sparse) | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
 | `keyword-index` | `VECTOR_SYNC_KEYWORD_TAG` (default `keyword-index`) | keyword (BM25 sparse only) | **None** for those docs |
 
 Both tags are **on by default** — create the `vector-index` and/or `keyword-index`
@@ -996,7 +996,7 @@ aware of:
   an excluded folder) drops out of results immediately rather than waiting for
   the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
   SEARCH, so deployments that tag whole directory trees pay that walk once per
-  search; configure `VECTOR_SYNC_PDF_TAG` to change the tag name. The `file`
+  search; configure `VECTOR_SYNC_TAG` to change the tag name. The `file`
   verifier's latency therefore scales with **both** the `Depth: infinity` folder
   expansion **and** the `EXCLUDED_TAGS` lookup: that lookup fans out ~2 WebDAV
   calls (1 PROPFIND + 1 REPORT) *per excluded tag*, concurrently, while holding
@@ -1038,8 +1038,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
-| `VECTOR_SYNC_PDF_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking PDFs for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
-| `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking PDFs for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
+| `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
+| `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |

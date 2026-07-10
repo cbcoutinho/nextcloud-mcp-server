@@ -8,7 +8,7 @@
 > described below as a per-id WebDAV check (`PROPFIND`, later
 > `file_accessible_by_id`) now gates on current **`vector-index` tag
 > membership** instead. It issues a single
-> `find_files_by_tag(<VECTOR_SYNC_PDF_TAG>, mime_type_filter="application/pdf")`
+> `find_files_by_tag(<VECTOR_SYNC_TAG>, mime_type_filter="application/pdf")`
 > REPORT per search (plus a one-shot `EXCLUDED_TAGS` lookup) and keeps only
 > files in that set — i.e. exactly what the scanner indexes. This is the
 > "fetch once and intersect" shape (like `news_item`), not per-id fan-out, and

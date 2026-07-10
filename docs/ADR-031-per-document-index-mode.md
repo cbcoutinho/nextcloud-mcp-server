@@ -30,7 +30,7 @@ documents write `sparse` only.
 collection entirely. Make the mode **per-document**, driven by which Nextcloud
 tag selected the document:
 
-- **`vector_sync_pdf_tag`** (default `vector-index`) → **hybrid**
+- **`vector_sync_tag`** (default `vector-index`) → **hybrid**
   (dense + BM25 sparse).
 - **`vector_sync_keyword_tag`** (env `VECTOR_SYNC_KEYWORD_TAG`, default
   `keyword-index`, symmetric with the hybrid tag; set empty to disable) →

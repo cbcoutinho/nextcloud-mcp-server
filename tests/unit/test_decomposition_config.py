@@ -50,14 +50,14 @@ class TestDecompositionDefaults:
 
 class TestKeywordTag:
     """VECTOR_SYNC_KEYWORD_TAG selects files to index keyword-only (BM25 sparse,
-    no dense vector), mirroring VECTOR_SYNC_PDF_TAG. Defaults to ``keyword-index``
+    no dense vector), mirroring VECTOR_SYNC_TAG. Defaults to ``keyword-index``
     (symmetric with the ``vector-index`` default); set empty to disable."""
 
     def test_default_is_keyword_index(self):
         assert Settings().vector_sync_keyword_tag == "keyword-index"
 
     def test_explicit_value_round_trips(self):
-        # Mirrors VECTOR_SYNC_PDF_TAG: a configured tag is passed through verbatim
+        # Mirrors VECTOR_SYNC_TAG: a configured tag is passed through verbatim
         # (an explicit value overrides the default tag name).
         assert (
             Settings(vector_sync_keyword_tag="kw-only").vector_sync_keyword_tag

@@ -2,7 +2,7 @@
 ``NextcloudClient.find_files_by_tag``.
 
 The vector scanner relies on this helper to enumerate files under the
-``vector-index`` system tag (env: ``VECTOR_SYNC_PDF_TAG``). A user can
+``vector-index`` system tag (env: ``VECTOR_SYNC_TAG``). A user can
 tag either an individual file *or* a folder; in the folder case the
 tag should propagate to every matching descendant via a
 ``Depth: infinity`` WebDAV SEARCH.
