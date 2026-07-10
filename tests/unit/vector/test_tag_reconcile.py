@@ -26,27 +26,33 @@ def _tag_task(doc_id: str = "478087") -> DocumentTask:
 
 @pytest.mark.unit
 async def test_reconcile_tagged_file_becomes_index():
-    """A fileid still carrying the tag is resolved to a concrete index task."""
+    """A fileid carrying the hybrid tag resolves to a concrete hybrid index task.
+
+    Both tags are queried by default (keyword-index is on by default); the file
+    is on vector-index, so hybrid precedence gives it index_mode "hybrid".
+    """
+    hybrid_file = {
+        "id": "478087",
+        "path": "/alice/files/Docs/report.pdf",
+        "etag": "abc123",
+        "last_modified_timestamp": 1762850245,
+    }
     nc_client = MagicMock()
     nc_client.find_files_by_tag = AsyncMock(
-        return_value=[
-            {
-                "id": "478087",
-                "path": "/alice/files/Docs/report.pdf",
-                "etag": "abc123",
-                "last_modified_timestamp": 1762850245,
-            }
-        ]
+        side_effect=lambda tag, mime_type_filter=None: (
+            [hybrid_file] if tag == "vector-index" else []
+        )
     )
 
     task = _tag_task("478087")
     await _reconcile_tag_event(task, nc_client)
 
     assert task.operation == "index"
+    assert task.index_mode == "hybrid"
     assert task.file_path == "/alice/files/Docs/report.pdf"
     assert task.etag == "abc123"
     assert task.modified_at == 1762850245
-    nc_client.find_files_by_tag.assert_awaited_once_with(
+    nc_client.find_files_by_tag.assert_any_await(
         "vector-index", mime_type_filter="application/pdf"
     )
 

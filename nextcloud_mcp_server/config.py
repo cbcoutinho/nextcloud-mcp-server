@@ -127,12 +127,12 @@ _DEFAULTS: dict[str, Any] = {
     # on current membership of this tag (ADR-019).
     "vector_sync_pdf_tag": "vector-index",
     # System tag that marks files for keyword-only (BM25 sparse) indexing.
-    # Empty (default) disables the second tag entirely — files are then only
-    # discovered via ``vector_sync_pdf_tag`` (hybrid). When set, files carrying
-    # this tag are indexed sparse-only (no dense embedding, no embedding cost)
-    # into the SAME collection as hybrid files; ``vector-index`` wins if a file
-    # carries both. See the per-document index-mode design.
-    "vector_sync_keyword_tag": "",
+    # Defaults to ``keyword-index`` (symmetric with ``vector_sync_pdf_tag``), so
+    # a user who creates + applies that tag gets keyword-only indexing out of the
+    # box. Files carrying it are indexed sparse-only (no dense embedding, no
+    # embedding cost) into the SAME collection as hybrid files; ``vector-index``
+    # wins if a file carries both. Set empty to disable the second tag entirely.
+    "vector_sync_keyword_tag": "keyword-index",
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -919,11 +919,12 @@ class Settings:
     # immediately.
     vector_sync_pdf_tag: str = "vector-index"
 
-    # System tag marking files for keyword-only (BM25 sparse) indexing. Empty
-    # (default) disables it. When set, tagged files are indexed sparse-only into
-    # the same collection as hybrid files (no dense embedding). ``vector-index``
-    # takes precedence when a file carries both tags.
-    vector_sync_keyword_tag: str = ""
+    # System tag marking files for keyword-only (BM25 sparse) indexing. Defaults
+    # to ``keyword-index`` (symmetric with ``vector_sync_pdf_tag``): tagged files
+    # are indexed sparse-only into the same collection as hybrid files (no dense
+    # embedding). ``vector-index`` takes precedence when a file carries both tags.
+    # Set empty to disable the second tag entirely.
+    vector_sync_keyword_tag: str = "keyword-index"
 
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the

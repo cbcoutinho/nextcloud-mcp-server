@@ -353,10 +353,14 @@ Documents are indexed **hybrid** (dense semantic + BM25 sparse) or
 tag the file carries (ADR-031). Both live in **one collection** and are returned
 by a single unified search.
 
-| Tag | Env var | Mode | Embedding endpoint |
+| Tag | Env var (override the tag name) | Mode | Embedding endpoint |
 |-----|---------|------|--------------------|
-| `vector-index` | `VECTOR_SYNC_PDF_TAG` (default) | hybrid (dense + BM25 sparse) | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
-| `keyword-index` | `VECTOR_SYNC_KEYWORD_TAG` (default **empty = off**) | keyword (BM25 sparse only) | **None** for those docs |
+| `vector-index` | `VECTOR_SYNC_PDF_TAG` (default `vector-index`) | hybrid (dense + BM25 sparse) | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
+| `keyword-index` | `VECTOR_SYNC_KEYWORD_TAG` (default `keyword-index`) | keyword (BM25 sparse only) | **None** for those docs |
+
+Both tags are **on by default** — create the `vector-index` and/or `keyword-index`
+system tag in Nextcloud and apply it; no env var needed. The env vars only
+**rename** a tag, or set `VECTOR_SYNC_KEYWORD_TAG=""` to disable the keyword tag.
 
 Tag a PDF `keyword-index` to lexically index it **without** paying embedding
 cost; tag it `vector-index` to also get conceptual/semantic matching. **Hybrid
@@ -366,8 +370,8 @@ wins** if a file carries both tags. Discovery is PDF-only, mirroring the
 ```dotenv
 ENABLE_SEMANTIC_SEARCH=true
 QDRANT_URL=http://qdrant:6333
-VECTOR_SYNC_KEYWORD_TAG=keyword-index   # enable the keyword-only tag
-# vector-index (hybrid) documents need an embedding endpoint, e.g.:
+# Both tags work out of the box; vector-index (hybrid) needs an embedding
+# endpoint, e.g.:
 OLLAMA_BASE_URL=http://ollama:11434
 ```
 
@@ -381,8 +385,8 @@ Notes:
   endpoint is unavailable **errors and retries** (then dead-letters) rather than
   silently degrading to keyword-only. Only the `keyword-index` tag produces
   sparse-only points.
-- **Fully airgapped:** leave `VECTOR_SYNC_KEYWORD_TAG=keyword-index`, configure
-  **no** embedding provider, and tag everything `keyword-index` — nothing ever
+- **Fully airgapped:** the `keyword-index` tag is on by default, so just configure
+  **no** embedding provider and tag everything `keyword-index` — nothing ever
   contacts an embedding endpoint (the local `SimpleProvider` only sizes the
   dense slot the keyword points never populate). Note the collection is always
   dense-sized from the *configured* provider, so if you set e.g. `OLLAMA_BASE_URL`
@@ -1035,7 +1039,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 |----------|----------|---------|-------------|
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `VECTOR_SYNC_PDF_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking PDFs for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
-| `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | _(empty)_ | Nextcloud tag marking PDFs for **keyword-only** (BM25 sparse) indexing into the same collection; empty disables it. Hybrid wins if a file carries both tags (ADR-031) |
+| `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking PDFs for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
