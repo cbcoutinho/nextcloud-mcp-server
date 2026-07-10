@@ -2135,7 +2135,7 @@ wheels = [
 
 [[package]]
 name = "nextcloud-mcp-server"
-version = "0.130.1"
+version = "0.131.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
