@@ -3,6 +3,8 @@
 Uses procrastinate's in-memory connector so no live Postgres is required.
 """
 
+import inspect
+from dataclasses import fields
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, patch
@@ -11,9 +13,25 @@ import pytest
 from procrastinate import App, JobContext, testing
 
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 pytestmark = pytest.mark.unit
+
+
+def test_document_task_fields_are_all_accepted_by_worker_task():
+    """Every ``DocumentTask`` field must be an accepted kwarg of the worker task.
+
+    Regression for the ``index_mode`` TypeError: the producer defers via
+    ``defer_async(**asdict(task))``, so any ``DocumentTask`` field the worker
+    entrypoint does not declare raises ``TypeError: process_document_task() got an
+    unexpected keyword argument`` on 100% of deferred jobs. This locks the
+    producer→worker kwarg contract so a new field can't silently break every job.
+    """
+    task_params = set(inspect.signature(pq.process_document_task).parameters)
+    task_params.discard("context")  # supplied by procrastinate, not from asdict()
+    missing = {f.name for f in fields(DocumentTask)} - task_params
+    assert not missing, f"process_document_task() is missing kwargs: {missing}"
 
 
 def _ctx(queue: str = pq.INGEST_QUEUE_FAST) -> JobContext:
@@ -128,11 +146,42 @@ class TestProcessDocumentTask:
         assert isinstance(captured["task"], DocumentTask)
         assert captured["task"].doc_id == "42"
         assert captured["task"].etag == "e1"
+        # index_mode omitted from the call defaults to hybrid, so jobs enqueued by
+        # an older producer (before the field existed) still run.
+        assert captured["task"].index_mode == payload_keys.INDEX_MODE_HYBRID
         # Worker disables the in-process retry loop; durable retry is the queue's.
         assert captured["max_retries"] == 1
         # Tier is derived from the job's queue (escalation enabled by default).
         assert captured["tier"] == "ocr"
         fake_client.close.assert_awaited_once()
+
+    async def test_index_mode_threaded_into_rebuilt_task(self, monkeypatch):
+        """A keyword-mode job must rebuild a DocumentTask carrying that mode, so the
+        pipeline embeds sparse-only (not the hybrid default)."""
+        captured = {}
+        fake_client = AsyncMock()
+
+        async def fake_resolve(user_id):
+            return fake_client
+
+        async def fake_process(task, nc_client, *, max_retries, tier):
+            captured["task"] = task
+
+        monkeypatch.setattr(pq, "_resolve_client", fake_resolve)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.vector.processor.process_document", fake_process
+        )
+
+        await pq.process_document_task(
+            _ctx(),
+            user_id="alice",
+            doc_id="42",
+            doc_type="file",
+            operation="index",
+            modified_at=100,
+            index_mode=payload_keys.INDEX_MODE_KEYWORD,
+        )
+        assert captured["task"].index_mode == payload_keys.INDEX_MODE_KEYWORD
 
     async def test_pipeline_error_propagates_and_closes_client(self, monkeypatch):
         # A non-credential failure must propagate (so procrastinate's
