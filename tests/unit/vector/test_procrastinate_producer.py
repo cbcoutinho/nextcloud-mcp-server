@@ -251,7 +251,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 # Reclaim sweeps EVERY queue (Deck #323), so no queue filter.
                 assert queue is None
                 return [Job(1), Job(2), Job(None)]  # None id is skipped
@@ -289,7 +291,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2), Job(3)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
@@ -335,7 +339,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
@@ -369,7 +375,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2), Job(3)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
