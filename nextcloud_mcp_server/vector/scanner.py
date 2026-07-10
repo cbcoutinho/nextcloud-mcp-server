@@ -151,7 +151,7 @@ async def _discover_tagged_files(
 ) -> list[dict]:
     """Discover tagged PDFs for both index modes, stamping ``_index_mode``.
 
-    ``vector_sync_pdf_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
+    ``vector_sync_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
     → keyword (BM25 sparse only). Hybrid wins precedence: a file carrying both tags
     is hybrid (a superset of keyword), so it is discovered once with
     ``_index_mode="hybrid"`` and its keyword listing is dropped. The keyword tag is
@@ -162,7 +162,7 @@ async def _discover_tagged_files(
     ``_index_mode`` key consumed by the enqueue loop.
     """
     hybrid_files = await nc_client.find_files_by_tag(
-        settings.vector_sync_pdf_tag, mime_type_filter="application/pdf"
+        settings.vector_sync_tag, mime_type_filter="application/pdf"
     )
     for f in hybrid_files:
         f["_index_mode"] = payload_keys.INDEX_MODE_HYBRID
@@ -170,7 +170,7 @@ async def _discover_tagged_files(
             "Scanned file %s (ID: %s) carries the hybrid tag %r -> index_mode=%s",
             f.get("path"),
             f.get("id"),
-            settings.vector_sync_pdf_tag,
+            settings.vector_sync_tag,
             payload_keys.INDEX_MODE_HYBRID,
         )
 
@@ -179,7 +179,7 @@ async def _discover_tagged_files(
         logger.info(
             "Tagged-file discovery: %d hybrid (tag %r); keyword tag disabled",
             len(hybrid_files),
-            settings.vector_sync_pdf_tag,
+            settings.vector_sync_tag,
         )
         return hybrid_files
 
@@ -197,7 +197,7 @@ async def _discover_tagged_files(
                 "keyword-only tag %r; hybrid precedence -> index_mode=%s",
                 f.get("path"),
                 f.get("id"),
-                settings.vector_sync_pdf_tag,
+                settings.vector_sync_tag,
                 keyword_tag,
                 payload_keys.INDEX_MODE_HYBRID,
             )
@@ -214,7 +214,7 @@ async def _discover_tagged_files(
     logger.info(
         "Tagged-file discovery: %d hybrid (tag %r), %d keyword-only (tag %r)",
         len(hybrid_files),
-        settings.vector_sync_pdf_tag,
+        settings.vector_sync_tag,
         len(extra_keyword_files),
         keyword_tag,
     )
@@ -702,7 +702,7 @@ async def scan_user_documents(
             # Find tagged PDFs via the OCS Tags API. find_files_by_tag also
             # expands tagged directories into their PDF descendants (Depth:
             # infinity SEARCH), so a tag on a folder applies to every PDF beneath
-            # it. Two tags feed one pipeline: ``vector_sync_pdf_tag`` →
+            # it. Two tags feed one pipeline: ``vector_sync_tag`` →
             # hybrid (dense + sparse), ``vector_sync_keyword_tag`` → keyword
             # (sparse only). Each file dict is stamped with ``_index_mode`` so the
             # per-document processor knows which to apply; hybrid wins when a file

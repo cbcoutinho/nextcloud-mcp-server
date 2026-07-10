@@ -103,7 +103,7 @@ async def shared_file(acl_users):
     await alice.webdav.write_file(path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(path))["id"]
     tag = await alice.webdav.get_or_create_tag(
-        name=get_settings().vector_sync_pdf_tag,
+        name=get_settings().vector_sync_tag,
         user_visible=True,
         user_assignable=True,
     )

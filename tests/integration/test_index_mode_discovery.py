@@ -1,7 +1,7 @@
 """End-to-end integration test for two-tag index-mode discovery (ADR-031).
 
 The scanner discovers files under two Nextcloud system tags —
-``VECTOR_SYNC_PDF_TAG`` (hybrid) and ``VECTOR_SYNC_KEYWORD_TAG`` (keyword-only)
+``VECTOR_SYNC_TAG`` (hybrid) and ``VECTOR_SYNC_KEYWORD_TAG`` (keyword-only)
 — via ``_discover_tagged_files``, which stamps each file with ``_index_mode``
 and applies **hybrid precedence** (a file carrying both tags is hybrid). This
 exercises the real OCS Tags API for both tags against a running Nextcloud, which
@@ -71,7 +71,7 @@ async def dual_tag_environment(nc_client: NextcloudClient):
         "keyword_tag": keyword_tag,
         "ids": {str(k): str(v) for k, v in ids.items()},
         "settings": SimpleNamespace(
-            vector_sync_pdf_tag=hybrid_tag,
+            vector_sync_tag=hybrid_tag,
             vector_sync_keyword_tag=keyword_tag,
         ),
     }

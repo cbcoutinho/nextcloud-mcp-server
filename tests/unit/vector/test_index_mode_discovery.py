@@ -1,6 +1,6 @@
 """Unit tests for per-document index-mode discovery (card #609).
 
-Two Nextcloud tags feed one ingestion pipeline: ``vector_sync_pdf_tag`` →
+Two Nextcloud tags feed one ingestion pipeline: ``vector_sync_tag`` →
 hybrid (dense + BM25 sparse) and ``vector_sync_keyword_tag`` → keyword (BM25
 sparse only). ``_discover_tagged_files`` unions both, stamping ``_index_mode``
 on each file with **hybrid precedence** (a file carrying both tags is hybrid, a
@@ -16,9 +16,9 @@ from nextcloud_mcp_server.vector.processor import _reconcile_tag_event
 from nextcloud_mcp_server.vector.scanner import DocumentTask, _discover_tagged_files
 
 
-def _settings(pdf_tag: str = "vector-index", keyword_tag: str = "") -> MagicMock:
+def _settings(tag: str = "vector-index", keyword_tag: str = "") -> MagicMock:
     s = MagicMock()
-    s.vector_sync_pdf_tag = pdf_tag
+    s.vector_sync_tag = tag
     s.vector_sync_keyword_tag = keyword_tag
     return s
 

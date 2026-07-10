@@ -125,9 +125,9 @@ _DEFAULTS: dict[str, Any] = {
     # System tag that marks files for hybrid (dense + BM25 sparse) indexing.
     # The scanner indexes files carrying this tag; verify-on-read gates results
     # on current membership of this tag (ADR-019).
-    "vector_sync_pdf_tag": "vector-index",
+    "vector_sync_tag": "vector-index",
     # System tag that marks files for keyword-only (BM25 sparse) indexing.
-    # Defaults to ``keyword-index`` (symmetric with ``vector_sync_pdf_tag``), so
+    # Defaults to ``keyword-index`` (symmetric with ``vector_sync_tag``), so
     # a user who creates + applies that tag gets keyword-only indexing out of the
     # box. Files carrying it are indexed sparse-only (no dense embedding, no
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
@@ -461,7 +461,7 @@ _dynaconf = Dynaconf(
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
-        Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
+        Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
         # discovery), so no len_min — but when set it must be a usable tag name.
         # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
@@ -917,10 +917,10 @@ class Settings:
     # scanner indexes files carrying this tag and verify-on-read gates results
     # on current membership (ADR-019), so an untagged file drops out of search
     # immediately.
-    vector_sync_pdf_tag: str = "vector-index"
+    vector_sync_tag: str = "vector-index"
 
     # System tag marking files for keyword-only (BM25 sparse) indexing. Defaults
-    # to ``keyword-index`` (symmetric with ``vector_sync_pdf_tag``): tagged files
+    # to ``keyword-index`` (symmetric with ``vector_sync_tag``): tagged files
     # are indexed sparse-only into the same collection as hybrid files (no dense
     # embedding). ``vector-index`` takes precedence when a file carries both tags.
     # Set empty to disable the second tag entirely.
@@ -1708,7 +1708,7 @@ def get_settings() -> Settings:
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
-        "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",
+        "vector_sync_tag": "VECTOR_SYNC_TAG",
         "vector_sync_keyword_tag": "VECTOR_SYNC_KEYWORD_TAG",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
