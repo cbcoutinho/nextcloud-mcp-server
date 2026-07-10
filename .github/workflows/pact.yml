@@ -54,13 +54,37 @@ jobs:
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
-          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+          # Unified pact CLI (Rust, pact-foundation/pact-cli) — replaces the
+          # deprecated pact-ruby-standalone `pact-broker` CLI (which only warns
+          # now and is no longer maintained). The cargo-dist installer appends
+          # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
+          # for the broker steps below.
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
+
+      # Guard the migration: only `publish` runs on a PR (can-i-deploy is
+      # master-only, record-deployment is tag-only), so assert here that the
+      # unified CLI exposes every flag those steps pass. Dumps each --help so a
+      # future flag rename is visible in the log, then fails fast if a flag the
+      # workflows rely on is gone.
+      - name: Verify pact broker CLI flags
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          for sub in publish can-i-deploy record-deployment; do
+            echo "::group::pact broker $sub --help"
+            pact broker "$sub" --help
+            echo "::endgroup::"
+          done
+          pact broker publish --help | grep -q -- '--consumer-app-version'
+          pact broker publish --help | grep -q -- '--branch'
+          pact broker can-i-deploy --help | grep -q -- '--to-environment'
+          pact broker record-deployment --help | grep -q -- '--environment'
 
       - name: Publish pacts to broker
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          pact-broker publish tests/contract/pacts \
+          pact broker publish tests/contract/pacts \
             --broker-base-url "$PACT_BROKER" \
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \
@@ -131,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [consumer, provider]
     # Only the `github` context is available in a job-level `if`, so the broker
-    # guard lives on each step below (the pact-broker CLI errors on an empty
+    # guard lives on each step below (the pact CLI errors on an empty
     # --broker-base-url, e.g. after a secret rotation or on a fork).
     if: ${{ github.ref == 'refs/heads/master' }}
     steps:
@@ -146,8 +170,14 @@ jobs:
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
-          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+          # Unified pact CLI (Rust, pact-foundation/pact-cli) — replaces the
+          # deprecated pact-ruby-standalone `pact-broker` CLI (which only warns
+          # now and is no longer maintained). The cargo-dist installer appends
+          # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
+          # for the broker steps below.
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
 
       # SHADOW MODE: run can-i-deploy for signal but never fail the workflow.
       # The broker's `production` environment is populated by the
@@ -161,7 +191,7 @@ jobs:
         if: ${{ env.PACT_BROKER != '' }}
         run: |
           set +e
-          pact-broker can-i-deploy \
+          pact broker can-i-deploy \
             --broker-base-url "$PACT_BROKER" \
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \

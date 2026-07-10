@@ -16,7 +16,7 @@ provider-state strings. The matching server-side states are registered in
 them once astrolabe publishes its real consumer pact.
 
 The generated pact is written to ``provider_contracts/`` (NOT ``pacts/``) so the
-``pact-broker publish tests/contract/pacts`` step never publishes it under *our*
+``pact broker publish tests/contract/pacts`` step never publishes it under *our*
 consumer identity — astrolabe owns and publishes the real consumer pact. The
 real provider response is verified by ``tests/unit/test_management_status_endpoint.py``
 (``TestStatusEndpointSearchTypes``) and, in integration CI, by provider

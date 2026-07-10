@@ -72,7 +72,7 @@ client before touching the broker:
    and commit SHA.
 2. **provider** — stand up the MCP server (single-user compose profile), verify
    astrolabe's pacts against it, publish verification results (master only).
-3. **can-i-deploy** — gate `master` on `pact-broker can-i-deploy … --pacticipant
+3. **can-i-deploy** — gate `master` on `pact broker can-i-deploy … --pacticipant
    nextcloud-mcp-server --to-environment production`.
 
 Broker-dependent steps are skipped when `PACT_BROKER` is unset (forks).
