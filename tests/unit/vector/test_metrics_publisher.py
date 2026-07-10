@@ -88,6 +88,130 @@ class TestCountIndexed:
         assert all(call.kwargs["exact"] is True for call in qc.count.await_args_list)
 
 
+class TestCountHybridChunks:
+    async def test_counts_hybrid_only(self) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(1234)
+
+        hybrid = await mp.count_hybrid_chunks(qc, _COLLECTION)
+
+        assert hybrid == 1234
+        assert qc.count.await_count == 1
+
+    async def test_filters_on_placeholder_and_hybrid_index_mode(self) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(3)
+
+        await mp.count_hybrid_chunks(qc, _COLLECTION)
+
+        flt = qc.count.await_args.kwargs["count_filter"]
+        # Excludes placeholders AND restricts to the hybrid (dense-bearing) mode.
+        assert _must_keys(flt) == ["is_placeholder", "index_mode"]
+        assert flt.must[0].match.value is False
+        assert flt.must[1].match.value == "hybrid"
+
+    async def test_exact_kwarg_forwarded(self) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(3)
+
+        await mp.count_hybrid_chunks(qc, _COLLECTION, exact=False)
+
+        assert qc.count.await_args.kwargs["exact"] is False
+
+
+class TestPublishVectorRamGauges:
+    """The dense-vector RAM gauges block of publish_vector_sync_metrics (#624)."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_settings(self, monkeypatch) -> None:
+        settings = SimpleNamespace(
+            ingest_queue="memory",
+            get_collection_name=lambda: _COLLECTION,
+            vector_ram_hnsw_overhead_factor=1.5,
+        )
+        monkeypatch.setattr(mp, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            mp, "get_ingest_pending", AsyncMock(return_value=IngestPending(pending=0))
+        )
+        # Dimension is a fixed 1024 for the estimate math.
+        monkeypatch.setattr(
+            mp,
+            "get_embedding_service",
+            lambda: SimpleNamespace(get_dimension=lambda: 1024),
+        )
+
+    @pytest.fixture
+    def ram_gauges(self, monkeypatch) -> dict[str, MagicMock]:
+        g = {
+            name: MagicMock()
+            for name in (
+                "update_vector_sync_estimated_vector_bytes",
+                "update_vector_sync_qdrant_vectors",
+                "update_vector_sync_qdrant_vector_bytes",
+            )
+        }
+        for name, mock in g.items():
+            monkeypatch.setattr(mp, name, mock)
+        return g
+
+    async def test_publishes_estimate_and_qdrant_actuals(
+        self, monkeypatch, ram_gauges
+    ) -> None:
+        qc = AsyncMock()
+        # count_indexed (2 calls) then count_hybrid_chunks (1 call).
+        qc.count.side_effect = [_count_obj(1000), _count_obj(200), _count_obj(600)]
+        qc.get_collection.return_value = SimpleNamespace(
+            vectors_count=700, points_count=1000
+        )
+        monkeypatch.setattr(mp, "get_qdrant_client", AsyncMock(return_value=qc))
+
+        await mp.publish_vector_sync_metrics(
+            task_producer=None, document_receive_stream=object()
+        )
+
+        # Estimate uses OUR hybrid count (600): 600 * 1024 * 4 * 1.5.
+        ram_gauges["update_vector_sync_estimated_vector_bytes"].assert_called_once_with(
+            600 * 1024 * 4 * 1.5
+        )
+        # Qdrant actuals use the reported vectors_count (700).
+        ram_gauges["update_vector_sync_qdrant_vectors"].assert_called_once_with(700)
+        ram_gauges["update_vector_sync_qdrant_vector_bytes"].assert_called_once_with(
+            700 * 1024 * 4 * 1.5
+        )
+
+    async def test_falls_back_to_points_count_when_vectors_count_none(
+        self, monkeypatch, ram_gauges
+    ) -> None:
+        qc = AsyncMock()
+        qc.count.side_effect = [_count_obj(1000), _count_obj(200), _count_obj(600)]
+        qc.get_collection.return_value = SimpleNamespace(
+            vectors_count=None, points_count=999
+        )
+        monkeypatch.setattr(mp, "get_qdrant_client", AsyncMock(return_value=qc))
+
+        await mp.publish_vector_sync_metrics(
+            task_producer=None, document_receive_stream=object()
+        )
+
+        ram_gauges["update_vector_sync_qdrant_vectors"].assert_called_once_with(999)
+
+    async def test_qdrant_failure_does_not_raise(self, monkeypatch, ram_gauges) -> None:
+        # get_collection raising must be swallowed — metrics can't disturb ingest.
+        qc = AsyncMock()
+        qc.count.side_effect = [_count_obj(1000), _count_obj(200), _count_obj(600)]
+        qc.get_collection.side_effect = RuntimeError("qdrant down")
+        monkeypatch.setattr(mp, "get_qdrant_client", AsyncMock(return_value=qc))
+
+        await mp.publish_vector_sync_metrics(
+            task_producer=None, document_receive_stream=object()
+        )
+
+        # The estimate gauge (computed before get_collection) still published;
+        # the Qdrant-actuals gauges did not (the exception short-circuited them).
+        ram_gauges["update_vector_sync_estimated_vector_bytes"].assert_called_once()
+        ram_gauges["update_vector_sync_qdrant_vectors"].assert_not_called()
+
+
 class TestPublishVectorSyncMetrics:
     @pytest.fixture(autouse=True)
     def _stub_settings(self, monkeypatch) -> None:

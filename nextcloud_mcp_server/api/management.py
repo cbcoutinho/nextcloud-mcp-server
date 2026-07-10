@@ -25,7 +25,12 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
+from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.observability.metrics import estimate_vector_bytes
+from nextcloud_mcp_server.vector.metrics_publisher import (
+    count_hybrid_chunks,
+    count_indexed,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -401,10 +406,23 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         # fans out to ~N chunks, so both are reported (the UI shows both).
         indexed_documents = 0
         indexed_chunks = 0
+        hybrid_chunks = 0
+        estimated_vector_bytes = 0
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
                 qdrant_client, settings.get_collection_name()
+            )
+            # Hybrid (dense-bearing) chunks drive the vector-RAM footprint; keyword
+            # chunks are sparse-only and cost no dense RAM (card #624).
+            hybrid_chunks = await count_hybrid_chunks(
+                qdrant_client, settings.get_collection_name()
+            )
+            dim = get_embedding_service().get_dimension()
+            estimated_vector_bytes = int(
+                estimate_vector_bytes(
+                    hybrid_chunks, dim, settings.vector_ram_hnsw_overhead_factor
+                )
             )
         except Exception as e:
             logger.warning("Failed to query Qdrant for indexed counts: %s", e)
@@ -422,6 +440,10 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             "indexed_documents": indexed_documents,
             "indexed_chunks": indexed_chunks,
             "indexed_count": indexed_chunks,
+            # Vector-RAM cost signals (card #624): hybrid_chunks is the dense-bearing
+            # subset; estimated_vector_bytes is its RAM footprint estimate.
+            "hybrid_chunks": hybrid_chunks,
+            "estimated_vector_bytes": estimated_vector_bytes,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
         }

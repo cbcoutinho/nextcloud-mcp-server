@@ -27,6 +27,8 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
+    estimate_vector_bytes,
+    record_chunk_density,
     record_document_chunks,
     record_document_dead_lettered,
     record_document_escalation,
@@ -34,6 +36,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
+    record_estimated_vector_bytes,
     record_ingest_dropped,
     record_qdrant_operation,
     record_vector_sync_processing,
@@ -1759,6 +1762,34 @@ async def _index_document(
             _meter_pipeline_tier if isinstance(_meter_pipeline_tier, str) else None
         ),
     )
+
+    # Observability-only cost signals (card #624), independent of USAGE_METERING.
+    # These never touch billing; they measure the true hybrid-search cost driver
+    # (dense-vector RAM) that source-byte billing does not capture. Best-effort:
+    # a metrics failure must never disturb indexing.
+    try:
+        # Deterministic per-document dense-vector RAM estimate, hybrid docs only —
+        # keyword docs embed no dense vector (estimate_vector_bytes returns 0, but
+        # gate on the mode too so we don't call get_dimension needlessly).
+        if dense_for_doc:
+            _dim = get_embedding_service().get_dimension()
+            record_estimated_vector_bytes(
+                doc_task.doc_type,
+                estimate_vector_bytes(
+                    len(chunk_texts),
+                    _dim,
+                    settings.vector_ram_hnsw_overhead_factor,
+                ),
+            )
+        # Chunk density (chunks per MB of source) for every embedded doc — the
+        # "density risk" distribution. Reuses the same source size as bytes_ingested.
+        record_chunk_density(
+            doc_task.doc_type,
+            len(chunk_texts),
+            ingested_byte_size(content_bytes, content),
+        )
+    except Exception:  # noqa: BLE001 — cost metrics must not break indexing
+        logger.warning("vector-cost observability hook skipped")
 
     # Prepare Qdrant points
     indexed_at = int(time.time())

@@ -190,6 +190,29 @@ vector_sync_indexed_chunks = Gauge(
     "Total indexed chunks (non-placeholder points) in the vector store",
 )
 
+# Dense-vector RAM footprint of the collection — the real cost driver for hybrid
+# search (billing is on source bytes, not vector RAM). Two views published by the
+# periodic vector_sync metrics task so operators can watch the "density risk"
+# (dense/low-fill docs pull chunk-per-byte high) and validate the estimate:
+#   * ``estimated_vector_bytes`` — deterministic, from OUR hybrid chunk count:
+#     ``hybrid_chunks * dim * 4 (float32) * hnsw_overhead``. Keyword-index chunks
+#     are sparse-only and carry no dense vector, so they contribute nothing.
+#   * ``qdrant_vectors`` / ``qdrant_vector_bytes`` — ground truth from Qdrant's own
+#     reported ``vectors_count`` (via ``get_collection``), converted with the same
+#     dim/overhead. The estimate-vs-actual gap catches duplication/segment drift.
+vector_sync_estimated_vector_bytes = Gauge(
+    "mcp_vector_sync_estimated_vector_bytes",
+    "Estimated dense-vector RAM footprint (hybrid_chunks * dim * 4 * hnsw_overhead)",
+)
+vector_sync_qdrant_vectors = Gauge(
+    "mcp_vector_sync_qdrant_vectors",
+    "Dense vectors reported by Qdrant get_collection().vectors_count",
+)
+vector_sync_qdrant_vector_bytes = Gauge(
+    "mcp_vector_sync_qdrant_vector_bytes",
+    "Estimated dense-vector RAM from Qdrant vectors_count (vectors * dim * 4 * hnsw_overhead)",
+)
+
 # Per-tier-queue ingest depth (Deck #323). One series per (queue, status) so an
 # operator can see where work sits -- a ``fast`` backlog, docs waiting on
 # ``ingest-structured``/``ingest-ocr``, or failures piling up per tier. KEDA
@@ -419,6 +442,29 @@ document_chunks_total = Counter(
     "astrolabe_document_chunks_total",
     "Total chunks produced by the chunker",
     ["doc_type"],
+)
+
+# Dense-vector RAM added per unit time, from OUR deterministic estimate at ingest
+# (hybrid docs only; keyword docs embed no dense vector). The cumulative counter
+# pairs with the corpus gauge above: rate() shows RAM-growth pressure, the gauge
+# shows the live footprint. See ``record_estimated_vector_bytes``.
+estimated_vector_bytes_total = Counter(
+    "astrolabe_estimated_vector_bytes_total",
+    "Estimated dense-vector RAM added at ingest (chunks * dim * 4 * hnsw_overhead)",
+    ["doc_type"],
+)
+
+# Chunk density = chunks per MB of source content, observed once per embedded
+# document. This is the "density risk" distribution from the cost-to-serve note:
+# born-digital text sits around ~91 chunks/MB, while dense/low-fill docs push the
+# tail higher and disproportionately inflate vector RAM relative to the billed
+# source bytes. Buckets straddle that band so the risky tail is visible. Recorded
+# for both index modes (density is a property of content, not of dense-vs-keyword).
+document_chunk_density_chunks_per_mb = Histogram(
+    "astrolabe_document_chunk_density_chunks_per_mb",
+    "Chunks produced per MB of source content, per embedded document",
+    ["doc_type"],
+    buckets=(1, 5, 10, 20, 40, 60, 91, 120, 160, 200, 300, 500),
 )
 
 documents_indexed_total = Counter(
@@ -690,6 +736,21 @@ def update_vector_sync_indexed_chunks(count: int) -> None:
     vector_sync_indexed_chunks.set(count)
 
 
+def update_vector_sync_estimated_vector_bytes(byte_estimate: float) -> None:
+    """Set the deterministic dense-vector RAM-footprint gauge (from hybrid chunks)."""
+    vector_sync_estimated_vector_bytes.set(byte_estimate)
+
+
+def update_vector_sync_qdrant_vectors(count: int) -> None:
+    """Set the Qdrant-reported dense-vector count gauge."""
+    vector_sync_qdrant_vectors.set(count)
+
+
+def update_vector_sync_qdrant_vector_bytes(byte_estimate: float) -> None:
+    """Set the dense-vector RAM-footprint gauge derived from Qdrant vectors_count."""
+    vector_sync_qdrant_vector_bytes.set(byte_estimate)
+
+
 def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> None:
     """Set the per-tier-queue depth gauge from procrastinate job counts (#323).
 
@@ -918,6 +979,49 @@ def record_document_chunks(doc_type: str, count: int) -> None:
         count: Number of chunks produced
     """
     document_chunks_total.labels(doc_type=doc_type).inc(count)
+
+
+# float32 elements — the dense-vector storage width. A module constant (not config)
+# because it is a property of the vector encoding, not a deployment knob.
+DENSE_VECTOR_BYTES_PER_DIMENSION = 4
+
+
+def estimate_vector_bytes(chunk_count: int, dimension: int, overhead: float) -> float:
+    """Estimate the dense-vector RAM footprint of ``chunk_count`` vectors.
+
+    ``chunk_count * dimension * 4 (float32) * overhead``, where ``overhead`` is the
+    HNSW-graph/segment multiplier (``VECTOR_RAM_HNSW_OVERHEAD_FACTOR``). Returns 0
+    for a non-positive chunk count or dimension — a keyword-only document embeds no
+    dense vector, so it must contribute nothing to the estimate.
+    """
+    if chunk_count <= 0 or dimension <= 0:
+        return 0.0
+    return chunk_count * dimension * DENSE_VECTOR_BYTES_PER_DIMENSION * overhead
+
+
+def record_estimated_vector_bytes(doc_type: str, byte_estimate: float) -> None:
+    """Record the estimated dense-vector RAM a document added at ingest.
+
+    No-op when ``byte_estimate <= 0`` (keyword-only docs, empty docs) so the
+    counter never advances on a document that stored no dense vector.
+    """
+    if byte_estimate > 0:
+        estimated_vector_bytes_total.labels(doc_type=doc_type).inc(byte_estimate)
+
+
+def record_chunk_density(doc_type: str, chunk_count: int, source_bytes: int) -> None:
+    """Observe chunk density (chunks per MB of source) for one embedded document.
+
+    Surfaces the "density risk" distribution: dense/low-fill docs produce many
+    chunks per source byte and so inflate vector RAM relative to the billed source
+    bytes. No-op when ``source_bytes <= 0`` (avoids a divide-by-zero) or when the
+    document produced no chunks.
+    """
+    if source_bytes > 0 and chunk_count > 0:
+        chunks_per_mb = chunk_count / (source_bytes / 1_000_000)
+        document_chunk_density_chunks_per_mb.labels(doc_type=doc_type).observe(
+            chunks_per_mb
+        )
 
 
 # =============================================================================

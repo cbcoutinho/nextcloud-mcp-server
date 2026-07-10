@@ -23,6 +23,7 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.models.semantic import (
     SamplingSearchResponse,
     SemanticSearchResponse,
@@ -30,6 +31,7 @@ from nextcloud_mcp_server.models.semantic import (
     VectorSyncStatusResponse,
 )
 from nextcloud_mcp_server.observability.metrics import (
+    estimate_vector_bytes,
     instrument_tool,
 )
 from nextcloud_mcp_server.search.access_filter import (
@@ -42,7 +44,10 @@ from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
-from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
+from nextcloud_mcp_server.vector.metrics_publisher import (
+    count_hybrid_chunks,
+    count_indexed,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -1150,10 +1155,23 @@ def configure_semantic_tools(mcp: FastMCP):
             # document fans out to ~N chunks.
             indexed_documents = 0
             indexed_chunks = 0
+            hybrid_chunks = 0
+            estimated_vector_bytes = 0
             try:
                 qdrant_client = await get_qdrant_client()
                 indexed_documents, indexed_chunks = await count_indexed(
                     qdrant_client, settings.get_collection_name()
+                )
+                # Hybrid chunks (dense-bearing) drive the vector-RAM footprint;
+                # keyword-index chunks are sparse-only and cost no dense RAM (#624).
+                hybrid_chunks = await count_hybrid_chunks(
+                    qdrant_client, settings.get_collection_name()
+                )
+                dim = get_embedding_service().get_dimension()
+                estimated_vector_bytes = int(
+                    estimate_vector_bytes(
+                        hybrid_chunks, dim, settings.vector_ram_hnsw_overhead_factor
+                    )
                 )
             except Exception as e:
                 logger.warning("Failed to query Qdrant for indexed counts: %s", e)
@@ -1172,6 +1190,8 @@ def configure_semantic_tools(mcp: FastMCP):
                 ingest_queue=settings.ingest_queue,
                 job_counts=pending.job_counts,
                 job_counts_by_queue=pending.job_counts_by_queue,
+                hybrid_chunks=hybrid_chunks,
+                estimated_vector_bytes=estimated_vector_bytes,
             )
 
         except Exception as e:
