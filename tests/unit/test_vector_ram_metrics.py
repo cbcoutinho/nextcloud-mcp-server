@@ -11,6 +11,9 @@ Covers the pure estimate helper and the two ingest-time recorders in
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 from nextcloud_mcp_server.observability.metrics import (
@@ -19,6 +22,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_chunk_density,
     record_estimated_vector_bytes,
 )
+from nextcloud_mcp_server.vector import processor as proc
 
 pytestmark = pytest.mark.unit
 
@@ -107,3 +111,70 @@ class TestRecordChunkDensity:
         assert metric_sample(
             "astrolabe_document_chunk_density_chunks_per_mb_count", labels
         ) == pytest.approx(0.0)
+
+
+class TestRecordIngestVectorCost:
+    """The best-effort ingest hook wiring (processor._record_ingest_vector_cost)."""
+
+    @pytest.fixture
+    def spies(self, monkeypatch) -> dict[str, MagicMock]:
+        s = {
+            "record_estimated_vector_bytes": MagicMock(),
+            "record_chunk_density": MagicMock(),
+        }
+        for name, mock in s.items():
+            monkeypatch.setattr(proc, name, mock)
+        monkeypatch.setattr(
+            proc,
+            "get_embedding_service",
+            lambda: SimpleNamespace(get_dimension=lambda: 1024),
+        )
+        return s
+
+    def test_hybrid_records_estimate_and_density(self, spies) -> None:
+        proc._record_ingest_vector_cost(
+            doc_type="file",
+            chunk_count=10,
+            source_bytes=1_000_000,
+            dense_for_doc=True,
+            overhead=1.5,
+        )
+        # Estimate = 10 * 1024 * 4 * 1.5.
+        spies["record_estimated_vector_bytes"].assert_called_once_with(
+            "file", 10 * 1024 * 4 * 1.5
+        )
+        spies["record_chunk_density"].assert_called_once_with("file", 10, 1_000_000)
+
+    def test_keyword_skips_estimate_but_records_density(self, spies) -> None:
+        proc._record_ingest_vector_cost(
+            doc_type="note",
+            chunk_count=4,
+            source_bytes=500_000,
+            dense_for_doc=False,
+            overhead=1.5,
+        )
+        # Keyword docs embed no dense vector — no RAM estimate row...
+        spies["record_estimated_vector_bytes"].assert_not_called()
+        # ...but density is still observed (it's a property of the content).
+        spies["record_chunk_density"].assert_called_once_with("note", 4, 500_000)
+
+    def test_exception_never_propagates(self, monkeypatch) -> None:
+        # A failure in the hook must not break indexing — it is swallowed+logged.
+        monkeypatch.setattr(
+            proc,
+            "get_embedding_service",
+            MagicMock(side_effect=RuntimeError("provider down")),
+        )
+        density = MagicMock()
+        monkeypatch.setattr(proc, "record_chunk_density", density)
+
+        # Must not raise.
+        proc._record_ingest_vector_cost(
+            doc_type="file",
+            chunk_count=10,
+            source_bytes=1_000_000,
+            dense_for_doc=True,
+            overhead=1.5,
+        )
+        # The exception short-circuited before the density call.
+        density.assert_not_called()

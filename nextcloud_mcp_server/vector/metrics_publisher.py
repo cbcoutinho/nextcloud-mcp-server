@@ -105,6 +105,27 @@ async def count_hybrid_chunks(
     return result.count
 
 
+async def estimate_hybrid_vector_bytes(
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    overhead: float,
+    *,
+    exact: bool = True,
+) -> tuple[int, int]:
+    """Return ``(hybrid_chunks, estimated_vector_bytes)`` for the collection.
+
+    Single source of truth for the dense-vector RAM figure surfaced by the MCP
+    tool and the ``/api/v1/vector-sync/status`` HTTP route, so the two can't
+    drift. ``overhead`` is ``settings.vector_ram_hnsw_overhead_factor``;
+    ``estimated_vector_bytes`` is ``hybrid_chunks * dim * 4 * overhead`` (card
+    #624), rounded to an int for the response payloads.
+    """
+    hybrid_chunks = await count_hybrid_chunks(qdrant_client, collection, exact=exact)
+    dim = get_embedding_service().get_dimension()
+    estimated = int(estimate_vector_bytes(hybrid_chunks, dim, overhead))
+    return hybrid_chunks, estimated
+
+
 async def publish_vector_sync_metrics(
     task_producer: Any, document_receive_stream: Any
 ) -> None:

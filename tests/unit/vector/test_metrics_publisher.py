@@ -119,6 +119,25 @@ class TestCountHybridChunks:
         assert qc.count.await_args.kwargs["exact"] is False
 
 
+class TestEstimateHybridVectorBytes:
+    """Shared helper used by the MCP tool + HTTP status route (no drift)."""
+
+    async def test_returns_hybrid_count_and_estimate(self, monkeypatch) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(600)
+        monkeypatch.setattr(
+            mp,
+            "get_embedding_service",
+            lambda: SimpleNamespace(get_dimension=lambda: 1024),
+        )
+
+        hybrid, estimated = await mp.estimate_hybrid_vector_bytes(qc, _COLLECTION, 1.5)
+
+        assert hybrid == 600
+        # 600 * 1024 * 4 * 1.5, rounded to int for the response payload.
+        assert estimated == int(600 * 1024 * 4 * 1.5)
+
+
 class TestPublishVectorRamGauges:
     """The dense-vector RAM gauges block of publish_vector_sync_metrics (#624)."""
 

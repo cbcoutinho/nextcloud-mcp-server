@@ -352,6 +352,37 @@ def build_point_vector(
     return point_vector
 
 
+def _record_ingest_vector_cost(
+    *,
+    doc_type: str,
+    chunk_count: int,
+    source_bytes: int,
+    dense_for_doc: bool,
+    overhead: float,
+) -> None:
+    """Emit the observability-only dense-vector cost signals for one document.
+
+    Records the deterministic per-document RAM estimate (hybrid docs only —
+    keyword docs embed no dense vector, so the estimate would be 0 anyway, but
+    gating on the mode avoids a needless ``get_dimension`` call) and the
+    chunk-density histogram (every embedded doc). Card #624.
+
+    Best-effort by contract: this never raises. A metrics failure here must not
+    disturb the indexing path, so every failure mode is caught and logged with
+    its cause (matching the ``metrics_publisher`` gauge guards) rather than
+    propagating.
+    """
+    try:
+        if dense_for_doc:
+            dim = get_embedding_service().get_dimension()
+            record_estimated_vector_bytes(
+                doc_type, estimate_vector_bytes(chunk_count, dim, overhead)
+            )
+        record_chunk_density(doc_type, chunk_count, source_bytes)
+    except Exception as exc:  # noqa: BLE001 — cost metrics must not break indexing
+        logger.warning("vector-cost observability hook skipped: %s", exc)
+
+
 async def record_indexing_usage(
     *,
     enabled: bool,
@@ -1764,32 +1795,15 @@ async def _index_document(
     )
 
     # Observability-only cost signals (card #624), independent of USAGE_METERING.
-    # These never touch billing; they measure the true hybrid-search cost driver
-    # (dense-vector RAM) that source-byte billing does not capture. Best-effort:
-    # a metrics failure must never disturb indexing.
-    try:
-        # Deterministic per-document dense-vector RAM estimate, hybrid docs only —
-        # keyword docs embed no dense vector (estimate_vector_bytes returns 0, but
-        # gate on the mode too so we don't call get_dimension needlessly).
-        if dense_for_doc:
-            _dim = get_embedding_service().get_dimension()
-            record_estimated_vector_bytes(
-                doc_task.doc_type,
-                estimate_vector_bytes(
-                    len(chunk_texts),
-                    _dim,
-                    settings.vector_ram_hnsw_overhead_factor,
-                ),
-            )
-        # Chunk density (chunks per MB of source) for every embedded doc — the
-        # "density risk" distribution. Reuses the same source size as bytes_ingested.
-        record_chunk_density(
-            doc_task.doc_type,
-            len(chunk_texts),
-            ingested_byte_size(content_bytes, content),
-        )
-    except Exception:  # noqa: BLE001 — cost metrics must not break indexing
-        logger.warning("vector-cost observability hook skipped")
+    # Best-effort and self-contained in the helper so a metrics failure can never
+    # disturb indexing.
+    _record_ingest_vector_cost(
+        doc_type=doc_task.doc_type,
+        chunk_count=len(chunk_texts),
+        source_bytes=ingested_byte_size(content_bytes, content),
+        dense_for_doc=dense_for_doc,
+        overhead=settings.vector_ram_hnsw_overhead_factor,
+    )
 
     # Prepare Qdrant points
     indexed_at = int(time.time())

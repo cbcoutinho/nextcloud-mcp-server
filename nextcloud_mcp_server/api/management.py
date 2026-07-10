@@ -25,11 +25,9 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.embedding import get_embedding_service
-from nextcloud_mcp_server.observability.metrics import estimate_vector_bytes
 from nextcloud_mcp_server.vector.metrics_publisher import (
-    count_hybrid_chunks,
     count_indexed,
+    estimate_hybrid_vector_bytes,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -414,15 +412,12 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
                 qdrant_client, settings.get_collection_name()
             )
             # Hybrid (dense-bearing) chunks drive the vector-RAM footprint; keyword
-            # chunks are sparse-only and cost no dense RAM (card #624).
-            hybrid_chunks = await count_hybrid_chunks(
-                qdrant_client, settings.get_collection_name()
-            )
-            dim = get_embedding_service().get_dimension()
-            estimated_vector_bytes = int(
-                estimate_vector_bytes(
-                    hybrid_chunks, dim, settings.vector_ram_hnsw_overhead_factor
-                )
+            # chunks are sparse-only and cost no dense RAM (card #624). Shared helper
+            # so this and the MCP tool surface can't drift.
+            hybrid_chunks, estimated_vector_bytes = await estimate_hybrid_vector_bytes(
+                qdrant_client,
+                settings.get_collection_name(),
+                settings.vector_ram_hnsw_overhead_factor,
             )
         except Exception as e:
             logger.warning("Failed to query Qdrant for indexed counts: %s", e)

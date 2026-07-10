@@ -23,7 +23,6 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.models.semantic import (
     SamplingSearchResponse,
     SemanticSearchResponse,
@@ -31,7 +30,6 @@ from nextcloud_mcp_server.models.semantic import (
     VectorSyncStatusResponse,
 )
 from nextcloud_mcp_server.observability.metrics import (
-    estimate_vector_bytes,
     instrument_tool,
 )
 from nextcloud_mcp_server.search.access_filter import (
@@ -45,8 +43,8 @@ from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
-    count_hybrid_chunks,
     count_indexed,
+    estimate_hybrid_vector_bytes,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -1164,14 +1162,14 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
                 # Hybrid chunks (dense-bearing) drive the vector-RAM footprint;
                 # keyword-index chunks are sparse-only and cost no dense RAM (#624).
-                hybrid_chunks = await count_hybrid_chunks(
-                    qdrant_client, settings.get_collection_name()
-                )
-                dim = get_embedding_service().get_dimension()
-                estimated_vector_bytes = int(
-                    estimate_vector_bytes(
-                        hybrid_chunks, dim, settings.vector_ram_hnsw_overhead_factor
-                    )
+                # Shared helper so this and the HTTP status route can't drift.
+                (
+                    hybrid_chunks,
+                    estimated_vector_bytes,
+                ) = await estimate_hybrid_vector_bytes(
+                    qdrant_client,
+                    settings.get_collection_name(),
+                    settings.vector_ram_hnsw_overhead_factor,
                 )
             except Exception as e:
                 logger.warning("Failed to query Qdrant for indexed counts: %s", e)
