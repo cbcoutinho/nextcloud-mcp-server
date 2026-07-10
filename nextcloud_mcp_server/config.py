@@ -302,10 +302,16 @@ _DEFAULTS: dict[str, Any] = {
     # regardless of worker liveness. The heartbeat threshold above only catches DEAD
     # workers; a job whose OWN completion crashed (e.g. an unhandled queueing_lock
     # UniqueViolation on the doing->todo retry) is stranded in ``doing`` under a LIVE,
-    # heart-beating worker and is invisible to the heartbeat sweep. Set well above the
-    # longest single process_document attempt — OCR batch polling releases the worker
-    # between polls (BatchPending -> retry_in), so a job never legitimately holds
-    # ``doing`` this long. (Deck: ingest doing-strand reclaim.)
+    # heart-beating worker and is invisible to the heartbeat sweep.
+    # This fires purely on time-in-``doing``, NOT on liveness, so it can't tell "stuck"
+    # from "legitimately slow": if a single HEALTHY process_document attempt ever ran
+    # past this, it'd be re-queued mid-flight and two workers could process the doc
+    # concurrently. That's safe ONLY because ingest re-runs are idempotent (uuid5
+    # Qdrant point IDs — see the queue module's "Design notes"), NOT because the
+    # reclaim distinguishes the two — so keep the default comfortably above the longest
+    # real single attempt. OCR batch polling releases the worker between polls
+    # (BatchPending -> retry_in), so a job never legitimately holds ``doing`` this
+    # long; 1800s is deep headroom. (Deck: ingest doing-strand reclaim.)
     "ingest_doing_max_seconds": 1800,
     # Delete succeeded ingest jobs (keeps the queue table lean + the KEDA
     # queue-depth metric clean). Set false to retain succeeded rows for audit

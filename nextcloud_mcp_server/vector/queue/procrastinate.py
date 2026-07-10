@@ -21,8 +21,10 @@ Design notes:
   deadlock a document if a worker crashed mid-job. The Qdrant upsert is
   idempotent (deterministic ``uuid5`` point IDs), so a concurrent/re-run is
   harmless; ``queueing_lock`` (partial-unique on ``status='todo'``) is enough to
-  dedupe enqueues, and :func:`reclaim_stalled_ingest_jobs` retries jobs orphaned
-  in ``doing`` by a crash.
+  dedupe enqueues, and :func:`reclaim_stalled_ingest_jobs` re-queues jobs stranded
+  in ``doing`` — both by a dead worker (heartbeat sweep) and by a live-worker strand
+  where the job's own completion crashed (time-in-``doing`` backstop; see its
+  docstring). That idempotent-re-run property is also what makes the backstop safe.
 - procrastinate is Postgres-only and uses asyncio; ``anyio`` runs natively on the
   asyncio backend, so the worker can call the anyio-based pipeline directly.
 - Tasks are defined on a :class:`procrastinate.Blueprint` so the connector is
@@ -267,7 +269,21 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     by_heartbeat = await manager.get_stalled_jobs(seconds_since_heartbeat=stalled_after)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
+        # TODO(procrastinate): ``nb_seconds`` is deprecated upstream in favour of
+        # heartbeat-only detection and MAY be removed in a future major — at which
+        # point this call becomes a hard TypeError inside the periodic instead of a
+        # DeprecationWarning. ``pyproject`` pins ``procrastinate>=3.8`` with no upper
+        # bound, so a routine bump could trip it; when upstream signals removal, pin an
+        # upper bound or reimplement the started-based query directly. Kept because the
+        # heartbeat sweep structurally cannot see a live-worker strand (see above).
         by_started = await manager.get_stalled_jobs(nb_seconds=doing_max)
+    # Attribution for the summary log: how many stalled jobs the (new) time-in-doing
+    # backstop surfaced that the heartbeat sweep alone missed — the exact signal the
+    # motivating incident lacked (reclaimed=0 while jobs sat in ``doing``).
+    hb_ids = {job.id for job in by_heartbeat if job.id is not None}
+    n_started_only = len(
+        {job.id for job in by_started if job.id is not None and job.id not in hb_ids}
+    )
     seen: set[int] = set()
     stalled: list[Job] = []
     for job in (*by_heartbeat, *by_started):
@@ -324,10 +340,13 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
             errored += 1
     if reclaimed or discarded or errored:
         logger.warning(
-            "ingest.reclaimed_stalled_jobs reclaimed=%d discarded=%d errored=%d",
+            "ingest.reclaimed_stalled_jobs reclaimed=%d discarded=%d errored=%d "
+            "heartbeat=%d started_backstop=%d",
             reclaimed,
             discarded,
             errored,
+            len(hb_ids),
+            n_started_only,
         )
     else:
         # Visible heartbeat under verbose logging when debugging a suspected
