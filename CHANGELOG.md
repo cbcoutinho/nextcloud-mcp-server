@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.132.0 (2026-07-10)
+
+### BREAKING CHANGE
+
+- the env var VECTOR_SYNC_PDF_TAG is renamed to VECTOR_SYNC_TAG.
+Deployments that set VECTOR_SYNC_PDF_TAG must switch to VECTOR_SYNC_TAG; the old
+name is no longer read (no alias). Confirmed no tenant currently overrides it, so
+the default "vector-index" tag is unaffected.
+
+### Refactor
+
+- **config**: rename VECTOR_SYNC_PDF_TAG -> VECTOR_SYNC_TAG
+
 ## v0.131.1 (2026-07-10)
 
 ### Fix
