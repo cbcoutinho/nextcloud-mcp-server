@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.133.0 (2026-07-10)
+
+### Feat
+
+- **vector**: monitor dense-vector RAM cost during ingestion
+
+### Refactor
+
+- **vector**: address round-1 review on RAM-cost monitoring
+
 ## v0.132.0 (2026-07-10)
 
 ### BREAKING CHANGE
