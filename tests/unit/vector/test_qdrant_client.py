@@ -111,6 +111,19 @@ def test_dead_letter_indexed_as_bool():
     assert _PAYLOAD_INDEX_FIELDS.get("dead_letter") == PayloadSchemaType.BOOL
 
 
+@pytest.mark.unit
+def test_index_mode_indexed_as_keyword():
+    """Card #624: the vector-RAM path filters on index_mode="hybrid".
+
+    count_hybrid_chunks (periodic metrics publisher + /vector-sync/status)
+    adds FieldCondition(key="index_mode", ...). Qdrant strict/server mode
+    requires a payload index for every filtered field, so without this the
+    count 400s ("Index required but not found for index_mode") and the RAM
+    gauges / hybrid_chunks stay empty. KEYWORD for the exact string match.
+    """
+    assert _PAYLOAD_INDEX_FIELDS.get("index_mode") == PayloadSchemaType.KEYWORD
+
+
 # ---------------------------------------------------------------------------
 # _ensure_payload_indexes
 # ---------------------------------------------------------------------------
