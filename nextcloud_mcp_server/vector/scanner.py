@@ -166,9 +166,21 @@ async def _discover_tagged_files(
     )
     for f in hybrid_files:
         f["_index_mode"] = payload_keys.INDEX_MODE_HYBRID
+        logger.debug(
+            "Scanned file %s (ID: %s) carries the hybrid tag %r -> index_mode=%s",
+            f.get("path"),
+            f.get("id"),
+            settings.vector_sync_pdf_tag,
+            payload_keys.INDEX_MODE_HYBRID,
+        )
 
     keyword_tag = settings.vector_sync_keyword_tag
     if not keyword_tag:
+        logger.info(
+            "Tagged-file discovery: %d hybrid (tag %r); keyword tag disabled",
+            len(hybrid_files),
+            settings.vector_sync_pdf_tag,
+        )
         return hybrid_files
 
     hybrid_ids = {str(f["id"]) for f in hybrid_files}
@@ -179,9 +191,33 @@ async def _discover_tagged_files(
     extra_keyword_files = []
     for f in keyword_files:
         if str(f["id"]) in hybrid_ids:
+            # File carries both tags: hybrid wins (superset of keyword).
+            logger.debug(
+                "Scanned file %s (ID: %s) carries both the hybrid tag %r and the "
+                "keyword-only tag %r; hybrid precedence -> index_mode=%s",
+                f.get("path"),
+                f.get("id"),
+                settings.vector_sync_pdf_tag,
+                keyword_tag,
+                payload_keys.INDEX_MODE_HYBRID,
+            )
             continue
         f["_index_mode"] = payload_keys.INDEX_MODE_KEYWORD
+        logger.debug(
+            "Scanned file %s (ID: %s) carries the keyword-only tag %r -> index_mode=%s",
+            f.get("path"),
+            f.get("id"),
+            keyword_tag,
+            payload_keys.INDEX_MODE_KEYWORD,
+        )
         extra_keyword_files.append(f)
+    logger.info(
+        "Tagged-file discovery: %d hybrid (tag %r), %d keyword-only (tag %r)",
+        len(hybrid_files),
+        settings.vector_sync_pdf_tag,
+        len(extra_keyword_files),
+        keyword_tag,
+    )
     return hybrid_files + extra_keyword_files
 
 

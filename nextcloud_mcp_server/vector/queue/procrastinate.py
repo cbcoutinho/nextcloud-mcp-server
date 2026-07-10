@@ -52,6 +52,7 @@ from procrastinate.jobs import Job, Status
 from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
 from ...config import get_procrastinate_conninfo, get_settings
+from .. import payload_keys
 from ..scanner import DocumentTask
 
 if TYPE_CHECKING:
@@ -164,6 +165,7 @@ async def process_document_task(
     metadata: dict[str, int | str] | None = None,
     etag: str | None = None,
     owner_id: str | None = None,
+    index_mode: str = payload_keys.INDEX_MODE_HYBRID,
 ) -> None:
     """Worker entry: rebuild the DocumentTask, resolve creds, run the pipeline.
 
@@ -195,6 +197,7 @@ async def process_document_task(
         metadata=metadata,
         etag=etag,
         owner_id=owner_id,
+        index_mode=index_mode,
     )
     try:
         nc_client = await _resolve_client(user_id)
