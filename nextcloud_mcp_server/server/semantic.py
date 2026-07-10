@@ -42,7 +42,10 @@ from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
-from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
+from nextcloud_mcp_server.vector.metrics_publisher import (
+    count_indexed,
+    estimate_hybrid_vector_bytes,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -1150,10 +1153,23 @@ def configure_semantic_tools(mcp: FastMCP):
             # document fans out to ~N chunks.
             indexed_documents = 0
             indexed_chunks = 0
+            hybrid_chunks = 0
+            estimated_vector_bytes = 0
             try:
                 qdrant_client = await get_qdrant_client()
                 indexed_documents, indexed_chunks = await count_indexed(
                     qdrant_client, settings.get_collection_name()
+                )
+                # Hybrid chunks (dense-bearing) drive the vector-RAM footprint;
+                # keyword-index chunks are sparse-only and cost no dense RAM (#624).
+                # Shared helper so this and the HTTP status route can't drift.
+                (
+                    hybrid_chunks,
+                    estimated_vector_bytes,
+                ) = await estimate_hybrid_vector_bytes(
+                    qdrant_client,
+                    settings.get_collection_name(),
+                    settings.vector_ram_hnsw_overhead_factor,
                 )
             except Exception as e:
                 logger.warning("Failed to query Qdrant for indexed counts: %s", e)
@@ -1172,6 +1188,8 @@ def configure_semantic_tools(mcp: FastMCP):
                 ingest_queue=settings.ingest_queue,
                 job_counts=pending.job_counts,
                 job_counts_by_queue=pending.job_counts_by_queue,
+                hybrid_chunks=hybrid_chunks,
+                estimated_vector_bytes=estimated_vector_bytes,
             )
 
         except Exception as e:

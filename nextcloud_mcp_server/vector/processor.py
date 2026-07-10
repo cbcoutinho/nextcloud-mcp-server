@@ -27,6 +27,8 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
+    estimate_vector_bytes,
+    record_chunk_density,
     record_document_chunks,
     record_document_dead_lettered,
     record_document_escalation,
@@ -34,6 +36,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
+    record_estimated_vector_bytes,
     record_ingest_dropped,
     record_qdrant_operation,
     record_vector_sync_processing,
@@ -347,6 +350,37 @@ def build_point_vector(
     if dense_enabled:
         point_vector["dense"] = dense_embeddings[index]
     return point_vector
+
+
+def _record_ingest_vector_cost(
+    *,
+    doc_type: str,
+    chunk_count: int,
+    source_bytes: int,
+    dense_for_doc: bool,
+    overhead: float,
+) -> None:
+    """Emit the observability-only dense-vector cost signals for one document.
+
+    Records the deterministic per-document RAM estimate (hybrid docs only —
+    keyword docs embed no dense vector, so the estimate would be 0 anyway, but
+    gating on the mode avoids a needless ``get_dimension`` call) and the
+    chunk-density histogram (every embedded doc). Card #624.
+
+    Best-effort by contract: this never raises. A metrics failure here must not
+    disturb the indexing path, so every failure mode is caught and logged with
+    its cause (matching the ``metrics_publisher`` gauge guards) rather than
+    propagating.
+    """
+    try:
+        if dense_for_doc:
+            dim = get_embedding_service().get_dimension()
+            record_estimated_vector_bytes(
+                doc_type, estimate_vector_bytes(chunk_count, dim, overhead)
+            )
+        record_chunk_density(doc_type, chunk_count, source_bytes)
+    except Exception as exc:  # noqa: BLE001 — cost metrics must not break indexing
+        logger.warning("vector-cost observability hook skipped: %s", exc)
 
 
 async def record_indexing_usage(
@@ -1758,6 +1792,17 @@ async def _index_document(
         pipeline_tier=(
             _meter_pipeline_tier if isinstance(_meter_pipeline_tier, str) else None
         ),
+    )
+
+    # Observability-only cost signals (card #624), independent of USAGE_METERING.
+    # Best-effort and self-contained in the helper so a metrics failure can never
+    # disturb indexing.
+    _record_ingest_vector_cost(
+        doc_type=doc_task.doc_type,
+        chunk_count=len(chunk_texts),
+        source_bytes=ingested_byte_size(content_bytes, content),
+        dense_for_doc=dense_for_doc,
+        overhead=settings.vector_ram_hnsw_overhead_factor,
     )
 
     # Prepare Qdrant points

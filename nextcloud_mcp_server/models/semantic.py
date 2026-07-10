@@ -205,6 +205,22 @@ class VectorSyncStatusResponse(BaseResponse):
             "None on the in-memory backend"
         ),
     )
+    hybrid_chunks: int = Field(
+        default=0,
+        description=(
+            "Chunks indexed in hybrid mode (dense + sparse). These carry a dense "
+            "vector and so drive the vector-RAM footprint; keyword-index chunks "
+            "(indexed_chunks - hybrid_chunks) are sparse-only and cost no dense RAM."
+        ),
+    )
+    estimated_vector_bytes: int = Field(
+        default=0,
+        description=(
+            "Estimated dense-vector RAM footprint in bytes "
+            "(hybrid_chunks * embedding_dim * 4 * hnsw_overhead) — the real "
+            "hybrid-search cost driver, which source-byte billing does not capture."
+        ),
+    )
 
 
 __all__ = [

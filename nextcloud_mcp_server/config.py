@@ -114,6 +114,7 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_processor_workers": 3,
     "vector_sync_queue_max_size": 10000,
     "vector_sync_metrics_refresh_interval": 20,
+    "vector_ram_hnsw_overhead_factor": 1.5,
     "vector_sync_user_poll_interval": 60,
     "health_ready_refresh_interval": 15,
     # Orphan-sweep at Pod startup (card #101). When True, delete any
@@ -434,6 +435,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
+        Validator("VECTOR_RAM_HNSW_OVERHEAD_FACTOR", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
         Validator("HEALTH_READY_REFRESH_INTERVAL", gte=1),
         Validator("PORT", gte=1, lte=65535),
@@ -907,6 +909,12 @@ class Settings:
     # outstanding-work + indexed documents/chunks. Decoupled from the consumer
     # so the gauges are correct on every deployment mode and queue backend.
     vector_sync_metrics_refresh_interval: int = 20  # seconds
+    # HNSW-graph/segment overhead multiplier applied when estimating dense-vector
+    # RAM (``chunks * dim * 4 bytes * factor``). ~1.5 matches the cost-to-serve
+    # note's ~6 KB / 1024-dim observation; a deployment knob because the real
+    # overhead varies with HNSW ``m``/segment layout. Observability only — no
+    # billing impact.
+    vector_ram_hnsw_overhead_factor: float = 1.5
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
     vector_sync_orphan_sweep_enabled: bool = True  # card #101
     # Cadence for the background readiness dependency-health refresh loop
@@ -1705,6 +1713,7 @@ def get_settings() -> Settings:
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
+        "vector_ram_hnsw_overhead_factor": "VECTOR_RAM_HNSW_OVERHEAD_FACTOR",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
