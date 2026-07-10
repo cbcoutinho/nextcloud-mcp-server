@@ -101,6 +101,18 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # search/access_filter.build_ownership_filter); KEYWORD indexes match array
     # membership element-wise. Idempotent startup migration.
     "acl_principals": PayloadSchemaType.KEYWORD,
+    # index_mode ("hybrid" | "keyword") is the per-document indexing mode written
+    # to every non-placeholder point (payload_keys.INDEX_MODE). The vector-RAM
+    # observability path (card #624) counts hybrid, dense-bearing chunks via
+    # count_hybrid_chunks -> FieldCondition(key="index_mode", match="hybrid") in
+    # the periodic metrics publisher AND the /vector-sync/status surfaces. Qdrant
+    # strict/server mode requires a payload index for every filtered field, so
+    # without this index that count 400s ("Index required but not found for
+    # index_mode") — the metrics guard swallows it, but the RAM gauges and the
+    # status hybrid_chunks/estimated_vector_bytes never populate. KEYWORD for the
+    # exact string match; idempotent startup migration like the fields above, so
+    # existing collections gain it with no content re-index and no operator action.
+    "index_mode": PayloadSchemaType.KEYWORD,
 }
 
 # Sentinel point that records "this collection has been backfilled to str
