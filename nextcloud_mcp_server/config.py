@@ -298,6 +298,15 @@ _DEFAULTS: dict[str, Any] = {
     # worker heartbeat is this many seconds stale (Deck #183). Default is well
     # above the longest expected document; raise it for slow embedding backends.
     "ingest_stalled_job_seconds": 300,
+    # Backstop reclaim: also re-queue a job stuck in ``doing`` for this many seconds
+    # regardless of worker liveness. The heartbeat threshold above only catches DEAD
+    # workers; a job whose OWN completion crashed (e.g. an unhandled queueing_lock
+    # UniqueViolation on the doing->todo retry) is stranded in ``doing`` under a LIVE,
+    # heart-beating worker and is invisible to the heartbeat sweep. Set well above the
+    # longest single process_document attempt — OCR batch polling releases the worker
+    # between polls (BatchPending -> retry_in), so a job never legitimately holds
+    # ``doing`` this long. (Deck: ingest doing-strand reclaim.)
+    "ingest_doing_max_seconds": 1800,
     # Delete succeeded ingest jobs (keeps the queue table lean + the KEDA
     # queue-depth metric clean). Set false to retain succeeded rows for audit
     # (note: indexing success is also recorded in logs/metrics regardless).
@@ -1081,6 +1090,7 @@ class Settings:
     ingest_queue: str | None = None  # memory | postgres
     mcp_role: str = "all"  # api | worker | all (Deck #183 two-pod model)
     ingest_stalled_job_seconds: int = 300  # crashed-worker reclaim threshold
+    ingest_doing_max_seconds: int = 1800  # backstop: reclaim live-worker doing strands
     ingest_delete_succeeded_jobs: bool = True  # drop succeeded ingest jobs
     ingest_listen_notify: bool = True  # False = poll-only (txn-mode pooler, Deck #424)
     ingest_escalation_enabled: bool = True  # per-tier queue-hop (Deck #323)
@@ -1791,6 +1801,7 @@ def get_settings() -> Settings:
         "ingest_queue": "INGEST_QUEUE",
         "mcp_role": "MCP_ROLE",
         "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",
+        "ingest_doing_max_seconds": "INGEST_DOING_MAX_SECONDS",
         "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
         "ingest_listen_notify": "INGEST_LISTEN_NOTIFY",
         "ingest_escalation_enabled": "INGEST_ESCALATION_ENABLED",

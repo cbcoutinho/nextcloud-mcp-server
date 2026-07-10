@@ -33,6 +33,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -219,11 +220,17 @@ async def process_document_task(
 
 
 async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> None:
-    """Re-queue ingest jobs orphaned in ``doing`` by a crashed worker.
+    """Re-queue ingest jobs stranded in ``doing``.
 
-    procrastinate prunes dead *workers* but does not reset their in-flight jobs;
-    without this they'd sit in ``doing`` forever. ``timestamp`` is procrastinate's
-    periodic-run marker (unused).
+    Two causes, two detections (see the sweep below):
+      * a **dead worker** — procrastinate prunes the worker but doesn't reset its
+        in-flight jobs, so they'd sit in ``doing`` forever (heartbeat sweep); and
+      * a **live-worker strand** — a job whose own completion crashed (e.g. an
+        unhandled ``queueing_lock`` collision on the ``doing``->``todo`` retry) is
+        left in ``doing`` under a still-heart-beating worker, invisible to the
+        heartbeat sweep, so a time-in-``doing`` backstop catches it.
+
+    ``timestamp`` is procrastinate's periodic-run marker (unused).
     """
     manager = context.app.job_manager
     settings = get_settings()
@@ -236,24 +243,53 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
         seconds=settings.ingest_reclaim_retry_delay_seconds
     )
     stalled_after = settings.ingest_stalled_job_seconds
+    doing_max = settings.ingest_doing_max_seconds
     reclaimed = 0
     discarded = 0
     errored = 0
-    # queue=None sweeps every queue, so an orphaned job on any tier queue is
-    # reclaimed regardless of which tier's worker happens to run this periodic.
-    # retry_job_by_id_async keeps the job on its own queue, so a stalled ``ocr``
-    # job re-runs on ``ingest-ocr`` (the ocr fleet), not the reclaiming worker's.
+    # Two complementary detections, de-duplicated by job id, both with queue=None so
+    # an orphan on ANY tier queue is reclaimed regardless of which tier's worker runs
+    # this periodic (retry_job_by_id_async keeps the job on its own queue, so a
+    # stalled ``ocr`` job re-runs on ``ingest-ocr``, not the reclaiming worker's):
     #
+    #  1. by heartbeat — jobs of a DEAD/stale/pruned worker (the common crash case).
+    #  2. by time-in-doing — jobs stuck in ``doing`` past ``doing_max`` even under a
+    #     LIVE worker. The heartbeat sweep structurally cannot see these: if a job's
+    #     OWN completion crashes — e.g. an unhandled ``queueing_lock`` UniqueViolation
+    #     when procrastinate's retry moves it ``doing``->``todo`` against a scanner-
+    #     deferred ``todo`` sibling (the lock's partial-unique index covers only
+    #     ``todo``) — the row is stranded in ``doing`` while the worker stays alive and
+    #     heart-beating, so ``select_stalled_jobs_by_heartbeat`` never returns it and
+    #     the job sits forever. ``nb_seconds`` (``select_stalled_jobs_by_started``) is
+    #     the only mechanism that catches it. procrastinate deprecation-warns that
+    #     path (upstream wants heartbeat-only), but heartbeats cannot cover a
+    #     live-worker strand, so we deliberately keep it and silence just that warning.
+    by_heartbeat = await manager.get_stalled_jobs(seconds_since_heartbeat=stalled_after)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        by_started = await manager.get_stalled_jobs(nb_seconds=doing_max)
+    seen: set[int] = set()
+    stalled: list[Job] = []
+    for job in (*by_heartbeat, *by_started):
+        if job.id is None or job.id in seen:
+            continue
+        seen.add(job.id)
+        stalled.append(job)
+
     # Each job is isolated: the retry UPDATE sets status='todo', which trips the
-    # partial-unique ``queueing_lock`` index if the scanner already re-queued the
-    # doc while it sat orphaned in ``doing`` (a fresh ``todo`` sibling holds the
-    # lock). Without per-job isolation the FIRST such UniqueViolation aborted the
-    # whole sweep, so every later orphan stayed in ``doing`` forever.
-    for job in await manager.get_stalled_jobs(seconds_since_heartbeat=stalled_after):
-        if job.id is None:
+    # partial-unique ``queueing_lock`` index if a ``todo`` sibling already holds the
+    # lock (the scanner re-queued the doc, or — for a live-worker strand — the sibling
+    # whose collision stranded this one is still queued). Without per-job isolation the
+    # FIRST such UniqueViolation aborted the whole sweep, so every later orphan stayed
+    # in ``doing`` forever.
+    for job in stalled:
+        job_id = job.id
+        if (
+            job_id is None
+        ):  # already filtered when building ``stalled``; narrows the type
             continue
         try:
-            await manager.retry_job_by_id_async(job_id=job.id, retry_at=retry_at)
+            await manager.retry_job_by_id_async(job_id=job_id, retry_at=retry_at)
             reclaimed += 1
         except UniqueViolation as exc:
             if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
@@ -262,7 +298,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
                 # constraint today, but guard the assumption explicitly rather
                 # than deleting an unrelated job if procrastinate ever adds one:
                 # log + count it like any unexpected per-job error, don't delete.
-                logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job.id, exc)
+                logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job_id, exc)
                 errored += 1
                 continue
             # A live ``todo`` sibling with the same queueing_lock already exists
@@ -276,15 +312,15 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
             # failed / aborted.)
             try:
                 await manager.finish_job_by_id_async(
-                    job_id=job.id, status=Status.ABORTED, delete_job=True
+                    job_id=job_id, status=Status.ABORTED, delete_job=True
                 )
                 discarded += 1
             except Exception as exc:
-                logger.error("ingest.reclaim_discard_failed job_id=%s: %s", job.id, exc)
+                logger.error("ingest.reclaim_discard_failed job_id=%s: %s", job_id, exc)
                 errored += 1
         except Exception as exc:
             # Never let one bad job abort the sweep; the rest still get reclaimed.
-            logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job.id, exc)
+            logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job_id, exc)
             errored += 1
     if reclaimed or discarded or errored:
         logger.warning(

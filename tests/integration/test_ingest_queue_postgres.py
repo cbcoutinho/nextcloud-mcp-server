@@ -156,7 +156,9 @@ async def test_reclaim_discards_real_queueing_lock_collision(fresh_app, monkeypa
         pq,
         "get_settings",
         lambda: types.SimpleNamespace(
-            ingest_stalled_job_seconds=0, ingest_reclaim_retry_delay_seconds=0
+            ingest_stalled_job_seconds=0,
+            ingest_doing_max_seconds=0,
+            ingest_reclaim_retry_delay_seconds=0,
         ),
     )
 
@@ -194,3 +196,72 @@ async def test_reclaim_discards_real_queueing_lock_collision(fresh_app, monkeypa
             )
         }
         assert by_status == {"todo": 1}  # orphan gone; the live sibling survives
+
+
+async def test_reclaim_backstops_live_worker_doing_strand(fresh_app, monkeypatch):
+    """Reclaim a job stranded in ``doing`` under a LIVE worker.
+
+    The heartbeat sweep only catches DEAD/pruned workers. When a job's OWN
+    completion crashes — e.g. procrastinate's ``doing``->``todo`` retry raises an
+    unhandled ``queueing_lock`` UniqueViolation against a scanner-deferred ``todo``
+    sibling — the row is left ``doing`` while its worker stays alive and
+    heart-beating, so ``select_stalled_jobs_by_heartbeat`` never returns it and the
+    job would sit forever (observed: 2 docs pinned ``doing``, reaper reclaimed=0).
+    The time-in-``doing`` backstop (``ingest_doing_max_seconds`` / by-started) must
+    reclaim it. Regression for the ingest doing-strand fix.
+    """
+    # Heartbeat threshold huge so the heartbeat sweep can NEVER be what catches the
+    # orphan; doing_max 0 so only the by-started backstop can.
+    monkeypatch.setattr(
+        pq,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            ingest_stalled_job_seconds=10**9,
+            ingest_doing_max_seconds=0,
+            ingest_reclaim_retry_delay_seconds=0,
+        ),
+    )
+
+    async with fresh_app.open_async():
+        producer = ProcrastinateTaskProducer(fresh_app)
+
+        # A LIVE worker (fresh heartbeat) — the orphan is owned by it, not a dead one.
+        worker = await fresh_app.connector.execute_query_one_async(
+            "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+        )
+        worker_id = worker["id"]
+
+        # Job A → todo, then strand it in ``doing`` OWNED BY THE LIVE WORKER, with a
+        # ``started`` event an hour in the past (its crashing attempt began long ago).
+        await producer.send(_task("1"))
+        job_a = await fresh_app.connector.execute_query_one_async(
+            "UPDATE procrastinate_jobs SET status='doing', worker_id=%(w)s "
+            "WHERE queue_name=%(q)s RETURNING id",
+            w=worker_id,
+            q=INGEST_QUEUE_NAME,
+        )
+        await fresh_app.connector.execute_query_async(
+            "INSERT INTO procrastinate_events (job_id, type, at) "
+            "VALUES (%(jid)s, 'started', NOW() - INTERVAL '1 hour')",
+            jid=job_a["id"],
+        )
+        # Scanner re-queues the doc → live todo sibling B, identical queueing_lock.
+        await producer.send(_task("1"))
+
+        # The heartbeat sweep is blind to it (worker alive, worker_id not null) — this
+        # is the exact gap the backstop closes.
+        hb = await fresh_app.job_manager.get_stalled_jobs(seconds_since_heartbeat=10**9)
+        assert list(hb) == []
+
+        ctx = cast(JobContext, types.SimpleNamespace(app=fresh_app))
+        await reclaim_stalled_ingest_jobs(ctx, timestamp=0)
+
+        by_status = {
+            r["status"]: r["n"]
+            for r in await fresh_app.connector.execute_query_all_async(
+                "SELECT status, count(*) AS n FROM procrastinate_jobs GROUP BY status"
+            )
+        }
+        # Backstop found A (by time-in-doing), retried it → collided with B →
+        # discarded the redundant orphan; the live sibling survives to run.
+        assert by_status == {"todo": 1}
