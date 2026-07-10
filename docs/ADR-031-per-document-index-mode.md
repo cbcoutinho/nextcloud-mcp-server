@@ -32,8 +32,9 @@ tag selected the document:
 
 - **`vector_sync_pdf_tag`** (default `vector-index`) → **hybrid**
   (dense + BM25 sparse).
-- **`vector_sync_keyword_tag`** (env `VECTOR_SYNC_KEYWORD_TAG`, default **empty =
-  disabled**) → **keyword** (BM25 sparse only).
+- **`vector_sync_keyword_tag`** (env `VECTOR_SYNC_KEYWORD_TAG`, default
+  `keyword-index`, symmetric with the hybrid tag; set empty to disable) →
+  **keyword** (BM25 sparse only).
 
 The collection is always sized for a real dense slot (from the embedding model);
 keyword documents simply omit the dense vector per-point. A new payload field
