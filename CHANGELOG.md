@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.136.0 (2026-07-11)
+
+### Feat
+
+- **chunker**: greedy page-packing + chunking_config_version + density sweep harness
+
+### Fix
+
+- **chunker**: clear SonarCloud gate + warn on page-pack misconfig
+
 ## v0.135.0 (2026-07-11)
 
 ### Feat
