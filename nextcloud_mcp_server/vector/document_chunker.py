@@ -226,6 +226,28 @@ class PageAwareChunker:
         )
         return chunks
 
+    def _split_oversized_page(
+        self, page_text: str, start: int, page: int
+    ) -> list[ChunkWithPosition]:
+        """Character-split a page that exceeds the budget within its own boundary.
+
+        Offsets stay absolute (into ``content``) and the page number is fixed —
+        an oversized page never spans a page range, so ``page_end == page``.
+        """
+        chunks: list[ChunkWithPosition] = []
+        for doc in self.splitter.create_documents([page_text]):
+            sub_start = start + doc.metadata.get("start_index", 0)
+            chunks.append(
+                ChunkWithPosition(
+                    text=doc.page_content,
+                    start_offset=sub_start,
+                    end_offset=sub_start + len(doc.page_content),
+                    page_number=page,
+                    page_end=page,
+                )
+            )
+        return chunks
+
     def _chunk_by_page(
         self, content: str, page_boundaries: list[dict[str, Any]]
     ) -> list[ChunkWithPosition]:
@@ -259,19 +281,8 @@ class PageAwareChunker:
                 )
                 continue
 
-            # Oversized page: split within the page only, keeping offsets
-            # absolute and the page number fixed.
-            for doc in self.splitter.create_documents([page_text]):
-                sub_start = start + doc.metadata.get("start_index", 0)
-                chunks.append(
-                    ChunkWithPosition(
-                        text=doc.page_content,
-                        start_offset=sub_start,
-                        end_offset=sub_start + len(doc.page_content),
-                        page_number=page,
-                        page_end=page,
-                    )
-                )
+            # Oversized page: split within the page only.
+            chunks.extend(self._split_oversized_page(page_text, start, page))
         return chunks
 
     def _chunk_by_page_packed(
@@ -332,17 +343,7 @@ class PageAwareChunker:
                 # An oversized page cannot join a pack: flush the pending pack,
                 # then character-split the page within its own boundary.
                 flush()
-                for doc in self.splitter.create_documents([page_text]):
-                    sub_start = start + doc.metadata.get("start_index", 0)
-                    chunks.append(
-                        ChunkWithPosition(
-                            text=doc.page_content,
-                            start_offset=sub_start,
-                            end_offset=sub_start + len(doc.page_content),
-                            page_number=page,
-                            page_end=page,
-                        )
-                    )
+                chunks.extend(self._split_oversized_page(page_text, start, page))
                 continue
 
             if pack_start is None:

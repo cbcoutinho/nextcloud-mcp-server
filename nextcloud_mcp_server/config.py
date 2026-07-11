@@ -1177,6 +1177,17 @@ class Settings:
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
 
+        # Page-packing is a sub-mode of page-aware chunking (the packing logic
+        # only runs inside the page-aware branch). Enabling it without page-aware
+        # is a silent no-op, so surface the misconfiguration at startup.
+        if self.document_chunk_page_pack and not self.document_chunk_page_aware:
+            logger.warning(
+                "DOCUMENT_CHUNK_PAGE_PACK is enabled but DOCUMENT_CHUNK_PAGE_AWARE "
+                "is disabled; page-packing only runs inside page-aware chunking, so "
+                "this setting has no effect. Enable DOCUMENT_CHUNK_PAGE_AWARE to "
+                "activate packing."
+            )
+
         # Surface the keep-alive opt-out at startup so an operator who set it to
         # work around #965 gets confirmation it took effect.
         if not self.nextcloud_http_keepalive:

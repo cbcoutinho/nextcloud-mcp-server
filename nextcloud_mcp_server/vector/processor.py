@@ -1878,6 +1878,11 @@ async def _index_document(
             sparse_emb, dense_embeddings, i, dense_enabled=dense_for_doc
         )
 
+        # Last page of a packed multi-page chunk (Deck #636); falls back to
+        # page_number for single-page and char-path chunks so the citation
+        # range is always set.
+        page_end = chunk.page_end if chunk.page_end is not None else chunk.page_number
+
         points.append(
             PointStruct(
                 id=point_id,
@@ -1935,12 +1940,7 @@ async def _index_document(
                             "mime_type": content_type,  # From WebDAV response
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,
-                            # Last page of a packed multi-page chunk (Deck #636);
-                            # falls back to page_number for single-page and
-                            # char-path chunks so citation range is always set.
-                            "page_end": chunk.page_end
-                            if chunk.page_end is not None
-                            else chunk.page_number,
+                            "page_end": page_end,
                             "page_count": file_metadata.get("page_count"),
                             "author": file_metadata.get("author"),
                             "creation_date": file_metadata.get("creation_date"),

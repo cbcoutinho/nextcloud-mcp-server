@@ -61,6 +61,23 @@ DEFAULT_CORPUS = Path("~/Downloads/OHR-Bench").expanduser()
 DEFAULT_CHUNK_SIZES = (2048, 4096)
 
 
+def _safe_output_path(raw: str) -> Path:
+    """Resolve a user-supplied ``--output`` path, confined to the working tree.
+
+    The report is dev output, but the path comes from a CLI argument, so refuse
+    anything that resolves outside the current working directory (defends against
+    ``../`` traversal / absolute-path escape when the script is driven by an
+    agent or wrapper).
+    """
+    base = Path.cwd().resolve()
+    resolved = (base / raw).resolve()
+    if resolved != base and base not in resolved.parents:
+        raise ValueError(
+            f"--output must stay within {base}, refusing to write {resolved}"
+        )
+    return resolved
+
+
 @dataclass(frozen=True)
 class ChunkerConfig:
     """A named chunker configuration under test."""
@@ -260,8 +277,9 @@ def main() -> None:
     report = anyio.run(run, args)
     print_table(report)
     if args.output:
-        Path(args.output).write_text(json.dumps(report, indent=2))
-        print(f"Wrote {args.output}")
+        out_path = _safe_output_path(args.output)
+        out_path.write_text(json.dumps(report, indent=2))
+        print(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":

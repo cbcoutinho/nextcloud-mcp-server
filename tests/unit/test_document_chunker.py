@@ -477,7 +477,7 @@ class TestPageAwareChunker:
         for chunk in chunks:
             assert chunk.page_end == chunk.page_number
 
-    async def test_pack_pages_off_by_default(self):
+    def test_pack_pages_off_by_default(self):
         """Packing is opt-in; the default keeps one-chunk-per-page."""
         assert PageAwareChunker().pack_pages is False
 
