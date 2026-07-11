@@ -30,8 +30,11 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
+    CHUNK_DENSITY_BUCKETS,
+    density_bucket_index,
     estimate_vector_bytes,
     update_ingest_queue_depth,
+    update_qdrant_chunk_density_snapshot,
     update_vector_sync_estimated_vector_bytes,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
@@ -227,5 +230,147 @@ async def vector_sync_metrics_task(
     while not shutdown_event.is_set():
         await publish_vector_sync_metrics(task_producer, document_receive_stream)
         # Sleep until the next refresh or until shutdown, whichever comes first.
+        with anyio.move_on_after(interval):
+            await shutdown_event.wait()
+
+
+async def compute_chunk_density_snapshot(
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    *,
+    max_documents: int,
+    page_size: int = 1000,
+) -> tuple[dict[str, tuple[list[float], float]], dict[str, int], bool]:
+    """Tally the current-corpus chunk-density distribution by scrolling Qdrant.
+
+    Iterates the ``chunk_index == 0`` point of every non-placeholder document
+    (one point per document — the same trick ``count_indexed`` uses), reading only
+    ``total_chunks``, ``source_bytes`` and ``doc_type`` from the payload. For each
+    document carrying a usable source size it computes
+    ``total_chunks / (source_bytes / 1e6)`` and increments the matching
+    per-``doc_type`` bucket (edges = ``CHUNK_DENSITY_BUCKETS`` + a ``+Inf``
+    overflow slot). Documents with no usable ``source_bytes`` (payload predates the
+    key, or a non-positive value) are tallied in ``uncovered`` instead of silently
+    shrinking the histogram.
+
+    Returns ``(per_doc_type, uncovered, truncated)`` shaped for
+    ``update_qdrant_chunk_density_snapshot``: ``per_doc_type`` maps
+    ``doc_type -> (bucket_counts, gsum)``, ``uncovered`` maps ``doc_type -> count``,
+    and ``truncated`` is True when the scan stopped at ``max_documents`` (partial
+    snapshot). Errors propagate to the best-effort caller.
+    """
+    n_slots = len(CHUNK_DENSITY_BUCKETS) + 1
+    bucket_counts: dict[str, list[float]] = {}
+    gsums: dict[str, float] = {}
+    uncovered: dict[str, int] = {}
+    scanned = 0
+    truncated = False
+    offset = None
+
+    doc_filter = Filter(
+        must=[
+            get_placeholder_filter(),
+            FieldCondition(key="chunk_index", match=MatchValue(value=0)),
+        ]
+    )
+
+    while True:
+        points, offset = await qdrant_client.scroll(
+            collection_name=collection,
+            scroll_filter=doc_filter,
+            with_payload=["total_chunks", payload_keys.SOURCE_BYTES, "doc_type"],
+            with_vectors=False,
+            limit=page_size,
+            offset=offset,
+        )
+        for point in points:
+            payload = point.payload or {}
+            doc_type = payload.get("doc_type") or "unknown"
+            total_chunks = payload.get("total_chunks")
+            source_bytes = payload.get(payload_keys.SOURCE_BYTES)
+            # bool is an int subclass — exclude it so a stray True can't meter as
+            # 1. The isinstance checks are inline (not hoisted into a bool) so the
+            # type checker narrows total_chunks/source_bytes for the division.
+            if (
+                isinstance(total_chunks, int)
+                and not isinstance(total_chunks, bool)
+                and total_chunks > 0
+                and isinstance(source_bytes, (int, float))
+                and not isinstance(source_bytes, bool)
+                and source_bytes > 0
+            ):
+                density = total_chunks / (source_bytes / 1_000_000)
+                counts = bucket_counts.setdefault(doc_type, [0.0] * n_slots)
+                counts[density_bucket_index(density)] += 1
+                gsums[doc_type] = gsums.get(doc_type, 0.0) + density
+            else:
+                uncovered[doc_type] = uncovered.get(doc_type, 0) + 1
+        scanned += len(points)
+        # Qdrant's end-of-scroll signal (offset is None) is authoritative and is
+        # checked FIRST: reaching it means the whole collection was covered, so it
+        # is never truncated — even if the final page pushed ``scanned`` to/over
+        # the cap. Only when there is genuinely more to fetch (offset not None)
+        # AND we have already retrieved *strictly more* than the cap do we stop
+        # early and flag truncation. This tolerates one page of slop and avoids a
+        # false positive when the collection size lands exactly on the cap: Qdrant
+        # returns a non-None next offset even when the following scroll would come
+        # back empty, so ``offset is not None`` alone is not proof of more data.
+        if offset is None:
+            break
+        if scanned > max_documents:
+            truncated = True
+            break
+
+    per_doc_type = {dt: (bucket_counts[dt], gsums[dt]) for dt in bucket_counts}
+    return per_doc_type, uncovered, truncated
+
+
+async def publish_chunk_density_snapshot() -> None:
+    """Compute and publish one current-corpus chunk-density snapshot.
+
+    Never raises: a metrics refresh must not disturb ingest. On any failure the
+    previously published snapshot simply remains until the next successful pass.
+    """
+    settings = get_settings()
+    try:
+        qdrant_client = await get_qdrant_client()
+        per_doc_type, uncovered, truncated = await compute_chunk_density_snapshot(
+            qdrant_client,
+            settings.get_collection_name(),
+            max_documents=settings.vector_density_snapshot_max_documents,
+        )
+        update_qdrant_chunk_density_snapshot(
+            per_doc_type, uncovered=uncovered, truncated=truncated
+        )
+        if truncated:
+            logger.warning(
+                "Chunk-density snapshot hit the %s-document scan cap; the "
+                "published distribution covers only a prefix of the collection",
+                settings.vector_density_snapshot_max_documents,
+            )
+    except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
+        logger.warning("Failed to publish chunk-density snapshot: %s", exc)
+
+
+async def vector_density_snapshot_task(
+    shutdown_event: anyio.Event,
+    *,
+    task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
+) -> None:
+    """Publish the current-corpus chunk-density snapshot on a slow cadence.
+
+    Separate from ``vector_sync_metrics_task`` because the collection scroll is
+    materially heavier than the ``count()``-based gauges, so it runs on its own
+    (longer) ``vector_density_snapshot_interval``. Spawned only when both vector
+    sync and the snapshot are enabled (see app startup wiring).
+    """
+    settings = get_settings()
+    interval = settings.vector_density_snapshot_interval
+    logger.info("Chunk-density snapshot publisher started (interval=%ss)", interval)
+    task_status.started()
+
+    while not shutdown_event.is_set():
+        await publish_chunk_density_snapshot()
+        # Sleep until the next snapshot or until shutdown, whichever comes first.
         with anyio.move_on_after(interval):
             await shutdown_event.wait()

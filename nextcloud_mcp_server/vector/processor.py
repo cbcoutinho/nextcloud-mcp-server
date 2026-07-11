@@ -1794,13 +1794,19 @@ async def _index_document(
         ),
     )
 
+    # Raw source size at ingestion (raw WebDAV binary for files, UTF-8 text size
+    # for text doc types). Computed once here and reused for both the ingest-time
+    # density metric and the per-point payload (payload_keys.SOURCE_BYTES) so the
+    # current-corpus density snapshot can recompute chunks-per-MB from Qdrant.
+    source_bytes = ingested_byte_size(content_bytes, content)
+
     # Observability-only cost signals (card #624), independent of USAGE_METERING.
     # Best-effort and self-contained in the helper so a metrics failure can never
     # disturb indexing.
     _record_ingest_vector_cost(
         doc_type=doc_task.doc_type,
         chunk_count=len(chunk_texts),
-        source_bytes=ingested_byte_size(content_bytes, content),
+        source_bytes=source_bytes,
         dense_for_doc=dense_for_doc,
         overhead=settings.vector_ram_hnsw_overhead_factor,
     )
@@ -1913,6 +1919,10 @@ async def _index_document(
                     "chunk_start_offset": chunk.start_offset,
                     "chunk_end_offset": chunk.end_offset,
                     "metadata_version": 2,  # v2 includes position metadata
+                    # Raw source size (bytes) at ingestion — the denominator the
+                    # current-corpus density snapshot needs, previously discarded
+                    # after embedding. Same on every chunk of the document.
+                    payload_keys.SOURCE_BYTES: source_bytes,
                     # Decomposition payload keys (design §10.2), additive.
                     payload_keys.PROCESSOR_VERSION: "monolith-v1",
                     payload_keys.PARSED_AT: indexed_at,
