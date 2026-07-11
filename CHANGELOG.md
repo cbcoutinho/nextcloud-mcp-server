@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.135.0 (2026-07-11)
+
+### Feat
+
+- **webdav**: opt-in interactive read-parse timeout cap
+- **config**: add DOCLING_PIPELINE/DOCLING_VLM_PRESET settings
+- **documents**: thread pipeline/vlm_preset through docling convert_file
+
 ## v0.134.0 (2026-07-11)
 
 ### Feat
