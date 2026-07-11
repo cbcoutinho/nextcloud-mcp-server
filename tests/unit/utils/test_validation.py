@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from nextcloud_mcp_server.utils.validation import (
+    is_safe_webdav_file_path,
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
 )
@@ -57,6 +58,38 @@ def test_accepts_positive_ascii_integers(value):
 def test_rejects_invalid_doc_ids(value, reason):
     """Reject empty/zero/leading-zero/non-ASCII/non-digit inputs."""
     assert is_valid_nextcloud_doc_id(value) is False, f"should reject: {reason}"
+
+
+# is_safe_webdav_file_path --------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/Documents/report.pdf",
+        "/Documents/My%20File.pdf",
+        "/Documents/archive..2026.pdf",
+    ],
+)
+def test_safe_webdav_file_path_accepts_normal_paths(value):
+    assert is_safe_webdav_file_path(value) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/Documents/../../../etc/passwd",
+        "/../secret.pdf",
+        "/folder/..%2F..%2Fetc/passwd",
+        "/folder/%252e%252e%252Fsecret.pdf",
+        "/folder/%2e%2e%5Csecret.pdf",
+        "/folder/%00secret.pdf",
+    ],
+)
+def test_safe_webdav_file_path_rejects_traversal(value):
+    assert is_safe_webdav_file_path(value) is False
 
 
 # parse_modified_timestamp (ADR-027) ---------------------------------------

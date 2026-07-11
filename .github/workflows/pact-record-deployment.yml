@@ -59,13 +59,19 @@ jobs:
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
-          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+          # Unified pact CLI (Rust, pact-foundation/pact-cli) — replaces the
+          # deprecated pact-ruby-standalone `pact-broker` CLI (which only warns
+          # now and is no longer maintained). The cargo-dist installer appends
+          # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
+          # for the record-deployment step below.
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
+          "$HOME/.pact/bin/pact" --help > /dev/null
 
       - name: Record deployment to production
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          pact-broker record-deployment \
+          pact broker record-deployment \
             --broker-base-url "$PACT_BROKER" \
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \

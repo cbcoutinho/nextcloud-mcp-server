@@ -42,24 +42,18 @@ async def test_qdrant_error_falls_back_to_env(mocker):
     assert meta == cm.env_default_metadata(settings)
 
 
-def test_build_embedding_identity_hybrid_is_model_name():
-    # Hybrid mode: the identity is the active dense embedding model name.
+def test_build_embedding_identity_is_model_name():
+    # The identity is always the active dense embedding model name — the global
+    # keyword switch (and its ``bm25-keyword`` marker) is gone; keyword-vs-hybrid
+    # is now per-document (payload_keys.INDEX_MODE) and shares one identity space,
+    # so the identity never depends on mode.
     settings = Settings()
-    assert settings.dense_enabled is True
     assert cm.build_embedding_identity(settings) == settings.get_embedding_model_name()
-
-
-def test_build_embedding_identity_keyword_is_bm25_marker():
-    # Regression (Deck #509): keyword mode must return the fixed ``bm25-keyword``
-    # marker, NOT get_embedding_model_name()'s ``simple-{dim}`` fallback — the value
-    # the chunk-point writer stamps and the dedup lookup compares must agree, or an
-    # unchanged shared doc is re-processed + re-OCR'd every scan.
-    settings = Settings(search_mode="keyword")
-    assert settings.dense_enabled is False
-    assert cm.build_embedding_identity(settings) == cm.KEYWORD_EMBEDDING_IDENTITY
-    assert cm.build_embedding_identity(settings) == "bm25-keyword"
-    # The sentinel/env-fallback metadata carries the same marker.
-    assert cm.env_default_metadata(settings)["embedding_identity"] == "bm25-keyword"
+    # The sentinel/env-fallback metadata carries the same model-name identity.
+    assert (
+        cm.env_default_metadata(settings)["embedding_identity"]
+        == settings.get_embedding_model_name()
+    )
 
 
 async def test_api_source(mocker):
@@ -83,7 +77,8 @@ async def test_api_source(mocker):
     mocker.patch.object(
         httpx,
         "AsyncClient",
-        lambda *a, **k: orig(*a, **{**k, "transport": transport}),
+        # ty can't narrow the spread kwargs through the constructor overloads.
+        lambda *a, **k: orig(*a, **{**k, "transport": transport}),  # ty: ignore[invalid-argument-type]
     )
 
     meta = await cm.read_collection_metadata(mocker.AsyncMock(), "col", settings)
@@ -100,6 +95,7 @@ async def test_api_source_uses_shared_http_client():
     shared = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     async with shared:
         meta = await cm._read_from_api("https://cp", "col", client=shared)
+    assert meta is not None
     assert meta["embedding_identity"] == "mistral-embed"
 
 

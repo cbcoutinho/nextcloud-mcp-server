@@ -109,12 +109,46 @@ async def test_poll_404_raises_job_not_found(monkeypatch):
 
 
 async def test_poll_pending(monkeypatch):
+    # No Retry-After header -> retry_after is None (caller falls back to its own
+    # configured poll interval).
     _patch_transport(
         monkeypatch,
         lambda r: httpx.Response(200, json={"status": "pending", "total": 1}),
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_pending and result.pages == []
+    assert result.retry_after is None
+
+
+async def test_poll_pending_parses_retry_after_header(monkeypatch):
+    # A pending poll carrying the gateway's Retry-After (delta-seconds) surfaces it
+    # on the result so the caller can back off (anti-storm, Deck #523). This is the
+    # layer doing the actual HTTP header parsing.
+    _patch_transport(
+        monkeypatch,
+        lambda r: httpx.Response(
+            202, json={"status": "pending"}, headers={"Retry-After": "30"}
+        ),
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+    assert result.is_pending
+    assert result.retry_after == 30
+
+
+async def test_poll_pending_ignores_malformed_retry_after_header(monkeypatch):
+    # An HTTP-date-formatted Retry-After (which _parse_retry_after intentionally does
+    # NOT support) — or any non-integer — degrades to None rather than raising.
+    _patch_transport(
+        monkeypatch,
+        lambda r: httpx.Response(
+            202,
+            json={"status": "pending"},
+            headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"},
+        ),
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+    assert result.is_pending
+    assert result.retry_after is None
 
 
 async def test_poll_succeeded_maps_pages(monkeypatch):
@@ -197,3 +231,20 @@ async def test_poll_raises_on_http_error(monkeypatch):
     )
     with pytest.raises(httpx.HTTPStatusError):
         await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("30", 30),
+        ("  45  ", 45),  # surrounding whitespace tolerated
+        (None, None),  # header absent
+        ("0", None),  # non-positive -> no back-off signal
+        ("-5", None),  # negative -> ignored
+        ("30.5", None),  # non-integer -> ignored (we send whole seconds)
+        ("soon", None),  # non-numeric -> ignored
+        ("Wed, 21 Oct 2026 07:28:00 GMT", None),  # HTTP-date form unsupported
+    ],
+)
+def test_parse_retry_after(raw, expected):
+    assert gbc._parse_retry_after(raw) == expected

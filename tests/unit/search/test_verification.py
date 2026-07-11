@@ -593,15 +593,16 @@ def _file_client(mocker, *, tagged=None, find_side_effect=None, username="alice"
 
 @pytest.mark.unit
 async def test_verify_files_tagged_is_kept(mocker):
-    """A file currently carrying the vector-index tag is kept, and the tagged
-    set is fetched with a single batch call (not one per result)."""
+    """A file currently carrying an index tag is kept, and the tagged set is
+    fetched with one batch call per tag (not one per result). Both tags are
+    queried by default (keyword-index is on by default)."""
     _patch_excluded(mocker)
     client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
 
     result = await _verify_files(client, [_make_result(100, doc_type="file")], _sem())
 
     assert result == {"100"}
-    client.find_files_by_tag.assert_awaited_once_with(
+    client.find_files_by_tag.assert_any_await(
         "vector-index", mime_type_filter="application/pdf"
     )
 

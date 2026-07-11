@@ -2,6 +2,7 @@ import atexit
 import logging
 import logging.config
 import os
+import re
 import socket
 import ssl
 import tempfile
@@ -88,19 +89,14 @@ _DEFAULTS: dict[str, Any] = {
     # Set TOKEN_STORAGE_DB to persist tokens across restarts.
     "token_storage_db": None,
     # Centralized backend (any SQLAlchemy URL). Wins over TOKEN_STORAGE_DB
-    # when set. Use postgresql+asyncpg://user:pw@host/db for HA k8s
-    # deployments so pods can be stateless. See ADR-026.
+    # when set. Use postgresql+psycopg://user:pw@host/db for HA k8s
+    # deployments so pods can be stateless. The URL is passed through
+    # verbatim — TLS (e.g. ?sslmode=require) and every other parameter are
+    # read from it by libpq/psycopg; the server never rewrites it. See ADR-026.
     "database_url": None,
-    # TLS for the Postgres backend (mirror NEXTCLOUD_VERIFY_SSL pattern).
-    # Default is None — preserve asyncpg's `prefer` mode so cluster-local
-    # Postgres without TLS works out of the box. Set to True for full
-    # verification or False to silence cert errors against self-signed
-    # homelab servers. DATABASE_CA_BUNDLE points at a private-CA PEM.
-    "database_verify_ssl": None,
-    "database_ca_bundle": None,
     # Postgres connection pool sizing (ADR-026 → "Concurrency model and
     # pool sizing"). Per-pod defaults to 2 + 5 overflow = 7 max
-    # connections. asyncpg connections are single-flight, so the pool
+    # connections. psycopg connections are single-flight, so the pool
     # only needs to cover typical multi-user MCP burst — not every
     # potential in-flight tool call. Tune up with DATABASE_POOL_SIZE /
     # DATABASE_MAX_OVERFLOW for high-traffic prod fleets.
@@ -118,6 +114,7 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_processor_workers": 3,
     "vector_sync_queue_max_size": 10000,
     "vector_sync_metrics_refresh_interval": 20,
+    "vector_ram_hnsw_overhead_factor": 1.5,
     "vector_sync_user_poll_interval": 60,
     "health_ready_refresh_interval": 15,
     # Orphan-sweep at Pod startup (card #101). When True, delete any
@@ -126,10 +123,17 @@ _DEFAULTS: dict[str, Any] = {
     # leave work stuck behind the 5x-scan-interval staleness gate.
     # Escape hatch only — leave on by default.
     "vector_sync_orphan_sweep_enabled": True,
-    # System tag that marks files for vector indexing. The scanner indexes
-    # files carrying this tag; verify-on-read gates results on current
-    # membership of this tag (ADR-019).
-    "vector_sync_pdf_tag": "vector-index",
+    # System tag that marks files for hybrid (dense + BM25 sparse) indexing.
+    # The scanner indexes files carrying this tag; verify-on-read gates results
+    # on current membership of this tag (ADR-019).
+    "vector_sync_tag": "vector-index",
+    # System tag that marks files for keyword-only (BM25 sparse) indexing.
+    # Defaults to ``keyword-index`` (symmetric with ``vector_sync_tag``), so
+    # a user who creates + applies that tag gets keyword-only indexing out of the
+    # box. Files carrying it are indexed sparse-only (no dense embedding, no
+    # embedding cost) into the SAME collection as hybrid files; ``vector-index``
+    # wins if a file carries both. Set empty to disable the second tag entirely.
+    "vector_sync_keyword_tag": "keyword-index",
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -230,10 +234,6 @@ _DEFAULTS: dict[str, Any] = {
     # Seconds between batch-job polls (the procrastinate re-enqueue delay). Each
     # poll re-runs the tier; keep it well above a few seconds.
     "document_ocr_batch_poll_seconds": 120,
-    # Hard deadline (seconds from submit) after which a still-pending batch job is
-    # abandoned and the document marked parse-failed (timeout). Matches the
-    # gateway's 24h Batch timeout default.
-    "document_ocr_batch_max_wait_seconds": 86400,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -298,11 +298,6 @@ _DEFAULTS: dict[str, Any] = {
     # the current monolithic behavior; self-hosters who set none are
     # unaffected. See docs/architecture/mcp-decomposition.md (sibling repo).
     "embedding_provider": "autodetect",  # autodetect | gateway
-    # Search mode (ADR-030). ``hybrid`` (default) generates + queries dense
-    # embeddings AND BM25 sparse vectors. ``keyword`` skips dense entirely:
-    # BM25 sparse only, so fully airgapped deployments need no embedding
-    # endpoint. ``keyword`` still requires vector sync enabled (it uses Qdrant).
-    "search_mode": "hybrid",  # hybrid (dense+sparse) | keyword (BM25 sparse only)
     # Ingest queue backend (Deck #183). None → ``memory`` (the in-process anyio
     # queue): procrastinate is strictly opt-in, even on a Postgres DATABASE_URL.
     # Set ``postgres`` explicitly to split ingest into a procrastinate worker;
@@ -317,6 +312,21 @@ _DEFAULTS: dict[str, Any] = {
     # worker heartbeat is this many seconds stale (Deck #183). Default is well
     # above the longest expected document; raise it for slow embedding backends.
     "ingest_stalled_job_seconds": 300,
+    # Backstop reclaim: also re-queue a job stuck in ``doing`` for this many seconds
+    # regardless of worker liveness. The heartbeat threshold above only catches DEAD
+    # workers; a job whose OWN completion crashed (e.g. an unhandled queueing_lock
+    # UniqueViolation on the doing->todo retry) is stranded in ``doing`` under a LIVE,
+    # heart-beating worker and is invisible to the heartbeat sweep.
+    # This fires purely on time-in-``doing``, NOT on liveness, so it can't tell "stuck"
+    # from "legitimately slow": if a single HEALTHY process_document attempt ever ran
+    # past this, it'd be re-queued mid-flight and two workers could process the doc
+    # concurrently. That's safe ONLY because ingest re-runs are idempotent (uuid5
+    # Qdrant point IDs — see the queue module's "Design notes"), NOT because the
+    # reclaim distinguishes the two — so keep the default comfortably above the longest
+    # real single attempt. OCR batch polling releases the worker between polls
+    # (BatchPending -> retry_in), so a job never legitimately holds ``doing`` this
+    # long; 1800s is deep headroom. (Deck: ingest doing-strand reclaim.)
+    "ingest_doing_max_seconds": 1800,
     # Delete succeeded ingest jobs (keeps the queue table lean + the KEDA
     # queue-depth metric clean). Set false to retain succeeded rows for audit
     # (note: indexing success is also recorded in logs/metrics regardless).
@@ -454,6 +464,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
+        Validator("VECTOR_RAM_HNSW_OVERHEAD_FACTOR", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
         Validator("HEALTH_READY_REFRESH_INTERVAL", gte=1),
         Validator("PORT", gte=1, lte=65535),
@@ -465,10 +476,8 @@ _dynaconf = Dynaconf(
         # Settings.__post_init__ via _enum_fields (case-insensitive, like
         # DOCUMENT_OCR_PROVIDER) — no strict dynaconf Validator here, so
         # "Batch"/"SYNC" normalise instead of erroring.
-        # Poll cadence well above a few seconds (each poll re-runs the tier);
-        # deadline at least one poll interval.
+        # Poll cadence well above a few seconds (each poll re-runs the tier).
         Validator("DOCUMENT_OCR_BATCH_POLL_SECONDS", gte=5),
-        Validator("DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS", gte=60),
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
         # 0 disables the pre-parse PDF size cap; otherwise it must be positive.
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
@@ -483,7 +492,9 @@ _dynaconf = Dynaconf(
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
-        Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
+        Validator("VECTOR_SYNC_TAG", len_min=1),
+        # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
+        # discovery), so no len_min — but when set it must be a usable tag name.
         # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
         # but when set it must be long enough to resist guessing. Surfaces a
         # weak/placeholder secret at startup rather than in a later audit.
@@ -582,7 +593,7 @@ def get_database_url() -> str:
 
     Priority:
     1. ``DATABASE_URL`` if set — any SQLAlchemy URL is accepted; the primary
-       supported backends are ``postgresql+asyncpg://...`` for HA k8s
+       supported backends are ``postgresql+psycopg://...`` for HA k8s
        deployments and ``sqlite+aiosqlite:///...`` for development.
     2. Otherwise build ``sqlite+aiosqlite:///{get_token_db_path()}`` so the
        legacy ``TOKEN_STORAGE_DB`` env var and the ephemeral-tempfile
@@ -610,7 +621,7 @@ def mask_db_password(url: str) -> str:
     """Return a logger-safe rendering of a SQLAlchemy URL.
 
     DATABASE_URL routinely carries a password (e.g.
-    ``postgresql+asyncpg://mcp:secret@db/mcp``); logging it raw leaks the
+    ``postgresql+psycopg://mcp:secret@db/mcp``); logging it raw leaks the
     secret to stdout/stderr and any aggregator. SQLAlchemy's
     :func:`make_url` + ``render_as_string(hide_password=True)`` substitutes
     a fixed ``***`` placeholder while keeping the rest of the URL intact
@@ -624,8 +635,6 @@ def mask_db_password(url: str) -> str:
         # If parsing fails (e.g. an explicit ssl-disable test URL with an
         # exotic shape), fall back to a regex that scrubs any
         # ``://user:password@`` pattern. Never raise from a logging path.
-        import re  # noqa: PLC0415
-
         return re.sub(r"(://[^:/]+):[^@]*@", r"\1:***@", url)
 
 
@@ -866,15 +875,8 @@ class Settings:
     # pooled connection on flaky CDN/WAN paths (see #965).
     nextcloud_http_keepalive: bool = True
 
-    # Postgres backend TLS settings (ADR-026). Default verify_ssl is None,
-    # not True: when DATABASE_URL is unset there's nothing to verify, and
-    # when it is set we don't want to break cluster-internal Postgres that
-    # commonly runs without TLS. Operators opt in to verify-full with True
-    # or supply a private-CA bundle.
-    database_verify_ssl: bool | None = None
-    database_ca_bundle: str | None = None
     # Postgres connection pool sizing — DEPRECATED, retained for
-    # backward compatibility. The asyncpg engine switched to NullPool
+    # backward compatibility. The psycopg engine switched to NullPool
     # in #799 (cross-event-loop crashes under anyio TaskGroups made
     # the original QueuePool + pool_pre_ping setup unsafe). These
     # fields no longer affect the Postgres engine; the validators
@@ -945,16 +947,30 @@ class Settings:
     # outstanding-work + indexed documents/chunks. Decoupled from the consumer
     # so the gauges are correct on every deployment mode and queue backend.
     vector_sync_metrics_refresh_interval: int = 20  # seconds
+    # HNSW-graph/segment overhead multiplier applied when estimating dense-vector
+    # RAM (``chunks * dim * 4 bytes * factor``). ~1.5 matches the cost-to-serve
+    # note's ~6 KB / 1024-dim observation; a deployment knob because the real
+    # overhead varies with HNSW ``m``/segment layout. Observability only — no
+    # billing impact.
+    vector_ram_hnsw_overhead_factor: float = 1.5
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
     vector_sync_orphan_sweep_enabled: bool = True  # card #101
     # Cadence for the background readiness dependency-health refresh loop
     # (app.py): keeps the Nextcloud/Qdrant snapshot warm off the probe path so
     # /health/ready never does external I/O (Deck #302).
     health_ready_refresh_interval: int = 15  # seconds
-    # System tag marking files for vector indexing. The scanner indexes files
-    # carrying this tag and verify-on-read gates results on current membership
-    # (ADR-019), so an untagged file drops out of search immediately.
-    vector_sync_pdf_tag: str = "vector-index"
+    # System tag marking files for hybrid (dense + BM25 sparse) indexing. The
+    # scanner indexes files carrying this tag and verify-on-read gates results
+    # on current membership (ADR-019), so an untagged file drops out of search
+    # immediately.
+    vector_sync_tag: str = "vector-index"
+
+    # System tag marking files for keyword-only (BM25 sparse) indexing. Defaults
+    # to ``keyword-index`` (symmetric with ``vector_sync_tag``): tagged files
+    # are indexed sparse-only into the same collection as hybrid files (no dense
+    # embedding). ``vector-index`` takes precedence when a file carries both tags.
+    # Set empty to disable the second tag entirely.
+    vector_sync_keyword_tag: str = "keyword-index"
 
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the
@@ -1061,9 +1077,10 @@ class Settings:
     # It requires a gateway: with no EMBEDDING_GATEWAY_URL, __post_init__ rejects
     # mode=batch at startup rather than silently downgrading to sync.
     document_ocr_mode: str = "sync"
-    # Batch-job poll cadence (procrastinate re-enqueue delay) and hard deadline.
+    # Batch-job poll cadence (procrastinate re-enqueue delay). A pending job is
+    # polled indefinitely — the gateway owns the OCR lifecycle (Deck #523), so
+    # there is no worker-side give-up deadline.
     document_ocr_batch_poll_seconds: int = 120
-    document_ocr_batch_max_wait_seconds: int = 86400
     # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
     # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
     # OR (when detect_scanned, image-analysis only runs when OCR is enabled)
@@ -1106,12 +1123,12 @@ class Settings:
     # MCP decomposition hook points (design §10, opt-in). All defaults
     # reproduce the current monolith; validated in __post_init__.
     embedding_provider: str = "autodetect"  # autodetect | gateway
-    search_mode: str = "hybrid"  # hybrid | keyword (BM25 sparse only) — ADR-030
     # Ingest queue backend (Deck #183). None → resolved in __post_init__ to
     # ``postgres`` when DATABASE_URL is Postgres, else ``memory``.
     ingest_queue: str | None = None  # memory | postgres
     mcp_role: str = "all"  # api | worker | all (Deck #183 two-pod model)
     ingest_stalled_job_seconds: int = 300  # crashed-worker reclaim threshold
+    ingest_doing_max_seconds: int = 1800  # backstop: reclaim live-worker doing strands
     ingest_delete_succeeded_jobs: bool = True  # drop succeeded ingest jobs
     ingest_listen_notify: bool = True  # False = poll-only (txn-mode pooler, Deck #424)
     ingest_escalation_enabled: bool = True  # per-tier queue-hop (Deck #323)
@@ -1182,23 +1199,9 @@ class Settings:
                 "poisoned/desynced pooled connections (#965)."
             )
 
-        # Validate Postgres backend TLS configuration (ADR-026)
-        if self.database_verify_ssl is False:
-            logger.warning(
-                "DATABASE_VERIFY_SSL is disabled. "
-                "TLS certificate verification is turned off for the Postgres "
-                "backend. Only acceptable for homelab / self-signed setups; "
-                "prefer DATABASE_CA_BUNDLE for production."
-            )
-        if self.database_ca_bundle:
-            if not os.path.isfile(self.database_ca_bundle):
-                raise ValueError(
-                    f"DATABASE_CA_BUNDLE path does not exist: {self.database_ca_bundle}"
-                )
-            logger.info(
-                "Using custom CA bundle for Postgres backend: %s",
-                self.database_ca_bundle,
-            )
+        # Postgres backend TLS is configured entirely in DATABASE_URL (e.g.
+        # ?sslmode=require&sslrootcert=/path) and read by libpq/psycopg — the
+        # server neither parses nor validates it (ADR-026, Model A).
 
         # Pool sizing must be sensible — guard against operators accidentally
         # setting 0 / negative via env (would deadlock at first request).
@@ -1249,7 +1252,6 @@ class Settings:
         # the monolith, so deployments that set none of these pass through.
         _enum_fields = {
             "embedding_provider": {"autodetect", "gateway"},
-            "search_mode": {"hybrid", "keyword"},
             "mcp_role": {"api", "worker", "all"},
             "collection_metadata_source": {"qdrant", "api"},
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
@@ -1518,15 +1520,11 @@ class Settings:
         # Sanitize deployment ID
         deployment_id = deployment_id.lower().replace(" ", "-").replace("_", "-")
 
-        # Keyword mode (ADR-030) indexes BM25 sparse vectors only and may run
-        # with no embedding provider configured, so the embedding model name is
-        # a meaningless ``simple-{dim}`` fallback. Use a fixed mode marker
-        # instead: this guarantees keyword and hybrid indexes never share a
-        # collection (their point schemas are not interchangeable — see ADR-030)
-        # and removes keyword mode's dependency on the phantom model name.
-        if self.search_mode == "keyword":
-            return f"{deployment_id}-bm25-keyword"
-
+        # The collection always carries a real dense slot sized from the
+        # embedding model. Keyword-only documents (``keyword-index`` tag) simply
+        # omit the dense vector per-point — they share this collection with
+        # hybrid documents (per-document index mode), so the name is always
+        # keyed on the embedding model.
         model_name = self.get_embedding_model_name().replace("/", "-").replace(":", "-")
 
         return f"{deployment_id}-{model_name}"
@@ -1538,17 +1536,6 @@ class Settings:
     def enable_semantic_search(self) -> bool:
         """Semantic search enabled (ADR-021 alias for vector_sync_enabled)."""
         return self.vector_sync_enabled
-
-    @property
-    def dense_enabled(self) -> bool:
-        """Dense embeddings generated + queried.
-
-        False in ``keyword`` mode (ADR-030), where ingestion and search use BM25
-        sparse vectors only — no external embedding endpoint is contacted. Single
-        source of truth for the processor, the search algorithm, and the Qdrant
-        client so the three subsystems stay consistent.
-        """
-        return self.search_mode != "keyword"
 
     @property
     def enable_background_operations(self) -> bool:
@@ -1773,9 +1760,6 @@ def get_settings() -> Settings:
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
         "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
         "nextcloud_http_keepalive": "NEXTCLOUD_HTTP_KEEPALIVE",
-        # Postgres backend TLS (ADR-026)
-        "database_verify_ssl": "DATABASE_VERIFY_SSL",
-        "database_ca_bundle": "DATABASE_CA_BUNDLE",
         # Postgres backend pool sizing (ADR-026)
         "database_pool_size": "DATABASE_POOL_SIZE",
         "database_max_overflow": "DATABASE_MAX_OVERFLOW",
@@ -1801,10 +1785,12 @@ def get_settings() -> Settings:
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
+        "vector_ram_hnsw_overhead_factor": "VECTOR_RAM_HNSW_OVERHEAD_FACTOR",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
-        "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",
+        "vector_sync_tag": "VECTOR_SYNC_TAG",
+        "vector_sync_keyword_tag": "VECTOR_SYNC_KEYWORD_TAG",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings
@@ -1851,7 +1837,6 @@ def get_settings() -> Settings:
         "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
         "document_ocr_mode": "DOCUMENT_OCR_MODE",
         "document_ocr_batch_poll_seconds": "DOCUMENT_OCR_BATCH_POLL_SECONDS",
-        "document_ocr_batch_max_wait_seconds": "DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS",
         "document_ocr_min_text_quality": "DOCUMENT_OCR_MIN_TEXT_QUALITY",
         "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
@@ -1878,10 +1863,10 @@ def get_settings() -> Settings:
         "excluded_tags": "EXCLUDED_TAGS",
         # MCP decomposition hook points (design §10)
         "embedding_provider": "EMBEDDING_PROVIDER",
-        "search_mode": "SEARCH_MODE",
         "ingest_queue": "INGEST_QUEUE",
         "mcp_role": "MCP_ROLE",
         "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",
+        "ingest_doing_max_seconds": "INGEST_DOING_MAX_SECONDS",
         "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
         "ingest_listen_notify": "INGEST_LISTEN_NOTIFY",
         "ingest_escalation_enabled": "INGEST_ESCALATION_ENABLED",
@@ -1943,143 +1928,34 @@ def get_nextcloud_http_keepalive() -> bool:
     return get_settings().nextcloud_http_keepalive
 
 
-def get_database_ssl() -> bool | ssl.SSLContext | None:
-    """Return the asyncpg ``ssl`` arg for the Postgres backend (ADR-026).
-
-    Returns:
-        - ``None`` when both DATABASE_VERIFY_SSL and DATABASE_CA_BUNDLE are
-          unset — caller skips passing ``ssl`` so asyncpg keeps its default
-          (``prefer``). Preserves PR #798 behavior for cluster-local
-          Postgres without TLS.
-        - ``False`` if DATABASE_VERIFY_SSL=false (silence cert errors).
-        - ``ssl.SSLContext`` if DATABASE_CA_BUNDLE is set (custom private
-          CA, implies verify-full).
-        - ``True`` if DATABASE_VERIFY_SSL=true and no bundle (verify-full
-          against system trust store).
-
-    DATABASE_VERIFY_SSL=false wins over DATABASE_CA_BUNDLE so an operator
-    can quickly silence cert errors during incident response without
-    having to delete the bundle path from their secret store. Matches the
-    Nextcloud-pattern precedence for symmetry with
-    :func:`get_nextcloud_ssl_verify`.
-    """
-    settings = get_settings()
-    if settings.database_verify_ssl is False:
-        # Operator-explicit opt-out (DATABASE_VERIFY_SSL=false) — semantics
-        # are documented in the docstring above and ADR-026 TLS section.
-        # Bare NOSONAR silences any cert-verification-required rule that
-        # may fire on this branch (defensive; no such rule fires today).
-        return False  # NOSONAR
-    if settings.database_ca_bundle:
-        # ``ssl.create_default_context()`` on Python 3.10+ already negotiates
-        # the strongest available protocol (TLS 1.2+ with secure ciphers);
-        # we pin Python 3.11+ in pyproject.toml. ``purpose=SERVER_AUTH`` is
-        # the default but spelt out here so the intent is visible to
-        # static analysers and human readers alike.
-        return ssl.create_default_context(  # NOSONAR
-            purpose=ssl.Purpose.SERVER_AUTH,
-            cafile=settings.database_ca_bundle,
-        )
-    if settings.database_verify_ssl is True:
-        return True
-    return None
-
-
-def _pg_ssl_params() -> dict[str, str]:
-    """Map the DATABASE_VERIFY_SSL / DATABASE_CA_BUNDLE settings to libpq
-    keyword params for psycopg3 (used by procrastinate, Deck #183).
-
-    psycopg/libpq takes ``sslmode`` (and ``sslrootcert``) rather than an
-    ``ssl.SSLContext`` like asyncpg, so we translate :func:`get_database_ssl`'s
-    intent into the equivalent libpq settings:
-
-    - ``None``  (both unset)        → ``{}`` (omit; libpq default ``prefer``,
-      matching the asyncpg default for cluster-local Postgres without TLS).
-    - ``False`` (DATABASE_VERIFY_SSL=false) → ``sslmode=require`` (encrypt but
-      do not verify the certificate).
-    - CA bundle set                → ``sslmode=verify-full`` + ``sslrootcert``.
-    - ``True``  (verify, no bundle) → ``sslmode=verify-full`` (system trust).
-    """
-    ssl_setting = get_database_ssl()
-    if ssl_setting is None:
-        return {}
-    if ssl_setting is False:
-        return {"sslmode": "require"}
-    settings = get_settings()
-    if settings.database_ca_bundle:
-        return {"sslmode": "verify-full", "sslrootcert": settings.database_ca_bundle}
-    return {"sslmode": "verify-full"}
-
-
 def get_procrastinate_conninfo(database_url: str | None = None) -> str:
-    """Build a libpq conninfo string for procrastinate's psycopg3 connector.
+    """Return the libpq conninfo for procrastinate's psycopg3 connector.
 
-    Derives the connection from ``DATABASE_URL`` (a SQLAlchemy URL such as
-    ``postgresql+asyncpg://user:pass@host/db``): the SQLAlchemy driver suffix
-    (``+asyncpg``/``+psycopg``) is stripped and the parts are rendered via
-    :func:`psycopg.conninfo.make_conninfo`, which quotes values correctly (never
-    f-string the password). TLS settings are appended from :func:`_pg_ssl_params`.
+    ``DATABASE_URL`` is passed through **verbatim** — never decomposed or
+    rewritten (ADR-026, Model A). procrastinate speaks raw libpq (psycopg3),
+    which wants the URL *without* SQLAlchemy's ``+psycopg`` driver tag, so the
+    only transform is a lossless strip of that tag. libpq then reads
+    ``sslmode``, ``connect_timeout``, the password, and every other parameter
+    straight from the URL. TLS therefore lives entirely in the DSN; there is no
+    separate env-var TLS mechanism.
 
-    This is driver-agnostic on purpose: procrastinate uses psycopg3 regardless of
-    which SQLAlchemy driver the app's own engine uses, so it works whether
-    ``DATABASE_URL`` carries ``+asyncpg`` or ``+psycopg``.
-
-    TODO(Deck #183 follow-up, out-of-tree): unify the app's SQLAlchemy engine on
-    psycopg3 too (``postgresql+psycopg://``) and drop asyncpg, so the deployment
-    ships a single Postgres driver. This belongs in the rendered Helm chart
-    (set ``DATABASE_URL`` to a ``+psycopg`` URL) rather than rewriting the driver
-    in code — see charts repo, not this repo.
-
-    Only the host/port/dbname/user/password components are forwarded, plus
-    ``connect_timeout`` (a libpq keyword) honored from the URL query string or
-    defaulted to 10s so a slow/unreachable DB can't hang worker/API startup
-    indefinitely. Any *other* ``?key=value`` query parameters are **dropped**
-    (TLS is set separately via :func:`_pg_ssl_params`, and SQLAlchemy-specific
-    options don't map cleanly to libpq keywords); a warning lists them.
-
-    Raises ``ValueError`` for a non-Postgres URL — procrastinate is Postgres-only.
+    Raises ``ValueError`` for a non-Postgres URL — procrastinate is
+    Postgres-only — rather than silently coercing it.
     """
-    from psycopg.conninfo import make_conninfo  # noqa: PLC0415
-    from sqlalchemy.engine.url import make_url  # noqa: PLC0415
-
-    url = make_url(database_url or get_database_url())
-    if not url.drivername.startswith("postgresql"):
+    url = database_url or get_database_url()
+    if not url.lower().startswith("postgresql"):
+        # Show only the scheme (no credentials) — the URL is not parsed.
+        scheme = url.split("://", 1)[0]
         raise ValueError(
             "get_procrastinate_conninfo requires a PostgreSQL DATABASE_URL; "
-            f"got driver {url.drivername!r}"
+            f"got driver {scheme!r}"
         )
 
-    # ``connect_timeout`` is forwarded (libpq keyword); everything else in the
-    # query string is dropped with a warning.
-    dropped = sorted(k for k in url.query if k != "connect_timeout")
-    if dropped:
-        logger.warning(
-            "Dropping DATABASE_URL query parameters not forwarded to the "
-            "procrastinate connector: %s",
-            ", ".join(dropped),
-        )
-
-    params: dict[str, str] = {}
-    if url.host:
-        params["host"] = url.host
-    if url.port:
-        params["port"] = str(url.port)
-    if url.database:
-        params["dbname"] = url.database
-    if url.username:
-        params["user"] = url.username
-    if url.password:
-        params["password"] = url.password
-    # Honor an operator-supplied connect_timeout, else default to 10s. (make_url
-    # query values are str or a tuple of strs when repeated; take the last.)
-    # ``connect_timeout=0`` (disable) is preserved — only a missing/empty value
-    # falls back to the default, and an explicit-but-empty value is flagged.
-    _ct = url.query.get("connect_timeout")
-    if isinstance(_ct, (list, tuple)):
-        _ct = _ct[-1] if _ct else None
-    if _ct == "":
-        logger.warning("DATABASE_URL has an empty connect_timeout=; using default 10s")
-    params["connect_timeout"] = _ct if _ct else "10"
-    params.update(_pg_ssl_params())
-
-    return make_conninfo(**params)
+    # Strip only the SQLAlchemy driver tag (``postgresql+psycopg`` →
+    # ``postgresql``); libpq consumes the rest of the URL unchanged. Match
+    # case-insensitively so the strip stays consistent with the scheme guard
+    # above (``url.lower().startswith``) — a ``Postgresql+psycopg://`` that
+    # passed the guard must not slip through unstripped into an invalid conninfo.
+    return re.sub(
+        r"^postgresql\+\w+://", "postgresql://", url, count=1, flags=re.IGNORECASE
+    )

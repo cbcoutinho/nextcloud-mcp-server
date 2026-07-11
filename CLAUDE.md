@@ -246,6 +246,9 @@ uv run pytest -m "integration and not oauth" -v # Without OAuth (~2-3min)
 uv run pytest -m oauth -v                       # OAuth only (~3min)
 uv run pytest                                   # Full suite (~4-5min)
 
+# Contract tests (Pact — ADR-029; broker-gated, skip without PACT_BROKER)
+uv run pytest -m contract tests/contract/ -v
+
 # Coverage
 uv run pytest --cov
 
@@ -512,6 +515,44 @@ async def nc_notes_semantic_search_answer(
 - **Rebuild the correct container** after code changes (see Development Commands above)
 - **If tests require modifications**, ask for permission before proceeding
 
+### End-to-end + contract coverage for API surface (MANDATORY — review gate)
+
+Any PR that **adds or changes API surface** — an MCP tool, an HTTP `/api/v1/*`
+route, or a cross-service provider/consumer boundary — MUST ship, in the same PR,
+with:
+
+- **End-to-end** coverage exercising the real flow against a running stack
+  (`tests/integration/` full-stack Docker tests, or `tests/smoke/`; there is no
+  dedicated `e2e` marker yet — extend the integration tier), and
+- **Contract (Pact)** coverage for every cross-service boundary it touches.
+
+This service participates in Pact contract tests (ADR-029) under
+`tests/contract/` — run `uv run pytest -m contract tests/contract/`. It is:
+
+- a **consumer** of `astrolabe-cloud-gateway` (sync `POST /v1/ocr` and batch
+  `POST /v1/ocr/batch` + `GET /v1/ocr/batch/{job_id}`) and of `astrolabe` (OCS
+  capabilities + credentials-status), and
+- a **provider** of the `/api/v1/*` API that the `astrolabe` Nextcloud app
+  consumes (verified via `test_mcp_provider_verification.py`).
+
+**Reviewers (including the Claude review bot) must flag any API-surface PR that
+lacks e2e + contract coverage** as a required change under "Test coverage". If a
+tier does not exist yet, say so explicitly in the PR and open/track a follow-up
+card (Deck board 11) — never leave the gap silent.
+
+Known gaps (tracked on board 11):
+
+- Provider verification currently covers only the **public** endpoints
+  (`/api/v1/status`, `/api/v1/vector-sync/status`). The authenticated surface
+  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`, `/pdf-preview`,
+  `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
+  pending the ADR-029 phase-4 Bearer-token/provider-state hook.
+- The gateway **embeddings** consumer pact (`/v1/embeddings` + `/v1/models`) is
+  not yet written — only OCR is pacted.
+- There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
+  is spread across `tests/integration/` + `tests/smoke/`.
+- `can-i-deploy` runs in non-blocking **shadow mode**.
+
 ### Use Existing Fixtures
 See `tests/conftest.py` for 2888 lines of test infrastructure:
 - `nc_mcp_client` - MCP client for tool/resource testing (uses `mcp` container)
@@ -595,16 +636,32 @@ derived from the LDAP `entryUUID` — so `loginName != UID` **and**
 only backend that reproduces #980 live: login-by-email resolves to the real home
 (email is a path alias) and `user_oidc` hardcodes `loginName == UID`.
 
-The reproduction test drives the **multi-user BasicAuth** MCP service (port 8003)
-as `alice`, so no browser is needed.
+The bug is exercised in **two deployment modes**, each its own CI lane and
+marker (the markers are mutually exclusive so the lanes don't overlap):
+
+- **`ldap`** (`-m ldap`) — drives the **multi-user BasicAuth** MCP service
+  (port 8003) as `alice`; no browser needed.
+- **`login_flow_ldap`** (`-m login_flow_ldap`) — drives the **login-flow** MCP
+  service (port 8004): identity via OIDC, API access via a per-user app password
+  obtained by completing Login Flow v2 as `alice` (Playwright). Proves the same
+  principal resolution holds when the username comes from the OIDC/app-password
+  path rather than a BasicAuth header.
+
+Both assert the same WebDAV round-trip lands in alice's real home via
+`BaseNextcloudClient._ensure_principal_id` (`current-user-principal` discovery).
 
 **Setup**:
 ```bash
-# openldap (ldap profile) + the multi-user-basic MCP service (port 8003).
+# ldap lane: openldap + the multi-user-basic MCP service (port 8003).
 # user_ldap is auto-configured by app-hooks/post-installation/15-setup-ldap-backend.sh
 # (gated on the openldap service; a no-op for every other profile).
 docker compose --profile ldap --profile multi-user-basic up --build -d
-uv run pytest -m ldap -v             # xfails until #980's client fix lands
+uv run pytest -m ldap -v
+
+# login_flow_ldap lane: openldap + the login-flow MCP service (port 8004).
+docker compose --profile ldap --profile login-flow up --build -d
+uv run playwright install chromium --with-deps
+uv run pytest -m login_flow_ldap -v
 ```
 
 > The post-installation hook only runs on a **fresh** Nextcloud install. If you
@@ -614,11 +671,11 @@ uv run pytest -m ldap -v             # xfails until #980's client fix lands
 **Credentials**: LDAP admin `uid=admin,dc=example,dc=org` / `ldap_admin_pw`;
 user `alice` / `AlicePass123!` (see `ldap/bootstrap.ldif`).
 
-**xfail note**: `tests/server/ldap/test_ldap_dav_principal.py` is
-`xfail(strict=True)` — it fails (RED) on `master` because the bug is present, and
-xpasses (GREEN) once #980's `BaseNextcloudClient._ensure_principal_id` discovery
-lands. `strict=True` turns the unexpected pass into a failure, signalling that
-the marker should be dropped when #980 merges.
+**Status**: #980's fix (`BaseNextcloudClient._ensure_principal_id`) has landed, so
+both `tests/server/ldap/test_ldap_dav_principal.py` and
+`tests/server/login_flow/test_ldap_dav_principal.py` are **passing regression
+guards** (not xfail) — a failure means the principal-discovery fix regressed in
+that deployment mode.
 
 ## Integration Testing with Docker
 

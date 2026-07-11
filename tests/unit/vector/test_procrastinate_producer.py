@@ -3,17 +3,35 @@
 Uses procrastinate's in-memory connector so no live Postgres is required.
 """
 
+import inspect
+from dataclasses import fields
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from procrastinate import App, JobContext, testing
 
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 pytestmark = pytest.mark.unit
+
+
+def test_document_task_fields_are_all_accepted_by_worker_task():
+    """Every ``DocumentTask`` field must be an accepted kwarg of the worker task.
+
+    Regression for the ``index_mode`` TypeError: the producer defers via
+    ``defer_async(**asdict(task))``, so any ``DocumentTask`` field the worker
+    entrypoint does not declare raises ``TypeError: process_document_task() got an
+    unexpected keyword argument`` on 100% of deferred jobs. This locks the
+    producer→worker kwarg contract so a new field can't silently break every job.
+    """
+    task_params = set(inspect.signature(pq.process_document_task).parameters)
+    task_params.discard("context")  # supplied by procrastinate, not from asdict()
+    missing = {f.name for f in fields(DocumentTask)} - task_params
+    assert not missing, f"process_document_task() is missing kwargs: {missing}"
 
 
 def _ctx(queue: str = pq.INGEST_QUEUE_FAST) -> JobContext:
@@ -128,11 +146,42 @@ class TestProcessDocumentTask:
         assert isinstance(captured["task"], DocumentTask)
         assert captured["task"].doc_id == "42"
         assert captured["task"].etag == "e1"
+        # index_mode omitted from the call defaults to hybrid, so jobs enqueued by
+        # an older producer (before the field existed) still run.
+        assert captured["task"].index_mode == payload_keys.INDEX_MODE_HYBRID
         # Worker disables the in-process retry loop; durable retry is the queue's.
         assert captured["max_retries"] == 1
         # Tier is derived from the job's queue (escalation enabled by default).
         assert captured["tier"] == "ocr"
         fake_client.close.assert_awaited_once()
+
+    async def test_index_mode_threaded_into_rebuilt_task(self, monkeypatch):
+        """A keyword-mode job must rebuild a DocumentTask carrying that mode, so the
+        pipeline embeds sparse-only (not the hybrid default)."""
+        captured = {}
+        fake_client = AsyncMock()
+
+        async def fake_resolve(user_id):
+            return fake_client
+
+        async def fake_process(task, nc_client, *, max_retries, tier):
+            captured["task"] = task
+
+        monkeypatch.setattr(pq, "_resolve_client", fake_resolve)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.vector.processor.process_document", fake_process
+        )
+
+        await pq.process_document_task(
+            _ctx(),
+            user_id="alice",
+            doc_id="42",
+            doc_type="file",
+            operation="index",
+            modified_at=100,
+            index_mode=payload_keys.INDEX_MODE_KEYWORD,
+        )
+        assert captured["task"].index_mode == payload_keys.INDEX_MODE_KEYWORD
 
     async def test_pipeline_error_propagates_and_closes_client(self, monkeypatch):
         # A non-credential failure must propagate (so procrastinate's
@@ -202,7 +251,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 # Reclaim sweeps EVERY queue (Deck #323), so no queue filter.
                 assert queue is None
                 return [Job(1), Job(2), Job(None)]  # None id is skipped
@@ -240,7 +291,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2), Job(3)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
@@ -286,7 +339,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
@@ -320,7 +375,9 @@ class TestReclaimStalledJobs:
                 self.id = id
 
         class FakeManager:
-            async def get_stalled_jobs(self, queue=None, seconds_since_heartbeat=0):
+            async def get_stalled_jobs(
+                self, queue=None, seconds_since_heartbeat=0, nb_seconds=None
+            ):
                 return [Job(1), Job(2), Job(3)]
 
             async def retry_job_by_id_async(self, job_id, retry_at):
@@ -394,3 +451,25 @@ class TestGetIngestJobCounts:
         assert set(by_queue) == {"ingest-fast", "ingest-ocr"}
         assert by_queue["ingest-fast"]["todo"] == 3
         assert by_queue["ingest-ocr"]["failed"] == 2
+
+
+def test_build_app_for_url_disables_psycopg_prepared_statements():
+    """The procrastinate connector MUST disable psycopg auto-prepared statements
+    (``prepare_threshold=None``) so it is safe behind the pgbouncer transaction-mode
+    pooler (Deck #424): per-client ``_pg3_N`` statement names otherwise collide over
+    the shared server connections, abort transactions, and exhaust the server pool."""
+    with patch.object(pq, "PsycopgConnector") as mock_conn:
+        pq.build_app_for_url("postgresql+psycopg://u:p@h:5432/db")
+    mock_conn.assert_called_once()
+    assert mock_conn.call_args.kwargs["kwargs"] == {"prepare_threshold": None}
+
+
+def test_get_procrastinate_app_disables_psycopg_prepared_statements(monkeypatch):
+    """The process-wide App builds the same prepared-statement-safe connector."""
+    monkeypatch.setattr(pq, "_app", None)  # reset the module singleton before/after
+    monkeypatch.setattr(pq, "get_procrastinate_conninfo", lambda: "host=h dbname=db")
+    with patch.object(pq, "PsycopgConnector") as mock_conn:
+        pq.get_procrastinate_app()
+    monkeypatch.setattr(pq, "_app", None)  # don't leak a mock-backed singleton
+    mock_conn.assert_called_once()
+    assert mock_conn.call_args.kwargs["kwargs"] == {"prepare_threshold": None}

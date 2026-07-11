@@ -41,38 +41,32 @@ class TestDecompositionDefaults:
             mcp_role=" API ",
             document_tier1_engine=" PyPDFium2 ",
             document_ocr_provider=" Gateway ",
-            search_mode=" KEYWORD ",
         )
         assert s.collection_metadata_source == "qdrant"
         assert s.mcp_role == "api"
         assert s.document_tier1_engine == "pypdfium2"
         assert s.document_ocr_provider == "gateway"
-        assert s.search_mode == "keyword"
 
 
-class TestSearchMode:
-    """SEARCH_MODE = hybrid (default) | keyword (BM25 sparse only), ADR-030."""
+class TestKeywordTag:
+    """VECTOR_SYNC_KEYWORD_TAG selects files to index keyword-only (BM25 sparse,
+    no dense vector), mirroring VECTOR_SYNC_TAG. Defaults to ``keyword-index``
+    (symmetric with the ``vector-index`` default); set empty to disable."""
 
-    def test_default_is_hybrid_with_dense_enabled(self):
-        s = Settings()
-        assert s.search_mode == "hybrid"
-        assert s.dense_enabled is True
+    def test_default_is_keyword_index(self):
+        assert Settings().vector_sync_keyword_tag == "keyword-index"
 
-    def test_keyword_disables_dense(self):
-        s = Settings(search_mode="keyword")
-        assert s.dense_enabled is False
+    def test_explicit_value_round_trips(self):
+        # Mirrors VECTOR_SYNC_TAG: a configured tag is passed through verbatim
+        # (an explicit value overrides the default tag name).
+        assert (
+            Settings(vector_sync_keyword_tag="kw-only").vector_sync_keyword_tag
+            == "kw-only"
+        )
 
-    def test_keyword_collection_name_is_mode_marked(self, monkeypatch):
-        # Keyword collections must not collide with hybrid ones and must not
-        # depend on the (phantom) embedding model name.
-        monkeypatch.setattr("socket.gethostname", lambda: "mcp-host", raising=True)
-        s = Settings(search_mode="keyword")
-        assert s.get_collection_name() == "mcp-host-bm25-keyword"
-
-    def test_explicit_collection_override_wins(self):
-        # An explicit QDRANT_COLLECTION still takes precedence in keyword mode.
-        s = Settings(search_mode="keyword", qdrant_collection="my_collection")
-        assert s.get_collection_name() == "my_collection"
+    def test_empty_disables(self):
+        # Setting it empty turns the second tag off entirely.
+        assert Settings(vector_sync_keyword_tag="").vector_sync_keyword_tag == ""
 
 
 class TestEnumValidation:
@@ -85,7 +79,7 @@ class TestEnumValidation:
             ("document_tier1_engine", "mupdf"),
             ("document_ocr_provider", "gatway"),
             ("search_mode", "fulltext"),
-            ("docling_pipeline", "vllm"),
+            ("docling_pipeline", "vllm")
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
@@ -151,7 +145,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings().ingest_queue == "memory"
 
@@ -160,7 +154,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings(ingest_queue="postgres").ingest_queue == "postgres"
 
@@ -168,7 +162,7 @@ class TestIngestQueueResolution:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+            lambda: "postgresql+psycopg://mcp:mcp@db/mcp",
         )
         assert Settings(ingest_queue="memory").ingest_queue == "memory"
 
@@ -195,68 +189,67 @@ class TestTenantId:
 
 
 class TestProcrastinateConninfo:
-    @pytest.mark.parametrize(
-        "url,expected_sslmode",
-        [
-            ("postgresql+asyncpg://mcp:p%40ss@db:5432/mcp", None),
-        ],
-    )
-    def test_conninfo_round_trips_password(self, monkeypatch, url, expected_sslmode):
+    """Model A (ADR-026): DATABASE_URL is passed through verbatim — the only
+    transform is stripping the SQLAlchemy ``+<driver>`` tag so libpq accepts
+    the URL. No decomposition, no injected defaults, no env-var TLS."""
+
+    def test_conninfo_strips_only_driver_tag(self, monkeypatch):
+        # sslmode, connect_timeout, and the (percent-encoded) password all pass
+        # through byte-for-byte; only ``+psycopg`` is removed.
+        url = "postgresql+psycopg://mcp:p%40ss@db:5432/mcp?sslmode=require&connect_timeout=7"
+        monkeypatch.setattr(config_module, "get_database_url", lambda: url)
+        assert (
+            config_module.get_procrastinate_conninfo()
+            == "postgresql://mcp:p%40ss@db:5432/mcp?sslmode=require&connect_timeout=7"
+        )
+
+    def test_conninfo_parses_to_expected_libpq_params(self, monkeypatch):
         from psycopg.conninfo import conninfo_to_dict
 
+        url = "postgresql+psycopg://mcp:p%40ss@db:5432/mcp?sslmode=require"
         monkeypatch.setattr(config_module, "get_database_url", lambda: url)
-        # No SSL settings → sslmode omitted (libpq default ``prefer``).
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
         parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
         assert parsed["password"] == "p@ss"
         assert parsed["host"] == "db"
         assert parsed["dbname"] == "mcp"
-        assert parsed.get("sslmode") == expected_sslmode
+        assert parsed["sslmode"] == "require"
 
-    def test_conninfo_connect_timeout_defaults_to_10(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
+    def test_conninfo_strips_driver_tag_case_insensitively(self, monkeypatch):
+        # The scheme guard is case-insensitive; the driver-tag strip must match,
+        # so an unconventional-cased scheme can't slip through unstripped.
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
+            lambda: "Postgresql+psycopg://mcp:s@db/mcp?sslmode=require",
         )
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
-        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
-        assert parsed["connect_timeout"] == "10"
-
-    def test_conninfo_honors_url_connect_timeout(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
-        monkeypatch.setattr(
-            config_module,
-            "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp?connect_timeout=3",
-        )
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
-        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
-        assert parsed["connect_timeout"] == "3"
-
-    def test_conninfo_ssl_mapping(self, monkeypatch):
-        from psycopg.conninfo import conninfo_to_dict
-
-        monkeypatch.setattr(
-            config_module,
-            "get_database_url",
-            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
-        )
-        # verify off → encrypt without verifying.
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: False)
         assert (
-            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
-            == "require"
+            config_module.get_procrastinate_conninfo()
+            == "postgresql://mcp:s@db/mcp?sslmode=require"
         )
-        # verify on → verify-full.
-        monkeypatch.setattr(config_module, "get_database_ssl", lambda: True)
-        assert (
-            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
-            == "verify-full"
+
+    def test_conninfo_no_injected_connect_timeout(self, monkeypatch):
+        # The server injects nothing — a URL without connect_timeout stays that
+        # way (the CP/gitops-generated DSN owns the default, not the server).
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+psycopg://mcp:s@db/mcp",
         )
+        assert config_module.get_procrastinate_conninfo() == "postgresql://mcp:s@db/mcp"
+
+    def test_conninfo_no_warning_on_query_params(self, monkeypatch, caplog):
+        # The old decomposition dropped unknown query params with a warning;
+        # passthrough must emit no such warning.
+        import logging
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+psycopg://mcp:s@db/mcp?sslmode=require&application_name=x",
+        )
+        with caplog.at_level(logging.WARNING):
+            config_module.get_procrastinate_conninfo()
+        assert "Dropping DATABASE_URL query parameters" not in caplog.text
 
     def test_conninfo_rejects_non_postgres(self, monkeypatch):
         monkeypatch.setattr(

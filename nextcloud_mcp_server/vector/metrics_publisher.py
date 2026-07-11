@@ -28,13 +28,19 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
+    estimate_vector_bytes,
     update_ingest_queue_depth,
+    update_vector_sync_estimated_vector_bytes,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
     update_vector_sync_pending_documents,
+    update_vector_sync_qdrant_vector_bytes,
+    update_vector_sync_qdrant_vectors,
     update_vector_sync_queue_size,
 )
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -72,6 +78,52 @@ async def count_indexed(
         exact=exact,
     )
     return docs_result.count, chunks_result.count
+
+
+async def count_hybrid_chunks(
+    qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
+) -> int:
+    """Return the number of hybrid (dense-bearing) chunks in the collection.
+
+    Only ``index_mode == hybrid`` points carry a dense vector; keyword-index
+    points are sparse-only and cost no dense-vector RAM. This is the count that
+    drives the RAM estimate. Excludes in-flight placeholder points.
+    """
+    result = await qdrant_client.count(
+        collection_name=collection,
+        count_filter=Filter(
+            must=[
+                get_placeholder_filter(),
+                FieldCondition(
+                    key=payload_keys.INDEX_MODE,
+                    match=MatchValue(value=payload_keys.INDEX_MODE_HYBRID),
+                ),
+            ]
+        ),
+        exact=exact,
+    )
+    return result.count
+
+
+async def estimate_hybrid_vector_bytes(
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    overhead: float,
+    *,
+    exact: bool = True,
+) -> tuple[int, int]:
+    """Return ``(hybrid_chunks, estimated_vector_bytes)`` for the collection.
+
+    Single source of truth for the dense-vector RAM figure surfaced by the MCP
+    tool and the ``/api/v1/vector-sync/status`` HTTP route, so the two can't
+    drift. ``overhead`` is ``settings.vector_ram_hnsw_overhead_factor``;
+    ``estimated_vector_bytes`` is ``hybrid_chunks * dim * 4 * overhead`` (card
+    #624), rounded to an int for the response payloads.
+    """
+    hybrid_chunks = await count_hybrid_chunks(qdrant_client, collection, exact=exact)
+    dim = get_embedding_service().get_dimension()
+    estimated = int(estimate_vector_bytes(hybrid_chunks, dim, overhead))
+    return hybrid_chunks, estimated
 
 
 async def publish_vector_sync_metrics(
@@ -115,6 +167,42 @@ async def publish_vector_sync_metrics(
         update_vector_sync_indexed_chunks(chunks)
     except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
         logger.warning("Failed to publish indexed-corpus gauges: %s", exc)
+
+    # Dense-vector RAM footprint (card #624) — the real hybrid-search cost driver
+    # that source-byte billing does not capture. Two independent views so the
+    # deterministic estimate can be validated against Qdrant's own reported count:
+    #   * estimate  = OUR hybrid chunk count (payload filter) * dim * 4 * overhead
+    #   * actuals   = Qdrant vectors_count (get_collection) * dim * 4 * overhead
+    # Separate try/except so a Qdrant hiccup here never blocks the gauges above.
+    try:
+        qdrant_client = await get_qdrant_client()
+        collection = settings.get_collection_name()
+        dim = get_embedding_service().get_dimension()
+        overhead = settings.vector_ram_hnsw_overhead_factor
+
+        hybrid_chunks = await count_hybrid_chunks(
+            qdrant_client, collection, exact=False
+        )
+        update_vector_sync_estimated_vector_bytes(
+            estimate_vector_bytes(hybrid_chunks, dim, overhead)
+        )
+
+        # Qdrant's own reported count as an independent reality check.
+        # ``vectors_count`` is optional/deprecated in the client model (often None);
+        # ``getattr`` keeps this robust across client versions and falls back to
+        # ``points_count``. It aggregates all named vectors / includes non-dense
+        # points, so it is a coarse upper bound, not a clean dense-only figure —
+        # the gap vs the estimate is the drift signal, not a bug.
+        info = await qdrant_client.get_collection(collection)
+        qdrant_count = getattr(info, "vectors_count", None)
+        if qdrant_count is None:
+            qdrant_count = info.points_count or 0
+        update_vector_sync_qdrant_vectors(qdrant_count)
+        update_vector_sync_qdrant_vector_bytes(
+            estimate_vector_bytes(qdrant_count, dim, overhead)
+        )
+    except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
+        logger.warning("Failed to publish vector-RAM gauges: %s", exc)
 
 
 async def vector_sync_metrics_task(

@@ -151,21 +151,32 @@ database via `DATABASE_URL`.
 
 ```env
 # Centralized Postgres backend (HA k8s deployments)
-DATABASE_URL=postgresql+asyncpg://mcp:secret@postgres.svc.cluster.local:5432/mcp
+DATABASE_URL=postgresql+psycopg://mcp:secret@postgres.svc.cluster.local:5432/mcp?sslmode=require&connect_timeout=10
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+asyncpg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). |
+| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+psycopg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). **Passed through verbatim** — the server never rewrites it. |
 | `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
-| `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
-| `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
-| `DATABASE_POOL_SIZE` | Deprecated, no-op | Was per-pod SQLAlchemy pool size for the Postgres backend. The engine now uses `NullPool` (one fresh asyncpg connection per checkout) to avoid cross-event-loop crashes under anyio TaskGroups — see [ADR-026 § Connection pool](ADR-026-pluggable-database-backend.md) and [#799](https://github.com/cbcoutinho/nextcloud-mcp-server/pull/799). Still accepted for backward compatibility; setting it has no effect. |
+| `DATABASE_POOL_SIZE` | Deprecated, no-op | Was per-pod SQLAlchemy pool size for the Postgres backend. The engine now uses `NullPool` (one fresh psycopg connection per checkout) to avoid cross-event-loop crashes under anyio TaskGroups — see [ADR-026 § Connection pool](ADR-026-pluggable-database-backend.md) and [#799](https://github.com/cbcoutinho/nextcloud-mcp-server/pull/799). Still accepted for backward compatibility; setting it has no effect. |
 | `DATABASE_MAX_OVERFLOW` | Deprecated, no-op | Was per-pod burst connection cap on top of `DATABASE_POOL_SIZE`. Now ignored (see above). |
 
-The asyncpg engine is `NullPool`-only: each `engine.connect()` opens
-and tears down a fresh asyncpg connection in the caller's current
+**TLS is configured in the URL, not via env vars.** The server uses
+psycopg3 (libpq) for both the app engine and the procrastinate queue and
+hands `DATABASE_URL` through untouched, so add libpq parameters directly to
+the URL: `?sslmode=require` (encrypt), `?sslmode=verify-full&sslrootcert=/path/ca.pem`
+(verify against a private CA). Omitting `sslmode` leaves libpq's default
+(`prefer`). There are no `DATABASE_VERIFY_SSL` / `DATABASE_CA_BUNDLE` settings.
+
+**Set `connect_timeout` for production.** Because the server passes
+`DATABASE_URL` through verbatim, it no longer injects a default connect
+timeout. Add `?...&connect_timeout=10` (seconds) to a production `DATABASE_URL`
+so worker/API startup fails fast against an unreachable Postgres instead of
+hanging indefinitely — libpq reads it directly (as it does `sslmode`).
+
+The psycopg engine is `NullPool`-only: each `engine.connect()` opens
+and tears down a fresh psycopg connection in the caller's current
 event loop. On LAN-local Postgres the per-connection overhead is a
 single round-trip (~5 ms), so the throughput cost is negligible for
 the MCP server's traffic shape (low concurrency, bursty per-user
@@ -174,18 +185,17 @@ requests).
 Homelab example (self-signed Postgres with a private CA):
 
 ```env
-DATABASE_URL=postgresql+asyncpg://mcp:secret@pg.lan:5432/mcp
-DATABASE_CA_BUNDLE=/etc/ssl/certs/homelab-ca.pem
+DATABASE_URL=postgresql+psycopg://mcp:secret@pg.lan:5432/mcp?sslmode=verify-full&sslrootcert=/etc/ssl/certs/homelab-ca.pem
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 ```
 
 Notes:
 
-- **PyPI extra required.** The `asyncpg` driver is an optional extra so
+- **PyPI extra required.** The `psycopg` driver is an optional extra so
   the default `pip install nextcloud-mcp-server` stays lean. Install
   with `pip install 'nextcloud-mcp-server[postgres]'` when using a
   Postgres URL. The Docker image bundles it by default. When
-  `DATABASE_URL=postgresql+asyncpg://...` is set without the extra,
+  `DATABASE_URL=postgresql+psycopg://...` is set without the extra,
   the server fails fast with a clear actionable error.
 - **Bring-your-own DB.** The MCP server doesn't provision the database;
   it just consumes the URL. Use CNPG, RDS, your existing Helm chart's
@@ -201,7 +211,7 @@ Notes:
   re-register on the next sync tick.
 - **Testing a Postgres backend locally:** `docker compose --profile
   postgres up -d postgres-test` then export
-  `DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp`.
+  `DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp`.
 
 See [ADR-026 Pluggable database backend](ADR-026-pluggable-database-backend.md)
 for the architecture rationale.
@@ -336,43 +346,58 @@ OLLAMA_BASE_URL=http://ollama:11434
 
 > **Note:** In multi-user modes (Login Flow v2, Multi-User BasicAuth), enabling `ENABLE_SEMANTIC_SEARCH` automatically enables background operations and refresh token storage. You don't need to set `ENABLE_BACKGROUND_OPERATIONS` separately!
 
-### Search Mode: Keyword-Only (Airgapped) — `SEARCH_MODE`
+### Per-document keyword vs hybrid indexing — `VECTOR_SYNC_KEYWORD_TAG`
 
-`SEARCH_MODE` selects how indexed content is searched (ADR-030):
+Documents are indexed **hybrid** (dense semantic + BM25 sparse) or
+**keyword-only** (BM25 sparse) **per document**, chosen by which Nextcloud system
+tag the file carries (ADR-031). Both live in **one collection** and are returned
+by a single unified search.
 
-| Value | Behavior | Embedding endpoint |
-|-------|----------|--------------------|
-| `hybrid` (default) | Dense semantic vectors **+** BM25 sparse vectors, fused in Qdrant | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
-| `keyword` | BM25 sparse (full-text/keyword) only — no dense embeddings | **None** |
+| Tag | Env var (override the tag name) | Mode | Embedding endpoint |
+|-----|---------|------|--------------------|
+| `vector-index` | `VECTOR_SYNC_TAG` (default `vector-index`) | hybrid (dense + BM25 sparse) | **Required** (Ollama/Bedrock/OpenAI/Mistral/gateway) |
+| `keyword-index` | `VECTOR_SYNC_KEYWORD_TAG` (default `keyword-index`) | keyword (BM25 sparse only) | **None** for those docs |
 
-Use `SEARCH_MODE=keyword` for fully **airgapped** deployments that cannot (or
-do not want to) run a text-embedding endpoint. You still get the unified
-cross-app Qdrant index (notes, files, OCR'd PDFs, deck cards, news, mail) and
-verify-on-read ACLs — just lexical (keyword) matching instead of conceptual
-similarity. BM25 sparse vectors are computed in-process, so no embedding service
-is contacted at ingestion or query time.
+Both tags are **on by default** — create the `vector-index` and/or `keyword-index`
+system tag in Nextcloud and apply it; no env var needed. The env vars only
+**rename** a tag, or set `VECTOR_SYNC_KEYWORD_TAG=""` to disable the keyword tag.
+
+Tag a PDF `keyword-index` to lexically index it **without** paying embedding
+cost; tag it `vector-index` to also get conceptual/semantic matching. **Hybrid
+wins** if a file carries both tags. Discovery is PDF-only, mirroring the
+`vector-index` path (tagged folders expand to their PDF descendants).
 
 ```dotenv
-# Airgapped, no embedding endpoint:
-ENABLE_SEMANTIC_SEARCH=true   # keyword mode still uses the Qdrant pipeline
-SEARCH_MODE=keyword
+ENABLE_SEMANTIC_SEARCH=true
 QDRANT_URL=http://qdrant:6333
-# (no OLLAMA_BASE_URL / Bedrock / OpenAI / gateway needed)
+# Both tags work out of the box; vector-index (hybrid) needs an embedding
+# endpoint, e.g.:
+OLLAMA_BASE_URL=http://ollama:11434
 ```
 
 Notes:
 
-- `keyword` **still requires `ENABLE_SEMANTIC_SEARCH=true`** — it uses the Qdrant
-  index. With vector sync off the search tools don't register.
-- The `nc_semantic_search` / `nc_semantic_search_answer` tools stay available;
-  results carry `search_method="bm25_keyword"`. The RAG answer tool still works
-  airgapped (retrieval via BM25, answer generated client-side via MCP sampling).
-- **Score caveat:** in keyword mode `score` is a raw BM25 value (unbounded), not
-  a normalized [0,1] fusion score, so a non-zero `score_threshold` filters very
-  differently. The `fusion` parameter is ignored.
-- **Switching modes** uses a different collection (keyword collections are named
-  `…-bm25-keyword`). Keyword and hybrid indexes are not interchangeable — to
-  switch, use a fresh collection and let background sync re-ingest.
+- Requires `ENABLE_SEMANTIC_SEARCH=true` (both tags use the Qdrant index).
+- **Unified search:** `nc_semantic_search` fuses dense + sparse. Keyword-only
+  documents contribute only their BM25 (sparse) match, so they appear in
+  bm25/hybrid results and are naturally absent from a pure-`semantic` query.
+- **Hybrid requires embeddings:** a `vector-index` document whose embedding
+  endpoint is unavailable **errors and retries** (then dead-letters) rather than
+  silently degrading to keyword-only. Only the `keyword-index` tag produces
+  sparse-only points.
+- **Fully airgapped:** the `keyword-index` tag is on by default, so just configure
+  **no** embedding provider and tag everything `keyword-index` — nothing ever
+  contacts an embedding endpoint (the local `SimpleProvider` only sizes the
+  dense slot the keyword points never populate). Note the collection is always
+  dense-sized from the *configured* provider, so if you set e.g. `OLLAMA_BASE_URL`
+  while intending to use only the keyword tag, collection creation still probes
+  that provider's dimension at startup — leave the provider env unset for a truly
+  offline stack.
+- **Retagging** a file between the two tags (unchanged content) reprocesses it:
+  keyword→`vector-index` adds a dense vector; the reverse is absorbed by the
+  dedup no-downgrade rule while any user still holds `vector-index`.
+- **Provisioning:** the `keyword-index` tag is created/exposed by the Astrolabe
+  Nextcloud app (or `occ tag:add` / the server's own `get_or_create_tag`).
 
 ### Qdrant Vector Database Modes
 
@@ -792,7 +817,6 @@ The OCR tier has two execution modes, selected by `DOCUMENT_OCR_MODE`:
 ```dotenv
 DOCUMENT_OCR_MODE=sync                 # "sync" (default) | "batch"
 DOCUMENT_OCR_BATCH_POLL_SECONDS=120    # re-poll cadence for a batch job (default: 120)
-DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS=86400  # give up + mark timeout after this (default: 24h)
 ```
 
 - **`sync`** (default) — transcribe the document inline via the backend's
@@ -817,11 +841,18 @@ there.
 
 Mechanics: the OCR tier submits the job, records its id in the `batch_ocr_jobs`
 app-DB table (keyed on the document + its etag), and raises a re-poll deferral so
-procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` — releasing
-the worker slot between polls (a long batch never pins a worker or is reclaimed as
-stalled). On completion the per-page markdown is indexed exactly like the sync
-path; a failure or a job exceeding `DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS` marks the
-document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
+procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` (or the
+gateway's `Retry-After` when longer, so a large pending backlog can't storm it —
+capped at an internal 1h ceiling, `_BATCH_POLL_MAX_DEFER_SECONDS`, or the poll
+interval if that is set higher, so a malformed/absurd header can't stall a poll
+unboundedly) —
+releasing the worker slot between polls (a long batch never pins a worker or is
+reclaimed as stalled). On completion the per-page markdown is indexed exactly like
+the sync path. A pending job is polled **indefinitely**: once the gateway accepts a
+document it owns the OCR lifecycle (Deck #523), so there is no worker-side give-up
+deadline — a transient backend/GPU outage only delays completion, never fails the
+document. Only a job-level failure (or a per-document error inside a succeeded job)
+marks the document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
 inefficiency, bounded by the poll cadence); one batch job is submitted per
 document (coalescing many documents per job is a planned follow-up).
 
@@ -1009,7 +1040,7 @@ aware of:
   an excluded folder) drops out of results immediately rather than waiting for
   the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
   SEARCH, so deployments that tag whole directory trees pay that walk once per
-  search; configure `VECTOR_SYNC_PDF_TAG` to change the tag name. The `file`
+  search; configure `VECTOR_SYNC_TAG` to change the tag name. The `file`
   verifier's latency therefore scales with **both** the `Depth: infinity` folder
   expansion **and** the `EXCLUDED_TAGS` lookup: that lookup fans out ~2 WebDAV
   calls (1 PROPFIND + 1 REPORT) *per excluded tag*, concurrently, while holding
@@ -1051,7 +1082,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
-| `SEARCH_MODE` | ⚠️ Optional | `hybrid` | `hybrid` (dense+sparse) or `keyword` (BM25 sparse only, no embedding endpoint — airgapped, ADR-030). `keyword` still requires `ENABLE_SEMANTIC_SEARCH=true` |
+| `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
+| `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |

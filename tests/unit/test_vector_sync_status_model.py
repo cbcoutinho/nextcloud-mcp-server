@@ -34,3 +34,21 @@ def test_vector_sync_status_defaults_zeroed() -> None:
     assert data["indexed_documents"] == 0
     assert data["indexed_chunks"] == 0
     assert data["indexed_count"] == 0
+    # Vector-RAM cost fields (card #624) also default to 0.
+    assert data["hybrid_chunks"] == 0
+    assert data["estimated_vector_bytes"] == 0
+
+
+def test_vector_sync_status_ram_cost_fields() -> None:
+    """hybrid_chunks / estimated_vector_bytes carry the dense-vector RAM signal."""
+    response = VectorSyncStatusResponse(
+        indexed_documents=486,
+        indexed_chunks=16039,
+        hybrid_chunks=12000,
+        estimated_vector_bytes=73_728_000,
+        status="idle",
+        enabled=True,
+    )
+    data = response.model_dump()
+    assert data["hybrid_chunks"] == 12000
+    assert data["estimated_vector_bytes"] == 73_728_000

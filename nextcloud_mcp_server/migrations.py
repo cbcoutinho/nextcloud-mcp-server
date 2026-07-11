@@ -5,7 +5,7 @@ programmatically. It enables automatic migration on application startup and
 provides CLI integration.
 
 All helpers accept a SQLAlchemy URL (``sqlite+aiosqlite:///...`` or
-``postgresql+asyncpg://...``). When called without an explicit URL they fall
+``postgresql+psycopg://...``). When called without an explicit URL they fall
 back to :func:`nextcloud_mcp_server.config.get_database_url`.
 """
 
@@ -35,36 +35,42 @@ def _coerce_url(database_url: str | Path | None) -> str:
     return database_url
 
 
-_KNOWN_ASYNC_DRIVERS = ("aiosqlite", "asyncpg")
+# Async-only drivers: strip the suffix so the sync engine falls back to the
+# backend's default sync driver (``+aiosqlite`` -> ``sqlite`` / pysqlite).
+_ASYNC_ONLY_DRIVERS = ("aiosqlite",)
+# Drivers that already work synchronously — psycopg3 supports both sync and
+# async, so the sync engine can use ``postgresql+psycopg://`` unchanged.
+_SYNC_CAPABLE_DRIVERS = ("psycopg",)
 
 
 def _to_sync_url(database_url: str) -> str:
     """Map an async driver URL to its sync equivalent for blocking inspection.
 
     SQLAlchemy's :func:`inspect` and :func:`create_engine` used below are
-    synchronous APIs. The runtime uses async drivers (``aiosqlite``,
-    ``asyncpg``) but Alembic and these utility queries don't need them.
+    synchronous APIs. ``+aiosqlite`` is async-only and gets stripped to the
+    sync pysqlite driver; ``+psycopg`` is sync-capable and passes through
+    unchanged (psycopg3 is a unified sync/async driver).
 
-    Emits a one-shot warning when the URL carries an async-driver
-    suffix we don't recognize — the sync engine creation downstream
-    will still fail, but with a clearer hint than SQLAlchemy's generic
-    "Can't load plugin" error.
+    Emits a one-shot warning when the URL carries some other unrecognized
+    driver suffix — the sync engine creation downstream will still fail, but
+    with a clearer hint than SQLAlchemy's generic "Can't load plugin" error.
     """
     out = database_url
-    for driver in _KNOWN_ASYNC_DRIVERS:
+    for driver in _ASYNC_ONLY_DRIVERS:
         out = out.replace(f"+{driver}", "")
     # Detect a leftover ``+<driver>`` token (we know the URL is
-    # ``scheme[+driver]://...``, so a remaining ``+`` before ``://``
-    # means an unrecognized async driver). Log once and pass through.
+    # ``scheme[+driver]://...``, so a remaining ``+`` before ``://`` means a
+    # driver we didn't strip). psycopg is sync-capable and expected; anything
+    # else is unrecognized — log once and pass through.
     head = out.split("://", 1)[0]
     if "+" in head:
-        unknown = head.split("+", 1)[1]
-        logger.warning(
-            "_to_sync_url: unrecognized driver %r in DATABASE_URL; "
-            "passing through unchanged. Supported async drivers: %s",
-            unknown,
-            ", ".join(_KNOWN_ASYNC_DRIVERS),
-        )
+        driver = head.split("+", 1)[1]
+        if driver not in _SYNC_CAPABLE_DRIVERS:
+            logger.warning(
+                "_to_sync_url: unrecognized driver %r in DATABASE_URL; "
+                "passing through unchanged.",
+                driver,
+            )
     return out
 
 

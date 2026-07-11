@@ -23,7 +23,7 @@ services:
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.12@sha256:41fe07a7397cd8e4a6b5873bcea83ba29d40e3333351c7aabc591f9ee1b0ef42}
+    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.12@sha256:607cce688a932f444926a902df979a21e83258746344ad23cd133b93088729c7}
     restart: always
     ports:
       - 127.0.0.1:8080:80
@@ -65,7 +65,7 @@ services:
       - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   unstructured:
-    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.7@sha256:ee89a87a545b6a7d56609607aced71b5b1acf0211400bf2d11a8f70f209a93bd
+    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.8@sha256:cd18ed5ac5e0284f4d7647774e63863190b0bad4b765a049cfc91c643c55396c
     restart: always
     ports:
       - 127.0.0.1:8005:8000
@@ -269,7 +269,7 @@ services:
       - multi-user-basic
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
+    image: quay.io/keycloak/keycloak:26.7.0@sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0
     command:
       - "start-dev"
       - "--import-realm"
@@ -403,7 +403,7 @@ services:
   # Usage: docker compose --profile login-flow --profile claude-funnel up --build -d
   # Requires: TS_AUTHKEY in .env file (see env.sample.claude-funnel)
   tailscale-mcp:
-    image: docker.io/tailscale/tailscale:v1.98.4@sha256:25cde9ad76020b0e29229136d0c38b5962e9a0e1774ffac9b0df68e4a37d6cf0
+    image: docker.io/tailscale/tailscale:v1.98.8@sha256:d54b2e6a9c09f0e5ec52e82b9ad4af3d446b54a7c08075e92f11c39dd410105f
     hostname: nextcloud-mcp-dev
     restart: always
     environment:
@@ -451,12 +451,12 @@ services:
 
   # Centralized Postgres backend for token storage. Used by:
   #   1. Integration tests gated on @pytest.mark.postgres — they read
-  #      TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp.
+  #      TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp.
   #   2. Manual smoke testing of the HA (multi-replica) deployment story.
   # Bring up with:  docker compose --profile postgres up -d postgres-test
   # See ADR-026 for the pluggable-database-backend design.
   postgres-test:
-    image: docker.io/library/postgres:18-alpine@sha256:1b1689b20d16a014a3d195653381cf2caa75a41a92d93b255a9d6ea29fd353aa
+    image: docker.io/library/postgres:18-alpine@sha256:ecafd34249b5c248f3cb6ebe339584ee6448b36fad3f0a827ae5e8efbae6afda
     restart: unless-stopped
     environment:
       POSTGRES_USER: mcp
@@ -505,7 +505,7 @@ services:
   # backends can't produce. Bootstrapped fresh on every `up` (no data volume),
   # so the custom LDIF is always applied.
   openldap:
-    image: docker.io/vegardit/openldap:2.6.10@sha256:a635242fe7bdafd8c59dbd20ffd43c77d6e3b930903d1c4580b6974b2e0e67ba
+    image: docker.io/vegardit/openldap:2.6.10@sha256:fd9af3fd925cda6409ea62156ce9002798bcc4c86eddc4178f137888a2e176d4
     environment:
       - LDAP_INIT_ORG_DN=dc=example,dc=org
       - LDAP_INIT_ORG_NAME=Example Org

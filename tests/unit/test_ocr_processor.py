@@ -22,7 +22,6 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
         document_ocr_timeout_seconds=180.0,
         document_ocr_mode="sync",
         document_ocr_batch_poll_seconds=120,
-        document_ocr_batch_max_wait_seconds=86400,
         embedding_gateway_url=None,
         embedding_gateway_client_id=None,
         embedding_gateway_client_secret=None,
@@ -677,6 +676,9 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: client)
+    # Drop the module-level poll-client cache so poll_pending_batch_ocr rebuilds via
+    # the just-monkeypatched build_gateway_batch_client rather than a stale fake.
+    ocr._reset_poll_batch_client()
 
     async def _shared(cls):
         return store
@@ -706,8 +708,6 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
     preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     store = _FakeStore(preset=preset)
-    # submitted just now -> deadline not reached
-    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0)
     _wire_batch(monkeypatch, client=client, store=store)
 
     r = await ocr.OcrProcessor().process(
@@ -717,6 +717,25 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
     assert client.polled == ["mistral/j"]
     assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
     assert client.submitted == []  # did NOT resubmit
+
+
+async def test_batch_existing_pending_honours_retry_after(monkeypatch):
+    # The submit/poll path (OcrProcessor.process -> _submit_and_poll) forwards the
+    # gateway's Retry-After into the pending sentinel's retry_in, same as the fast
+    # poll_pending path — 200 is above the 120s floor and below the cap (Deck #523).
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=200)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
+    assert r.metadata[ocr.OCR_BATCH_RETRY_IN_KEY] == 200
+    assert client.submitted == []  # polled the existing job, did NOT resubmit
 
 
 async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
@@ -735,7 +754,6 @@ async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
 
     client.poll = _poll_404  # type: ignore[method-assign]
     store = _FakeStore(preset=preset)
-    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0)
     _wire_batch(monkeypatch, client=client, store=store)
 
     r = await ocr.OcrProcessor().process(
@@ -828,21 +846,25 @@ async def test_batch_unexpected_status_marks_failed_not_empty_success(monkeypatc
     assert ("u1", "d1", "file", "v1") in store.deleted
 
 
-async def test_batch_deadline_exceeded_marks_timeout(monkeypatch):
+async def test_batch_pending_polls_forever_no_deadline(monkeypatch):
+    # Deck #523: a pending batch job is NEVER abandoned on a worker-side deadline —
+    # even long past the old max-wait it stays pending (re-defers), because the
+    # gateway owns the lifecycle and never fails an item for a GPU outage.
     preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     store = _FakeStore(preset=preset)
-    # now far past submitted_at + max_wait (86400)
-    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0 + 90000)
     _wire_batch(monkeypatch, client=client, store=store)
 
     r = await ocr.OcrProcessor().process(
         b"%PDF", "application/pdf", options=dict(_IDENTITY)
     )
 
+    # Pending sentinel (re-queue), NOT a terminal timeout → no dead-letter.
     assert r.success is False
-    assert r.metadata["parse_failed_reason"] == "timeout"
-    assert ("u1", "d1", "file", "v1") in store.deleted
+    assert r.metadata.get(ocr.OCR_BATCH_PENDING_KEY) is True
+    assert "parse_failed_reason" not in r.metadata
+    # The tracking row is kept — the job keeps being polled, not abandoned.
+    assert ("u1", "d1", "file", "v1") not in store.deleted
 
 
 async def test_batch_raises_when_no_gateway(monkeypatch):
@@ -933,3 +955,144 @@ async def test_batch_submit_transport_error_propagates_not_caught(monkeypatch):
             b"%PDF", "application/pdf", options=dict(_IDENTITY)
         )
     assert sync_backend_used is False  # never fell back to the sync path
+
+
+# --- poll_pending_batch_ocr: skip the WebDAV re-download on OCR polls (Deck #516) ---
+
+
+async def test_poll_pending_no_job_falls_through(monkeypatch):
+    """No in-flight job -> None: the caller downloads + submits normally."""
+    _wire_batch(monkeypatch, client=_FakeBatchClient(), store=_FakeStore())
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(document_ocr_mode="batch"),
+    )
+    assert got is None
+
+
+async def test_poll_pending_defers_without_download(monkeypatch):
+    """A still-pending job within its deadline -> return the poll interval so the
+    caller defers WITHOUT re-downloading the file (the win: polled by job_id only)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == 120
+    assert client.polled == ["surya/j"]  # polled by job_id; never submitted/fetched
+
+
+async def test_poll_pending_terminal_falls_through(monkeypatch):
+    """A terminal (succeeded) job -> None so the caller re-polls + indexes via the
+    pipeline (whose post-parse quality gate needs the real bytes)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="succeeded", pages=[(0, "hello", None)])
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(document_ocr_mode="batch"),
+    )
+    assert got is None
+
+
+async def test_poll_pending_polls_forever_no_deadline(monkeypatch):
+    """Deck #523: past the old deadline still re-defers (a positive retry_in), never
+    None — the gateway owns the lifecycle, so the worker polls forever."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(document_ocr_mode="batch"),
+    )
+    assert got is not None and got > 0
+
+
+async def test_poll_pending_honours_retry_after(monkeypatch):
+    """The gateway's Retry-After sets the poll cadence (anti-storm) when it's above
+    the configured floor — passed through, not clamped (Deck #523)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=200)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == 200  # honoured verbatim (above the 120s floor, below the cap)
+
+
+async def test_poll_pending_floors_retry_after(monkeypatch):
+    """A Retry-After BELOW the poll interval is raised to the floor so a tiny value
+    can't busy-loop the gateway (Deck #523)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=5)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == 120  # floored up from 5
+
+
+async def test_poll_pending_caps_retry_after(monkeypatch):
+    """An absurd Retry-After (e.g. a malformed header with an extra zero) is capped
+    so one document can't stall for an absurd duration — still no give-up (Deck #523)."""
+    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="pending", pages=[], retry_after=999_999)
+    )
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_batch_poll_seconds=120
+        ),
+    )
+    assert got == ocr._BATCH_POLL_MAX_DEFER_SECONDS  # capped at the ceiling
+
+
+async def test_poll_pending_job_gone_falls_through(monkeypatch):
+    """Gateway 404 (job purged) -> None so the caller re-submits (#1019)."""
+    from nextcloud_mcp_server.embedding.gateway_batch_client import OcrBatchJobNotFound
+
+    class _NotFoundClient(_FakeBatchClient):
+        async def poll(self, job_id):
+            raise OcrBatchJobNotFound(job_id)
+
+    preset = SimpleNamespace(job_id="surya/gone", submitted_at=1000)
+    _wire_batch(monkeypatch, client=_NotFoundClient(), store=_FakeStore(preset=preset))
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(document_ocr_mode="batch"),
+    )
+    assert got is None

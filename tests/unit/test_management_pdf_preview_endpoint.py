@@ -9,6 +9,7 @@ Tests the /api/v1/pdf-preview endpoint focusing on:
 """
 
 import base64
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -250,6 +251,63 @@ class TestPdfPreviewRendering:
                 assert decoded[:8] == b"\x89PNG\r\n\x1a\n"
             except Exception as e:
                 pytest.fail(f"Image is not valid base64-encoded PNG: {e}")
+
+    def test_request_and_auth_logs_are_debug_level(self, caplog):
+        """Request/auth logs should not add production INFO noise."""
+        pdf_bytes = create_mock_pdf_bytes()
+
+        mock_webdav = AsyncMock()
+        mock_webdav.read_file = AsyncMock(return_value=(pdf_bytes, "application/pdf"))
+
+        mock_nc_client = MagicMock()
+        mock_nc_client.webdav = mock_webdav
+        mock_nc_client.__aenter__ = AsyncMock(return_value=mock_nc_client)
+        mock_nc_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
+                return_value=mock_nc_client,
+            ),
+            caplog.at_level(
+                logging.DEBUG, logger="nextcloud_mcp_server.api.visualization"
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get(
+                "/api/v1/pdf-preview?file_path=/test.pdf&page=1&scale=1.0",
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+        assert response.status_code == 200
+
+        preview_records = [
+            record
+            for record in caplog.records
+            if record.name == "nextcloud_mcp_server.api.visualization"
+        ]
+        assert any(
+            record.levelno == logging.DEBUG
+            and record.message.startswith("PDF preview request:")
+            for record in preview_records
+        )
+        assert any(
+            record.levelno == logging.DEBUG
+            and record.message == "PDF preview authenticated for user: testuser"
+            for record in preview_records
+        )
+        assert any(
+            record.levelno == logging.INFO
+            and record.message.startswith("Rendered PDF preview:")
+            for record in preview_records
+        )
 
     def test_page_out_of_range_returns_400(self):
         """Test that requesting page beyond total pages returns 400."""
@@ -528,6 +586,8 @@ class TestPdfPreviewSecurityValidation:
                 "/Documents/../../../etc/passwd",
                 "/../secret.pdf",
                 "/folder/..%2F..%2Fetc/passwd",  # URL-encoded
+                "/folder/%252e%252e%252Fsecret.pdf",  # Double URL-encoded
+                "/folder/%2e%2e%5Csecret.pdf",  # Encoded Windows separator
                 "/test/../secret.pdf",
             ]
 

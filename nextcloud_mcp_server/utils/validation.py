@@ -2,6 +2,8 @@
 
 import re
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
+from urllib.parse import unquote
 
 # Nextcloud object IDs are unsigned ints from MySQL AUTO_INCREMENT, which
 # starts at 1. Restrict to ASCII positive integers to exclude Unicode digit
@@ -18,6 +20,22 @@ _UNIX_SECONDS_RE = re.compile(r"^[0-9]+$")
 def is_valid_nextcloud_doc_id(value: str) -> bool:
     """True iff `value` is the str form of a positive ASCII integer (>= 1)."""
     return bool(_NEXTCLOUD_DOC_ID_RE.fullmatch(value))
+
+
+def is_safe_webdav_file_path(file_path: str) -> bool:
+    """Reject traversal in a WebDAV path after repeated URL decoding."""
+    decoded_path = file_path
+    for _ in range(3):
+        next_path = unquote(decoded_path)
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+
+    if "\x00" in decoded_path:
+        return False
+
+    path_parts = PurePosixPath(decoded_path.replace("\\", "/").lstrip("/")).parts
+    return ".." not in path_parts
 
 
 def parse_modified_timestamp(

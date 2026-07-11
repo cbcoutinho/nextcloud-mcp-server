@@ -29,7 +29,6 @@ import base64
 import html as _html
 import logging
 import re
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
@@ -59,6 +58,28 @@ _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 # into a ``BatchPending`` control-flow raise (same site as ``EscalateError``).
 OCR_BATCH_PENDING_KEY = "ocr_batch_pending"
 OCR_BATCH_RETRY_IN_KEY = "ocr_batch_retry_in"
+
+# Ceiling on how long one batch-OCR poll may defer. The gateway's Retry-After is
+# honoured (floored at the poll interval), but capped here so a malformed header
+# (e.g. an accidental extra zero) can't stall a document for an absurd duration.
+# This is NOT a give-up deadline — the job keeps polling forever, just never slower
+# than this ceiling (Deck #523).
+_BATCH_POLL_MAX_DEFER_SECONDS = 3600
+
+
+def _batch_defer_seconds(poll_seconds: int, retry_after: int | None) -> int:
+    """Seconds to wait before the next batch poll. Honour the gateway's ``Retry-After``,
+    floored at ``poll_seconds`` (a tiny value can't busy-loop the gateway) and capped at
+    ``_BATCH_POLL_MAX_DEFER_SECONDS`` (a malformed header can't stall a document absurdly
+    long). No give-up — this only paces re-polls (Deck #523)."""
+    raw = retry_after or poll_seconds
+    # ceiling = max(poll_seconds, cap): the cap must never clamp BELOW the operator's
+    # configured floor (poll_seconds has no upper-bound validator), else a re-poll
+    # could fire faster than they asked. So an interval above the 1h cap raises the
+    # effective ceiling to that interval — floor and ceiling coincide, still bounded.
+    ceiling = max(poll_seconds, _BATCH_POLL_MAX_DEFER_SECONDS)
+    return min(max(raw, poll_seconds), ceiling)
+
 
 # Metadata key carrying per-block geometry from a layout-aware OCR backend (surya
 # via the gateway). A list of ``{"page", "bbox", "start_offset", "end_offset"}``:
@@ -431,6 +452,87 @@ def build_gateway_batch_client(
     )
 
 
+# Module-level cached batch client for the poll fast-path (Deck #518). Built once
+# and reused so the GatewayTokenProvider's M2M token cache survives across the many
+# ~5s poll retries — mirrors OcrProcessor._get_batch_client (per-instance cache).
+# Without it, rebuilding the client on every poll forces a fresh OAuth
+# client_credentials fetch each retry, trading the skipped WebDAV download for a
+# token round-trip on M2M-auth gateways.
+_poll_batch_client: "GatewayBatchOcrClient | None" = None
+_poll_batch_client_resolved: bool = False
+_poll_batch_client_lock: "anyio.Lock | None" = None
+
+
+async def _get_poll_batch_client(settings: Settings) -> "GatewayBatchOcrClient | None":
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    if not _poll_batch_client_resolved:
+        if _poll_batch_client_lock is None:
+            _poll_batch_client_lock = anyio.Lock()
+        async with _poll_batch_client_lock:
+            if not _poll_batch_client_resolved:  # double-checked
+                _poll_batch_client = build_gateway_batch_client(settings)
+                _poll_batch_client_resolved = True
+    return _poll_batch_client
+
+
+def _reset_poll_batch_client() -> None:
+    """Test hook: drop the cached poll client so a monkeypatched
+    ``build_gateway_batch_client`` (or fresh settings) takes effect on the next call."""
+    global _poll_batch_client, _poll_batch_client_resolved, _poll_batch_client_lock
+    _poll_batch_client = None
+    _poll_batch_client_resolved = False
+    _poll_batch_client_lock = None
+
+
+async def poll_pending_batch_ocr(
+    *, user_id: str, doc_id: str, etag: str, settings: Settings
+) -> int | None:
+    """Fast-path the OCR poll loop (Deck #516): if a batch OCR job is already in
+    flight for this exact content (same ``etag``), poll it by ``job_id`` and return
+    how many seconds to defer while it is still PENDING — so the ingest worker can
+    re-defer WITHOUT re-downloading the file. A poll needs only the ``job_id``; the
+    file bytes are needed only to SUBMIT, and indexing uses the gateway's OCR text,
+    not the original bytes. Re-fetching the file over WebDAV on every poll retry was
+    ~half the OCR worker's single-slot wall-time, starving the co-resident GPU.
+
+    Returns ``None`` — meaning "fall through to the normal download + parse path" —
+    when: there is no in-flight job (nothing submitted yet); batch OCR isn't
+    configured; the gateway has no record of the job (re-submit, #1019); or the poll
+    is TERMINAL (succeeded/failed — the pipeline re-polls and indexes the result, and
+    its post-parse quality gate needs the real bytes). A still-PENDING job ALWAYS
+    returns a positive int (Deck #523: no give-up deadline — the gateway owns the OCR
+    lifecycle and never fails an item for a GPU outage), and that is the ONLY case in
+    which the caller may skip the fetch.
+    """
+    from ..vector.batch_ocr_store import BatchOcrJobStore  # noqa: PLC0415
+
+    store = await BatchOcrJobStore.shared()
+    job = await store.get(user_id=user_id, doc_id=doc_id, doc_type="file", etag=etag)
+    if job is None:
+        return None
+    client = await _get_poll_batch_client(settings)
+    if client is None:
+        return None
+    from ..embedding.gateway_batch_client import OcrBatchJobNotFound  # noqa: PLC0415
+
+    try:
+        result = await client.poll(job.job_id)
+    except OcrBatchJobNotFound:
+        # Gateway purged/orphaned the job — fall through so the normal path re-hits
+        # the same 404 and re-submits (#1019), which needs the file bytes anyway.
+        return None
+    if not result.is_pending:
+        return None  # terminal — fall through to index the result via the pipeline
+    # Poll forever: in batch mode the gateway owns the OCR lifecycle for an accepted
+    # document (Deck #523), so a pending job is NEVER abandoned on a worker-side
+    # deadline — it re-defers until the gateway completes it (the gateway never fails
+    # an item for a GPU outage). Back off by the gateway's Retry-After, floored at our
+    # poll interval (no busy-loop) and capped (no absurd stall); fall back when absent.
+    return _batch_defer_seconds(
+        settings.document_ocr_batch_poll_seconds, result.retry_after
+    )
+
+
 def build_ocr_backend(
     settings: Settings, *, model: str | None = None
 ) -> _OcrBackend | None:
@@ -774,10 +876,9 @@ class OcrProcessor(DocumentProcessor):
             # The gateway lost this job — its row was purged (retention) or
             # orphaned by a gateway pod move. Polling it 404s forever. Drop our
             # tracking row so the NEXT cycle re-submits a fresh job (store.get →
-            # None → new submission) instead of looping on a dead id. Bounded by
-            # the same document_ocr_batch_max_wait budget as any submit; a genuine
-            # poison-pill still terminalises via the failed/timeout paths below and
-            # is dead-lettered by the scanner (incident 2026-07-03).
+            # None → new submission) instead of looping on a dead id. A genuine
+            # poison-pill still terminalises via the failed paths below and is
+            # dead-lettered by the scanner (incident 2026-07-03).
             logger.warning(
                 "batch OCR job %s not found on gateway (404); re-submitting %s",
                 job.job_id,
@@ -788,27 +889,13 @@ class OcrProcessor(DocumentProcessor):
             )
             return self._pending(poll_seconds)
         if result.is_pending:
-            elapsed = int(time.time()) - job.submitted_at
-            if elapsed >= settings.document_ocr_batch_max_wait_seconds:
-                await store.delete(
-                    user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
-                )
-                # We don't cancel the gateway-side job (there's no cancel endpoint
-                # at this layer) — it keeps running and is reaped by the gateway's
-                # own file purge. Dropping the row just stops us polling it.
-                logger.warning(
-                    "batch OCR job %s exceeded max wait (%ss); marking failed",
-                    job.job_id,
-                    settings.document_ocr_batch_max_wait_seconds,
-                )
-                return ProcessingResult(
-                    text="",
-                    metadata={"parse_failed_reason": "timeout"},
-                    processor=self.name,
-                    success=False,
-                    error="batch OCR timed out",
-                )
-            return self._pending(poll_seconds)
+            # Poll forever: in batch mode the gateway owns the OCR lifecycle for an
+            # accepted document (Deck #523), so a pending job is NEVER abandoned on a
+            # worker-side deadline — it re-defers until the gateway completes it (the
+            # gateway never fails an item for a GPU outage). Back off by the gateway's
+            # Retry-After, floored at our poll interval (no busy-loop) and capped (no
+            # absurd stall); fall back to poll_seconds when absent.
+            return self._pending(_batch_defer_seconds(poll_seconds, result.retry_after))
 
         # Terminal — drop the tracking row either way.
         await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)

@@ -56,11 +56,10 @@ def test_bm25_hybrid_requires_vector_db():
     assert algo.requires_vector_db is True
 
 
-def _make_search_deps(monkeypatch, *, dense_enabled: bool):
+def _make_search_deps(monkeypatch):
     """Stub the embedding / BM25 / Qdrant / settings deps of ``search()`` and
-    return ``(embed, qdrant)`` mocks. ``dense_enabled`` selects hybrid (True) vs
-    keyword (False) mode; everything else is identical, so both fixtures below
-    share this one builder."""
+    return ``(embed, qdrant)`` mocks. The query always fuses dense + sparse
+    (there is no keyword-only mode), so a single builder serves every test."""
     embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7))
     svc = MagicMock()
     svc.embed_with_usage = embed
@@ -85,7 +84,6 @@ def _make_search_deps(monkeypatch, *, dense_enabled: bool):
     )
 
     settings = MagicMock()
-    settings.dense_enabled = dense_enabled
     settings.get_collection_name.return_value = "test_collection"
     settings.get_embedding_provider_family.return_value = "mistral"
     monkeypatch.setattr(
@@ -102,7 +100,7 @@ def _make_search_deps(monkeypatch, *, dense_enabled: bool):
 def patched_search(monkeypatch):
     """Hybrid-mode deps; returns the embed mock so tests can assert how often the
     query was embedded."""
-    embed, _ = _make_search_deps(monkeypatch, dense_enabled=True)
+    embed, _ = _make_search_deps(monkeypatch)
     return embed
 
 
@@ -156,47 +154,10 @@ async def test_hybrid_query_uses_dense_prefetch_and_fusion(patched_search, monke
     assert isinstance(kwargs["query"], models.FusionQuery)
 
 
-@pytest.fixture
-def patched_keyword_search(monkeypatch):
-    """Keyword mode (ADR-030): dense disabled. Returns (embed, qdrant) so tests
-    can assert the embedding service is never called and the Qdrant call is a
-    direct sparse query with no fusion."""
-    return _make_search_deps(monkeypatch, dense_enabled=False)
-
-
 @pytest.mark.unit
-async def test_keyword_mode_never_embeds_query(patched_keyword_search):
-    """Keyword mode must not contact the embedding service (airgapped)."""
-    embed, _ = patched_keyword_search
-    algo = BM25HybridSearchAlgorithm()
-
-    await algo.search(query="invoice 2026", user_id="alice")
-
-    assert embed.await_count == 0
-    assert algo.query_embedding is None
-    assert algo.query_token_count is None
-
-
-@pytest.mark.unit
-async def test_keyword_mode_issues_direct_sparse_query(patched_keyword_search):
-    """Keyword mode issues a single sparse query, no dense prefetch / fusion."""
-    _, qdrant = patched_keyword_search
-    algo = BM25HybridSearchAlgorithm()
-
-    await algo.search(query="invoice 2026", user_id="alice")
-
-    kwargs = qdrant.query_points.await_args.kwargs
-    assert kwargs["using"] == "sparse"
-    assert isinstance(kwargs["query"], models.SparseVector)
-    assert "prefetch" not in kwargs
-    assert not isinstance(kwargs["query"], models.FusionQuery)
-
-
-@pytest.mark.unit
-async def test_keyword_mode_search_method_label(patched_keyword_search, monkeypatch):
-    """Keyword results are tagged search_method='bm25_keyword'."""
-    _, qdrant = patched_keyword_search
-
+async def test_search_method_label_is_always_bm25_hybrid(patched_search, monkeypatch):
+    """Results are tagged search_method='bm25_hybrid_<fusion>' — the query always
+    fuses dense + sparse, so there is no keyword-only label anymore."""
     captured: dict = {}
 
     def fake_build(point, metadata_extras):
@@ -209,10 +170,15 @@ async def test_keyword_mode_search_method_label(patched_keyword_search, monkeypa
     )
     response = MagicMock()
     response.points = [MagicMock(score=3.2)]
+    qdrant = MagicMock()
     qdrant.query_points = AsyncMock(return_value=response)
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+        AsyncMock(return_value=qdrant),
+    )
 
     algo = BM25HybridSearchAlgorithm()
     results = await algo.search(query="invoice", user_id="alice", limit=5)
 
     assert results
-    assert captured["search_method"] == "bm25_keyword"
+    assert captured["search_method"] == "bm25_hybrid_rrf"

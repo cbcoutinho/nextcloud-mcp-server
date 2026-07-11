@@ -25,7 +25,10 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
+from nextcloud_mcp_server.vector.metrics_publisher import (
+    count_indexed,
+    estimate_hybrid_vector_bytes,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -47,32 +50,32 @@ SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
 def supported_search_types(settings: Settings) -> list[str]:
     """Search algorithms this server can actually serve, given its config.
 
-    Advertised via /api/v1/status (ADR-030) so the astrolabe UI can gate which
-    query types it offers, without having to know the server's SEARCH_MODE:
+    Advertised via /api/v1/status so the astrolabe UI can gate which query types
+    it offers:
 
     - vector sync disabled → ``[]`` (no Qdrant-backed search at all)
-    - SEARCH_MODE=keyword  → ``["bm25"]`` (dense embeddings are off, so
-      ``semantic`` and the dense half of ``hybrid`` are unavailable)
-    - SEARCH_MODE=hybrid   → all three (``semantic``, ``bm25``, ``hybrid``)
+    - vector sync enabled  → all three (``semantic``, ``bm25``, ``hybrid``). The
+      collection is always dense-capable; keyword-only documents
+      (``keyword-index`` tag) simply contribute to ``bm25``/``hybrid`` via their
+      sparse vector.
 
     Order follows ``SUPPORTED_SEARCH_ALGORITHMS`` for a stable contract.
     """
     if not settings.vector_sync_enabled:
         return []
-    if settings.dense_enabled:
-        return list(SUPPORTED_SEARCH_ALGORITHMS)
-    return ["bm25"]
+    return list(SUPPORTED_SEARCH_ALGORITHMS)
 
 
 class UnsupportedSearchType(Exception):
     """A client *explicitly* asked for a search algorithm this server can't serve.
 
     Raised by :func:`select_search_algorithm` and translated by the search
-    endpoints into **HTTP 422** carrying the advertised ``supported_search_types``
-    (ADR-030), so a client (astrolabe) that requests ``semantic`` against a
-    keyword-only server gets a hard, self-correcting error instead of silent BM25
-    results. Only *explicit* requests are strict — an absent ``algorithm`` still
-    defaults gracefully (see :func:`select_search_algorithm`).
+    endpoints into **HTTP 422** carrying the advertised ``supported_search_types``,
+    so a client (astrolabe) that requests an unavailable algorithm (e.g. any
+    algorithm while vector sync is disabled) gets a hard, self-correcting error
+    instead of silent fallback results. Only *explicit* requests are strict — an
+    absent ``algorithm`` still defaults gracefully (see
+    :func:`select_search_algorithm`).
     """
 
     def __init__(self, requested: str, supported: list[str]) -> None:
@@ -85,23 +88,23 @@ class UnsupportedSearchType(Exception):
 
 
 def select_search_algorithm(requested: str | None, settings: Settings) -> str:
-    """Pick the algorithm to run for a search request (ADR-030).
+    """Pick the algorithm to run for a search request.
 
     Single source of truth for the two search endpoints (`/api/v1/search`,
     `/api/v1/vector-viz/search`), called with the raw ``body.get("algorithm")`` —
     ``None`` when the client sent no ``algorithm`` field:
 
     - ``requested is None`` → graceful default: ``hybrid`` when available, else the
-      first supported type (``bm25`` in keyword mode). Never errors, so callers
-      that don't pin an algorithm keep working across modes. (An explicit JSON
-      ``"algorithm": null`` is indistinguishable from an omitted key — both surface
-      as ``None`` — so it takes this default path rather than being rejected.)
+      first supported type. Never errors, so callers that don't pin an algorithm
+      keep working. (An explicit JSON ``"algorithm": null`` is indistinguishable
+      from an omitted key — both surface as ``None`` — so it takes this default
+      path rather than being rejected.)
     - explicit ``requested`` in ``supported_search_types`` → returned unchanged.
     - explicit ``requested`` NOT in ``supported_search_types`` → raise
       :class:`UnsupportedSearchType` (→ 422). This is the strict half of the
-      contract that /api/v1/status advertises: an explicit ``semantic`` while
-      ``SEARCH_MODE=keyword`` is rejected rather than silently coerced, so the
-      accepted set stays in lockstep with the advertised one.
+      contract that /api/v1/status advertises, so the accepted set stays in
+      lockstep with the advertised one (e.g. any algorithm is rejected when vector
+      sync is disabled).
     """
     supported = supported_search_types(settings)
     if requested is None:
@@ -329,10 +332,9 @@ async def get_server_status(request: Request) -> JSONResponse:
         # not mounted, so the Astrolabe UI can show webhooks as unavailable and
         # vector sync falls back to the polling scanner.
         "webhooks_enabled": bool(settings.webhook_secret),
-        # Query types the astrolabe UI may offer for this server (ADR-030).
-        # Empty when vector sync is off; ["bm25"] in keyword mode; all three in
-        # hybrid mode. Lets the UI gate its algorithm picker without knowing
-        # SEARCH_MODE.
+        # Query types the astrolabe UI may offer for this server. Empty when
+        # vector sync is off; all three (semantic, bm25, hybrid) when it is on.
+        # Lets the UI gate its algorithm picker.
         "supported_search_types": supported_search_types(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
@@ -402,10 +404,20 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         # fans out to ~N chunks, so both are reported (the UI shows both).
         indexed_documents = 0
         indexed_chunks = 0
+        hybrid_chunks = 0
+        estimated_vector_bytes = 0
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
                 qdrant_client, settings.get_collection_name()
+            )
+            # Hybrid (dense-bearing) chunks drive the vector-RAM footprint; keyword
+            # chunks are sparse-only and cost no dense RAM (card #624). Shared helper
+            # so this and the MCP tool surface can't drift.
+            hybrid_chunks, estimated_vector_bytes = await estimate_hybrid_vector_bytes(
+                qdrant_client,
+                settings.get_collection_name(),
+                settings.vector_ram_hnsw_overhead_factor,
             )
         except Exception as e:
             logger.warning("Failed to query Qdrant for indexed counts: %s", e)
@@ -423,6 +435,10 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             "indexed_documents": indexed_documents,
             "indexed_chunks": indexed_chunks,
             "indexed_count": indexed_chunks,
+            # Vector-RAM cost signals (card #624): hybrid_chunks is the dense-bearing
+            # subset; estimated_vector_bytes is its RAM footprint estimate.
+            "hybrid_chunks": hybrid_chunks,
+            "estimated_vector_bytes": estimated_vector_bytes,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
         }

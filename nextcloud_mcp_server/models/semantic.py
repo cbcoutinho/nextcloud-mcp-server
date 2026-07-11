@@ -29,10 +29,8 @@ class SemanticSearchResult(BaseModel):
     excerpt: str = Field(description="Excerpt from matching chunk")
     score: float = Field(
         description=(
-            "Relevance score (≥ 0.0, higher is better). Range depends on search "
-            "mode (ADR-030): in hybrid mode it is a normalized fusion score — RRF "
-            "in [0.0, 1.0], DBSF can exceed 1.0; in keyword mode it is a raw BM25 "
-            "score that is unbounded (commonly well above 1.0), not normalized."
+            "Relevance score (≥ 0.0, higher is better). A normalized fusion score "
+            "— RRF in [0.0, 1.0], DBSF can exceed 1.0."
         )
     )
     chunk_index: int = Field(description="Index of matching chunk in document")
@@ -82,9 +80,9 @@ class SemanticSearchResponse(BaseResponse):
     search_method: str = Field(
         default="semantic",
         description=(
-            "Search method used: 'bm25_hybrid_<fusion>' (dense+sparse) in hybrid "
-            "mode, or 'bm25_keyword' (BM25 sparse only) under SEARCH_MODE=keyword "
-            "(ADR-030)"
+            "Search method used, e.g. 'bm25_hybrid_<fusion>' (dense + BM25 sparse "
+            "fused). Keyword-only documents contribute via the sparse side of the "
+            "same fused query."
         ),
     )
     verified_chunk_count: int = Field(
@@ -205,6 +203,22 @@ class VectorSyncStatusResponse(BaseResponse):
             "postgres backend (Deck #323), so an operator can see whether work is "
             "backed up on ingest-fast vs waiting on ingest-structured/ingest-ocr; "
             "None on the in-memory backend"
+        ),
+    )
+    hybrid_chunks: int = Field(
+        default=0,
+        description=(
+            "Chunks indexed in hybrid mode (dense + sparse). These carry a dense "
+            "vector and so drive the vector-RAM footprint; keyword-index chunks "
+            "(indexed_chunks - hybrid_chunks) are sparse-only and cost no dense RAM."
+        ),
+    )
+    estimated_vector_bytes: int = Field(
+        default=0,
+        description=(
+            "Estimated dense-vector RAM footprint in bytes "
+            "(hybrid_chunks * embedding_dim * 4 * hnsw_overhead) — the real "
+            "hybrid-search cost driver, which source-byte billing does not capture."
         ),
     )
 

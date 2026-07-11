@@ -943,7 +943,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Shutting down BasicAuth session")
         if client is not None:
             await client.close()
-        # Dispose the storage engine so pooled asyncpg connections drain
+        # Dispose the storage engine so pooled psycopg connections drain
         # cleanly on SIGTERM (ADR-026, PR #798 round-4).
         try:
             await storage.close()
@@ -1654,7 +1654,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             finally:
                 logger.info("Shutting down MCP server")
                 # Dispose the RefreshTokenStorage engine so pooled
-                # asyncpg connections drain cleanly on SIGTERM instead
+                # psycopg connections drain cleanly on SIGTERM instead
                 # of leaking server-side slots until the Postgres
                 # idle-timeout fires (ADR-026, PR #798 round-4).
                 if refresh_token_storage is not None:
@@ -1719,28 +1719,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     if settings.vector_sync_enabled:
-        if settings.dense_enabled:
-            logger.info(
-                "Configuring search tools (vector sync enabled, SEARCH_MODE=hybrid)"
-            )
-        else:
-            logger.info(
-                "Configuring search tools (vector sync enabled, SEARCH_MODE=keyword):"
-                " dense embeddings disabled; BM25 keyword search only — no embedding"
-                " endpoint required (ADR-030)"
-            )
+        logger.info("Configuring search tools (vector sync enabled, hybrid search)")
         configure_semantic_tools(mcp)
     else:
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
-        if not settings.dense_enabled:
-            # keyword mode is meaningless without the Qdrant pipeline it queries;
-            # the tools just won't register. Warn rather than crash, matching the
-            # codebase's gate-don't-crash posture for search enablement.
-            logger.warning(
-                "SEARCH_MODE=keyword has no effect while VECTOR_SYNC_ENABLED is "
-                "off: keyword search uses the Qdrant index, so enable vector sync "
-                "to use it (ADR-030)"
-            )
 
     # Register OAuth provisioning tools (only when offline access is enabled)
     enable_offline_access_for_tools = settings.enable_offline_access

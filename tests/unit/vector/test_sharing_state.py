@@ -27,27 +27,13 @@ _MODEL = "model-x"
 
 
 class _Settings:
-    # Hybrid mode: the dedup identity is the dense embedding model name.
-    dense_enabled = True
-
+    # The dedup identity is always the dense embedding model name (keyword-vs-
+    # hybrid is tracked per-document via payload_keys.INDEX_MODE, not the identity).
     def get_collection_name(self) -> str:
         return _COLLECTION
 
     def get_embedding_model_name(self) -> str:
         return _MODEL
-
-
-class _KeywordSettings:
-    # Keyword mode (ADR-030): no dense vectors. The dedup identity must be the
-    # fixed ``bm25-keyword`` marker, NOT the ``simple-{dim}`` model-name fallback,
-    # so it matches what the chunk-point writer stamps (Deck #509).
-    dense_enabled = False
-
-    def get_collection_name(self) -> str:
-        return _COLLECTION
-
-    def get_embedding_model_name(self) -> str:
-        return "simple-384"
 
 
 def _point(payload: dict) -> SimpleNamespace:
@@ -284,29 +270,116 @@ class TestClaimExistingIndex:
         assert await ss.claim_existing_index("42", "file", "abc", "alice") is True
         client.set_payload.assert_not_called()
 
-    async def test_keyword_mode_hit_matches_bm25_marker(
-        self, client, monkeypatch
-    ) -> None:
-        # Regression (Deck #509): in keyword mode the dedup identity is the fixed
-        # ``bm25-keyword`` marker the writer stamps — NOT get_embedding_model_name()'s
-        # ``simple-{dim}`` fallback. With the pre-fix code these disagreed, so the
-        # claim always missed and an unchanged shared doc was re-processed + re-OCR'd
-        # every scan. A point stamped ``bm25-keyword`` must register as a HIT.
-        monkeypatch.setattr(ss, "get_settings", lambda: _KeywordSettings())
+    async def test_hybrid_claim_misses_existing_keyword_point(self, client) -> None:
+        # Monotonic keyword→hybrid upgrade: a hybrid claim cannot reuse a
+        # sparse-only keyword point (it lacks the dense vector), so — even though
+        # the embedding identity matches (same model) — it MUST miss and force a
+        # reprocess that adds the dense vector. No principal is granted on a miss.
         client.scroll.return_value = (
             [
                 _point(
                     {
-                        payload_keys.EMBEDDING_IDENTITY: "bm25-keyword",
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        payload_keys.INDEX_MODE: payload_keys.INDEX_MODE_KEYWORD,
                         ss.ACL_PRINCIPALS_KEY: ["user:alice"],
                     }
                 )
             ],
             None,
         )
-        # alice already listed -> HIT (skip reprocess), no write.
-        assert await ss.claim_existing_index("42", "file", "abc", "alice") is True
+        assert (
+            await ss.find_indexed_content(
+                "42",
+                "file",
+                "abc",
+                _MODEL,
+                index_mode=payload_keys.INDEX_MODE_HYBRID,
+            )
+            is None
+        )
+        # claim_existing_index defaults to index_mode="hybrid" → same miss → False.
+        assert await ss.claim_existing_index("42", "file", "abc", "bob") is False
         client.set_payload.assert_not_called()
+
+    async def test_keyword_claim_hits_existing_hybrid_point(self, client) -> None:
+        # hybrid ⊇ keyword: a keyword claim reuses an existing hybrid point rather
+        # than downgrading/stripping the dense vector while a hybrid reader holds
+        # the tag. alice already listed → HIT (skip reprocess), no write.
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        payload_keys.INDEX_MODE: payload_keys.INDEX_MODE_HYBRID,
+                        ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+                    }
+                )
+            ],
+            None,
+        )
+        assert (
+            await ss.claim_existing_index(
+                "42",
+                "file",
+                "abc",
+                "alice",
+                index_mode=payload_keys.INDEX_MODE_KEYWORD,
+            )
+            is True
+        )
+        client.set_payload.assert_not_called()
+
+    async def test_same_mode_claim_hits(self, client) -> None:
+        # Same-mode (keyword claim vs existing keyword point) is a hit as before —
+        # the monotonic rule only forces a miss for hybrid-over-keyword.
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        payload_keys.INDEX_MODE: payload_keys.INDEX_MODE_KEYWORD,
+                        ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+                    }
+                )
+            ],
+            None,
+        )
+        assert (
+            await ss.claim_existing_index(
+                "42",
+                "file",
+                "abc",
+                "alice",
+                index_mode=payload_keys.INDEX_MODE_KEYWORD,
+            )
+            is True
+        )
+        client.set_payload.assert_not_called()
+
+    async def test_missing_index_mode_defaults_to_hybrid(self, client) -> None:
+        # A legacy point written before INDEX_MODE existed has no key; it defaults
+        # to "hybrid", so a hybrid claim still dedups against it (HIT).
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+                    }
+                )
+            ],
+            None,
+        )
+        assert (
+            await ss.find_indexed_content(
+                "42",
+                "file",
+                "abc",
+                _MODEL,
+                index_mode=payload_keys.INDEX_MODE_HYBRID,
+            )
+            is not None
+        )
 
     async def test_lookup_error_degrades_to_process_normally(self, client) -> None:
         # A Qdrant hiccup during dedup must not abort the scan — fall back to

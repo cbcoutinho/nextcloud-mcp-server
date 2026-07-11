@@ -35,14 +35,15 @@ from nextcloud_mcp_server.observability.metrics import record_db_operation
 logger = logging.getLogger(__name__)
 
 
-# Parameters bind untyped through the ``sa.text(...)`` shim; asyncpg infers
-# each placeholder's type from its target column. For ``occurred_at``
-# (TIMESTAMPTZ) it wants a real ``datetime`` (a string is rejected even with a
-# CAST), so we bind the aware datetime object on Postgres; SQLite's sqlite3
-# driver can't bind a ``datetime`` on Python 3.12+, so we bind an ISO string
-# there. ``metadata`` (JSONB) takes a JSON string on both — asyncpg's jsonb
-# codec accepts ``str`` directly, so no cast is needed. Same SQL both ways;
-# only the ``occurred_at`` bind value differs by dialect.
+# Parameters bind untyped through the ``sa.text(...)`` shim. psycopg3 dumps a
+# Python ``str`` with the libpq "unknown" OID, so Postgres infers each
+# placeholder's type from its target column. For ``occurred_at`` (TIMESTAMPTZ)
+# we bind the aware ``datetime`` object on Postgres — psycopg3 adapts it to
+# timestamptz directly; SQLite's sqlite3 driver can't bind a ``datetime`` on
+# Python 3.12+, so we bind an ISO string there. ``metadata`` (JSONB) takes a
+# JSON string on both: on Postgres the unknown-typed ``str`` is inferred as
+# jsonb and parsed server-side, so no explicit ``::jsonb`` cast is needed. Same
+# SQL both ways; only the ``occurred_at`` bind value differs by dialect.
 _INSERT_SQL = (
     "INSERT INTO usage_events (event_id, occurred_at, metric, value, metadata) "
     "VALUES (?, ?, ?, ?, ?) "
@@ -125,7 +126,7 @@ class UsageEventStore:
         try:
             event_id = event_id or str(uuid.uuid4())
             when = occurred_at or datetime.now(timezone.utc)
-            # asyncpg takes the datetime object directly; sqlite3 needs a string.
+            # psycopg takes the datetime object directly; sqlite3 needs a string.
             when_bind = (
                 when if self._storage.dialect == "postgresql" else when.isoformat()
             )

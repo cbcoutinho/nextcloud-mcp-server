@@ -44,6 +44,7 @@ from nextcloud_mcp_server.search.context import (
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import (
+    is_safe_webdav_file_path,
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
 )
@@ -59,7 +60,7 @@ _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
-    """Uniform 422 for an explicit unsupported search algorithm (ADR-030).
+    """Uniform 422 for an explicit unsupported search algorithm.
 
     Shared by both search endpoints so the ``unsupported_search_type`` payload
     shape (error / requested / supported_search_types) can't drift between them.
@@ -81,7 +82,7 @@ def _build_search_algorithm(
     score_threshold: float,
     fusion: str,
 ) -> tuple[SearchAlgorithm, str]:
-    """Resolve + instantiate the search algorithm for a request (ADR-030).
+    """Resolve + instantiate the search algorithm for a request.
 
     Shared by both search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`)
     so their selection logic can't drift. Raises :class:`UnsupportedSearchType`
@@ -93,9 +94,9 @@ def _build_search_algorithm(
     algorithm = select_search_algorithm(requested_algorithm, settings)
     if algorithm == "semantic":
         return SemanticSearchAlgorithm(score_threshold=score_threshold), algorithm
-    # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it combines dense
-    # semantic + sparse BM25 in hybrid mode, and issues a sparse-only query in
-    # keyword mode (it branches on dense_enabled internally).
+    # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it fuses dense
+    # semantic + sparse BM25; keyword-only documents contribute via the sparse
+    # side of the same query.
     fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
     return (
         BM25HybridSearchAlgorithm(score_threshold=score_threshold, fusion=fusion),
@@ -245,10 +246,9 @@ async def unified_search(request: Request) -> JSONResponse:
                 "offset",
             )
 
-            # No upper bound: hybrid DBSF fusion can exceed 1.0 and, under
-            # SEARCH_MODE=keyword (ADR-030), scores are raw BM25 (unbounded). A
-            # le=1.0 cap would 400 a legitimate keyword threshold like 3.0 —
-            # mirrors the round-1 Field(ge=0.0) fix on the nc_semantic_search tool.
+            # No upper bound: hybrid DBSF fusion can exceed 1.0, so a le=1.0 cap
+            # would 400 a legitimate threshold — mirrors the round-1
+            # Field(ge=0.0) fix on the nc_semantic_search tool.
             score_threshold = _parse_float_param(
                 body.get("score_threshold"),
                 0.0,
@@ -295,11 +295,11 @@ async def unified_search(request: Request) -> JSONResponse:
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
 
-        # Resolve + build the search algorithm (ADR-030): an *explicit*
-        # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
-        # rejected with 422 carrying the advertised supported_search_types, so the
-        # client can correct it rather than silently receive BM25 results. An
-        # absent algorithm still defaults gracefully across modes.
+        # Resolve + build the search algorithm: an *explicit* unsupported request
+        # (e.g. any algorithm while vector sync is disabled) is rejected with 422
+        # carrying the advertised supported_search_types, so the client can
+        # correct it rather than silently receive fallback results. An absent
+        # algorithm still defaults gracefully.
         try:
             search_algo, algorithm = _build_search_algorithm(
                 requested_algorithm,
@@ -425,12 +425,11 @@ async def unified_search(request: Request) -> JSONResponse:
             "algorithm_used": algorithm,
         }
 
-        # Optional PCA coordinates
-        # PCA plots the result chunks around the query's dense embedding, so it
-        # only applies in hybrid mode. In keyword mode (ADR-030) there is no dense
-        # query embedding — skip PCA rather than calling the embedding service,
-        # keeping the airgapped path free of any embed attempt.
-        if include_pca and settings.dense_enabled and len(paginated_results) >= 2:
+        # Optional PCA coordinates. PCA plots the result chunks around the query's
+        # dense embedding. Keyword-only result chunks (``keyword-index`` tag) carry
+        # no dense vector, so compute_pca_coordinates places them at the origin
+        # (they can't be positioned) — the hybrid chunks still plot normally.
+        if include_pca and len(paginated_results) >= 2:
             try:
                 if search_algo.query_embedding is not None:
                     query_embedding = search_algo.query_embedding
@@ -544,11 +543,11 @@ async def vector_search(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
-        # Resolve + build the search algorithm (ADR-030): an *explicit*
-        # unsupported request (e.g. "semantic" while SEARCH_MODE=keyword) is
-        # rejected with 422 carrying the advertised supported_search_types, so the
-        # client can correct it rather than silently receive BM25 results. An
-        # absent algorithm still defaults gracefully across modes.
+        # Resolve + build the search algorithm: an *explicit* unsupported request
+        # (e.g. any algorithm while vector sync is disabled) is rejected with 422
+        # carrying the advertised supported_search_types, so the client can
+        # correct it rather than silently receive fallback results. An absent
+        # algorithm still defaults gracefully.
         try:
             search_algo, algorithm = _build_search_algorithm(
                 requested_algorithm,
@@ -629,11 +628,10 @@ async def vector_search(request: Request) -> JSONResponse:
         }
 
         # Compute PCA coordinates for visualization using shared function. PCA
-        # plots chunks around the query's dense embedding, so it only applies in
-        # hybrid mode; keyword mode (ADR-030) has no dense query embedding, so
-        # fall through to the empty-coordinates branch without calling the
-        # embedding service (airgapped-safe).
-        if include_pca and settings.dense_enabled and len(all_results) >= 2:
+        # plots chunks around the query's dense embedding; keyword-only chunks
+        # (``keyword-index`` tag) have no dense vector and are placed at the origin
+        # by compute_pca_coordinates while hybrid chunks plot normally.
+        if include_pca and len(all_results) >= 2:
             try:
                 # Get query embedding from search algorithm or generate it
                 if search_algo.query_embedding is not None:
@@ -890,14 +888,14 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
     # Log incoming request
     file_path_param = request.query_params.get("file_path", "<not provided>")
     page_param = request.query_params.get("page", "1")
-    logger.info(
+    logger.debug(
         "PDF preview request: file_path=%s, page=%s", file_path_param, page_param
     )
 
     try:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
-        logger.info("PDF preview authenticated for user: %s", user_id)
+        logger.debug("PDF preview authenticated for user: %s", user_id)
     except Exception as e:
         logger.warning("Unauthorized access to /api/v1/pdf-preview: %s", e)
         return JSONResponse(
@@ -919,7 +917,7 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
             )
 
         # Validate no path traversal sequences
-        if ".." in file_path:
+        if not is_safe_webdav_file_path(file_path):
             return JSONResponse(
                 {"success": False, "error": "Invalid file path"},
                 status_code=400,

@@ -4,7 +4,7 @@ Persistent Storage for MCP Server State
 This module provides SQL-backed storage for multiple concerns across both
 BasicAuth and OAuth authentication modes. The default backend is SQLite
 (file-based or per-process tempfile); set ``DATABASE_URL`` to a
-``postgresql+asyncpg://...`` URL for HA k8s deployments where pods need
+``postgresql+psycopg://...`` URL for HA k8s deployments where pods need
 to be stateless. See :doc:`ADR-026 </docs/ADR-026-pluggable-database-backend>`
 for the design.
 
@@ -53,7 +53,6 @@ from sqlalchemy.pool import NullPool
 
 from nextcloud_mcp_server.config import (
     cfg,
-    get_database_ssl,
     get_database_url,
     is_ephemeral_token_db,
     is_sqlite_url,
@@ -170,19 +169,6 @@ def _wrap_row(row) -> _Row | None:
     return _Row(tuple(row), dict(row._mapping))
 
 
-def _describe_ssl_arg(ssl_arg: object) -> str:
-    """Render the ``ssl`` value for the startup log line.
-
-    Split out of the engine factory to avoid a nested-ternary
-    SonarQube finding (``S3358``) and to make the cases readable.
-    """
-    if ssl_arg is False:
-        return "disabled"
-    if isinstance(ssl_arg, bool):
-        return "verify-full (system CAs)"
-    return "custom CA bundle"
-
-
 def _wrap_rows(rows) -> list[_Row]:
     """Wrap a list of SQLAlchemy rows; iterator never yields ``None``."""
     return [_Row(tuple(r), dict(r._mapping)) for r in rows]
@@ -198,7 +184,7 @@ class _Cursor:
 
     ``rowcount`` is captured eagerly at construction time. ``lastrowid`` is
     intentionally NOT exposed: accessing ``CursorResult.lastrowid`` on the
-    asyncpg dialect consumes the result buffer, which would silently turn
+    Postgres dialect consumes the result buffer, which would silently turn
     every subsequent ``fetchall()`` into an empty list (a real bug hit
     during the Postgres port).
     """
@@ -331,7 +317,7 @@ class RefreshTokenStorage:
 
         Args:
             database_url: SQLAlchemy URL (``sqlite+aiosqlite:///...`` or
-                ``postgresql+asyncpg://...``). When omitted, falls back to
+                ``postgresql+psycopg://...``). When omitted, falls back to
                 :func:`get_database_url` (honors ``DATABASE_URL`` env, then
                 ``TOKEN_STORAGE_DB``).
             encryption_key: Optional Fernet encryption key (32 bytes, base64-encoded).
@@ -371,7 +357,7 @@ class RefreshTokenStorage:
         Environment variables:
             DATABASE_URL: SQLAlchemy URL for any supported backend. Wins
                 over ``TOKEN_STORAGE_DB`` when set. Use
-                ``postgresql+asyncpg://user:pw@host/db`` for HA k8s
+                ``postgresql+psycopg://user:pw@host/db`` for HA k8s
                 deployments. See ADR-026.
             TOKEN_STORAGE_DB: Legacy SQLite-only path. If unset and
                 ``DATABASE_URL`` is also unset, a per-process tempfile is
@@ -535,11 +521,11 @@ class RefreshTokenStorage:
         under the SonarQube ``S3776`` threshold and so a future
         engine-arg unit test has a single seam to mock.
 
-        Uses :class:`NullPool` (one fresh asyncpg connection per
+        Uses :class:`NullPool` (one fresh psycopg connection per
         checkout, no caching). The original ADR-026 design used a
         small bounded ``QueuePool`` with ``pool_pre_ping=True``, but
         that combination is unsafe under the server's anyio task
-        layout: cached asyncpg connections are bound to the event
+        layout: cached connections are bound to the event
         loop they were opened on, and a checkout from a task running
         under a different anyio TaskGroup / loop triggers
         ``RuntimeError: got Future attached to a different loop`` on
@@ -550,8 +536,8 @@ class RefreshTokenStorage:
         and the request-path code paths share an engine across loops.
 
         NullPool sidesteps the entire class of bugs: every
-        ``engine.connect()`` opens a fresh asyncpg connection in the
-        caller's current loop, and disposes it on close. asyncpg
+        ``engine.connect()`` opens a fresh psycopg connection in the
+        caller's current loop, and disposes it on close. psycopg
         connection setup is cheap (~5 ms LAN, single round-trip when
         the server is local) so the throughput cost is negligible for
         the MCP server's traffic shape (low-concurrency, bursty).
@@ -560,35 +546,30 @@ class RefreshTokenStorage:
         the Postgres backend — they were never propagated to SQLite,
         which has always used NullPool.
         """
-        # asyncpg ships as an optional PyPI extra (`[postgres]`) so the
-        # default `pip install nextcloud-mcp-server` audience doesn't
-        # pull in the C extension. The Docker image bundles it. Surface
-        # a clear actionable error when the driver is missing rather
-        # than the generic ``ModuleNotFoundError`` SQLAlchemy emits.
-        if "+asyncpg" in self.database_url.lower() and (
-            importlib.util.find_spec("asyncpg") is None
+        # psycopg (psycopg3) ships as an optional PyPI extra
+        # (`[postgres]`) so the default `pip install nextcloud-mcp-server`
+        # audience doesn't pull it in. The Docker image bundles it.
+        # Surface a clear actionable error when the driver is missing
+        # rather than the generic ``ModuleNotFoundError`` SQLAlchemy emits.
+        if "+psycopg" in self.database_url.lower() and (
+            importlib.util.find_spec("psycopg") is None
         ):
             raise RuntimeError(
-                "DATABASE_URL points at Postgres via asyncpg but the "
-                "'asyncpg' driver is not installed. Install with "
+                "DATABASE_URL points at Postgres via psycopg but the "
+                "'psycopg' driver is not installed. Install with "
                 "`pip install nextcloud-mcp-server[postgres]` or use "
                 "the Docker image, which bundles it. See ADR-026."
             )
 
-        # Conditionally pass TLS config through to asyncpg. When
-        # ``get_database_ssl()`` returns None we omit ``ssl`` entirely
-        # so asyncpg's default (``prefer``) applies — keeps
+        # TLS is carried IN the DATABASE_URL (e.g. ``?sslmode=require``) and
+        # read by libpq/psycopg directly — the URL is passed through verbatim,
+        # never decomposed or rewritten. No TLS ``connect_args``: the server
+        # accepts the operator-supplied DSN as-is (ADR-026). When the URL omits
+        # ``sslmode`` libpq's default (``prefer``) applies, keeping
         # cluster-local Postgres without TLS working out of the box.
-        connect_args: dict[str, object] = {}
-        ssl_arg = get_database_ssl()
-        if ssl_arg is not None:
-            connect_args["ssl"] = ssl_arg
-            logger.info("Postgres backend TLS: %s", _describe_ssl_arg(ssl_arg))
-
         engine = create_async_engine(
             self.database_url,
             poolclass=NullPool,
-            connect_args=connect_args,
             future=True,
         )
         logger.info(
@@ -601,7 +582,7 @@ class RefreshTokenStorage:
         """Dispose the underlying AsyncEngine on shutdown.
 
         With ``NullPool`` the dispose call has no idle pool to drain,
-        but it still cleanly tears down any in-flight asyncpg
+        but it still cleanly tears down any in-flight psycopg
         connections held by active checkouts so shutdown hooks don't
         leave dangling transports behind. Idempotent: safe to call
         from any number of shutdown hooks.

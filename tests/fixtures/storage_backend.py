@@ -10,7 +10,7 @@ available in the current environment:
 
   and export the URL so the fixture picks it up::
 
-      export TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp
+      export TEST_DATABASE_URL=postgresql+psycopg://mcp:mcp@localhost:5433/mcp
 
   When ``TEST_DATABASE_URL`` is unset (or the host is unreachable), the
   Postgres parametrization is skipped automatically so the suite still runs
@@ -38,8 +38,8 @@ def _postgres_reachable(url: str) -> bool:
     """Return ``True`` if the configured Postgres accepts TCP connections.
 
     A lightweight socket probe is used rather than a full DB handshake so
-    we don't have to ship a sync Postgres driver (psycopg2) just for the
-    test gate — asyncpg only works inside an event loop.
+    we don't have to open a sync Postgres connection just for the test
+    gate — the async psycopg engine only works inside an event loop.
     """
     import socket
     from urllib.parse import urlparse
@@ -80,9 +80,9 @@ def storage_backend(request):
 
     async def reset() -> None:
         # Use a fresh async engine so we don't fight an async connection
-        # the test might still be holding open at teardown time. asyncpg
+        # the test might still be holding open at teardown time. psycopg3
         # is the only driver we ship for Postgres, so the reset path stays
-        # event-loop-only (no psycopg2 dependency required).
+        # event-loop-only.
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
 

@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Check format
         run: uv run --frozen ruff format --diff
       - name: Linting
@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Run unit tests
         run: uv run pytest -v -m unit -o "addopts=-p no:asyncio"
 
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - name: Smoke test CLI (isolated install)
@@ -68,21 +68,22 @@ jobs:
           - "login-flow"
           - "keycloak"
           - "ldap"
+          - "login-flow-ldap"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
-            nextcloud_image: "docker.io/library/nextcloud:32.0.12@sha256:41fe07a7397cd8e4a6b5873bcea83ba29d40e3333351c7aabc591f9ee1b0ef42"
+            nextcloud_image: "docker.io/library/nextcloud:32.0.12@sha256:607cce688a932f444926a902df979a21e83258746344ad23cd133b93088729c7"
           - nextcloud_version: "33"
-            nextcloud_image: "docker.io/library/nextcloud:33.0.6@sha256:63010f2b216af07597f706bde1cda130d79381b03dc76266fdff9d54f8ef96c0"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.6@sha256:35170a1c67e759ef874eaa0fde74eb223cf221dacfb67a8ccc14e8d7c5f2c990"
           # Disabled until all upstream apps support NC 34
           # - nextcloud_version: "34"
-          #   nextcloud_image: "docker.io/library/nextcloud:34.0.1@sha256:e74a21b3d94e016831f06a6cdb3891f48ee981f6679df0bbd29af6e6f890e7c4"
+          #   nextcloud_image: "docker.io/library/nextcloud:34.0.1@sha256:6444fc5450302534e850b4d23c05b5f06c7b0d25bd5ece716452061454699c58"
 
           # Mode-specific properties
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap)"
+            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic and not ldap and not login_flow_ldap) or (integration and not keycloak and not login_flow and not multi_user_basic and not ldap and not login_flow_ldap)"
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
@@ -128,6 +129,21 @@ jobs:
             wait-port: 8003
             mcp-internal-url: "http://mcp-multi-user-basic:8000"
             needs-playwright: false
+            extra-args: ""
+
+          # Login-flow mode against the LDAP backend: proves the #980 principal
+          # resolution holds in login-flow mode too (identity via OIDC, API
+          # access via a per-user app password). login-flow MCP (8004) +
+          # openldap; user_ldap is auto-configured by the post-installation
+          # hook. Dedicated `login_flow_ldap` marker keeps it out of the plain
+          # `login_flow` and `ldap` lanes. Needs a browser for Login Flow v2.
+          - mode: login-flow-ldap
+            profile: login-flow
+            extra-compose-profiles: "--profile ldap"
+            markers: "login_flow_ldap"
+            wait-port: 8004
+            mcp-internal-url: "http://mcp-login-flow:8004"
+            needs-playwright: true
             extra-args: ""
 
     name: integration (${{ matrix.mode }} / nc${{ matrix.nextcloud_version }})
@@ -195,7 +211,7 @@ jobs:
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Install Playwright
         if: matrix.needs-playwright
@@ -248,7 +264,7 @@ jobs:
       # openldap service). This step just surfaces the resulting config for
       # debugging, mirroring the keycloak verify step below.
       - name: Verify LDAP backend
-        if: matrix.mode == 'ldap'
+        if: matrix.mode == 'ldap' || matrix.mode == 'login-flow-ldap'
         run: |
           echo "=== user_ldap enabled? ==="
           docker compose exec -T app php occ app:list 2>/dev/null | grep -i ldap || echo "user_ldap NOT enabled"
@@ -277,7 +293,7 @@ jobs:
           echo "Keycloak is ready."
 
       - name: Verify OIDC configuration
-        if: matrix.mode == 'login-flow' || matrix.mode == 'keycloak'
+        if: matrix.mode == 'login-flow' || matrix.mode == 'keycloak' || matrix.mode == 'login-flow-ldap'
         run: |
           echo "=== OIDC Discovery ==="
           curl -s http://localhost:8080/.well-known/openid-configuration | jq .
@@ -363,7 +379,7 @@ jobs:
           DOCLING_TIMEOUT: "300"
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Wait for Nextcloud
         run: |

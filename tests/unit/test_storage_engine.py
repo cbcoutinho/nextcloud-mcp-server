@@ -4,8 +4,7 @@ PR #799 switched the Postgres engine from ``AsyncAdaptedQueuePool``
 to ``NullPool`` to eliminate cross-event-loop crashes under anyio
 TaskGroups. The method is factored out explicitly so a future
 engine-arg unit test has a single seam to mock — these tests pin
-the pool class and the connect-args plumbing so a refactor can't
-silently regress to a sharing pool.
+the pool class so a refactor can't silently regress to a sharing pool.
 """
 
 from __future__ import annotations
@@ -27,19 +26,19 @@ def _storage(url: str) -> RefreshTokenStorage:
 
 
 # The unit-test environment may not have the optional ``[postgres]``
-# extra installed (asyncpg is the C-extension dep). Skip the
-# engine-construction tests when asyncpg isn't importable rather
-# than hitting the "DATABASE_URL points at Postgres via asyncpg but
-# the 'asyncpg' driver is not installed" guard — that branch is
-# exercised explicitly by ``test_postgres_engine_missing_asyncpg_driver_message``
+# extra installed (psycopg is the C-extension dep). Skip the
+# engine-construction tests when psycopg isn't importable rather
+# than hitting the "DATABASE_URL points at Postgres via psycopg but
+# the 'psycopg' driver is not installed" guard — that branch is
+# exercised explicitly by ``test_postgres_engine_missing_psycopg_driver_message``
 # below.
-asyncpg_required = pytest.importorskip("asyncpg")
+psycopg_required = pytest.importorskip("psycopg")
 
 
 def test_postgres_engine_uses_nullpool():
     """The Postgres engine must use ``NullPool`` to avoid cross-loop
     crashes under anyio TaskGroups (see PR #799)."""
-    storage = _storage("postgresql+asyncpg://mcp:placeholder@db.example.com:5432/mcp")
+    storage = _storage("postgresql+psycopg://mcp:placeholder@db.example.com:5432/mcp")
     engine = storage._build_postgres_engine()
 
     assert isinstance(engine, AsyncEngine)
@@ -64,25 +63,25 @@ def test_postgres_engine_ignores_pool_sizing_settings(monkeypatch: pytest.Monkey
     monkeypatch.setattr(cfg.get_settings(), "database_pool_size", 99, raising=False)
     monkeypatch.setattr(cfg.get_settings(), "database_max_overflow", 99, raising=False)
 
-    storage = _storage("postgresql+asyncpg://mcp:placeholder@db.example.com:5432/mcp")
+    storage = _storage("postgresql+psycopg://mcp:placeholder@db.example.com:5432/mcp")
     engine = storage._build_postgres_engine()
     assert isinstance(engine.pool, NullPool)
 
 
-def test_postgres_engine_missing_asyncpg_driver_message(
+def test_postgres_engine_missing_psycopg_driver_message(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """When the ``+asyncpg`` dialect is requested but the asyncpg
+    """When the ``+psycopg`` dialect is requested but the psycopg
     optional dep isn't installed, the engine builder must surface an
     actionable error before SQLAlchemy emits its generic
     ``ModuleNotFoundError``."""
     import importlib.util
 
     def _fake_find_spec(name: str):
-        return None if name == "asyncpg" else importlib.util.find_spec(name)
+        return None if name == "psycopg" else importlib.util.find_spec(name)
 
     monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
 
-    storage = _storage("postgresql+asyncpg://mcp:placeholder@db.example.com:5432/mcp")
-    with pytest.raises(RuntimeError, match="asyncpg.*not installed"):
+    storage = _storage("postgresql+psycopg://mcp:placeholder@db.example.com:5432/mcp")
+    with pytest.raises(RuntimeError, match="psycopg.*not installed"):
         storage._build_postgres_engine()

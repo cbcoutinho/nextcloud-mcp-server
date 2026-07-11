@@ -3,11 +3,11 @@
 For the status endpoint the roles are reversed from the other contract tests in
 this package: **astrolabe is the consumer** and **nextcloud-mcp-server is the
 provider**. The astrolabe UI reads ``supported_search_types`` from
-``/api/v1/status`` to gate which query types it offers (ADR-030):
+``/api/v1/status`` to gate which query types it offers (ADR-031):
 
-- ``SEARCH_MODE=hybrid`` → ``["semantic", "bm25", "hybrid"]``
-- ``SEARCH_MODE=keyword`` → ``["bm25"]`` (dense embeddings are off)
-- vector sync disabled  → ``[]``
+- vector sync enabled  → ``["semantic", "bm25", "hybrid"]`` (the collection is
+  always dense-capable; keyword-only documents contribute via the sparse side)
+- vector sync disabled → ``[]``
 
 This is **contract-first**: we author the pact astrolabe's follow-up UI PR will
 implement against, pinning the field name, the value vocabulary, and the
@@ -16,13 +16,13 @@ provider-state strings. The matching server-side states are registered in
 them once astrolabe publishes its real consumer pact.
 
 The generated pact is written to ``provider_contracts/`` (NOT ``pacts/``) so the
-``pact-broker publish tests/contract/pacts`` step never publishes it under *our*
+``pact broker publish tests/contract/pacts`` step never publishes it under *our*
 consumer identity — astrolabe owns and publishes the real consumer pact. The
 real provider response is verified by ``tests/unit/test_management_status_endpoint.py``
 (``TestStatusEndpointSearchTypes``) and, in integration CI, by provider
 verification against a running server.
 
-See ADR-029 (contract architecture) and ADR-030 (SEARCH_MODE).
+See ADR-029 (contract architecture) and ADR-031 (per-document index mode).
 """
 
 import shutil
@@ -75,10 +75,15 @@ async def _fetch_supported_search_types(base_url: str) -> list[str]:
         return resp.json()["supported_search_types"]
 
 
-async def test_status_advertises_all_query_types_in_hybrid_mode(status_pact):
-    """Hybrid mode advertises semantic + bm25 + hybrid, so the UI offers all."""
+async def test_status_advertises_all_query_types_when_vector_sync_enabled(status_pact):
+    """Vector sync on advertises semantic + bm25 + hybrid, so the UI offers all.
+
+    The collection is always dense-capable (ADR-031); keyword-only documents
+    contribute via the sparse side of the fused query, so all three types are
+    offered whenever vector sync is enabled.
+    """
     (
-        status_pact.upon_receiving("a status request when the server is in hybrid mode")
+        status_pact.upon_receiving("a status request when vector sync is enabled")
         .given("the server advertises hybrid search support")
         .with_request("GET", "/api/v1/status")
         .will_respond_with(200)
@@ -96,17 +101,15 @@ async def test_status_advertises_all_query_types_in_hybrid_mode(status_pact):
     assert types == ["semantic", "bm25", "hybrid"]
 
 
-async def test_status_advertises_bm25_only_in_keyword_mode(status_pact):
-    """Keyword mode advertises bm25 only, so the UI hides semantic/hybrid."""
+async def test_status_advertises_nothing_when_vector_sync_disabled(status_pact):
+    """Vector sync off advertises no query types, so the UI hides the picker."""
     (
-        status_pact.upon_receiving(
-            "a status request when the server is in keyword mode"
-        )
-        .given("the server advertises keyword-only search support")
+        status_pact.upon_receiving("a status request when vector sync is disabled")
+        .given("the server has vector sync disabled")
         .with_request("GET", "/api/v1/status")
         .will_respond_with(200)
         .with_body(
-            {"supported_search_types": ["bm25"]},
+            {"supported_search_types": []},
             content_type="application/json",
         )
     )
@@ -114,7 +117,7 @@ async def test_status_advertises_bm25_only_in_keyword_mode(status_pact):
     with status_pact.serve() as srv:
         types = await _fetch_supported_search_types(str(srv.url))
 
-    assert types == ["bm25"]
+    assert types == []
 
 
 async def _post_search_algorithm(
@@ -122,7 +125,7 @@ async def _post_search_algorithm(
 ) -> httpx.Response:
     """Stand-in for astrolabe's McpServerClient search calls: POST ``path`` with an
     explicit ``algorithm``. Returns the raw response so the caller can assert on
-    the (strict, ADR-030) 422 the server sends for an unsupported algorithm.
+    the (strict, ADR-031) 422 the server sends for an unsupported algorithm.
 
     Both astrolabe search entry points are exercised — ``searchForUnifiedSearch``
     (POST /api/v1/search) and ``search`` (POST /api/v1/vector-viz/search) — which
@@ -137,23 +140,24 @@ async def _post_search_algorithm(
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
-async def test_search_rejects_unsupported_algorithm_in_keyword_mode(
+async def test_search_rejects_algorithm_when_vector_sync_disabled(
     status_pact, path: str
 ):
-    """Explicitly requesting ``semantic`` on a keyword-only server → 422 (ADR-030).
+    """Any explicit algorithm against a vector-sync-disabled server → 422 (ADR-031).
 
-    This is the strict half of the contract: rather than silently degrading a
-    ``semantic`` request to BM25, the server rejects it with the advertised
-    ``supported_search_types`` so astrolabe can surface/guard the error. astrolabe
-    also gates the request client-side from ``/api/v1/status``, but this pins the
-    server-side backstop the client relies on — on **both** search endpoints,
-    which share one ``_build_search_algorithm`` gate.
+    With per-document index mode there is no keyword-only server: whenever vector
+    sync is on, all three algorithms are supported. The remaining strict-reject
+    case is a request made while vector sync is **off** (``supported_search_types``
+    is empty) — the server rejects it with the advertised (empty) set rather than
+    silently returning nothing, so astrolabe can surface/guard the error. astrolabe
+    also gates client-side from ``/api/v1/status``, but this pins the server-side
+    backstop on **both** search endpoints, which share one gate.
     """
     (
         status_pact.upon_receiving(
-            f"a semantic search request to {path} when the server is in keyword mode"
+            f"a semantic search request to {path} when vector sync is disabled"
         )
-        .given("the server advertises keyword-only search support")
+        .given("the server has vector sync disabled")
         .with_request("POST", path)
         .with_body(
             {"query": "torch leadership award", "algorithm": "semantic"},
@@ -164,7 +168,7 @@ async def test_search_rejects_unsupported_algorithm_in_keyword_mode(
             {
                 "error": "unsupported_search_type",
                 "requested": "semantic",
-                "supported_search_types": ["bm25"],
+                "supported_search_types": [],
             },
             content_type="application/json",
         )
@@ -177,4 +181,4 @@ async def test_search_rejects_unsupported_algorithm_in_keyword_mode(
     body = resp.json()
     assert body["error"] == "unsupported_search_type"
     assert body["requested"] == "semantic"
-    assert body["supported_search_types"] == ["bm25"]
+    assert body["supported_search_types"] == []

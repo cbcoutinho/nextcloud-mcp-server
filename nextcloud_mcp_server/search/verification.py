@@ -152,11 +152,11 @@ async def _verify_files(
     fetch therefore subsumes the old per-file ``file_accessible_by_id`` check
     and replaces N round-trips with one.
 
-    This is the verify-on-read fix for stale tags (ADR-019): a file removed
-    from the ``vector-index`` tag — or outright deleted — drops out of the
-    tagged set, so it is dropped from results and scheduled for eviction by the
-    caller immediately, rather than lingering until the scanner's grace-period
-    sweep reconciles it.
+    This is the verify-on-read fix for stale tags (ADR-019): a file removed from
+    both index tags (``vector-index``/``keyword-index``) — or outright deleted —
+    drops out of the tagged set, so it is dropped from results and scheduled for
+    eviction by the caller immediately, rather than lingering until the scanner's
+    grace-period sweep reconciles it.
 
     Failure policy mirrors ``_verify_news_items``: if the tag fetch itself
     fails we keep every file result (fail-open, the next query re-verifies),
@@ -173,7 +173,13 @@ async def _verify_files(
         is_path_excluded,
     )
 
-    tag_name = get_settings().vector_sync_pdf_tag
+    # Lazy import (same import-cycle reason as tag_exclusion above): scanner pulls
+    # this module in indirectly via the server package.
+    from nextcloud_mcp_server.vector.scanner import (  # noqa: PLC0415
+        _discover_tagged_files,
+    )
+
+    settings = get_settings()
 
     # One semaphore slot is held for both Nextcloud round-trips: the tagged-file
     # REPORT (plus optional Depth:infinity folder expansion) and — only when the
@@ -199,23 +205,23 @@ async def _verify_files(
     # an untag is reflected on the very next search rather than after a TTL.
     async with semaphore:
         try:
-            tagged = await client.find_files_by_tag(
-                tag_name, mime_type_filter="application/pdf"
-            )
+            # Union of BOTH index tags (vector-index → hybrid, keyword-index →
+            # keyword): a result stays verified if its file still carries either
+            # tag, so untagging from whichever tag indexed it drops it from
+            # results. Membership is all that matters here, not the mode.
+            tagged = await _discover_tagged_files(client, settings)
         except HTTPStatusError as e:
             logger.warning(
-                "Transient error fetching %r-tagged files for verification: "
+                "Transient error fetching index-tagged files for verification: "
                 "%s %s; keeping all file results",
-                tag_name,
                 e.response.status_code,
                 e,
             )
             return {r.id for r in results}
         except Exception as e:
             logger.warning(
-                "Unexpected error fetching %r-tagged files for verification: "
+                "Unexpected error fetching index-tagged files for verification: "
                 "%s; keeping all file results",
-                tag_name,
                 e,
             )
             return {r.id for r in results}
