@@ -347,9 +347,17 @@ class _DoclingServeBackend(_OcrBackend):
     (``DOCLING_API_URL``), for self-hosters who prefer docling's OCR over the
     gateway/Mistral backends (esp. photographed/handwritten text)."""
 
-    def __init__(self, api_url: str, ocr_lang: list[str] | None) -> None:
+    def __init__(
+        self,
+        api_url: str,
+        ocr_lang: list[str] | None,
+        pipeline: str = "standard",
+        vlm_preset: str | None = None,
+    ) -> None:
         self._api_url = api_url
         self._ocr_lang = ocr_lang or None
+        self._pipeline = pipeline
+        self._vlm_preset = vlm_preset
 
     async def ocr(
         self, content: bytes, mime_type: str
@@ -367,8 +375,11 @@ class _DoclingServeBackend(_OcrBackend):
             to_formats=["md", "json"],
             # This IS the OCR tier -- always OCR. (DOCLING_DO_OCR tunes only the
             # image processor; honoring it here would silently no-OCR scanned PDFs.)
+            # In VLM mode do_ocr is inert -- convert_file omits it.
             do_ocr=True,
             ocr_lang=self._ocr_lang,
+            pipeline=self._pipeline,
+            vlm_pipeline_preset=self._vlm_preset,
             timeout=ocr_timeout,
         )
         pages = docling_pages(document.get("json_content"))
@@ -562,7 +573,23 @@ def build_ocr_backend(
         lang = [
             s.strip() for s in (settings.docling_ocr_lang or "").split(",") if s.strip()
         ]
-        return _DoclingServeBackend(settings.docling_api_url, lang or None)
+        # VLM OCR is ~30-150s per page; the default 180s OCR timeout is often too
+        # low. Warn (don't override) so the operator raises it deliberately (D3).
+        if (
+            settings.docling_pipeline == "vlm"
+            and settings.document_ocr_timeout_seconds < 300
+        ):
+            logger.warning(
+                "DOCLING_PIPELINE=vlm but DOCUMENT_OCR_TIMEOUT_SECONDS=%.0fs is low "
+                "for Vision-LLM OCR; consider raising it (e.g. >= 600)",
+                settings.document_ocr_timeout_seconds,
+            )
+        return _DoclingServeBackend(
+            settings.docling_api_url,
+            lang or None,
+            settings.docling_pipeline,
+            settings.docling_vlm_preset,
+        )
 
     # An EXPLICIT provider that's missing its config is an operator error -- warn
     # loudly (once, since the backend is resolved+cached) rather than silently

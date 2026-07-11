@@ -176,6 +176,13 @@ _DEFAULTS: dict[str, Any] = {
     # PDF parse isolation (OOM guard)
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
+    # Optional wall-clock cap (seconds) on the SYNCHRONOUS parse inside the
+    # nc_webdav_read_file MCP tool. None (default) = disabled: an interactive read
+    # is bounded only by the underlying processor timeout (DOCLING_TIMEOUT /
+    # DOCUMENT_OCR_TIMEOUT_SECONDS). Set a client-friendly bound (e.g. 45-60s) so a
+    # slow VLM/OCR convert returns base64 quickly instead of blocking past an MCP
+    # client's own timeout. Never applies to the async ingest/worker path (ADR-032).
+    "document_read_timeout_seconds": None,
     "document_parse_mem_limit_mb": 1536,
     # Pre-parse size cap (MB): PDFs larger than this fail fast with reason
     # "oversize" instead of burning the OCR timeout to 0 chars on a pathological
@@ -279,6 +286,13 @@ _DEFAULTS: dict[str, Any] = {
     # Run OCR on IMAGES routed to the DoclingProcessor (find_processor path). The
     # docling OCR *backend* (scanned PDFs) always OCRs regardless of this flag.
     "docling_do_ocr": True,
+    # Which docling-serve pipeline to request: "standard" (classic layout+OCR,
+    # default, unchanged) or "vlm" (Vision-LLM OCR). "vlm" needs a docling-serve
+    # instance configured with VLM presets (see ADR-032).
+    "docling_pipeline": "standard",
+    # VLM preset name sent when docling_pipeline == "vlm". None -> docling-serve
+    # picks its own DOCLING_SERVE_DEFAULT_VLM_PRESET. Preset names are server-defined.
+    "docling_vlm_preset": None,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
@@ -766,6 +780,15 @@ def get_document_processor_config() -> dict[str, Any]:
                 "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
                 "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
                 "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
+                # Normalize like Settings.__post_init__ does (.strip().lower()) so the
+                # image path matches convert_file()'s ``pipeline == "vlm"`` check --
+                # otherwise DOCLING_PIPELINE=VLM would silently fall back to standard
+                # here while the OCR-backend path (Settings-validated) uses vlm.
+                # vlm_preset is server-defined and case-sensitive, so it stays raw.
+                "pipeline": (_dynaconf.get("DOCLING_PIPELINE") or "standard")
+                .strip()
+                .lower(),
+                "vlm_preset": _dynaconf.get("DOCLING_VLM_PRESET"),
                 "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
             }
 
@@ -1026,6 +1049,13 @@ class Settings:
     # float so a fractional DOCUMENT_PARSE_TIMEOUT_SECONDS is honoured, matching
     # anyio.move_on_after's float seconds.
     document_parse_timeout_seconds: float = 120.0
+    # Optional cap (seconds) on the synchronous parse in the nc_webdav_read_file
+    # tool. None = disabled (bounded only by the processor timeout). When set,
+    # anyio.fail_after aborts a slow interactive convert and the tool returns
+    # base64 instead of blocking; it never affects the async ingest path (ADR-032).
+    # Distinct from document_parse_timeout_seconds, which caps the fast/structured
+    # PDF-parse subprocess, not the docling/OCR HTTP call.
+    document_read_timeout_seconds: float | None = None
     # Pre-parse PDF size cap (MB). A PDF larger than this fails fast with
     # parse_failed_reason="oversize" (placeholder marked "failed") rather than
     # being handed to the fast/OCR tiers, where a pathological large file burns
@@ -1083,6 +1113,8 @@ class Settings:
     # resolves to None (docling OCR off) and the image processor is not registered.
     docling_api_url: str | None = None
     docling_ocr_lang: str = "en,de"
+    docling_pipeline: str = "standard"
+    docling_vlm_preset: str | None = None
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1238,6 +1270,7 @@ class Settings:
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
             "document_ocr_provider": {"auto", "gateway", "mistral", "docling", "none"},
             "document_ocr_mode": {"sync", "batch"},
+            "docling_pipeline": {"standard", "vlm"},
         }
         for _field, _allowed in _enum_fields.items():
             _val = (getattr(self, _field) or "").strip().lower()
@@ -1286,6 +1319,29 @@ class Settings:
                 "routes through the embedding gateway); use DOCUMENT_OCR_MODE=sync "
                 "for the direct backend without a gateway"
             )
+        # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
+        # disabled; when set it must be a positive number of seconds. An empty string
+        # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is
+        # treated as unset. Coerce so a dynaconf env string ("60") becomes a float for
+        # anyio.fail_after.
+        _read_cap = self.document_read_timeout_seconds
+        if isinstance(_read_cap, str):
+            _read_cap = _read_cap.strip() or None
+        if _read_cap is not None:
+            try:
+                _read_cap = float(_read_cap)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "DOCUMENT_READ_TIMEOUT_SECONDS must be a positive number of "
+                    "seconds (or unset to disable); got "
+                    f"{self.document_read_timeout_seconds!r}"
+                ) from None
+            if _read_cap < 1:
+                raise ValueError(
+                    "DOCUMENT_READ_TIMEOUT_SECONDS must be >= 1 second (or unset to "
+                    f"disable); got {_read_cap}"
+                )
+        self.document_read_timeout_seconds = _read_cap
         if (
             self.collection_metadata_source == "api"
             and not self.collection_metadata_api_url
@@ -1786,6 +1842,7 @@ def get_settings() -> Settings:
         "document_chunk_page_aware": "DOCUMENT_CHUNK_PAGE_AWARE",
         "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
+        "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
@@ -1806,6 +1863,8 @@ def get_settings() -> Settings:
         # image processor only (the OCR backend always OCRs), like the unstructured_* keys.
         "docling_api_url": "DOCLING_API_URL",
         "docling_ocr_lang": "DOCLING_OCR_LANG",
+        "docling_pipeline": "DOCLING_PIPELINE",
+        "docling_vlm_preset": "DOCLING_VLM_PRESET",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

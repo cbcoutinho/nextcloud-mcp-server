@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.docling]
 
 _DOCLING_ENABLED = os.getenv("ENABLE_DOCLING", "false").lower() == "true"
+# The VLM round-trip needs a VLM-capable docling-serve (a VLM preset backed by a
+# real inference engine, e.g. glm_ocr via Ollama). The CI docling-serve-cpu image
+# has no such engine, so the VLM test is opt-in: it runs only when the operator
+# has deployed the MCP service with DOCLING_PIPELINE=vlm against such an instance.
+_DOCLING_VLM = _DOCLING_ENABLED and os.getenv("DOCLING_PIPELINE", "").lower() == "vlm"
 
 
 @pytest.fixture
@@ -97,6 +102,41 @@ async def test_docling_image_parsing(
         content = result["content"]
         assert isinstance(content, str) and content
         # OCR is imperfect; assert on a distinctive substring rather than equality.
+        assert "docling" in content.lower()
+    finally:
+        try:
+            await nc_client.webdav.delete_resource(test_file)
+        except Exception:
+            pass
+
+
+@pytest.mark.skipif(
+    not _DOCLING_VLM,
+    reason="Docling VLM pipeline is not configured (DOCLING_PIPELINE=vlm)",
+)
+async def test_docling_vlm_image_parsing(
+    nc_client: NextcloudClient, test_base_path: str, nc_mcp_client: ClientSession
+):
+    """With DOCLING_PIPELINE=vlm the same image auto-routes to docling and the VLM
+    preset transcribes it. parsing_method stays "docling"; the pipeline surfaces in
+    parsing_metadata. Manual/opt-in: needs a VLM-capable docling-serve."""
+    test_file = f"{test_base_path}/docling_vlm_image.png"
+    marker = "DoclingVlmHello"
+    try:
+        await nc_client.webdav.write_file(
+            test_file, create_text_image(marker), content_type="image/png"
+        )
+        mcp_result = await nc_mcp_client.call_tool(
+            "nc_webdav_read_file", arguments={"path": test_file}
+        )
+        result = _read_result(mcp_result)
+
+        assert result.get("parsed") is True
+        metadata = result["parsing_metadata"]
+        assert metadata["parsing_method"] == "docling"
+        assert metadata.get("docling_pipeline") == "vlm"
+        content = result["content"]
+        assert isinstance(content, str) and content
         assert "docling" in content.lower()
     finally:
         try:

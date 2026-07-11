@@ -116,6 +116,9 @@ class TestDocumentProcessorConfig:
             assert dcfg["ocr_lang"] == ["en", "de"]
             assert dcfg["timeout"] == 90
             assert dcfg["do_ocr"] is True
+            # VLM opt-in defaults: standard pipeline, no preset.
+            assert dcfg["pipeline"] == "standard"
+            assert dcfg["vlm_preset"] is None
         finally:
             for key in (
                 "ENABLE_DOCLING",
@@ -123,6 +126,32 @@ class TestDocumentProcessorConfig:
                 "DOCLING_OCR_LANG",
                 "DOCLING_TIMEOUT",
                 "DOCLING_DO_OCR",
+            ):
+                os.environ.pop(key, None)
+
+    def test_docling_vlm_pipeline_config(self):
+        """DOCLING_PIPELINE/DOCLING_VLM_PRESET flow into the docling processor
+        config so the image path can drive the VLM pipeline."""
+        os.environ["ENABLE_DOCLING"] = "true"
+        os.environ["DOCLING_API_URL"] = "https://docling:5001"
+        # Uppercase to prove the image path normalizes like Settings does; otherwise
+        # convert_file's `pipeline == "vlm"` check would silently use standard.
+        os.environ["DOCLING_PIPELINE"] = "VLM"
+        os.environ["DOCLING_VLM_PRESET"] = "glm_ocr"
+
+        try:
+            _reload_config()
+            config = get_document_processor_config()
+            dcfg = config["processors"]["docling"]
+            assert dcfg["pipeline"] == "vlm"
+            # Preset stays verbatim -- server-defined and case-sensitive (D6).
+            assert dcfg["vlm_preset"] == "glm_ocr"
+        finally:
+            for key in (
+                "ENABLE_DOCLING",
+                "DOCLING_API_URL",
+                "DOCLING_PIPELINE",
+                "DOCLING_VLM_PRESET",
             ):
                 os.environ.pop(key, None)
 

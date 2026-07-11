@@ -191,6 +191,17 @@ services:
       - ENABLE_DOCLING=${ENABLE_DOCLING:-false}
       - DOCLING_API_URL=${DOCLING_API_URL:-}
       - DOCLING_TIMEOUT=${DOCLING_TIMEOUT:-120}
+      # Opt-in VLM pipeline (ADR-032): point docling-serve at its VLM presets
+      # instead of classic OCR. Default "standard" is byte-identical to the
+      # pre-VLM request. VLM is slow (~90-200s/page): for bulk indexing use the
+      # async ingest path (DOCUMENT_OCR_PROVIDER=docling) and raise
+      # DOCUMENT_OCR_TIMEOUT_SECONDS -- do NOT inflate DOCLING_TIMEOUT (interactive).
+      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
+      - DOCLING_VLM_PRESET=${DOCLING_VLM_PRESET:-}
+      # Opt-in cap on the synchronous nc_webdav_read_file parse; empty = disabled.
+      # A client-friendly bound (e.g. 45-60) makes a slow VLM/OCR read fall back to
+      # base64 fast instead of blocking past the MCP client's own timeout.
+      - DOCUMENT_READ_TIMEOUT_SECONDS=${DOCUMENT_READ_TIMEOUT_SECONDS:-}
     profiles:
       - single-user
 

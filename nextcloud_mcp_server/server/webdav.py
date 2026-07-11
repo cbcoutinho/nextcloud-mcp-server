@@ -1,11 +1,14 @@
 import base64
+import contextlib
 import logging
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -151,6 +154,17 @@ def configure_webdav_tools(mcp: FastMCP):
         # Parse when the type is auto-parseable OR the caller forced a processor.
         # is_parseable_document() also checks that document processing is enabled.
         if force_processor is not None or is_parseable_document(content_type):
+            # Optional interactive cap (ADR-032): bound the SYNCHRONOUS parse so a
+            # slow VLM/OCR convert returns base64 quickly instead of blocking past
+            # the MCP client's own timeout. Read lazily so test/env overrides apply.
+            # Disabled (None) -> nullcontext, i.e. unchanged behavior. Only wraps this
+            # interactive tool; the async ingest/worker path is never bounded here.
+            read_cap = get_settings().document_read_timeout_seconds
+            cap_ctx = (
+                anyio.fail_after(read_cap)
+                if read_cap is not None
+                else contextlib.nullcontext()
+            )
             try:
                 logger.info(
                     "Parsing document %r of type %r%s",
@@ -160,13 +174,14 @@ def configure_webdav_tools(mcp: FastMCP):
                     if force_processor
                     else "",
                 )
-                parsed_text, metadata = await parse_document(
-                    content,
-                    content_type,
-                    filename=path,
-                    progress_callback=ctx.report_progress,
-                    processor_name=force_processor,
-                )
+                with cap_ctx:
+                    parsed_text, metadata = await parse_document(
+                        content,
+                        content_type,
+                        filename=path,
+                        progress_callback=ctx.report_progress,
+                        processor_name=force_processor,
+                    )
                 return {
                     "path": path,
                     "content": parsed_text,
@@ -175,6 +190,25 @@ def configure_webdav_tools(mcp: FastMCP):
                     "parsed": True,
                     "parsing_metadata": metadata,
                 }
+            except TimeoutError as e:
+                # Caught before the generic Exception (subclass-first). When the cap
+                # is set this is our anyio.fail_after tripping; when it is None the
+                # TimeoutError bubbled from a backend's own anyio timeout (e.g. the
+                # Mistral OCR path) -- either way base64 is the right fallback.
+                if read_cap is not None:
+                    logger.warning(
+                        "Parsing document %r exceeded the interactive read cap "
+                        "(%ss), falling back to base64",
+                        path,
+                        read_cap,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to parse document %r, falling back to base64: %s",
+                        path,
+                        e,
+                    )
+                # Fall through to base64 encoding on timeout
             except Exception as e:
                 logger.warning(
                     "Failed to parse document %r, falling back to base64: %s",

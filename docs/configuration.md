@@ -717,9 +717,12 @@ HTTP — no ML dependencies are added to the server image. Run one via the
 ```dotenv
 ENABLE_DOCLING=false                  # master switch for the docling touchpoints
 DOCLING_API_URL=http://docling:5001   # docling-serve base URL (required)
-DOCLING_TIMEOUT=120                   # image/force conversion timeout (seconds)
+DOCLING_TIMEOUT=120                   # INTERACTIVE image/force read timeout (nc_webdav_read_file); keep client-friendly
 DOCLING_OCR_LANG=en,de                # engine-dependent codes (EasyOCR: en,de; Tesseract: eng,deu)
 DOCLING_DO_OCR=true                   # run OCR (vs. text-layer extraction only)
+DOCLING_PIPELINE=standard             # "standard" (classic OCR) | "vlm" (vision-language model)
+DOCLING_VLM_PRESET=                   # VLM preset name when DOCLING_PIPELINE=vlm (unset = docling-serve default)
+DOCUMENT_READ_TIMEOUT_SECONDS=        # opt-in cap on the interactive read parse; empty = disabled (see VLM note)
 ```
 
 **Required configuration per use case** (`auto` never selects docling — it needs
@@ -730,6 +733,8 @@ an explicit self-hosted URL):
 | Images auto-route to docling | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
 | Force docling on a text-layer PDF (`force_processor="docling"`) | `ENABLE_DOCUMENT_PROCESSING=true` + `ENABLE_DOCLING=true` + `DOCLING_API_URL` |
 | Scanned / no-text-layer PDFs auto-OCR via docling | `DOCUMENT_OCR_ENABLED=true` + `DOCUMENT_OCR_PROVIDER=docling` + `DOCLING_API_URL` |
+| **VLM** for bulk PDF indexing (async, recommended) | scanned-PDF row + `DOCLING_PIPELINE=vlm` (+ `DOCLING_VLM_PRESET`) + raise `DOCUMENT_OCR_TIMEOUT_SECONDS` (e.g. 600–900) |
+| **VLM** for interactive image/force reads | image/force row + `DOCLING_PIPELINE=vlm` (+ `DOCLING_VLM_PRESET`); expect long blocking — see the VLM note below |
 
 The scanned-PDF row deliberately omits `ENABLE_DOCLING`/`ENABLE_DOCUMENT_PROCESSING`:
 that path rides the always-registered `ocr` tier during **indexing** (so it also
@@ -765,6 +770,45 @@ convert endpoint has an observed ~2 min practical ceiling (from our testing, not
 hard server-enforced limit), so a larger `DOCLING_TIMEOUT` (e.g. 300s for slow CPU
 OCR) simply lets a slow conversion finish; very large scans are future work (async
 submit/poll). See `docs/ADR-031-docling-document-parsing-backend.md`.
+
+**VLM pipeline (opt-in).** docling-serve can also transcribe with a
+vision-language model instead of classic OCR — often markedly better on messy
+scans, handwriting and complex layouts. The pipeline is **client-selected**: set
+`DOCLING_PIPELINE=vlm` and the docling client sends `pipeline=vlm` (plus
+`DOCLING_VLM_PRESET`, if set, and a lean `image_export_mode=placeholder`) on
+**both** the image and scanned-PDF touchpoints. Presets are defined by the
+docling-serve instance (e.g. `glm_ocr` backed by a local Ollama), so the client
+does not validate the name — an unknown preset surfaces as a docling error. Under
+`vlm` the classic `DOCLING_DO_OCR`/`DOCLING_OCR_LANG` knobs are inert and not sent.
+The default `standard` is byte-identical to the pre-VLM request, so leaving it
+unset changes nothing. The chosen pipeline is recorded in
+`parsing_metadata.docling_pipeline` while `parsing_method` stays `docling`.
+
+**VLM is much slower than classic OCR (~90–200s/page), so where you run it
+matters — and the two touchpoints have independent timeouts:**
+
+- **Bulk indexing (recommended for VLM):** with `DOCUMENT_OCR_PROVIDER=docling`,
+  scanned PDFs are transcribed on the **async ingest pipeline** (`mcp_role=worker`,
+  the `ingest-ocr` queue) and written to the search index. That path uses
+  **`DOCUMENT_OCR_TIMEOUT_SECONDS`** and never blocks a tool call — raise it freely
+  (e.g. 600–900s) for VLM.
+- **Interactive reads (`nc_webdav_read_file` on images / `force_processor="docling"`):**
+  these parse **synchronously** and block for up to **`DOCLING_TIMEOUT`**. Raising
+  `DOCLING_TIMEOUT` for VLM directly lengthens that block, and MCP clients usually
+  enforce a much shorter per-tool timeout (~30–60s) — so the client typically kills
+  the call before docling responds and you see a client timeout, not the tool's
+  base64 fallback. **Do not inflate `DOCLING_TIMEOUT` to force interactive VLM.**
+  Images are interactive-only (the ingest scanner is PDF-only), so interactive VLM
+  image reads inherently block.
+
+**`DOCUMENT_READ_TIMEOUT_SECONDS` (opt-in cap).** Set it to bound the synchronous
+parse inside `nc_webdav_read_file` (via `anyio.fail_after`), independent of
+`DOCLING_TIMEOUT` and of the worker path: when the cap trips, the tool returns
+base64 **fast** instead of hanging until the client times out. Default is empty
+(disabled) — no behavior change for existing reads. Set a client-friendly bound
+(e.g. 45–60s) if you want graceful fallback; leave it unset (and expect long calls)
+if you deliberately want interactive VLM with a tolerant client. It never affects
+the async ingest/worker path. See `docs/ADR-032-docling-vlm-pipeline.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 

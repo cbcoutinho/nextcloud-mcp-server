@@ -31,6 +31,8 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
         mistral_base_url=None,
         docling_api_url=None,
         docling_ocr_lang="en,de",
+        docling_pipeline="standard",
+        docling_vlm_preset=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -249,6 +251,25 @@ def test_build_backend_docling():
     assert isinstance(b, ocr._DoclingServeBackend)
     assert b._api_url == "https://docling:5001"
     assert b._ocr_lang == ["en", "de"]
+    # Default (standard) pipeline, no preset.
+    assert b._pipeline == "standard"
+    assert b._vlm_preset is None
+
+
+def test_build_backend_docling_vlm():
+    """DOCLING_PIPELINE=vlm + preset thread through to the OCR-backend (the scanned
+    -PDF path), so DOCUMENT_OCR_PROVIDER=docling can drive the VLM pipeline too."""
+    b = ocr.build_ocr_backend(
+        _settings(
+            document_ocr_provider="docling",
+            docling_api_url="https://docling:5001",
+            docling_pipeline="vlm",
+            docling_vlm_preset="glm_ocr",
+        )
+    )
+    assert isinstance(b, ocr._DoclingServeBackend)
+    assert b._pipeline == "vlm"
+    assert b._vlm_preset == "glm_ocr"
 
 
 def test_build_backend_docling_missing_url():

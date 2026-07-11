@@ -22,4 +22,5 @@ repos:
       name: ty-check
       language: system
       types: [python]
-      entry: uv run ty check
+      pass_filenames: false
+      entry: uv run ty check -- nextcloud_mcp_server

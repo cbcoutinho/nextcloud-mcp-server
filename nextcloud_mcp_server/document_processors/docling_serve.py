@@ -119,10 +119,17 @@ async def convert_file(
     to_formats: list[str],
     do_ocr: bool = True,
     ocr_lang: list[str] | None = None,
+    pipeline: str | None = None,
+    vlm_pipeline_preset: str | None = None,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
     """POST one document to docling-serve ``/v1/convert/file`` and return its
     ``document`` payload (``md_content``/``text_content``/``json_content``/...).
+
+    ``pipeline="vlm"`` drives docling-serve's Vision-LLM pipeline (optionally with a
+    server-defined ``vlm_pipeline_preset``); the default (``None``/``"standard"``)
+    requests the classic layout+OCR pipeline with byte-identical form fields to the
+    pre-VLM client. The response shape is the same for both pipelines.
 
     Raises :class:`ProcessorError` on HTTP error, a non-usable ``status``
     (anything but success/partial_success), or empty output -- so callers get a
@@ -137,15 +144,25 @@ async def convert_file(
     }
     # docling-serve reads repeated multipart fields for list params; httpx emits a
     # part per list item. Booleans go as lowercase strings for FastAPI coercion.
-    data: dict[str, Any] = {
-        "to_formats": list(to_formats),
-        "do_ocr": "true" if do_ocr else "false",
-    }
+    data: dict[str, Any] = {"to_formats": list(to_formats)}
     from_format = _from_format_for_mime(content_type)
     if from_format:
         data["from_formats"] = [from_format]
-    if ocr_lang:
-        data["ocr_lang"] = list(ocr_lang)
+    if pipeline == "vlm":
+        # VLM pipeline: docling-serve defaults an absent ``pipeline`` to "standard",
+        # so it must be requested explicitly. The classic OCR engine isn't used, so
+        # do_ocr/ocr_lang are inert and omitted. Select the (server-defined) preset
+        # when given, and keep base64 page images out of the markdown for lean text.
+        data["pipeline"] = "vlm"
+        if vlm_pipeline_preset:
+            data["vlm_pipeline_preset"] = vlm_pipeline_preset
+        data["image_export_mode"] = "placeholder"
+    else:
+        # Standard pipeline (default): byte-identical to pre-VLM requests -- no
+        # ``pipeline`` field is emitted, so existing deployments are unaffected.
+        data["do_ocr"] = "true" if do_ocr else "false"
+        if ocr_lang:
+            data["ocr_lang"] = list(ocr_lang)
 
     url = f"{api_url.rstrip('/')}/v1/convert/file"
     try:
@@ -208,19 +225,39 @@ class DoclingProcessor(DocumentProcessor):
         timeout: int = 120,
         ocr_lang: list[str] | None = None,
         do_ocr: bool = True,
+        pipeline: str = "standard",
+        vlm_preset: str | None = None,
         progress_interval: int = 10,
     ) -> None:
         self.api_url = api_url
         self.timeout = timeout
         self.ocr_lang = ocr_lang or ["en", "de"]
         self.do_ocr = do_ocr
+        self.pipeline = pipeline
+        self.vlm_preset = vlm_preset
         self.progress_interval = progress_interval
         logger.info(
-            "Initialized DoclingProcessor: %s, ocr_lang=%s, do_ocr=%s",
+            "Initialized DoclingProcessor: %s, pipeline=%s, ocr_lang=%s, do_ocr=%s",
             api_url,
+            pipeline,
             self.ocr_lang,
             do_ocr,
         )
+        # DoclingProcessor is the INTERACTIVE path (nc_webdav_read_file on images /
+        # force_processor="docling"). Under VLM a convert is slow (~30-150s/page) and
+        # blocks the tool call for up to DOCLING_TIMEOUT, which can exceed an MCP
+        # client's own timeout. Don't inflate DOCLING_TIMEOUT to "fix" this: for bulk
+        # VLM use the async ingest path (DOCUMENT_OCR_PROVIDER=docling, its own
+        # DOCUMENT_OCR_TIMEOUT_SECONDS), and set DOCUMENT_READ_TIMEOUT_SECONDS for a
+        # graceful base64 fallback on interactive reads (ADR-032).
+        if pipeline == "vlm":
+            logger.warning(
+                "DOCLING_PIPELINE=vlm makes nc_webdav_read_file a slow synchronous "
+                "convert (VLM ~30-150s/page, up to DOCLING_TIMEOUT=%ss) that can "
+                "exceed MCP client timeouts; prefer the async ingest path for bulk "
+                "and set DOCUMENT_READ_TIMEOUT_SECONDS to bound interactive reads",
+                timeout,
+            )
 
     @property
     def name(self) -> str:
@@ -248,6 +285,8 @@ class DoclingProcessor(DocumentProcessor):
             to_formats=["md"],
             do_ocr=self.do_ocr,
             ocr_lang=self.ocr_lang,
+            pipeline=self.pipeline,
+            vlm_pipeline_preset=self.vlm_preset,
             timeout=self.timeout,
         )
         text = _document_text(document)
@@ -255,6 +294,7 @@ class DoclingProcessor(DocumentProcessor):
             text=text,
             metadata={
                 "parsing_method": "docling",
+                "docling_pipeline": self.pipeline,
                 "text_length": len(text),
             },
             processor=self.name,
