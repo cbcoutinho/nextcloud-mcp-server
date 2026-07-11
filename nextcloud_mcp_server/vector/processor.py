@@ -297,6 +297,18 @@ def assign_page_numbers(chunks, page_boundaries):
             chunk.page_number = assigned_page
 
 
+def resolve_page_end(chunk: ChunkWithPosition) -> int | None:
+    """Citation end-page for a chunk's Qdrant payload (Deck #636).
+
+    Packed multi-page chunks carry a real ``page_end`` (last page of the range);
+    every other chunk leaves it ``None`` — notably the char-based path, where
+    :func:`assign_page_numbers` back-fills ``page_number`` post-hoc but never
+    ``page_end``. Fall back to ``page_number`` so the payload always ships a
+    citation range (single-page chunks report ``page_end == page_number``).
+    """
+    return chunk.page_end if chunk.page_end is not None else chunk.page_number
+
+
 def should_use_page_aware(
     *, page_aware_enabled: bool, doc_type: str, page_boundaries: Any
 ) -> bool:
@@ -1481,6 +1493,7 @@ async def _index_document(
             chunks = await PageAwareChunker(
                 chunk_size=settings.document_chunk_size,
                 overlap=settings.document_chunk_overlap,
+                pack_pages=settings.document_chunk_page_pack,
             ).chunk_text(content, page_boundaries_list)
         else:
             chunks = await DocumentChunker(
@@ -1883,6 +1896,11 @@ async def _index_document(
             sparse_emb, dense_embeddings, i, dense_enabled=dense_for_doc
         )
 
+        # Last page of a packed multi-page chunk (Deck #636); falls back to
+        # page_number for single-page and char-path chunks so the citation
+        # range is always set.
+        page_end = resolve_page_end(chunk)
+
         points.append(
             PointStruct(
                 id=point_id,
@@ -1944,6 +1962,7 @@ async def _index_document(
                             "mime_type": content_type,  # From WebDAV response
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,
+                            "page_end": page_end,
                             "page_count": file_metadata.get("page_count"),
                             "author": file_metadata.get("author"),
                             "creation_date": file_metadata.get("creation_date"),

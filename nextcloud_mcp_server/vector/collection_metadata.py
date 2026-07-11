@@ -68,6 +68,12 @@ def env_default_metadata(settings: Settings | None = None) -> dict[str, Any]:
         "chunking_config": {
             "chunk_size": s.document_chunk_size,
             "chunk_overlap": s.document_chunk_overlap,
+            # Full chunker config so a collection records exactly what produced
+            # its vectors — the density reference the €/GiB rate is pinned to
+            # (Deck #636). Bump ``version`` on any chunker behaviour change.
+            "page_aware": s.document_chunk_page_aware,
+            "page_pack": s.document_chunk_page_pack,
+            "version": s.chunking_config_version,
         },
     }
 

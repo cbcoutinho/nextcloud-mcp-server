@@ -67,6 +67,26 @@ class TestQdrantConfigValidation:
         )
         assert "API key is only relevant for network mode" not in caplog.text
 
+    def test_page_pack_without_page_aware_warns(self, caplog):
+        """page-pack without page-aware is a silent no-op; warn at startup."""
+
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(
+            document_chunk_page_pack=True,
+            document_chunk_page_aware=False,
+        )
+        assert "DOCUMENT_CHUNK_PAGE_PACK is enabled" in caplog.text
+
+    def test_page_pack_with_page_aware_no_warning(self, caplog):
+        """page-pack alongside page-aware is a valid combination; no warning."""
+
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(
+            document_chunk_page_pack=True,
+            document_chunk_page_aware=True,
+        )
+        assert "DOCUMENT_CHUNK_PAGE_PACK is enabled" not in caplog.text
+
 
 class TestGetSettings:
     """Test get_settings() function with environment variables."""

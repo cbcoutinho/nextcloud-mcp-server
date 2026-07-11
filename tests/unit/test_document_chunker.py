@@ -464,3 +464,119 @@ class TestPageAwareChunker:
         assert chunks[0].text == ""
         assert chunks[0].start_offset == 0
         assert chunks[0].end_offset == 0
+
+    async def test_page_end_equals_page_number_without_packing(self):
+        """Single-page chunks carry page_end == page_number (citation range)."""
+        content, boundaries = _make_doc(["One.", "Two.", "Three."])
+
+        chunks = await PageAwareChunker(chunk_size=2048, overlap=200).chunk_text(
+            content, boundaries
+        )
+
+        assert len(chunks) == 3
+        for chunk in chunks:
+            assert chunk.page_end == chunk.page_number
+
+    def test_pack_pages_off_by_default(self):
+        """Packing is opt-in; the default keeps one-chunk-per-page."""
+        assert PageAwareChunker().pack_pages is False
+
+
+class TestPageAwarePacking:
+    """Test suite for greedy page-packing (Deck #636)."""
+
+    async def test_merges_sub_budget_pages_into_one_chunk(self):
+        """Consecutive sub-budget pages merge into a single page-range chunk."""
+        content, boundaries = _make_doc(["AAAA", "BBBB", "CCCC"])
+
+        chunks = await PageAwareChunker(
+            chunk_size=2048, overlap=200, pack_pages=True
+        ).chunk_text(content, boundaries)
+
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk.text == "AAAABBBB" + "CCCC"
+        assert chunk.page_number == 1  # first page
+        assert chunk.page_end == 3  # last page — citation range preserved
+        assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+
+    async def test_packing_respects_the_budget(self):
+        """A page that would overflow the budget starts a fresh chunk."""
+        content, boundaries = _make_doc(["AAAAAAAA", "BBBBBBBB", "CCCCCCCC"])  # 8 each
+
+        chunks = await PageAwareChunker(
+            chunk_size=20, overlap=5, pack_pages=True
+        ).chunk_text(content, boundaries)
+
+        # pages 1+2 (16) fit; adding page 3 (24) overflows -> new chunk.
+        assert len(chunks) == 2
+        assert (chunks[0].page_number, chunks[0].page_end) == (1, 2)
+        assert (chunks[1].page_number, chunks[1].page_end) == (3, 3)
+        for chunk in chunks:
+            assert len(chunk.text) <= 20
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+
+    async def test_oversized_page_flushes_pack_and_splits_within_page(self):
+        """An oversized page can't join a pack: flush, then split within-page."""
+        content, boundaries = _make_doc(["AAAA", "word " * 200, "BBBB"])
+
+        chunks = await PageAwareChunker(
+            chunk_size=200, overlap=20, pack_pages=True
+        ).chunk_text(content, boundaries)
+
+        per_page: dict[int, int] = {}
+        for chunk in chunks:
+            page = chunk.page_number
+            assert page is not None
+            per_page[page] = per_page.get(page, 0) + 1
+            assert chunk.page_end == chunk.page_number  # single-page sub-chunks
+        assert per_page[1] == 1  # small page, its own chunk
+        assert per_page[2] > 1  # oversized page split within the page
+        assert per_page[3] == 1
+        for chunk in chunks:
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+
+    async def test_no_chunk_exceeds_budget(self):
+        """Across a realistic mix, no packed chunk exceeds chunk_size."""
+        pages = [f"Page {i} " + "x" * (i * 30) for i in range(1, 12)]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(
+            chunk_size=200, overlap=20, pack_pages=True
+        ).chunk_text(content, boundaries)
+
+        for chunk in chunks:
+            page_start = chunk.page_number
+            page_last = chunk.page_end
+            assert page_start is not None and page_last is not None
+            assert len(chunk.text) <= 200
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+            assert page_start <= page_last
+
+    async def test_blank_interior_page_kept_in_contiguous_pack(self):
+        """A blank page interior to a pack contributes no vector of its own."""
+        content, boundaries = _make_doc(["Real one.", "   ", "Real two."])
+
+        chunks = await PageAwareChunker(
+            chunk_size=2048, overlap=200, pack_pages=True
+        ).chunk_text(content, boundaries)
+
+        assert len(chunks) == 1
+        assert "Real one." in chunks[0].text
+        assert "Real two." in chunks[0].text
+        assert chunks[0].page_number == 1
+
+    async def test_packing_reduces_chunk_count_vs_unpacked(self):
+        """The density win: packing yields strictly fewer chunks on lean pages."""
+        pages = ["Lean page." for _ in range(10)]  # 10 near-empty pages
+        content, boundaries = _make_doc(pages)
+
+        unpacked = await PageAwareChunker(chunk_size=2048, pack_pages=False).chunk_text(
+            content, boundaries
+        )
+        packed = await PageAwareChunker(chunk_size=2048, pack_pages=True).chunk_text(
+            content, boundaries
+        )
+
+        assert len(unpacked) == 10  # one vector per lean page (the inflator)
+        assert len(packed) < len(unpacked)  # merged into far fewer vectors

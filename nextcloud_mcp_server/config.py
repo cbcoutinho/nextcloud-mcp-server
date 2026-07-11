@@ -173,6 +173,14 @@ _DEFAULTS: dict[str, Any] = {
     # first so no chunk spans a page (exact page_number, clean snippets, and
     # predictable ~1 chunk/page when chunk_size >= the largest page).
     "document_chunk_page_aware": True,
+    # Greedy page-packing (density fix, Deck #636): merge consecutive sub-budget
+    # pages into one chunk instead of one-per-page. Off by default until the
+    # post-change density re-measure + pricing re-calibration land.
+    "document_chunk_page_pack": False,
+    # Chunking config generation. Bump whenever chunker behaviour changes (size,
+    # overlap, page-aware, page-pack, split strategy) so the pricing model's
+    # density reference can't silently go stale. Pinned in stripe-catalog.tf.
+    "chunking_config_version": 1,
     # PDF parse isolation (OOM guard)
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
@@ -475,6 +483,7 @@ _dynaconf = Dynaconf(
         Validator("PORT", gte=1, lte=65535),
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
+        Validator("CHUNKING_CONFIG_VERSION", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
         # DOCUMENT_OCR_MODE is normalised + membership-checked in
@@ -1034,6 +1043,17 @@ class Settings:
     # ~1 chunk/page when document_chunk_size >= the largest page. When False,
     # the legacy char-based path runs with post-hoc assign_page_numbers.
     document_chunk_page_aware: bool = True
+    # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
+    # consecutive sub-budget pages into one chunk (page-range citation via
+    # page_number/page_end) instead of one-chunk-per-page — the density fix for
+    # lean-page/born-digital PDFs. Off by default: enabling it re-scales density
+    # fleet-wide and requires the storage-rate re-calibration first (#626).
+    document_chunk_page_pack: bool = False
+    # Chunking config generation. Bump on ANY chunker behaviour change (size,
+    # overlap, page-aware, page-pack, split strategy) so a change can't silently
+    # invalidate the €/GiB density reference. Stamped on the collection sentinel
+    # and pinned next to the density reference in stripe-catalog.tf + note 389935.
+    chunking_config_version: int = 1
 
     # PDF parse isolation (OOM guard). The parse runs in a subprocess so one
     # pathological file fails that doc, not the pod.
@@ -1201,6 +1221,17 @@ class Settings:
                     f"NEXTCLOUD_CA_BUNDLE path does not exist: {self.nextcloud_ca_bundle}"
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
+
+        # Page-packing is a sub-mode of page-aware chunking (the packing logic
+        # only runs inside the page-aware branch). Enabling it without page-aware
+        # is a silent no-op, so surface the misconfiguration at startup.
+        if self.document_chunk_page_pack and not self.document_chunk_page_aware:
+            logger.warning(
+                "DOCUMENT_CHUNK_PAGE_PACK is enabled but DOCUMENT_CHUNK_PAGE_AWARE "
+                "is disabled; page-packing only runs inside page-aware chunking, so "
+                "this setting has no effect. Enable DOCUMENT_CHUNK_PAGE_AWARE to "
+                "activate packing."
+            )
 
         # Surface the keep-alive opt-out at startup so an operator who set it to
         # work around #965 gets confirmation it took effect.
@@ -1840,6 +1871,8 @@ def get_settings() -> Settings:
         "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
         "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
         "document_chunk_page_aware": "DOCUMENT_CHUNK_PAGE_AWARE",
+        "document_chunk_page_pack": "DOCUMENT_CHUNK_PAGE_PACK",
+        "chunking_config_version": "CHUNKING_CONFIG_VERSION",
         "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
