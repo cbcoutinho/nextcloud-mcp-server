@@ -418,15 +418,18 @@ class TestComputeChunkDensitySnapshot:
         assert truncated is False
         assert per_doc_type["note"][0][1] == 2  # both notes counted in le=5 slot
 
-    async def test_truncates_at_max_documents(self) -> None:
+    async def test_truncates_when_corpus_strictly_exceeds_cap(self) -> None:
         qc = AsyncMock()
-        # First page fills the cap and there IS a next page -> truncated, stop.
+
+        def note():
+            return _point(doc_type="note", total_chunks=3, source_bytes=1_000_000)
+
+        # cap=2, pages of 2: after page 2 scanned=4 (> cap) with a further page
+        # still to come -> genuinely truncated, stop before fetching page 3.
         qc.scroll = _scroll_returning(
-            [
-                _point(doc_type="note", total_chunks=3, source_bytes=1_000_000),
-                _point(doc_type="note", total_chunks=3, source_bytes=1_000_000),
-            ],
-            [_point(doc_type="note", total_chunks=3, source_bytes=1_000_000)],
+            [note(), note()],  # scanned=2 (== cap, NOT yet truncated)
+            [note(), note()],  # scanned=4 (> cap) -> truncated
+            [note()],  # never fetched
         )
 
         _, _, truncated = await mp.compute_chunk_density_snapshot(
@@ -434,7 +437,27 @@ class TestComputeChunkDensitySnapshot:
         )
 
         assert truncated is True
-        assert qc.scroll.await_count == 1  # second page never fetched
+        assert qc.scroll.await_count == 2  # third page never fetched
+
+    async def test_exact_cap_boundary_is_not_truncated(self) -> None:
+        # Regression for the false-positive flagged in review: Qdrant can return a
+        # non-None next offset even at the exact end, so a collection sized exactly
+        # at the cap must NOT be reported as truncated. Model that: a full page at
+        # the cap with a non-None offset, then an empty page with offset=None.
+        qc = AsyncMock()
+        qc.scroll = _scroll_returning(
+            [
+                _point(doc_type="note", total_chunks=3, source_bytes=1_000_000),
+                _point(doc_type="note", total_chunks=3, source_bytes=1_000_000),
+            ],
+            [],  # empty trailing page, offset=None -> authoritative end
+        )
+
+        _, _, truncated = await mp.compute_chunk_density_snapshot(
+            qc, _COLLECTION, max_documents=2, page_size=2
+        )
+
+        assert truncated is False
 
 
 class TestPublishChunkDensitySnapshot:
@@ -488,7 +511,9 @@ class TestVectorDensitySnapshotTask:
         shutdown = anyio.Event()
         published = 0
 
-        async def _fake_publish() -> None:
+        # Plain callable: AsyncMock still awaits fine, and this avoids an
+        # async-def-without-await that the analyzer flags.
+        def _fake_publish() -> None:
             nonlocal published
             published += 1
             shutdown.set()

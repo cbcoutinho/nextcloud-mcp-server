@@ -54,23 +54,39 @@ class TestUpdateSnapshot:
         update_qdrant_chunk_density_snapshot({"note": _tally(3.0, 100.0)})
 
         labels = {"doc_type": "note"}
+        # Counts are exact integers stored as floats; approx keeps the float
+        # comparison well-defined (and satisfies the no-float-equality lint).
         # Below the first observation nothing has accumulated yet.
-        assert metric_sample(f"{_CURRENT}_bucket", {**labels, "le": "1"}) == 0.0
+        assert metric_sample(
+            f"{_CURRENT}_bucket", {**labels, "le": "1"}
+        ) == pytest.approx(0)
         # The le=5 observation shows from le=5 onward (cumulative).
-        assert metric_sample(f"{_CURRENT}_bucket", {**labels, "le": "5"}) == 1.0
-        assert metric_sample(f"{_CURRENT}_bucket", {**labels, "le": "91"}) == 1.0
+        assert metric_sample(
+            f"{_CURRENT}_bucket", {**labels, "le": "5"}
+        ) == pytest.approx(1)
+        assert metric_sample(
+            f"{_CURRENT}_bucket", {**labels, "le": "91"}
+        ) == pytest.approx(1)
         # The le=120 observation joins the cumulative count at 120.
-        assert metric_sample(f"{_CURRENT}_bucket", {**labels, "le": "120"}) == 2.0
-        assert metric_sample(f"{_CURRENT}_bucket", {**labels, "le": "+Inf"}) == 2.0
-        assert metric_sample(f"{_CURRENT}_gcount", labels) == 2.0
+        assert metric_sample(
+            f"{_CURRENT}_bucket", {**labels, "le": "120"}
+        ) == pytest.approx(2)
+        assert metric_sample(
+            f"{_CURRENT}_bucket", {**labels, "le": "+Inf"}
+        ) == pytest.approx(2)
+        assert metric_sample(f"{_CURRENT}_gcount", labels) == pytest.approx(2)
         assert metric_sample(f"{_CURRENT}_gsum", labels) == pytest.approx(103.0)
 
     def test_update_replaces_previous_snapshot(self, metric_sample):
         update_qdrant_chunk_density_snapshot({"note": _tally(3.0, 3.0, 3.0)})
-        assert metric_sample(f"{_CURRENT}_gcount", {"doc_type": "note"}) == 3.0
+        assert metric_sample(
+            f"{_CURRENT}_gcount", {"doc_type": "note"}
+        ) == pytest.approx(3)
         # A fresh snapshot fully replaces — not accumulates.
         update_qdrant_chunk_density_snapshot({"note": _tally(3.0)})
-        assert metric_sample(f"{_CURRENT}_gcount", {"doc_type": "note"}) == 1.0
+        assert metric_sample(
+            f"{_CURRENT}_gcount", {"doc_type": "note"}
+        ) == pytest.approx(1)
 
     def test_uncovered_and_truncated_gauges(self, metric_sample):
         update_qdrant_chunk_density_snapshot(
@@ -78,39 +94,28 @@ class TestUpdateSnapshot:
             uncovered={"file": 4, "deck_card": 1},
             truncated=True,
         )
-        assert (
-            metric_sample(
-                "astrolabe_qdrant_chunk_density_uncovered_documents",
-                {"doc_type": "file"},
-            )
-            == 4.0
-        )
-        assert (
-            metric_sample("astrolabe_qdrant_chunk_density_snapshot_truncated", {})
-            == 1.0
-        )
+        assert metric_sample(
+            "astrolabe_qdrant_chunk_density_uncovered_documents",
+            {"doc_type": "file"},
+        ) == pytest.approx(4)
+        assert metric_sample(
+            "astrolabe_qdrant_chunk_density_snapshot_truncated", {}
+        ) == pytest.approx(1)
 
     def test_uncovered_gauge_reset_between_snapshots(self, metric_sample):
         update_qdrant_chunk_density_snapshot(
             {"note": _tally(3.0)}, uncovered={"file": 9}
         )
-        assert (
-            metric_sample(
-                "astrolabe_qdrant_chunk_density_uncovered_documents",
-                {"doc_type": "file"},
-            )
-            == 9.0
-        )
+        assert metric_sample(
+            "astrolabe_qdrant_chunk_density_uncovered_documents",
+            {"doc_type": "file"},
+        ) == pytest.approx(9)
         # Next snapshot has no uncovered files — the stale series must clear.
         update_qdrant_chunk_density_snapshot({"note": _tally(3.0)}, uncovered={})
-        assert (
-            metric_sample(
-                "astrolabe_qdrant_chunk_density_uncovered_documents",
-                {"doc_type": "file"},
-            )
-            == 0.0
-        )
-        assert (
-            metric_sample("astrolabe_qdrant_chunk_density_snapshot_truncated", {})
-            == 0.0
-        )
+        assert metric_sample(
+            "astrolabe_qdrant_chunk_density_uncovered_documents",
+            {"doc_type": "file"},
+        ) == pytest.approx(0)
+        assert metric_sample(
+            "astrolabe_qdrant_chunk_density_snapshot_truncated", {}
+        ) == pytest.approx(0)

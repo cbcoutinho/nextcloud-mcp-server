@@ -306,10 +306,19 @@ async def compute_chunk_density_snapshot(
             else:
                 uncovered[doc_type] = uncovered.get(doc_type, 0) + 1
         scanned += len(points)
-        if scanned >= max_documents and offset is not None:
-            truncated = True
-            break
+        # Qdrant's end-of-scroll signal (offset is None) is authoritative and is
+        # checked FIRST: reaching it means the whole collection was covered, so it
+        # is never truncated — even if the final page pushed ``scanned`` to/over
+        # the cap. Only when there is genuinely more to fetch (offset not None)
+        # AND we have already retrieved *strictly more* than the cap do we stop
+        # early and flag truncation. This tolerates one page of slop and avoids a
+        # false positive when the collection size lands exactly on the cap: Qdrant
+        # returns a non-None next offset even when the following scroll would come
+        # back empty, so ``offset is not None`` alone is not proof of more data.
         if offset is None:
+            break
+        if scanned > max_documents:
+            truncated = True
             break
 
     per_doc_type = {dt: (bucket_counts[dt], gsums[dt]) for dt in bucket_counts}
