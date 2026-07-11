@@ -79,7 +79,7 @@ class TestEnumValidation:
             ("document_tier1_engine", "mupdf"),
             ("document_ocr_provider", "gatway"),
             ("search_mode", "fulltext"),
-            ("docling_pipeline", "vllm")
+            ("docling_pipeline", "vllm"),
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
