@@ -42,7 +42,12 @@ class SemanticSearchResult(BaseModel):
         default=None, description="Character position where chunk ends in document"
     )
     page_number: int | None = Field(
-        default=None, description="Page number for PDF documents"
+        default=None, description="First (or only) page for PDF documents"
+    )
+    page_end: int | None = Field(
+        default=None,
+        description="Last page for packed multi-page chunks; equals page_number "
+        "for single-page chunks",
     )
     page_count: int | None = Field(
         default=None, description="Total number of pages in PDF document"

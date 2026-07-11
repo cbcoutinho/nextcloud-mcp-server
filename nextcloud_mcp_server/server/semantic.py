@@ -524,6 +524,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         chunk_start_offset=r.chunk_start_offset,
                         chunk_end_offset=r.chunk_end_offset,
                         page_number=r.page_number,
+                        page_end=r.page_end,
                     )
                 )
 
@@ -597,6 +598,7 @@ def configure_semantic_tools(mcp: FastMCP):
                                     chunk_start_offset=result.chunk_start_offset,
                                     chunk_end_offset=result.chunk_end_offset,
                                     page_number=result.page_number,
+                                    page_end=result.page_end,
                                     # Context expansion fields
                                     has_context_expansion=True,
                                     marked_text=chunk_context.marked_text,

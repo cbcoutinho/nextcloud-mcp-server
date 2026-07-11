@@ -175,7 +175,9 @@ class SearchResult:
         metadata: Additional algorithm-specific metadata
         chunk_start_offset: Character position where chunk starts (None if not available)
         chunk_end_offset: Character position where chunk ends (None if not available)
-        page_number: Page number for PDF documents (None for other doc types)
+        page_number: First (or only) page for PDF documents (None for other doc types)
+        page_end: Last page for packed multi-page chunks; equals page_number for
+            single-page chunks (None for other doc types)
         page_count: Total number of pages in PDF document (None for other doc types)
         chunk_index: Zero-based index of this chunk in the document
         total_chunks: Total number of chunks in the document
@@ -191,6 +193,7 @@ class SearchResult:
     chunk_start_offset: int | None = None
     chunk_end_offset: int | None = None
     page_number: int | None = None
+    page_end: int | None = None
     page_count: int | None = None
     chunk_index: int = 0
     total_chunks: int = 1
@@ -273,6 +276,7 @@ def build_search_result_from_point(
         chunk_start_offset=point.payload.get("chunk_start_offset"),
         chunk_end_offset=point.payload.get("chunk_end_offset"),
         page_number=point.payload.get("page_number"),
+        page_end=point.payload.get("page_end"),
         page_count=point.payload.get("page_count"),
         chunk_index=point.payload.get("chunk_index", 0),
         total_chunks=point.payload.get("total_chunks", 1),

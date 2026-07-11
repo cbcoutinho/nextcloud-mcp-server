@@ -630,6 +630,8 @@ VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
 # Document chunking settings (for vector embeddings)
 DOCUMENT_CHUNK_SIZE=2048              # Characters per chunk (default: 2048)
 DOCUMENT_CHUNK_OVERLAP=200            # Overlapping characters between chunks (default: 200)
+DOCUMENT_CHUNK_PAGE_PACK=false        # Merge consecutive sub-budget PDF pages into one chunk (default: false)
+CHUNKING_CONFIG_VERSION=1             # Chunker config generation; bump on any chunker behaviour change (default: 1)
 ```
 
 > **Note:** The `VECTOR_SYNC_*` tuning parameters keep their names as they're implementation details. Only the user-facing feature flag was renamed to `ENABLE_SEMANTIC_SEARCH`.
@@ -1070,6 +1072,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `2048` | Characters per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `200` | Overlapping characters between chunks (must be < chunk size) |
 | `DOCUMENT_CHUNK_PAGE_AWARE` | ⚠️ Optional | `true` | Split PDFs on page boundaries first (one chunk per page; oversized pages split within the page). Exact page numbers, clean snippets, and a predictable ~1 chunk/page when chunk size ≥ the largest page. Set `false` for the legacy char-based path. |
+| `DOCUMENT_CHUNK_PAGE_PACK` | ⚠️ Optional | `false` | Greedy page-packing (requires page-aware): merge consecutive sub-budget PDF pages into one chunk (page-range citation via `page_number`/`page_end`) instead of one-per-page. Cuts dense-vector density on lean-page/born-digital PDFs. Enabling it re-scales density fleet-wide — re-calibrate the storage rate first (Deck #636/#626). |
+| `CHUNKING_CONFIG_VERSION` | ⚠️ Optional | `1` | Chunker config generation stamped on the collection sentinel. Bump on any chunker behaviour change (size, overlap, page-aware, page-pack) so the pricing density reference can't silently go stale. |
 
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)
