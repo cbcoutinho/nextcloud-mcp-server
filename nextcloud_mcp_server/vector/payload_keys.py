@@ -32,6 +32,16 @@ INDEX_MODE = "index_mode"
 INDEX_MODE_HYBRID = "hybrid"
 INDEX_MODE_KEYWORD = "keyword"
 
+# Raw source size of the document in bytes at ingestion time
+# (``ingested_byte_size``: raw WebDAV binary for files, UTF-8 text size for text
+# doc types). Persisted on every chunk so the current-corpus chunk-density
+# snapshot (``astrolabe_qdrant_chunk_density_chunks_per_mb_current``) can compute
+# chunks-per-MB from live Qdrant state — the denominator the ingest-time density
+# histogram consumes but that was previously discarded after embedding. Written
+# forward-only: documents indexed before this key shipped carry no value and are
+# reported via the ``uncovered_documents`` gauge until re-ingested.
+SOURCE_BYTES = "source_bytes"
+
 # Fixed platform namespace for deterministic chunk point IDs (design §2.2).
 # Derived once from ``uuid5(NAMESPACE_DNS, "astrolabe.cloud/mcp/point-id/v1")``
 # and pinned here as a literal so neither repo recomputes it. DO NOT CHANGE —
