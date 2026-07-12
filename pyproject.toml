@@ -36,6 +36,7 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.49b2", # Auto-instrument httpx client
     "opentelemetry-instrumentation-logging>=0.49b2", # Logging integration
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.2", # OTLP gRPC exporter
+    "pyroscope-io>=0.8.0", # Continuous profiling (Pyroscope push SDK)
     "python-json-logger>=3.2.0", # Structured JSON logging
     "jinja2>=3.1.6",
     "langchain-text-splitters>=1.0.0",

@@ -253,6 +253,8 @@ _DEFAULTS: dict[str, Any] = {
     "otel_service_name": "nextcloud-mcp-server",
     "otel_traces_sampler": "always_on",
     "otel_traces_sampler_arg": 1.0,
+    "pyroscope_enabled": False,
+    "pyroscope_server_address": None,
     "log_format": "text",
     "log_level": "INFO",
     "log_include_trace_context": True,
@@ -1144,6 +1146,12 @@ class Settings:
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
+    # Continuous profiling (Pyroscope). Push-mode via the Pyroscope SDK to an
+    # Alloy pyroscope.receive_http endpoint (e.g. the cloudfleet Alloy at
+    # http://alloy.alloy.svc.cluster.local:4041), which forwards to the homelab
+    # Pyroscope. Disabled by default; enabled per-deployment via env.
+    pyroscope_enabled: bool = False
+    pyroscope_server_address: str | None = None
     log_format: str = "text"  # "json" or "text"
     log_level: str = "INFO"
     log_include_trace_context: bool = True
@@ -1906,6 +1914,8 @@ def get_settings() -> Settings:
         "otel_service_name": "OTEL_SERVICE_NAME",
         "otel_traces_sampler": "OTEL_TRACES_SAMPLER",
         "otel_traces_sampler_arg": "OTEL_TRACES_SAMPLER_ARG",
+        "pyroscope_enabled": "PYROSCOPE_ENABLED",
+        "pyroscope_server_address": "PYROSCOPE_SERVER_ADDRESS",
         "log_format": "LOG_FORMAT",
         "log_level": "LOG_LEVEL",
         "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",

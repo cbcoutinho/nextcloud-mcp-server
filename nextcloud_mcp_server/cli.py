@@ -23,6 +23,7 @@ from nextcloud_mcp_server.observability import (
     get_uvicorn_logging_config,
     setup_logging,
     setup_metrics,
+    setup_profiling,
     setup_tracing,
 )
 from nextcloud_mcp_server.server import AVAILABLE_APPS
@@ -321,6 +322,14 @@ def _init_worker_observability(settings: Settings) -> None:
         logger.info(
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
+
+    # Continuous profiling (optional). The worker is the highest-value target
+    # (CPU-bound parse/chunk/embed), so profile it in its own process.
+    setup_profiling(
+        application_name=f"{settings.otel_service_name}-worker",
+        server_address=settings.pyroscope_server_address,
+        enabled=settings.pyroscope_enabled,
+    )
 
 
 @click.command()

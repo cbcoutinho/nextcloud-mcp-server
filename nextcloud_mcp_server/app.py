@@ -115,6 +115,7 @@ from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
+    setup_profiling,
     setup_tracing,
 )
 from nextcloud_mcp_server.observability.metrics import (
@@ -1494,6 +1495,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info(
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
+
+    # Setup continuous profiling (optional; push to Alloy → homelab Pyroscope)
+    setup_profiling(
+        application_name=f"{settings.otel_service_name}-api",
+        server_address=settings.pyroscope_server_address,
+        enabled=settings.pyroscope_enabled,
+    )
 
     # Initialize OAuth credentials for multi-user modes that need background operations
     # This must happen BEFORE uvicorn starts (same lifecycle point as OAuth modes)

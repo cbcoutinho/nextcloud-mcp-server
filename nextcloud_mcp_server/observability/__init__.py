@@ -20,12 +20,14 @@ from nextcloud_mcp_server.observability.logging_config import (
 )
 from nextcloud_mcp_server.observability.metrics import setup_metrics
 from nextcloud_mcp_server.observability.middleware import ObservabilityMiddleware
+from nextcloud_mcp_server.observability.profiling import setup_profiling
 from nextcloud_mcp_server.observability.tracing import setup_tracing
 
 __all__ = [
     "setup_logging",
     "get_uvicorn_logging_config",
     "setup_metrics",
+    "setup_profiling",
     "setup_tracing",
     "ObservabilityMiddleware",
 ]
