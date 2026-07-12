@@ -8,7 +8,11 @@ free. The enabled+configured path is covered end-to-end at deploy time.
 import logging
 from unittest.mock import patch
 
+import pytest
+
 from nextcloud_mcp_server.observability import profiling
+
+pytestmark = pytest.mark.unit
 
 # Opaque server-address fixture. Never dialed — the enabled tests mock
 # pyroscope.configure and the disabled/no-server tests return early — so it is
@@ -39,6 +43,9 @@ def test_setup_profiling_configures_when_enabled():
     kwargs. Guards against a wrong/renamed kwarg against the pinned pyroscope-io
     API (e.g. tags=) that would otherwise only surface at deploy time.
     """
+    # pyroscope-io is an optional extra (not in the default deps); skip when the
+    # runtime SDK isn't installed rather than fail.
+    pytest.importorskip("pyroscope")
     _reset()
     with patch("pyroscope.configure") as mock_configure:
         profiling.setup_profiling(
@@ -57,6 +64,7 @@ def test_setup_profiling_configures_when_enabled():
 
 def test_setup_profiling_idempotent():
     """A second call is a no-op once configured (does not re-call configure)."""
+    pytest.importorskip("pyroscope")
     _reset()
     with patch("pyroscope.configure") as mock_configure:
         profiling.setup_profiling("svc-a", SERVER, enabled=True)

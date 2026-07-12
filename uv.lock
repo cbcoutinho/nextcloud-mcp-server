@@ -2168,7 +2168,6 @@ dependencies = [
     { name = "pymupdf" },
     { name = "pymupdf4llm" },
     { name = "pypdfium2" },
-    { name = "pyroscope-io" },
     { name = "python-json-logger" },
     { name = "pythonvcard4" },
     { name = "qdrant-client" },
@@ -2178,6 +2177,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+observability = [
+    { name = "pyroscope-io" },
+]
 postgres = [
     { name = "procrastinate" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -2192,6 +2194,7 @@ dev = [
     { name = "playwright" },
     { name = "procrastinate" },
     { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pyroscope-io" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
@@ -2237,7 +2240,7 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.26.6" },
     { name = "pymupdf4llm", specifier = ">=0.2.2" },
     { name = "pypdfium2", specifier = ">=5.9.0" },
-    { name = "pyroscope-io", specifier = ">=0.8.0" },
+    { name = "pyroscope-io", marker = "extra == 'observability'", specifier = ">=0.8.0" },
     { name = "python-json-logger", specifier = ">=3.2.0" },
     { name = "pythonvcard4", specifier = ">=0.2.0" },
     { name = "qdrant-client", specifier = ">=1.17.0" },
@@ -2245,7 +2248,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "starlette", specifier = "<1.0" },
 ]
-provides-extras = ["postgres"]
+provides-extras = ["postgres", "observability"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2256,6 +2259,7 @@ dev = [
     { name = "playwright", specifier = ">=1.49.1" },
     { name = "procrastinate", specifier = ">=3.8" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pyroscope-io", specifier = ">=0.8.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "pytest-mock", specifier = ">=3.15.1" },

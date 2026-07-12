@@ -162,7 +162,7 @@ class TestGetSettings:
         os.environ,
         {
             "PYROSCOPE_ENABLED": "true",
-            "PYROSCOPE_SERVER_ADDRESS": "http://alloy.alloy.svc.cluster.local:4041",
+            "PYROSCOPE_SERVER_ADDRESS": "alloy.alloy.svc.cluster.local:4041",
         },
         clear=True,
     )
@@ -175,10 +175,7 @@ class TestGetSettings:
         _reload_config()
         settings = get_settings()
         assert settings.pyroscope_enabled is True
-        assert (
-            settings.pyroscope_server_address
-            == "http://alloy.alloy.svc.cluster.local:4041"
-        )
+        assert settings.pyroscope_server_address == "alloy.alloy.svc.cluster.local:4041"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_pyroscope_disabled_by_default(self):
