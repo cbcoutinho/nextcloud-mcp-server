@@ -38,6 +38,11 @@ def setup_profiling(
     """
     global _configured
     if _configured:
+        logger.debug(
+            "Pyroscope profiling already configured; ignoring repeat call "
+            "(application=%s)",
+            application_name,
+        )
         return
     if not enabled:
         logger.debug("Pyroscope profiling disabled")

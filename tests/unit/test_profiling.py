@@ -6,6 +6,7 @@ free. The enabled+configured path is covered end-to-end at deploy time.
 """
 
 import logging
+from unittest.mock import patch
 
 from nextcloud_mcp_server.observability import profiling
 
@@ -28,3 +29,33 @@ def test_setup_profiling_noop_when_server_unset(caplog):
         profiling.setup_profiling("nextcloud-mcp-server-worker", None, enabled=True)
     assert profiling._configured is False
     assert "PYROSCOPE_SERVER_ADDRESS" in caplog.text
+
+
+def test_setup_profiling_configures_when_enabled():
+    """Enabled + server address → pyroscope.configure() called with the exact
+    kwargs. Guards against a wrong/renamed kwarg against the pinned pyroscope-io
+    API (e.g. tags=) that would otherwise only surface at deploy time.
+    """
+    _reset()
+    with patch("pyroscope.configure") as mock_configure:
+        profiling.setup_profiling(
+            "nextcloud-mcp-server-worker",
+            "http://alloy.alloy.svc.cluster.local:4041",
+            enabled=True,
+            tags={"role": "worker"},
+        )
+    assert profiling._configured is True
+    mock_configure.assert_called_once_with(
+        application_name="nextcloud-mcp-server-worker",
+        server_address="http://alloy.alloy.svc.cluster.local:4041",
+        tags={"role": "worker"},
+    )
+
+
+def test_setup_profiling_idempotent():
+    """A second call is a no-op once configured (does not re-call configure)."""
+    _reset()
+    with patch("pyroscope.configure") as mock_configure:
+        profiling.setup_profiling("svc-a", "http://alloy:4041", enabled=True)
+        profiling.setup_profiling("svc-b", "http://alloy:4041", enabled=True)
+    assert mock_configure.call_count == 1
