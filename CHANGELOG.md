@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.137.0 (2026-07-12)
+
+### Feat
+
+- **observability**: add Pyroscope continuous profiling (push SDK)
+
+### Fix
+
+- **observability**: repair worker test helper; fail open on configure
+- **deps**: move pyroscope-io to an optional `observability` extra
+- **observability**: resolve SonarCloud security-gate findings
+
 ## v0.136.0 (2026-07-11)
 
 ### Feat
