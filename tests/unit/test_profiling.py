@@ -70,3 +70,16 @@ def test_setup_profiling_idempotent():
         profiling.setup_profiling("svc-a", SERVER, enabled=True)
         profiling.setup_profiling("svc-b", SERVER, enabled=True)
     assert mock_configure.call_count == 1
+
+
+def test_setup_profiling_degrades_on_configure_error(caplog):
+    """A pyroscope.configure() failure must not propagate (fail open)."""
+    pytest.importorskip("pyroscope")
+    _reset()
+    with (
+        patch("pyroscope.configure", side_effect=RuntimeError("boom")),
+        caplog.at_level(logging.WARNING, logger=profiling.logger.name),
+    ):
+        profiling.setup_profiling("svc", SERVER, enabled=True)  # must not raise
+    assert profiling._configured is False
+    assert "failed to configure" in caplog.text

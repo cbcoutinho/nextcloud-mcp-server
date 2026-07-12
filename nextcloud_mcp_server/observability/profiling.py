@@ -62,11 +62,24 @@ def setup_profiling(
         logger.warning("pyroscope-io is not installed; continuous profiling disabled")
         return
 
-    pyroscope.configure(
-        application_name=application_name,
-        server_address=server_address,
-        tags=tags or {},
-    )
+    try:
+        pyroscope.configure(
+            application_name=application_name,
+            server_address=server_address,
+            tags=tags or {},
+        )
+    except Exception:  # noqa: BLE001 - profiling is optional; never crash startup
+        # Fail open, matching setup_tracing()'s defensive OTLP-exporter handling:
+        # a bad server_address / SDK error disables profiling rather than taking
+        # down the API/worker process.
+        logger.warning(
+            "Pyroscope profiling failed to configure (application=%s); "
+            "continuing without it",
+            application_name,
+            exc_info=True,
+        )
+        return
+
     _configured = True
     logger.info(
         "Pyroscope profiling enabled (application=%s, server=%s)",

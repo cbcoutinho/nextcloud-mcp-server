@@ -349,6 +349,8 @@ def _fake_settings(**overrides):
         otel_service_name="nextcloud-mcp-server",
         otel_exporter_verify_ssl=False,
         otel_traces_sampler_arg=1.0,
+        pyroscope_enabled=False,
+        pyroscope_server_address=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -369,6 +371,10 @@ def patched_observability(monkeypatch):
     monkeypatch.setattr(
         "nextcloud_mcp_server.cli.setup_tracing",
         lambda **kw: calls.__setitem__("tracing", kw),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.setup_profiling",
+        lambda *a, **kw: calls.__setitem__("profiling", {"args": a, "kwargs": kw}),
     )
     return calls
 
@@ -426,6 +432,24 @@ def test_init_worker_observability_skips_tracing_without_endpoint(
     _init_worker_observability(_fake_settings(otel_exporter_otlp_endpoint=None))
 
     assert "tracing" not in patched_observability
+
+
+def test_init_worker_observability_configures_profiling(patched_observability):
+    """Worker wires Pyroscope profiling with the -worker application name and the
+    pyroscope_* settings, mirroring the API entrypoint (setup_profiling gates on
+    `enabled` internally, so it is always called)."""
+    _init_worker_observability(
+        _fake_settings(
+            pyroscope_enabled=True,
+            pyroscope_server_address="alloy.alloy.svc.cluster.local:4041",
+        )
+    )
+
+    assert patched_observability["profiling"]["kwargs"] == {
+        "application_name": "nextcloud-mcp-server-worker",
+        "server_address": "alloy.alloy.svc.cluster.local:4041",
+        "enabled": True,
+    }
 
 
 def test_worker_initializes_observability_on_postgres_queue(runner, monkeypatch):
