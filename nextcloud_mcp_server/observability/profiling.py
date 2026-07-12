@@ -55,7 +55,9 @@ def setup_profiling(
         return
 
     try:
-        import pyroscope  # noqa: PLC0415  (optional dependency, imported lazily)
+        # pyroscope-io is an optional dependency; import lazily so a missing
+        # install degrades to a warning instead of a startup ImportError.
+        import pyroscope  # noqa: PLC0415
     except ImportError:
         logger.warning("pyroscope-io is not installed; continuous profiling disabled")
         return

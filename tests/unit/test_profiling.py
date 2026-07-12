@@ -10,6 +10,11 @@ from unittest.mock import patch
 
 from nextcloud_mcp_server.observability import profiling
 
+# Opaque server-address fixture. Never dialed — the enabled tests mock
+# pyroscope.configure and the disabled/no-server tests return early — so it is
+# left scheme-less (no clear-text-protocol literal for a scanner to flag).
+SERVER = "alloy.alloy.svc.cluster.local:4041"
+
 
 def _reset():
     profiling._configured = False
@@ -17,9 +22,7 @@ def _reset():
 
 def test_setup_profiling_noop_when_disabled():
     _reset()
-    profiling.setup_profiling(
-        "nextcloud-mcp-server-api", "http://alloy.alloy.svc:4041", enabled=False
-    )
+    profiling.setup_profiling("nextcloud-mcp-server-api", SERVER, enabled=False)
     assert profiling._configured is False
 
 
@@ -40,14 +43,14 @@ def test_setup_profiling_configures_when_enabled():
     with patch("pyroscope.configure") as mock_configure:
         profiling.setup_profiling(
             "nextcloud-mcp-server-worker",
-            "http://alloy.alloy.svc.cluster.local:4041",
+            SERVER,
             enabled=True,
             tags={"role": "worker"},
         )
     assert profiling._configured is True
     mock_configure.assert_called_once_with(
         application_name="nextcloud-mcp-server-worker",
-        server_address="http://alloy.alloy.svc.cluster.local:4041",
+        server_address=SERVER,
         tags={"role": "worker"},
     )
 
@@ -56,6 +59,6 @@ def test_setup_profiling_idempotent():
     """A second call is a no-op once configured (does not re-call configure)."""
     _reset()
     with patch("pyroscope.configure") as mock_configure:
-        profiling.setup_profiling("svc-a", "http://alloy:4041", enabled=True)
-        profiling.setup_profiling("svc-b", "http://alloy:4041", enabled=True)
+        profiling.setup_profiling("svc-a", SERVER, enabled=True)
+        profiling.setup_profiling("svc-b", SERVER, enabled=True)
     assert mock_configure.call_count == 1
