@@ -133,6 +133,11 @@ dev = [
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
     "pact-python>=3.4.0",
+    # Linux-only dev/CI: exercise the profiling configured-path tests. The
+    # unit-test job runs on ubuntu, so the pyroscope-io Rust wheel resolves;
+    # package-smoke (which hits Windows) uses `--with .` and never sees the dev
+    # group, so this doesn't reintroduce the Windows build failure.
+    "pyroscope-io>=0.8.0",
 ]
 
 [project.scripts]
@@ -142,6 +147,15 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 postgres = [
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
+]
+# Continuous profiling (Pyroscope push SDK). Kept OUT of the default deps: it's
+# a Rust extension with no Windows wheel, so an unconditional dep breaks the
+# cross-platform package-smoke isolated install (source build fails on Windows).
+# The runtime import is guarded (observability/profiling.py degrades to a warning
+# when absent), so the app runs fully without it; deploy images install
+# `.[observability]`. Deck #655.
+observability = [
+    "pyroscope-io>=0.8.0",
 ]
 
 [[tool.uv.index]]

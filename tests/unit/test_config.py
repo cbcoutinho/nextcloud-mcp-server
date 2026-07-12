@@ -160,6 +160,33 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {
+            "PYROSCOPE_ENABLED": "true",
+            "PYROSCOPE_SERVER_ADDRESS": "alloy.alloy.svc.cluster.local:4041",
+        },
+        clear=True,
+    )
+    def test_get_settings_pyroscope_from_env(self):
+        """PYROSCOPE_ENABLED / _SERVER_ADDRESS must reach settings (Deck #655).
+
+        Guards against the _DEFAULTS / _field_map omission that has silently
+        dropped other observability env vars before (cf. OCR batch mode, #332).
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.pyroscope_enabled is True
+        assert settings.pyroscope_server_address == "alloy.alloy.svc.cluster.local:4041"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_pyroscope_disabled_by_default(self):
+        """Profiling is opt-in: default off with no server address."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.pyroscope_enabled is False
+        assert settings.pyroscope_server_address is None
+
+    @patch.dict(
+        os.environ,
         {"DOCUMENT_OCR_MODE": "Batch", "EMBEDDING_GATEWAY_URL": "https://gw"},
         clear=True,
     )

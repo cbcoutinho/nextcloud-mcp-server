@@ -16,11 +16,11 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md .
 
-RUN uv sync --locked --no-dev --no-install-project --no-cache --extra postgres
+RUN uv sync --locked --no-dev --no-install-project --no-cache --extra postgres --extra observability
 
 COPY . .
 
-RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres
+RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault
