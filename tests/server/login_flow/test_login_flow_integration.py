@@ -659,3 +659,37 @@ class TestLoginFlowConnectivity:
         """Verify resource templates are available."""
         templates = await nc_mcp_login_flow_client.list_resource_templates()
         logger.info("Resource templates: %s", len(templates.resourceTemplates))
+
+
+# ---------------------------------------------------------------------------
+# Browser login route (GH #1068)
+# ---------------------------------------------------------------------------
+#
+# Regression guard for GH #1068: in login_flow mode with offline access
+# disabled (the default — the mcp-login-flow container sets TOKEN_ENCRYPTION_KEY
+# but not ENABLE_BACKGROUND_OPERATIONS), app.py built oauth_context with
+# storage=None, so GET /oauth/login dereferenced None and returned HTTP 500.
+# The existing suite drives provisioning through the MCP tool / app-password
+# paths (which use the always-initialized shared storage) and never exercised
+# this browser route, so the bug shipped. This asserts the route redirects to
+# the IdP instead of 500-ing.
+
+
+class TestBrowserOAuthLoginRoute:
+    """The browser /oauth/login route must not 500 on default login_flow config."""
+
+    LOGIN_FLOW_MCP_BASE_URL = "http://localhost:8004"
+
+    async def test_oauth_login_redirects_not_500(self):
+        import httpx
+
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            resp = await client.get(f"{self.LOGIN_FLOW_MCP_BASE_URL}/oauth/login")
+
+        # 302 redirect to the IdP authorization endpoint — the pre-#1068
+        # behaviour was a 500 from `None.store_oauth_session`.
+        assert resp.status_code == 302, (
+            f"/oauth/login returned {resp.status_code}, expected 302 "
+            f"(GH #1068 regression: oauth_context storage was None)"
+        )
+        assert "location" in resp.headers
