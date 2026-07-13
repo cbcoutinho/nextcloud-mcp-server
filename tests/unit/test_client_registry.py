@@ -249,3 +249,18 @@ def test_find_client_for_redirect_uris_empty_list_returns_none(monkeypatch):
     registry = _get_registry(monkeypatch, "claude-code-mcp")
     match = registry.find_client_for_redirect_uris([])
     assert match is None
+
+
+def test_find_client_for_redirect_uris_rejects_dict(monkeypatch):
+    """A dict value (malformed request body) must not trigger a match."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    # A dict is iterable but yields keys, not URIs — should not short-circuit.
+    match = registry.find_client_for_redirect_uris({"http://localhost:9999/cb": True})  # type: ignore[arg-type]
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_rejects_list_of_non_strings(monkeypatch):
+    """A list containing non-string elements must not trigger a match."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris([None, 42])  # type: ignore[list-item]
+    assert match is None

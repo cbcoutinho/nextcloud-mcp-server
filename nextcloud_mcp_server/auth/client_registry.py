@@ -242,12 +242,21 @@ class ClientRegistry:
         Returns:
             The first matching static client, or ``None`` if none match.
         """
+        # Guard: only process a non-empty list of plain strings.  Untrusted
+        # request bodies may carry a dict or a list of non-strings; iterating
+        # over a dict yields its keys, which could produce a false positive
+        # match or an unexpected RFC 7591 response that bypasses IdP validation.
+        if (
+            not redirect_uris
+            or not isinstance(redirect_uris, list)
+            or not all(isinstance(uri, str) for uri in redirect_uris)
+        ):
+            return None
+
         for client in self._clients.values():
             if not client.is_static:
                 continue
-            if redirect_uris and all(
-                self._validate_redirect_uri(client, uri) for uri in redirect_uris
-            ):
+            if all(self._validate_redirect_uri(client, uri) for uri in redirect_uris):
                 return client
         return None
 
