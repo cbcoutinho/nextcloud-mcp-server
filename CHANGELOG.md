@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.138.1 (2026-07-13)
+
+### Fix
+
+- **auth**: guarantee oauth_context storage in login_flow mode (#1068)
+
 ## v0.138.0 (2026-07-13)
 
 ### Feat
