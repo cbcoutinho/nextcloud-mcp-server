@@ -25,6 +25,7 @@ class MCPClientInfo:
     redirect_uris: List[str]
     allowed_scopes: List[str]
     is_public: bool = True  # Native clients are public (no client_secret)
+    is_static: bool = False  # True for pre-configured clients (ALLOWED_MCP_CLIENTS)
     metadata: Optional[Dict] = None
 
 
@@ -122,6 +123,7 @@ class ClientRegistry:
                         redirect_uris=[redirect],
                         allowed_scopes=["*"],
                         is_public=True,
+                        is_static=True,
                     )
                     logger.info("Registered static client: %s", cid)
                 else:
@@ -131,6 +133,7 @@ class ClientRegistry:
                         redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
                         allowed_scopes=["*"],
                         is_public=True,
+                        is_static=True,
                     )
                     logger.info("Registered static client: %s", entry)
 
@@ -219,6 +222,34 @@ class ClientRegistry:
                 return True
 
         return False
+
+    def find_client_for_redirect_uris(
+        self, redirect_uris: List[str]
+    ) -> Optional[MCPClientInfo]:
+        """Find a pre-configured static client that accepts all given redirect URIs.
+
+        Only static clients (loaded from ``ALLOWED_MCP_CLIENTS``) are considered.
+        DCR-proxy clients are excluded to avoid returning an entry that belongs to
+        a different dynamic registration session.
+
+        This is used by the DCR proxy to short-circuit upstream IdP registration
+        when the requesting client's redirect URIs already match a whitelisted
+        static entry, preventing unnecessary client accumulation in the IdP.
+
+        Args:
+            redirect_uris: Redirect URIs from the incoming DCR request.
+
+        Returns:
+            The first matching static client, or ``None`` if none match.
+        """
+        for client in self._clients.values():
+            if not client.is_static:
+                continue
+            if redirect_uris and all(
+                self._validate_redirect_uri(client, uri) for uri in redirect_uris
+            ):
+                return client
+        return None
 
     def register_client(self, client_info: MCPClientInfo) -> bool:
         """

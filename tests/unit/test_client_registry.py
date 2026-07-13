@@ -201,3 +201,51 @@ def test_validate_redirect_uri_no_hostname(monkeypatch):
     valid, err = registry.validate_client("test-client", redirect_uri="not-a-uri")
     assert valid is False
     assert "redirect_uri" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# find_client_for_redirect_uris tests
+# ---------------------------------------------------------------------------
+
+
+def test_find_client_for_redirect_uris_matches_localhost_wildcard(monkeypatch):
+    """Static client with localhost:* pattern matches any specific localhost port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris(["http://localhost:54321/callback"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
+def test_find_client_for_redirect_uris_matches_loopback_ip(monkeypatch):
+    """Static client with 127.0.0.1:* pattern matches any specific loopback port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris(["http://127.0.0.1:8765/callback"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
+def test_find_client_for_redirect_uris_no_match(monkeypatch):
+    """Returns None when no static client accepts all redirect URIs."""
+    registry = _get_registry(monkeypatch, "my-app|https://app.example.com/callback")
+    match = registry.find_client_for_redirect_uris(["http://localhost:9999/callback"])
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_ignores_proxy_clients(monkeypatch):
+    """DCR-proxy clients (is_static=False) are not returned."""
+    registry = _get_registry(monkeypatch, None)
+    # Register a proxy client (as the DCR proxy does)
+    registry.register_proxy_client(
+        client_id="some-uuid-from-idp",
+        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
+        name="Dynamic Client",
+    )
+    match = registry.find_client_for_redirect_uris(["http://localhost:12345/cb"])
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_empty_list_returns_none(monkeypatch):
+    """Empty redirect_uris list returns None (no match without URIs to check)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris([])
+    assert match is None
