@@ -137,7 +137,12 @@ async def test_static_client_match_different_port_returns_same_client_id(monkeyp
             )
         )
 
-    assert json.loads(resp1.body)["client_id"] == json.loads(resp2.body)["client_id"]
+    body1 = json.loads(resp1.body)
+    body2 = json.loads(resp2.body)
+    assert body1["client_id"] == body2["client_id"]
+    # client_id_issued_at must be stable (sourced from the static MCPClientInfo record,
+    # not from the current request time) so both responses agree on the same value.
+    assert body1["client_id_issued_at"] == body2["client_id_issued_at"]
 
 
 async def test_no_static_client_falls_through_to_idp_proxy(monkeypatch):

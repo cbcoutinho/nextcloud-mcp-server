@@ -1375,7 +1375,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
                 "token_endpoint_auth_method": "none",
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
-                "client_id_issued_at": int(time.time()),
+                "client_id_issued_at": static_match.issued_at,
             },
             status_code=201,
         )

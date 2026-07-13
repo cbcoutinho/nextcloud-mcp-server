@@ -7,7 +7,8 @@ via Flow 1. In production, this would integrate with Dynamic Client Registration
 """
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -26,6 +27,7 @@ class MCPClientInfo:
     allowed_scopes: List[str]
     is_public: bool = True  # Native clients are public (no client_secret)
     is_static: bool = False  # True for pre-configured clients (ALLOWED_MCP_CLIENTS)
+    issued_at: int = field(default_factory=lambda: int(time.time()))
     metadata: Optional[Dict] = None
 
 
@@ -215,9 +217,15 @@ class ClientRegistry:
                 # Handle wildcard port (localhost:*)
                 pattern_base = pattern.replace(":*", "")
                 if redirect_uri.startswith(pattern_base + ":"):
-                    # Validate it's localhost with a port
+                    # Validate it's localhost with a syntactically valid port number.
+                    # parsed.port raises ValueError for non-integer ports (e.g. "abc")
+                    # and returns None for an empty port component (e.g. "localhost:").
                     if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
-                        return True
+                        try:
+                            if parsed.port is not None:
+                                return True
+                        except ValueError:
+                            return False
             elif redirect_uri == pattern:
                 return True
 

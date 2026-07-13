@@ -264,3 +264,38 @@ def test_find_client_for_redirect_uris_rejects_list_of_non_strings(monkeypatch):
     registry = _get_registry(monkeypatch, "claude-code-mcp")
     match = registry.find_client_for_redirect_uris([None, 42])  # type: ignore[list-item]
     assert match is None
+
+
+# ---------------------------------------------------------------------------
+# _validate_redirect_uri port validation tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_redirect_uri_invalid_port_rejected(monkeypatch):
+    """Wildcard match must reject URIs with a non-numeric port (e.g. localhost:abc)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:abc/callback"
+    )
+    assert valid is False
+    assert "redirect_uri" in err.lower()
+
+
+def test_validate_redirect_uri_empty_port_rejected(monkeypatch):
+    """Wildcard match must reject URIs with an empty port component (e.g. localhost:)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:/callback"
+    )
+    assert valid is False
+    assert "redirect_uri" in err.lower()
+
+
+def test_validate_redirect_uri_valid_port_accepted(monkeypatch):
+    """Wildcard match must accept URIs with a valid integer port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:8080/callback"
+    )
+    assert valid is True
+    assert err is None
