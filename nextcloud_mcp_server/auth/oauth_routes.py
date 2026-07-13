@@ -1352,6 +1352,34 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     timestamps.append(now)
     _dcr_rate_limit[client_ip] = timestamps
 
+    # Short-circuit: if any pre-configured static client (ALLOWED_MCP_CLIENTS) already
+    # accepts all requested redirect URIs, return it directly without proxying to the
+    # upstream IdP. This prevents a new dynamic client from accumulating in the IdP
+    # for every distinct Claude Code / MCP client installation.
+    requested_redirect_uris = body.get("redirect_uris", [])
+    static_match = get_client_registry().find_client_for_redirect_uris(
+        requested_redirect_uris
+    )
+    if static_match:
+        logger.info(
+            "DCR: serving registration for %r using pre-configured client %r "
+            "(skipping IdP proxy)",
+            body.get("client_name", ""),
+            static_match.client_id,
+        )
+        return JSONResponse(
+            {
+                "client_id": static_match.client_id,
+                "client_name": static_match.name,
+                "redirect_uris": requested_redirect_uris,
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "client_id_issued_at": static_match.issued_at,
+            },
+            status_code=201,
+        )
+
     # Discover registration endpoint from OIDC discovery
     discovery_url = oauth_config.get("discovery_url")
     registration_endpoint = None

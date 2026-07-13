@@ -7,7 +7,8 @@ via Flow 1. In production, this would integrate with Dynamic Client Registration
 """
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -25,6 +26,8 @@ class MCPClientInfo:
     redirect_uris: List[str]
     allowed_scopes: List[str]
     is_public: bool = True  # Native clients are public (no client_secret)
+    is_static: bool = False  # True for pre-configured clients (ALLOWED_MCP_CLIENTS)
+    issued_at: int = field(default_factory=lambda: int(time.time()))
     metadata: Optional[Dict] = None
 
 
@@ -122,6 +125,7 @@ class ClientRegistry:
                         redirect_uris=[redirect],
                         allowed_scopes=["*"],
                         is_public=True,
+                        is_static=True,
                     )
                     logger.info("Registered static client: %s", cid)
                 else:
@@ -131,6 +135,7 @@ class ClientRegistry:
                         redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
                         allowed_scopes=["*"],
                         is_public=True,
+                        is_static=True,
                     )
                     logger.info("Registered static client: %s", entry)
 
@@ -212,13 +217,81 @@ class ClientRegistry:
                 # Handle wildcard port (localhost:*)
                 pattern_base = pattern.replace(":*", "")
                 if redirect_uri.startswith(pattern_base + ":"):
-                    # Validate it's localhost with a port
+                    # Validate it's localhost with a syntactically valid port number.
+                    # parsed.port raises ValueError for non-integer ports (e.g. "abc")
+                    # and returns None for an empty port component (e.g. "localhost:").
                     if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
-                        return True
+                        try:
+                            if parsed.port is not None:
+                                return True
+                        except ValueError:
+                            return False
             elif redirect_uri == pattern:
                 return True
 
         return False
+
+    def find_client_for_redirect_uris(
+        self, redirect_uris: List[str]
+    ) -> Optional[MCPClientInfo]:
+        """Find a pre-configured static client that accepts all given redirect URIs.
+
+        Only static clients (loaded from ``ALLOWED_MCP_CLIENTS``) are considered.
+        DCR-proxy clients are excluded to avoid returning an entry that belongs to
+        a different dynamic registration session.
+
+        This is used by the DCR proxy to short-circuit upstream IdP registration
+        when the requesting client's redirect URIs already match a whitelisted
+        static entry, preventing unnecessary client accumulation in the IdP.
+
+        Ambiguity guard: loopback redirect URIs are not a client identity — per
+        RFC 8252 §7.3 every native client uses ``http://localhost:<ephemeral>``,
+        and §8.6 treats such clients as mutually indistinguishable. If two or
+        more static entries (e.g. multiple ``localhost:*`` wildcards) both accept
+        the requested URIs, we cannot tell which one the caller actually is, so
+        we refuse to guess: a warning is logged and ``None`` is returned, letting
+        the caller fall through to the normal proxy path rather than silently
+        mis-attributing the registration to the first-listed entry.
+
+        Args:
+            redirect_uris: Redirect URIs from the incoming DCR request.
+
+        Returns:
+            The single matching static client, or ``None`` if none match or the
+            match is ambiguous (more than one static client qualifies).
+        """
+        # Guard: only process a non-empty list of plain strings.  Untrusted
+        # request bodies may carry a dict or a list of non-strings; iterating
+        # over a dict yields its keys, which could produce a false positive
+        # match or an unexpected RFC 7591 response that bypasses IdP validation.
+        if (
+            not redirect_uris
+            or not isinstance(redirect_uris, list)
+            or not all(isinstance(uri, str) for uri in redirect_uris)
+        ):
+            return None
+
+        matches = [
+            client
+            for client in self._clients.values()
+            if client.is_static
+            and all(self._validate_redirect_uri(client, uri) for uri in redirect_uris)
+        ]
+
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(
+                "Ambiguous DCR short-circuit: %d static clients (%s) all accept "
+                "redirect URIs %s; refusing to guess and falling through to the "
+                "IdP proxy. Configure a single ALLOWED_MCP_CLIENTS entry for "
+                "loopback clients to enable the short-circuit.",
+                len(matches),
+                ", ".join(c.client_id for c in matches),
+                redirect_uris,
+            )
+            return None
+        return matches[0]
 
     def register_client(self, client_info: MCPClientInfo) -> bool:
         """

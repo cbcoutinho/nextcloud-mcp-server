@@ -201,3 +201,134 @@ def test_validate_redirect_uri_no_hostname(monkeypatch):
     valid, err = registry.validate_client("test-client", redirect_uri="not-a-uri")
     assert valid is False
     assert "redirect_uri" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# find_client_for_redirect_uris tests
+# ---------------------------------------------------------------------------
+
+
+def test_find_client_for_redirect_uris_matches_localhost_wildcard(monkeypatch):
+    """Static client with localhost:* pattern matches any specific localhost port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris(["http://localhost:54321/callback"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
+def test_find_client_for_redirect_uris_matches_loopback_ip(monkeypatch):
+    """Static client with 127.0.0.1:* pattern matches any specific loopback port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris(["http://127.0.0.1:8765/callback"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
+def test_find_client_for_redirect_uris_no_match(monkeypatch):
+    """Returns None when no static client accepts all redirect URIs."""
+    registry = _get_registry(monkeypatch, "my-app|https://app.example.com/callback")
+    match = registry.find_client_for_redirect_uris(["http://localhost:9999/callback"])
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_ignores_proxy_clients(monkeypatch):
+    """DCR-proxy clients (is_static=False) are not returned."""
+    registry = _get_registry(monkeypatch, None)
+    # Register a proxy client (as the DCR proxy does)
+    registry.register_proxy_client(
+        client_id="some-uuid-from-idp",
+        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
+        name="Dynamic Client",
+    )
+    match = registry.find_client_for_redirect_uris(["http://localhost:12345/cb"])
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_ambiguous_returns_none(monkeypatch, caplog):
+    """Two static wildcard clients both accept a loopback URI → ambiguous, no guess.
+
+    Loopback redirect URIs are not a client identity (RFC 8252 §7.3/§8.6), so
+    when more than one static entry qualifies the short-circuit must refuse to
+    guess and fall through, rather than silently returning the first-listed one.
+    """
+    registry = _get_registry(monkeypatch, "claude-code-mcp, cursor-mcp")
+    with caplog.at_level(logging.WARNING):
+        match = registry.find_client_for_redirect_uris(["http://localhost:5000/cb"])
+    assert match is None
+    assert "Ambiguous DCR short-circuit" in caplog.text
+    # Both ambiguous candidates are named so the operator can fix their config.
+    assert "claude-code-mcp" in caplog.text
+    assert "cursor-mcp" in caplog.text
+
+
+def test_find_client_for_redirect_uris_single_match_with_nonmatching_static(
+    monkeypatch,
+):
+    """The guard counts only *matching* static clients, not the total registered.
+
+    A non-loopback static entry that does not accept the requested URI must not
+    make an otherwise-unambiguous loopback match look ambiguous.
+    """
+    registry = _get_registry(
+        monkeypatch, "claude-code-mcp, my-app|https://app.example.com/callback"
+    )
+    match = registry.find_client_for_redirect_uris(["http://localhost:7777/cb"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
+def test_find_client_for_redirect_uris_empty_list_returns_none(monkeypatch):
+    """Empty redirect_uris list returns None (no match without URIs to check)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris([])
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_rejects_dict(monkeypatch):
+    """A dict value (malformed request body) must not trigger a match."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    # A dict is iterable but yields keys, not URIs — should not short-circuit.
+    match = registry.find_client_for_redirect_uris({"http://localhost:9999/cb": True})  # type: ignore[arg-type]
+    assert match is None
+
+
+def test_find_client_for_redirect_uris_rejects_list_of_non_strings(monkeypatch):
+    """A list containing non-string elements must not trigger a match."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    match = registry.find_client_for_redirect_uris([None, 42])  # type: ignore[list-item]
+    assert match is None
+
+
+# ---------------------------------------------------------------------------
+# _validate_redirect_uri port validation tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_redirect_uri_invalid_port_rejected(monkeypatch):
+    """Wildcard match must reject URIs with a non-numeric port (e.g. localhost:abc)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:abc/callback"
+    )
+    assert valid is False
+    assert "redirect_uri" in err.lower()
+
+
+def test_validate_redirect_uri_empty_port_rejected(monkeypatch):
+    """Wildcard match must reject URIs with an empty port component (e.g. localhost:)."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:/callback"
+    )
+    assert valid is False
+    assert "redirect_uri" in err.lower()
+
+
+def test_validate_redirect_uri_valid_port_accepted(monkeypatch):
+    """Wildcard match must accept URIs with a valid integer port."""
+    registry = _get_registry(monkeypatch, "claude-code-mcp")
+    valid, err = registry.validate_client(
+        "claude-code-mcp", redirect_uri="http://localhost:8080/callback"
+    )
+    assert valid is True
+    assert err is None
