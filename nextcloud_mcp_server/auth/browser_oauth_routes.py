@@ -17,6 +17,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.auth.token_utils import (
     IdTokenVerificationError,
     get_oidc_discovery,
@@ -145,7 +146,10 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         # BasicAuth mode - no login needed, redirect to app
         return RedirectResponse("/app", status_code=302)
 
-    storage = oauth_ctx["storage"]
+    # Fall back to the always-initialized shared storage singleton when the
+    # OAuth context carries no storage — login_flow with offline access off
+    # (the default) leaves oauth_context["storage"] None (GH #1068).
+    storage = oauth_ctx.get("storage") or await get_shared_storage()
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
@@ -359,7 +363,9 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
 
     # Get OAuth context
     oauth_ctx = request.app.state.oauth_context
-    storage = oauth_ctx["storage"]
+    # Same GH #1068 fallback as oauth_login: the callback also writes to storage
+    # and must not dereference a None captured under offline-access-off config.
+    storage = oauth_ctx.get("storage") or await get_shared_storage()
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 

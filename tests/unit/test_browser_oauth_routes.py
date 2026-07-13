@@ -10,13 +10,17 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
 
 from nextcloud_mcp_server.auth import browser_oauth_routes, token_utils
-from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
+from nextcloud_mcp_server.auth.browser_oauth_routes import (
+    oauth_login,
+    oauth_login_callback,
+)
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 pytestmark = pytest.mark.unit
@@ -218,3 +222,72 @@ async def test_callback_rejects_token_response_without_refresh_token(
     # session cookie.
     set_cookie = response.headers.get("set-cookie", "")
     assert "mcp_session" not in set_cookie
+
+
+# ---------------------------------------------------------------------------
+# oauth_login: None storage in oauth_context must NOT 500 (GH #1068)
+# ---------------------------------------------------------------------------
+#
+# In login_flow mode with offline access disabled (the default), app.py builds
+# oauth_context with ``storage=None`` (refresh_token_storage is only created
+# when offline access is enabled). Before the fix, ``oauth_login`` hard-indexed
+# ``oauth_ctx["storage"]`` and called ``store_oauth_session`` on ``None``,
+# raising ``AttributeError: 'NoneType' object has no attribute
+# 'store_oauth_session'`` and returning HTTP 500. The route now falls back to
+# the always-initialized shared storage singleton.
+
+
+async def test_oauth_login_falls_back_to_shared_storage_when_ctx_storage_none(
+    _clear_oidc_caches, _no_refresh_storage
+):
+    """Reproduces GH #1068: oauth_login must tolerate oauth_context storage=None.
+
+    Fails before the fix with AttributeError on ``None.store_oauth_session``.
+    """
+    shared_storage = _no_refresh_storage
+
+    request = MagicMock()
+    request.query_params = {}
+    # Exactly the context login_flow builds when offline access is off.
+    request.app.state.oauth_context = {
+        "storage": None,
+        "oauth_client": None,  # integrated Nextcloud OIDC mode
+        "config": {
+            "mcp_server_url": "http://localhost:8004",
+            "discovery_url": "http://idp.example/.well-known/openid-configuration",
+            "client_id": "static-client",
+            "client_secret": "secret",
+            "nextcloud_host": "http://idp.example",
+            "nextcloud_resource_uri": "http://idp.example",
+        },
+    }
+
+    discovery = {
+        "issuer": "http://idp.example",
+        "authorization_endpoint": "http://idp.example/authorize",
+        "scopes_supported": ["openid", "profile", "email"],
+    }
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.browser_oauth_routes.get_shared_storage",
+            new=AsyncMock(return_value=shared_storage),
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.browser_oauth_routes.get_oidc_discovery",
+            new=AsyncMock(return_value=discovery),
+        ),
+    ):
+        response = await oauth_login(request)
+
+    # Redirect to the IdP authorization endpoint — not a 500.
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("http://idp.example/authorize?")
+
+    # The PKCE/session row was persisted to the fallback (shared) storage,
+    # keyed by the generated ``state`` carried in the redirect URL.
+    location = response.headers["location"]
+    state = parse_qs(urlparse(location).query)["state"][0]
+    session = await shared_storage.get_oauth_session(state)
+    assert session is not None
+    assert session["flow_type"] == "browser"

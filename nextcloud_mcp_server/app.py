@@ -1916,7 +1916,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             scopes = settings.oidc_scopes
 
             oauth_context_dict = {
-                "storage": refresh_token_storage,
+                # login_flow needs storage for browser sessions + app passwords
+                # regardless of offline access. refresh_token_storage is only
+                # created when offline access is enabled (default off), so fall
+                # back to the always-initialized process-wide singleton — the
+                # same instance the MCP tools use — so browser/provisioning
+                # routes never dereference None (GH #1068).
+                "storage": refresh_token_storage or await get_shared_storage(),
                 "oauth_client": oauth_client,
                 "token_verifier": token_verifier,  # For querying IdP userinfo endpoint
                 "config": {
