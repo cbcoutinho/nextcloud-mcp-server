@@ -244,11 +244,21 @@ class ClientRegistry:
         when the requesting client's redirect URIs already match a whitelisted
         static entry, preventing unnecessary client accumulation in the IdP.
 
+        Ambiguity guard: loopback redirect URIs are not a client identity — per
+        RFC 8252 §7.3 every native client uses ``http://localhost:<ephemeral>``,
+        and §8.6 treats such clients as mutually indistinguishable. If two or
+        more static entries (e.g. multiple ``localhost:*`` wildcards) both accept
+        the requested URIs, we cannot tell which one the caller actually is, so
+        we refuse to guess: a warning is logged and ``None`` is returned, letting
+        the caller fall through to the normal proxy path rather than silently
+        mis-attributing the registration to the first-listed entry.
+
         Args:
             redirect_uris: Redirect URIs from the incoming DCR request.
 
         Returns:
-            The first matching static client, or ``None`` if none match.
+            The single matching static client, or ``None`` if none match or the
+            match is ambiguous (more than one static client qualifies).
         """
         # Guard: only process a non-empty list of plain strings.  Untrusted
         # request bodies may carry a dict or a list of non-strings; iterating
@@ -261,12 +271,27 @@ class ClientRegistry:
         ):
             return None
 
-        for client in self._clients.values():
-            if not client.is_static:
-                continue
-            if all(self._validate_redirect_uri(client, uri) for uri in redirect_uris):
-                return client
-        return None
+        matches = [
+            client
+            for client in self._clients.values()
+            if client.is_static
+            and all(self._validate_redirect_uri(client, uri) for uri in redirect_uris)
+        ]
+
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(
+                "Ambiguous DCR short-circuit: %d static clients (%s) all accept "
+                "redirect URIs %s; refusing to guess and falling through to the "
+                "IdP proxy. Configure a single ALLOWED_MCP_CLIENTS entry for "
+                "loopback clients to enable the short-circuit.",
+                len(matches),
+                ", ".join(c.client_id for c in matches),
+                redirect_uris,
+            )
+            return None
+        return matches[0]
 
     def register_client(self, client_info: MCPClientInfo) -> bool:
         """

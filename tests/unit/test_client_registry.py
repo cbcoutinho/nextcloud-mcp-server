@@ -244,6 +244,39 @@ def test_find_client_for_redirect_uris_ignores_proxy_clients(monkeypatch):
     assert match is None
 
 
+def test_find_client_for_redirect_uris_ambiguous_returns_none(monkeypatch, caplog):
+    """Two static wildcard clients both accept a loopback URI → ambiguous, no guess.
+
+    Loopback redirect URIs are not a client identity (RFC 8252 §7.3/§8.6), so
+    when more than one static entry qualifies the short-circuit must refuse to
+    guess and fall through, rather than silently returning the first-listed one.
+    """
+    registry = _get_registry(monkeypatch, "claude-code-mcp, cursor-mcp")
+    with caplog.at_level(logging.WARNING):
+        match = registry.find_client_for_redirect_uris(["http://localhost:5000/cb"])
+    assert match is None
+    assert "Ambiguous DCR short-circuit" in caplog.text
+    # Both ambiguous candidates are named so the operator can fix their config.
+    assert "claude-code-mcp" in caplog.text
+    assert "cursor-mcp" in caplog.text
+
+
+def test_find_client_for_redirect_uris_single_match_with_nonmatching_static(
+    monkeypatch,
+):
+    """The guard counts only *matching* static clients, not the total registered.
+
+    A non-loopback static entry that does not accept the requested URI must not
+    make an otherwise-unambiguous loopback match look ambiguous.
+    """
+    registry = _get_registry(
+        monkeypatch, "claude-code-mcp, my-app|https://app.example.com/callback"
+    )
+    match = registry.find_client_for_redirect_uris(["http://localhost:7777/cb"])
+    assert match is not None
+    assert match.client_id == "claude-code-mcp"
+
+
 def test_find_client_for_redirect_uris_empty_list_returns_none(monkeypatch):
     """Empty redirect_uris list returns None (no match without URIs to check)."""
     registry = _get_registry(monkeypatch, "claude-code-mcp")
