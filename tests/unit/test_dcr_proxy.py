@@ -126,13 +126,19 @@ async def test_static_client_match_different_port_returns_same_client_id(monkeyp
     with patch("nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery"):
         resp1 = await oauth_register_proxy(
             _make_request(
-                body={"client_name": "Claude Code", "redirect_uris": ["http://localhost:11111/cb"]},
+                body={
+                    "client_name": "Claude Code",
+                    "redirect_uris": ["http://localhost:11111/cb"],
+                },
                 oauth_config=oauth_config,
             )
         )
         resp2 = await oauth_register_proxy(
             _make_request(
-                body={"client_name": "Claude Code", "redirect_uris": ["http://localhost:22222/cb"]},
+                body={
+                    "client_name": "Claude Code",
+                    "redirect_uris": ["http://localhost:22222/cb"],
+                },
                 oauth_config=oauth_config,
             )
         )
