@@ -20,8 +20,10 @@ from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector import scanner as scanner_module
 from nextcloud_mcp_server.vector.scanner import (
     _bump_streak,
+    _FileDeletionPlan,
     _indexed_files_scroll_filter,
     _plan_file_deletions,
+    _record_suppressed_deletions,
 )
 from nextcloud_mcp_server.vector.sharing_state import (
     ACL_PRINCIPALS_KEY,
@@ -304,3 +306,37 @@ def test_indexed_files_filter_legacy_branch_is_user_id_scoped_to_empty_acl():
         isinstance(c, IsEmptyCondition) and c.is_empty.key == ACL_PRINCIPALS_KEY
         for c in legacy.must
     )
+
+
+# ---------------------------------------------------------------------------
+# Suppressed-deletion emission (metric + log wiring, extracted for testability).
+# ---------------------------------------------------------------------------
+
+
+def test_record_suppressed_deletions_meters_only_nonzero_modes(monkeypatch):
+    """Emit one counter increment per mode that actually suppressed; skip zeros."""
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        scanner_module,
+        "record_vector_sync_deletions_suppressed",
+        lambda mode, count: calls.append((mode, count)),
+    )
+    plan = _FileDeletionPlan(
+        to_delete=[],
+        suppressed_by_mode={HYB: 3, KW: 0},  # KW zero must be skipped
+        streaks={HYB: 2},
+    )
+    _record_suppressed_deletions("SCAN-1", plan, {HYB: {"a", "b", "c"}}, threshold=3)
+    assert calls == [(HYB, 3)]
+
+
+def test_record_suppressed_deletions_noop_when_nothing_suppressed(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        scanner_module,
+        "record_vector_sync_deletions_suppressed",
+        lambda mode, count: calls.append((mode, count)),
+    )
+    plan = _FileDeletionPlan(to_delete=["x"], suppressed_by_mode={}, streaks={})
+    _record_suppressed_deletions("SCAN-2", plan, {}, threshold=3)
+    assert calls == []

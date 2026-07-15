@@ -297,6 +297,36 @@ def _plan_file_deletions(
     )
 
 
+def _record_suppressed_deletions(
+    scan_id: str | int,
+    plan: _FileDeletionPlan,
+    indexed_by_mode: dict[str, set[str]],
+    threshold: int,
+) -> None:
+    """Log + meter the per-mode file deletions the fail-safe gate withheld.
+
+    Emits one WARNING and one ``record_vector_sync_deletions_suppressed`` counter
+    increment per mode that actually suppressed at least one candidate this scan;
+    modes with a zero count are skipped. Kept out of ``scan_user_documents`` so
+    the metric/log wiring is unit-testable without driving the full async scan.
+    """
+    for mode, suppressed in plan.suppressed_by_mode.items():
+        if not suppressed:
+            continue
+        logger.warning(
+            "[SCAN-%s] Suppressed %d file deletion(s) for mode %s: tag "
+            "discovery returned 0 but Qdrant holds %d indexed doc(s) — "
+            "treating as a failed read (streak %d/%d)",
+            scan_id,
+            suppressed,
+            mode,
+            len(indexed_by_mode.get(mode, set())),
+            plan.streaks.get(mode, 0),
+            threshold,
+        )
+        record_vector_sync_deletions_suppressed(mode, suppressed)
+
+
 def _indexed_files_scroll_filter(user_id: str) -> Filter:
     """Filter selecting a user's readable indexed file points for deletion tracking.
 
@@ -1251,21 +1281,12 @@ async def scan_user_documents(
                     )
                     file_queued += 1
 
-                for mode, suppressed in plan.suppressed_by_mode.items():
-                    if not suppressed:
-                        continue
-                    logger.warning(
-                        "[SCAN-%s] Suppressed %d file deletion(s) for mode %s: tag "
-                        "discovery returned 0 but Qdrant holds %d indexed doc(s) — "
-                        "treating as a failed read (streak %d/%d)",
-                        scan_id,
-                        suppressed,
-                        mode,
-                        len(indexed_by_mode.get(mode, set())),
-                        plan.streaks.get(mode, 0),
-                        settings.vector_sync_empty_discovery_delete_threshold,
-                    )
-                    record_vector_sync_deletions_suppressed(mode, suppressed)
+                _record_suppressed_deletions(
+                    scan_id,
+                    plan,
+                    indexed_by_mode,
+                    settings.vector_sync_empty_discovery_delete_threshold,
+                )
 
         except Exception as e:
             logger.warning("Failed to scan tagged files for %s: %s", user_id, e)
