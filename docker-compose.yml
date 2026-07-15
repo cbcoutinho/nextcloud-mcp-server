@@ -23,7 +23,7 @@ services:
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.12@sha256:607cce688a932f444926a902df979a21e83258746344ad23cd133b93088729c7}
+    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.12@sha256:90fdc9f99fab6f8dcfb16f6010a2a615775f01ed8e9265fa10beed6b2f10cbae}
     restart: always
     ports:
       - 127.0.0.1:8080:80
