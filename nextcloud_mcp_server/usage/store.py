@@ -23,6 +23,8 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +33,7 @@ import anyio
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import record_db_operation
+from nextcloud_mcp_server.observability.tracing import trace_db_operation
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,22 @@ _INSERT_SQL = (
     "VALUES (?, ?, ?, ?, ?) "
     "ON CONFLICT (event_id) DO NOTHING"
 )
+
+
+@dataclass(frozen=True)
+class UsageEvent:
+    """One billable usage event for batch recording via ``record_usage_events``.
+
+    Mirrors the keyword arguments of :meth:`UsageEventStore.record_usage_event`
+    so a caller can accumulate a document's events and write them in a single
+    transaction. ``occurred_at`` / ``event_id`` default lazily at write time.
+    """
+
+    metric: str
+    value: int
+    metadata: dict[str, Any] | None = None
+    occurred_at: datetime | None = None
+    event_id: str | None = None
 
 
 class UsageEventStore:
@@ -140,9 +159,10 @@ class UsageEventStore:
                 value,
                 json.dumps(metadata, sort_keys=True) if metadata is not None else None,
             )
-            async with self._storage.acquire() as db:
-                await db.execute(_INSERT_SQL, params)
-                await db.commit()
+            with trace_db_operation(self._storage.dialect, "insert", "usage_events"):
+                async with self._storage.acquire() as db:
+                    await db.execute(_INSERT_SQL, params)
+                    await db.commit()
             record_db_operation(
                 self._storage.dialect, "insert", time.time() - start, "success"
             )
@@ -155,5 +175,79 @@ class UsageEventStore:
                 "usage metering write dropped (metric=%s, value=%s): %s",
                 metric,
                 value,
+                exc,
+            )
+
+    async def record_usage_events(
+        self,
+        events: Sequence[UsageEvent],
+        *,
+        enabled: bool | None = None,
+    ) -> None:
+        """Record several usage events in ONE connection and ONE transaction.
+
+        Same best-effort, flag-gated contract as :meth:`record_usage_event`, but
+        amortizes the per-event ``acquire() -> INSERT -> commit`` across the whole
+        batch. The shared engine uses ``NullPool`` (ADR-026) behind a
+        transaction-mode PgBouncer, so each such round-trip pays a full
+        connection setup (~0.6-0.8s measured on cloudfleet); a document's ~5
+        metering events therefore serialized into seconds of ingest-critical-path
+        latency. One acquire + N inserts + one commit collapses that to a single
+        round-trip (Deck #667).
+
+        Atomic per call: a mid-batch failure rolls back the whole transaction, so
+        a document's events are recorded all-or-nothing rather than partially —
+        within the best-effort billing contract (dropped writes are tolerated)
+        and cleaner than a half-metered document.
+        """
+        if enabled is None:
+            enabled = get_settings().usage_metering_enabled
+        if not enabled or not events:
+            return
+
+        start = time.time()
+        try:
+            when_default = datetime.now(timezone.utc)
+            # json.dumps lives inside the best-effort try (see record_usage_event):
+            # a non-serializable metadata dict is swallowed, not raised.
+            rows = []
+            for e in events:
+                when = e.occurred_at or when_default
+                when_bind = (
+                    when if self._storage.dialect == "postgresql" else when.isoformat()
+                )
+                rows.append(
+                    (
+                        e.event_id or str(uuid.uuid4()),
+                        when_bind,
+                        e.metric,
+                        e.value,
+                        json.dumps(e.metadata, sort_keys=True)
+                        if e.metadata is not None
+                        else None,
+                    )
+                )
+            with trace_db_operation(
+                self._storage.dialect, "insert", "usage_events"
+            ) as span:
+                if span is not None:
+                    # OTel semconv-aligned name for the row count on a DB span.
+                    span.set_attribute("db.rows_affected", len(rows))
+                async with self._storage.acquire() as db:
+                    for params in rows:
+                        await db.execute(_INSERT_SQL, params)
+                    await db.commit()
+            record_db_operation(
+                self._storage.dialect, "insert", time.time() - start, "success"
+            )
+        except Exception as exc:
+            # Best-effort: never surface a metering failure to the user op.
+            record_db_operation(
+                self._storage.dialect, "insert", time.time() - start, "error"
+            )
+            logger.warning(
+                "usage metering batch dropped (%d events, metrics=%s): %s",
+                len(events),
+                [e.metric for e in events],
                 exc,
             )
