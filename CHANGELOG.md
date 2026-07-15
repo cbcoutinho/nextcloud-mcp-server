@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.139.1 (2026-07-15)
+
+### Fix
+
+- **scanner**: converge shared-file deletion tracking on acl_principals + fail-safe empty-discovery gate
+
+### Refactor
+
+- **scanner**: split _plan_file_deletions to clear SonarCloud findings
+
 ## v0.139.0 (2026-07-15)
 
 ### Feat
