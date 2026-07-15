@@ -1675,6 +1675,18 @@ async def _index_document(
                 "vector_sync.pdf_size": len(content_bytes),
             },
         ) as highlights_span:
+
+            def _stamp_bbox_source() -> None:
+                """Record which branch produced the bboxes on the envelope span.
+
+                Called on every exit path so a trace query by bbox_source never
+                finds a highlight span with the attribute missing.
+                """
+                if highlights_span is not None:
+                    highlights_span.set_attribute(
+                        "vector_sync.bbox_source", bbox_source or "none"
+                    )
+
             ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
             if ocr_block_spans:
                 spans = cast(list[dict[str, Any]], ocr_block_spans)
@@ -1717,10 +1729,7 @@ async def _index_document(
                 # pymupdf highlights. That's acceptable — escalation to OCR is a
                 # whole-document decision, so a mixed doc is rare, and unmatched
                 # blocks are logged in _pages_to_text for diagnosis.
-                if highlights_span is not None:
-                    highlights_span.set_attribute(
-                        "vector_sync.bbox_source", bbox_source or "none"
-                    )
+                _stamp_bbox_source()
                 return
 
             with trace_operation(
@@ -1747,12 +1756,7 @@ async def _index_document(
                     logger.warning(
                         "No page boundaries available, skipping bbox computation"
                     )
-                    # Stamp the envelope span on this exit too, so every path
-                    # through generate_highlights records bbox_source consistently.
-                    if highlights_span is not None:
-                        highlights_span.set_attribute(
-                            "vector_sync.bbox_source", bbox_source or "none"
-                        )
+                    _stamp_bbox_source()
                     return
 
                 page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
@@ -1776,10 +1780,7 @@ async def _index_document(
                 logger.info(
                     "Computed bboxes for %s/%s chunks", len(chunk_bboxes), len(chunks)
                 )
-            if highlights_span is not None:
-                highlights_span.set_attribute(
-                    "vector_sync.bbox_source", bbox_source or "none"
-                )
+            _stamp_bbox_source()
 
     # Run all embedding/highlighting operations in parallel
     # - Dense embeddings: I/O bound (API call)

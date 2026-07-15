@@ -39,4 +39,8 @@ def _reload_dynaconf_after_test():
     from nextcloud_mcp_server import config as _config
 
     _config._dynaconf.reload()
+    # get_settings()/get_nextcloud_ssl_verify()/get_nextcloud_http_keepalive()
+    # are @functools.cache'd; reloading dynaconf alone won't refresh them, so
+    # clear the settings caches too or a cached value leaks into later tests.
+    _config._clear_settings_caches()
     _config._bg_ops_advisories_logged = False
