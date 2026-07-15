@@ -1747,6 +1747,12 @@ async def _index_document(
                     logger.warning(
                         "No page boundaries available, skipping bbox computation"
                     )
+                    # Stamp the envelope span on this exit too, so every path
+                    # through generate_highlights records bbox_source consistently.
+                    if highlights_span is not None:
+                        highlights_span.set_attribute(
+                            "vector_sync.bbox_source", bbox_source or "none"
+                        )
                     return
 
                 page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
