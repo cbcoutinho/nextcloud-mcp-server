@@ -246,5 +246,8 @@ class UsageEventStore:
                 self._storage.dialect, "insert", time.time() - start, "error"
             )
             logger.warning(
-                "usage metering batch dropped (%d events): %s", len(events), exc
+                "usage metering batch dropped (%d events, metrics=%s): %s",
+                len(events),
+                [e.metric for e in events],
+                exc,
             )
