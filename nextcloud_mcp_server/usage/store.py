@@ -231,7 +231,8 @@ class UsageEventStore:
                 self._storage.dialect, "insert", "usage_events"
             ) as span:
                 if span is not None:
-                    span.set_attribute("db.rows", len(rows))
+                    # OTel semconv-aligned name for the row count on a DB span.
+                    span.set_attribute("db.rows_affected", len(rows))
                 async with self._storage.acquire() as db:
                     for params in rows:
                         await db.execute(_INSERT_SQL, params)

@@ -361,3 +361,40 @@ async def test_batch_best_effort_swallows_encode_error(storage, monkeypatch, cap
         r.levelno == logging.WARNING and "usage metering batch dropped" in r.message
         for r in caplog.records
     )
+
+
+async def test_batch_rolls_back_on_midbatch_failure(storage, monkeypatch):
+    """A DB failure mid-batch rolls back the WHOLE document's events (atomic).
+
+    Forces the 2nd of three inserts to raise: the first insert must not survive,
+    proving the one-transaction batch is all-or-nothing (docstring claim), not a
+    partial write.
+    """
+    from nextcloud_mcp_server.auth.storage import _DBConn
+
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+
+    real_execute = _DBConn.execute
+    calls = {"n": 0}
+
+    def flaky_execute(self, sql, params=()):
+        calls["n"] += 1
+        if calls["n"] == 2:  # blow up on the 2nd insert of the 3-event batch
+            raise RuntimeError("boom mid-batch")
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(_DBConn, "execute", flaky_execute)
+    # Best-effort: the swallowed failure must not raise into the caller.
+    await store.record_usage_events(
+        [
+            UsageEvent("tokens_embedded", 1),
+            UsageEvent("pages_embedded", 2),
+            UsageEvent("bytes_stored", 3),
+        ]
+    )
+    monkeypatch.undo()  # restore the real execute before counting
+
+    # The 1st insert never commits — the transaction rolls back on the failing
+    # batch, so NONE of the document's events are persisted.
+    assert await _count(storage) == 0
