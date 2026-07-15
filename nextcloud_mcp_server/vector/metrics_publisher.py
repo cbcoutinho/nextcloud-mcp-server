@@ -240,7 +240,9 @@ async def compute_chunk_density_snapshot(
     *,
     max_documents: int,
     page_size: int = 1000,
-) -> tuple[dict[str, tuple[list[float], float]], dict[str, int], bool]:
+) -> tuple[
+    dict[str, tuple[list[float], float]], dict[str, int], bool, dict[str, float]
+]:
     """Tally the current-corpus chunk-density distribution by scrolling Qdrant.
 
     Iterates the ``chunk_index == 0`` point of every non-placeholder document
@@ -253,15 +255,19 @@ async def compute_chunk_density_snapshot(
     key, or a non-positive value) are tallied in ``uncovered`` instead of silently
     shrinking the histogram.
 
-    Returns ``(per_doc_type, uncovered, truncated)`` shaped for
+    Returns ``(per_doc_type, uncovered, truncated, source_bytes_totals)`` shaped for
     ``update_qdrant_chunk_density_snapshot``: ``per_doc_type`` maps
     ``doc_type -> (bucket_counts, gsum)``, ``uncovered`` maps ``doc_type -> count``,
-    and ``truncated`` is True when the scan stopped at ``max_documents`` (partial
-    snapshot). Errors propagate to the best-effort caller.
+    ``truncated`` is True when the scan stopped at ``max_documents`` (partial
+    snapshot), and ``source_bytes_totals`` maps ``doc_type -> sum(source_bytes)`` over
+    exactly the covered documents (same forward-only set as the histogram — docs
+    counted in ``uncovered`` are excluded), enabling a corpus-weighted (byte-weighted)
+    density in Grafana. Errors propagate to the best-effort caller.
     """
     n_slots = len(CHUNK_DENSITY_BUCKETS) + 1
     bucket_counts: dict[str, list[float]] = {}
     gsums: dict[str, float] = {}
+    source_bytes_totals: dict[str, float] = {}
     uncovered: dict[str, int] = {}
     scanned = 0
     truncated = False
@@ -303,6 +309,9 @@ async def compute_chunk_density_snapshot(
                 counts = bucket_counts.setdefault(doc_type, [0.0] * n_slots)
                 counts[density_bucket_index(density)] += 1
                 gsums[doc_type] = gsums.get(doc_type, 0.0) + density
+                source_bytes_totals[doc_type] = (
+                    source_bytes_totals.get(doc_type, 0.0) + source_bytes
+                )
             else:
                 uncovered[doc_type] = uncovered.get(doc_type, 0) + 1
         scanned += len(points)
@@ -322,7 +331,7 @@ async def compute_chunk_density_snapshot(
             break
 
     per_doc_type = {dt: (bucket_counts[dt], gsums[dt]) for dt in bucket_counts}
-    return per_doc_type, uncovered, truncated
+    return per_doc_type, uncovered, truncated, source_bytes_totals
 
 
 async def publish_chunk_density_snapshot() -> None:
@@ -334,13 +343,21 @@ async def publish_chunk_density_snapshot() -> None:
     settings = get_settings()
     try:
         qdrant_client = await get_qdrant_client()
-        per_doc_type, uncovered, truncated = await compute_chunk_density_snapshot(
+        (
+            per_doc_type,
+            uncovered,
+            truncated,
+            source_bytes_totals,
+        ) = await compute_chunk_density_snapshot(
             qdrant_client,
             settings.get_collection_name(),
             max_documents=settings.vector_density_snapshot_max_documents,
         )
         update_qdrant_chunk_density_snapshot(
-            per_doc_type, uncovered=uncovered, truncated=truncated
+            per_doc_type,
+            uncovered=uncovered,
+            truncated=truncated,
+            source_bytes=source_bytes_totals,
         )
         if truncated:
             logger.warning(

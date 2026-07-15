@@ -372,9 +372,12 @@ class TestComputeChunkDensitySnapshot:
             ],
         )
 
-        per_doc_type, uncovered, truncated = await mp.compute_chunk_density_snapshot(
-            qc, _COLLECTION, max_documents=1000
-        )
+        (
+            per_doc_type,
+            uncovered,
+            truncated,
+            source_bytes,
+        ) = await mp.compute_chunk_density_snapshot(qc, _COLLECTION, max_documents=1000)
 
         assert truncated is False
         assert uncovered == {"file": 2}
@@ -390,6 +393,14 @@ class TestComputeChunkDensitySnapshot:
         deck_counts, deck_gsum = per_doc_type["deck_card"]
         assert deck_counts[0] == 1
         assert deck_gsum == pytest.approx(0.5)
+
+        # source_bytes_totals sums the SAME covered docs (byte-weighted denominator):
+        # two notes @1e6 -> 2e6, one deck_card @2e6 -> 2e6. The two `file` docs are
+        # uncovered (missing / non-positive source_bytes) so they contribute nothing
+        # and `file` has no series at all — matching the uncovered semantics.
+        assert source_bytes["note"] == pytest.approx(2_000_000.0)
+        assert source_bytes["deck_card"] == pytest.approx(2_000_000.0)
+        assert "file" not in source_bytes
 
     async def test_scrolls_chunk_index_zero_non_placeholder(self) -> None:
         qc = AsyncMock()
@@ -410,13 +421,18 @@ class TestComputeChunkDensitySnapshot:
             [_point(doc_type="note", total_chunks=3, source_bytes=1_000_000)],
         )
 
-        per_doc_type, _, truncated = await mp.compute_chunk_density_snapshot(
-            qc, _COLLECTION, max_documents=1000
-        )
+        (
+            per_doc_type,
+            _,
+            truncated,
+            source_bytes,
+        ) = await mp.compute_chunk_density_snapshot(qc, _COLLECTION, max_documents=1000)
 
         assert qc.scroll.await_count == 2
         assert truncated is False
         assert per_doc_type["note"][0][1] == 2  # both notes counted in le=5 slot
+        # source_bytes accumulates across pages: 1e6 + 1e6.
+        assert source_bytes["note"] == pytest.approx(2_000_000.0)
 
     async def test_truncates_when_corpus_strictly_exceeds_cap(self) -> None:
         qc = AsyncMock()
@@ -432,7 +448,7 @@ class TestComputeChunkDensitySnapshot:
             [note()],  # never fetched
         )
 
-        _, _, truncated = await mp.compute_chunk_density_snapshot(
+        _, _, truncated, _ = await mp.compute_chunk_density_snapshot(
             qc, _COLLECTION, max_documents=2, page_size=2
         )
 
@@ -453,7 +469,7 @@ class TestComputeChunkDensitySnapshot:
             [],  # empty trailing page, offset=None -> authoritative end
         )
 
-        _, _, truncated = await mp.compute_chunk_density_snapshot(
+        _, _, truncated, _ = await mp.compute_chunk_density_snapshot(
             qc, _COLLECTION, max_documents=2, page_size=2
         )
 
@@ -484,6 +500,8 @@ class TestPublishChunkDensitySnapshot:
         _, kwargs = published.call_args
         assert kwargs["truncated"] is False
         assert kwargs["uncovered"] == {}
+        # The byte-weighted denominator is threaded through to the publish entry.
+        assert kwargs["source_bytes"] == {"note": pytest.approx(1_000_000.0)}
 
     async def test_qdrant_failure_is_swallowed(self, monkeypatch) -> None:
         monkeypatch.setattr(
