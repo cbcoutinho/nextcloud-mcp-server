@@ -90,14 +90,14 @@ def test_suppression_lifts_after_threshold_then_deletes_past_grace():
     """A *sustained* empty (streak == threshold) resumes deletion via grace."""
     grace: dict = {}
     streak: dict = {}
-    common = dict(
-        indexed_by_mode={HYB: {"1"}},
-        nextcloud_file_ids=set(),
-        discovered_by_mode={},
-        attempted_modes={HYB},
-        grace_state=grace,
-        streak_state=streak,
-    )
+    common = {
+        "indexed_by_mode": {HYB: {"1"}},
+        "nextcloud_file_ids": set(),
+        "discovered_by_mode": {},
+        "attempted_modes": {HYB},
+        "grace_state": grace,
+        "streak_state": streak,
+    }
     # Cycles 1 & 2: below threshold -> suppressed, nothing deleted, no grace.
     p1 = _plan(**common, now=1000.0)
     assert p1.to_delete == [] and p1.suppressed_by_mode == {HYB: 1} and grace == {}

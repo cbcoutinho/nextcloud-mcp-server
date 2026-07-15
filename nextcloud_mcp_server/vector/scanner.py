@@ -250,38 +250,91 @@ def _plan_file_deletions(
     Pure except for the passed-in ``grace_state`` / ``streak_state`` dicts, which
     it mutates; it does no I/O. Callers own the enqueue, logging, and metrics.
     """
-    suppressed_modes: set[str] = set()
-    suppressed_by_mode: dict[str, int] = {}
-    streaks: dict[str, int] = {}
+    suppressed_modes, streaks = _update_empty_discovery_streaks(
+        user_id=user_id,
+        indexed_by_mode=indexed_by_mode,
+        discovered_by_mode=discovered_by_mode,
+        attempted_modes=attempted_modes,
+        streak_state=streak_state,
+        empty_delete_threshold=empty_delete_threshold,
+    )
+    to_delete, suppressed_by_mode = _sweep_missing_files(
+        user_id=user_id,
+        indexed_by_mode=indexed_by_mode,
+        nextcloud_file_ids=nextcloud_file_ids,
+        suppressed_modes=suppressed_modes,
+        grace_state=grace_state,
+        now=now,
+        grace_period=grace_period,
+    )
+    return _FileDeletionPlan(
+        to_delete=to_delete,
+        suppressed_by_mode=suppressed_by_mode,
+        streaks=streaks,
+    )
 
-    # Pass A: update per-mode streaks and decide which modes are suppressed.
+
+def _update_empty_discovery_streaks(
+    *,
+    user_id: str,
+    indexed_by_mode: dict[str, set[str]],
+    discovered_by_mode: dict[str, int],
+    attempted_modes: set[str],
+    streak_state: dict[tuple[str, str], int],
+    empty_delete_threshold: int,
+) -> tuple[set[str], dict[str, int]]:
+    """Advance per-mode empty-discovery streaks; return (suppressed_modes, streaks).
+
+    A mode is *implausible* iff it was attempted, discovered zero, yet still has
+    indexed points — bump its streak and suppress deletions while the streak is
+    below ``empty_delete_threshold``. Any other outcome (not attempted → an
+    intentional zero; healthy read; nothing indexed) clears the streak.
+    """
+    suppressed_modes: set[str] = set()
+    streaks: dict[str, int] = {}
     for mode in set(indexed_by_mode) | attempted_modes:
         streak_key = (user_id, mode)
-        if mode not in attempted_modes:
-            # Intentional zero (files admin-disabled or keyword tag disabled):
-            # honor deletions, clear any streak.
+        implausible = (
+            mode in attempted_modes
+            and discovered_by_mode.get(mode, 0) == 0
+            and len(indexed_by_mode.get(mode, set())) > 0
+        )
+        if not implausible:
             streak_state.pop(streak_key, None)
             continue
-        indexed_count = len(indexed_by_mode.get(mode, set()))
-        if discovered_by_mode.get(mode, 0) == 0 and indexed_count > 0:
-            # Implausible empty read for a mode that still has indexed points.
-            streak = _bump_streak(streak_state, streak_key)
-            streaks[mode] = streak
-            if streak < empty_delete_threshold:
-                suppressed_modes.add(mode)
-        else:
-            # Healthy read (or nothing indexed): normal deletion, clear streak.
-            streak_state.pop(streak_key, None)
+        streak = _bump_streak(streak_state, streak_key)
+        streaks[mode] = streak
+        if streak < empty_delete_threshold:
+            suppressed_modes.add(mode)
+    return suppressed_modes, streaks
 
-    # Pass B: the deletion sweep, per mode, gated by suppression.
+
+def _sweep_missing_files(
+    *,
+    user_id: str,
+    indexed_by_mode: dict[str, set[str]],
+    nextcloud_file_ids: set[str],
+    suppressed_modes: set[str],
+    grace_state: dict[tuple[str, str, str], float],
+    now: float,
+    grace_period: float,
+) -> tuple[list[str], dict[str, int]]:
+    """Grace-tracked deletion sweep; return (to_delete, suppressed_by_mode).
+
+    For a suppressed mode, count the missing docs without touching their grace
+    timers (so a transient empty neither starts nor advances a deletion). For an
+    unsuppressed mode, a doc missing beyond ``grace_period`` is enqueued for
+    deletion; a first miss just starts the grace clock.
+    """
     to_delete: list[str] = []
+    suppressed_by_mode: dict[str, int] = {}
     for mode, indexed_ids in indexed_by_mode.items():
-        for doc_id in indexed_ids:
-            if doc_id in nextcloud_file_ids:
-                continue
-            if mode in suppressed_modes:
-                suppressed_by_mode[mode] = suppressed_by_mode.get(mode, 0) + 1
-                continue
+        missing = indexed_ids - nextcloud_file_ids
+        if mode in suppressed_modes:
+            if missing:
+                suppressed_by_mode[mode] = len(missing)
+            continue
+        for doc_id in missing:
             grace_key = (user_id, doc_id, "file")
             first_missing = grace_state.get(grace_key)
             if first_missing is None:
@@ -290,11 +343,7 @@ def _plan_file_deletions(
             elif now - first_missing >= grace_period:
                 to_delete.append(doc_id)
                 del grace_state[grace_key]
-    return _FileDeletionPlan(
-        to_delete=to_delete,
-        suppressed_by_mode=suppressed_by_mode,
-        streaks=streaks,
-    )
+    return to_delete, suppressed_by_mode
 
 
 def _record_suppressed_deletions(
