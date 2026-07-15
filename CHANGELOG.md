@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.139.2 (2026-07-15)
+
+### Fix
+
+- **config,vector**: clear settings caches between tests; dedup bbox stamp
+- **vector**: stamp bbox_source on no-boundaries exit; dedup bbox test helpers
+
+### Perf
+
+- **ingest**: cut worker CPU + trace the highlight step
+
 ## v0.139.1 (2026-07-15)
 
 ### Fix
