@@ -426,8 +426,29 @@ class PDFHighlighter:
         return 0.0 if v < 0 else 1.0 if v > 1 else v
 
     @staticmethod
+    def _page_flat_tokens(
+        page: pymupdf.Page,
+    ) -> list[tuple[str, tuple[float, float, float, float, str, int, int, int]]]:
+        """Flatten a page's words into ``(token, word_tuple)`` pairs, extracted once.
+
+        ``get_text("words")`` + tokenisation is the dominant per-page cost. Callers
+        that locate many chunks on the same page build this once and reuse it (see
+        ``compute_chunk_bboxes_batch``) instead of re-extracting per chunk.
+        """
+        flat: list[
+            tuple[str, tuple[float, float, float, float, str, int, int, int]]
+        ] = []
+        for w in page.get_text("words"):  # (x0,y0,x1,y1, word, block, line, word_no)
+            for tok in PDFHighlighter._norm_tokens(w[4]):  # w[4] is the word str
+                flat.append((tok, w))
+        return flat
+
+    @staticmethod
     def _find_chunk_line_rects(
-        page: pymupdf.Page, chunk_text: str
+        page: pymupdf.Page,
+        chunk_text: str,
+        flat: list[tuple[str, tuple[float, float, float, float, str, int, int, int]]]
+        | None = None,
     ) -> list[tuple[float, float, float, float]] | None:
         """Tight per-line rects for a chunk, located by word-level matching.
 
@@ -449,17 +470,10 @@ class PDFHighlighter:
         want = PDFHighlighter._norm_tokens(PDFHighlighter.strip_markdown(chunk_text))
         if not want:
             return None
-        words = page.get_text("words")  # (x0,y0,x1,y1, word, block, line, word_no)
-        if not words:
-            return None
-        # One (token, word) per token; a single word may yield 0..n tokens.
-        # word tuple: (x0, y0, x1, y1, text, block_no, line_no, word_no)
-        flat: list[
-            tuple[str, tuple[float, float, float, float, str, int, int, int]]
-        ] = []
-        for w in words:
-            for tok in PDFHighlighter._norm_tokens(w[4]):  # w[4] is the word str
-                flat.append((tok, w))
+        # Reuse a caller-provided per-page (token, word) list when available (the
+        # batch path); otherwise extract this page's words once here.
+        if flat is None:
+            flat = PDFHighlighter._page_flat_tokens(page)
         if not flat:
             return None
         want_set = set(want)
@@ -810,6 +824,14 @@ class PDFHighlighter:
 
             doc = pymupdf.open(temp_pdf_path)
 
+            # Per-page (token, word) cache: get_text("words") + tokenisation is the
+            # dominant per-page cost. Extract each page once and reuse it across all
+            # of that page's chunks — O(pages) instead of O(chunks).
+            page_flat_cache: dict[
+                int,
+                list[tuple[str, tuple[float, float, float, float, str, int, int, int]]],
+            ] = {}
+
             for (
                 chunk_index,
                 start_offset,
@@ -842,7 +864,13 @@ class PDFHighlighter:
                 page_relative_text = full_text[chunk_start_on_page:chunk_end_on_page]
 
                 page = doc[page_num - 1]
-                rects = PDFHighlighter._find_chunk_line_rects(page, page_relative_text)
+                flat = page_flat_cache.get(page_num)
+                if flat is None:
+                    flat = PDFHighlighter._page_flat_tokens(page)
+                    page_flat_cache[page_num] = flat
+                rects = PDFHighlighter._find_chunk_line_rects(
+                    page, page_relative_text, flat=flat
+                )
                 if not rects:
                     continue
 

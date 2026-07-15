@@ -1,4 +1,6 @@
 import atexit
+import copy
+import functools
 import logging
 import logging.config
 import os
@@ -562,6 +564,7 @@ def _reload_config():
     """
     _dynaconf.reload()
     _dynaconf.validators.validate_all()
+    _clear_settings_caches()
 
 
 _ephemeral_db_path: str | None = None
@@ -1777,9 +1780,11 @@ def set_override(key: str, value) -> None:
     bool) land with the right type, matching settings.toml semantics.
     """
     _dynaconf.set(key, value, tomlfy=True)
+    _clear_settings_caches()
 
 
-def get_settings() -> Settings:
+@functools.cache
+def _build_settings() -> Settings:
     """Get application settings from dynaconf configuration.
 
     Settings are loaded from (last wins):
@@ -1979,6 +1984,20 @@ def get_settings() -> Settings:
     return Settings(**kwargs)
 
 
+def get_settings() -> Settings:
+    """Return application settings, memoizing the dynaconf resolution.
+
+    The ~150-key dynaconf resolution in ``_build_settings`` is the ingest
+    worker's second CPU hotspot (it runs 5-7x per job). Memoize it and return a
+    shallow copy per call, so callers that mutate the returned object (e.g. the
+    OAuth registration flow in ``app.py``) keep the per-call-instance semantics
+    they had before caching. Caches are dropped by ``_reload_config`` (tests) and
+    ``set_override`` (CLI overrides).
+    """
+    return copy.copy(_build_settings())
+
+
+@functools.cache
 def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
     """Return the SSL verification setting for Nextcloud connections.
 
@@ -1996,6 +2015,7 @@ def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
     return True
 
 
+@functools.cache
 def get_nextcloud_http_keepalive() -> bool:
     """Return whether the Nextcloud httpx client may reuse pooled connections.
 
@@ -2005,6 +2025,17 @@ def get_nextcloud_http_keepalive() -> bool:
         - True otherwise (default pooled keep-alive behavior).
     """
     return get_settings().nextcloud_http_keepalive
+
+
+def _clear_settings_caches() -> None:
+    """Drop memoized settings/SSL/keepalive so the next read re-resolves dynaconf.
+
+    Called by ``_reload_config`` (tests refresh after mutating os.environ) and
+    ``set_override`` (CLI runtime overrides) so those paths still take effect.
+    """
+    _build_settings.cache_clear()
+    get_nextcloud_ssl_verify.cache_clear()
+    get_nextcloud_http_keepalive.cache_clear()
 
 
 def get_procrastinate_conninfo(database_url: str | None = None) -> str:

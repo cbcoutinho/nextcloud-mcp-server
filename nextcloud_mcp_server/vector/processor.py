@@ -1664,82 +1664,123 @@ async def _index_document(
             OCR_BLOCK_SPANS_KEY,
         )
 
-        ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
-        if ocr_block_spans:
-            spans = cast(list[dict[str, Any]], ocr_block_spans)
-            attributed = _ocr_chunk_bboxes(chunks, spans)
-            chunk_bboxes.update(attributed)
-            # Only stamp "ocr" when something was actually attributed — a non-empty
-            # spans list that overlaps no chunk leaves the source unset (nothing is
-            # stored either way; the payload gates on `i in chunk_bboxes`).
-            if attributed:
-                bbox_source = "ocr"
-                logger.info(
-                    "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
-                    len(attributed),
-                    len(chunks),
-                    len(spans),
-                )
-            else:
-                # OCR returned geometry but none overlapped a chunk — unexpected
-                # (offset accounting / empty chunks); warn so it's visible.
-                logger.warning(
-                    "OCR returned %s blocks but none overlapped any of %s chunks; "
-                    "no pre-computed bboxes stored",
-                    len(spans),
-                    len(chunks),
-                )
-            # One path for the WHOLE document: when the OCR tier ran, surya OCRs
-            # every rendered page, so its blocks cover the whole doc — pymupdf has
-            # no text layer to add (a scanned doc) and we do NOT fall through to it,
-            # even when attribution found nothing. Caveat: a mixed native+OCR PDF
-            # gets OCR geometry only; native-page chunks won't also get pymupdf
-            # highlights. That's acceptable — escalation to OCR is a whole-document
-            # decision, so a mixed doc is rare, and unmatched blocks are logged in
-            # _pages_to_text for diagnosis.
-            return
-
+        # Envelope span so the WHOLE highlight step is visible in traces — both the
+        # OCR-attribution branch (previously untraced) and the pymupdf branch — and
+        # the off-thread bbox CPU no longer shows up as an unattributed gap.
         with trace_operation(
-            "vector_sync.compute_chunk_bboxes",
+            "vector_sync.generate_highlights",
             attributes={
                 _ATTR_CHUNK_COUNT: len(chunks),
+                "vector_sync.is_pdf": is_pdf,
                 "vector_sync.pdf_size": len(content_bytes),
             },
-        ):
-            chunk_data: list[tuple[int, int, int, int | None, str]] = [
-                (i, chunk.start_offset, chunk.end_offset, chunk.page_number, chunk.text)
-                for i, chunk in enumerate(chunks)
-                if chunk.page_number is not None
-            ]
+        ) as highlights_span:
 
-            page_boundaries = file_metadata.get("page_boundaries")
-            if not page_boundaries:
-                logger.warning(
-                    "No page boundaries available, skipping bbox computation"
-                )
+            def _stamp_bbox_source() -> None:
+                """Record which branch produced the bboxes on the envelope span.
+
+                Called on every exit path so a trace query by bbox_source never
+                finds a highlight span with the attribute missing.
+                """
+                if highlights_span is not None:
+                    highlights_span.set_attribute(
+                        "vector_sync.bbox_source", bbox_source or "none"
+                    )
+
+            ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
+            if ocr_block_spans:
+                spans = cast(list[dict[str, Any]], ocr_block_spans)
+                with trace_operation(
+                    "vector_sync.ocr_chunk_bboxes",
+                    attributes={
+                        _ATTR_CHUNK_COUNT: len(chunks),
+                        "vector_sync.ocr_block_count": len(spans),
+                    },
+                ):
+                    attributed = _ocr_chunk_bboxes(chunks, spans)
+                    chunk_bboxes.update(attributed)
+                    # Only stamp "ocr" when something was actually attributed — a
+                    # non-empty spans list that overlaps no chunk leaves the source
+                    # unset (nothing is stored either way; the payload gates on
+                    # `i in chunk_bboxes`).
+                    if attributed:
+                        bbox_source = "ocr"
+                        logger.info(
+                            "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
+                            len(attributed),
+                            len(chunks),
+                            len(spans),
+                        )
+                    else:
+                        # OCR returned geometry but none overlapped a chunk —
+                        # unexpected (offset accounting / empty chunks); warn so it
+                        # is visible.
+                        logger.warning(
+                            "OCR returned %s blocks but none overlapped any of %s "
+                            "chunks; no pre-computed bboxes stored",
+                            len(spans),
+                            len(chunks),
+                        )
+                # One path for the WHOLE document: when the OCR tier ran, surya OCRs
+                # every rendered page, so its blocks cover the whole doc — pymupdf has
+                # no text layer to add (a scanned doc) and we do NOT fall through to
+                # it, even when attribution found nothing. Caveat: a mixed native+OCR
+                # PDF gets OCR geometry only; native-page chunks won't also get
+                # pymupdf highlights. That's acceptable — escalation to OCR is a
+                # whole-document decision, so a mixed doc is rare, and unmatched
+                # blocks are logged in _pages_to_text for diagnosis.
+                _stamp_bbox_source()
                 return
 
-            page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
+            with trace_operation(
+                "vector_sync.compute_chunk_bboxes",
+                attributes={
+                    _ATTR_CHUNK_COUNT: len(chunks),
+                    "vector_sync.pdf_size": len(content_bytes),
+                },
+            ):
+                chunk_data: list[tuple[int, int, int, int | None, str]] = [
+                    (
+                        i,
+                        chunk.start_offset,
+                        chunk.end_offset,
+                        chunk.page_number,
+                        chunk.text,
+                    )
+                    for i, chunk in enumerate(chunks)
+                    if chunk.page_number is not None
+                ]
 
-            logger.info("Computing chunk bboxes for %s PDF chunks", len(chunk_data))
+                page_boundaries = file_metadata.get("page_boundaries")
+                if not page_boundaries:
+                    logger.warning(
+                        "No page boundaries available, skipping bbox computation"
+                    )
+                    _stamp_bbox_source()
+                    return
 
-            batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                lambda: PDFHighlighter.compute_chunk_bboxes_batch(
-                    pdf_bytes=content_bytes,
-                    chunks=chunk_data,
-                    page_boundaries=page_boundaries_list,
-                    full_text=content,
+                page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
+
+                logger.info("Computing chunk bboxes for %s PDF chunks", len(chunk_data))
+
+                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                    lambda: PDFHighlighter.compute_chunk_bboxes_batch(
+                        pdf_bytes=content_bytes,
+                        chunks=chunk_data,
+                        page_boundaries=page_boundaries_list,
+                        full_text=content,
+                    )
                 )
-            )
 
-            for chunk_index, (bboxes, _) in batch_results.items():
-                chunk_bboxes[chunk_index] = bboxes
-            if chunk_bboxes:
-                bbox_source = "pymupdf"
+                for chunk_index, (bboxes, _) in batch_results.items():
+                    chunk_bboxes[chunk_index] = bboxes
+                if chunk_bboxes:
+                    bbox_source = "pymupdf"
 
-            logger.info(
-                "Computed bboxes for %s/%s chunks", len(chunk_bboxes), len(chunks)
-            )
+                logger.info(
+                    "Computed bboxes for %s/%s chunks", len(chunk_bboxes), len(chunks)
+                )
+            _stamp_bbox_source()
 
     # Run all embedding/highlighting operations in parallel
     # - Dense embeddings: I/O bound (API call)
