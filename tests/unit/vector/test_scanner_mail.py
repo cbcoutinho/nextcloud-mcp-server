@@ -22,9 +22,11 @@ def _clear_scanner_module_state():
     """Isolate the module-global grace-period / cap-log dicts per test."""
     scanner_module._potentially_deleted.clear()
     scanner_module._mail_cap_logged.clear()
+    scanner_module._empty_discovery_streak.clear()
     yield
     scanner_module._potentially_deleted.clear()
     scanner_module._mail_cap_logged.clear()
+    scanner_module._empty_discovery_streak.clear()
 
 
 def _patch_incremental(mocker, *, indexed_ids, existing_metadata, interval=1):

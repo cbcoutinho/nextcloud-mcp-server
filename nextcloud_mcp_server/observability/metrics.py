@@ -358,6 +358,19 @@ vector_ingest_dropped_total = Counter(
     ["reason"],
 )
 
+# File deletions the scanner declined to enqueue because a tag-discovery cycle
+# returned zero files for an index mode while Qdrant still held indexed points
+# for it — treated as a flaky/empty read, not "all files gone" (see
+# _plan_file_deletions in vector/scanner.py). A rising rate here means the
+# tenant's Nextcloud is answering the systemtag REPORT with intermittent empties;
+# each increment is a deletion that was correctly withheld.
+vector_sync_deletions_suppressed_total = Counter(
+    "astrolabe_vector_sync_deletions_suppressed_total",
+    "File deletions suppressed because tag discovery returned an implausible "
+    "empty result (treated as a failed read), by index mode",
+    ["index_mode"],  # hybrid | keyword
+)
+
 # --- Tier-0 classifier (shadow mode) -----------------------------------------
 #
 # The classifier runs a cheap pre-pass per PDF and recommends a starting tier.
@@ -788,6 +801,19 @@ def record_vector_sync_scan(documents_found: int) -> None:
         documents_found: Number of documents discovered in scan
     """
     vector_sync_documents_scanned_total.inc(documents_found)
+
+
+def record_vector_sync_deletions_suppressed(index_mode: str, count: int) -> None:
+    """
+    Record file deletions withheld this scan because tag discovery for an index
+    mode came back empty while Qdrant still held indexed points (a suspected
+    flaky read rather than a genuine mass-untag).
+
+    Args:
+        index_mode: The index mode whose deletions were suppressed (hybrid|keyword)
+        count: Number of would-be deletions withheld this cycle
+    """
+    vector_sync_deletions_suppressed_total.labels(index_mode=index_mode).inc(count)
 
 
 def record_vector_sync_processing(

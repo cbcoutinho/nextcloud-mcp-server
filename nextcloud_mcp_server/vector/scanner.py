@@ -14,14 +14,25 @@ import anyio
 from anyio.abc import TaskStatus
 from httpx import HTTPStatusError
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    IsEmptyCondition,
+    MatchAny,
+    MatchValue,
+    PayloadField,
+    Record,
+)
 
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.models.deck import DeckCard
-from nextcloud_mcp_server.observability.metrics import record_vector_sync_scan
+from nextcloud_mcp_server.observability.metrics import (
+    record_vector_sync_deletions_suppressed,
+    record_vector_sync_scan,
+)
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
@@ -41,8 +52,10 @@ if TYPE_CHECKING:
     from nextcloud_mcp_server.search.algorithms import NextcloudClientProtocol
 
 from nextcloud_mcp_server.vector.sharing_state import (
+    ACL_PRINCIPALS_KEY,
     claim_existing_index,
     reconcile_document_path,
+    user_principal,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,6 +157,271 @@ class DocumentTask:
 # part of the key so the same numeric id under different doc types (a note 42
 # and a mail_message 42 for one user) tracks grace periods independently.
 _potentially_deleted: dict[tuple[str, str, str], float] = {}
+
+# Per-(user_id, index_mode) count of *consecutive* scan cycles whose tag
+# discovery returned zero files for that mode while Qdrant still held indexed
+# points for it. A single empty read from a flaky Nextcloud systemtag REPORT is
+# byte-indistinguishable from a genuine "no tagged files", so a transient empty
+# is treated as a failed read and that mode's deletions are suppressed until the
+# streak reaches ``vector_sync_empty_discovery_delete_threshold`` (a *sustained*
+# empty = a real mass-untag). The key is popped on any healthy read, so healthy
+# users hold no entry. A dict (not a Counter) so it stays insertion-ordered for
+# oldest-first eviction under the safety bound below.
+#
+# Concurrency: per-user scan tasks run concurrently (oauth_sync.user_scanner_task
+# via ``tg.start_soon``), all mutating this one dict. It is safe because keys are
+# ``(user_id, mode)`` (distinct per task, no cross-user collision) and the only
+# mutator, ``_plan_file_deletions``, is synchronous — it has no ``await``, so a
+# read-modify-write is never interleaved by the cooperative scheduler.
+_empty_discovery_streak: dict[tuple[str, str], int] = {}
+
+# Safety bound mirroring _CONSENT_BACKSTOP_MAX: cap the streak dict so heavy
+# deprovisioned-user churn can't grow it without limit; evict oldest-first down
+# to half capacity on overflow.
+_EMPTY_DISCOVERY_STREAK_MAX = 50_000
+
+
+def _bump_streak(streak_state: dict[tuple[str, str], int], key: tuple[str, str]) -> int:
+    """Increment and return the consecutive-empty streak for ``key``, bounded.
+
+    Evicts oldest-first down to half capacity on overflow (insertion-ordered
+    dict), matching ``_mark_backstop_done``, so a bound hit only forgets the
+    oldest streaks rather than clearing wholesale.
+    """
+    if key not in streak_state and len(streak_state) >= _EMPTY_DISCOVERY_STREAK_MAX:
+        overage = len(streak_state) - _EMPTY_DISCOVERY_STREAK_MAX // 2
+        logger.info(
+            "empty-discovery streak tracking hit %d entries; evicting %d oldest",
+            _EMPTY_DISCOVERY_STREAK_MAX,
+            overage,
+        )
+        for stale_key in list(streak_state)[:overage]:
+            del streak_state[stale_key]
+    streak_state[key] = streak_state.get(key, 0) + 1
+    return streak_state[key]
+
+
+@dataclass
+class _FileDeletionPlan:
+    """Outcome of reconciling indexed file points against a scan's discovery.
+
+    Attributes:
+        to_delete: doc_ids to enqueue for deletion this cycle (grace elapsed).
+        suppressed_by_mode: index_mode -> count of candidate deletions withheld
+            because that mode's discovery was an implausible empty read.
+        streaks: index_mode -> current consecutive-empty streak, for logging.
+    """
+
+    to_delete: list[str]
+    suppressed_by_mode: dict[str, int]
+    streaks: dict[str, int]
+
+
+def _plan_file_deletions(
+    *,
+    user_id: str,
+    indexed_by_mode: dict[str, set[str]],
+    nextcloud_file_ids: set[str],
+    discovered_by_mode: dict[str, int],
+    attempted_modes: set[str],
+    grace_state: dict[tuple[str, str, str], float],
+    streak_state: dict[tuple[str, str], int],
+    now: float,
+    grace_period: float,
+    empty_delete_threshold: int,
+) -> _FileDeletionPlan:
+    """Decide which indexed file points to delete, fail-safe against empty reads.
+
+    A mode's discovery is *implausible* this cycle iff it was attempted, returned
+    zero files, yet Qdrant still holds indexed points for it — the signature of a
+    flaky/empty tag read (issue: blackbox-demo re-index flap). While a mode's
+    consecutive-empty streak is below ``empty_delete_threshold`` its deletions are
+    suppressed and its grace timers are left untouched (neither started nor
+    advanced), so a transient empty deletes nothing. Once the streak reaches the
+    threshold (a sustained empty = a genuine mass-untag) the mode's deletions
+    proceed normally. Any healthy read (>0 discovered) pops the streak and
+    restores normal grace-based deletion.
+
+    A mode that was *not attempted* (files admin-disabled, or the keyword tag
+    disabled) is an intentional zero — its streak is reset and its deletions
+    proceed, preserving the existing disable-purge backstop. The discriminator is
+    always "was discovery attempted", never "did it return 0".
+
+    Pure except for the passed-in ``grace_state`` / ``streak_state`` dicts, which
+    it mutates; it does no I/O. Callers own the enqueue, logging, and metrics.
+    """
+    suppressed_modes, streaks = _update_empty_discovery_streaks(
+        user_id=user_id,
+        indexed_by_mode=indexed_by_mode,
+        discovered_by_mode=discovered_by_mode,
+        attempted_modes=attempted_modes,
+        streak_state=streak_state,
+        empty_delete_threshold=empty_delete_threshold,
+    )
+    to_delete, suppressed_by_mode = _sweep_missing_files(
+        user_id=user_id,
+        indexed_by_mode=indexed_by_mode,
+        nextcloud_file_ids=nextcloud_file_ids,
+        suppressed_modes=suppressed_modes,
+        grace_state=grace_state,
+        now=now,
+        grace_period=grace_period,
+    )
+    return _FileDeletionPlan(
+        to_delete=to_delete,
+        suppressed_by_mode=suppressed_by_mode,
+        streaks=streaks,
+    )
+
+
+def _update_empty_discovery_streaks(
+    *,
+    user_id: str,
+    indexed_by_mode: dict[str, set[str]],
+    discovered_by_mode: dict[str, int],
+    attempted_modes: set[str],
+    streak_state: dict[tuple[str, str], int],
+    empty_delete_threshold: int,
+) -> tuple[set[str], dict[str, int]]:
+    """Advance per-mode empty-discovery streaks; return (suppressed_modes, streaks).
+
+    A mode is *implausible* iff it was attempted, discovered zero, yet still has
+    indexed points — bump its streak and suppress deletions while the streak is
+    below ``empty_delete_threshold``. Any other outcome (not attempted → an
+    intentional zero; healthy read; nothing indexed) clears the streak.
+    """
+    suppressed_modes: set[str] = set()
+    streaks: dict[str, int] = {}
+    for mode in set(indexed_by_mode) | attempted_modes:
+        streak_key = (user_id, mode)
+        implausible = (
+            mode in attempted_modes
+            and discovered_by_mode.get(mode, 0) == 0
+            and len(indexed_by_mode.get(mode, set())) > 0
+        )
+        if not implausible:
+            streak_state.pop(streak_key, None)
+            continue
+        streak = _bump_streak(streak_state, streak_key)
+        streaks[mode] = streak
+        if streak < empty_delete_threshold:
+            suppressed_modes.add(mode)
+    return suppressed_modes, streaks
+
+
+def _sweep_missing_files(
+    *,
+    user_id: str,
+    indexed_by_mode: dict[str, set[str]],
+    nextcloud_file_ids: set[str],
+    suppressed_modes: set[str],
+    grace_state: dict[tuple[str, str, str], float],
+    now: float,
+    grace_period: float,
+) -> tuple[list[str], dict[str, int]]:
+    """Grace-tracked deletion sweep; return (to_delete, suppressed_by_mode).
+
+    For a suppressed mode, count the missing docs without touching their grace
+    timers (so a transient empty neither starts nor advances a deletion). For an
+    unsuppressed mode, a doc missing beyond ``grace_period`` is enqueued for
+    deletion; a first miss just starts the grace clock.
+    """
+    to_delete: list[str] = []
+    suppressed_by_mode: dict[str, int] = {}
+    for mode, indexed_ids in indexed_by_mode.items():
+        missing = indexed_ids - nextcloud_file_ids
+        if mode in suppressed_modes:
+            if missing:
+                suppressed_by_mode[mode] = len(missing)
+            continue
+        for doc_id in missing:
+            grace_key = (user_id, doc_id, "file")
+            first_missing = grace_state.get(grace_key)
+            if first_missing is None:
+                # First time missing — start the grace period.
+                grace_state[grace_key] = now
+            elif now - first_missing >= grace_period:
+                to_delete.append(doc_id)
+                del grace_state[grace_key]
+    return to_delete, suppressed_by_mode
+
+
+def _record_suppressed_deletions(
+    scan_id: str | int,
+    plan: _FileDeletionPlan,
+    indexed_by_mode: dict[str, set[str]],
+    threshold: int,
+) -> None:
+    """Log + meter the per-mode file deletions the fail-safe gate withheld.
+
+    Emits one WARNING and one ``record_vector_sync_deletions_suppressed`` counter
+    increment per mode that actually suppressed at least one candidate this scan;
+    modes with a zero count are skipped. Kept out of ``scan_user_documents`` so
+    the metric/log wiring is unit-testable without driving the full async scan.
+    """
+    for mode, suppressed in plan.suppressed_by_mode.items():
+        if not suppressed:
+            continue
+        logger.warning(
+            "[SCAN-%s] Suppressed %d file deletion(s) for mode %s: tag "
+            "discovery returned 0 but Qdrant holds %d indexed doc(s) — "
+            "treating as a failed read (streak %d/%d)",
+            scan_id,
+            suppressed,
+            mode,
+            len(indexed_by_mode.get(mode, set())),
+            plan.streaks.get(mode, 0),
+            threshold,
+        )
+        record_vector_sync_deletions_suppressed(mode, suppressed)
+
+
+def _indexed_files_scroll_filter(user_id: str) -> Filter:
+    """Filter selecting a user's readable indexed file points for deletion tracking.
+
+    Keyed on ``acl_principals`` (the observed-access set), **not** the immutable
+    ``user_id`` indexer stamp. Chunk point IDs are user-agnostic, so a file shared
+    across users (a team/group folder) has one point set stamped with only its
+    *first* indexer's ``user_id`` plus an ``acl_principals`` set of every reader.
+    ``release_document_for_user`` drops a leaving user's principal but never
+    clears/reassigns ``user_id``. So keying deletion tracking on ``user_id`` meant
+    the original indexer, once they lost access, re-selected the shared points
+    every scan (their discovery is now empty), re-issued a release, and — because
+    the release only touches ``acl_principals`` — never shrank the set: a
+    perpetual no-op release loop (blackbox-demo team-folder removal, 2.7k
+    releases/hr). Keying on the principal makes a release converge: once a user's
+    principal is dropped, the next scan no longer selects the doc.
+
+    Consequence (intentional): a "pure claimer" (in ``acl_principals`` but not the
+    ``user_id``) is now tracked too, so it releases its own principal eagerly on
+    the first scan after losing access, rather than relying on lazy verify-on-read
+    eviction. Each reader manages exactly its own principal; the last release
+    removes the points.
+
+    Legacy points written before ``acl_principals`` existed carry no principal
+    set, so the principal branch would never surface them (they'd orphan on file
+    deletion). A second ``should`` branch keeps tracking those by ``user_id`` —
+    but *only* when ``acl_principals`` is empty, so it can't reintroduce the
+    original-indexer loop for modern points (which always carry the set). This
+    mirrors ``release_document_for_user``'s own legacy ``user_id`` fallback.
+    """
+    return Filter(
+        must=[FieldCondition(key="doc_type", match=MatchValue(value="file"))],
+        should=[
+            # Modern points: I am an observed reader of this shared document.
+            FieldCondition(
+                key=ACL_PRINCIPALS_KEY,
+                match=MatchAny(any=[user_principal(user_id)]),
+            ),
+            # Legacy points (no acl_principals): fall back to the indexer stamp.
+            Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    IsEmptyCondition(is_empty=PayloadField(key=ACL_PRINCIPALS_KEY)),
+                ]
+            ),
+        ],
+    )
 
 
 async def _discover_tagged_files(
@@ -660,38 +938,39 @@ async def scan_user_documents(
             return
 
         # Scan tagged PDF files (after notes)
-        # Get indexed file IDs from Qdrant (for deletion tracking).
-        # NOTE: this is filtered by user_id, so a "pure claimer" — a user who
-        # gained access to a shared file via the tenant-wide dedup path
-        # (claim_existing_index) without ever indexing it themselves — is NOT in
-        # this set (the points carry the first indexer's user_id, only the
-        # claimer's user:<uid> in acl_principals). Such a user is therefore never
-        # enqueued for deletion by the grace-period sweep below; their stale
-        # acl_principals entry is reclaimed lazily by verify-on-read eviction
-        # (release_document_for_user) when a search surfaces a now-inaccessible
-        # result. A future scanner-side cleanup could scroll acl_principals too.
-        indexed_file_ids = set()
+        # Get this user's readable indexed file points from Qdrant (for deletion
+        # tracking), keyed on acl_principals (the observed-access set) rather than
+        # the immutable user_id indexer stamp — see _indexed_files_scroll_filter
+        # for why (blackbox-demo team-folder-removal release loop). Keying on the
+        # principal makes a release converge and also tracks pure claimers, so a
+        # reader who lost access releases its own principal on the next scan.
+        indexed_by_mode: dict[str, set[str]] = {}
         if not initial_sync:
             assert qdrant_client is not None  # narrow for the type checker
             points = await _scroll_all_points(
                 qdrant_client,
                 collection_name=settings.get_collection_name(),
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                        FieldCondition(key="doc_type", match=MatchValue(value="file")),
-                    ]
-                ),
-                payload_fields=["doc_id"],
+                scroll_filter=_indexed_files_scroll_filter(user_id),
+                payload_fields=["doc_id", payload_keys.INDEX_MODE],
             )
 
-            indexed_file_ids = {
-                str(point.payload["doc_id"])
-                for point in points
-                if point.payload is not None and "doc_id" in point.payload
-            }
+            # Bucket indexed file points by index mode so the deletion fail-safe
+            # can reason per mode (a flaky read can zero one tag but not the
+            # other). Points written before INDEX_MODE existed carry no key and
+            # were dense+sparse, so they default to hybrid — matching how the
+            # modified-at gate below reads INDEX_MODE.
+            for point in points:
+                if point.payload is not None and "doc_id" in point.payload:
+                    did = str(point.payload["doc_id"])
+                    mode = point.payload.get(
+                        payload_keys.INDEX_MODE, payload_keys.INDEX_MODE_HYBRID
+                    )
+                    indexed_by_mode.setdefault(mode, set()).add(did)
 
-            logger.debug("Found %s indexed files in Qdrant", len(indexed_file_ids))
+            logger.debug(
+                "Found %s indexed files in Qdrant",
+                sum(len(ids) for ids in indexed_by_mode.values()),
+            )
 
         # Scan for tagged PDF files
         file_count = 0
@@ -997,43 +1276,66 @@ async def scan_user_documents(
             )
             record_vector_sync_scan(file_count)
 
-            # Check for deleted files (not initial sync)
+            # Check for deleted files (not initial sync). Fail-safe: an empty
+            # tag-discovery read (a flaky Nextcloud systemtag REPORT returning an
+            # empty 207) must not be mistaken for "all files gone" and delete the
+            # corpus. _plan_file_deletions gates deletions per index mode on a
+            # consecutive-empty streak; see its docstring.
             if not initial_sync:
-                for file_id in indexed_file_ids:
-                    if file_id not in nextcloud_file_ids:
-                        file_key = (user_id, file_id, "file")
+                # Which index modes did we actually attempt to discover this
+                # cycle? Only an *attempted* mode that came back empty is
+                # suspicious — an unattempted mode (files admin-disabled, or the
+                # keyword tag disabled) is an intentional zero and must still
+                # purge (the existing disable backstop).
+                attempted_modes: set[str] = set()
+                if is_doc_type_allowed("file", allowed):
+                    attempted_modes.add(payload_keys.INDEX_MODE_HYBRID)
+                    if settings.vector_sync_keyword_tag:
+                        attempted_modes.add(payload_keys.INDEX_MODE_KEYWORD)
 
-                        if file_key in _potentially_deleted:
-                            # Check if grace period elapsed
-                            first_missing_time = _potentially_deleted[file_key]
-                            time_missing = current_time - first_missing_time
+                discovered_by_mode: dict[str, int] = {}
+                for f in tagged_files:
+                    m = f.get("_index_mode", payload_keys.INDEX_MODE_HYBRID)
+                    discovered_by_mode[m] = discovered_by_mode.get(m, 0) + 1
 
-                            if time_missing >= grace_period:
-                                # Grace period elapsed, send for deletion
-                                logger.info(
-                                    "File ID %s missing for %ss (>%ss grace period), sending deletion",
-                                    file_id,
-                                    format(time_missing, ".1f"),
-                                    format(grace_period, ".1f"),
-                                )
-                                await send_stream.send(
-                                    DocumentTask(
-                                        user_id=user_id,
-                                        doc_id=file_id,
-                                        doc_type="file",
-                                        operation="delete",
-                                        modified_at=0,
-                                    )
-                                )
-                                file_queued += 1
-                                del _potentially_deleted[file_key]
-                        else:
-                            # First time missing, add to grace period tracking
-                            logger.debug(
-                                "File ID %s missing for first time, starting grace period",
-                                file_id,
-                            )
-                            _potentially_deleted[file_key] = current_time
+                plan = _plan_file_deletions(
+                    user_id=user_id,
+                    indexed_by_mode=indexed_by_mode,
+                    nextcloud_file_ids=nextcloud_file_ids,
+                    discovered_by_mode=discovered_by_mode,
+                    attempted_modes=attempted_modes,
+                    grace_state=_potentially_deleted,
+                    streak_state=_empty_discovery_streak,
+                    now=current_time,
+                    grace_period=grace_period,
+                    empty_delete_threshold=(
+                        settings.vector_sync_empty_discovery_delete_threshold
+                    ),
+                )
+
+                for file_id in plan.to_delete:
+                    logger.info(
+                        "File ID %s missing beyond %ss grace period, sending deletion",
+                        file_id,
+                        format(grace_period, ".1f"),
+                    )
+                    await send_stream.send(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=file_id,
+                            doc_type="file",
+                            operation="delete",
+                            modified_at=0,
+                        )
+                    )
+                    file_queued += 1
+
+                _record_suppressed_deletions(
+                    scan_id,
+                    plan,
+                    indexed_by_mode,
+                    settings.vector_sync_empty_discovery_delete_threshold,
+                )
 
         except Exception as e:
             logger.warning("Failed to scan tagged files for %s: %s", user_id, e)

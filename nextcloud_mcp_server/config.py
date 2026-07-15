@@ -137,6 +137,15 @@ _DEFAULTS: dict[str, Any] = {
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
     # wins if a file carries both. Set empty to disable the second tag entirely.
     "vector_sync_keyword_tag": "keyword-index",
+    # Fail-safe against a flaky/empty tag-discovery read: number of *consecutive*
+    # scan cycles for which a given index mode's tag discovery must return zero
+    # files (while Qdrant still holds indexed points for that mode) before the
+    # scanner believes it and starts deleting. A transient empty read (e.g. a
+    # customer-hosted Nextcloud that intermittently answers the systemtag REPORT
+    # with an empty 207) is thereby treated as a failed read, not "all files
+    # gone" — preventing a delete/re-index churn loop. A sustained empty (a real
+    # mass-untag) still eventually deletes once the streak reaches this value.
+    "vector_sync_empty_discovery_delete_threshold": 3,
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -996,6 +1005,16 @@ class Settings:
     # Set empty to disable the second tag entirely.
     vector_sync_keyword_tag: str = "keyword-index"
 
+    # Fail-safe against a flaky/empty tag-discovery read. Number of *consecutive*
+    # scan cycles for which an index mode's tag discovery must return zero files
+    # (while Qdrant still holds indexed points for that mode) before the scanner
+    # believes it and deletes. Guards against a customer-hosted Nextcloud that
+    # intermittently answers the systemtag REPORT with an empty 207 — which would
+    # otherwise be read as "all files gone" and drive a delete/re-index churn
+    # loop. A sustained empty (a genuine mass-untag) still deletes once the streak
+    # reaches this value. See _plan_file_deletions in vector/scanner.py.
+    vector_sync_empty_discovery_delete_threshold: int = 3
+
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the
     # Nextcloud backend struggles with the parallel load; raise it on a
@@ -1846,6 +1865,7 @@ def get_settings() -> Settings:
         "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
         "vector_sync_tag": "VECTOR_SYNC_TAG",
         "vector_sync_keyword_tag": "VECTOR_SYNC_KEYWORD_TAG",
+        "vector_sync_empty_discovery_delete_threshold": "VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings
