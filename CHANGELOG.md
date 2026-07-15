@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.139.3 (2026-07-15)
+
+### Refactor
+
+- **usage**: round-2 review nits (batch drop-log detail)
+- **usage**: address round-1 review nits (semconv span attr, rollback test)
+
+### Perf
+
+- **usage**: batch per-document metering into one transaction + trace DB writes
+
 ## v0.139.2 (2026-07-15)
 
 ### Fix
