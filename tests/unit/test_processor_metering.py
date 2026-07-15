@@ -10,9 +10,12 @@ tokens only — ``pages_embedded`` is a charge for parsing, not content size (ca
 carry an ``index_mode`` metadata dimension (card #609) so the CP rollup can slice
 hybrid vs keyword ingestion. These cover the value mapping, the flag/zero-chunk
 no-ops, the text-only path, and the best-effort failure path without standing up
-the full document pipeline. (The call site's raw-binary-vs-UTF-8 source selection
-for ``bytes_ingested`` lives in the document pipeline and is exercised by the
-integration smoke path, not these helper-level tests.)
+the full document pipeline.
+
+Since Deck #667 the helper writes a document's events with a single
+``record_usage_events(events, enabled=True)`` batch call (one connection + one
+commit) rather than N ``record_usage_event`` calls, so these tests assert on the
+batched ``UsageEvent`` list.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -26,11 +29,17 @@ from nextcloud_mcp_server.vector import processor
 def store_spy(monkeypatch):
     """Patch UsageEventStore.shared() to return a spy store."""
     store = MagicMock()
-    store.record_usage_event = AsyncMock()
+    store.record_usage_events = AsyncMock()
     monkeypatch.setattr(
         processor.UsageEventStore, "shared", AsyncMock(return_value=store)
     )
     return store
+
+
+def _events(store_spy):
+    """The ``UsageEvent`` list from the single batched record_usage_events() call."""
+    store_spy.record_usage_events.assert_awaited_once()
+    return list(store_spy.record_usage_events.await_args.args[0])
 
 
 @pytest.mark.unit
@@ -95,8 +104,8 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
         bytes_stored=178000,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    events = _events(store_spy)
+    by_metric = {e.metric: e.value for e in events}
     # pages_embedded is the real parsed-page count, NOT the chunk count;
     # bytes_* are the raw-ingest / stored-chunk byte counts (card #401).
     assert by_metric == {
@@ -109,18 +118,18 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
     # conditional parsing cost). Asserted so a refactor can't silently reverse
     # it — a comment alone is easier to delete than a failing test. The byte
     # rows are appended after the pages block, so these two stay valid.
-    assert calls[0].kwargs["metric"] == "tokens_embedded"
-    assert calls[1].kwargs["metric"] == "pages_embedded"
-    for c in calls:
-        # Hot-path fast-gate + tenant-local attribution metadata.
-        assert c.kwargs["enabled"] is True
-        assert c.kwargs["metadata"]["provider"] == "mistral"
-        assert c.kwargs["metadata"]["model"] == "mistral-embed"
-        assert c.kwargs["metadata"]["user_id"] == "alice"
-        assert c.kwargs["metadata"]["doc_type"] == "file"
-        # index_mode is threaded onto every event so the CP rollup can slice
-        # hybrid vs keyword ingestion (card #609).
-        assert c.kwargs["metadata"]["index_mode"] == "hybrid"
+    assert events[0].metric == "tokens_embedded"
+    assert events[1].metric == "pages_embedded"
+    # One batched write, hot-path fast-gated (the store skips a Settings rebuild).
+    assert store_spy.record_usage_events.await_args.kwargs["enabled"] is True
+    for e in events:
+        # Tenant-local attribution metadata, threaded onto every event.
+        assert e.metadata["provider"] == "mistral"
+        assert e.metadata["model"] == "mistral-embed"
+        assert e.metadata["user_id"] == "alice"
+        assert e.metadata["doc_type"] == "file"
+        # index_mode lets the CP rollup slice hybrid vs keyword ingestion (#609).
+        assert e.metadata["index_mode"] == "hybrid"
 
 
 @pytest.mark.unit
@@ -141,8 +150,7 @@ async def test_text_doc_records_tokens_and_bytes_no_pages(store_spy):
         bytes_stored=8200,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
     # Byte rows fire for text docs (they have no page_count, so no pages row).
     assert by_metric == {
         "tokens_embedded": 512,
@@ -170,8 +178,7 @@ async def test_zero_pages_skips_pages(store_spy):
         bytes_stored=1100,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
     assert by_metric == {
         "tokens_embedded": 99,
         "bytes_ingested": 2048,
@@ -197,8 +204,7 @@ async def test_negative_pages_skips_pages(store_spy):
         bytes_stored=1100,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
     assert by_metric == {
         "tokens_embedded": 99,
         "bytes_ingested": 2048,
@@ -224,8 +230,7 @@ async def test_nonpositive_bytes_skip_byte_rows(store_spy):
         bytes_stored=-5,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
     # Only tokens_embedded survives — neither byte row is written.
     assert by_metric == {"tokens_embedded": 99}
 
@@ -247,7 +252,7 @@ async def test_disabled_is_noop(store_spy):
         bytes_ingested=4096,
         bytes_stored=512,
     )
-    store_spy.record_usage_event.assert_not_awaited()
+    store_spy.record_usage_events.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -267,7 +272,7 @@ async def test_zero_chunks_is_noop(store_spy):
         bytes_ingested=4096,
         bytes_stored=512,
     )
-    store_spy.record_usage_event.assert_not_awaited()
+    store_spy.record_usage_events.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -314,10 +319,8 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
         bytes_stored=41000,
         pipeline_tier="ocr",
     )
-    by_metric = {
-        c.kwargs["metric"]: c.kwargs["value"]
-        for c in store_spy.record_usage_event.await_args_list
-    }
+    events = _events(store_spy)
+    by_metric = {e.metric: e.value for e in events}
     # pages_ocr fires IN ADDITION to pages_embedded for OCR-tier pages.
     assert by_metric == {
         "tokens_embedded": 900,
@@ -327,8 +330,8 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
         "bytes_stored": 41000,
     }
     # pipeline_tier is threaded into the billing metadata for CP attribution.
-    for c in store_spy.record_usage_event.await_args_list:
-        assert c.kwargs["metadata"]["pipeline_tier"] == "ocr"
+    for e in events:
+        assert e.metadata["pipeline_tier"] == "ocr"
 
 
 @pytest.mark.unit
@@ -349,7 +352,7 @@ async def test_fast_tier_does_not_record_pages_ocr(store_spy):
         bytes_stored=20500,
         pipeline_tier="fast",
     )
-    metrics = {c.kwargs["metric"] for c in store_spy.record_usage_event.await_args_list}
+    metrics = {e.metric for e in _events(store_spy)}
     assert "pages_ocr" not in metrics
     assert metrics == {
         "tokens_embedded",
@@ -379,8 +382,8 @@ async def test_keyword_mode_meters_bytes_not_tokens(store_spy):
         bytes_stored=30500,
     )
 
-    calls = store_spy.record_usage_event.await_args_list
-    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    events = _events(store_spy)
+    by_metric = {e.metric: e.value for e in events}
     # No tokens_embedded row; parsing (pages) + byte volume still bill.
     assert by_metric == {
         "pages_embedded": 5,
@@ -389,8 +392,8 @@ async def test_keyword_mode_meters_bytes_not_tokens(store_spy):
     }
     assert "tokens_embedded" not in by_metric
     # Every event carries the keyword mode so the CP can attribute it separately.
-    for c in calls:
-        assert c.kwargs["metadata"]["index_mode"] == "keyword"
+    for e in events:
+        assert e.metadata["index_mode"] == "keyword"
 
 
 @pytest.mark.unit
@@ -412,6 +415,6 @@ async def test_hybrid_zero_tokens_still_skips_tokens_row(store_spy):
         bytes_ingested=200,
         bytes_stored=250,
     )
-    metrics = {c.kwargs["metric"] for c in store_spy.record_usage_event.await_args_list}
+    metrics = {e.metric for e in _events(store_spy)}
     assert "tokens_embedded" not in metrics
     assert metrics == {"bytes_ingested", "bytes_stored"}

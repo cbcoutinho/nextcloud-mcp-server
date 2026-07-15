@@ -44,7 +44,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
-from nextcloud_mcp_server.usage import UsageEventStore
+from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector._errors import format_exception_group
@@ -482,69 +482,61 @@ async def record_indexing_usage(
         # doc types, which are never parsed.
         "pipeline_tier": pipeline_tier,
     }
+    # Build the document's events in the historical order (tokens -> pages ->
+    # pages_ocr -> bytes_*), then write them in ONE transaction. Each event used
+    # to be its own acquire() -> INSERT -> commit; on the NullPool + pgbouncer
+    # setup every such round-trip pays a full connection setup (~0.6-0.8s on
+    # cloudfleet), so ~5 events serialized into seconds on the ingest critical
+    # path. Batching collapses them to a single round-trip (Deck #667).
+    events: list[UsageEvent] = []
+
+    # tokens_embedded first (intentional ordering): captured before the
+    # conditional parsing/byte costs — don't reverse this in a refactor. Skipped
+    # for keyword docs (token_count == 0), which never embed, so no zero-value
+    # embedding row is written.
+    if token_count > 0:
+        events.append(
+            UsageEvent(metric="tokens_embedded", value=token_count, metadata=metadata)
+        )
+    # pages_embedded: parsed pages only, and only a strictly positive count. Text
+    # content has no page_count; a zero/negative count is skipped rather than
+    # writing a row that would misrepresent a no-parse document as billable
+    # parsing work.
+    if page_count and page_count > 0:
+        events.append(
+            UsageEvent(metric="pages_embedded", value=page_count, metadata=metadata)
+        )
+        # OCR pages are metered as a SEPARATE line (Deck #323) so the OCR tier's
+        # cost is billable independently of CPU-cheap parsing -- pages_embedded
+        # counts all parsed pages, pages_ocr only the OCR tier's. Gated on the
+        # tier so it's emitted exactly when the doc hit OCR.
+        if pipeline_tier == "ocr":
+            events.append(
+                UsageEvent(metric="pages_ocr", value=page_count, metadata=metadata)
+            )
+    # Byte-volume dimensions (card #401), recorded for every embedded document.
+    # Appended after the conditional pages block so the tokens-then-pages
+    # ordering above is preserved. Each is skipped on a non-positive count to
+    # avoid writing a zero-value billing row (the chunk_count guard already
+    # filtered truly-empty documents).
+    if bytes_ingested > 0:
+        events.append(
+            UsageEvent(metric="bytes_ingested", value=bytes_ingested, metadata=metadata)
+        )
+    if bytes_stored > 0:
+        events.append(
+            UsageEvent(metric="bytes_stored", value=bytes_stored, metadata=metadata)
+        )
+
     try:
         store = await UsageEventStore.shared()
         # enabled=True: the guard above already confirmed the flag, so the store
-        # skips a second uncached Settings build per record (ADR-024).
-        # record_usage_event swallows its own write failures, so the records are
-        # independent; one raising never blocks the other — acceptable under the
-        # (day, metric) SUM-aggregation billing model.
-
-        # tokens_embedded first (intentional ordering): captured before the
-        # conditional parsing/byte costs — don't reverse this in a refactor.
-        # Skipped for keyword docs (token_count == 0), which never embed, so no
-        # zero-value embedding row is written.
-        if token_count > 0:
-            await store.record_usage_event(
-                metric="tokens_embedded",
-                value=token_count,
-                metadata=metadata,
-                enabled=True,
-            )
-        # pages_embedded: parsed pages only, and only a strictly positive count.
-        # Text content has no page_count; a zero/negative count is skipped rather
-        # than writing a row that would misrepresent a no-parse document as
-        # billable parsing work.
-        if page_count and page_count > 0:
-            await store.record_usage_event(
-                metric="pages_embedded",
-                value=page_count,
-                metadata=metadata,
-                enabled=True,
-            )
-            # OCR pages are metered as a SEPARATE line (Deck #323) so the OCR
-            # tier's cost is billable independently of CPU-cheap parsing --
-            # pages_embedded counts all parsed pages, pages_ocr only the OCR tier's.
-            # Gated on the tier so it's emitted exactly when the doc hit OCR.
-            if pipeline_tier == "ocr":
-                await store.record_usage_event(
-                    metric="pages_ocr",
-                    value=page_count,
-                    metadata=metadata,
-                    enabled=True,
-                )
-        # Byte-volume dimensions (card #401), recorded for every embedded
-        # document. Appended after the conditional pages block so the
-        # tokens-then-pages ordering above is preserved. Each is skipped on a
-        # non-positive count to avoid writing a zero-value billing row (the
-        # chunk_count guard already filtered truly-empty documents).
-        if bytes_ingested > 0:
-            await store.record_usage_event(
-                metric="bytes_ingested",
-                value=bytes_ingested,
-                metadata=metadata,
-                enabled=True,
-            )
-        if bytes_stored > 0:
-            await store.record_usage_event(
-                metric="bytes_stored",
-                value=bytes_stored,
-                metadata=metadata,
-                enabled=True,
-            )
+        # skips a second uncached Settings build (ADR-024). One connection + one
+        # commit for the whole document instead of ~5 sequential round-trips.
+        await store.record_usage_events(events, enabled=True)
     except Exception:
         # Reached only when shared()/store construction itself raises
-        # (record_usage_event swallows its own write failures). Metering is on,
+        # (record_usage_events swallows its own write failures). Metering is on,
         # so warn rather than hide the "enabled but no billing data" case.
         logger.warning("usage metering hook (indexing embeddings) skipped")
 

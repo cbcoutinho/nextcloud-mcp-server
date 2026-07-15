@@ -23,7 +23,7 @@ from cryptography.fernet import Fernet
 
 import nextcloud_mcp_server.usage.store as store_module
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.usage.store import UsageEventStore
+from nextcloud_mcp_server.usage.store import UsageEvent, UsageEventStore
 
 pytestmark = pytest.mark.unit
 
@@ -271,5 +271,93 @@ async def test_best_effort_swallows_unserializable_metadata(
     # contract as the DB-error path.
     assert any(
         r.levelno == logging.WARNING and "usage metering write dropped" in r.message
+        for r in caplog.records
+    )
+
+
+# --- Batch write: record_usage_events (Deck #667) --------------------------
+
+
+async def test_batch_records_all_events(storage, monkeypatch):
+    """A batch writes every event, with values and metadata intact."""
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    eids = [str(uuid.uuid4()) for _ in range(3)]
+    await store.record_usage_events(
+        [
+            UsageEvent("tokens_embedded", 100, {"m": "a"}, event_id=eids[0]),
+            UsageEvent("pages_embedded", 5, {"m": "a"}, event_id=eids[1]),
+            UsageEvent("bytes_stored", 2048, {"m": "a"}, event_id=eids[2]),
+        ]
+    )
+    assert await _count(storage) == 3
+    by_metric = {}
+    for eid in eids:
+        row = await _fetch(storage, eid)
+        assert row is not None
+        by_metric[row[2]] = row[3]
+    assert by_metric == {
+        "tokens_embedded": 100,
+        "pages_embedded": 5,
+        "bytes_stored": 2048,
+    }
+
+
+async def test_batch_uses_single_connection(storage, monkeypatch, mocker):
+    """The whole batch runs on ONE acquire()/transaction, not one per event."""
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    spy = mocker.spy(storage, "acquire")
+    await store.record_usage_events(
+        [
+            UsageEvent("tokens_embedded", 1),
+            UsageEvent("pages_embedded", 2),
+            UsageEvent("bytes_stored", 3),
+        ]
+    )
+    # One connection checkout for all three inserts — the point of Deck #667.
+    assert spy.call_count == 1
+
+
+async def test_batch_is_traced(storage, monkeypatch, mocker):
+    """DB activity is traced: the batch opens a db.<dialect>.insert span."""
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    spy = mocker.spy(store_module, "trace_db_operation")
+    await store.record_usage_events([UsageEvent("pages_embedded", 1)])
+    spy.assert_called_once_with(storage.dialect, "insert", "usage_events")
+
+
+async def test_batch_flag_off_is_noop(storage, monkeypatch, mocker):
+    """Metering disabled → no rows and no DB access, even with events queued."""
+    _set_metering(monkeypatch, False)
+    store = UsageEventStore(storage)
+    spy = mocker.spy(storage, "acquire")
+    await store.record_usage_events([UsageEvent("pages_embedded", 1)])
+    assert spy.call_count == 0
+    assert await _count(storage) == 0
+
+
+async def test_batch_empty_is_noop(storage, monkeypatch, mocker):
+    """An empty event list touches the DB not at all."""
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    spy = mocker.spy(storage, "acquire")
+    await store.record_usage_events([])
+    assert spy.call_count == 0
+    assert await _count(storage) == 0
+
+
+async def test_batch_best_effort_swallows_encode_error(storage, monkeypatch, caplog):
+    """A non-serializable event is swallowed (best-effort); the batch writes nothing."""
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.usage.store"):
+        await store.record_usage_events(
+            [UsageEvent("pages_embedded", 1, metadata={"obj": object()})]
+        )
+    assert await _count(storage) == 0
+    assert any(
+        r.levelno == logging.WARNING and "usage metering batch dropped" in r.message
         for r in caplog.records
     )
