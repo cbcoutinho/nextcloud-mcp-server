@@ -119,3 +119,28 @@ class TestUpdateSnapshot:
         assert metric_sample(
             "astrolabe_qdrant_chunk_density_snapshot_truncated", {}
         ) == pytest.approx(0)
+
+    def test_source_bytes_total_published_per_doc_type(self, metric_sample):
+        update_qdrant_chunk_density_snapshot(
+            {"note": _tally(3.0)},
+            source_bytes={"note": 12345.0, "file": 6_000_000.0},
+        )
+        assert metric_sample(
+            "astrolabe_qdrant_source_bytes_total", {"doc_type": "note"}
+        ) == pytest.approx(12345.0)
+        assert metric_sample(
+            "astrolabe_qdrant_source_bytes_total", {"doc_type": "file"}
+        ) == pytest.approx(6_000_000.0)
+
+    def test_source_bytes_total_reset_between_snapshots(self, metric_sample):
+        update_qdrant_chunk_density_snapshot(
+            {"note": _tally(3.0)}, source_bytes={"file": 6_000_000.0}
+        )
+        assert metric_sample(
+            "astrolabe_qdrant_source_bytes_total", {"doc_type": "file"}
+        ) == pytest.approx(6_000_000.0)
+        # A doc_type that leaves the corpus must clear, not linger stale.
+        update_qdrant_chunk_density_snapshot({"note": _tally(3.0)}, source_bytes={})
+        assert metric_sample(
+            "astrolabe_qdrant_source_bytes_total", {"doc_type": "file"}
+        ) == pytest.approx(0)

@@ -84,9 +84,12 @@ async def seeded_collection():
 async def test_snapshot_covers_uncovered_and_excludes_placeholder(seeded_collection):
     client, collection = seeded_collection
 
-    per_doc_type, uncovered, truncated = await compute_chunk_density_snapshot(
-        client, collection, max_documents=1000
-    )
+    (
+        per_doc_type,
+        uncovered,
+        truncated,
+        source_bytes,
+    ) = await compute_chunk_density_snapshot(client, collection, max_documents=1000)
 
     assert truncated is False
     # Placeholder excluded; legacy file counted as uncovered.
@@ -102,13 +105,18 @@ async def test_snapshot_covers_uncovered_and_excludes_placeholder(seeded_collect
     # File produced no covered docs, so it has no density series.
     assert "file" not in per_doc_type
 
+    # Byte-weighted denominator sums the SAME covered docs: two notes @1 MB each
+    # -> 2 MB. The uncovered file and the excluded placeholder contribute nothing.
+    assert source_bytes["note"] == pytest.approx(2_000_000.0)
+    assert "file" not in source_bytes
+
 
 async def test_truncation_signalled_against_real_engine(seeded_collection):
     client, collection = seeded_collection
 
     # Cap below the covered-document count with a tiny page size so the scroll
     # has a next page when the cap is reached.
-    _, _, truncated = await compute_chunk_density_snapshot(
+    _, _, truncated, _ = await compute_chunk_density_snapshot(
         client, collection, max_documents=1, page_size=1
     )
 

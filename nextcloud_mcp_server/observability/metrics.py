@@ -561,6 +561,23 @@ chunk_density_snapshot_truncated = Gauge(
     "1 if the last chunk-density snapshot hit the document scan cap (partial)",
 )
 
+# Sum of ``source_bytes`` across documents currently resident in Qdrant, per
+# ``doc_type``. Covers exactly the same forward-only set as the density snapshot
+# histogram (documents without a usable source_bytes are excluded and surfaced via
+# ``chunk_density_uncovered_documents``). Enables a corpus-weighted (byte-weighted)
+# chunk density in Grafana — ``sum(indexed_chunks) / (sum(source_bytes) / 1e6)`` —
+# which is the pricing driver, vs the doc-weighted mean of the histogram. This is a
+# Gauge, not a Counter, because it falls when documents are deleted from the
+# collection; the ``_total`` name is fixed (the deployed dashboard query depends on
+# it) and denotes the aggregate over the corpus, not a monotonic counter.
+qdrant_source_bytes_total = Gauge(
+    "astrolabe_qdrant_source_bytes_total",
+    "Total source_bytes across documents currently resident in Qdrant "
+    "(byte-weighted density denominator; forward-only — docs without source_bytes "
+    "are excluded, see astrolabe_qdrant_chunk_density_uncovered_documents)",
+    ["doc_type"],
+)
+
 documents_indexed_total = Counter(
     "astrolabe_documents_indexed_total",
     "Total documents indexed, by source type",
@@ -1138,6 +1155,7 @@ def update_qdrant_chunk_density_snapshot(
     *,
     uncovered: dict[str, int] | None = None,
     truncated: bool = False,
+    source_bytes: dict[str, float] | None = None,
 ) -> None:
     """Publish one current-corpus chunk-density snapshot (GaugeHistogram + coverage).
 
@@ -1154,6 +1172,10 @@ def update_qdrant_chunk_density_snapshot(
     ``truncated`` (scan hit the document cap) update the companion coverage
     gauges. The uncovered gauge is fully reset each snapshot so a doc_type that
     falls back to zero uncovered does not leave a stale series.
+
+    ``source_bytes`` (doc_type -> sum of source_bytes over the covered documents)
+    updates ``astrolabe_qdrant_source_bytes_total``, the byte-weighted density
+    denominator. It is reset-then-repopulated the same way as the uncovered gauge.
     """
     edges = [str(b) for b in CHUNK_DENSITY_BUCKETS] + ["+Inf"]
     snapshot: dict[str, tuple[list[tuple[str, float]], float]] = {}
@@ -1170,6 +1192,11 @@ def update_qdrant_chunk_density_snapshot(
     chunk_density_uncovered_documents.clear()
     for doc_type, count in (uncovered or {}).items():
         chunk_density_uncovered_documents.labels(doc_type=doc_type).set(count)
+
+    # Same reset-then-repopulate: a doc_type that leaves the corpus clears its series.
+    qdrant_source_bytes_total.clear()
+    for doc_type, total in (source_bytes or {}).items():
+        qdrant_source_bytes_total.labels(doc_type=doc_type).set(total)
 
     chunk_density_snapshot_truncated.set(1 if truncated else 0)
 
