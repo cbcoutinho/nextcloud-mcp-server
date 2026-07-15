@@ -160,6 +160,29 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {"VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD": "5"},
+        clear=True,
+    )
+    def test_get_settings_empty_discovery_threshold_from_env(self):
+        """VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD must reach settings.
+
+        Guards against the _DEFAULTS / _field_map omission that has silently
+        dropped env vars before (cf. OCR batch mode #332): the setting is added
+        in all three places (defaults, dataclass, field map).
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.vector_sync_empty_discovery_delete_threshold == 5
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_empty_discovery_threshold_default(self):
+        """Default is 3 consecutive empty cycles before deletions are believed."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.vector_sync_empty_discovery_delete_threshold == 3
+
+    @patch.dict(
+        os.environ,
         {
             "PYROSCOPE_ENABLED": "true",
             "PYROSCOPE_SERVER_ADDRESS": "alloy.alloy.svc.cluster.local:4041",
