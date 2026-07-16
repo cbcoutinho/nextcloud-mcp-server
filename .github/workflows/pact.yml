@@ -51,6 +51,10 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-runner
 
+      - name: Wait for Pact broker
+        if: ${{ env.PACT_BROKER != '' }}
+        run: .github/scripts/wait-for-pact-broker.sh
+
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
         run: |
@@ -83,13 +87,22 @@ jobs:
 
       - name: Publish pacts to broker
         if: ${{ env.PACT_BROKER != '' }}
+        # Retried once, same rationale as provider verification: the probe above
+        # closes the common case, but a blip landing between probe and call would
+        # still fail the build for a network reason. Re-publishing identical pact
+        # content under the same consumer version is idempotent in the broker.
         run: |
-          pact broker publish tests/contract/pacts \
-            --broker-base-url "$PACT_BROKER" \
-            --broker-username "$PACT_USERNAME" \
-            --broker-password "$PACT_PASSWORD" \
-            --consumer-app-version "${{ github.sha }}" \
-            --branch "${{ github.head_ref || github.ref_name }}"
+          publish() {
+            pact broker publish tests/contract/pacts \
+              --broker-base-url "$PACT_BROKER" \
+              --broker-username "$PACT_USERNAME" \
+              --broker-password "$PACT_PASSWORD" \
+              --consumer-app-version "${{ github.sha }}" \
+              --branch "${{ github.head_ref || github.ref_name }}"
+          }
+          publish && exit 0
+          echo "::warning title=Retrying pact publish::First attempt failed; retrying once to rule out a transient broker/tailnet error."
+          publish
 
   provider:
     name: Provider verification (astrolabe -> mcp)
@@ -140,6 +153,10 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-runner
 
+      - name: Wait for Pact broker
+        if: ${{ env.PACT_BROKER != '' }}
+        run: .github/scripts/wait-for-pact-broker.sh
+
       - name: Verify provider against broker pacts
         if: ${{ env.PACT_BROKER != '' }}
         env:
@@ -148,7 +165,15 @@ jobs:
           PACT_PROVIDER_BRANCH: ${{ github.head_ref || github.ref_name }}
           # Publish results only from master so PR runs don't pollute the matrix.
           PACT_PUBLISH_RESULTS: ${{ github.ref == 'refs/heads/master' }}
-        run: uv run pytest -v -m contract tests/contract/test_mcp_provider_verification.py
+        # Retried once: the probe above closes the common case, but a blip landing
+        # between probe and verify would still red master for a network reason. A
+        # genuine contract mismatch is deterministic and fails both attempts, so
+        # the gate is preserved; publishing the same provider version twice is
+        # idempotent in the broker.
+        run: |
+          uv run pytest -v -m contract tests/contract/test_mcp_provider_verification.py && exit 0
+          echo "::warning title=Retrying provider verification::First attempt failed; retrying once to rule out a transient broker/tailnet error."
+          uv run pytest -v -m contract tests/contract/test_mcp_provider_verification.py
 
   can-i-deploy:
     name: can-i-deploy
@@ -159,6 +184,8 @@ jobs:
     # --broker-base-url, e.g. after a secret rotation or on a fork).
     if: ${{ github.ref == 'refs/heads/master' }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       - name: Join tailnet
         if: ${{ env.PACT_BROKER != '' }}
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
@@ -166,6 +193,16 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-runner
+
+      # Advisory only (continue-on-error): this job is deliberately non-blocking
+      # (see the shadow-mode note below), so the probe must not become the one
+      # step that fails it. Its value here is diagnostic — it separates "broker
+      # unreachable" from a real incompatibility, which the shadow warning below
+      # would otherwise misreport as the expected bootstrap gap.
+      - name: Wait for Pact broker
+        if: ${{ env.PACT_BROKER != '' }}
+        continue-on-error: true
+        run: .github/scripts/wait-for-pact-broker.sh
 
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
