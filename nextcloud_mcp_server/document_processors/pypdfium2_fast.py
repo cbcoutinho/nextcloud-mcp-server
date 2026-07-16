@@ -35,24 +35,32 @@ def _extract(content: bytes) -> tuple[str, dict[str, Any]]:
     """
     import pypdfium2 as pdfium  # noqa: PLC0415 -- keep the native import lazy
 
-    pdf = pdfium.PdfDocument(content)
-    try:
-        page_texts: list[str] = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                textpage = page.get_textpage()
+    from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+        pdfium_serialized,
+    )
+
+    # PDFium is not thread-safe (shared process-global library + an unlocked
+    # module-global object tracker), so serialize: concurrent ingest jobs must not
+    # drive it from two worker threads at once.
+    with pdfium_serialized():
+        pdf = pdfium.PdfDocument(content)
+        try:
+            page_texts: list[str] = []
+            for i in range(len(pdf)):
+                page = pdf[i]
                 try:
-                    page_texts.append(textpage.get_text_bounded() or "")
+                    textpage = page.get_textpage()
+                    try:
+                        page_texts.append(textpage.get_text_bounded() or "")
+                    finally:
+                        textpage.close()
                 finally:
-                    textpage.close()
-            finally:
-                # Outer finally so the page handle is freed even if
-                # get_textpage() raises on a corrupt page.
-                page.close()
-        doc_meta = pdf.get_metadata_dict() or {}
-    finally:
-        pdf.close()
+                    # Outer finally so the page handle is freed even if
+                    # get_textpage() raises on a corrupt page.
+                    page.close()
+            doc_meta = pdf.get_metadata_dict() or {}
+        finally:
+            pdf.close()
 
     page_boundaries: list[dict[str, Any]] = []
     offset = 0

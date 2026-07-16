@@ -118,15 +118,27 @@ class PyMuPDFProcessor(DocumentProcessor):
             # immediately (try/finally so a failure in _extract_metadata can't
             # leak it). The heavy extraction below works from ``content`` bytes
             # in the isolated worker, so ``doc`` is not needed past this point.
-            doc = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                lambda: pymupdf.open("pdf", content)
+            # Read metadata entirely inside ONE worker thread, serialized against
+            # other MuPDF work: pymupdf is not thread-safe, and a doc opened in one
+            # thread must not be touched from another. (The heavy page extraction
+            # below runs in an isolated subprocess, so it needs no lock.)
+            def _read_metadata() -> tuple[dict[str, Any], int]:
+                from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+                    pymupdf_serialized,
+                )
+
+                with pymupdf_serialized():
+                    doc = pymupdf.open("pdf", content)
+                    try:
+                        meta = self._extract_metadata(doc, filename)
+                        meta["file_size"] = len(content)
+                        return meta, doc.page_count
+                    finally:
+                        doc.close()
+
+            metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                _read_metadata
             )
-            try:
-                metadata = self._extract_metadata(doc, filename)
-                metadata["file_size"] = len(content)
-                page_count = doc.page_count
-            finally:
-                doc.close()
 
             if progress_callback:
                 await progress_callback(10, 100, f"Extracting {page_count} pages")

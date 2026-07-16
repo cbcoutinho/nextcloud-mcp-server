@@ -246,7 +246,12 @@ def classify_pdf(content: bytes) -> DocClassification:
     """
     import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy / off module load
 
-    with pymupdf.open("pdf", content) as doc:
+    from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+        pymupdf_serialized,
+    )
+
+    # MuPDF is not thread-safe; serialize against concurrent bbox/parse threads.
+    with pymupdf_serialized(), pymupdf.open("pdf", content) as doc:
         page_count = doc.page_count
         indices = _sample_indices(page_count)
         pages: list[PageSignals] = []
@@ -330,8 +335,14 @@ def image_coverage_per_page(content: bytes) -> list[float]:
     """
     import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy
 
+    from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+        pymupdf_serialized,
+    )
+
     cov: list[float] = []
-    with pymupdf.open("pdf", content) as doc:
+    # MuPDF is not thread-safe. This runs on the event loop during escalation, so
+    # the lock also serializes it against concurrent bbox/parse worker threads.
+    with pymupdf_serialized(), pymupdf.open("pdf", content) as doc:
         for n in range(min(doc.page_count, MAX_SAMPLED_PAGES)):
             cov.append(_page_image_coverage(doc.load_page(n)))
     return cov
