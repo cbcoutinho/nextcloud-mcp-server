@@ -291,7 +291,15 @@ async def _get_enabled_presets(
         storage: Optional RefreshTokenStorage instance
 
     Returns:
-        Dictionary mapping preset_id to list of webhook IDs
+        Dictionary mapping preset_id to list of webhook IDs. An empty dict means
+        genuinely no presets are enabled — a lookup failure raises instead of
+        returning one, because callers act on that difference.
+
+    Raises:
+        Exception: whatever the storage/API lookup raised. Deliberately not
+            swallowed into an empty dict: callers treat {} as "nothing enabled",
+            which would render live presets as disabled (and double-register them
+            on the next Enable). Both callers already surface the error.
     """
     try:
         # Try database first (faster, works offline)
@@ -461,7 +469,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
         return HTMLResponse(content=html_content)
 
     except Exception as e:
-        logger.error("Error loading webhook management pane: %s", e)
+        logger.exception("Error loading webhook management pane: %s", e)
         return HTMLResponse(
             content=f"""
             <div class="warning">
@@ -563,7 +571,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
             status_code=503,
         )
     except Exception as e:
-        logger.error("Failed to enable preset %s: %s", preset_id, e)
+        logger.exception("Failed to enable preset %s: %s", preset_id, e)
         return HTMLResponse(
             content=f'<div class="warning">Failed to enable preset: {html.escape(str(e))}</div>',
             status_code=500,
@@ -655,7 +663,7 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error("Failed to disable preset %s: %s", preset_id, e)
+        logger.exception("Failed to disable preset %s: %s", preset_id, e)
         return HTMLResponse(
             content=f'<div class="warning">Failed to disable preset: {html.escape(str(e))}</div>',
             status_code=500,
