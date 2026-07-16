@@ -105,5 +105,16 @@ Broker-dependent steps are skipped when `PACT_BROKER` is unset (forks).
   Qdrant). These land incrementally as astrolabe publishes its consumer pacts.
 - **Broker is a homelab dependency**: contract publication/verification needs the
   tailnet and the broker up. Steps degrade to skipped (not failed) when the
-  broker is unreachable from a fork; on `master` an outage will fail
-  `can-i-deploy`.
+  broker is unreachable from a fork; on `master` a broker outage fails the
+  `consumer` and `provider` jobs (`can-i-deploy` is currently shadow mode and
+  only warns).
+- **Transient tailnet blips are absorbed, outages are named**: `tailscale up`
+  returning does not mean MagicDNS/routes have settled, and the pact FFI reports
+  a *transport* failure as the misleading `No pacts found for provider ...
+  matching the given consumer version selectors` — i.e. a network blip reads as a
+  contract break (this reddened `master` once; a re-run of the same commit was
+  green). Each broker-touching job therefore runs
+  `.github/scripts/wait-for-pact-broker.sh` after joining the tailnet, and
+  provider verification is retried once. A real outage fails with an explicit
+  "NOT a contract failure" annotation; a real contract mismatch is deterministic
+  and still gates.
