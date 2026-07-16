@@ -26,7 +26,7 @@ def pytest_collection_modifyitems(items):
     directory's, so it must filter by path.
     """
     for item in items:
-        if _UNIT_DIR in Path(str(item.fspath)).parents:
+        if _UNIT_DIR in item.path.parents:
             item.add_marker(pytest.mark.unit)
 
 
