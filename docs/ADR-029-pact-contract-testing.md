@@ -114,7 +114,7 @@ Broker-dependent steps are skipped when `PACT_BROKER` is unset (forks).
   matching the given consumer version selectors` — i.e. a network blip reads as a
   contract break (this reddened `master` once; a re-run of the same commit was
   green). Each broker-touching job therefore runs
-  `.github/scripts/wait-for-pact-broker.sh` after joining the tailnet, and
-  provider verification is retried once. A real outage fails with an explicit
-  "NOT a contract failure" annotation; a real contract mismatch is deterministic
-  and still gates.
+  `.github/scripts/wait-for-pact-broker.sh` after joining the tailnet, and the
+  two calls that gate a build — pact publication and provider verification — are
+  each retried once. A real outage fails with an explicit "NOT a contract
+  failure" annotation; a real contract mismatch is deterministic and still gates.
