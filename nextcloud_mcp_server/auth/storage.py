@@ -59,7 +59,11 @@ from nextcloud_mcp_server.config import (
     mask_db_password,
 )
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
-from nextcloud_mcp_server.observability.metrics import record_db_operation
+from nextcloud_mcp_server.observability.metrics import (
+    record_db_connect,
+    record_db_operation,
+)
+from nextcloud_mcp_server.observability.tracing import trace_db_connect
 
 logger = logging.getLogger(__name__)
 
@@ -643,10 +647,29 @@ class RefreshTokenStorage:
         ``?`` placeholders, ``commit``, cursor with ``fetchone`` /
         ``fetchall`` / ``rowcount``) so the existing storage method bodies
         work against either SQLite or Postgres without per-call rewrites.
+
+        The connect is measured and traced separately from the operation it
+        serves. Under ``NullPool`` (ADR-026) ``engine.connect()`` *is* the
+        physical connect, so this is a genuine per-operation cost — one that
+        callers' spans previously bundled with execute, hiding a ~600ms
+        handshake inside an apparently slow insert (Deck #678). Instrumenting
+        here rather than at the call sites covers every caller for free.
         """
         assert self.engine is not None, "RefreshTokenStorage.initialize() not called"
-        async with self.engine.connect() as conn:
+        start = time.time()
+        try:
+            with trace_db_connect(self._dialect):
+                conn = await self.engine.connect()
+        finally:
+            # Recorded in a finally so a connect that fails *slowly* — a timeout,
+            # an unreachable host — is still measured. Those are precisely the
+            # samples worth seeing; dropping them would leave the histogram
+            # reporting only the healthy connects.
+            record_db_connect(self._dialect, time.time() - start)
+        try:
             yield _DBConn(conn)
+        finally:
+            await conn.close()
 
     def acquire(self) -> AbstractAsyncContextManager["_DBConn"]:
         """Public alias for :meth:`_db`: a backend-agnostic connection cm.

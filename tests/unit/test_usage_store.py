@@ -23,6 +23,7 @@ from cryptography.fernet import Fernet
 
 import nextcloud_mcp_server.usage.store as store_module
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.observability.metrics import db_connect_duration_seconds
 from nextcloud_mcp_server.usage.store import UsageEvent, UsageEventStore
 
 pytestmark = pytest.mark.unit
@@ -72,6 +73,19 @@ def _set_metering(monkeypatch, enabled: bool) -> None:
         usage_metering_enabled = enabled
 
     monkeypatch.setattr(store_module, "get_settings", lambda: _Settings())
+
+
+def _connect_observations(dialect: str) -> float:
+    """How many connects the ``mcp_db_connect_duration_seconds`` histogram saw.
+
+    Read as a delta around the call under test: the registry is process-wide and
+    other tests in the session also open connections.
+    """
+    for metric in db_connect_duration_seconds.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_count") and sample.labels.get("db") == dialect:
+                return sample.value
+    return 0.0
 
 
 async def _count(storage: RefreshTokenStorage) -> int:
@@ -326,6 +340,46 @@ async def test_batch_is_traced(storage, monkeypatch, mocker):
     spy = mocker.spy(store_module, "trace_db_operation")
     await store.record_usage_events([UsageEvent("pages_embedded", 1)])
     spy.assert_called_once_with(storage.dialect, "insert", "usage_events")
+
+
+async def test_batch_records_connect_duration_separately(storage, monkeypatch):
+    """Connection acquisition is measured on its own, not folded into execute.
+
+    Deck #678: one span/metric covering acquire+execute hid a ~600ms connect
+    inside an apparently slow insert. The connect must be independently
+    observable, or that class of regression is invisible in Prometheus.
+    """
+    _set_metering(monkeypatch, True)
+    before = _connect_observations(storage.dialect)
+
+    store = UsageEventStore(storage)
+    await store.record_usage_events(
+        [UsageEvent("tokens_embedded", 1), UsageEvent("pages_embedded", 2)]
+    )
+
+    # Exactly one connect for the whole batch: the acquire is amortized across
+    # the events (Deck #667), and it is now attributable on its own.
+    assert _connect_observations(storage.dialect) == pytest.approx(before + 1)
+
+
+async def test_failed_connect_is_still_measured(storage, monkeypatch):
+    """A connect that fails is recorded too — a slow timeout is the sample
+    you most want to see, so it must not be dropped from the histogram."""
+    _set_metering(monkeypatch, True)
+    before = _connect_observations(storage.dialect)
+
+    class _UnreachableEngine:
+        async def connect(self):
+            raise RuntimeError("connection refused")
+
+    # ``AsyncEngine.connect`` is read-only, so swap the engine itself.
+    monkeypatch.setattr(storage, "engine", _UnreachableEngine())
+
+    store = UsageEventStore(storage)
+    # Best-effort contract still holds: the failure must not reach the caller.
+    await store.record_usage_events([UsageEvent("pages_embedded", 1)])
+
+    assert _connect_observations(storage.dialect) == pytest.approx(before + 1)
 
 
 async def test_batch_flag_off_is_noop(storage, monkeypatch, mocker):
