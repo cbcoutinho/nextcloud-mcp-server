@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.140.0 (2026-07-16)
+
+### Feat
+
+- **ingest**: safe per-tier worker concurrency (serialize pypdfium2/pymupdf) + overrides
+
+### Fix
+
+- **ingest**: serialize the pdf-preview PyMuPDF render + validate tier concurrency
+
 ## v0.139.3 (2026-07-15)
 
 ### Refactor
