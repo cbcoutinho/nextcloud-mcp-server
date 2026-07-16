@@ -20,6 +20,7 @@ set -uo pipefail
 
 attempts=12
 delay=5
+started=$SECONDS
 
 for i in $(seq 1 "$attempts"); do
   # -f so an HTTP error status is a failure; the broker root answers 200 to an
@@ -28,9 +29,17 @@ for i in $(seq 1 "$attempts"); do
     echo "broker ready (attempt $i)"
     exit 0
   fi
-  echo "attempt $i/$attempts: broker not reachable; retrying in ${delay}s"
-  sleep "$delay"
+  # No sleep after the final attempt — it would only delay the error below.
+  if [ "$i" -lt "$attempts" ]; then
+    echo "attempt $i/$attempts: broker not reachable; retrying in ${delay}s"
+    sleep "$delay"
+  fi
 done
 
-echo "::error title=Pact broker unreachable::${PACT_BROKER} did not respond after $((attempts * delay))s. This is a tailnet/broker outage, NOT a contract failure."
+# Report measured elapsed time, not attempts*delay: each curl may burn up to its
+# -m 10 timeout when the broker is reachable-but-hanging (vs failing instantly
+# when it's unroutable), so the computed figure could understate reality by
+# minutes. This message exists to make an outage unambiguous, so it should not
+# itself state a number that never happened.
+echo "::error title=Pact broker unreachable::${PACT_BROKER} did not respond after $attempts attempts over $((SECONDS - started))s. This is a tailnet/broker outage, NOT a contract failure."
 exit 1
