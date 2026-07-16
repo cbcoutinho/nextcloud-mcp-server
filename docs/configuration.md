@@ -625,6 +625,10 @@ ENABLE_SEMANTIC_SEARCH=true           # Enable background indexing
 # Tuning parameters (advanced - only modify if needed)
 VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
 VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
+# Optional per-tier concurrency overrides (unset = inherit PROCESSOR_WORKERS).
+# Precedence: worker --concurrency flag > tier override > PROCESSOR_WORKERS.
+VECTOR_SYNC_FAST_CONCURRENCY=         # Fast-tier worker concurrency (default: unset)
+VECTOR_SYNC_STRUCTURED_CONCURRENCY=   # Structured-tier worker concurrency (default: unset)
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
 
 # Document chunking settings (for vector embeddings)
@@ -1096,6 +1100,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
 | `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero (while Qdrant still holds points for it) before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty (a genuine mass-untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
+| `VECTOR_SYNC_FAST_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **fast** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Resolution precedence: the worker `--concurrency` flag > this tier override > `VECTOR_SYNC_PROCESSOR_WORKERS`. |
+| `VECTOR_SYNC_STRUCTURED_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **structured** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Same precedence as `VECTOR_SYNC_FAST_CONCURRENCY`. |
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
 | `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |

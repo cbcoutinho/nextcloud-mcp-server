@@ -114,6 +114,10 @@ _DEFAULTS: dict[str, Any] = {
     # Vector sync
     "vector_sync_scan_interval": 300,
     "vector_sync_processor_workers": 3,
+    # Optional per-tier concurrency overrides (None = fall back to
+    # vector_sync_processor_workers). Consumed by the `worker` CLI per --tier.
+    "vector_sync_fast_concurrency": None,
+    "vector_sync_structured_concurrency": None,
     "vector_sync_queue_max_size": 10000,
     "vector_sync_metrics_refresh_interval": 20,
     "vector_density_snapshot_enabled": True,
@@ -486,6 +490,25 @@ _dynaconf = Dynaconf(
         Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
+        # Optional per-tier concurrency overrides (None = fall back to
+        # VECTOR_SYNC_PROCESSOR_WORKERS). Like the sibling above they must be
+        # >=1 when set — a 0/negative value would otherwise reach
+        # app.run_worker_async(concurrency=...) and fail with an opaque runtime
+        # error instead of a clear config error at startup.
+        Validator(
+            "VECTOR_SYNC_FAST_CONCURRENCY",
+            condition=lambda v: v is None or v >= 1,
+            messages={
+                "condition": "VECTOR_SYNC_FAST_CONCURRENCY must be >= 1 when set"
+            },
+        ),
+        Validator(
+            "VECTOR_SYNC_STRUCTURED_CONCURRENCY",
+            condition=lambda v: v is None or v >= 1,
+            messages={
+                "condition": "VECTOR_SYNC_STRUCTURED_CONCURRENCY must be >= 1 when set"
+            },
+        ),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
         Validator("VECTOR_DENSITY_SNAPSHOT_INTERVAL", gte=1),
@@ -970,6 +993,11 @@ class Settings:
     vector_sync_enabled: bool = False
     vector_sync_scan_interval: int = 300  # seconds (5 minutes)
     vector_sync_processor_workers: int = 3
+    # Optional per-tier concurrency overrides for the ingest worker (None = use
+    # vector_sync_processor_workers). Only fast/structured are exposed; the
+    # CPU-heavy PDF paths are serialized (see document_processors/_native_locks).
+    vector_sync_fast_concurrency: int | None = None
+    vector_sync_structured_concurrency: int | None = None
     vector_sync_queue_max_size: int = 10000
     # Cadence for the periodic gauge publisher (vector/metrics_publisher.py):
     # outstanding-work + indexed documents/chunks. Decoupled from the consumer
@@ -1859,6 +1887,8 @@ def _build_settings() -> Settings:
         # Vector sync settings (ADR-007)
         "vector_sync_scan_interval": "VECTOR_SYNC_SCAN_INTERVAL",
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
+        "vector_sync_fast_concurrency": "VECTOR_SYNC_FAST_CONCURRENCY",
+        "vector_sync_structured_concurrency": "VECTOR_SYNC_STRUCTURED_CONCURRENCY",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
         "vector_density_snapshot_enabled": "VECTOR_DENSITY_SNAPSHOT_ENABLED",

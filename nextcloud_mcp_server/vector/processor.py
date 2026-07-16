@@ -1755,13 +1755,23 @@ async def _index_document(
 
                 logger.info("Computing chunk bboxes for %s PDF chunks", len(chunk_data))
 
-                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                    lambda: PDFHighlighter.compute_chunk_bboxes_batch(
-                        pdf_bytes=content_bytes,
-                        chunks=chunk_data,
-                        page_boundaries=page_boundaries_list,
-                        full_text=content,
+                # pymupdf is not thread-safe; run the bbox batch under the shared
+                # MuPDF lock so concurrent ingest jobs serialize their native work.
+                def _compute_bboxes():
+                    from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+                        pymupdf_serialized,
                     )
+
+                    with pymupdf_serialized():
+                        return PDFHighlighter.compute_chunk_bboxes_batch(
+                            pdf_bytes=content_bytes,
+                            chunks=chunk_data,
+                            page_boundaries=page_boundaries_list,
+                            full_text=content,
+                        )
+
+                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                    _compute_bboxes
                 )
 
                 for chunk_index, (bboxes, _) in batch_results.items():

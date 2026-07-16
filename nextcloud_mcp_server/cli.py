@@ -332,6 +332,25 @@ def _init_worker_observability(settings: Settings) -> None:
     )
 
 
+def _resolve_worker_concurrency(
+    cli_concurrency: int | None,
+    tier: str | None,
+    *,
+    fast: int | None,
+    structured: int | None,
+    default: int,
+) -> int:
+    """Resolve the procrastinate worker concurrency for a tier.
+
+    Precedence: an explicit ``--concurrency`` (the chart's per-tier arg) wins,
+    else the per-tier setting override (fast/structured), else the global
+    ``vector_sync_processor_workers``. ``or`` also treats a 0/None override as
+    "unset", so a bogus value can never yield ``concurrency=0``.
+    """
+    tier_override = {"fast": fast, "structured": structured}.get(tier)
+    return cli_concurrency or tier_override or default
+
+
 @click.command()
 @click.option(
     "--concurrency",
@@ -425,7 +444,13 @@ def worker(concurrency: int | None, tier: str | None):
     # directly (run_worker_async), so it does NOT go through IngestTransport —
     # DistributedTransport.run_consumers is a deliberate no-op precisely because
     # this separate process is the consumer (see vector/queue/transport.py).
-    workers = concurrency or settings.vector_sync_processor_workers
+    workers = _resolve_worker_concurrency(
+        concurrency,
+        tier,
+        fast=settings.vector_sync_fast_concurrency,
+        structured=settings.vector_sync_structured_concurrency,
+        default=settings.vector_sync_processor_workers,
+    )
     app = get_procrastinate_app()
 
     # Register the configured document processors (Unstructured / Tesseract /

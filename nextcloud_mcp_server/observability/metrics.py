@@ -632,6 +632,22 @@ db_operation_duration_seconds = Histogram(
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
 )
 
+# pypdfium2 / pymupdf are not thread-safe; concurrent ingest jobs serialize their
+# native calls on per-library locks (see document_processors/_native_locks.py).
+# This surfaces the resulting contention so per-tier `concurrency` can be tuned.
+pdf_native_lock_wait_seconds = Histogram(
+    "astrolabe_pdf_native_lock_wait_seconds",
+    "Time spent waiting to acquire a native PDF library lock",
+    ["library"],  # library: pdfium | pymupdf
+    buckets=(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+)
+
+
+def record_pdf_native_lock_wait(library: str, seconds: float) -> None:
+    """Record the wait to acquire the PDFium/MuPDF serialization lock."""
+    pdf_native_lock_wait_seconds.labels(library=library).observe(seconds)
+
+
 # =============================================================================
 # External Dependency Health Metrics
 # =============================================================================
