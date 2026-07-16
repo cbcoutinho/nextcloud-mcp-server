@@ -416,6 +416,53 @@ class TestChunkConfigValidation:
         with pytest.raises(ValidationError, match="DOCUMENT_CHUNK_OVERLAP"):
             _reload_config()
 
+    def test_tier_concurrency_defaults_to_none(self):
+        """Unset per-tier overrides fall through to VECTOR_SYNC_PROCESSOR_WORKERS."""
+        with patch.dict(os.environ, {}, clear=True):
+            _reload_config()
+            settings = get_settings()
+            assert settings.vector_sync_fast_concurrency is None
+            assert settings.vector_sync_structured_concurrency is None
+
+    def test_tier_concurrency_valid_value_accepted(self):
+        """A positive per-tier override loads normally."""
+        with patch.dict(
+            os.environ,
+            {
+                "VECTOR_SYNC_FAST_CONCURRENCY": "2",
+                "VECTOR_SYNC_STRUCTURED_CONCURRENCY": "3",
+            },
+            clear=True,
+        ):
+            _reload_config()
+            settings = get_settings()
+            assert settings.vector_sync_fast_concurrency == 2
+            assert settings.vector_sync_structured_concurrency == 3
+
+    @patch.dict(
+        os.environ,
+        {"VECTOR_SYNC_FAST_CONCURRENCY": "0"},
+        clear=True,
+    )
+    def test_zero_fast_concurrency_raises_error(self):
+        """0 is rejected at startup rather than reaching the worker (>=1 when set)."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="VECTOR_SYNC_FAST_CONCURRENCY"):
+            _reload_config()
+
+    @patch.dict(
+        os.environ,
+        {"VECTOR_SYNC_STRUCTURED_CONCURRENCY": "-1"},
+        clear=True,
+    )
+    def test_negative_structured_concurrency_raises_error(self):
+        """A negative per-tier override raises ValidationError via dynaconf."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="VECTOR_SYNC_STRUCTURED_CONCURRENCY"):
+            _reload_config()
+
     def test_small_chunk_size_warning(self, caplog):
         """Test that chunk size < 512 triggers warning."""
 

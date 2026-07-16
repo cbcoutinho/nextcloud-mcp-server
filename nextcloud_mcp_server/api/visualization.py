@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import anyio
 import pymupdf
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -57,6 +58,19 @@ from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 logger = logging.getLogger(__name__)
 
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
+
+
+class _PageOutOfRangeError(Exception):
+    """Requested preview page exceeds the document's page count.
+
+    Raised inside the off-loop render callable so the caller can map it to a
+    400 response after the (locked) PyMuPDF work has completed and the doc is
+    closed.
+    """
+
+    def __init__(self, total_pages: int) -> None:
+        self.total_pages = total_pages
+        super().__init__(f"page out of range (document has {total_pages} pages)")
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
@@ -966,27 +980,40 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
                 status_code=413,
             )
 
-        # Render page with PyMuPDF
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        # Render page with PyMuPDF. MuPDF is not thread-safe, and with
+        # INGEST_QUEUE=memory the ingest workers run in-process and offload
+        # their PyMuPDF work under PYMUPDF_LOCK; serialize this render under the
+        # same lock (and run it off the event loop) so a preview request can't
+        # race a worker thread. Open/use/close happen entirely in one thread.
+        def _render_preview() -> tuple[bytes, int]:
+            from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+                pymupdf_serialized,
+            )
+
+            with (
+                pymupdf_serialized(),
+                pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc,
+            ):
+                total = doc.page_count
+                if page_num > total:
+                    raise _PageOutOfRangeError(total)
+                page = doc[page_num - 1]  # 0-indexed
+                mat = pymupdf.Matrix(scale, scale)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                return pix.tobytes("png"), total
+
         try:
-            total_pages = doc.page_count
-
-            # Validate page number
-            if page_num > total_pages:
-                return JSONResponse(
-                    {
-                        "success": False,
-                        "error": f"Page {page_num} does not exist (document has {total_pages} pages)",
-                    },
-                    status_code=400,
-                )
-
-            page = doc[page_num - 1]  # 0-indexed
-            mat = pymupdf.Matrix(scale, scale)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            png_bytes = pix.tobytes("png")
-        finally:
-            doc.close()
+            png_bytes, total_pages = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                _render_preview
+            )
+        except _PageOutOfRangeError as e:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Page {page_num} does not exist (document has {e.total_pages} pages)",
+                },
+                status_code=400,
+            )
 
         # Encode as base64
         image_b64 = base64.b64encode(png_bytes).decode("ascii")

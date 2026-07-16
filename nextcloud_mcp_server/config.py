@@ -490,6 +490,25 @@ _dynaconf = Dynaconf(
         Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
+        # Optional per-tier concurrency overrides (None = fall back to
+        # VECTOR_SYNC_PROCESSOR_WORKERS). Like the sibling above they must be
+        # >=1 when set — a 0/negative value would otherwise reach
+        # app.run_worker_async(concurrency=...) and fail with an opaque runtime
+        # error instead of a clear config error at startup.
+        Validator(
+            "VECTOR_SYNC_FAST_CONCURRENCY",
+            condition=lambda v: v is None or v >= 1,
+            messages={
+                "condition": "VECTOR_SYNC_FAST_CONCURRENCY must be >= 1 when set"
+            },
+        ),
+        Validator(
+            "VECTOR_SYNC_STRUCTURED_CONCURRENCY",
+            condition=lambda v: v is None or v >= 1,
+            messages={
+                "condition": "VECTOR_SYNC_STRUCTURED_CONCURRENCY must be >= 1 when set"
+            },
+        ),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
         Validator("VECTOR_DENSITY_SNAPSHOT_INTERVAL", gte=1),
