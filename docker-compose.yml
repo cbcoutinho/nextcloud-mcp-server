@@ -58,7 +58,7 @@ services:
       retries: 30
 
   recipes:
-    image: docker.io/library/nginx:1.31.2-alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+    image: docker.io/library/nginx:1.31.3-alpine@sha256:2776cd5b70d8983e27e9f5c90abee3d24c690014ae8ecbb529572d954a459096
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
@@ -422,7 +422,7 @@ services:
       - claude-funnel
 
   nginx-claude-filter:
-    image: docker.io/library/nginx:1.31.2-alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+    image: docker.io/library/nginx:1.31.3-alpine@sha256:2776cd5b70d8983e27e9f5c90abee3d24c690014ae8ecbb529572d954a459096
     restart: always
     depends_on:
       - mcp-login-flow
