@@ -87,13 +87,22 @@ jobs:
 
       - name: Publish pacts to broker
         if: ${{ env.PACT_BROKER != '' }}
+        # Retried once, same rationale as provider verification: the probe above
+        # closes the common case, but a blip landing between probe and call would
+        # still fail the build for a network reason. Re-publishing identical pact
+        # content under the same consumer version is idempotent in the broker.
         run: |
-          pact broker publish tests/contract/pacts \
-            --broker-base-url "$PACT_BROKER" \
-            --broker-username "$PACT_USERNAME" \
-            --broker-password "$PACT_PASSWORD" \
-            --consumer-app-version "${{ github.sha }}" \
-            --branch "${{ github.head_ref || github.ref_name }}"
+          publish() {
+            pact broker publish tests/contract/pacts \
+              --broker-base-url "$PACT_BROKER" \
+              --broker-username "$PACT_USERNAME" \
+              --broker-password "$PACT_PASSWORD" \
+              --consumer-app-version "${{ github.sha }}" \
+              --branch "${{ github.head_ref || github.ref_name }}"
+          }
+          publish && exit 0
+          echo "::warning title=Retrying pact publish::First attempt failed; retrying once to rule out a transient broker/tailnet error."
+          publish
 
   provider:
     name: Provider verification (astrolabe -> mcp)
