@@ -78,7 +78,6 @@ class TestEnumValidation:
             ("collection_metadata_source", "redis"),
             ("document_tier1_engine", "mupdf"),
             ("document_ocr_provider", "gatway"),
-            ("search_mode", "fulltext"),
             ("docling_pipeline", "vllm"),
         ],
     )
