@@ -184,17 +184,41 @@ async def _register_preset_webhooks(
     """
     auth_method, auth_data = webhook_auth_pair()
     registered_ids: list[int] = []
-    for event_config in preset["events"]:
-        webhook_data = await webhooks_client.create_webhook(
-            event=event_config["event"],
-            uri=webhook_uri,
-            event_filter=event_config["filter"] if event_config["filter"] else None,
-            auth_method=auth_method,
-            auth_data=auth_data,
-        )
-        webhook_id = webhook_data["id"]
-        registered_ids.append(webhook_id)
-        logger.info("Registered webhook %s for %s", webhook_id, event_config["event"])
+    try:
+        for event_config in preset["events"]:
+            webhook_data = await webhooks_client.create_webhook(
+                event=event_config["event"],
+                uri=webhook_uri,
+                event_filter=event_config["filter"] if event_config["filter"] else None,
+                auth_method=auth_method,
+                auth_data=auth_data,
+            )
+            webhook_id = webhook_data["id"]
+            registered_ids.append(webhook_id)
+            logger.info(
+                "Registered webhook %s for %s", webhook_id, event_config["event"]
+            )
+    except Exception:
+        # Roll back the webhooks already created in Nextcloud before re-raising.
+        # Without this, a failure on event N leaves events 1..N-1 live in
+        # Nextcloud while the caller's store_webhook() never runs — orphaned
+        # registrations that the UI cannot see or delete, still delivering. The
+        # caller reports "Failed to enable preset", so the only honest end state
+        # is "nothing enabled". Rollback is best-effort: a failed cleanup must not
+        # replace the original error, which is the one that explains the failure.
+        for webhook_id in registered_ids:
+            try:
+                await webhooks_client.delete_webhook(webhook_id)
+                logger.info(
+                    "Rolled back webhook %s after failed preset enable", webhook_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to roll back webhook %s; it is live in Nextcloud but "
+                    "untracked — delete it manually",
+                    webhook_id,
+                )
+        raise
     return registered_ids
 
 
@@ -309,9 +333,16 @@ async def _get_enabled_presets(
 
         return enabled_presets
 
-    except Exception as e:
-        logger.error("Failed to list webhooks: %s", e)
-        return {}
+    except Exception:
+        # Propagate rather than returning {}: an empty map is indistinguishable
+        # from the truthful "no presets are enabled", and both callers act on that
+        # difference. The pane would render "Not Enabled" for presets that are
+        # live, so an admin clicking Enable double-registers every event; the
+        # storage-less disable path would no-op its delete loop and still report
+        # success. Both callers already wrap this in a handler that surfaces an
+        # error, so failing honestly is strictly better than answering wrongly.
+        logger.exception("Failed to determine enabled presets")
+        raise
 
 
 @requires("authenticated", redirect="oauth_login")

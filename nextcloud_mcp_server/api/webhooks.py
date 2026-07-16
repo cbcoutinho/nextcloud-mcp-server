@@ -188,23 +188,41 @@ async def create_webhook(request: Request) -> JSONResponse:
             status_code=401,
         )
 
+    # Parse the body before the try below: a malformed payload is a *caller* fault
+    # (400), but inside that block it would be swallowed by the catch-all and
+    # reported as 500 "Internal error" — telling the client the server is broken
+    # when the client sent bad JSON. Mirrors the int() guard in delete_webhook.
     try:
-        # Parse request body
         body = await request.json()
-        event = body.get("event")
-        uri = body.get("uri")
-        # Accept both camelCase (eventFilter) and snake_case (event_filter)
-        event_filter = body.get("eventFilter") or body.get("event_filter")
+    except (ValueError, UnicodeDecodeError) as e:
+        logger.warning("Create-webhook payload was not valid JSON: %s", e)
+        return JSONResponse(
+            {"error": "Bad request", "message": "Invalid JSON"},
+            status_code=400,
+        )
 
-        if not event or not uri:
-            return JSONResponse(
-                {
-                    "error": "Bad request",
-                    "message": "Missing required fields: event, uri",
-                },
-                status_code=400,
-            )
+    # A JSON scalar/array parses fine but has no .get — also a caller fault, not a 500.
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "Bad request", "message": "Request body must be a JSON object"},
+            status_code=400,
+        )
 
+    event = body.get("event")
+    uri = body.get("uri")
+    # Accept both camelCase (eventFilter) and snake_case (event_filter)
+    event_filter = body.get("eventFilter") or body.get("event_filter")
+
+    if not event or not uri:
+        return JSONResponse(
+            {
+                "error": "Bad request",
+                "message": "Missing required fields: event, uri",
+            },
+            status_code=400,
+        )
+
+    try:
         username, app_password = await get_basic_auth_for_user(user_id)
 
         oauth_ctx = request.app.state.oauth_context

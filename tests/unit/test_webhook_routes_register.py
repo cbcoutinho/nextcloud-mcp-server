@@ -87,3 +87,66 @@ async def test_register_returns_ids_in_call_order(monkeypatch, mocker):
     ids = await _register_preset_webhooks(client, preset, "https://example.com/wh")
 
     assert ids == [42, 43, 44]
+
+
+async def test_register_rolls_back_already_created_webhooks_on_failure(
+    monkeypatch, mocker
+):
+    """A mid-loop failure must not leave orphaned webhooks live in Nextcloud.
+
+    ``_register_preset_webhooks`` only returns after every event registers, so
+    the caller's ``store_webhook`` never runs when event N fails — previously
+    leaving events 1..N-1 live in Nextcloud but absent from the DB, invisible to
+    the UI and still delivering, while the handler reported "Failed to enable
+    preset" (i.e. that nothing happened).
+    """
+    _patch_secret(monkeypatch, "supersecret")
+    preset = get_preset("notes_sync")
+    assert preset is not None
+
+    client = mocker.AsyncMock(spec=WebhooksClient)
+    # Events 1 and 2 succeed, event 3 fails.
+    client.create_webhook.side_effect = [
+        {"id": 42},
+        {"id": 43},
+        RuntimeError("nextcloud exploded"),
+    ]
+
+    with pytest.raises(RuntimeError, match="nextcloud exploded"):
+        await _register_preset_webhooks(client, preset, "https://example.com/wh")
+
+    # The two that were created must be deleted again, so the reported end state
+    # ("nothing enabled") matches reality.
+    assert [c.args[0] for c in client.delete_webhook.call_args_list] == [42, 43]
+
+
+async def test_register_rollback_failure_does_not_mask_original_error(
+    monkeypatch, mocker
+):
+    """A failed rollback must not replace the error that explains the failure."""
+    _patch_secret(monkeypatch, "supersecret")
+    preset = get_preset("notes_sync")
+    assert preset is not None
+
+    client = mocker.AsyncMock(spec=WebhooksClient)
+    client.create_webhook.side_effect = [{"id": 42}, RuntimeError("original cause")]
+    client.delete_webhook.side_effect = RuntimeError("cleanup also failed")
+
+    # The original error propagates, not the cleanup error.
+    with pytest.raises(RuntimeError, match="original cause"):
+        await _register_preset_webhooks(client, preset, "https://example.com/wh")
+
+
+async def test_enabled_presets_failure_propagates_rather_than_reporting_none_enabled(
+    mocker,
+):
+    """A listing failure must not masquerade as "no presets are enabled".
+
+    Returning {} made the pane render "Not Enabled" for live presets, so an admin
+    clicking Enable would double-register every event.
+    """
+    client = mocker.AsyncMock(spec=WebhooksClient)
+    client.list_webhooks.side_effect = RuntimeError("nextcloud unreachable")
+
+    with pytest.raises(RuntimeError, match="nextcloud unreachable"):
+        await webhook_routes._get_enabled_presets(client)

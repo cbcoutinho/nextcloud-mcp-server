@@ -238,8 +238,11 @@ def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
     Returns:
         Generic error message safe for client consumption
     """
-    # Log detailed error for debugging
-    logger.error("Error in %s: %s", context, error)
+    # Log detailed error for debugging. logger.exception (not logger.error) so the
+    # traceback survives: this helper backs every catch-all 500 in the management /
+    # access surface, and the client deliberately gets only the generic message
+    # below, so this log line is the *sole* record of what actually failed.
+    logger.exception("Error in %s: %s", context, error)
 
     # Return generic message
     return "An internal error occurred. Please contact your administrator."
