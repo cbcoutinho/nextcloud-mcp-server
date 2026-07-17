@@ -35,8 +35,17 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     mitigation for connection poisoning is ``NEXTCLOUD_HTTP_KEEPALIVE=false``.)
     A missing or malformed header (e.g. ``Transfer-Encoding: chunked``) skips
     the check so legitimately header-less responses never raise.
+
+    ``Content-Length`` on a compressed response describes the compressed
+    size on the wire, not the decompressed ``response.content`` httpx hands
+    back — comparing the two would misfire on every compressible file
+    Nextcloud happens to gzip, so the check only applies to identity-encoded
+    responses (see #1099).
     """
     content = response.content
+    content_encoding = response.headers.get("content-encoding")
+    if content_encoding is not None and content_encoding.lower() != "identity":
+        return content
     declared = response.headers.get("content-length")
     if declared is None:
         return content
