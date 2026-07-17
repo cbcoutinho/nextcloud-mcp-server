@@ -653,6 +653,30 @@ async def test_read_file_accepts_matching_content_length(mocker):
 
 
 @pytest.mark.unit
+async def test_read_file_accepts_gzip_response_shorter_than_content_length(mocker):
+    """A gzip response's Content-Length is the compressed wire size, not the
+    decompressed body httpx hands back in ``response.content`` — comparing
+    the two would misfire on every compressible file Nextcloud gzips (#1099).
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    body = b'{"key": "value"} ' * 2000  # compressible enough to be gzipped
+    mock_response = AsyncMock()
+    mock_response.content = body  # httpx already decompressed this
+    mock_response.headers = {
+        "content-type": "application/json",
+        "content-encoding": "gzip",
+        "content-length": "128",  # compressed size on the wire, << len(body)
+    }
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    content, _ = await client.read_file("Documents/index.json")
+    assert content == body
+
+
+@pytest.mark.unit
 async def test_read_file_skips_check_without_content_length(mocker):
     """A header-less (e.g. chunked) response must not raise — nothing to compare."""
     mock_http_client = AsyncMock()
