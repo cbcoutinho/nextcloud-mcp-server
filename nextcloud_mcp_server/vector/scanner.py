@@ -150,6 +150,14 @@ class DocumentTask:
     # "keyword" for files discovered via the ``keyword-index`` tag so the
     # processor skips dense embedding for them. See payload_keys.INDEX_MODE_*.
     index_mode: str = payload_keys.INDEX_MODE_HYBRID
+    # WebDAV getcontentlength at scan time, for files. Lets the processor apply
+    # the oversize cap BEFORE downloading, so an over-cap document costs nothing
+    # instead of being fetched into memory only to be rejected (a 531 MB PDF
+    # OOMKilled a worker mid-download, before the cap was ever evaluated).
+    # None = unknown (deletes, non-file types, webhook-produced tasks, and jobs
+    # deferred by a pre-upgrade producer) -> the post-download guard still
+    # applies. Defaulted so old in-flight job payloads deserialize unchanged.
+    size_bytes: int | None = None
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -1076,6 +1084,12 @@ async def scan_user_documents(
                 # it. Eliminates the per-user reprocessing ping-pong that arises
                 # because chunk point IDs are user-agnostic (note 386945 #5).
                 etag = str(file_info.get("etag") or "")
+                # getcontentlength is already requested and parsed by the WebDAV
+                # discovery calls, so carrying it costs no extra request. The
+                # parser yields 0 when the property is absent; treat that as
+                # "unknown" so the processor falls back to the post-download
+                # guard rather than gating on a bogus zero.
+                size_bytes = file_info.get("size") or None
                 if etag and await claim_existing_index(
                     file_id,
                     "file",
@@ -1132,6 +1146,7 @@ async def scan_user_documents(
                             file_path=file_path,
                             etag=etag,
                             index_mode=index_mode,
+                            size_bytes=size_bytes,
                         )
                     )
                     file_queued += 1
@@ -1239,6 +1254,7 @@ async def scan_user_documents(
                                 file_path=file_path,
                                 etag=etag,
                                 index_mode=index_mode,
+                                size_bytes=size_bytes,
                             )
                         )
                         file_queued += 1

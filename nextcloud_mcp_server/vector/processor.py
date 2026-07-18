@@ -328,6 +328,33 @@ def should_use_page_aware(
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
 
 
+def preflight_oversize_result(
+    doc_task: Any, file_path: str | None, settings: Any
+) -> Any:
+    """Apply the PDF size cap to the scanned size, before any download.
+
+    ``DocumentTask.size_bytes`` carries the WebDAV ``getcontentlength`` captured
+    at scan time, so an over-cap document can be rejected without fetching it.
+    Previously the cap could only be applied to bytes already fully resident,
+    which meant the guard against pathological files was itself paid for in
+    memory: a 531 MB PDF OOMKilled a worker mid-download, before its size was
+    ever checked.
+
+    Returns the same ``oversize`` :class:`ProcessingResult` the post-download
+    guard produces (so the caller's terminal/dead-letter handling is unchanged),
+    or ``None`` when the size is unknown or within the cap -- in which case the
+    post-download guard still applies as the backstop.
+    """
+    size_bytes = getattr(doc_task, "size_bytes", None)
+    if not size_bytes:
+        return None
+    from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+        get_registry,
+    )
+
+    return get_registry().oversize_result_for_size(size_bytes, file_path, settings)
+
+
 def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
     """Bytes ingested for one document (card #401).
 
@@ -948,6 +975,10 @@ async def _index_document(
         qdrant_client: Qdrant client instance
     """
     settings = get_settings()
+    # Set by the pre-flight size gate (files only) when a document is rejected
+    # from its scanned size; substituted for the parse result further down so the
+    # existing terminal/dead-letter handling is reached unchanged.
+    preflight_failure = None
 
     # Fetch document content
     with trace_operation(
@@ -1216,8 +1247,17 @@ async def _index_document(
                 if retry_in is not None:
                     raise BatchPending(retry_in=retry_in)
 
-            # Read file content via WebDAV
-            content_bytes, content_type = await nc_client.webdav.read_file(file_path)
+            # Pre-flight size gate: reject an over-cap document from the size the
+            # scanner already captured, so the download is never paid for. Falls
+            # through to the post-download guard when the size is unknown.
+            preflight_failure = preflight_oversize_result(doc_task, file_path, settings)
+            if preflight_failure is None:
+                # Read file content via WebDAV
+                content_bytes, content_type = await nc_client.webdav.read_file(
+                    file_path
+                )
+            else:
+                content_bytes, content_type = b"", "application/pdf"
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1232,7 +1272,9 @@ async def _index_document(
             "vector_sync.document_process",
             attributes={
                 "vector_sync.content_type": content_type,
-                "vector_sync.file_size": len(content_bytes),
+                # The scanned size when known, so a document rejected before its
+                # download still reports its real size rather than 0.
+                "vector_sync.file_size": doc_task.size_bytes or len(content_bytes),
             },
         ):
             # The registry runs the tiered PDF pipeline and records
@@ -1257,7 +1299,14 @@ async def _index_document(
                 # queue-hop to the next tier). Everything else -- non-PDF files,
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
-                if tier is not None and _is_pdf(content_type):
+                if preflight_failure is not None:
+                    # Rejected from its scanned size before the download, so
+                    # there is nothing to parse. Substituting the guard's result
+                    # here (rather than returning early) keeps oversize handling
+                    # on the single terminal/dead-letter path below, however the
+                    # size became known.
+                    result = preflight_failure
+                elif tier is not None and _is_pdf(content_type):
                     # Per-document identity, forwarded to every tier's processor.
                     # Only the OCR tier reads it (batch mode keys its job-tracking
                     # table on it, Deck #332); fast/structured ignore it, so it's
