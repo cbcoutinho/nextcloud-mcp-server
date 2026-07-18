@@ -244,10 +244,7 @@ async def test_non_terminal_failure_escalates_to_next_tier(mocker):
         AsyncMock(
             return_value=ProcessingResult(
                 text="",
-                metadata={
-                    "parse_failed_reason": "error",
-                    "pipeline_tier": "structured",
-                },
+                metadata={"parse_failed_reason": "error", "pipeline_tier": "fast"},
                 processor="pypdfium2",
                 success=False,
                 error="isolated parse failed (error)",

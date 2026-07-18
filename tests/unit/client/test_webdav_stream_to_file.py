@@ -32,7 +32,7 @@ def _response(body: bytes, headers: dict[str, str] | None = None) -> httpx.Respo
         200,
         content=body,
         headers=headers or {},
-        request=httpx.Request("GET", "http://nc/remote.php/dav/files/u/f.pdf"),
+        request=httpx.Request("GET", "https://nc/remote.php/dav/files/u/f.pdf"),
     )
 
 
@@ -45,7 +45,7 @@ def _client(
         return httpx.Response(200, content=body, headers=headers or {})
 
     transport = httpx.MockTransport(handler)
-    http = httpx.AsyncClient(transport=transport, base_url="http://nc")
+    http = httpx.AsyncClient(transport=transport, base_url="https://nc")
     client = WebDAVClient(http, "u")
     # Principal discovery talks to the server; the transport above answers every
     # request identically, so short-circuit it.
@@ -70,15 +70,18 @@ def _client(
 )
 def test_content_length_guard_matches_buffered_path(body, headers, raises):
     """One implementation, so the two download paths cannot drift apart."""
+    buffered = _response(body, headers)
+    streamed = _response(body, headers)
+
     if raises:
         with pytest.raises(httpx.RemoteProtocolError):
-            _read_complete_body(_response(body, headers), "f.pdf")
+            _read_complete_body(buffered, "f.pdf")
         with pytest.raises(httpx.RemoteProtocolError):
-            _verify_content_length(_response(body, headers), len(body), "f.pdf")
+            _verify_content_length(streamed, len(body), "f.pdf")
     else:
-        assert _read_complete_body(_response(body, headers), "f.pdf") == body
+        assert _read_complete_body(buffered, "f.pdf") == body
         # Must not raise for the streaming path either.
-        _verify_content_length(_response(body, headers), len(body), "f.pdf")
+        _verify_content_length(streamed, len(body), "f.pdf")
 
 
 def test_compressed_response_is_exempt_on_both_paths():
@@ -119,10 +122,10 @@ async def test_short_read_raises_and_removes_partial_file(tmp_path):
     """#965: a truncated download must not be left on disk to parse as valid."""
     dest = tmp_path / "out.pdf"
 
+    client = _client(b"short", {"content-length": "9999"})
+
     with pytest.raises(httpx.RemoteProtocolError):
-        await _client(b"short", {"content-length": "9999"}).stream_to_file(
-            "/f.pdf", dest
-        )
+        await client.stream_to_file("/f.pdf", dest)
 
     assert not dest.exists()
 
@@ -146,10 +149,10 @@ async def test_max_bytes_aborts_and_removes_the_file(tmp_path):
     body = b"x" * 5000
     dest = tmp_path / "out.pdf"
 
+    client = _client(body, {"content-length": str(len(body))})
+
     with pytest.raises(OversizeDownload):
-        await _client(body, {"content-length": str(len(body))}).stream_to_file(
-            "/f.pdf", dest, max_bytes=100
-        )
+        await client.stream_to_file("/f.pdf", dest, max_bytes=100)
 
     assert not dest.exists()
 
@@ -163,10 +166,10 @@ async def test_max_bytes_fires_even_when_content_length_lies_small(tmp_path):
     body = b"x" * 5000
     dest = tmp_path / "out.pdf"
 
+    client = _client(body, {"content-length": "10"})
+
     with pytest.raises(OversizeDownload):
-        await _client(body, {"content-length": "10"}).stream_to_file(
-            "/f.pdf", dest, max_bytes=100
-        )
+        await client.stream_to_file("/f.pdf", dest, max_bytes=100)
 
     assert not dest.exists()
 

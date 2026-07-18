@@ -24,7 +24,7 @@ import anyio
 from nextcloud_mcp_server.config import get_settings
 
 from .base import DocumentProcessor, ProcessingResult
-from .source import DocumentSource
+from .source import DocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +150,11 @@ class Pypdfium2FastProcessor(DocumentProcessor):
         ) = None,
     ) -> ProcessingResult:
         """Extract from the source's path, so the bytes are never materialised."""
+        # resolve_path, not source.path(): an in-memory source materialises by
+        # writing to disk, which must not block the shared event loop.
+        source_path = await resolve_path(source)
         return await self._extract_to_result(
-            str(source.path()), source.size, source.filename, progress_callback
+            str(source_path), source.size, source.filename, progress_callback
         )
 
     async def process(

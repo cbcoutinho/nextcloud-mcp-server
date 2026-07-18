@@ -20,7 +20,7 @@ from nextcloud_mcp_server.config import get_settings
 
 from ._isolation import PdfParseFailed, run_isolated_pdf_parse
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .source import DocumentSource, MemoryDocumentSource
+from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,31 @@ class PyMuPDFProcessor(DocumentProcessor):
         finally:
             source.cleanup()
 
+    def _read_metadata_sync(
+        self, source_path: str, filename: Optional[str], size: int
+    ) -> tuple[dict[str, Any], int]:
+        """Read metadata + page count, then close the document immediately.
+
+        Runs entirely inside ONE worker thread, serialized against other MuPDF
+        work: pymupdf is not thread-safe and a doc opened in one thread must not
+        be touched from another. The heavy page extraction re-opens the same path
+        in an isolated subprocess, so it needs no lock and ``doc`` is not needed
+        past this point. try/finally so a failure in _extract_metadata cannot
+        leak the handle.
+        """
+        from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+            pymupdf_serialized,
+        )
+
+        with pymupdf_serialized():
+            doc = pymupdf.open(source_path)
+            try:
+                meta = self._extract_metadata(doc, filename)
+                meta["file_size"] = size
+                return meta, doc.page_count
+            finally:
+                doc.close()
+
     async def process_source(
         self,
         source: "DocumentSource",
@@ -129,36 +154,16 @@ class PyMuPDFProcessor(DocumentProcessor):
             ProcessorError: If PDF processing fails
         """
 
-        source_path = str(source.path())
+        # Off the event loop: materialising an in-memory source writes the
+        # whole buffer to disk, which would stall every other in-flight job.
+        source_path = str(await resolve_path(source))
         filename = source.filename
         try:
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
-            # Open document only to read metadata + page count, then close it
-            # immediately (try/finally so a failure in _extract_metadata can't
-            # leak it). The heavy extraction below re-opens the same path in the
-            # isolated worker, so ``doc`` is not needed past this point.
-            # Read metadata entirely inside ONE worker thread, serialized against
-            # other MuPDF work: pymupdf is not thread-safe, and a doc opened in one
-            # thread must not be touched from another. (The heavy page extraction
-            # below runs in an isolated subprocess, so it needs no lock.)
-            def _read_metadata() -> tuple[dict[str, Any], int]:
-                from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
-                    pymupdf_serialized,
-                )
-
-                with pymupdf_serialized():
-                    doc = pymupdf.open(source_path)
-                    try:
-                        meta = self._extract_metadata(doc, filename)
-                        meta["file_size"] = source.size
-                        return meta, doc.page_count
-                    finally:
-                        doc.close()
-
             metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                _read_metadata
+                self._read_metadata_sync, source_path, filename, source.size
             )
 
             if progress_callback:

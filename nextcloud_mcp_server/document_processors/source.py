@@ -55,7 +55,14 @@ class DocumentSource(Protocol):
         ...
 
     def path(self) -> Path:
-        """A local filesystem path a native library can open."""
+        """A local filesystem path a native library can open.
+
+        May block: for an in-memory source this writes the buffer to a temp
+        file. Call :func:`resolve_path` from async code rather than calling this
+        directly -- ingest workers run many documents on one event loop, so a
+        synchronous multi-hundred-MB write would stall every other in-flight
+        document for its duration.
+        """
         ...
 
     def open(self) -> IO[bytes]:
@@ -143,6 +150,21 @@ class MemoryDocumentSource:
             self._materialised = None
 
 
+async def resolve_path(source: DocumentSource) -> Path:
+    """Await a source's local path without blocking the event loop.
+
+    ``SpooledDocumentSource.path()`` is already just an attribute read, but
+    ``MemoryDocumentSource.path()`` writes the buffer to disk. Ingest workers run
+    multiple documents concurrently on a single event loop, so that write is
+    offloaded to a worker thread -- otherwise materialising one large document
+    stalls every other job on the loop, which is exactly the case this ingest
+    work exists to fix.
+    """
+    from anyio.to_thread import run_sync  # noqa: PLC0415 -- keep imports light
+
+    return await run_sync(source.path)
+
+
 @contextmanager
 def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
     """Yield a fresh spool path, removing it (and any partial file) on exit."""
@@ -159,9 +181,11 @@ def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
 def sweep_orphaned_spools(spool_dir: str | None = None) -> int:
     """Delete spool files left behind by a previous run; returns the count.
 
-    A SIGKILLed worker cannot run its cleanup, and the spool directory is an
-    emptyDir that survives container restarts within the pod, so without a sweep
-    at startup a crash-looping worker would accumulate whole documents on disk.
+    Intended for a worker's startup path: a SIGKILLed worker cannot run its own
+    cleanup, and the spool directory is an emptyDir that survives container
+    restarts within the pod, so a crash-looping worker would otherwise accumulate
+    whole documents on disk. NOT yet called anywhere -- it lands with the change
+    that wires streaming downloads into the ingest path.
     """
     directory = Path(spool_dir or tempfile.gettempdir())
     removed = 0

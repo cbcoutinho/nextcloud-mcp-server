@@ -347,6 +347,9 @@ def test_recover_ignores_chunks_beyond_page_count():
 
 
 async def test_parse_process_limiter_is_bounded_by_setting():
+    # async because the limiter is stored in a RunVar, which requires a running
+    # event loop -- a sync test raises NoCurrentAsyncBackend.
+    await anyio.lowlevel.checkpoint()
     from nextcloud_mcp_server.document_processors._isolation import (
         parse_process_limiter,
     )
@@ -358,6 +361,7 @@ async def test_parse_process_limiter_is_bounded_by_setting():
 
 async def test_parse_process_limiter_is_reused_within_an_event_loop():
     """One limiter per loop, or the bound would not actually bind."""
+    await anyio.lowlevel.checkpoint()  # RunVar needs a running loop
     from nextcloud_mcp_server.document_processors._isolation import (
         parse_process_limiter,
     )
@@ -370,6 +374,7 @@ async def test_parse_process_limiter_is_reused_within_an_event_loop():
 
 async def test_parse_process_limiter_never_zero():
     """A zero-slot limiter would deadlock every parse."""
+    await anyio.lowlevel.checkpoint()  # RunVar needs a running loop
     from nextcloud_mcp_server.document_processors._isolation import (
         parse_process_limiter,
     )

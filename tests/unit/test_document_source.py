@@ -84,15 +84,14 @@ def test_memory_source_path_is_stable_across_calls():
 
 
 def test_spool_target_removes_the_file_even_on_failure(tmp_path):
-    captured: Path | None = None
+    manager = spool_target(str(tmp_path))
+    captured = manager.__enter__()
+    captured.write_bytes(b"partial download")
+    assert captured.exists()
 
-    with pytest.raises(RuntimeError):
-        with spool_target(str(tmp_path)) as target:
-            captured = target
-            target.write_bytes(b"partial download")
-            raise RuntimeError("download blew up")
+    # Simulate a download blowing up part-way through.
+    manager.__exit__(RuntimeError, RuntimeError("download blew up"), None)
 
-    assert captured is not None
     assert not captured.exists(), "a partial download must not be left behind"
 
 

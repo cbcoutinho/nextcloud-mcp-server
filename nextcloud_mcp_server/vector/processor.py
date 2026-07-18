@@ -132,9 +132,12 @@ def _drop_reason(exc: BaseException) -> str:
     return "other"
 
 
+PDF_MIME_TYPE = "application/pdf"
+
+
 def _is_pdf(content_type: str) -> bool:
     """Whether a MIME type is a PDF (parameter-tolerant)."""
-    return content_type.split(";")[0].strip().lower() == "application/pdf"
+    return content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE
 
 
 async def _parse_pdf_tier(
@@ -1265,7 +1268,7 @@ async def _index_document(
                     file_path
                 )
             else:
-                content_bytes, content_type = b"", "application/pdf"
+                content_bytes, content_type = b"", PDF_MIME_TYPE
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1615,7 +1618,7 @@ async def _index_document(
     bbox_source: str | None = None
 
     # Determine if we need PDF highlighting
-    is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
+    is_pdf = doc_task.doc_type == "file" and content_type == PDF_MIME_TYPE
 
     # Define async tasks for parallel execution
     async def generate_dense_embeddings():

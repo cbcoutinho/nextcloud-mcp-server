@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
 
+import anyio
 from httpx import HTTPStatusError, RemoteProtocolError, Response
 
 from nextcloud_mcp_server.observability.metrics import (
@@ -515,7 +516,11 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
-                with dest.open("wb") as fh:
+                # anyio's async file wrapper, not pathlib.Path.open: the writes
+                # run on a worker thread, so streaming a multi-hundred-MB
+                # document does not block the event loop (and with it every other
+                # in-flight job on this worker) for the duration of the download.
+                async with await anyio.open_file(dest, "wb") as fh:
                     async for chunk in response.aiter_bytes():
                         written += len(chunk)
                         if max_bytes is not None and written > max_bytes:
@@ -523,7 +528,7 @@ class WebDAVClient(BaseNextcloudClient):
                                 f"Download of {path!r} exceeded {max_bytes} bytes "
                                 f"(aborted after {written})"
                             )
-                        fh.write(chunk)
+                        await fh.write(chunk)
                 # Same short-read guard as the buffered path, against bytes
                 # written rather than bytes held in memory.
                 _verify_content_length(response, written, path)
