@@ -61,7 +61,7 @@ jobs:
         nextcloud_version:
           - "32"
           - "33"
-          # - "34"  # Disabled until all upstream apps support NC 34
+          - "34"
         mode:
           - "single-user"
           - "multi-user-basic"
