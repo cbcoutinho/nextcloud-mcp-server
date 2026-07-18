@@ -215,6 +215,10 @@ _DEFAULTS: dict[str, Any] = {
     "document_parse_page_window": 100,
     # Concurrent isolated parse subprocesses (see document_parse_process_slots).
     "document_parse_process_slots": 2,
+    # Stream ingest downloads to disk instead of buffering them in memory.
+    "document_stream_download_enabled": True,
+    # Directory for ingest spool files (default: the system temp dir).
+    "document_spool_dir": None,
     # Tier-0 classifier (records classification metrics on the tiered path)
     "document_classify_enabled": True,
     # Tiered PDF pipeline: pypdfium2 is the default/only hot-path extractor;
@@ -1161,6 +1165,15 @@ class Settings:
     # instead. 2 covers the per-tier worker concurrency actually deployed (1-3)
     # while capping the pathological case; raise it only with headroom to spare.
     document_parse_process_slots: int = 2
+    # Stream ingest downloads to a spool file rather than buffering the whole
+    # response in memory. read_file holds the entire document (a real 1040 MB
+    # file cost ~1.1 GB resident before a page was read); streaming keeps that
+    # at one chunk. Set false to fall back to the buffered path without a revert.
+    document_stream_download_enabled: bool = True
+    # Where spool files are written. None = tempfile.gettempdir(). In the
+    # container that is the /tmp emptyDir, which must have room for roughly
+    # (worker concurrency x the largest document).
+    document_spool_dir: str | None = None
     # Tier-0 classifier. Records classification metrics (recommended_tier,
     # text-quality) on the tiered path, derived from the tier-1 extraction.
     document_classify_enabled: bool = True
@@ -1968,6 +1981,8 @@ def _build_settings() -> Settings:
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
         "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",
+        "document_stream_download_enabled": "DOCUMENT_STREAM_DOWNLOAD_ENABLED",
+        "document_spool_dir": "DOCUMENT_SPOOL_DIR",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",

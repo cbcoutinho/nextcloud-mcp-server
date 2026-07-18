@@ -408,6 +408,23 @@ def worker(concurrency: int | None, tier: str | None):
     # docstring). Done after the queue check so a misconfig fails fast.
     _init_worker_observability(settings)
 
+    # Clear spool files left by a previous run. A SIGKILLed worker cannot run its
+    # own cleanup, and the spool directory is an emptyDir that survives container
+    # restarts within the pod, so a crash-looping worker would otherwise
+    # accumulate whole documents on disk until the volume filled.
+    if settings.document_stream_download_enabled:
+        from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
+            sweep_orphaned_spools,
+        )
+
+        swept = sweep_orphaned_spools(settings.document_spool_dir)
+        if swept:
+            logger.warning(
+                "Removed %d orphaned ingest spool file(s) at startup "
+                "(previous worker exited without cleaning up)",
+                swept,
+            )
+
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
         ALL_INGEST_QUEUES,
         INGEST_QUEUE_MAINTENANCE,

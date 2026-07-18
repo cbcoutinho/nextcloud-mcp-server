@@ -203,27 +203,26 @@ class BaseNextcloudClient(ABC):
         max_retries = 5
         for attempt in range(1, max_retries + 1):
             start_time = time.time()
+            # Status is recorded in a finally so the request is metered however
+            # the block ends. Without that, a failure raised by the CALLER's body
+            # loop (OversizeDownload, or the short-read RemoteProtocolError) is
+            # neither an HTTPStatusError nor a normal return, so the request went
+            # entirely unrecorded on mcp_nextcloud_api_requests_total.
+            status_code = 0
             try:
                 with trace_nextcloud_api_call(
                     app=self.app_name, method=method, path=url
                 ):
                     async with self._client.stream(method, url, **kwargs) as response:
+                        status_code = response.status_code
                         # Raised inside the stream context so the connection is
                         # released before the 429 handler sleeps and retries.
                         response.raise_for_status()
                         yield response
-                        record_nextcloud_api_call(
-                            app=self.app_name,
-                            method=method,
-                            status_code=response.status_code,
-                            duration=time.time() - start_time,
-                        )
                 return
             except HTTPStatusError as e:
-                if (
-                    e.response.status_code == codes.TOO_MANY_REQUESTS
-                    and attempt < max_retries
-                ):
+                status_code = e.response.status_code
+                if status_code == codes.TOO_MANY_REQUESTS and attempt < max_retries:
                     logger.warning(
                         "429 Too Many Requests on streaming download, attempt %s",
                         attempt,
@@ -231,13 +230,16 @@ class BaseNextcloudClient(ABC):
                     record_nextcloud_api_retry(app=self.app_name, reason="429")
                     await anyio.sleep(5)
                     continue
+                raise
+            finally:
+                # A retried 429 is metered as its own attempt, matching how
+                # retry_on_429 accounts for the buffered path.
                 record_nextcloud_api_call(
                     app=self.app_name,
                     method=method,
-                    status_code=e.response.status_code,
+                    status_code=status_code,
                     duration=time.time() - start_time,
                 )
-                raise
         raise RuntimeError(
             f"Maximum number of retries ({max_retries}) exceeded without success"
         )

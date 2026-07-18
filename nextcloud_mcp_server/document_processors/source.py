@@ -167,7 +167,19 @@ async def resolve_path(source: DocumentSource) -> Path:
 
 @contextmanager
 def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
-    """Yield a fresh spool path, removing it (and any partial file) on exit."""
+    """Yield a fresh spool path; the file is removed when the block exits.
+
+    **This block owns the file for its whole lifetime**, on success as well as
+    failure. That is deliberate and is the answer to the ownership question the
+    :meth:`DocumentProcessor.process_source` contract raises: rather than handing
+    a live path to a caller who must remember to unlink it, the document is
+    processed *inside* the block and the file cannot outlive it.
+
+    So do not return the path (or a :class:`SpooledDocumentSource` wrapping it)
+    out of the block expecting the file to still be there -- open a wider block
+    instead. ``vector.spool.spooled_document`` is the ingest-path wrapper that
+    does exactly that: it spans download, parse, embed and bbox extraction.
+    """
     directory = spool_dir or tempfile.gettempdir()
     fd, name = tempfile.mkstemp(prefix=SPOOL_PREFIX, suffix=".bin", dir=directory)
     os.close(fd)

@@ -44,16 +44,18 @@ def _events(store_spy):
 
 @pytest.mark.unit
 def test_ingested_byte_size_files_use_raw_binary():
-    """A file's bytes_ingested is its raw binary size, not the text size."""
-    # Raw bytes longer than the decoded text would suggest (e.g. PDF overhead):
-    # the helper must report the binary length, ignoring `content`.
-    raw = b"%PDF-1.7 ...binary..." + b"\x00" * 500
-    assert processor.ingested_byte_size(raw, "short extracted text") == len(raw)
+    """A file's bytes_ingested is its raw binary size, not the text size.
+
+    Takes the size rather than the bytes: a streamed document is never fully
+    resident, so the caller reads it off the document source.
+    """
+    raw_size = len(b"%PDF-1.7 ...binary..." + b"\x00" * 500)
+    assert processor.ingested_byte_size(raw_size, "short extracted text") == raw_size
 
 
 @pytest.mark.unit
 def test_ingested_byte_size_text_uses_utf8_length():
-    """Text doc types (content_bytes=None) fall back to UTF-8 byte length."""
+    """Text doc types (no source size) fall back to UTF-8 byte length."""
     # Multibyte char: 1 code point, 2 UTF-8 bytes — len(str) would undercount.
     text = "café"
     assert processor.ingested_byte_size(None, text) == len(text.encode("utf-8"))
