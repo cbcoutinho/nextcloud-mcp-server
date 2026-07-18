@@ -21,17 +21,62 @@ from typing import Any
 
 import anyio
 
+from nextcloud_mcp_server.config import get_settings
+
 from .base import DocumentProcessor, ProcessingResult
+from .source import DocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
 
-def _extract(content: bytes) -> tuple[str, dict[str, Any]]:
+def _extract_window(
+    pdfium: Any, content: bytes | str, start: int, end: int, page_texts: list[str]
+) -> None:
+    """Extract pages ``[start, end)`` into ``page_texts`` from a fresh document.
+
+    Opening and closing the document per window is what bounds memory -- see
+    ``_extract``. Callers hold the pdfium lock.
+    """
+    pdf = pdfium.PdfDocument(content)
+    try:
+        for i in range(start, end):
+            page = pdf[i]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    page_texts.append(textpage.get_text_bounded() or "")
+                finally:
+                    textpage.close()
+            finally:
+                # Outer finally so the page handle is freed even if
+                # get_textpage() raises on a corrupt page.
+                page.close()
+    finally:
+        pdf.close()
+
+
+def _extract(
+    content: bytes | str, page_window: int = 100
+) -> tuple[str, dict[str, Any]]:
     """Extract concatenated text + metadata from a PDF (runs in a worker thread).
+
+    ``content`` is either the PDF bytes or a path to it. A path is preferable:
+    ``PdfDocument(path)`` uses ``FPDF_LoadDocument``, which reads incrementally,
+    whereas the bytes form uses ``FPDF_LoadMemDocument64`` and pins the whole
+    buffer for the document's lifetime. Note this bounds the *input* copy only --
+    the parse working set is bounded by ``page_window`` below.
 
     ``page_boundaries`` offsets index into the returned text, which is the page
     texts joined with no separator so the offsets stay exact (the contract
     ``search/pdf_highlighter`` and the chunker rely on).
+
+    Pages are extracted in windows of ``page_window``, re-opening the document
+    for each window. PDFium retains parsed page objects for the document's
+    lifetime -- ``page.close()`` does not return them -- so a single open scales
+    peak RSS with page count (a real 4003-page file measured 1914 MB). Windowing
+    caps that at one window's worth; the freed arena is reused by the next
+    window, so peak stays flat (100 pages -> 63 MB, unchanged output). Pass 0 to
+    disable and extract in a single open.
     """
     import pypdfium2 as pdfium  # noqa: PLC0415 -- keep the native import lazy
 
@@ -41,26 +86,26 @@ def _extract(content: bytes) -> tuple[str, dict[str, Any]]:
 
     # PDFium is not thread-safe (shared process-global library + an unlocked
     # module-global object tracker), so serialize: concurrent ingest jobs must not
-    # drive it from two worker threads at once.
+    # drive it from two worker threads at once. The lock is taken per window
+    # rather than for the whole extraction: no pdfium object is held across a
+    # window boundary, so releasing there is safe and stops one large document
+    # blocking every other ingest job for the duration of its parse.
     with pdfium_serialized():
         pdf = pdfium.PdfDocument(content)
         try:
-            page_texts: list[str] = []
-            for i in range(len(pdf)):
-                page = pdf[i]
-                try:
-                    textpage = page.get_textpage()
-                    try:
-                        page_texts.append(textpage.get_text_bounded() or "")
-                    finally:
-                        textpage.close()
-                finally:
-                    # Outer finally so the page handle is freed even if
-                    # get_textpage() raises on a corrupt page.
-                    page.close()
+            page_count = len(pdf)
             doc_meta = pdf.get_metadata_dict() or {}
         finally:
             pdf.close()
+
+    page_texts: list[str] = []
+    window = page_window if page_window > 0 else page_count
+    start = 0
+    while start < page_count:
+        end = min(start + window, page_count)
+        with pdfium_serialized():
+            _extract_window(pdfium, content, start, end, page_texts)
+        start = end
 
     page_boundaries: list[dict[str, Any]] = []
     offset = 0
@@ -96,6 +141,22 @@ class Pypdfium2FastProcessor(DocumentProcessor):
     def supported_mime_types(self) -> set[str]:
         return {"application/pdf"}
 
+    async def process_source(
+        self,
+        source: DocumentSource,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        """Extract from the source's path, so the bytes are never materialised."""
+        # resolve_path, not source.path(): an in-memory source materialises by
+        # writing to disk, which must not block the shared event loop.
+        source_path = await resolve_path(source)
+        return await self._extract_to_result(
+            str(source_path), source.size, source.filename, progress_callback
+        )
+
     async def process(
         self,
         content: bytes,
@@ -106,11 +167,25 @@ class Pypdfium2FastProcessor(DocumentProcessor):
             Callable[[float, float | None, str | None], Awaitable[None]] | None
         ) = None,
     ) -> ProcessingResult:
+        return await self._extract_to_result(
+            content, len(content), filename, progress_callback
+        )
+
+    async def _extract_to_result(
+        self,
+        content: bytes | str,
+        size: int,
+        filename: str | None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
         if progress_callback:
             await progress_callback(0, 100, "Extracting text (pypdfium2)")
+        settings = get_settings()
         try:
             full_text, metadata = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                _extract, content
+                _extract, content, settings.document_parse_page_window
             )
         except Exception as e:
             # Fast path is best-effort: a failure here escalates rather than
@@ -126,7 +201,7 @@ class Pypdfium2FastProcessor(DocumentProcessor):
                 success=False,
                 error=f"{type(e).__name__}: {e}",
             )
-        metadata["file_size"] = len(content)
+        metadata["file_size"] = size
         if progress_callback:
             await progress_callback(100, 100, "Done")
         return ProcessingResult(text=full_text, metadata=metadata, processor=self.name)

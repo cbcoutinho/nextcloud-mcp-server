@@ -33,6 +33,8 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_dead_lettered,
     record_document_escalation,
     record_document_escalation_suppressed,
+    record_document_ingest_rejected,
+    record_document_ingest_size,
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
@@ -130,9 +132,12 @@ def _drop_reason(exc: BaseException) -> str:
     return "other"
 
 
+PDF_MIME_TYPE = "application/pdf"
+
+
 def _is_pdf(content_type: str) -> bool:
     """Whether a MIME type is a PDF (parameter-tolerant)."""
-    return content_type.split(";")[0].strip().lower() == "application/pdf"
+    return content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE
 
 
 async def _parse_pdf_tier(
@@ -326,6 +331,44 @@ def should_use_page_aware(
         page_boundaries: The extractor's page-boundary list (or ``None``).
     """
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
+
+
+def preflight_oversize_result(
+    doc_task: Any, file_path: str | None, settings: Any
+) -> Any:
+    """Apply the PDF size cap to the scanned size, before any download.
+
+    ``DocumentTask.size_bytes`` carries the WebDAV ``getcontentlength`` captured
+    at scan time, so an over-cap document can be rejected without fetching it.
+    Previously the cap could only be applied to bytes already fully resident,
+    which meant the guard against pathological files was itself paid for in
+    memory: a 531 MB PDF OOMKilled a worker mid-download, before its size was
+    ever checked.
+
+    Returns the same ``oversize`` :class:`ProcessingResult` the post-download
+    guard produces (so the caller's terminal/dead-letter handling is unchanged),
+    or ``None`` when the size is unknown or within the cap -- in which case the
+    post-download guard still applies as the backstop.
+    """
+    # The cap is PDF-specific, but content type is not known before the download.
+    # Safe because file discovery is PDF-only: _discover_tagged_files passes
+    # mime_type_filter="application/pdf" (vector/scanner.py), so every
+    # doc_type="file" task is a PDF. If discovery is ever broadened to other MIME
+    # types, gate this on content type rather than silently applying a PDF cap.
+    size_bytes = getattr(doc_task, "size_bytes", None)
+    if not size_bytes:
+        return None
+    from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+        get_registry,
+    )
+
+    # Observe the size BEFORE the cap, so the corpus histogram shows the over-cap
+    # tail rather than only what we accepted.
+    record_document_ingest_size(doc_task.doc_type, size_bytes)
+    result = get_registry().oversize_result_for_size(size_bytes, file_path, settings)
+    if result is not None:
+        record_document_ingest_rejected(doc_task.doc_type, "oversize")
+    return result
 
 
 def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
@@ -665,6 +708,12 @@ async def _reconcile_tag_event(
 
     doc_task.index_mode = match.get("_index_mode", payload_keys.INDEX_MODE_HYBRID)
     doc_task.file_path = match["path"]
+    # Mirror the scanner's assignment (vector/scanner.py): the SEARCH rows carry
+    # getcontentlength as "size". Without this a webhook-triggered index leaves
+    # size_bytes None, the pre-flight gate short-circuits, and the unbounded
+    # read_file runs -- so tagging a huge PDF for real-time indexing reproduces
+    # the OOM the gate exists to prevent. 0/absent means unknown.
+    doc_task.size_bytes = match.get("size") or None
     if not doc_task.etag:
         doc_task.etag = match.get("etag")
     last_modified = match.get("last_modified_timestamp")
@@ -948,6 +997,10 @@ async def _index_document(
         qdrant_client: Qdrant client instance
     """
     settings = get_settings()
+    # Set by the pre-flight size gate (files only) when a document is rejected
+    # from its scanned size; substituted for the parse result further down so the
+    # existing terminal/dead-letter handling is reached unchanged.
+    preflight_failure = None
 
     # Fetch document content
     with trace_operation(
@@ -1216,8 +1269,17 @@ async def _index_document(
                 if retry_in is not None:
                     raise BatchPending(retry_in=retry_in)
 
-            # Read file content via WebDAV
-            content_bytes, content_type = await nc_client.webdav.read_file(file_path)
+            # Pre-flight size gate: reject an over-cap document from the size the
+            # scanner already captured, so the download is never paid for. Falls
+            # through to the post-download guard when the size is unknown.
+            preflight_failure = preflight_oversize_result(doc_task, file_path, settings)
+            if preflight_failure is None:
+                # Read file content via WebDAV
+                content_bytes, content_type = await nc_client.webdav.read_file(
+                    file_path
+                )
+            else:
+                content_bytes, content_type = b"", PDF_MIME_TYPE
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1232,7 +1294,9 @@ async def _index_document(
             "vector_sync.document_process",
             attributes={
                 "vector_sync.content_type": content_type,
-                "vector_sync.file_size": len(content_bytes),
+                # The scanned size when known, so a document rejected before its
+                # download still reports its real size rather than 0.
+                "vector_sync.file_size": doc_task.size_bytes or len(content_bytes),
             },
         ):
             # The registry runs the tiered PDF pipeline and records
@@ -1257,7 +1321,14 @@ async def _index_document(
                 # queue-hop to the next tier). Everything else -- non-PDF files,
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
-                if tier is not None and _is_pdf(content_type):
+                if preflight_failure is not None:
+                    # Rejected from its scanned size before the download, so
+                    # there is nothing to parse. Substituting the guard's result
+                    # here (rather than returning early) keeps oversize handling
+                    # on the single terminal/dead-letter path below, however the
+                    # size became known.
+                    result = preflight_failure
+                elif tier is not None and _is_pdf(content_type):
                     # Per-document identity, forwarded to every tier's processor.
                     # Only the OCR tier reads it (batch mode keys its job-tracking
                     # table on it, Deck #332); fast/structured ignore it, so it's
@@ -1558,7 +1629,7 @@ async def _index_document(
     bbox_source: str | None = None
 
     # Determine if we need PDF highlighting
-    is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
+    is_pdf = doc_task.doc_type == "file" and content_type == PDF_MIME_TYPE
 
     # Define async tasks for parallel execution
     async def generate_dense_embeddings():

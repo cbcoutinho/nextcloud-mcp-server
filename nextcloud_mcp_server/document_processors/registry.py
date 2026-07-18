@@ -402,24 +402,24 @@ class ProcessorRegistry:
 
         return result
 
-    def _oversize_result(
-        self, content: bytes, filename: str | None, settings: Any
+    def oversize_result_for_size(
+        self, size_bytes: int, filename: str | None, settings: Any
     ) -> ProcessingResult | None:
-        """Pre-parse size guard, shared by the inline and per-tier paths.
+        """Pre-parse size guard evaluated against a known byte size.
 
-        A pathologically large PDF (e.g. a 42 MB scanned DUDE) burns the OCR
-        timeout for 0 chars. Return an explicit ``oversize`` failure so the
-        caller marks the placeholder "failed" instead of retrying; 0 disables the
-        cap. An explicit ``processor_name`` override (``registry.process``)
-        bypasses tiering entirely and is intentionally not size-gated (power-user
-        escape hatch). Skipping ``_run_processor`` means the rejection is counted
-        on ``astrolabe_document_parse_failed_total{oversize}`` (via
-        ``vector/processor.py``) but deliberately not on the parse-duration
-        histogram -- there is no parse to time.
+        Split out from :meth:`_oversize_result` so the cap can be applied to a
+        size learned *before* the download (WebDAV ``getcontentlength``, carried
+        on ``DocumentTask.size_bytes``). Applying it there means an over-cap
+        document is never fetched at all -- the old byte-based form could only
+        reject a file already fully resident in memory, which is how a 531 MB PDF
+        OOMKilled a worker before the cap was ever evaluated.
+
+        Returns an explicit ``oversize`` failure so the caller marks the
+        placeholder "failed" instead of retrying; 0 disables the cap.
         """
         max_pdf_mb = settings.document_max_pdf_size_mb
-        if max_pdf_mb > 0 and len(content) > max_pdf_mb * 1024 * 1024:
-            size_mb = len(content) / (1024 * 1024)
+        if max_pdf_mb > 0 and size_bytes > max_pdf_mb * 1024 * 1024:
+            size_mb = size_bytes / (1024 * 1024)
             logger.warning(
                 "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
                 filename or "<bytes>",
@@ -434,6 +434,26 @@ class ProcessorRegistry:
                 error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
             )
         return None
+
+    def _oversize_result(
+        self, content: bytes, filename: str | None, settings: Any
+    ) -> ProcessingResult | None:
+        """Pre-parse size guard, shared by the inline and per-tier paths.
+
+        A pathologically large PDF (e.g. a 42 MB scanned DUDE) burns the OCR
+        timeout for 0 chars. Return an explicit ``oversize`` failure so the
+        caller marks the placeholder "failed" instead of retrying; 0 disables the
+        cap. An explicit ``processor_name`` override (``registry.process``)
+        bypasses tiering entirely and is intentionally not size-gated (power-user
+        escape hatch). Skipping ``_run_processor`` means the rejection is counted
+        on ``astrolabe_document_parse_failed_total{oversize}`` (via
+        ``vector/processor.py``) but deliberately not on the parse-duration
+        histogram -- there is no parse to time.
+
+        Backstop for callers without a pre-fetch size; prefer
+        :meth:`oversize_result_for_size` when the size is known up front.
+        """
+        return self.oversize_result_for_size(len(content), filename, settings)
 
     def _classify_result(
         self,

@@ -39,7 +39,7 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from procrastinate import (
     App,
@@ -169,8 +169,16 @@ async def process_document_task(
     etag: str | None = None,
     owner_id: str | None = None,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
+    size_bytes: int | None = None,
+    **_forward_compat: Any,
 ) -> None:
     """Worker entry: rebuild the DocumentTask, resolve creds, run the pipeline.
+
+    Payload contract: procrastinate invokes this as
+    ``await_func(**job.task_kwargs)``, so every :class:`DocumentTask` field must
+    be accepted here with a default (an older producer's payload omits new
+    fields) and ``**_forward_compat`` absorbs fields a newer producer adds, so a
+    version skew degrades to ignoring them rather than failing the job.
 
     Queue-aware (Deck #323): the tier this worker runs is the tier of the job's
     current queue. A low-quality parse raises ``EscalateError``, which the
@@ -201,6 +209,7 @@ async def process_document_task(
         etag=etag,
         owner_id=owner_id,
         index_mode=index_mode,
+        size_bytes=size_bytes,
     )
     try:
         nc_client = await _resolve_client(user_id)

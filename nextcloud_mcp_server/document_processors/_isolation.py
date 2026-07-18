@@ -19,7 +19,8 @@ from typing import Any, cast
 
 import anyio
 import anyio.to_process
-from anyio import BrokenWorkerProcess
+from anyio import BrokenWorkerProcess, CapacityLimiter
+from anyio.lowlevel import RunVar
 
 # ``resource`` is a Unix-only stdlib module -- it does not exist on Windows, and
 # importing it unconditionally crashed Windows startup (#877). The RLIMIT_AS cap
@@ -34,6 +35,31 @@ logger = logging.getLogger(__name__)
 
 # Guard so the address-space limit is applied once per (reused) worker process.
 _MEM_LIMIT_APPLIED = False
+
+# Bounds how many parse subprocesses may run at once. anyio's default process
+# limiter is os.cpu_count(), which is decoupled from both the worker's
+# --concurrency and the pod memory limit: on an 8-core node that allows 8 x
+# document_parse_mem_limit_mb of address space inside a 3 GiB pod. A CapacityLimiter
+# belongs to the event loop that created it, so hold it in a RunVar (the same
+# mechanism anyio uses for its own default) rather than a module global.
+_PARSE_LIMITER: RunVar[CapacityLimiter] = RunVar("_pdf_parse_process_limiter")
+
+
+def parse_process_limiter(slots: int) -> CapacityLimiter:
+    """The per-event-loop limiter bounding concurrent parse subprocesses.
+
+    Created on first use from ``document_parse_process_slots``. Later changes to
+    the setting do not resize an existing limiter -- like the RLIMIT_AS cap it
+    pairs with, it is fixed for the worker's lifetime and a change needs a
+    restart.
+    """
+    try:
+        return _PARSE_LIMITER.get()
+    except LookupError:
+        limiter = CapacityLimiter(max(1, slots))
+        _PARSE_LIMITER.set(limiter)
+        return limiter
+
 
 # pymupdf4llm reconstructs reading-order markdown, which can DROP most of the text
 # on non-prose layouts (engineering drawings, scattered labels): observed 598 of a
@@ -109,13 +135,21 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
 
 
 def _parse_pdf_worker(
-    content: bytes,
+    source_path: str,
     write_images: bool,
     image_path: str | None,
     graphics_limit: int,
     mem_limit_mb: int,
 ) -> list[dict[str, Any]]:
     """Run pymupdf4llm.to_markdown in the worker subprocess (positional args only).
+
+    Takes a PATH, not bytes. Passing bytes meant every argument crossing the
+    ``to_process`` pipe was a full copy of the document -- one in the parent, one
+    pickled into the pipe, one in the child -- so a large file breached the
+    child's RLIMIT_AS before pymupdf4llm ran at all. Measured on a real 1040 MB
+    document: the worker died during initialisation in 0.9s while the parent
+    peaked at 2185 MB. Opening the path uses ``fz_open_file``, which reads
+    incrementally, so the rlimit now bounds parse working set as intended.
 
     Returns the ``page_chunks`` list (picklable dicts of text + metadata). Imports
     pymupdf lazily so the parent process isn't forced to load them here.
@@ -128,7 +162,7 @@ def _parse_pdf_worker(
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
 
-    doc = pymupdf.open("pdf", content)
+    doc = pymupdf.open(source_path)
     try:
         # page_chunks=True makes to_markdown return list[dict], not str.
         chunks = cast(
@@ -149,29 +183,35 @@ def _parse_pdf_worker(
 
 
 async def run_isolated_pdf_parse(
-    content: bytes,
+    source_path: str,
     *,
     write_images: bool,
     image_path: Path | None,
     graphics_limit: int,
     timeout_seconds: float,
     mem_limit_mb: int,
+    process_slots: int = 2,
 ) -> list[dict[str, Any]]:
     """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
 
     Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``error``) instead of
     taking the pod down. On timeout the worker process is killed (``cancellable``).
+
+    ``process_slots`` bounds how many parses run concurrently. Without it anyio
+    defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
+    ``--concurrency`` nor the pod memory limit constrains.
     """
     with anyio.move_on_after(timeout_seconds):
         try:
             return await anyio.to_process.run_sync(
                 _parse_pdf_worker,
-                content,
+                source_path,
                 write_images,
                 str(image_path) if image_path is not None else None,
                 graphics_limit,
                 mem_limit_mb,
                 cancellable=True,
+                limiter=parse_process_limiter(process_slots),
             )
         except MemoryError as e:
             # A clean rlimit breach: the worker raised MemoryError and stays

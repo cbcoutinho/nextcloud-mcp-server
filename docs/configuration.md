@@ -679,12 +679,64 @@ shorter OCR ceiling:
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
+DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
 ```
+
+`DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
+once. Without it anyio defaults to an `os.cpu_count()`-wide pool, which is
+constrained by neither the worker's `--concurrency` nor the pod memory limit: on
+an 8-core node that permits `8 × DOCUMENT_PARSE_MEM_LIMIT_MB` (~12 GiB of address
+space) inside a 3 GiB pod. `RLIMIT_AS` caps virtual address space rather than
+resident memory, so that is a ceiling rather than a reservation — but it is still
+well beyond what the pod can survive. Keep
+`DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
+memory limit. The limiter is created once per worker, so a change needs a restart.
 
 A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
+
+**Sizing the cap for a tenant.** Two metrics make the corpus visible instead of
+requiring a manual crawl:
+
+- `astrolabe_document_ingest_size_bytes{doc_type}` — a histogram of source sizes,
+  observed **before** the cap is applied, so the over-cap tail is included.
+  Buckets run to 2 GiB.
+- `astrolabe_document_ingest_rejected_total{doc_type,reason="oversize"}` — how
+  many documents the cap turned away.
+
+The fraction of a tenant's corpus blocked by the cap is then a query rather than
+an investigation, e.g.:
+
+```promql
+sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
+  / sum(rate(astrolabe_document_ingest_size_bytes_count[1h]))
+```
+
+> **Changing `DOCUMENT_MAX_PDF_SIZE_MB` re-drives dead-lettered documents.** The
+> cap is part of the escalation-tier signature that keys the document dead-letter
+> marker, so raising it makes previously-oversize documents retryable without
+> waiting for their etag to change (which, for an archive of scanned documents,
+> never happens). The trade-off is that a cap change invalidates *all* dead
+> letters for the tenant, not just oversize ones, so genuinely corrupt files are
+> re-attempted once too. On a large tenant that is a thundering herd — roll the
+> change out one tenant at a time and watch ingest queue depth.
+
+`DOCUMENT_PARSE_PAGE_WINDOW` bounds the **fast** tier's peak memory. PDFium keeps
+parsed page objects for the lifetime of the open document and `page.close()` does
+not give them back, so extracting a long document in one open makes peak RSS scale
+with page count — measured at ~0.5 MB/page, i.e. 1.9 GB for a real 4003-page
+document, enough to OOM a 3 GiB worker on its own. The extractor therefore
+re-opens the document every `DOCUMENT_PARSE_PAGE_WINDOW` pages; the freed arena is
+reused by the next window, so peak stays flat at roughly one window's worth
+(100 pages ≈ 85 MB) with byte-identical output and no measurable slowdown.
+
+Lower it for very memory-constrained workers, raise it to trade memory for fewer
+re-opens. Note the cost is per *page*, not per byte — a 500 MB / 70-page scan is
+far cheaper than a 100 MB / 4000-page one, so page count, not file size, is what
+this setting tracks.
 
 #### OCR tier configuration
 

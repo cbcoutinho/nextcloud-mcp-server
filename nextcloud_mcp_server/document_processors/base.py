@@ -2,7 +2,10 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from .source import DocumentSource
 
 from pydantic import BaseModel
 
@@ -77,6 +80,49 @@ class DocumentProcessor(ABC):
         Examples: {"application/pdf", "image/jpeg", "image/png"}
         """
         pass
+
+    async def process_source(
+        self,
+        source: "DocumentSource",
+        options: dict[str, Any] | None = None,
+        progress_callback: Callable[[float, float | None, str | None], Awaitable[None]]
+        | None = None,
+    ) -> ProcessingResult:
+        """Process a document from a file-backed handle.
+
+        Concrete on purpose: the default materialises the source and delegates to
+        :meth:`process`, so every existing processor keeps working untouched and
+        each can be migrated to a path-based parse independently. Override it
+        where opening by path avoids holding the whole document in memory (the
+        PDF engines); leave it alone where the processor genuinely needs bytes
+        (OCR base64, HTTP upload backends).
+
+        Note the default is where peak memory still scales with document size --
+        ``read_bytes`` is deliberately greppable for that reason.
+
+        The read is offloaded to a worker thread: for a spooled source it is a
+        synchronous disk read of the whole document, and every processor except
+        the two PDF engines relies on this default, so once streaming downloads
+        are wired in a large non-PDF document would otherwise block the shared
+        event loop for the full read.
+
+        Ownership: the CALLER owns ``source`` and is responsible for its
+        ``cleanup()``. Implementations must not clean up a source they were
+        handed -- they do not know whether the caller still needs it (e.g. for a
+        subsequent tier or bbox extraction). The bytes-based ``process()``
+        wrappers create their own :class:`MemoryDocumentSource` and clean it up
+        themselves.
+        """
+        from anyio.to_thread import run_sync  # noqa: PLC0415 -- keep imports light
+
+        content = await run_sync(source.read_bytes)
+        return await self.process(
+            content,
+            source.content_type,
+            source.filename,
+            options,
+            progress_callback,
+        )
 
     @abstractmethod
     async def process(

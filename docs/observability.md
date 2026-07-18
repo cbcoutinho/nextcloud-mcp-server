@@ -83,6 +83,25 @@ The Helm chart has moved to a [separate repository](https://github.com/cbcoutinh
 - `mcp_vector_sync_queue_size` - Current queue depth
 - `mcp_qdrant_operations_total` - Qdrant DB operations
 
+### Document Ingest Metrics
+
+Throughput at the parse boundary, labelled by `processor` and `tier`
+(`fast` | `structured` | `ocr`). Throughput counters accrue only on a full
+success, so partial extractions and in-flight batch-OCR polls never inflate them.
+
+- `astrolabe_document_parse_total{status}` - Parse attempts (doc rate)
+- `astrolabe_document_pages_processed_total` - Pages extracted (page rate)
+- `astrolabe_document_chars_processed_total` - Characters extracted
+- `astrolabe_document_bytes_processed_total` - Source bytes parsed
+- `astrolabe_document_parse_duration_seconds` - Parse latency per document
+- `astrolabe_document_parse_failed_total{reason}` - Hard failures
+  (`timeout` | `oom` | `error` | `oversize`)
+
+Corpus shape, recorded before the oversize gate so the over-cap tail is visible:
+
+- `astrolabe_document_ingest_size_bytes{doc_type}` - Source size distribution
+- `astrolabe_document_ingest_rejected_total{doc_type,reason}` - Rejected pre-parse
+
 ### Database Metrics
 
 - `mcp_db_operations_total` - DB operations (SQLite, Qdrant)
@@ -159,6 +178,40 @@ topk(10, sum(rate(mcp_tool_calls_total[5m])) by (tool_name))
 **Nextcloud API Health**:
 ```promql
 sum(rate(mcp_nextcloud_api_requests_total{status_code!~"2.."}[5m])) by (app)
+```
+
+**Ingest throughput — documents/s and pages/s**:
+
+Both are counters, so the per-second rate comes from `rate()` rather than a
+gauge. Pages/s is the more stable capacity signal, because documents vary from
+one page to several thousand.
+
+```promql
+# documents/s by tier
+sum(rate(astrolabe_document_parse_total{status="success"}[5m])) by (tier)
+
+# pages/s by tier
+sum(rate(astrolabe_document_pages_processed_total[5m])) by (tier)
+
+# mean pages per document (how page-heavy this tenant's corpus is)
+sum(rate(astrolabe_document_pages_processed_total[5m]))
+  / sum(rate(astrolabe_document_parse_total{status="success"}[5m]))
+
+# seconds per page — compare tiers, or spot a slow corpus
+sum(rate(astrolabe_document_parse_duration_seconds_sum{status="success"}[5m]))
+  / sum(rate(astrolabe_document_pages_processed_total[5m]))
+```
+
+**Corpus size distribution and how much the cap turns away**:
+```promql
+# p50 / p99 source size
+histogram_quantile(0.99,
+  sum(rate(astrolabe_document_ingest_size_bytes_bucket[1h])) by (le)
+)
+
+# fraction of documents rejected as oversize
+sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
+  / sum(rate(astrolabe_document_ingest_size_bytes_count[1h]))
 ```
 
 ## Alerts

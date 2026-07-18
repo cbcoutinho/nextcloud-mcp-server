@@ -38,6 +38,9 @@ def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
         # skip-redownload guard in process_document inert on these non-batch paths.
         document_ocr_mode="sync",
         document_tier1_engine="pypdfium2",
+        # Part of escalation_tiers_signature: raising the cap re-drives
+        # previously oversize-dead-lettered documents.
+        document_max_pdf_size_mb=50.0,
         get_collection_name=lambda: "c",
     )
 
@@ -125,6 +128,106 @@ async def test_terminal_failure_dead_letters(mocker):
     # Terminal failure still counts as a parse failure and does not escalate.
     spies.parse_failed.assert_called_once_with("timeout")
     spies.escalation.assert_not_called()
+
+
+async def test_preflight_oversize_dead_letters_without_downloading(mocker):
+    """An over-cap document must be rejected from its scanned size, no download.
+
+    This is the regression guard for the production OOM: the size cap could only
+    be applied to bytes already resident, so a 531 MB PDF was fetched into memory
+    and OOMKilled the worker mid-download, before the cap was ever evaluated.
+    """
+    spies = _patch_common(mocker, ocr_enabled=False)
+    parse = mocker.patch.object(processor, "_parse_pdf_tier", AsyncMock())
+    nc = _nc_client()
+    task = _file_task()
+    task.size_bytes = 531 * 1024 * 1024  # over the 50 MB cap
+
+    result = await processor._index_document(task, nc, MagicMock(), tier="fast")
+
+    assert result is False
+    # The whole point of the gate: the over-cap file is never fetched or parsed.
+    nc.webdav.read_file.assert_not_awaited()
+    parse.assert_not_awaited()
+    # Same terminal handling as the post-download guard: dead-lettered oversize.
+    spies.mark.assert_awaited_once()
+    assert spies.mark.await_args.args[4] == "oversize"
+    spies.dead_metric.assert_called_once_with("oversize")
+    spies.parse_failed.assert_called_once_with("oversize")
+    spies.escalation.assert_not_called()
+
+
+async def test_preflight_gate_allows_under_cap_file_through(mocker):
+    _patch_common(mocker, ocr_enabled=False)
+    # A terminal failure result keeps the assertion focused on the gate: the
+    # document is fetched and parsed (which is what is under test) and then
+    # stops on the harness's supported dead-letter path rather than running the
+    # full chunk/embed/index pipeline.
+    parse = mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(
+            return_value=ProcessingResult(
+                text="",
+                metadata={
+                    "parse_failed_reason": "error",
+                    "pipeline_tier": "structured",
+                },
+                processor="pypdfium2_fast",
+                success=False,
+                error="boom",
+            )
+        ),
+    )
+    nc = _nc_client()
+    task = _file_task()
+    task.size_bytes = 1024  # well under the cap
+
+    # structured with OCR off is terminal, so the failure stops here instead of
+    # escalating (#399) -- keeps the test about the gate, not the ladder.
+    await processor._index_document(task, nc, MagicMock(), tier="structured")
+
+    nc.webdav.read_file.assert_awaited_once()
+    parse.assert_awaited_once()
+
+
+async def test_preflight_gate_falls_back_when_size_unknown(mocker):
+    """size_bytes=None (webhook task, or a source without the property) still runs.
+
+    The post-download guard remains the backstop, so an unknown size must never
+    short-circuit the fetch.
+    """
+    _patch_common(mocker, ocr_enabled=False)
+    # A terminal failure result keeps the assertion focused on the gate: the
+    # document is fetched and parsed (which is what is under test) and then
+    # stops on the harness's supported dead-letter path rather than running the
+    # full chunk/embed/index pipeline.
+    parse = mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(
+            return_value=ProcessingResult(
+                text="",
+                metadata={
+                    "parse_failed_reason": "error",
+                    "pipeline_tier": "structured",
+                },
+                processor="pypdfium2_fast",
+                success=False,
+                error="boom",
+            )
+        ),
+    )
+    nc = _nc_client()
+    task = _file_task()
+    assert task.size_bytes is None
+
+    # structured with OCR off is terminal, so the failure stops here instead of
+    # escalating (#399) -- keeps the test about the gate, not the ladder.
+    await processor._index_document(task, nc, MagicMock(), tier="structured")
+
+    nc.webdav.read_file.assert_awaited_once()
+    parse.assert_awaited_once()
 
 
 async def test_non_terminal_failure_escalates_to_next_tier(mocker):

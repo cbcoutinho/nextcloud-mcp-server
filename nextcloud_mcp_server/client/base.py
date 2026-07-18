@@ -4,6 +4,7 @@ import logging
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC
+from contextlib import asynccontextmanager
 from functools import wraps
 from urllib.parse import unquote
 
@@ -181,6 +182,65 @@ class BaseNextcloudClient(ABC):
         if url.startswith("/apps/"):
             return "/index.php" + url
         return url
+
+    @asynccontextmanager
+    async def _stream_request(self, method: str, url: str, **kwargs):
+        """Streaming sibling of :meth:`_make_request`, yielding an unread Response.
+
+        Shares ``_resolve_url``, tracing and the API-call metric, so a streamed
+        download is not a second, untraced transport path. The body is NOT read
+        here -- the caller consumes ``aiter_bytes()`` inside the ``async with``.
+
+        ``retry_on_429`` deliberately does not apply: it re-invokes a coroutine
+        that returns a fully-read Response, and a partially-consumed stream
+        cannot be replayed. Retry only the connect+status phase instead, before
+        any body byte is yielded; a mid-body failure surfaces as the retryable
+        transport error it already is.
+        """
+        url = self._resolve_url(url)
+        logger.debug("Making streaming %s request to %s", method, url)
+
+        max_retries = 5
+        for attempt in range(1, max_retries + 1):
+            start_time = time.time()
+            try:
+                with trace_nextcloud_api_call(
+                    app=self.app_name, method=method, path=url
+                ):
+                    async with self._client.stream(method, url, **kwargs) as response:
+                        # Raised inside the stream context so the connection is
+                        # released before the 429 handler sleeps and retries.
+                        response.raise_for_status()
+                        yield response
+                        record_nextcloud_api_call(
+                            app=self.app_name,
+                            method=method,
+                            status_code=response.status_code,
+                            duration=time.time() - start_time,
+                        )
+                return
+            except HTTPStatusError as e:
+                if (
+                    e.response.status_code == codes.TOO_MANY_REQUESTS
+                    and attempt < max_retries
+                ):
+                    logger.warning(
+                        "429 Too Many Requests on streaming download, attempt %s",
+                        attempt,
+                    )
+                    record_nextcloud_api_retry(app=self.app_name, reason="429")
+                    await anyio.sleep(5)
+                    continue
+                record_nextcloud_api_call(
+                    app=self.app_name,
+                    method=method,
+                    status_code=e.response.status_code,
+                    duration=time.time() - start_time,
+                )
+                raise
+        raise RuntimeError(
+            f"Maximum number of retries ({max_retries}) exceeded without success"
+        )
 
     @retry_on_429
     async def _make_request(self, method: str, url: str, **kwargs):
