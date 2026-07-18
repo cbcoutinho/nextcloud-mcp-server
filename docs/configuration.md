@@ -679,12 +679,27 @@ shorter OCR ceiling:
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 ```
 
 A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
+
+`DOCUMENT_PARSE_PAGE_WINDOW` bounds the **fast** tier's peak memory. PDFium keeps
+parsed page objects for the lifetime of the open document and `page.close()` does
+not give them back, so extracting a long document in one open makes peak RSS scale
+with page count — measured at ~0.5 MB/page, i.e. 1.9 GB for a real 4003-page
+document, enough to OOM a 3 GiB worker on its own. The extractor therefore
+re-opens the document every `DOCUMENT_PARSE_PAGE_WINDOW` pages; the freed arena is
+reused by the next window, so peak stays flat at roughly one window's worth
+(100 pages ≈ 85 MB) with byte-identical output and no measurable slowdown.
+
+Lower it for very memory-constrained workers, raise it to trade memory for fewer
+re-opens. Note the cost is per *page*, not per byte — a 500 MB / 70-page scan is
+far cheaper than a 100 MB / 4000-page one, so page count, not file size, is what
+this setting tracks.
 
 #### OCR tier configuration
 

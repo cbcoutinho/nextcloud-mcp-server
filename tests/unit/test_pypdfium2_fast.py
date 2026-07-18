@@ -5,6 +5,7 @@ import pytest
 
 from nextcloud_mcp_server.document_processors.pypdfium2_fast import (
     Pypdfium2FastProcessor,
+    _extract,
 )
 
 pytestmark = pytest.mark.unit
@@ -57,3 +58,48 @@ async def test_malformed_pdf_returns_success_false():
 
 async def test_health_check():
     assert await Pypdfium2FastProcessor().health_check() is True
+
+
+# Page-windowed extraction (see _extract). PDFium retains parsed page objects for
+# the document's lifetime, so the extractor re-opens the document every N pages to
+# bound peak RSS. Windowing must not change a single byte of the output, and the
+# page_boundaries offsets must keep indexing exactly into the joined text --
+# search/pdf_highlighter and PageAwareChunker both depend on that contract.
+@pytest.mark.parametrize("window", [0, 1, 2, 3, 7, 100])
+def test_page_window_output_is_identical(window: int):
+    content = _digital_pdf(pages=7)
+
+    baseline_text, baseline_meta = _extract(content, 0)
+    text, meta = _extract(content, window)
+
+    assert text == baseline_text
+    assert meta["page_count"] == baseline_meta["page_count"] == 7
+    assert meta["page_boundaries"] == baseline_meta["page_boundaries"]
+
+
+@pytest.mark.parametrize("window", [1, 2, 3, 7, 100])
+def test_page_window_boundaries_stay_contiguous(window: int):
+    # A window that does not divide the page count is the off-by-one risk.
+    content = _digital_pdf(pages=7)
+
+    text, meta = _extract(content, window)
+
+    boundaries = meta["page_boundaries"]
+    assert len(boundaries) == 7
+    assert boundaries[0]["start_offset"] == 0
+    assert boundaries[-1]["end_offset"] == len(text)
+    for prev, nxt in zip(boundaries, boundaries[1:]):
+        assert prev["end_offset"] == nxt["start_offset"]
+
+
+def test_page_window_handles_empty_document():
+    doc = pymupdf.open()
+    doc.new_page(width=595, height=842)
+    content: bytes = doc.tobytes()
+    doc.close()
+
+    text, meta = _extract(content, 100)
+
+    assert meta["page_count"] == 1
+    assert meta["page_boundaries"][0]["start_offset"] == 0
+    assert meta["page_boundaries"][-1]["end_offset"] == len(text)
