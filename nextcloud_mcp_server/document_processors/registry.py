@@ -26,6 +26,8 @@ from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
+PDF_MIME_TYPE = "application/pdf"
+
 
 class ProcessorRegistry:
     """Central registry for document processors.
@@ -168,7 +170,7 @@ class ProcessorRegistry:
 
         # PDFs go through the tiered pipeline (tier-0 classify -> tier-1 fast ->
         # tier-3 OCR escalation). Everything else uses priority selection.
-        if content_type.split(";")[0].strip().lower() == "application/pdf":
+        if content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE:
             return await self._process_pdf(
                 content, content_type, filename, options, progress_callback
             )
@@ -187,7 +189,7 @@ class ProcessorRegistry:
         """First registered processor of ``tier`` that handles PDFs."""
         for name in self._priority_order:
             processor = self._processors[name][0]
-            if processor.tier == tier and processor.supports("application/pdf"):
+            if processor.tier == tier and processor.supports(PDF_MIME_TYPE):
                 return processor
         return None
 
@@ -616,7 +618,7 @@ class ProcessorRegistry:
         PDFs run the inline tiered pipeline, which is bytes-based, so they are
         materialised here -- see the note below.
         """
-        if source.content_type.split(";")[0].strip().lower() == "application/pdf":
+        if source.content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE:
             # TODO: give _process_pdf a source-based twin. The inline pipeline is
             # the escalation-disabled path (in-process/memory pool), not the
             # per-tier worker fleet that production runs, so the memory win lands

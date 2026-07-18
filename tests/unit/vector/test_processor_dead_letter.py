@@ -18,6 +18,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 
 from nextcloud_mcp_server.document_processors.base import ProcessingResult
@@ -466,6 +467,9 @@ async def test_buffered_fallback_cleans_up_its_temp_file(mocker):
     materialised: list = []
 
     async def _parse(registry, source, tier, settings, options=None):
+        # async because it stands in for _parse_pdf_tier; the checkpoint keeps
+        # that explicit rather than leaving a bare `async def` with no await.
+        await anyio.lowlevel.checkpoint()
         materialised.append(source.path())  # what a real PDF engine does
         return ProcessingResult(
             text="",

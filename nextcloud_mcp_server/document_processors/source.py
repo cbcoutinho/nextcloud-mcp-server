@@ -132,6 +132,11 @@ class MemoryDocumentSource:
     content: bytes
     content_type: str
     filename: str | None = None
+    #: Where :meth:`path` materialises. Must be the same directory the worker
+    #: sweeps at startup, or an in-process cleanup missed by a SIGKILL leaves an
+    #: orphan nothing will ever collect -- and the buffered path's disk usage
+    #: escapes the volume the spool budget sizes. None = system temp dir.
+    spool_dir: str | None = None
     _materialised: Path | None = field(default=None, repr=False)
 
     @property
@@ -140,7 +145,11 @@ class MemoryDocumentSource:
 
     def path(self) -> Path:
         if self._materialised is None:
-            fd, name = tempfile.mkstemp(prefix=SPOOL_PREFIX, suffix=".bin")
+            fd, name = tempfile.mkstemp(
+                prefix=SPOOL_PREFIX,
+                suffix=".bin",
+                dir=self.spool_dir or tempfile.gettempdir(),
+            )
             with os.fdopen(fd, "wb") as fh:
                 fh.write(self.content)
             self._materialised = Path(name)

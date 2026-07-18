@@ -81,8 +81,10 @@ async def test_spool_is_removed_when_the_download_raises(tmp_path):
     nc.webdav.stream_to_file = AsyncMock(side_effect=OSError("connection reset"))
 
     entered = False
+    manager = spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path))
+
     with pytest.raises(OSError):
-        async with spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path)):
+        async with manager:
             entered = True
 
     assert not entered, "the body must not run when the download fails"

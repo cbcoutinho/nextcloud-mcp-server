@@ -1338,7 +1338,12 @@ async def _index_document_inner(
                 content_bytes, content_type = await nc_client.webdav.read_file(
                     file_path
                 )
-                source = MemoryDocumentSource(content_bytes, content_type, file_path)
+                source = MemoryDocumentSource(
+                    content_bytes,
+                    content_type,
+                    file_path,
+                    spool_dir=settings.document_spool_dir,
+                )
                 # Same lifetime guarantee as the streamed branch. path() lazily
                 # materialises the buffer to a temp file -- both PDF engines and
                 # the bbox step call it -- so without this the kill-switch path
