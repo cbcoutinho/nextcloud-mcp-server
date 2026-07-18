@@ -213,6 +213,8 @@ _DEFAULTS: dict[str, Any] = {
     "document_max_pdf_size_mb": 50.0,
     # Pages per pypdfium2 extraction window (see document_parse_page_window).
     "document_parse_page_window": 100,
+    # Concurrent isolated parse subprocesses (see document_parse_process_slots).
+    "document_parse_process_slots": 2,
     # Tier-0 classifier (records classification metrics on the tiered path)
     "document_classify_enabled": True,
     # Tiered PDF pipeline: pypdfium2 is the default/only hot-path extractor;
@@ -535,6 +537,8 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
         # 0 disables page-windowed extraction; otherwise it must be positive.
         Validator("DOCUMENT_PARSE_PAGE_WINDOW", gte=0),
+        # At least one parse must be able to run.
+        Validator("DOCUMENT_PARSE_PROCESS_SLOTS", gte=1),
         # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
         # re-expose the OOM this guards against.
         Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=1),
@@ -1148,6 +1152,15 @@ class Settings:
     # a 30x reduction) with no measurable time cost and byte-identical output.
     # 0 disables windowing (single open, pre-0.141 behaviour).
     document_parse_page_window: int = 100
+    # Concurrent isolated parse subprocesses. anyio's default process limiter is
+    # os.cpu_count(), which is decoupled from both --concurrency and the pod
+    # memory limit: on an 8-core node that permits 8 x document_parse_mem_limit_mb
+    # (~12 GiB of address space) inside a 3 GiB pod. RLIMIT_AS bounds virtual
+    # address space rather than RSS, so that is a ceiling and not a reservation,
+    # but it is still far above anything the pod can survive. Bound it explicitly
+    # instead. 2 covers the per-tier worker concurrency actually deployed (1-3)
+    # while capping the pathological case; raise it only with headroom to spare.
+    document_parse_process_slots: int = 2
     # Tier-0 classifier. Records classification metrics (recommended_tier,
     # text-quality) on the tiered path, derived from the tier-1 extraction.
     document_classify_enabled: bool = True
@@ -1954,6 +1967,7 @@ def _build_settings() -> Settings:
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
+        "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",

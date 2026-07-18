@@ -338,3 +338,64 @@ def test_recover_ignores_chunks_beyond_page_count():
     _isolation._recover_underextracted_pages(_FakeDoc([_FakePage(rich)]), chunks)
     assert chunks[0]["text"] == rich  # page 0 recovered
     assert chunks[1]["text"] == "extra"  # extra chunk untouched (loop broke)
+
+
+# --- Parse-subprocess pool bound ---------------------------------------------
+# anyio's default process limiter is os.cpu_count(), which neither --concurrency
+# nor the pod memory limit constrains: on an 8-core node that permits 8 x
+# document_parse_mem_limit_mb of address space inside a 3 GiB pod.
+
+
+async def test_parse_process_limiter_is_bounded_by_setting():
+    from nextcloud_mcp_server.document_processors._isolation import (
+        parse_process_limiter,
+    )
+
+    limiter = parse_process_limiter(3)
+
+    assert limiter.total_tokens == 3
+
+
+async def test_parse_process_limiter_is_reused_within_an_event_loop():
+    """One limiter per loop, or the bound would not actually bind."""
+    from nextcloud_mcp_server.document_processors._isolation import (
+        parse_process_limiter,
+    )
+
+    first = parse_process_limiter(3)
+    second = parse_process_limiter(99)
+
+    assert first is second, "a second call must not mint a fresh, wider limiter"
+
+
+async def test_parse_process_limiter_never_zero():
+    """A zero-slot limiter would deadlock every parse."""
+    from nextcloud_mcp_server.document_processors._isolation import (
+        parse_process_limiter,
+    )
+
+    assert parse_process_limiter(0).total_tokens >= 1
+
+
+async def test_isolated_parse_uses_the_bounded_limiter(mocker):
+    """run_sync must be handed our limiter, not anyio's cpu_count default."""
+    import anyio.to_process
+
+    from nextcloud_mcp_server.document_processors import _isolation
+
+    run_sync = mocker.patch.object(
+        anyio.to_process, "run_sync", new=mocker.AsyncMock(return_value=[])
+    )
+
+    await _isolation.run_isolated_pdf_parse(
+        b"%PDF-1.4",
+        write_images=False,
+        image_path=None,
+        graphics_limit=1000,
+        timeout_seconds=5.0,
+        mem_limit_mb=512,
+        process_slots=2,
+    )
+
+    limiter = run_sync.await_args.kwargs["limiter"]
+    assert limiter.total_tokens == 2

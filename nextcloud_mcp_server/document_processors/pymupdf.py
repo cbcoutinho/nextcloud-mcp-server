@@ -165,6 +165,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     graphics_limit=settings.document_pdf_graphics_limit,
                     timeout_seconds=settings.document_parse_timeout_seconds,
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
+                    process_slots=settings.document_parse_process_slots,
                 )
             except PdfParseFailed as exc:
                 logger.warning(

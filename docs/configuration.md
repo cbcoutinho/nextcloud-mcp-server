@@ -680,7 +680,18 @@ DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (defau
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
+DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
 ```
+
+`DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
+once. Without it anyio defaults to an `os.cpu_count()`-wide pool, which is
+constrained by neither the worker's `--concurrency` nor the pod memory limit: on
+an 8-core node that permits `8 × DOCUMENT_PARSE_MEM_LIMIT_MB` (~12 GiB of address
+space) inside a 3 GiB pod. `RLIMIT_AS` caps virtual address space rather than
+resident memory, so that is a ceiling rather than a reservation — but it is still
+well beyond what the pod can survive. Keep
+`DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
+memory limit. The limiter is created once per worker, so a change needs a restart.
 
 A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
