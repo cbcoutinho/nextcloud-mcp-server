@@ -294,6 +294,42 @@ document_bytes_processed_total = Counter(
     ["processor", "tier"],
 )
 
+# Size distribution of everything a tenant offers for ingest, observed BEFORE the
+# oversize gate so the over-cap tail -- the part that decides caps, spool sizing
+# and worker memory -- is visible rather than silently dropped. Sizing decisions
+# were previously made from a one-off manual crawl (866 files / 66.84 GB, 51%
+# over cap); this makes the same picture a query for every tenant.
+#
+# Buckets are exponential to 2 GiB: an observed corpus spanned 1 MB to 1040 MB,
+# so the tail buckets carry real signal and must not collapse into +Inf.
+# Deliberately NOT labelled by tenant -- Prometheus already attaches the
+# namespace/pod, and a tenant label here would multiply series per bucket.
+document_ingest_size_bytes = Histogram(
+    "astrolabe_document_ingest_size_bytes",
+    "Source size of documents offered for ingest, before the oversize gate",
+    ["doc_type"],
+    buckets=(
+        64 * 1024,
+        256 * 1024,
+        1024 * 1024,
+        4 * 1024 * 1024,
+        16 * 1024 * 1024,
+        32 * 1024 * 1024,
+        64 * 1024 * 1024,
+        128 * 1024 * 1024,
+        256 * 1024 * 1024,
+        512 * 1024 * 1024,
+        1024 * 1024 * 1024,
+        2048 * 1024 * 1024,
+    ),
+)
+
+document_ingest_rejected_total = Counter(
+    "astrolabe_document_ingest_rejected_total",
+    "Documents rejected before parsing, by reason",
+    ["doc_type", "reason"],  # reason: oversize
+)
+
 # --- Escalation (tiered-pipeline readiness; ~0 until extra tiers exist) --------
 
 document_escalation_total = Counter(
@@ -1025,6 +1061,29 @@ def record_document_parse_failed(reason: str) -> None:
         reason: ``timeout`` | ``oom`` | ``error``
     """
     document_parse_failed_total.labels(reason=reason).inc()
+
+
+def record_document_ingest_size(doc_type: str, size_bytes: int) -> None:
+    """Record the source size of a document offered for ingest.
+
+    Called before the oversize gate so the distribution includes documents that
+    are subsequently rejected -- they are exactly the ones that drive cap, spool
+    and memory sizing. A size of 0/None means the source did not report one, and
+    is skipped rather than recorded as a real zero, which would pile a false
+    spike into the smallest bucket.
+    """
+    if size_bytes > 0:
+        document_ingest_size_bytes.labels(doc_type=doc_type).observe(size_bytes)
+
+
+def record_document_ingest_rejected(doc_type: str, reason: str) -> None:
+    """Record a document rejected before parsing (currently ``oversize``).
+
+    Paired with :func:`record_document_ingest_size` so "what fraction of this
+    tenant's corpus is over cap" is a ratio of two metrics rather than an
+    investigation.
+    """
+    document_ingest_rejected_total.labels(doc_type=doc_type, reason=reason).inc()
 
 
 def record_document_dead_lettered(reason: str) -> None:

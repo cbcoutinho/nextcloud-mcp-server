@@ -687,6 +687,23 @@ A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
 
+**Sizing the cap for a tenant.** Two metrics make the corpus visible instead of
+requiring a manual crawl:
+
+- `astrolabe_document_ingest_size_bytes{doc_type}` — a histogram of source sizes,
+  observed **before** the cap is applied, so the over-cap tail is included.
+  Buckets run to 2 GiB.
+- `astrolabe_document_ingest_rejected_total{doc_type,reason="oversize"}` — how
+  many documents the cap turned away.
+
+The fraction of a tenant's corpus blocked by the cap is then a query rather than
+an investigation, e.g.:
+
+```promql
+sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
+  / sum(rate(astrolabe_document_ingest_size_bytes_count[1h]))
+```
+
 > **Changing `DOCUMENT_MAX_PDF_SIZE_MB` re-drives dead-lettered documents.** The
 > cap is part of the escalation-tier signature that keys the document dead-letter
 > marker, so raising it makes previously-oversize documents retryable without

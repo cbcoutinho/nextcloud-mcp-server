@@ -33,6 +33,8 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_dead_lettered,
     record_document_escalation,
     record_document_escalation_suppressed,
+    record_document_ingest_rejected,
+    record_document_ingest_size,
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
@@ -352,7 +354,13 @@ def preflight_oversize_result(
         get_registry,
     )
 
-    return get_registry().oversize_result_for_size(size_bytes, file_path, settings)
+    # Observe the size BEFORE the cap, so the corpus histogram shows the over-cap
+    # tail rather than only what we accepted.
+    record_document_ingest_size(doc_task.doc_type, size_bytes)
+    result = get_registry().oversize_result_for_size(size_bytes, file_path, settings)
+    if result is not None:
+        record_document_ingest_rejected(doc_task.doc_type, "oversize")
+    return result
 
 
 def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
