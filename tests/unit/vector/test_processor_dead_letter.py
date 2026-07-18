@@ -38,6 +38,9 @@ def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
         # skip-redownload guard in process_document inert on these non-batch paths.
         document_ocr_mode="sync",
         document_tier1_engine="pypdfium2",
+        # Part of escalation_tiers_signature: raising the cap re-drives
+        # previously oversize-dead-lettered documents.
+        document_max_pdf_size_mb=50.0,
         get_collection_name=lambda: "c",
     )
 

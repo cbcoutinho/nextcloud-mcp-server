@@ -49,16 +49,29 @@ def escalation_tiers_signature(settings: Any) -> str:
     pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
     re-attempted automatically.
 
+    ``document_max_pdf_size_mb`` is included for the same reason: an oversize PDF
+    is always-terminal (``vector/processor.py`` never escalates ``oversize``), so
+    without the cap here a document stays dead-lettered until its etag changes
+    even after an operator allows bigger files -- and for an archive of scanned
+    documents the etag never changes. Formatted with ``:g`` so ``50`` and ``50.0``
+    fingerprint identically and a float-repr change cannot spuriously invalidate
+    every dead letter.
+
+    Note the blast radius: changing the cap invalidates ALL dead letters, not just
+    oversize ones, so genuinely corrupt documents are re-attempted once too. That
+    is the intended trade -- the alternative is a bespoke backfill path -- but it
+    means a cap change is a thundering herd on a large tenant and should be rolled
+    out one tenant at a time.
+
     TODO: when a future setting can make a previously-terminal document parseable,
-    fold it in here so raising it auto-retries existing dead-letters. Two known
-    candidates: a new escalation tier becoming toggleable (e.g. the reserved
-    ``llm`` rung in ``TIER_LADDER``), and a raised oversize cap (an oversize PDF is
-    always-terminal, so without the cap in this signature it stays dead-lettered
-    until its etag changes even after an operator allows bigger files).
+    fold it in here so raising it auto-retries existing dead-letters. Known
+    remaining candidate: a new escalation tier becoming toggleable (e.g. the
+    reserved ``llm`` rung in ``TIER_LADDER``).
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
-        f"t1={settings.document_tier1_engine}"
+        f"t1={settings.document_tier1_engine};"
+        f"maxmb={settings.document_max_pdf_size_mb:g}"
     )
 
 

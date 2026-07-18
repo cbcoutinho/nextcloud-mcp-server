@@ -687,6 +687,15 @@ A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
 
+> **Changing `DOCUMENT_MAX_PDF_SIZE_MB` re-drives dead-lettered documents.** The
+> cap is part of the escalation-tier signature that keys the document dead-letter
+> marker, so raising it makes previously-oversize documents retryable without
+> waiting for their etag to change (which, for an archive of scanned documents,
+> never happens). The trade-off is that a cap change invalidates *all* dead
+> letters for the tenant, not just oversize ones, so genuinely corrupt files are
+> re-attempted once too. On a large tenant that is a thundering herd — roll the
+> change out one tenant at a time and watch ingest queue depth.
+
 `DOCUMENT_PARSE_PAGE_WINDOW` bounds the **fast** tier's peak memory. PDFium keeps
 parsed page objects for the lifetime of the open document and `page.close()` does
 not give them back, so extracting a long document in one open makes peak RSS scale
