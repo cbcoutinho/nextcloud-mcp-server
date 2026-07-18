@@ -36,7 +36,12 @@ services:
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
-      #- ./third_party/astrolabe:/opt/apps/astrolabe:ro
+      # TEMPORARY (PR #1106): mounted to integration-test the unreleased
+      # NC-34 compatibility bump (cbcoutinho/astrolabe#242) before it is
+      # published to the app store. Re-comment once astrolabe ships a
+      # release declaring max-version="34" — leaving this on silently pins
+      # CI to the local submodule instead of the published app.
+      - ./third_party/astrolabe:/opt/apps/astrolabe:ro
       #- ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
