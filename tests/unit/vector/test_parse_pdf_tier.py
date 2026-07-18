@@ -117,10 +117,11 @@ async def test_ocr_batch_pending_sentinel_raises_batch_pending():
         success=False,
     )
     reg = _registry(result, decision=None)
+    source = _source(filename="scan.pdf")
+    settings = object()
+
     with pytest.raises(BatchPending) as ei:
-        await processor._parse_pdf_tier(
-            reg, _source(filename="scan.pdf"), "ocr", settings=object()
-        )
+        await processor._parse_pdf_tier(reg, source, "ocr", settings=settings)
     assert ei.value.retry_in == 90
     reg.evaluate_escalation_source.assert_not_called()
 

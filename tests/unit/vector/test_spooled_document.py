@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 
 from nextcloud_mcp_server.vector.spool import spooled_document
@@ -25,6 +26,9 @@ def _nc_client(
     nc = MagicMock()
 
     async def _stream_to_file(path, dest: Path, *, max_bytes=None):
+        # async because AsyncMock drives it; the checkpoint makes that explicit
+        # rather than leaving a bare `async def` with no await in it.
+        await anyio.lowlevel.checkpoint()
         dest.write_bytes(body)
         return len(body), content_type
 
@@ -57,14 +61,18 @@ async def test_spool_is_removed_on_success(tmp_path):
 async def test_spool_is_removed_when_the_body_raises(tmp_path):
     """A failure mid-processing must not leak a whole document onto disk."""
     nc = _nc_client()
-    spooled: Path | None = None
+    manager = spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path))
+    source = await manager.__aenter__()
+    spooled = source.path()
+    assert spooled.exists()
 
-    with pytest.raises(RuntimeError):
-        async with spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path)) as source:
-            spooled = source.path()
-            raise RuntimeError("parse blew up")
+    # Simulate the parse/embed step blowing up part-way through. __aexit__
+    # returns False ("not suppressed") rather than re-raising -- the `async with`
+    # statement is what re-raises -- so assert on that plus the cleanup.
+    exc = RuntimeError("parse blew up")
+    suppressed = await manager.__aexit__(RuntimeError, exc, exc.__traceback__)
 
-    assert spooled is not None
+    assert not suppressed, "the failure must propagate to the caller"
     assert not spooled.exists()
 
 
@@ -72,10 +80,12 @@ async def test_spool_is_removed_when_the_download_raises(tmp_path):
     nc = MagicMock()
     nc.webdav.stream_to_file = AsyncMock(side_effect=OSError("connection reset"))
 
+    entered = False
     with pytest.raises(OSError):
         async with spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path)):
-            pass
+            entered = True
 
+    assert not entered, "the body must not run when the download fails"
     assert list(tmp_path.iterdir()) == [], "no spool file may survive a failed download"
 
 
@@ -84,8 +94,10 @@ async def test_max_bytes_is_forwarded_to_the_client(tmp_path):
     when Content-Length is absent or wrong."""
     nc = _nc_client()
 
-    async with spooled_document(nc, "/f.pdf", spool_dir=str(tmp_path), max_bytes=4096):
-        pass
+    async with spooled_document(
+        nc, "/f.pdf", spool_dir=str(tmp_path), max_bytes=4096
+    ) as source:
+        assert source.path().exists()
 
     assert nc.webdav.stream_to_file.await_args.kwargs["max_bytes"] == 4096
 

@@ -332,6 +332,31 @@ def _init_worker_observability(settings: Settings) -> None:
     )
 
 
+def _sweep_spools_at_startup(settings) -> int:
+    """Clear ingest spool files left behind by a previous worker; returns count.
+
+    A SIGKILLed worker cannot run its own cleanup, and the spool directory is an
+    emptyDir that survives container restarts within the pod, so a crash-looping
+    worker would otherwise accumulate whole documents on disk until the volume
+    filled. Skipped when streaming is off, since nothing spools then.
+    """
+    if not settings.document_stream_download_enabled:
+        return 0
+
+    from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
+        sweep_orphaned_spools,
+    )
+
+    swept = sweep_orphaned_spools(settings.document_spool_dir)
+    if swept:
+        logger.warning(
+            "Removed %d orphaned ingest spool file(s) at startup "
+            "(previous worker exited without cleaning up)",
+            swept,
+        )
+    return swept
+
+
 def _resolve_worker_concurrency(
     cli_concurrency: int | None,
     tier: str | None,
@@ -408,22 +433,7 @@ def worker(concurrency: int | None, tier: str | None):
     # docstring). Done after the queue check so a misconfig fails fast.
     _init_worker_observability(settings)
 
-    # Clear spool files left by a previous run. A SIGKILLed worker cannot run its
-    # own cleanup, and the spool directory is an emptyDir that survives container
-    # restarts within the pod, so a crash-looping worker would otherwise
-    # accumulate whole documents on disk until the volume filled.
-    if settings.document_stream_download_enabled:
-        from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
-            sweep_orphaned_spools,
-        )
-
-        swept = sweep_orphaned_spools(settings.document_spool_dir)
-        if swept:
-            logger.warning(
-                "Removed %d orphaned ingest spool file(s) at startup "
-                "(previous worker exited without cleaning up)",
-                swept,
-            )
+    _sweep_spools_at_startup(settings)
 
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
         ALL_INGEST_QUEUES,
