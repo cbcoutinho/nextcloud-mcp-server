@@ -111,3 +111,54 @@ def test_sweep_removes_orphans_but_leaves_other_files(tmp_path):
 
 def test_sweep_on_empty_directory_is_a_noop(tmp_path):
     assert sweep_orphaned_spools(str(tmp_path)) == 0
+
+
+def test_is_file_backed_distinguishes_the_two_sources(tmp_path):
+    """Sync callers use this to pick the access that does no I/O.
+
+    A spooled source hands over its path for free; an in-memory one hands over
+    its buffer for free. Choosing wrong means a blocking whole-buffer disk write
+    on the shared event loop (registry._classify_result is a plain def).
+    """
+    spooled = _spooled(tmp_path)
+    memory = MemoryDocumentSource(b"hello", "text/plain")
+
+    assert spooled.is_file_backed is True
+    assert memory.is_file_backed is False
+
+
+def test_memory_source_free_access_does_not_touch_disk():
+    """read_bytes on an in-memory source must not materialise anything."""
+    source = MemoryDocumentSource(b"hello", "text/plain")
+
+    assert source.read_bytes() == b"hello"
+    assert source._materialised is None
+
+
+def test_memory_source_materialises_into_the_configured_spool_dir(tmp_path):
+    """Both source types must land in the directory the worker actually sweeps.
+
+    The startup sweep only globs ``document_spool_dir``. If an in-memory source
+    materialised to the system temp dir instead, a SIGKILL on the buffered path
+    would leave an orphan nothing ever collects -- and that disk usage would sit
+    outside the volume the spool budget sizes.
+    """
+    source = MemoryDocumentSource(b"hello", "text/plain", spool_dir=str(tmp_path))
+    try:
+        path = source.path()
+        assert path.parent == tmp_path
+        assert path.name.startswith(SPOOL_PREFIX)
+        # ...and therefore the sweep can actually find it.
+        assert sweep_orphaned_spools(str(tmp_path)) == 1
+    finally:
+        source.cleanup()
+
+
+def test_memory_source_defaults_to_the_system_temp_dir():
+    import tempfile as _tempfile
+
+    source = MemoryDocumentSource(b"hello", "text/plain")
+    try:
+        assert source.path().parent == Path(_tempfile.gettempdir())
+    finally:
+        source.cleanup()

@@ -14,11 +14,19 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .classifier import DocClassification, classify_from_text, image_coverage_per_page
+from .classifier import (
+    DocClassification,
+    classify_from_text,
+    image_coverage_per_page,
+    image_coverage_per_page_from_path,
+)
 from .escalation import TIER_LADDER, EscalationDecision
 from .ocr import OCR_BATCH_PENDING_KEY
+from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
+
+PDF_MIME_TYPE = "application/pdf"
 
 
 class ProcessorRegistry:
@@ -162,7 +170,7 @@ class ProcessorRegistry:
 
         # PDFs go through the tiered pipeline (tier-0 classify -> tier-1 fast ->
         # tier-3 OCR escalation). Everything else uses priority selection.
-        if content_type.split(";")[0].strip().lower() == "application/pdf":
+        if content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE:
             return await self._process_pdf(
                 content, content_type, filename, options, progress_callback
             )
@@ -181,7 +189,7 @@ class ProcessorRegistry:
         """First registered processor of ``tier`` that handles PDFs."""
         for name in self._priority_order:
             processor = self._processors[name][0]
-            if processor.tier == tier and processor.supports("application/pdf"):
+            if processor.tier == tier and processor.supports(PDF_MIME_TYPE):
                 return processor
         return None
 
@@ -463,6 +471,7 @@ class ProcessorRegistry:
         *,
         record: bool,
         filename: str | None = None,
+        source: DocumentSource | None = None,
     ) -> DocClassification | None:
         """Tier-0 classification of a parse result (text-only, cheap).
 
@@ -481,7 +490,20 @@ class ProcessorRegistry:
             # Scan detection feeds the OCR tier, so run it whenever OCR is enabled.
             if settings.document_ocr_enabled and settings.document_ocr_detect_scanned:
                 try:
-                    image_coverage = image_coverage_per_page(content)
+                    # Pick the access that does no I/O for this source type:
+                    # a spooled document hands over its path for free, while an
+                    # in-memory one hands over its buffer for free. Calling
+                    # path() on an in-memory source would write the whole buffer
+                    # to disk -- and this runs synchronously on the event loop,
+                    # so that would stall every other in-flight document.
+                    if source is None:
+                        image_coverage = image_coverage_per_page(content)
+                    elif source.is_file_backed:
+                        image_coverage = image_coverage_per_page_from_path(
+                            str(source.path())
+                        )
+                    else:
+                        image_coverage = image_coverage_per_page(source.read_bytes())
                 except Exception:
                     # Best-effort: fall back to text-only signals. WARNING (not
                     # DEBUG) so a systematic scan-detection failure on an
@@ -576,6 +598,87 @@ class ProcessorRegistry:
                 return tier
         return None
 
+    async def process_source(
+        self,
+        source: DocumentSource,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        """Inline (non-tiered) processing of a file-backed source.
+
+        Non-PDFs are handed the source directly. Note that only the two PDF
+        engines override ``process_source`` today, so any other processor still
+        materialises the document via the base-class default -- off the event
+        loop through ``run_sync``, so it no longer blocks, but the memory is
+        still proportional to document size until that processor grows a
+        path-based override.
+
+        PDFs run the inline tiered pipeline, which is bytes-based, so they are
+        materialised here -- see the note below.
+        """
+        if source.content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE:
+            # TODO: give _process_pdf a source-based twin. The inline pipeline is
+            # the escalation-disabled path (in-process/memory pool), not the
+            # per-tier worker fleet that production runs, so the memory win lands
+            # where it matters first; this keeps behaviour identical meanwhile.
+            from anyio.to_thread import run_sync  # noqa: PLC0415
+
+            content = await run_sync(source.read_bytes)
+            return await self._process_pdf(
+                content,
+                source.content_type,
+                source.filename,
+                options,
+                progress_callback,
+            )
+
+        processor = self.find_processor(source.content_type)
+        if not processor:
+            raise ProcessorError(
+                f"No processor found for type: {source.content_type}. "
+                f"Registered processors: {', '.join(self.list_processors())}"
+            )
+        return await self._run_processor_source(
+            processor, source, options, progress_callback
+        )
+
+    async def process_tier_source(
+        self,
+        source: DocumentSource,
+        tier: str,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        """Run exactly ONE tier against a file-backed source.
+
+        The path-based twin of :meth:`process_tier`. Applying the size guard to
+        ``source.size`` avoids materialising a document only to reject it, and
+        handing the processor the source lets the PDF engines open by path
+        instead of holding the bytes.
+        """
+        oversize = self.oversize_result_for_size(
+            source.size, source.filename, get_settings()
+        )
+        if oversize is not None:
+            return oversize
+        processor = self._pdf_processor_for_tier(tier)
+        if processor is None:
+            raise ProcessorError(
+                f"No '{tier}'-tier PDF processor registered "
+                f"(available: {', '.join(self.list_processors())})"
+            )
+        return await self._run_processor_source(
+            processor,
+            source,
+            options,
+            progress_callback,
+            escalated=(tier != TIER_LADDER[0]),
+        )
+
     async def process_tier(
         self,
         content: bytes,
@@ -614,6 +717,22 @@ class ProcessorRegistry:
             escalated=(tier != TIER_LADDER[0]),
         )
 
+    def evaluate_escalation_source(
+        self,
+        result: ProcessingResult,
+        source: DocumentSource,
+        current_tier: str,
+        settings: Any,
+    ) -> EscalationDecision | None:
+        """:meth:`evaluate_escalation` against a file-backed source.
+
+        Scan detection re-opens the document; giving it the path keeps that off
+        the bytes, so a large scan is not materialised just to be classified.
+        """
+        return self._evaluate_escalation(
+            result, b"", current_tier, settings, filename=source.filename, source=source
+        )
+
     def evaluate_escalation(
         self,
         result: ProcessingResult,
@@ -622,6 +741,21 @@ class ProcessorRegistry:
         settings: Any,
         *,
         filename: str | None = None,
+    ) -> EscalationDecision | None:
+        """Bytes-based adapter; see :meth:`_evaluate_escalation`."""
+        return self._evaluate_escalation(
+            result, content, current_tier, settings, filename=filename
+        )
+
+    def _evaluate_escalation(
+        self,
+        result: ProcessingResult,
+        content: bytes,
+        current_tier: str,
+        settings: Any,
+        *,
+        filename: str | None = None,
+        source: DocumentSource | None = None,
     ) -> EscalationDecision | None:
         """Decide whether ``current_tier``'s result must escalate (external path).
 
@@ -659,6 +793,7 @@ class ProcessorRegistry:
             settings,
             record=(current_tier == TIER_LADDER[0]),
             filename=filename,
+            source=source,
         )
         if classification is None or classification.recommended_tier not in (
             "structured",
@@ -694,6 +829,29 @@ class ProcessorRegistry:
             return EscalationDecision("suppressed", ideal, reason)
         return None
 
+    async def _run_processor_source(
+        self,
+        processor: DocumentProcessor,
+        source: DocumentSource,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+        *,
+        escalated: bool = False,
+    ) -> ProcessingResult:
+        """Run one processor against a file-backed source."""
+        return await self._run_processor(
+            processor,
+            b"",
+            source.content_type,
+            source.filename,
+            options,
+            progress_callback,
+            escalated=escalated,
+            source=source,
+        )
+
     async def _run_processor(
         self,
         processor: DocumentProcessor,
@@ -706,8 +864,18 @@ class ProcessorRegistry:
         ) = None,
         *,
         escalated: bool = False,
+        source: DocumentSource | None = None,
     ) -> ProcessingResult:
-        """Run one processor with the per-processor span + parse metrics."""
+        """Run one processor with the per-processor span + parse metrics.
+
+        When ``source`` is given the processor is driven through
+        ``process_source`` (so a PDF engine opens by path rather than holding the
+        bytes) and ``content`` is ignored. The instrumentation is identical
+        either way, which is why this is one method rather than two.
+        """
+        if source is not None:
+            content_type = source.content_type
+            filename = source.filename
         tier = processor.tier
         logger.info(
             "Processing with '%s' processor",
@@ -719,7 +887,7 @@ class ProcessorRegistry:
             },
         )
 
-        byte_size = len(content)
+        byte_size = source.size if source is not None else len(content)
         start_time = time.time()
         with trace_operation(
             "document_processor.parse",
@@ -733,9 +901,14 @@ class ProcessorRegistry:
             record_exception=True,
         ) as span:
             try:
-                result = await processor.process(
-                    content, content_type, filename, options, progress_callback
-                )
+                if source is not None:
+                    result = await processor.process_source(
+                        source, options, progress_callback
+                    )
+                else:
+                    result = await processor.process(
+                        content, content_type, filename, options, progress_callback
+                    )
             except Exception:
                 duration = time.time() - start_time
                 record_document_parse(

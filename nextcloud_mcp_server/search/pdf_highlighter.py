@@ -783,10 +783,11 @@ class PDFHighlighter:
 
     @staticmethod
     def compute_chunk_bboxes_batch(
-        pdf_bytes: bytes,
+        pdf_bytes: bytes | None,
         chunks: list[tuple[int, int, int, int | None, str]],
         page_boundaries: list[dict],
         full_text: str,
+        pdf_path: Path | None = None,
     ) -> dict[int, tuple[list[tuple[float, float, float, float]], int]]:
         """Compute normalized bounding boxes for chunks without rendering.
 
@@ -797,12 +798,15 @@ class PDFHighlighter:
         no PNG bytes are produced.
 
         Args:
-            pdf_bytes: PDF file bytes.
+            pdf_bytes: PDF file bytes. May be None when ``pdf_path`` is given.
             chunks: List of (chunk_index, start_offset, end_offset,
                 stored_page_number, chunk_text). chunk_index is the dict key.
             page_boundaries: Pre-computed page boundaries from the document
                 processor; each entry is {"page", "start_offset", "end_offset"}.
             full_text: Full document text (for cross-page chunk handling).
+            pdf_path: Path to the PDF, used in preference to ``pdf_bytes``. The
+                ingest path already has the document spooled on disk, so passing
+                the path skips writing a second copy of it to a temp file.
 
         Returns:
             dict mapping chunk_index to (normalized_bboxes, page_number).
@@ -818,11 +822,17 @@ class PDFHighlighter:
         temp_pdf_path = None
         doc = None
         try:
-            temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
-            temp_pdf_path = temp_dir / "pdf.pdf"
-            temp_pdf_path.write_bytes(pdf_bytes)
+            if pdf_path is not None:
+                source_path = pdf_path
+            else:
+                if pdf_bytes is None:
+                    raise ValueError("one of pdf_bytes or pdf_path is required")
+                temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
+                temp_pdf_path = temp_dir / "pdf.pdf"
+                temp_pdf_path.write_bytes(pdf_bytes)
+                source_path = temp_pdf_path
 
-            doc = pymupdf.open(temp_pdf_path)
+            doc = pymupdf.open(source_path)
 
             # Per-page (token, word) cache: get_text("words") + tokenisation is the
             # dominant per-page cost. Extract each page once and reuse it across all

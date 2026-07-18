@@ -35,7 +35,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Iterator, Protocol, runtime_checkable
+from typing import IO, ClassVar, Iterator, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,12 @@ class DocumentSource(Protocol):
 
     content_type: str
     filename: str | None
+
+    #: True when the document already lives on disk, so :meth:`path` is a free
+    #: attribute read and :meth:`read_bytes` costs a full read. False when it is
+    #: already in memory, where the costs are reversed. Sync callers use this to
+    #: pick the access that does no I/O, rather than blocking the event loop.
+    is_file_backed: bool
 
     @property
     def size(self) -> int:
@@ -82,6 +88,8 @@ class DocumentSource(Protocol):
 @dataclass
 class SpooledDocumentSource:
     """A document streamed to a local file, removed by :meth:`cleanup`."""
+
+    is_file_backed: ClassVar[bool] = True
 
     spool_path: Path
     content_type: str
@@ -119,9 +127,16 @@ class MemoryDocumentSource:
     so the common small-document case never touches the disk.
     """
 
+    is_file_backed: ClassVar[bool] = False
+
     content: bytes
     content_type: str
     filename: str | None = None
+    #: Where :meth:`path` materialises. Must be the same directory the worker
+    #: sweeps at startup, or an in-process cleanup missed by a SIGKILL leaves an
+    #: orphan nothing will ever collect -- and the buffered path's disk usage
+    #: escapes the volume the spool budget sizes. None = system temp dir.
+    spool_dir: str | None = None
     _materialised: Path | None = field(default=None, repr=False)
 
     @property
@@ -130,7 +145,11 @@ class MemoryDocumentSource:
 
     def path(self) -> Path:
         if self._materialised is None:
-            fd, name = tempfile.mkstemp(prefix=SPOOL_PREFIX, suffix=".bin")
+            fd, name = tempfile.mkstemp(
+                prefix=SPOOL_PREFIX,
+                suffix=".bin",
+                dir=self.spool_dir or tempfile.gettempdir(),
+            )
             with os.fdopen(fd, "wb") as fh:
                 fh.write(self.content)
             self._materialised = Path(name)
@@ -167,7 +186,19 @@ async def resolve_path(source: DocumentSource) -> Path:
 
 @contextmanager
 def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
-    """Yield a fresh spool path, removing it (and any partial file) on exit."""
+    """Yield a fresh spool path; the file is removed when the block exits.
+
+    **This block owns the file for its whole lifetime**, on success as well as
+    failure. That is deliberate and is the answer to the ownership question the
+    :meth:`DocumentProcessor.process_source` contract raises: rather than handing
+    a live path to a caller who must remember to unlink it, the document is
+    processed *inside* the block and the file cannot outlive it.
+
+    So do not return the path (or a :class:`SpooledDocumentSource` wrapping it)
+    out of the block expecting the file to still be there -- open a wider block
+    instead. ``vector.spool.spooled_document`` is the ingest-path wrapper that
+    does exactly that: it spans download, parse, embed and bbox extraction.
+    """
     directory = spool_dir or tempfile.gettempdir()
     fd, name = tempfile.mkstemp(prefix=SPOOL_PREFIX, suffix=".bin", dir=directory)
     os.close(fd)
@@ -181,11 +212,16 @@ def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
 def sweep_orphaned_spools(spool_dir: str | None = None) -> int:
     """Delete spool files left behind by a previous run; returns the count.
 
-    Intended for a worker's startup path: a SIGKILLed worker cannot run its own
-    cleanup, and the spool directory is an emptyDir that survives container
-    restarts within the pod, so a crash-looping worker would otherwise accumulate
-    whole documents on disk. NOT yet called anywhere -- it lands with the change
-    that wires streaming downloads into the ingest path.
+    Called from the worker's startup path (``cli._sweep_spools_at_startup``): a
+    SIGKILLed worker cannot run its own cleanup, and the spool directory
+    survives container restarts within the pod, so a crash-looping worker would
+    otherwise accumulate whole documents on disk.
+
+    Assumes the spool directory belongs to THIS worker. The glob has no liveness
+    check, so a directory shared between concurrently-running replicas would let
+    one worker's startup sweep unlink a peer's in-flight spool file. That holds
+    today (the default is an unshared per-pod temp dir) and must keep holding if
+    the volume becomes a PVC -- see Deck #693.
     """
     directory = Path(spool_dir or tempfile.gettempdir())
     removed = 0
