@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
@@ -18,6 +19,15 @@ from nextcloud_mcp_server.observability.metrics import (
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
+
+
+class OversizeDownload(Exception):
+    """A streamed download exceeded its byte budget and was aborted.
+
+    Distinct from the pre-flight size gate: that acts on the size the server
+    advertised at scan time, this acts on what actually arrives, so it still
+    holds when ``Content-Length`` is absent or untrue.
+    """
 
 
 def _read_complete_body(response: Response, label: str) -> bytes:
@@ -43,41 +53,65 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     responses (see #1099).
     """
     content = response.content
+    _verify_content_length(response, len(content), label)
+    return content
+
+
+def _expected_content_length(response: Response) -> int | None:
+    """The comparable ``Content-Length``, or ``None`` when the check can't apply.
+
+    Returns ``None`` for a compressed response (the header describes the
+    compressed size on the wire, not the decompressed bytes httpx hands back --
+    see #1099), a missing header (e.g. ``Transfer-Encoding: chunked``), a
+    malformed one, or a degenerate negative length.
+    """
     content_encoding = response.headers.get("content-encoding")
     if content_encoding is not None and content_encoding.lower() != "identity":
-        return content
+        return None
     declared = response.headers.get("content-length")
     if declared is None:
-        return content
+        return None
     try:
         expected = int(declared)
     except ValueError:
         # Malformed header — nothing reliable to compare against, so don't
         # raise spuriously; let the (possibly fine) body through.
-        return content
+        return None
     if expected < 0:
         # Degenerate header (negative length) — can't be a real short-read
         # signal and would always trip the check below; ignore it.
-        return content
-    if len(content) != expected:
-        document_download_truncated_total.inc()
-        # Log here, not just in the message: both callers funnel this through a
-        # generic ``except Exception`` that would otherwise report it as an
-        # opaque "Unexpected error reading file".
-        logger.warning(
-            "Truncated download for %r: expected %d bytes, got %d "
-            "(poisoned keep-alive connection? set NEXTCLOUD_HTTP_KEEPALIVE=false "
-            "— see #965)",
-            label,
-            expected,
-            len(content),
-        )
-        raise RemoteProtocolError(
-            f"Truncated download for {label!r}: expected {expected} bytes, "
-            f"got {len(content)} (poisoned keep-alive connection? see #965)",
-            request=response.request,
-        )
-    return content
+        return None
+    return expected
+
+
+def _verify_content_length(response: Response, received: int, label: str) -> None:
+    """Raise :class:`RemoteProtocolError` when ``received`` is a short read.
+
+    Shared by the buffered (:func:`_read_complete_body`) and streaming
+    (``WebDavClient.stream_to_file``) download paths so the #965 truncation
+    guard and the #1099 content-encoding carve-out cannot drift apart between
+    them.
+    """
+    expected = _expected_content_length(response)
+    if expected is None or received == expected:
+        return
+    document_download_truncated_total.inc()
+    # Log here, not just in the message: callers funnel this through a
+    # generic ``except Exception`` that would otherwise report it as an
+    # opaque "Unexpected error reading file".
+    logger.warning(
+        "Truncated download for %r: expected %d bytes, got %d "
+        "(poisoned keep-alive connection? set NEXTCLOUD_HTTP_KEEPALIVE=false "
+        "— see #965)",
+        label,
+        expected,
+        received,
+    )
+    raise RemoteProtocolError(
+        f"Truncated download for {label!r}: expected {expected} bytes, "
+        f"got {received} (poisoned keep-alive connection? see #965)",
+        request=response.request,
+    )
 
 
 # Paging defaults for WebDAV SEARCH. Nextcloud's SEARCH returns a server-default
@@ -449,6 +483,58 @@ class WebDAVClient(BaseNextcloudClient):
         except Exception as e:
             logger.error("Unexpected error listing directory '%s': %s", webdav_path, e)
             raise e
+
+    async def stream_to_file(
+        self, path: str, dest: Path, *, max_bytes: int | None = None
+    ) -> Tuple[int, str]:
+        """Stream a WebDAV GET straight to ``dest``, never holding the whole body.
+
+        :meth:`read_file` buffers the entire response (``response.content``), so
+        peak memory scales with file size -- a 531 MB PDF OOMKilled an ingest
+        worker mid-download. Streaming keeps resident memory at one chunk
+        regardless of how large the document is.
+
+        ``max_bytes`` aborts the transfer as soon as the limit is exceeded and
+        removes the partial file. This is the guard that survives an absent or
+        untrue ``Content-Length``: the pre-flight size gate can only act on what
+        the server advertised at scan time, whereas this acts on what actually
+        arrives.
+
+        Returns ``(bytes_written, content_type)``. Raises
+        :class:`OversizeDownload` if ``max_bytes`` is exceeded, or
+        :class:`httpx.RemoteProtocolError` on a short read (#965).
+        """
+        await self._ensure_principal_id()
+        webdav_path = self._webdav_path(path)
+
+        logger.debug("Streaming file to %s: %s", dest, path)
+
+        written = 0
+        try:
+            async with self._stream_request("GET", webdav_path) as response:
+                content_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                )
+                with dest.open("wb") as fh:
+                    async for chunk in response.aiter_bytes():
+                        written += len(chunk)
+                        if max_bytes is not None and written > max_bytes:
+                            raise OversizeDownload(
+                                f"Download of {path!r} exceeded {max_bytes} bytes "
+                                f"(aborted after {written})"
+                            )
+                        fh.write(chunk)
+                # Same short-read guard as the buffered path, against bytes
+                # written rather than bytes held in memory.
+                _verify_content_length(response, written, path)
+        except BaseException:
+            # Never leave a partial or over-cap file behind for the parser to
+            # read as a valid (truncated) document.
+            dest.unlink(missing_ok=True)
+            raise
+
+        logger.debug("Streamed '%s' to %s (%s bytes)", path, dest, written)
+        return written, content_type
 
     async def read_file(self, path: str) -> Tuple[bytes, str]:
         """Read a file's content via WebDAV GET."""
