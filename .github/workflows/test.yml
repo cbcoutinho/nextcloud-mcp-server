@@ -74,20 +74,20 @@ jobs:
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.12@sha256:c7debbbf65f84e9691e209ec834b67dd438e80d04be98c2c63b94ecf483d3d05"
-            compose-files: "./docker-compose.yml"
           - nextcloud_version: "33"
             nextcloud_image: "docker.io/library/nextcloud:33.0.6@sha256:d234808c4e63aad6889922228d64612a28682183dccaeac251db4db0be368aab"
-            compose-files: "./docker-compose.yml"
+          # NOTE: the nc34 lanes are EXPECTED TO FAIL until Astrolabe publishes an
+          # NC-34-compatible release to the app store. cbcoutinho/astrolabe#242
+          # (max-version="34") is merged but not yet released, so
+          # `occ app:install astrolabe` still aborts the app container with
+          # "App "Astrolabe" cannot be installed because it is not compatible with
+          # this version of the server". Check availability with:
+          #   curl -sL https://apps.nextcloud.com/api/v1/platform/34.0.0/apps.json \
+          #     | jq '[.[] | select(.id=="astrolabe")] | length'
+          # A non-zero result means the release is live and these lanes should go
+          # green on a re-run.
           - nextcloud_version: "34"
             nextcloud_image: "docker.io/library/nextcloud:34.0.1@sha256:e15c14f83a90484e497dabc7d01248370f69e1de353c072b8aa15dbd19d5fd9b"
-            # TEMPORARY (PR #1106): the app store has no NC-34-compatible
-            # Astrolabe release, so nc34 — and ONLY nc34 — overlays the locally
-            # built submodule (cbcoutinho/astrolabe#242). 32/33 keep testing the
-            # published app. Drop this override once astrolabe ships an NC-34
-            # release.
-            compose-files: |
-              ./docker-compose.yml
-              ./docker-compose.astrolabe-dev.yml
 
           # Mode-specific properties
           - mode: single-user
@@ -162,13 +162,8 @@ jobs:
         with:
           submodules: 'true'
 
-      # single-user normally needs no locally-built Astrolabe. The nc34 lanes are
-      # the exception (TEMPORARY, PR #1106): they overlay the submodule via
-      # docker-compose.astrolabe-dev.yml, and `vendor/` + `js/` are not committed,
-      # so an unbuilt checkout would break `occ app:enable`. Drop the
-      # nextcloud_version clause along with the override.
       - name: Set up PHP 8.4
-        if: matrix.mode != 'single-user' || matrix.nextcloud_version == '34'
+        if: matrix.mode != 'single-user'
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: 8.4
@@ -177,13 +172,13 @@ jobs:
       # OIDC app installed from app store (dev mount removed from docker-compose.yml)
 
       - name: Set up Node.js
-        if: matrix.mode != 'single-user' || matrix.nextcloud_version == '34'
+        if: matrix.mode != 'single-user'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
       - name: Build Astrolabe app
-        if: matrix.mode != 'single-user' || matrix.nextcloud_version == '34'
+        if: matrix.mode != 'single-user'
         run: |
           cd third_party/astrolabe
           composer install --no-dev --optimize-autoloader
@@ -215,7 +210,7 @@ jobs:
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
         with:
-          compose-file: ${{ matrix.compose-files }}
+          compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }} ${{ matrix.extra-compose-profiles }}"
           up-flags: "--build"
         env:
