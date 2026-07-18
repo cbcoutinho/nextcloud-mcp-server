@@ -36,12 +36,11 @@ services:
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
-      # TEMPORARY (PR #1106): mounted to integration-test the unreleased
-      # NC-34 compatibility bump (cbcoutinho/astrolabe#242) before it is
-      # published to the app store. Re-comment once astrolabe ships a
-      # release declaring max-version="34" — leaving this on silently pins
-      # CI to the local submodule instead of the published app.
-      - ./third_party/astrolabe:/opt/apps/astrolabe:ro
+      # The astrolabe dev mount lives in docker-compose.astrolabe-dev.yml, applied
+      # as an override only by the nc34 CI lanes (TEMPORARY, PR #1106). Enabling it
+      # here would apply it to every profile and every workflow that brings up this
+      # stack — including jobs that never build the submodule.
+      #- ./third_party/astrolabe:/opt/apps/astrolabe:ro
       #- ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
