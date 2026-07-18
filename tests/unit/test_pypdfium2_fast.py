@@ -103,3 +103,29 @@ def test_page_window_handles_empty_document():
     assert meta["page_count"] == 1
     assert meta["page_boundaries"][0]["start_offset"] == 0
     assert meta["page_boundaries"][-1]["end_offset"] == len(text)
+
+
+async def test_process_source_parses_from_a_path_not_bytes(tmp_path):
+    """The path form must produce the same result as the bytes form.
+
+    PdfDocument(path) uses FPDF_LoadDocument, which reads incrementally, while
+    PdfDocument(bytes) uses FPDF_LoadMemDocument64 and pins the buffer for the
+    document's lifetime.
+    """
+    from nextcloud_mcp_server.document_processors.source import SpooledDocumentSource
+
+    content = _digital_pdf(pages=4)
+    spool = tmp_path / "doc.pdf"
+    spool.write_bytes(content)
+    source = SpooledDocumentSource(spool, "application/pdf", "doc.pdf")
+    processor = Pypdfium2FastProcessor()
+
+    from_path = await processor.process_source(source)
+    from_bytes = await processor.process(content, "application/pdf", "doc.pdf")
+
+    assert from_path.success is True
+    assert from_path.text == from_bytes.text
+    assert (
+        from_path.metadata["page_boundaries"] == from_bytes.metadata["page_boundaries"]
+    )
+    assert from_path.metadata["file_size"] == len(content)

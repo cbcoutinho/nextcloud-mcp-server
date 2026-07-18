@@ -24,12 +24,13 @@ import anyio
 from nextcloud_mcp_server.config import get_settings
 
 from .base import DocumentProcessor, ProcessingResult
+from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
 
 def _extract_window(
-    pdfium: Any, content: bytes, start: int, end: int, page_texts: list[str]
+    pdfium: Any, content: bytes | str, start: int, end: int, page_texts: list[str]
 ) -> None:
     """Extract pages ``[start, end)`` into ``page_texts`` from a fresh document.
 
@@ -54,8 +55,16 @@ def _extract_window(
         pdf.close()
 
 
-def _extract(content: bytes, page_window: int = 100) -> tuple[str, dict[str, Any]]:
+def _extract(
+    content: bytes | str, page_window: int = 100
+) -> tuple[str, dict[str, Any]]:
     """Extract concatenated text + metadata from a PDF (runs in a worker thread).
+
+    ``content`` is either the PDF bytes or a path to it. A path is preferable:
+    ``PdfDocument(path)`` uses ``FPDF_LoadDocument``, which reads incrementally,
+    whereas the bytes form uses ``FPDF_LoadMemDocument64`` and pins the whole
+    buffer for the document's lifetime. Note this bounds the *input* copy only --
+    the parse working set is bounded by ``page_window`` below.
 
     ``page_boundaries`` offsets index into the returned text, which is the page
     texts joined with no separator so the offsets stay exact (the contract
@@ -132,12 +141,38 @@ class Pypdfium2FastProcessor(DocumentProcessor):
     def supported_mime_types(self) -> set[str]:
         return {"application/pdf"}
 
+    async def process_source(
+        self,
+        source: DocumentSource,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        """Extract from the source's path, so the bytes are never materialised."""
+        return await self._extract_to_result(
+            str(source.path()), source.size, source.filename, progress_callback
+        )
+
     async def process(
         self,
         content: bytes,
         content_type: str,
         filename: str | None = None,
         options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        return await self._extract_to_result(
+            content, len(content), filename, progress_callback
+        )
+
+    async def _extract_to_result(
+        self,
+        content: bytes | str,
+        size: int,
+        filename: str | None,
         progress_callback: (
             Callable[[float, float | None, str | None], Awaitable[None]] | None
         ) = None,
@@ -163,7 +198,7 @@ class Pypdfium2FastProcessor(DocumentProcessor):
                 success=False,
                 error=f"{type(e).__name__}: {e}",
             )
-        metadata["file_size"] = len(content)
+        metadata["file_size"] = size
         if progress_callback:
             await progress_callback(100, 100, "Done")
         return ProcessingResult(text=full_text, metadata=metadata, processor=self.name)

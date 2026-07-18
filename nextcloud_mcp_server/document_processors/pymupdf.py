@@ -20,6 +20,7 @@ from nextcloud_mcp_server.config import get_settings
 
 from ._isolation import PdfParseFailed, run_isolated_pdf_parse
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .source import DocumentSource, MemoryDocumentSource
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +95,30 @@ class PyMuPDFProcessor(DocumentProcessor):
             Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
         ] = None,
     ) -> ProcessingResult:
+        """Bytes-based entry point: materialise a path and delegate.
+
+        The parse itself is path-based (see :meth:`process_source`), because the
+        isolated worker must not be handed a copy of the document.
+        """
+        source = MemoryDocumentSource(content, content_type, filename)
+        try:
+            return await self.process_source(source, options, progress_callback)
+        finally:
+            source.cleanup()
+
+    async def process_source(
+        self,
+        source: "DocumentSource",
+        options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
+    ) -> ProcessingResult:
         """Process a PDF document and extract text, metadata, and images.
 
         Args:
-            content: PDF document bytes
-            content_type: MIME type (should be application/pdf)
-            filename: Optional filename for better error messages
+            source: File-backed handle to the PDF. Opened by path so neither the
+                metadata read nor the isolated worker holds a copy of it.
             options: Processing options (currently unused)
             progress_callback: Optional callback for progress updates
 
@@ -110,14 +129,16 @@ class PyMuPDFProcessor(DocumentProcessor):
             ProcessorError: If PDF processing fails
         """
 
+        source_path = str(source.path())
+        filename = source.filename
         try:
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
             # Open document only to read metadata + page count, then close it
             # immediately (try/finally so a failure in _extract_metadata can't
-            # leak it). The heavy extraction below works from ``content`` bytes
-            # in the isolated worker, so ``doc`` is not needed past this point.
+            # leak it). The heavy extraction below re-opens the same path in the
+            # isolated worker, so ``doc`` is not needed past this point.
             # Read metadata entirely inside ONE worker thread, serialized against
             # other MuPDF work: pymupdf is not thread-safe, and a doc opened in one
             # thread must not be touched from another. (The heavy page extraction
@@ -128,10 +149,10 @@ class PyMuPDFProcessor(DocumentProcessor):
                 )
 
                 with pymupdf_serialized():
-                    doc = pymupdf.open("pdf", content)
+                    doc = pymupdf.open(source_path)
                     try:
                         meta = self._extract_metadata(doc, filename)
-                        meta["file_size"] = len(content)
+                        meta["file_size"] = source.size
                         return meta, doc.page_count
                     finally:
                         doc.close()
@@ -159,7 +180,7 @@ class PyMuPDFProcessor(DocumentProcessor):
             settings = get_settings()
             try:
                 page_chunks: list[dict[str, Any]] = await run_isolated_pdf_parse(
-                    content,
+                    source_path,
                     write_images=self.extract_images,
                     image_path=pdf_image_dir if self.extract_images else None,
                     graphics_limit=settings.document_pdf_graphics_limit,
@@ -237,7 +258,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     "pages": metadata["page_count"],
                     "chars": len(md_text),
                     "images": metadata.get("image_count", 0),
-                    "byte_size": len(content),
+                    "byte_size": source.size,
                 },
             )
 

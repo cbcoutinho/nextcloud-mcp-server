@@ -135,13 +135,21 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
 
 
 def _parse_pdf_worker(
-    content: bytes,
+    source_path: str,
     write_images: bool,
     image_path: str | None,
     graphics_limit: int,
     mem_limit_mb: int,
 ) -> list[dict[str, Any]]:
     """Run pymupdf4llm.to_markdown in the worker subprocess (positional args only).
+
+    Takes a PATH, not bytes. Passing bytes meant every argument crossing the
+    ``to_process`` pipe was a full copy of the document -- one in the parent, one
+    pickled into the pipe, one in the child -- so a large file breached the
+    child's RLIMIT_AS before pymupdf4llm ran at all. Measured on a real 1040 MB
+    document: the worker died during initialisation in 0.9s while the parent
+    peaked at 2185 MB. Opening the path uses ``fz_open_file``, which reads
+    incrementally, so the rlimit now bounds parse working set as intended.
 
     Returns the ``page_chunks`` list (picklable dicts of text + metadata). Imports
     pymupdf lazily so the parent process isn't forced to load them here.
@@ -154,7 +162,7 @@ def _parse_pdf_worker(
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
 
-    doc = pymupdf.open("pdf", content)
+    doc = pymupdf.open(source_path)
     try:
         # page_chunks=True makes to_markdown return list[dict], not str.
         chunks = cast(
@@ -175,7 +183,7 @@ def _parse_pdf_worker(
 
 
 async def run_isolated_pdf_parse(
-    content: bytes,
+    source_path: str,
     *,
     write_images: bool,
     image_path: Path | None,
@@ -197,7 +205,7 @@ async def run_isolated_pdf_parse(
         try:
             return await anyio.to_process.run_sync(
                 _parse_pdf_worker,
-                content,
+                source_path,
                 write_images,
                 str(image_path) if image_path is not None else None,
                 graphics_limit,
