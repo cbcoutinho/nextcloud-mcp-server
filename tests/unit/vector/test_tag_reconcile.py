@@ -36,6 +36,10 @@ async def test_reconcile_tagged_file_becomes_index():
         "path": "/alice/files/Docs/report.pdf",
         "etag": "abc123",
         "last_modified_timestamp": 1762850245,
+        # WebDAV SEARCH returns getcontentlength as "size"; the reconcile must
+        # carry it so the pre-flight oversize gate applies to webhook-triggered
+        # indexing too, not just scheduled scans.
+        "size": 4096,
     }
     nc_client = MagicMock()
     nc_client.find_files_by_tag = AsyncMock(
@@ -52,6 +56,9 @@ async def test_reconcile_tagged_file_becomes_index():
     assert task.file_path == "/alice/files/Docs/report.pdf"
     assert task.etag == "abc123"
     assert task.modified_at == 1762850245
+    # Without this the pre-flight oversize gate is bypassed for every
+    # webhook-triggered index, and a tagged huge PDF still gets fully downloaded.
+    assert task.size_bytes == 4096
     nc_client.find_files_by_tag.assert_any_await(
         "vector-index", mime_type_filter="application/pdf"
     )
@@ -91,3 +98,27 @@ async def test_reconcile_preserves_existing_etag():
 
     assert task.etag == "preset"
     assert task.file_path == "/alice/files/r.pdf"
+
+
+@pytest.mark.unit
+async def test_reconcile_treats_absent_size_as_unknown():
+    """A SEARCH row without getcontentlength must not gate on a bogus zero."""
+    nc_client = MagicMock()
+    nc_client.find_files_by_tag = AsyncMock(
+        side_effect=lambda tag, mime_type_filter=None: (
+            [{"id": "478087", "path": "/alice/files/Docs/report.pdf", "etag": "abc"}]
+            if tag == "vector-index"
+            else []
+        )
+    )
+    task = DocumentTask(
+        user_id="alice",
+        doc_id="478087",
+        doc_type="file",
+        operation="index",
+        modified_at=0,
+    )
+
+    await _reconcile_tag_event(task, nc_client)
+
+    assert task.size_bytes is None, "unknown size falls back to the post-download guard"

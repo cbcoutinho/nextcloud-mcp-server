@@ -105,6 +105,13 @@ class DocumentProcessor(ABC):
         the two PDF engines relies on this default, so once streaming downloads
         are wired in a large non-PDF document would otherwise block the shared
         event loop for the full read.
+
+        Ownership: the CALLER owns ``source`` and is responsible for its
+        ``cleanup()``. Implementations must not clean up a source they were
+        handed -- they do not know whether the caller still needs it (e.g. for a
+        subsequent tier or bbox extraction). The bytes-based ``process()``
+        wrappers create their own :class:`MemoryDocumentSource` and clean it up
+        themselves.
         """
         from anyio.to_thread import run_sync  # noqa: PLC0415 -- keep imports light
 

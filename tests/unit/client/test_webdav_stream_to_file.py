@@ -44,9 +44,7 @@ def _client_over(http: httpx.AsyncClient) -> WebDAVClient:
     return client
 
 
-def _client(
-    body: bytes, headers: dict[str, str] | None = None, chunk: int = 3
-) -> WebDAVClient:
+def _client(body: bytes, headers: dict[str, str] | None = None) -> WebDAVClient:
     """A WebDAVClient whose transport streams ``body`` back in small chunks."""
 
     def handler(request: httpx.Request) -> httpx.Response:

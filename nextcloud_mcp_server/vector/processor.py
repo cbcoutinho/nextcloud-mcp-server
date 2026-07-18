@@ -708,6 +708,12 @@ async def _reconcile_tag_event(
 
     doc_task.index_mode = match.get("_index_mode", payload_keys.INDEX_MODE_HYBRID)
     doc_task.file_path = match["path"]
+    # Mirror the scanner's assignment (vector/scanner.py): the SEARCH rows carry
+    # getcontentlength as "size". Without this a webhook-triggered index leaves
+    # size_bytes None, the pre-flight gate short-circuits, and the unbounded
+    # read_file runs -- so tagging a huge PDF for real-time indexing reproduces
+    # the OOM the gate exists to prevent. 0/absent means unknown.
+    doc_task.size_bytes = match.get("size") or None
     if not doc_task.etag:
         doc_task.etag = match.get("etag")
     last_modified = match.get("last_modified_timestamp")
