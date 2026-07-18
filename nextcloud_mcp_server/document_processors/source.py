@@ -35,7 +35,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Iterator, Protocol, runtime_checkable
+from typing import IO, ClassVar, Iterator, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,12 @@ class DocumentSource(Protocol):
 
     content_type: str
     filename: str | None
+
+    #: True when the document already lives on disk, so :meth:`path` is a free
+    #: attribute read and :meth:`read_bytes` costs a full read. False when it is
+    #: already in memory, where the costs are reversed. Sync callers use this to
+    #: pick the access that does no I/O, rather than blocking the event loop.
+    is_file_backed: bool
 
     @property
     def size(self) -> int:
@@ -82,6 +88,8 @@ class DocumentSource(Protocol):
 @dataclass
 class SpooledDocumentSource:
     """A document streamed to a local file, removed by :meth:`cleanup`."""
+
+    is_file_backed: ClassVar[bool] = True
 
     spool_path: Path
     content_type: str
@@ -118,6 +126,8 @@ class MemoryDocumentSource:
     ``path()`` materialises a temp file only if something actually asks for one,
     so the common small-document case never touches the disk.
     """
+
+    is_file_backed: ClassVar[bool] = False
 
     content: bytes
     content_type: str

@@ -449,3 +449,38 @@ async def test_batch_ocr_no_pending_job_still_downloads(mocker):
         await processor._index_document(_file_task(), nc, MagicMock(), tier="ocr")
 
     nc.webdav.read_file.assert_awaited_once()  # no in-flight job -> fetched normally
+
+
+async def test_buffered_fallback_cleans_up_its_temp_file(mocker):
+    """DOCUMENT_STREAM_DOWNLOAD_ENABLED=false must not leak a file per document.
+
+    MemoryDocumentSource.path() lazily materialises the buffer to a temp file --
+    both PDF engines reach it via resolve_path, and the bbox step calls it
+    directly -- so the kill-switch path registers cleanup on the exit stack.
+    Without that, every PDF ingested with streaming disabled leaked one file.
+
+    The parse stub calls path() the way a real engine does, so this fails if the
+    cleanup registration is dropped.
+    """
+    _patch_common(mocker, ocr_enabled=False)
+    materialised: list = []
+
+    async def _parse(registry, source, tier, settings, options=None):
+        materialised.append(source.path())  # what a real PDF engine does
+        return ProcessingResult(
+            text="",
+            metadata={"parse_failed_reason": "error", "pipeline_tier": "structured"},
+            processor="pypdfium2_fast",
+            success=False,
+            error="boom",
+        )
+
+    mocker.patch.object(processor, "_parse_pdf_tier", _parse)
+
+    await processor._index_document(
+        _file_task(), _nc_client(), MagicMock(), tier="structured"
+    )
+
+    assert materialised, "the parse stub should have materialised the source"
+    for path in materialised:
+        assert not path.exists(), f"leaked temp file for the buffered path: {path}"

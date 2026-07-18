@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def spooled_document(
-    nc_client: Any,
+    nc_client: Any,  # NextcloudClient; typed loosely to avoid a client import
     file_path: str,
     *,
     spool_dir: str | None = None,

@@ -149,7 +149,7 @@ def _is_pdf(content_type: str) -> bool:
 
 async def _parse_pdf_tier(
     registry: "ProcessorRegistry",
-    source: Any,
+    source: DocumentSource,
     tier: str,
     settings: Any,
     options: dict[str, Any] | None = None,
@@ -1339,6 +1339,12 @@ async def _index_document_inner(
                     file_path
                 )
                 source = MemoryDocumentSource(content_bytes, content_type, file_path)
+                # Same lifetime guarantee as the streamed branch. path() lazily
+                # materialises the buffer to a temp file -- both PDF engines and
+                # the bbox step call it -- so without this the kill-switch path
+                # leaks one file per document, which is the very failure mode the
+                # streaming side's exit-stack scoping exists to prevent.
+                exit_stack.callback(source.cleanup)
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1390,6 +1396,9 @@ async def _index_document_inner(
                     # size became known.
                     result = preflight_failure
                 elif tier is not None and _is_pdf(content_type):
+                    # Narrowing: the download branch above always sets ``source``
+                    # when it did not short-circuit on the pre-flight gate.
+                    assert source is not None
                     # Per-document identity, forwarded to every tier's processor.
                     # Only the OCR tier reads it (batch mode keys its job-tracking
                     # table on it, Deck #332); fast/structured ignore it, so it's
@@ -1408,6 +1417,7 @@ async def _index_document_inner(
                         options=doc_identity_options,
                     )
                 else:
+                    assert source is not None
                     result = await registry.process_source(source)
 
                 # A permanent parse failure (e.g. an isolated-worker OOM/timeout

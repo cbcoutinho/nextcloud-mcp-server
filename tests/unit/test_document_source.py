@@ -111,3 +111,25 @@ def test_sweep_removes_orphans_but_leaves_other_files(tmp_path):
 
 def test_sweep_on_empty_directory_is_a_noop(tmp_path):
     assert sweep_orphaned_spools(str(tmp_path)) == 0
+
+
+def test_is_file_backed_distinguishes_the_two_sources(tmp_path):
+    """Sync callers use this to pick the access that does no I/O.
+
+    A spooled source hands over its path for free; an in-memory one hands over
+    its buffer for free. Choosing wrong means a blocking whole-buffer disk write
+    on the shared event loop (registry._classify_result is a plain def).
+    """
+    spooled = _spooled(tmp_path)
+    memory = MemoryDocumentSource(b"hello", "text/plain")
+
+    assert spooled.is_file_backed is True
+    assert memory.is_file_backed is False
+
+
+def test_memory_source_free_access_does_not_touch_disk():
+    """read_bytes on an in-memory source must not materialise anything."""
+    source = MemoryDocumentSource(b"hello", "text/plain")
+
+    assert source.read_bytes() == b"hello"
+    assert source._materialised is None

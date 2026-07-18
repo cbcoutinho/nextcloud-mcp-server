@@ -22,6 +22,7 @@ from .classifier import (
 )
 from .escalation import TIER_LADDER, EscalationDecision
 from .ocr import OCR_BATCH_PENDING_KEY
+from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +469,7 @@ class ProcessorRegistry:
         *,
         record: bool,
         filename: str | None = None,
-        source: Any | None = None,
+        source: DocumentSource | None = None,
     ) -> DocClassification | None:
         """Tier-0 classification of a parse result (text-only, cheap).
 
@@ -487,11 +488,20 @@ class ProcessorRegistry:
             # Scan detection feeds the OCR tier, so run it whenever OCR is enabled.
             if settings.document_ocr_enabled and settings.document_ocr_detect_scanned:
                 try:
-                    image_coverage = (
-                        image_coverage_per_page_from_path(str(source.path()))
-                        if source is not None
-                        else image_coverage_per_page(content)
-                    )
+                    # Pick the access that does no I/O for this source type:
+                    # a spooled document hands over its path for free, while an
+                    # in-memory one hands over its buffer for free. Calling
+                    # path() on an in-memory source would write the whole buffer
+                    # to disk -- and this runs synchronously on the event loop,
+                    # so that would stall every other in-flight document.
+                    if source is None:
+                        image_coverage = image_coverage_per_page(content)
+                    elif source.is_file_backed:
+                        image_coverage = image_coverage_per_page_from_path(
+                            str(source.path())
+                        )
+                    else:
+                        image_coverage = image_coverage_per_page(source.read_bytes())
                 except Exception:
                     # Best-effort: fall back to text-only signals. WARNING (not
                     # DEBUG) so a systematic scan-detection failure on an
@@ -588,7 +598,7 @@ class ProcessorRegistry:
 
     async def process_source(
         self,
-        source: Any,
+        source: DocumentSource,
         options: dict[str, Any] | None = None,
         progress_callback: (
             Callable[[float, float | None, str | None], Awaitable[None]] | None
@@ -628,7 +638,7 @@ class ProcessorRegistry:
 
     async def process_tier_source(
         self,
-        source: Any,
+        source: DocumentSource,
         tier: str,
         options: dict[str, Any] | None = None,
         progress_callback: (
@@ -702,7 +712,7 @@ class ProcessorRegistry:
     def evaluate_escalation_source(
         self,
         result: ProcessingResult,
-        source: Any,
+        source: DocumentSource,
         current_tier: str,
         settings: Any,
     ) -> EscalationDecision | None:
@@ -737,7 +747,7 @@ class ProcessorRegistry:
         settings: Any,
         *,
         filename: str | None = None,
-        source: Any | None = None,
+        source: DocumentSource | None = None,
     ) -> EscalationDecision | None:
         """Decide whether ``current_tier``'s result must escalate (external path).
 
@@ -814,7 +824,7 @@ class ProcessorRegistry:
     async def _run_processor_source(
         self,
         processor: DocumentProcessor,
-        source: Any,
+        source: DocumentSource,
         options: dict[str, Any] | None = None,
         progress_callback: (
             Callable[[float, float | None, str | None], Awaitable[None]] | None
@@ -846,7 +856,7 @@ class ProcessorRegistry:
         ) = None,
         *,
         escalated: bool = False,
-        source: Any | None = None,
+        source: DocumentSource | None = None,
     ) -> ProcessingResult:
         """Run one processor with the per-processor span + parse metrics.
 
