@@ -606,9 +606,15 @@ class ProcessorRegistry:
     ) -> ProcessingResult:
         """Inline (non-tiered) processing of a file-backed source.
 
-        Non-PDFs go straight to their processor by source, so nothing is
-        materialised. PDFs still run the inline tiered pipeline, which is
-        bytes-based, so they are materialised here -- see the note below.
+        Non-PDFs are handed the source directly. Note that only the two PDF
+        engines override ``process_source`` today, so any other processor still
+        materialises the document via the base-class default -- off the event
+        loop through ``run_sync``, so it no longer blocks, but the memory is
+        still proportional to document size until that processor grows a
+        path-based override.
+
+        PDFs run the inline tiered pipeline, which is bytes-based, so they are
+        materialised here -- see the note below.
         """
         if source.content_type.split(";")[0].strip().lower() == "application/pdf":
             # TODO: give _process_pdf a source-based twin. The inline pipeline is

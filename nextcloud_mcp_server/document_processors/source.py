@@ -203,11 +203,16 @@ def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
 def sweep_orphaned_spools(spool_dir: str | None = None) -> int:
     """Delete spool files left behind by a previous run; returns the count.
 
-    Intended for a worker's startup path: a SIGKILLed worker cannot run its own
-    cleanup, and the spool directory is an emptyDir that survives container
-    restarts within the pod, so a crash-looping worker would otherwise accumulate
-    whole documents on disk. NOT yet called anywhere -- it lands with the change
-    that wires streaming downloads into the ingest path.
+    Called from the worker's startup path (``cli._sweep_spools_at_startup``): a
+    SIGKILLed worker cannot run its own cleanup, and the spool directory
+    survives container restarts within the pod, so a crash-looping worker would
+    otherwise accumulate whole documents on disk.
+
+    Assumes the spool directory belongs to THIS worker. The glob has no liveness
+    check, so a directory shared between concurrently-running replicas would let
+    one worker's startup sweep unlink a peer's in-flight spool file. That holds
+    today (the default is an unshared per-pod temp dir) and must keep holding if
+    the volume becomes a PVC -- see Deck #693.
     """
     directory = Path(spool_dir or tempfile.gettempdir())
     removed = 0
