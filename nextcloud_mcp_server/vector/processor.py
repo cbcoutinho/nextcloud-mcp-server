@@ -350,6 +350,11 @@ def preflight_oversize_result(
     or ``None`` when the size is unknown or within the cap -- in which case the
     post-download guard still applies as the backstop.
     """
+    # The cap is PDF-specific, but content type is not known before the download.
+    # Safe because file discovery is PDF-only: _discover_tagged_files passes
+    # mime_type_filter="application/pdf" (vector/scanner.py), so every
+    # doc_type="file" task is a PDF. If discovery is ever broadened to other MIME
+    # types, gate this on content type rather than silently applying a PDF cap.
     size_bytes = getattr(doc_task, "size_bytes", None)
     if not size_bytes:
         return None

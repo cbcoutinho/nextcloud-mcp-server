@@ -36,6 +36,14 @@ def _response(body: bytes, headers: dict[str, str] | None = None) -> httpx.Respo
     )
 
 
+def _client_over(http: httpx.AsyncClient) -> WebDAVClient:
+    """A WebDAVClient over a caller-supplied transport, principal pre-resolved."""
+    client = WebDAVClient(http, "u")
+    client._principal_id = "u"
+    client._principal_discovered = True
+    return client
+
+
 def _client(
     body: bytes, headers: dict[str, str] | None = None, chunk: int = 3
 ) -> WebDAVClient:
@@ -72,16 +80,17 @@ def test_content_length_guard_matches_buffered_path(body, headers, raises):
     """One implementation, so the two download paths cannot drift apart."""
     buffered = _response(body, headers)
     streamed = _response(body, headers)
+    received = len(body)
 
     if raises:
         with pytest.raises(httpx.RemoteProtocolError):
             _read_complete_body(buffered, "f.pdf")
         with pytest.raises(httpx.RemoteProtocolError):
-            _verify_content_length(streamed, len(body), "f.pdf")
+            _verify_content_length(streamed, received, "f.pdf")
     else:
         assert _read_complete_body(buffered, "f.pdf") == body
         # Must not raise for the streaming path either.
-        _verify_content_length(streamed, len(body), "f.pdf")
+        _verify_content_length(streamed, received, "f.pdf")
 
 
 def test_compressed_response_is_exempt_on_both_paths():
@@ -200,3 +209,54 @@ def test_make_request_still_carries_the_429_retry():
     assert not hasattr(BaseNextcloudClient._stream_request, "__wrapped__") or (
         BaseNextcloudClient._stream_request.__wrapped__.__name__ == "_stream_request"
     )
+
+
+async def test_stream_retries_on_429_then_succeeds(tmp_path, mocker):
+    """_stream_request's manual retry loop must actually retry and succeed.
+
+    retry_on_429 cannot decorate a streaming call (a partly-consumed stream is
+    not replayable), so _stream_request retries the connect+status phase itself.
+    The existing decorator guard only pins that _make_request kept its decorator;
+    nothing drove a 429-then-200 sequence through stream_to_file until now.
+    """
+    body = b"%PDF-1.7 recovered"
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, content=b"slow down")
+        return httpx.Response(
+            200, content=body, headers={"content-length": str(len(body))}
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://nc"
+    )
+    client = _client_over(http)
+    # Don't actually wait out the backoff.
+    mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
+    dest = tmp_path / "out.pdf"
+
+    written, _ = await client.stream_to_file("/f.pdf", dest)
+
+    assert len(calls) == 2, "should have retried once after the 429"
+    assert written == len(body)
+    assert dest.read_bytes() == body
+
+
+async def test_stream_gives_up_after_repeated_429(tmp_path, mocker):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, content=b"slow down")
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://nc"
+    )
+    client = _client_over(http)
+    mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
+    dest = tmp_path / "out.pdf"
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.stream_to_file("/f.pdf", dest)
+
+    assert not dest.exists()

@@ -131,6 +131,45 @@ class PyMuPDFProcessor(DocumentProcessor):
             finally:
                 doc.close()
 
+    def _build_text_and_metadata(
+        self,
+        page_chunks: list[dict[str, Any]],
+        pdf_image_dir: Optional[pathlib.Path],
+        metadata: dict[str, Any],
+    ) -> str:
+        """Join per-page markdown and record boundaries + images on ``metadata``.
+
+        ``page_boundaries`` offsets index into the joined text with no separator,
+        so they stay exact -- the contract ``search/pdf_highlighter`` and the
+        chunker rely on.
+        """
+        page_texts: list[str] = []
+        page_boundaries: list[dict[str, Any]] = []
+        current_offset = 0
+        for chunk in page_chunks:
+            text = chunk.get("text", "")
+            page_num = chunk.get("metadata", {}).get("page", len(page_texts) + 1)
+            page_texts.append(text)
+            page_boundaries.append(
+                {
+                    "page": page_num,
+                    "start_offset": current_offset,
+                    "end_offset": current_offset + len(text),
+                }
+            )
+            current_offset += len(text)
+
+        image_paths = []
+        if pdf_image_dir and pdf_image_dir.exists():
+            image_paths = [str(p) for p in pdf_image_dir.glob("*")]
+
+        metadata["has_images"] = len(image_paths) > 0
+        if image_paths:
+            metadata["image_count"] = len(image_paths)
+            metadata["image_paths"] = image_paths
+        metadata["page_boundaries"] = page_boundaries
+        return "".join(page_texts)
+
     async def process_source(
         self,
         source: "DocumentSource",
@@ -218,35 +257,9 @@ class PyMuPDFProcessor(DocumentProcessor):
             if progress_callback:
                 await progress_callback(90, 100, "Building result")
 
-            # Extract page texts and build boundaries from chunks
-            page_texts: list[str] = []
-            page_boundaries: list[dict[str, Any]] = []
-            current_offset = 0
-            for chunk in page_chunks:
-                text = chunk.get("text", "")
-                page_num = chunk.get("metadata", {}).get("page", len(page_texts) + 1)
-                page_texts.append(text)
-                page_boundaries.append(
-                    {
-                        "page": page_num,
-                        "start_offset": current_offset,
-                        "end_offset": current_offset + len(text),
-                    }
-                )
-                current_offset += len(text)
-
-            # Collect image paths
-            image_paths = []
-            if pdf_image_dir and pdf_image_dir.exists():
-                image_paths = [str(p) for p in pdf_image_dir.glob("*")]
-
-            # Build final text and metadata
-            md_text = "".join(page_texts)
-            metadata["has_images"] = len(image_paths) > 0
-            if image_paths:
-                metadata["image_count"] = len(image_paths)
-                metadata["image_paths"] = image_paths
-            metadata["page_boundaries"] = page_boundaries
+            md_text = self._build_text_and_metadata(
+                page_chunks, pdf_image_dir, metadata
+            )
 
             if progress_callback:
                 await progress_callback(100, 100, "Processing complete")

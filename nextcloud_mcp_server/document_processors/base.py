@@ -99,9 +99,18 @@ class DocumentProcessor(ABC):
 
         Note the default is where peak memory still scales with document size --
         ``read_bytes`` is deliberately greppable for that reason.
+
+        The read is offloaded to a worker thread: for a spooled source it is a
+        synchronous disk read of the whole document, and every processor except
+        the two PDF engines relies on this default, so once streaming downloads
+        are wired in a large non-PDF document would otherwise block the shared
+        event loop for the full read.
         """
+        from anyio.to_thread import run_sync  # noqa: PLC0415 -- keep imports light
+
+        content = await run_sync(source.read_bytes)
         return await self.process(
-            source.read_bytes(),
+            content,
             source.content_type,
             source.filename,
             options,

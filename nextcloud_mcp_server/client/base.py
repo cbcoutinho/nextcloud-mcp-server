@@ -208,10 +208,8 @@ class BaseNextcloudClient(ABC):
                     app=self.app_name, method=method, path=url
                 ):
                     async with self._client.stream(method, url, **kwargs) as response:
-                        if response.status_code == codes.TOO_MANY_REQUESTS:
-                            # Raise inside the context so the connection is
-                            # released before sleeping and retrying.
-                            response.raise_for_status()
+                        # Raised inside the stream context so the connection is
+                        # released before the 429 handler sleeps and retries.
                         response.raise_for_status()
                         yield response
                         record_nextcloud_api_call(
