@@ -7,6 +7,8 @@ normalized bounding boxes only.
 
 from __future__ import annotations
 
+import logging
+
 import pymupdf
 import pytest
 
@@ -395,3 +397,143 @@ def test_empty_page_flat_tokens_is_cached_and_reused(mocker):
     # Two chunks, one page: extracted once, empty result cached and reused.
     assert spy.call_count == 1
     assert results == {}
+
+
+def _many_page_fixture(n_pages: int) -> tuple[bytes, list[dict], str, list[tuple]]:
+    """An n-page PDF with one chunk per page, for window-boundary testing."""
+    pages = [
+        f"Page {i} content about storage synchronisation and indexing behaviour."
+        for i in range(1, n_pages + 1)
+    ]
+    pdf_bytes = _make_pdf(pages)
+    boundaries, full_text = _page_boundaries(pages)
+    chunks = [
+        (i, b["start_offset"], b["end_offset"], b["page"], pages[i])
+        for i, b in enumerate(boundaries)
+    ]
+    return pdf_bytes, boundaries, full_text, chunks
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("window", [1, 2, 3, 5, 12, 13, 100])
+def test_windowed_bboxes_identical_to_unwindowed(window):
+    """Windowing bounds MuPDF page retention; it must NOT change results.
+
+    MuPDF keeps parsed page objects alive for the lifetime of the Document, so
+    a single open across a long document accumulates ~0.154 MB/page (+617 MB
+    measured on a real 4003-page file, which OOMKilled the ingest workers).
+    Reopening every `page_window` pages fixes that, but only if the output is
+    identical -- otherwise it silently moves highlight rectangles.
+
+    12 pages exercises windows that divide the count exactly (1, 2, 3, 12), one
+    that leaves a remainder (5), and ones larger than the document (13, 100).
+    Off-by-one at the window boundary is the obvious failure mode.
+    """
+    pdf_bytes, boundaries, full_text, chunks = _many_page_fixture(12)
+
+    kwargs = {
+        "pdf_bytes": pdf_bytes,
+        "chunks": chunks,
+        "page_boundaries": boundaries,
+        "full_text": full_text,
+    }
+    unwindowed = PDFHighlighter.compute_chunk_bboxes_batch(**kwargs, page_window=0)
+    windowed = PDFHighlighter.compute_chunk_bboxes_batch(**kwargs, page_window=window)
+
+    assert windowed == unwindowed
+    # Guard against the degenerate pass where both are empty and "identical".
+    assert len(unwindowed) == 12
+
+
+@pytest.mark.unit
+def test_windowing_actually_reopens_the_document(mocker):
+    """The document must be REOPENED per window, not just produce equal output.
+
+    Parity alone cannot catch a regression that stops windowing: results would
+    still match while memory silently regressed. Assert the open count instead,
+    which is the property that bounds retention.
+    """
+    pdf_bytes, boundaries, full_text, chunks = _many_page_fixture(12)
+    spy = mocker.spy(pymupdf, "open")
+
+    PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=boundaries,
+        full_text=full_text,
+        page_window=3,
+    )
+
+    # 12 pages carrying chunks / window of 3 == 4 opens.
+    assert spy.call_count == 4
+
+
+@pytest.mark.unit
+def test_window_zero_opens_document_once(mocker):
+    """page_window=0 is the documented escape hatch: one open for the document."""
+    pdf_bytes, boundaries, full_text, chunks = _many_page_fixture(12)
+    spy = mocker.spy(pymupdf, "open")
+
+    PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=boundaries,
+        full_text=full_text,
+        page_window=0,
+    )
+
+    assert spy.call_count == 1
+
+
+@pytest.mark.unit
+def test_windowing_only_opens_pages_that_carry_chunks(mocker):
+    """Windows count pages WITH chunks, so a sparse document stays cheap.
+
+    A 12-page document with chunks on 2 pages must not cost 12/window opens.
+    """
+    pdf_bytes, boundaries, full_text, _ = _many_page_fixture(12)
+    sparse = [
+        (0, boundaries[0]["start_offset"], boundaries[0]["end_offset"], 1, "x"),
+        (1, boundaries[11]["start_offset"], boundaries[11]["end_offset"], 12, "x"),
+    ]
+    spy = mocker.spy(pymupdf, "open")
+
+    PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=sparse,
+        page_boundaries=boundaries,
+        full_text=full_text,
+        page_window=1,
+    )
+
+    # Two pages carry chunks, window of 1 -> 2 opens, not 12.
+    assert spy.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("window", [0, 100])
+def test_no_resolvable_pages_returns_empty_without_error(window, caplog):
+    """Chunks that match no page must return {} cleanly, at any window setting.
+
+    With windowing disabled the window size is derived from the number of pages
+    carrying chunks; if that is zero, computing the window before checking would
+    build range(0, 0, 0) -> "arg 3 must not be zero", surfacing as a bogus
+    "Error computing chunk bboxes" instead of an honest empty result.
+    """
+    pdf_bytes, boundaries, full_text, _ = _many_page_fixture(3)
+    # Offsets far past every page boundary -> find_chunk_page finds nothing.
+    unresolvable = [(0, 10_000, 10_100, None, "nowhere")]
+
+    caplog.set_level(
+        logging.ERROR, logger="nextcloud_mcp_server.search.pdf_highlighter"
+    )
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=unresolvable,
+        page_boundaries=boundaries,
+        full_text=full_text,
+        page_window=window,
+    )
+
+    assert results == {}
+    assert "Error computing chunk bboxes" not in caplog.text
