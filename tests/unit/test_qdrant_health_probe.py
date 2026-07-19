@@ -18,7 +18,13 @@ import pytest
 from nextcloud_mcp_server.app import _check_qdrant_health, _readiness_cache
 
 
-def _settings(*, vector_sync: bool, url: str | None = "http://qdrant:6333"):
+def _settings(
+    *,
+    vector_sync: bool,
+    url: str | None = "http://qdrant:6333",
+    collection: str = "tenant_abc123",
+    collection_raises: bool = False,
+):
     """Minimal stand-in for the Settings object this probe reads."""
 
     class _S:
@@ -27,7 +33,9 @@ def _settings(*, vector_sync: bool, url: str | None = "http://qdrant:6333"):
         vector_sync_enabled = vector_sync
 
         def get_collection_name(self) -> str:
-            return "tenant_abc123"
+            if collection_raises:
+                raise RuntimeError("cannot derive collection name")
+            return collection
 
     return _S()
 
@@ -38,7 +46,12 @@ def probe(monkeypatch):
     resulting cache entry plus the URL that was actually requested."""
 
     async def _run(
-        *, vector_sync: bool, handler, url: str | None = "http://qdrant:6333"
+        *,
+        vector_sync: bool,
+        handler,
+        url: str | None = "http://qdrant:6333",
+        collection: str = "tenant_abc123",
+        collection_raises: bool = False,
     ):
         seen: dict[str, str] = {}
 
@@ -55,7 +68,12 @@ def probe(monkeypatch):
 
         monkeypatch.setattr(
             "nextcloud_mcp_server.app.get_settings",
-            lambda: _settings(vector_sync=vector_sync, url=url),
+            lambda: _settings(
+                vector_sync=vector_sync,
+                url=url,
+                collection=collection,
+                collection_raises=collection_raises,
+            ),
         )
         monkeypatch.setattr("nextcloud_mcp_server.app.httpx.AsyncClient", _client)
         await _check_qdrant_health()
@@ -138,3 +156,39 @@ class TestQdrantHealthProbeFailureModes:
             vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
         )
         assert status.detail == "ok"
+
+
+@pytest.mark.unit
+class TestQdrantHealthProbeRobustness:
+    async def test_collection_name_failure_reports_unhealthy_not_raises(self, probe):
+        """A config error must surface as unhealthy, not escape the task.
+
+        ``get_collection_name()`` derives from the embedding provider/hostname and
+        can raise. This probe runs under ``tg.start_soon``, so an escaping
+        exception also cancels the sibling Nextcloud probe for that cycle — and
+        leaves ``checks.qdrant`` simply not updated rather than reporting a
+        problem, which is the silent skip this probe exists to eliminate.
+        """
+        _seen, status = await probe(
+            vector_sync=True,
+            handler=lambda r: httpx.Response(200, json={"result": {}}),
+            collection_raises=True,
+        )
+        assert status.healthy is False
+        assert "error:" in status.detail
+
+    async def test_collection_name_is_url_encoded(self, probe):
+        """This is the one place the collection name is spliced into a URL path
+        rather than handed to the qdrant-client SDK. ``get_collection_name()``'s
+        explicit-override branch does no sanitisation, so an operator-set
+        QDRANT_COLLECTION containing "/" would otherwise probe a different path
+        entirely — and could read as healthy off the wrong resource.
+        """
+        seen, _status = await probe(
+            vector_sync=True,
+            handler=lambda r: httpx.Response(200, json={"result": {}}),
+            collection="weird/name with space",
+        )
+        assert (
+            seen["url"] == "http://qdrant:6333/collections/weird%2Fname%20with%20space"
+        )

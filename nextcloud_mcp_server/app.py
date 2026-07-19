@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import anyio
 import click
@@ -560,16 +560,31 @@ async def _check_qdrant_health() -> None:
         return
     headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
 
-    if settings.vector_sync_enabled:
-        collection = settings.get_collection_name()
-        probe_url = f"{qdrant_url}/collections/{collection}"
-        probe_desc = f"collection {collection}"
-    else:
-        probe_url = f"{qdrant_url}/readyz"
-        probe_desc = "cluster readyz"
-
     start = time.time()
+    probe_desc = "qdrant"
     try:
+        # Resolving the collection name is INSIDE the guard: get_collection_name()
+        # can raise (it derives from the embedding provider / hostname), and an
+        # escaping exception would propagate out of this task. Because the caller
+        # runs it via tg.start_soon, that also cancels the sibling Nextcloud probe
+        # for the cycle — and, worse, leaves checks.qdrant simply not updated
+        # rather than reporting unhealthy, which is the silent-skip this probe
+        # exists to eliminate. A config error is an unhealthy dependency, and is
+        # reported through the same channel as a dead JWT.
+        if settings.vector_sync_enabled:
+            collection = settings.get_collection_name()
+            # quote() because this is the one place the collection name is spliced
+            # into a URL path rather than handed to the qdrant-client SDK (which
+            # encodes internally). The explicit-override branch of
+            # get_collection_name() does no sanitisation, so an operator-set
+            # QDRANT_COLLECTION containing "/" would otherwise silently probe a
+            # different path.
+            probe_url = f"{qdrant_url}/collections/{quote(collection, safe='')}"
+            probe_desc = f"collection {collection}"
+        else:
+            probe_url = f"{qdrant_url}/readyz"
+            probe_desc = "cluster readyz"
+
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(probe_url, headers=headers)
         healthy = response.status_code == 200
