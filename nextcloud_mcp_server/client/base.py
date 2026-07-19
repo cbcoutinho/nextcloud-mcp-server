@@ -17,6 +17,14 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_nextcloud_api_call
 
+#: Marks a request whose body the caller intends to consume incrementally.
+#:
+#: httpx runs response event hooks BEFORE the body is fetched, so a hook that
+#: calls ``aread()`` pulls the whole body into memory and leaves nothing for the
+#: caller's ``aiter_bytes()`` loop -- silently turning a streamed download into a
+#: buffered one. ``log_response`` checks for this marker and skips reading.
+STREAMING_REQUEST_EXTENSION = "nextcloud_mcp_streaming"
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,6 +208,15 @@ class BaseNextcloudClient(ABC):
         url = self._resolve_url(url)
         logger.debug("Making streaming %s request to %s", method, url)
 
+        # Tell the response event hook to keep its hands off this body. Without
+        # it, log_response's aread() consumes the whole document before the
+        # caller's aiter_bytes() loop runs -- the download is then buffered, not
+        # streamed, and peak memory scales with file size again.
+        stream_extensions = {
+            **kwargs.pop("extensions", {}),
+            STREAMING_REQUEST_EXTENSION: True,
+        }
+
         max_retries = 5
         for attempt in range(1, max_retries + 1):
             start_time = time.time()
@@ -213,7 +230,9 @@ class BaseNextcloudClient(ABC):
                 with trace_nextcloud_api_call(
                     app=self.app_name, method=method, path=url
                 ):
-                    async with self._client.stream(method, url, **kwargs) as response:
+                    async with self._client.stream(
+                        method, url, extensions=stream_extensions, **kwargs
+                    ) as response:
                         status_code = response.status_code
                         # Raised inside the stream context so the connection is
                         # released before the 429 handler sleeps and retries.
