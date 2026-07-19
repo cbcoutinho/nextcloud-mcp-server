@@ -40,7 +40,6 @@ from nextcloud_mcp_server.api import (
     get_app_password_status,
     get_chunk_context,
     get_installed_apps,
-    get_pdf_preview,
     get_server_status,
     get_user_access,
     get_user_session,
@@ -2629,8 +2628,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/chunk-context", get_chunk_context, methods=["GET"])
         )
-        # PDF preview endpoint for Astrolabe (server-side rendering)
-        routes.append(Route("/api/v1/pdf-preview", get_pdf_preview, methods=["GET"]))
         # ADR-018: Unified search endpoint for Nextcloud PHP app integration
         routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
         routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
@@ -2675,7 +2672,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
             "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
-            "/api/v1/webhooks, /api/v1/pdf-preview"
+            "/api/v1/webhooks"
         )
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.

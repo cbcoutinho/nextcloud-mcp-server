@@ -41,7 +41,6 @@ from nextcloud_mcp_server.api.vector_sync import (
 )
 from nextcloud_mcp_server.api.visualization import (
     get_chunk_context,
-    get_pdf_preview,
     unified_search,
     vector_search,
 )
@@ -87,5 +86,4 @@ __all__ = [
     "unified_search",
     "vector_search",
     "get_chunk_context",
-    "get_pdf_preview",
 ]

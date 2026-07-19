@@ -544,7 +544,7 @@ Known gaps (tracked on board 11):
 
 - Provider verification currently covers only the **public** endpoints
   (`/api/v1/status`, `/api/v1/vector-sync/status`). The authenticated surface
-  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`, `/pdf-preview`,
+  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`,
   `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
   pending the ADR-029 phase-4 Bearer-token/provider-state hook.
 - The gateway **embeddings** consumer pact (`/v1/embeddings` + `/v1/models`) is

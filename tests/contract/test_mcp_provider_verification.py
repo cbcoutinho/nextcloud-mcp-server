@@ -2,7 +2,7 @@
 
 The astrolabe Nextcloud app consumes this server's ``/api/v1/*`` HTTP API
 (``lib/Service/McpServerClient.php``: ``search``, ``webhooks`` CRUD, ``apps``,
-``status``, ``vector-sync/status``, ``chunk-context``, ``pdf-preview``,
+``status``, ``vector-sync/status``, ``chunk-context``,
 ``vector-viz/search``). This test plays the **provider** role: it pulls the
 pacts astrolabe published to the broker and replays each interaction against a
 running MCP server, failing if a response no longer matches the contract.
