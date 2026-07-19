@@ -134,7 +134,7 @@ async def test_stream_survives_the_real_hook_end_to_end(tmp_path):
     assert received == len(body)
 
 
-async def test_unmarked_stream_would_be_consumed(tmp_path):
+async def test_unmarked_stream_would_be_consumed(caplog):
     """Pins WHY the marker is required, so its removal fails loudly.
 
     Without the extension the hook cannot tell a streamed request apart and
@@ -153,7 +153,11 @@ async def test_unmarked_stream_would_be_consumed(tmp_path):
         event_hooks={"response": [log_response]},
     )
 
-    logging.getLogger(HOOK_LOGGER).setLevel(logging.DEBUG)
+    # caplog.set_level, not Logger.setLevel: the latter is a global mutation
+    # that outlives the test and would leave this logger at DEBUG for the rest
+    # of the session -- reinstating, inside the suite, the very "read on every
+    # response regardless of level" cost this change removes.
+    caplog.set_level(logging.DEBUG, logger=HOOK_LOGGER)
     request = http.build_request("GET", "/f.pdf")  # deliberately unmarked
     response = await http.send(request, stream=True)
     try:
