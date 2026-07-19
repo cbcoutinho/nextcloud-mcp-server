@@ -17,8 +17,9 @@ import anyio
 import pymupdf
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.metrics import record_document_parse_mode
 
-from ._isolation import PdfParseFailed, run_isolated_pdf_parse
+from ._isolation import PdfParseFailed, run_isolated_pdf_parse, uses_markdown
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
@@ -231,6 +232,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     timeout_seconds=settings.document_parse_timeout_seconds,
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
                     process_slots=settings.document_parse_process_slots,
+                    markdown_max_pages=settings.document_markdown_max_pages,
                 )
             except PdfParseFailed as exc:
                 logger.warning(
@@ -253,6 +255,26 @@ class PyMuPDFProcessor(DocumentProcessor):
                     success=False,
                     error=f"isolated parse failed ({exc.reason}): {exc}",
                 )
+
+            # Recompute the worker's decision here rather than have it report a
+            # mode back: a Counter incremented in the subprocess would never
+            # reach this process's registry. Uses ``page_count`` from the
+            # metadata read -- the same authoritative value the worker's own
+            # ``doc.page_count`` gate saw -- rather than ``len(page_chunks)``,
+            # which would silently mislabel the metric if pymupdf4llm ever
+            # stopped emitting exactly one chunk per page. Shares the worker's
+            # predicate so the label cannot drift from the actual decision.
+            #
+            # Note the gated path also writes no images, so ``has_images`` is
+            # False for a large PDF even with extract_images=True -- markdown
+            # reconstruction is what emits them.
+            mode = (
+                "markdown"
+                if uses_markdown(page_count, settings.document_markdown_max_pages)
+                else "text_only"
+            )
+            metadata["parse_mode"] = mode
+            record_document_parse_mode(mode)
 
             if progress_callback:
                 await progress_callback(90, 100, "Building result")

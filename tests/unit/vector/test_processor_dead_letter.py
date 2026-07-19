@@ -45,6 +45,9 @@ def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
         # Part of escalation_tiers_signature: raising the cap re-drives
         # previously oversize-dead-lettered documents.
         document_max_pdf_size_mb=50.0,
+        # Also part of escalation_tiers_signature (Deck #399): changing the
+        # markdown page ceiling re-drives timeout-dead-lettered documents.
+        document_markdown_max_pages=150,
         get_collection_name=lambda: "c",
     )
 

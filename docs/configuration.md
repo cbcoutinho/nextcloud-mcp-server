@@ -681,6 +681,7 @@ DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 18
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
+DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
 ```
 
 `DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
@@ -723,6 +724,57 @@ sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
 > letters for the tenant, not just oversize ones, so genuinely corrupt files are
 > re-attempted once too. On a large tenant that is a thundering herd — roll the
 > change out one tenant at a time and watch ingest queue depth.
+
+#### Markdown page ceiling (structured tier)
+
+`DOCUMENT_MARKDOWN_MAX_PAGES` bounds the **structured** tier. Above it, the tier
+skips `pymupdf4llm.to_markdown` and returns the raw text layer instead; `0`
+disables markdown entirely. A negative value is rejected at startup, so a typo
+cannot quietly turn markdown off across the fleet.
+
+`to_markdown` is **superlinear in page count** — the per-page rate itself grows
+with document size. Measured across an 866-file corpus of scanned documents:
+
+| Pages | to_markdown | Whole document |
+|---|---|---|
+| 22–31 | 0.48–1.48 s/page | 13–33 s |
+| 136–158 | 0.60–0.94 s/page | 95–149 s |
+| 364–419 | 0.91–1.06 s/page | 331–444 s |
+| 1111–1898 | 1.48–3.11 s/page | 27–98 min |
+| 4003 | 5.92 s/page | **6.6 hours** |
+
+Raw `get_text` is ~4.5 ms/page and flat. On that corpus it recovered 116,375 of
+the 145,199 characters markdown produced — markdown's value is structure, not
+completeness.
+
+Without a ceiling, a large document burns the whole
+`DOCUMENT_PARSE_TIMEOUT_SECONDS` and then dead-letters `reason="timeout"`,
+discarding a text layer that was extractable in under a second.
+
+The gate is expressed in **pages rather than predicted seconds** deliberately:
+seconds depend on node CPU, so a seconds-based threshold drifts silently between
+node types and needs recalibration, while a page count is deterministic and
+reviewable. Pick it from the tier's real budget — at ~1 s/page on a throttled
+2-core pod, a 120 s timeout is roughly 120 pages.
+
+Above the ceiling no images are written either, since markdown reconstruction is
+what emits them — so `has_images` is `False` for a gated document even when the
+processor was constructed with `extract_images=True`.
+
+Which path ran is exported on `astrolabe_document_parse_mode_total{mode}`
+(`markdown` | `text_only`) and recorded on the result as `parse_mode`. Skipping
+markdown is a **successful** parse, so it is deliberately not counted as a parse
+failure:
+
+```promql
+sum by (mode) (rate(astrolabe_document_parse_mode_total[1h]))
+```
+
+> **Changing `DOCUMENT_MARKDOWN_MAX_PAGES` also re-drives dead letters.** Like
+> the size cap it is part of the escalation-tier signature: lowering it lets a
+> previously-timing-out document take the raw-text path and succeed, so the
+> documents dead-lettered under the old value must become retryable. The same
+> thundering-herd caveat applies.
 
 `DOCUMENT_PARSE_PAGE_WINDOW` bounds the **fast** tier's peak memory. PDFium keeps
 parsed page objects for the lifetime of the open document and `page.close()` does

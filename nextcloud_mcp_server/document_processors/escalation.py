@@ -63,6 +63,17 @@ def escalation_tiers_signature(settings: Any) -> str:
     means a cap change is a thundering herd on a large tenant and should be rolled
     out one tenant at a time.
 
+    ``document_markdown_max_pages`` is included for the same reason (Deck #399).
+    A structured-tier ``timeout`` is terminal, and lowering the page ceiling makes
+    a previously-timing-out document take the raw-text path and succeed -- so
+    without the ceiling here it would stay dead-lettered until its etag changed,
+    which for an archive of scanned documents never happens. Any change to the
+    value invalidates dead letters, in either direction: raising it can also turn
+    a text-only document back into a markdown parse. Formatted with ``:g`` for the
+    same reason as the cap: a settings source that yields ``150.0`` instead of
+    ``150`` must not change the fingerprint (and ``:d`` would raise on a float,
+    breaking the dead-letter key for the whole tenant).
+
     TODO: when a future setting can make a previously-terminal document parseable,
     fold it in here so raising it auto-retries existing dead-letters. Known
     remaining candidate: a new escalation tier becoming toggleable (e.g. the
@@ -71,7 +82,8 @@ def escalation_tiers_signature(settings: Any) -> str:
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
         f"t1={settings.document_tier1_engine};"
-        f"maxmb={settings.document_max_pdf_size_mb:g}"
+        f"maxmb={settings.document_max_pdf_size_mb:g};"
+        f"mdpages={settings.document_markdown_max_pages:g}"
     )
 
 

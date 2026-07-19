@@ -349,6 +349,13 @@ class TestChunkConfigValidation:
             _reload_config()
             assert get_settings().document_max_pdf_size_mb == pytest.approx(12.5)
 
+    def test_markdown_max_pages_default_and_env_override(self):
+        """document_markdown_max_pages defaults to 150 and reads its env var."""
+        assert Settings().document_markdown_max_pages == 150
+        with patch.dict(os.environ, {"DOCUMENT_MARKDOWN_MAX_PAGES": "40"}, clear=True):
+            _reload_config()
+            assert get_settings().document_markdown_max_pages == 40
+
     def test_glyph_corruption_ratio_default_and_env_override(self):
         """document_glyph_corruption_ratio defaults to 0.02 and reads its env var.
 
@@ -772,6 +779,19 @@ class TestDynaconfValidators:
         from dynaconf import ValidationError
 
         with pytest.raises(ValidationError, match="DOCUMENT_MAX_PDF_SIZE_MB"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_MARKDOWN_MAX_PAGES": "-1"}, clear=True)
+    def test_markdown_max_pages_negative_rejected(self):
+        """DOCUMENT_MARKDOWN_MAX_PAGES=-1 fails the gte=0 validator (0 = disabled).
+
+        Without this, a typo silently disables markdown reconstruction for the
+        whole fleet instead of failing fast -- the same silent-disarm class the
+        page gate exists to fix.
+        """
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_MARKDOWN_MAX_PAGES"):
             _reload_config()
 
     @patch.dict(os.environ, {"METRICS_PORT": "8080"}, clear=True)

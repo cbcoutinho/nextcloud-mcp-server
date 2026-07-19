@@ -98,6 +98,43 @@ def _recover_underextracted_pages(doc: Any, chunks: list[dict[str, Any]]) -> Non
             chunk["text"] = raw
 
 
+def uses_markdown(page_count: int, markdown_max_pages: int) -> bool:
+    """Whether a document of ``page_count`` pages gets markdown reconstruction.
+
+    Single source of truth for the page gate (Deck #399). The worker uses it to
+    choose the parse path; ``PyMuPDFProcessor`` uses it to label
+    ``astrolabe_document_parse_mode_total``. Duplicating the comparison would let
+    the metric drift from the decision it claims to describe.
+
+    ``markdown_max_pages <= 0`` disables markdown entirely; the bound is
+    inclusive, so a document exactly at the ceiling still gets markdown.
+    """
+    return markdown_max_pages > 0 and page_count <= markdown_max_pages
+
+
+def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
+    """Build ``page_chunks``-shaped output from the raw text layer alone.
+
+    Emits the same contract ``to_markdown(page_chunks=True)`` does, as far as
+    callers actually consume it: ``PyMuPDFProcessor._build_page_boundaries``
+    reads only ``chunk["text"]`` and ``chunk["metadata"]["page"]`` (with a
+    positional fallback for the latter), so page boundaries, the chunker and
+    bbox computation are unaffected by which path produced the list.
+
+    ``metadata.page`` is 1-based to match pymupdf4llm.
+    """
+    chunks: list[dict[str, Any]] = []
+    for i in range(doc.page_count):
+        try:
+            text = doc[i].get_text("text")
+        # Per-page best effort, mirroring the markdown path above: one
+        # unreadable page degrades to "" rather than failing the document.
+        except Exception:  # noqa: BLE001
+            text = ""
+        chunks.append({"text": text, "metadata": {"page": i + 1}})
+    return chunks
+
+
 class PdfParseFailed(Exception):
     """A PDF parse failed in the isolated worker.
 
@@ -140,8 +177,14 @@ def _parse_pdf_worker(
     image_path: str | None,
     graphics_limit: int,
     mem_limit_mb: int,
+    markdown_max_pages: int,
 ) -> list[dict[str, Any]]:
-    """Run pymupdf4llm.to_markdown in the worker subprocess (positional args only).
+    """Extract a PDF in the worker subprocess (positional args only).
+
+    Runs ``pymupdf4llm.to_markdown`` when :func:`uses_markdown` allows it for this
+    document's page count, and falls back to the raw text layer
+    (:func:`_text_only_chunks`) otherwise. Both paths return the same
+    ``page_chunks`` shape, so the caller does not branch.
 
     Takes a PATH, not bytes. Passing bytes meant every argument crossing the
     ``to_process`` pipe was a full copy of the document -- one in the parent, one
@@ -164,6 +207,16 @@ def _parse_pdf_worker(
 
     doc = pymupdf.open(source_path)
     try:
+        # Page gate (Deck #399). to_markdown is superlinear in page count, so a
+        # large document burns the entire parse timeout and then dead-letters
+        # reason="timeout" -- discarding a text layer that get_text extracts in
+        # ~4.5 ms/page. Decide from page_count BEFORE parsing: a runtime budget
+        # would still pay the full timeout on every doomed document to learn
+        # what page_count gives for free. page_count is metadata, so this costs
+        # nothing beyond the open we already did.
+        if not uses_markdown(doc.page_count, markdown_max_pages):
+            return _text_only_chunks(doc)
+
         # page_chunks=True makes to_markdown return list[dict], not str.
         chunks = cast(
             "list[dict[str, Any]]",
@@ -190,6 +243,7 @@ async def run_isolated_pdf_parse(
     graphics_limit: int,
     timeout_seconds: float,
     mem_limit_mb: int,
+    markdown_max_pages: int,
     process_slots: int = 2,
 ) -> list[dict[str, Any]]:
     """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
@@ -200,6 +254,10 @@ async def run_isolated_pdf_parse(
     ``process_slots`` bounds how many parses run concurrently. Without it anyio
     defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
     ``--concurrency`` nor the pod memory limit constrains.
+
+    ``markdown_max_pages`` is required rather than defaulted: <=0 legitimately
+    means "never run to_markdown", so a default would silently pick a parse mode
+    for any caller that forgot to pass one.
     """
     with anyio.move_on_after(timeout_seconds):
         try:
@@ -210,6 +268,7 @@ async def run_isolated_pdf_parse(
                 str(image_path) if image_path is not None else None,
                 graphics_limit,
                 mem_limit_mb,
+                markdown_max_pages,
                 cancellable=True,
                 limiter=parse_process_limiter(process_slots),
             )
