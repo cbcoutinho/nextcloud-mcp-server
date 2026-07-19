@@ -15,6 +15,7 @@ token silently manufactures confidence.
 import httpx
 import pytest
 
+from nextcloud_mcp_server import app as app_module
 from nextcloud_mcp_server.app import _check_qdrant_health, _readiness_cache
 
 
@@ -100,14 +101,6 @@ class TestQdrantHealthProbeTarget:
         )
         assert seen["api_key"] == "tenant-jwt"
 
-    async def test_falls_back_to_readyz_when_vector_sync_disabled(self, probe):
-        """No collection exists to probe; cluster liveness is still worth reporting."""
-        seen, status = await probe(
-            vector_sync=False, handler=lambda r: httpx.Response(200)
-        )
-        assert seen["url"] == "https://qdrant:6333/readyz"
-        assert status.healthy is True
-
     async def test_noop_without_a_qdrant_url(self, probe, monkeypatch):
         """Embedded/local mode has no URL to probe — must not blow up."""
         seen, _ = await probe(
@@ -192,3 +185,95 @@ class TestQdrantHealthProbeRobustness:
         assert (
             seen["url"] == "https://qdrant:6333/collections/weird%2Fname%20with%20space"
         )
+
+
+@pytest.mark.unit
+class TestQdrantHealthProbeScheduling:
+    """Pins the CALLER's gate, which is what decides whether the probe runs.
+
+    An earlier revision of this file tested a `/readyz` fallback inside
+    `_check_qdrant_health` for the vector-sync-disabled case. That branch was
+    unreachable in the running server — `_refresh_dependency_health` never
+    schedules the probe unless vector sync is on — so the test "passed" only by
+    calling the function directly and bypassing the gate, proving nothing about
+    production. These tests exercise the gate itself instead.
+    """
+
+    @staticmethod
+    def _settings_for(*, vector_sync: bool, url: str | None):
+        class _S:
+            vector_sync_enabled = vector_sync
+            qdrant_url = url
+
+        return _S()
+
+    async def test_probe_scheduled_only_with_vector_sync_and_a_url(self, monkeypatch):
+        called: list[str] = []
+
+        async def _fake_qdrant() -> None:
+            called.append("qdrant")
+
+        async def _fake_nextcloud() -> None:
+            called.append("nextcloud")
+
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_qdrant_health", _fake_qdrant
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_nextcloud_health", _fake_nextcloud
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app.get_settings",
+            lambda: self._settings_for(vector_sync=True, url="https://qdrant:6333"),
+        )
+        await app_module._refresh_dependency_health()
+        assert "qdrant" in called
+
+    async def test_probe_not_scheduled_when_vector_sync_disabled(self, monkeypatch):
+        """With vector sync off there is no collection and nothing populates
+        checks.qdrant — which is why a /readyz fallback inside the probe would be
+        dead code."""
+        called: list[str] = []
+
+        async def _fake_qdrant() -> None:
+            called.append("qdrant")
+
+        async def _fake_nextcloud() -> None:
+            called.append("nextcloud")
+
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_qdrant_health", _fake_qdrant
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_nextcloud_health", _fake_nextcloud
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app.get_settings",
+            lambda: self._settings_for(vector_sync=False, url="https://qdrant:6333"),
+        )
+        await app_module._refresh_dependency_health()
+        assert "qdrant" not in called
+
+    async def test_embedded_mode_reports_without_probing(self, monkeypatch):
+        """Vector sync on but no URL = embedded Qdrant; reported directly."""
+        called: list[str] = []
+
+        async def _fake_qdrant() -> None:
+            called.append("qdrant")
+
+        async def _fake_nextcloud() -> None:
+            called.append("nextcloud")
+
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_qdrant_health", _fake_qdrant
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app._check_nextcloud_health", _fake_nextcloud
+        )
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app.get_settings",
+            lambda: self._settings_for(vector_sync=True, url=None),
+        )
+        await app_module._refresh_dependency_health()
+        assert "qdrant" not in called
+        assert _readiness_cache.snapshot()["qdrant"].detail == "embedded"

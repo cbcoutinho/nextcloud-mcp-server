@@ -533,14 +533,23 @@ async def _check_qdrant_health() -> None:
     Qdrant Cloud's auth gateway 403s unauthenticated requests, so forward the
     same api-key the configured client uses (see vector/qdrant_client.py).
 
-    When vector sync is on, this probes the tenant's **collection**
-    (``GET /collections/{name}``) rather than the cluster's ``/readyz``. That
-    matters because the deployed api-key is a *collection-scoped* JWT: a token
-    that is expired, revoked, or scoped to the wrong collection still sails past
-    ``/readyz`` (which only proves the cluster is up), so a cluster-level probe
-    reports "ok" while every real query fails. Probing the collection exercises
-    the credential we actually depend on, and additionally catches the
-    collection having been deleted out from under us.
+    Probes the tenant's **collection** (``GET /collections/{name}``) rather than
+    the cluster's ``/readyz``. That matters because the deployed api-key is a
+    *collection-scoped* JWT: a token that is expired, revoked, or scoped to the
+    wrong collection still sails past ``/readyz`` (which only proves the cluster
+    is up), so a cluster-level probe reports "ok" while every real query fails.
+    Probing the collection exercises the credential we actually depend on, and
+    additionally catches the collection having been deleted out from under us.
+
+    PRECONDITION: the caller (:func:`_refresh_dependency_health`) only schedules
+    this when ``vector_sync_enabled`` **and** ``qdrant_url`` are both set — the
+    no-``qdrant_url`` case is reported as ``"embedded"`` there, and with vector
+    sync off nothing populates ``checks.qdrant`` at all. So there is deliberately
+    no ``/readyz`` fallback here: with vector sync on there is always a collection
+    to probe, and a branch for the other case would be unreachable code that a
+    unit test could only "cover" by calling this function directly and bypassing
+    the gate — proving nothing about the running server. If that gate ever
+    changes, revisit this function rather than adding a branch here.
 
     Deliberately still NON-gating for Kubernetes readiness (see the
     ``/health/ready`` handler): this only populates the reported snapshot, so a
@@ -549,10 +558,6 @@ async def _check_qdrant_health() -> None:
     JWT rotation actually reached this Pod — before this change there was no
     signal anywhere that could distinguish a working token from a dead one
     (astrolabe-cloud-website board 6 #723).
-
-    Falls back to ``/readyz`` when vector sync is disabled: there is no
-    collection to probe then, and reporting the cluster's liveness is still
-    useful.
     """
     settings = get_settings()
     qdrant_url = settings.qdrant_url
@@ -571,19 +576,15 @@ async def _check_qdrant_health() -> None:
         # rather than reporting unhealthy, which is the silent-skip this probe
         # exists to eliminate. A config error is an unhealthy dependency, and is
         # reported through the same channel as a dead JWT.
-        if settings.vector_sync_enabled:
-            collection = settings.get_collection_name()
-            # quote() because this is the one place the collection name is spliced
-            # into a URL path rather than handed to the qdrant-client SDK (which
-            # encodes internally). The explicit-override branch of
-            # get_collection_name() does no sanitisation, so an operator-set
-            # QDRANT_COLLECTION containing "/" would otherwise silently probe a
-            # different path.
-            probe_url = f"{qdrant_url}/collections/{quote(collection, safe='')}"
-            probe_desc = f"collection {collection}"
-        else:
-            probe_url = f"{qdrant_url}/readyz"
-            probe_desc = "cluster readyz"
+        collection = settings.get_collection_name()
+        # quote() because this is the one place the collection name is spliced
+        # into a URL path rather than handed to the qdrant-client SDK (which
+        # encodes internally). The explicit-override branch of
+        # get_collection_name() does no sanitisation, so an operator-set
+        # QDRANT_COLLECTION containing "/" would otherwise silently probe a
+        # different path.
+        probe_url = f"{qdrant_url}/collections/{quote(collection, safe='')}"
+        probe_desc = f"collection {collection}"
 
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(probe_url, headers=headers)
