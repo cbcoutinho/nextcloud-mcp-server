@@ -431,12 +431,12 @@ def test_windowed_bboxes_identical_to_unwindowed(window):
     """
     pdf_bytes, boundaries, full_text, chunks = _many_page_fixture(12)
 
-    kwargs = dict(
-        pdf_bytes=pdf_bytes,
-        chunks=chunks,
-        page_boundaries=boundaries,
-        full_text=full_text,
-    )
+    kwargs = {
+        "pdf_bytes": pdf_bytes,
+        "chunks": chunks,
+        "page_boundaries": boundaries,
+        "full_text": full_text,
+    }
     unwindowed = PDFHighlighter.compute_chunk_bboxes_batch(**kwargs, page_window=0)
     windowed = PDFHighlighter.compute_chunk_bboxes_batch(**kwargs, page_window=window)
 
