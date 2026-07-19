@@ -30,6 +30,10 @@ from nextcloud_mcp_server.observability.tracing import (
 
 logger = logging.getLogger(__name__)
 
+# Nextcloud's reqId is 20 chars; the cap is slack for other callers, not a
+# format assumption. Bounds what an untrusted header can put on every span.
+_MAX_REQUEST_ID_LEN = 128
+
 
 class ObservabilityMiddleware(BaseHTTPMiddleware):
     """
@@ -95,6 +99,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                         "http.scheme": request.url.scheme,
                         "http.host": request.url.hostname,
                         **self._tenant_attributes(),
+                        **self._correlation_attributes(request),
                     },
                 ) as span:
                     # Process request
@@ -161,6 +166,10 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                     "method": method,
                     "path": path,
                     "duration_seconds": duration,
+                    # Same key the span carries, so a crash found in the logs
+                    # can be tied back to the Nextcloud request that caused it
+                    # even if the trace was dropped by sampling.
+                    **self._correlation_attributes(request),
                 },
             )
 
@@ -170,6 +179,29 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         finally:
             # Decrement in-flight requests counter
             http_requests_in_progress.labels(method=method, endpoint=endpoint).dec()
+
+    def _correlation_attributes(self, request: Request) -> dict[str, str]:
+        """Caller-supplied identifiers to hang on the span.
+
+        Astrolabe cannot export spans of its own — it runs on managed storage
+        with no collector in reach — so it forwards ``X-Request-Id``, which is
+        Nextcloud's ``reqId``: the value prefixing every line that request
+        writes to ``nextcloud.log``. Recording it here is what lets a
+        user-visible failure be traced from the Nextcloud log, through this
+        server's spans, to the query that actually broke, without Astrolabe
+        needing to emit a single span.
+
+        When Astrolabe does gain an OTel setup, ``traceparent`` takes over and
+        links the two halves properly; ``trace_server_request`` already
+        extracts it, so nothing here changes.
+
+        Capped because it lands in span attributes: an unbounded header from a
+        caller should not be able to inflate every span it touches.
+        """
+        request_id = request.headers.get("x-request-id")
+        if not request_id:
+            return {}
+        return {"client.request.id": request_id[:_MAX_REQUEST_ID_LEN]}
 
     def _tenant_attributes(self) -> dict[str, str]:
         """Tenant identity for the span, when this deployment has one.

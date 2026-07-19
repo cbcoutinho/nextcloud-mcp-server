@@ -191,6 +191,57 @@ def test_successful_response_leaves_the_span_ok(client, exporter):
     assert _finished_span(exporter).status.status_code is not trace.StatusCode.ERROR
 
 
+class TestCorrelationHeaders:
+    """Astrolabe cannot emit spans, so it forwards identifiers instead.
+
+    X-Request-Id is Nextcloud's reqId — the value prefixing every line that
+    request writes to nextcloud.log — so recording it on the span is what makes
+    a user-visible failure traceable from the Nextcloud log through to the
+    backend work, with no spans on the Astrolabe side at all.
+    """
+
+    def test_request_id_is_recorded_on_the_span(self, client, exporter):
+        client.get("/api/v1/status", headers={"X-Request-Id": "aBcD1234efGh5678ijKl"})
+
+        span = _finished_span(exporter)
+        assert span.attributes["client.request.id"] == "aBcD1234efGh5678ijKl"
+
+    def test_absent_header_adds_no_attribute(self, client, exporter):
+        """An uninstrumented caller must not gain an empty attribute."""
+        client.get("/api/v1/status")
+
+        assert "client.request.id" not in _finished_span(exporter).attributes
+
+    def test_oversized_request_id_is_truncated(self, client, exporter):
+        """A caller-controlled header must not inflate every span it touches."""
+        client.get("/api/v1/status", headers={"X-Request-Id": "x" * 500})
+
+        recorded = _finished_span(exporter).attributes["client.request.id"]
+        assert len(recorded) == 128
+
+    def test_failure_log_carries_the_request_id(self, client, exporter, caplog):
+        """So a crash stays correlatable even if its trace was sampled out."""
+        with caplog.at_level(
+            logging.ERROR, logger="nextcloud_mcp_server.observability.middleware"
+        ):
+            client.get("/api/v1/boom", headers={"X-Request-Id": "req-42"})
+
+        failures = [r for r in caplog.records if "Request failed" in r.getMessage()]
+        assert failures
+        assert getattr(failures[0], "client.request.id", None) == "req-42"
+
+    def test_traceparent_still_wins_when_both_are_present(self, client, exporter):
+        """The header is a fallback, not a replacement for real trace context."""
+        client.get(
+            "/api/v1/status",
+            headers={"traceparent": TRACEPARENT, "X-Request-Id": "req-7"},
+        )
+
+        span = _finished_span(exporter)
+        assert format(span.get_span_context().trace_id, "032x") == UPSTREAM_TRACE_ID
+        assert span.attributes["client.request.id"] == "req-7"
+
+
 def test_health_endpoints_are_not_traced(client, exporter):
     """Polling endpoints stay out of traces to keep the signal readable."""
     client.get("/health/live")
