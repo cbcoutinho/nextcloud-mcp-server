@@ -49,13 +49,13 @@ def exporter(monkeypatch):
 
 @pytest.fixture
 def client(exporter):
-    async def ok(request):
+    def ok(request):
         return JSONResponse({"ok": True})
 
-    async def boom(request):
+    def boom(request):
         raise RuntimeError("kaboom")
 
-    async def caught_500(request):
+    def caught_500(request):
         # Mirrors every /api/v1 handler: catches its own exception and returns
         # a 500 rather than letting it propagate.
         return JSONResponse({"error": "internal"}, status_code=500)
