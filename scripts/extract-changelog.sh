@@ -15,9 +15,11 @@ if [ ! -f "$CHANGELOG" ]; then
     exit 1
 fi
 
-# Match the heading by exact string comparison rather than a regex: a version
-# like v0.142.0 is full of dots, which awk would treat as "any character" in a
-# dynamic regex and could match a neighbouring version.
+# Headings are matched by exact string comparison rather than by building a
+# regex out of "$TAG". Nothing in a vX.Y.Z tag actually collides today — the
+# trailing " (" anchors a regex well enough — but string comparison means the
+# tag is never interpreted as a pattern, so this stays correct if the tag or
+# heading format ever grows a character that means something to a regex.
 section=$(awk -v tag="$TAG" '
     BEGIN { heading = "## " tag; dated = heading " (" }
     !found && ($0 == heading || substr($0, 1, length(dated)) == dated) { found = 1; next }
