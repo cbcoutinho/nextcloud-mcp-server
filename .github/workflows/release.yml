@@ -50,3 +50,48 @@ jobs:
         run: uv run --isolated --no-project --with dist/*.tar.gz nextcloud-mcp-server --help
       - name: Publish
         run: uv publish
+
+  github-release:
+    name: Create GitHub Release
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: Build release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          ./scripts/extract-changelog.sh "${{ steps.resolve.outputs.tag }}" > notes.md
+          echo "Release notes for ${{ steps.resolve.outputs.tag }}:"
+          cat notes.md
+
+      # `gh release create` is idempotent enough for our needs but errors if the
+      # release already exists (e.g. a re-run of this job), so check first.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating notes."
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag
+          fi
