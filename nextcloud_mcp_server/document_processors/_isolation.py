@@ -127,7 +127,9 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
     for i in range(doc.page_count):
         try:
             text = doc[i].get_text("text")
-        except Exception:  # noqa: BLE001 -- per-page best effort, mirrors the markdown path
+        # Per-page best effort, mirroring the markdown path above: one
+        # unreadable page degrades to "" rather than failing the document.
+        except Exception:  # noqa: BLE001
             text = ""
         chunks.append({"text": text, "metadata": {"page": i + 1}})
     return chunks

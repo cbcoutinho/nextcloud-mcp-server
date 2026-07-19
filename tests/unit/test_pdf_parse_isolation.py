@@ -213,6 +213,19 @@ def test_isolation_imports_on_windows_without_resource(monkeypatch):
     assert mod.resource is None
 
 
+def _fake_parse_returning(n_pages: int):
+    """Build a ``run_isolated_pdf_parse`` double yielding ``n_pages`` chunks.
+
+    Must be a coroutine function -- the production call site awaits it -- which
+    is why it has no ``await`` of its own.
+    """
+
+    async def fake_parse(content, **kwargs):
+        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(n_pages)]
+
+    return fake_parse
+
+
 # --- PyMuPDF processor wiring ------------------------------------------------
 
 
@@ -249,11 +262,10 @@ async def test_processor_reports_parse_mode(monkeypatch):
     """
     from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
 
-    async def fake_parse(content, **kwargs):
-        # 3 pages against the default 150-page ceiling -> markdown.
-        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(3)]
-
-    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    # 3 pages against the default 150-page ceiling -> markdown.
+    monkeypatch.setattr(
+        pymupdf_proc, "run_isolated_pdf_parse", _fake_parse_returning(3)
+    )
     proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
     result = await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
     assert result.metadata["parse_mode"] == "markdown"
@@ -270,9 +282,6 @@ async def test_processor_reports_text_only_mode_above_ceiling(monkeypatch):
 
     from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
 
-    async def fake_parse(content, **kwargs):
-        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(5)]
-
     def fake_settings():
         # Only the attributes process_source reads from settings.
         return SimpleNamespace(
@@ -283,7 +292,9 @@ async def test_processor_reports_text_only_mode_above_ceiling(monkeypatch):
             document_markdown_max_pages=4,  # 5 pages > 4 -> text_only
         )
 
-    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    monkeypatch.setattr(
+        pymupdf_proc, "run_isolated_pdf_parse", _fake_parse_returning(5)
+    )
     monkeypatch.setattr(pymupdf_proc, "get_settings", fake_settings)
 
     proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
@@ -586,10 +597,9 @@ async def test_parse_mode_counter_increments(monkeypatch):
 
     before = _value("markdown")
 
-    async def fake_parse(content, **kwargs):
-        return [{"text": "x", "metadata": {"page": 1}}]
-
-    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    monkeypatch.setattr(
+        pymupdf_proc, "run_isolated_pdf_parse", _fake_parse_returning(1)
+    )
     proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
     await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
 
