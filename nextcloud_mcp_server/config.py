@@ -543,6 +543,10 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
         # 0 disables page-windowed extraction; otherwise it must be positive.
         Validator("DOCUMENT_PARSE_PAGE_WINDOW", gte=0),
+        # 0 disables markdown reconstruction; otherwise it must be positive. A
+        # negative value must fail fast rather than silently disable markdown
+        # fleet-wide -- the same silent-disarm class this setting exists to fix.
+        Validator("DOCUMENT_MARKDOWN_MAX_PAGES", gte=0),
         # At least one parse must be able to run.
         Validator("DOCUMENT_PARSE_PROCESS_SLOTS", gte=1),
         # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
@@ -1148,9 +1152,11 @@ class Settings:
     # the OCR timeout for 0 chars. 0 disables the guard.
     document_max_pdf_size_mb: float = 50.0
     # Page ceiling above which the structured tier skips pymupdf4llm.to_markdown
-    # and returns the raw text layer instead. <=0 disables markdown entirely
+    # and returns the raw text layer instead. 0 disables markdown entirely
     # (every document takes the raw-text path), matching how
-    # document_max_pdf_size_mb treats 0 as "guard off".
+    # document_max_pdf_size_mb treats 0 as "guard off"; a NEGATIVE value is
+    # rejected at startup by the DOCUMENT_MARKDOWN_MAX_PAGES validator, so a
+    # typo cannot silently turn markdown off everywhere.
     #
     # to_markdown is SUPERLINEAR in page count -- the per-page rate itself grows
     # with document size. Measured across a 866-file scanned corpus: 0.48-1.48

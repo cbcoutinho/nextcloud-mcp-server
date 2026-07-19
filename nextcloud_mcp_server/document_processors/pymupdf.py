@@ -256,10 +256,13 @@ class PyMuPDFProcessor(DocumentProcessor):
                     error=f"isolated parse failed ({exc.reason}): {exc}",
                 )
 
-            # Both paths emit exactly one chunk per page, so the page count is
-            # recoverable here without the worker reporting its mode back over
-            # the process boundary (a Counter incremented in the subprocess
-            # would never reach this process's registry). Shares the worker's
+            # Recompute the worker's decision here rather than have it report a
+            # mode back: a Counter incremented in the subprocess would never
+            # reach this process's registry. Uses ``page_count`` from the
+            # metadata read -- the same authoritative value the worker's own
+            # ``doc.page_count`` gate saw -- rather than ``len(page_chunks)``,
+            # which would silently mislabel the metric if pymupdf4llm ever
+            # stopped emitting exactly one chunk per page. Shares the worker's
             # predicate so the label cannot drift from the actual decision.
             #
             # Note the gated path also writes no images, so ``has_images`` is
@@ -267,7 +270,7 @@ class PyMuPDFProcessor(DocumentProcessor):
             # reconstruction is what emits them.
             mode = (
                 "markdown"
-                if uses_markdown(len(page_chunks), settings.document_markdown_max_pages)
+                if uses_markdown(page_count, settings.document_markdown_max_pages)
                 else "text_only"
             )
             metadata["parse_mode"] = mode

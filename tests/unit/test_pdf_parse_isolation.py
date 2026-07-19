@@ -260,6 +260,12 @@ async def test_processor_reports_parse_mode(monkeypatch):
 
 
 async def test_processor_reports_text_only_mode_above_ceiling(monkeypatch):
+    """A REAL 5-page document against a 4-page ceiling.
+
+    The mode is derived from the authoritative ``page_count`` read off the
+    document, not from ``len(page_chunks)``, so this must feed a genuinely
+    multi-page PDF rather than a fake chunk list.
+    """
     from types import SimpleNamespace
 
     from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
@@ -281,7 +287,7 @@ async def test_processor_reports_text_only_mode_above_ceiling(monkeypatch):
     monkeypatch.setattr(pymupdf_proc, "get_settings", fake_settings)
 
     proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
-    result = await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
+    result = await proc.process(_pdf_with_pages(5), "application/pdf", filename="t.pdf")
     assert result.metadata["parse_mode"] == "text_only"
 
 

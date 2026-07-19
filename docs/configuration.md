@@ -681,7 +681,7 @@ DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 18
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
-DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; <=0 disables markdown (default: 150)
+DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
 ```
 
 `DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
@@ -728,8 +728,9 @@ sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
 #### Markdown page ceiling (structured tier)
 
 `DOCUMENT_MARKDOWN_MAX_PAGES` bounds the **structured** tier. Above it, the tier
-skips `pymupdf4llm.to_markdown` and returns the raw text layer instead; `<=0`
-disables markdown entirely.
+skips `pymupdf4llm.to_markdown` and returns the raw text layer instead; `0`
+disables markdown entirely. A negative value is rejected at startup, so a typo
+cannot quietly turn markdown off across the fleet.
 
 `to_markdown` is **superlinear in page count** — the per-page rate itself grows
 with document size. Measured across an 866-file corpus of scanned documents:
