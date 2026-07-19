@@ -161,6 +161,10 @@ def test_handler_exception_marks_the_span_and_is_logged(client, exporter, caplog
     ]
     assert failures, "middleware must log the failing request"
     assert "/api/v1/boom" in failures[0].getMessage()
+    # The traceback is the whole point on this path: it is the only record of an
+    # exception no handler caught. logger.error() would drop it silently.
+    assert failures[0].exc_info is not None, "crash log must carry the traceback"
+    assert failures[0].exc_info[0] is RuntimeError
 
 
 def test_handler_caught_500_still_marks_the_span_as_error(client, exporter):

@@ -149,7 +149,11 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                 duration=duration,
             )
 
-            logger.error(
+            # exception() over error(): this is the genuine crash path — an
+            # exception that no handler caught — so it is the one place a
+            # traceback is worth most, and the one place it was being dropped.
+            # Also Sonar python:S8572.
+            logger.exception(
                 "Request failed: %s %s",
                 method,
                 path,
