@@ -21,7 +21,7 @@ from nextcloud_mcp_server.app import _check_qdrant_health, _readiness_cache
 def _settings(
     *,
     vector_sync: bool,
-    url: str | None = "http://qdrant:6333",
+    url: str | None = "https://qdrant:6333",
     collection: str = "tenant_abc123",
     collection_raises: bool = False,
 ):
@@ -49,7 +49,7 @@ def probe(monkeypatch):
         *,
         vector_sync: bool,
         handler,
-        url: str | None = "http://qdrant:6333",
+        url: str | None = "https://qdrant:6333",
         collection: str = "tenant_abc123",
         collection_raises: bool = False,
     ):
@@ -89,7 +89,7 @@ class TestQdrantHealthProbeTarget:
         seen, status = await probe(
             vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
         )
-        assert seen["url"] == "http://qdrant:6333/collections/tenant_abc123"
+        assert seen["url"] == "https://qdrant:6333/collections/tenant_abc123"
         assert status.detail == "ok"
         assert status.healthy is True
 
@@ -105,7 +105,7 @@ class TestQdrantHealthProbeTarget:
         seen, status = await probe(
             vector_sync=False, handler=lambda r: httpx.Response(200)
         )
-        assert seen["url"] == "http://qdrant:6333/readyz"
+        assert seen["url"] == "https://qdrant:6333/readyz"
         assert status.healthy is True
 
     async def test_noop_without_a_qdrant_url(self, probe, monkeypatch):
@@ -190,5 +190,5 @@ class TestQdrantHealthProbeRobustness:
             collection="weird/name with space",
         )
         assert (
-            seen["url"] == "http://qdrant:6333/collections/weird%2Fname%20with%20space"
+            seen["url"] == "https://qdrant:6333/collections/weird%2Fname%20with%20space"
         )
