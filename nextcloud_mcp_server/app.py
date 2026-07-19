@@ -528,25 +528,60 @@ async def _check_nextcloud_health() -> None:
 
 
 async def _check_qdrant_health() -> None:
-    """Probe Qdrant ``/readyz`` (network mode) and record the result.
+    """Probe Qdrant (network mode) and record the result in the readiness cache.
 
     Qdrant Cloud's auth gateway 403s unauthenticated requests, so forward the
     same api-key the configured client uses (see vector/qdrant_client.py).
+
+    When vector sync is on, this probes the tenant's **collection**
+    (``GET /collections/{name}``) rather than the cluster's ``/readyz``. That
+    matters because the deployed api-key is a *collection-scoped* JWT: a token
+    that is expired, revoked, or scoped to the wrong collection still sails past
+    ``/readyz`` (which only proves the cluster is up), so a cluster-level probe
+    reports "ok" while every real query fails. Probing the collection exercises
+    the credential we actually depend on, and additionally catches the
+    collection having been deleted out from under us.
+
+    Deliberately still NON-gating for Kubernetes readiness (see the
+    ``/health/ready`` handler): this only populates the reported snapshot, so a
+    Qdrant blip never pulls a single-replica Pod out of its Service (Deck #302).
+    The control plane reads ``checks.qdrant`` from that body to decide whether a
+    JWT rotation actually reached this Pod — before this change there was no
+    signal anywhere that could distinguish a working token from a dead one
+    (astrolabe-cloud-website board 6 #723).
+
+    Falls back to ``/readyz`` when vector sync is disabled: there is no
+    collection to probe then, and reporting the cluster's liveness is still
+    useful.
     """
     settings = get_settings()
     qdrant_url = settings.qdrant_url
     if not qdrant_url:
         return
     headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
+
+    if settings.vector_sync_enabled:
+        collection = settings.get_collection_name()
+        probe_url = f"{qdrant_url}/collections/{collection}"
+        probe_desc = f"collection {collection}"
+    else:
+        probe_url = f"{qdrant_url}/readyz"
+        probe_desc = "cluster readyz"
+
     start = time.time()
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(f"{qdrant_url}/readyz", headers=headers)
+            response = await client.get(probe_url, headers=headers)
         healthy = response.status_code == 200
-        detail = "ok" if healthy else f"error: status {response.status_code}"
+        # Keep the healthy detail exactly "ok" — the control plane's rotate-verify
+        # gates on that literal. Failures name what was probed, so an operator can
+        # tell a dead JWT (401/403) from a missing collection (404) at a glance.
+        detail = (
+            "ok" if healthy else f"error: status {response.status_code} ({probe_desc})"
+        )
     except Exception as e:  # noqa: BLE001 - any failure is "unhealthy"
         healthy = False
-        detail = f"error: {e}"
+        detail = f"error: {e} ({probe_desc})"
     _readiness_cache.update("qdrant", healthy, detail)
     set_dependency_health("qdrant", healthy)
     record_dependency_check("qdrant", time.time() - start)

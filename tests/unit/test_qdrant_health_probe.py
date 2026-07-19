@@ -1,0 +1,140 @@
+"""Unit tests for the background Qdrant readiness probe.
+
+``_check_qdrant_health`` populates the ``checks.qdrant`` entry that
+``/health/ready`` reports. It probes the tenant's **collection** (not the
+cluster's ``/readyz``) whenever vector sync is on, because the deployed api-key
+is a collection-scoped JWT: a token that is expired, revoked, or scoped to the
+wrong collection still passes ``/readyz`` while every real query fails.
+
+That distinction is load-bearing — the control plane reads ``checks.qdrant`` to
+decide whether a JWT rotation actually reached this Pod
+(astrolabe-cloud-website board 6 #723), so a probe that can't fail on a dead
+token silently manufactures confidence.
+"""
+
+import httpx
+import pytest
+
+from nextcloud_mcp_server.app import _check_qdrant_health, _readiness_cache
+
+
+def _settings(*, vector_sync: bool, url: str | None = "http://qdrant:6333"):
+    """Minimal stand-in for the Settings object this probe reads."""
+
+    class _S:
+        qdrant_url = url
+        qdrant_api_key = "tenant-jwt"
+        vector_sync_enabled = vector_sync
+
+        def get_collection_name(self) -> str:
+            return "tenant_abc123"
+
+    return _S()
+
+
+@pytest.fixture
+def probe(monkeypatch):
+    """Drive ``_check_qdrant_health`` against a scripted transport, returning the
+    resulting cache entry plus the URL that was actually requested."""
+
+    async def _run(
+        *, vector_sync: bool, handler, url: str | None = "http://qdrant:6333"
+    ):
+        seen: dict[str, str] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["api_key"] = request.headers.get("api-key", "")
+            return handler(request)
+
+        real_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.app.get_settings",
+            lambda: _settings(vector_sync=vector_sync, url=url),
+        )
+        monkeypatch.setattr("nextcloud_mcp_server.app.httpx.AsyncClient", _client)
+        await _check_qdrant_health()
+        return seen, _readiness_cache.snapshot().get("qdrant")
+
+    return _run
+
+
+@pytest.mark.unit
+class TestQdrantHealthProbeTarget:
+    async def test_probes_the_collection_when_vector_sync_enabled(self, probe):
+        """The collection endpoint is what exercises the collection-scoped JWT."""
+        seen, status = await probe(
+            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+        )
+        assert seen["url"] == "http://qdrant:6333/collections/tenant_abc123"
+        assert status.detail == "ok"
+        assert status.healthy is True
+
+    async def test_forwards_the_api_key(self, probe):
+        """Qdrant Cloud's gateway 403s unauthenticated reads."""
+        seen, _ = await probe(
+            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+        )
+        assert seen["api_key"] == "tenant-jwt"
+
+    async def test_falls_back_to_readyz_when_vector_sync_disabled(self, probe):
+        """No collection exists to probe; cluster liveness is still worth reporting."""
+        seen, status = await probe(
+            vector_sync=False, handler=lambda r: httpx.Response(200)
+        )
+        assert seen["url"] == "http://qdrant:6333/readyz"
+        assert status.healthy is True
+
+    async def test_noop_without_a_qdrant_url(self, probe, monkeypatch):
+        """Embedded/local mode has no URL to probe — must not blow up."""
+        seen, _ = await probe(
+            vector_sync=True, handler=lambda r: httpx.Response(200), url=None
+        )
+        assert seen == {}  # no request issued
+
+
+@pytest.mark.unit
+class TestQdrantHealthProbeFailureModes:
+    @pytest.mark.parametrize(
+        ("status_code", "label"),
+        [
+            (401, "expired/invalid JWT"),
+            (403, "revoked or wrong-scoped JWT"),
+            (404, "collection deleted"),
+        ],
+    )
+    async def test_unhealthy_on_error_status(self, probe, status_code, label):
+        """Each of these is a real outage for the tenant and MUST report unhealthy.
+
+        Before probing the collection, every one of them returned a 200 from
+        /readyz — which is precisely how a rotation could report success over a
+        Pod holding a dead token.
+        """
+        _seen, status = await probe(
+            vector_sync=True, handler=lambda r: httpx.Response(status_code)
+        )
+        assert status.healthy is False, label
+        assert str(status_code) in status.detail
+        # The failure names what was probed so an operator can triage from the body.
+        assert "tenant_abc123" in status.detail
+
+    async def test_unhealthy_on_transport_error(self, probe):
+        def _boom(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        _seen, status = await probe(vector_sync=True, handler=_boom)
+        assert status.healthy is False
+        assert "error:" in status.detail
+
+    async def test_healthy_detail_is_exactly_ok(self, probe):
+        """The control plane's rotate-verify gates on this literal string — a
+        decorated success value ("ok (collection ...)") would break it."""
+        _seen, status = await probe(
+            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+        )
+        assert status.detail == "ok"
