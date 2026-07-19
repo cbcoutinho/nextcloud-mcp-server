@@ -64,7 +64,7 @@ jobs:
           # now and is no longer maintained). The cargo-dist installer appends
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the record-deployment step below.
-          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.7/pact-installer.sh | sh
           echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
           "$HOME/.pact/bin/pact" --help > /dev/null
 
