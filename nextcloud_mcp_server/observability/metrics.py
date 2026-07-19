@@ -330,6 +330,12 @@ document_ingest_rejected_total = Counter(
     ["doc_type", "reason"],  # reason: oversize
 )
 
+document_parse_mode_total = Counter(
+    "astrolabe_document_parse_mode_total",
+    "Structured-tier parses by extraction mode",
+    ["mode"],  # markdown | text_only
+)
+
 # --- Escalation (tiered-pipeline readiness; ~0 until extra tiers exist) --------
 
 document_escalation_total = Counter(
@@ -1084,6 +1090,18 @@ def record_document_ingest_rejected(doc_type: str, reason: str) -> None:
     investigation.
     """
     document_ingest_rejected_total.labels(doc_type=doc_type, reason=reason).inc()
+
+
+def record_document_parse_mode(mode: str) -> None:
+    """Record which extraction mode the structured tier used.
+
+    Deliberately NOT folded into ``document_parse_failed_total``: skipping
+    markdown is a successful parse, not a failure. Without its own signal the
+    page gate (``document_markdown_max_pages``) is invisible -- there is no way
+    to tell "markdown is off for most of this tenant" from "markdown is running
+    fine", which is exactly the question an operator asks after tuning it.
+    """
+    document_parse_mode_total.labels(mode=mode).inc()
 
 
 def record_document_dead_lettered(reason: str) -> None:

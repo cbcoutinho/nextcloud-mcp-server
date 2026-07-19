@@ -211,6 +211,8 @@ _DEFAULTS: dict[str, Any] = {
     # "oversize" instead of burning the OCR timeout to 0 chars on a pathological
     # file. 0 disables the guard.
     "document_max_pdf_size_mb": 50.0,
+    # Page ceiling for markdown reconstruction (see document_markdown_max_pages).
+    "document_markdown_max_pages": 150,
     # Pages per pypdfium2 extraction window (see document_parse_page_window).
     "document_parse_page_window": 100,
     # Concurrent isolated parse subprocesses (see document_parse_process_slots).
@@ -1145,6 +1147,29 @@ class Settings:
     # being handed to the fast/OCR tiers, where a pathological large file burns
     # the OCR timeout for 0 chars. 0 disables the guard.
     document_max_pdf_size_mb: float = 50.0
+    # Page ceiling above which the structured tier skips pymupdf4llm.to_markdown
+    # and returns the raw text layer instead. <=0 disables markdown entirely
+    # (every document takes the raw-text path), matching how
+    # document_max_pdf_size_mb treats 0 as "guard off".
+    #
+    # to_markdown is SUPERLINEAR in page count -- the per-page rate itself grows
+    # with document size. Measured across a 866-file scanned corpus: 0.48-1.48
+    # s/page at 22-31 pages, ~1.0 s/page at 400, 3.11 s/page at 1898, and 5.92
+    # s/page at 4003 (6.6 hours for one document). Raw ``get_text`` is ~4.5
+    # ms/page flat, and on that corpus recovered 116,375 of the 145,199 chars
+    # markdown produced -- markdown's value is structure, not completeness.
+    #
+    # Without a ceiling a large document burns the whole parse timeout and then
+    # dead-letters with reason="timeout", discarding a text layer that was
+    # already extractable in under a second (Deck #399). The gate is expressed in
+    # PAGES rather than predicted seconds deliberately: seconds depend on node
+    # CPU, so a seconds-based threshold silently drifts between node types and
+    # needs recalibration, while a page count is deterministic and reviewable.
+    #
+    # Default 150: roughly the point where markdown costs >~120s on a throttled
+    # 2-core pod, and it keeps markdown for the small/prose documents that
+    # actually benefit from table reconstruction.
+    document_markdown_max_pages: int = 150
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
@@ -1978,6 +2003,7 @@ def _build_settings() -> Settings:
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
+        "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
         "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",

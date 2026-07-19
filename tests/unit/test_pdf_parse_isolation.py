@@ -60,6 +60,7 @@ async def _run(monkeypatch, fake_run_sync) -> list:
         graphics_limit=5000,
         timeout_seconds=5,
         mem_limit_mb=1536,
+        markdown_max_pages=150,
     )
 
 
@@ -116,6 +117,7 @@ async def test_timeout_kills_and_classifies_as_timeout(monkeypatch):
             graphics_limit=5000,
             timeout_seconds=0.2,
             mem_limit_mb=1536,
+            markdown_max_pages=150,
         )
     assert exc.value.reason == "timeout"
 
@@ -235,6 +237,52 @@ async def test_processor_success_builds_page_boundaries(monkeypatch):
     assert seen["graphics_limit"] == 1000
     assert seen["timeout_seconds"] == 120
     assert seen["mem_limit_mb"] == 1536
+    assert seen["markdown_max_pages"] == 150
+
+
+async def test_processor_reports_parse_mode(monkeypatch):
+    """The mode must be observable: a silent gate is untunable.
+
+    Derived in the parent from the returned page count (both worker paths emit
+    one chunk per page) because a Counter incremented in the subprocess would
+    never reach this process's registry.
+    """
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+
+    async def fake_parse(content, **kwargs):
+        # 3 pages against the default 150-page ceiling -> markdown.
+        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(3)]
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    result = await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
+    assert result.metadata["parse_mode"] == "markdown"
+
+
+async def test_processor_reports_text_only_mode_above_ceiling(monkeypatch):
+    from types import SimpleNamespace
+
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+
+    async def fake_parse(content, **kwargs):
+        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(5)]
+
+    def fake_settings():
+        # Only the attributes process_source reads from settings.
+        return SimpleNamespace(
+            document_pdf_graphics_limit=1000,
+            document_parse_timeout_seconds=120.0,
+            document_parse_mem_limit_mb=1536,
+            document_parse_process_slots=2,
+            document_markdown_max_pages=4,  # 5 pages > 4 -> text_only
+        )
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    monkeypatch.setattr(pymupdf_proc, "get_settings", fake_settings)
+
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    result = await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
+    assert result.metadata["parse_mode"] == "text_only"
 
 
 async def test_processor_parse_failure_returns_success_false(monkeypatch):
@@ -399,8 +447,144 @@ async def test_isolated_parse_uses_the_bounded_limiter(mocker):
         graphics_limit=1000,
         timeout_seconds=5.0,
         mem_limit_mb=512,
+        markdown_max_pages=150,
         process_slots=2,
     )
 
     limiter = run_sync.await_args.kwargs["limiter"]
     assert limiter.total_tokens == 2
+
+
+# --- markdown page gate (Deck #399) -----------------------------------------
+#
+# to_markdown is superlinear in page count, so a large document burns the whole
+# parse timeout and dead-letters reason="timeout" -- throwing away a text layer
+# get_text extracts in ~4.5 ms/page. These drive the REAL worker against real
+# PDFs (no mocked to_markdown) so the gate is verified end to end.
+
+
+def _pdf_with_pages(n: int, text: str = "Hello world") -> bytes:
+    doc = pymupdf.open()
+    for i in range(n):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 50), f"{text} {i + 1}")
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def _write(tmp_path, data: bytes) -> str:
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(data)
+    return str(p)
+
+
+def test_gate_uses_text_only_above_ceiling(tmp_path):
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(5))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 2)
+
+    # One chunk per page, 1-based page numbers, real text recovered.
+    assert len(chunks) == 5
+    assert [c["metadata"]["page"] for c in chunks] == [1, 2, 3, 4, 5]
+    assert "Hello world 1" in chunks[0]["text"]
+    assert "Hello world 5" in chunks[4]["text"]
+
+
+def test_gate_runs_markdown_at_or_below_ceiling(tmp_path):
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(3))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 3)
+
+    # Boundary is inclusive: page_count == ceiling still gets markdown, which
+    # carries pymupdf4llm's richer metadata (the text-only path emits only
+    # "page").
+    assert len(chunks) == 3
+    assert set(chunks[0]["metadata"]) > {"page"}
+
+
+def test_gate_zero_disables_markdown_entirely(tmp_path):
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 0)
+
+    assert len(chunks) == 2
+    assert chunks[0]["metadata"] == {"page": 1}
+    assert "Hello world 1" in chunks[0]["text"]
+
+
+def test_text_only_chunks_match_markdown_page_count_and_order(tmp_path):
+    """Both paths must agree on shape -- page_boundaries depends on it."""
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(4))
+    md = _parse_pdf_worker(path, False, None, 1000, 0, 100)
+    raw = _parse_pdf_worker(path, False, None, 1000, 0, 1)
+
+    assert len(md) == len(raw) == 4
+    assert [c["metadata"]["page"] for c in md] == [c["metadata"]["page"] for c in raw]
+    # Text layer is the source of truth: the raw path must not lose content.
+    for m, r in zip(md, raw, strict=True):
+        assert m["text"].strip()
+        assert r["text"].strip()
+
+
+def test_text_only_path_survives_a_page_that_cannot_be_read(monkeypatch):
+    """A per-page failure degrades that page, never the whole document."""
+    from nextcloud_mcp_server.document_processors._isolation import _text_only_chunks
+
+    class _Page:
+        def __init__(self, ok: bool) -> None:
+            self._ok = ok
+
+        def get_text(self, _mode: str) -> str:
+            if not self._ok:
+                raise RuntimeError("corrupt page")
+            return "fine"
+
+    class _Doc:
+        page_count = 3
+
+        def __getitem__(self, i: int) -> _Page:
+            return _Page(ok=(i != 1))
+
+    chunks = _text_only_chunks(_Doc())
+    assert [c["text"] for c in chunks] == ["fine", "", "fine"]
+    assert [c["metadata"]["page"] for c in chunks] == [1, 2, 3]
+
+
+def test_uses_markdown_is_the_single_source_of_truth():
+    """The worker and the metric label must agree; both call this predicate."""
+    from nextcloud_mcp_server.document_processors._isolation import uses_markdown
+
+    assert uses_markdown(page_count=1, markdown_max_pages=150) is True
+    assert uses_markdown(page_count=150, markdown_max_pages=150) is True  # inclusive
+    assert uses_markdown(page_count=151, markdown_max_pages=150) is False
+    # <=0 disables markdown entirely, however small the document.
+    assert uses_markdown(page_count=1, markdown_max_pages=0) is False
+    assert uses_markdown(page_count=1, markdown_max_pages=-5) is False
+
+
+async def test_parse_mode_counter_increments(monkeypatch):
+    """The gate must be observable in Prometheus, not just on the result."""
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+    from nextcloud_mcp_server.observability import metrics
+
+    def _value(mode: str) -> float:
+        return (
+            metrics.document_parse_mode_total.labels(mode=mode)._value.get()  # noqa: SLF001
+        )
+
+    before = _value("markdown")
+
+    async def fake_parse(content, **kwargs):
+        return [{"text": "x", "metadata": {"page": 1}}]
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
+
+    assert _value("markdown") == before + 1
