@@ -55,11 +55,17 @@ def client(exporter):
     async def boom(request):
         raise RuntimeError("kaboom")
 
+    async def caught_500(request):
+        # Mirrors every /api/v1 handler: catches its own exception and returns
+        # a 500 rather than letting it propagate.
+        return JSONResponse({"error": "internal"}, status_code=500)
+
     app = Starlette(
         routes=[
             Route("/api/v1/status", ok, methods=["GET"]),
             Route("/health/live", ok, methods=["GET"]),
             Route("/api/v1/boom", boom, methods=["GET"]),
+            Route("/api/v1/caught", caught_500, methods=["GET"]),
         ]
     )
     app.add_middleware(ObservabilityMiddleware)
@@ -155,6 +161,30 @@ def test_handler_exception_marks_the_span_and_is_logged(client, exporter, caplog
     ]
     assert failures, "middleware must log the failing request"
     assert "/api/v1/boom" in failures[0].getMessage()
+
+
+def test_handler_caught_500_still_marks_the_span_as_error(client, exporter):
+    """A 500 returned rather than raised must still be an error span.
+
+    Every /api/v1 handler catches its own exception and returns a 500, so
+    nothing propagates to the middleware and the span would finish OK — making
+    the failure invisible to a `status=error` trace query, which is precisely
+    the blind spot this work exists to remove.
+    """
+    response = client.get("/api/v1/caught")
+
+    assert response.status_code == 500
+
+    span = _finished_span(exporter)
+    assert span.attributes["http.status_code"] == 500
+    assert span.status.status_code is trace.StatusCode.ERROR
+
+
+def test_successful_response_leaves_the_span_ok(client, exporter):
+    """...and a 2xx must not be mislabelled as an error."""
+    client.get("/api/v1/status")
+
+    assert _finished_span(exporter).status.status_code is not trace.StatusCode.ERROR
 
 
 def test_health_endpoints_are_not_traced(client, exporter):

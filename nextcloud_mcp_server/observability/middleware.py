@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Callable
 
+from opentelemetry.trace import Status, StatusCode
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -95,12 +96,23 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                         "http.host": request.url.hostname,
                         **self._tenant_attributes(),
                     },
-                ):
+                ) as span:
                     # Process request
                     response = await call_next(request)
 
                     # Add response status to span
                     add_span_attribute("http.status_code", response.status_code)
+
+                    # A handler that catches its own exception and returns a 500
+                    # (which every /api/v1 handler does) never raises past this
+                    # middleware, so the span would otherwise finish OK and be
+                    # invisible to a `status=error` trace query — the exact
+                    # blind spot this PR set out to close. Derive the span
+                    # status from the response as well as tagging it.
+                    if span is not None and response.status_code >= 500:
+                        span.set_status(
+                            Status(StatusCode.ERROR, f"HTTP {response.status_code}")
+                        )
 
                     # Record metrics
                     duration = time.time() - start_time
