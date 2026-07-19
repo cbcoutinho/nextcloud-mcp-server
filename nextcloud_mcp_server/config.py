@@ -274,7 +274,7 @@ _DEFAULTS: dict[str, Any] = {
     "metrics_enabled": True,
     "metrics_port": 9090,
     "otel_exporter_otlp_endpoint": None,
-    "otel_exporter_verify_ssl": False,
+    "otel_exporter_verify_ssl": None,
     "otel_service_name": "nextcloud-mcp-server",
     "otel_traces_sampler": "always_on",
     "otel_traces_sampler_arg": 1.0,
@@ -1261,7 +1261,11 @@ class Settings:
     metrics_enabled: bool = True
     metrics_port: int = 9090
     otel_exporter_otlp_endpoint: str | None = None
-    otel_exporter_verify_ssl: bool = False
+    # Tri-state. None (default) lets the OTLP exporter apply the OTel spec:
+    # the endpoint scheme decides, https:// secure and http:// insecure.
+    # Set explicitly only to force one or the other (e.g. a scheme-less
+    # endpoint, or plaintext behind a TLS-terminating sidecar).
+    otel_exporter_verify_ssl: bool | None = None
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0

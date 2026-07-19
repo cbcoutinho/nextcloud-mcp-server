@@ -162,3 +162,51 @@ def test_health_endpoints_are_not_traced(client, exporter):
     client.get("/health/live")
 
     assert exporter.get_finished_spans() == ()
+
+
+class TestOtlpTransportSelection:
+    """The endpoint scheme, not a side flag, must decide TLS vs plaintext.
+
+    This previously passed ``insecure=not verify_ssl`` unconditionally, which
+    overrode the exporter's own spec-compliant scheme handling
+    (``insecure = parsed_url.scheme == "http"``). Since the flag defaulted to
+    False, an ``https://`` collector was dialled in plaintext and every export
+    failed with ``StatusCode.UNAVAILABLE`` — silently, because the failure only
+    appears in the exporter's own logs.
+    """
+
+    @staticmethod
+    def _insecure_arg_for(monkeypatch, endpoint, verify_ssl):
+        captured = {}
+
+        class FakeExporter:
+            def __init__(self, endpoint, insecure=None):
+                captured["endpoint"] = endpoint
+                captured["insecure"] = insecure
+
+        monkeypatch.setattr(tracing, "OTLPSpanExporter", FakeExporter)
+        monkeypatch.setattr(tracing, "BatchSpanProcessor", lambda exporter: object())
+        monkeypatch.setattr(
+            tracing.TracerProvider, "add_span_processor", lambda self, p: None
+        )
+        tracing.setup_tracing(otlp_endpoint=endpoint, otlp_verify_ssl=verify_ssl)
+        return captured
+
+    def test_unset_defers_to_the_exporter(self, monkeypatch):
+        """None must reach the exporter so it can read the scheme itself."""
+        captured = self._insecure_arg_for(
+            monkeypatch, "https://collector.example:4317", None
+        )
+        assert captured["insecure"] is None
+
+    def test_explicit_true_forces_tls(self, monkeypatch):
+        """An operator can still force TLS for a scheme-less endpoint."""
+        captured = self._insecure_arg_for(monkeypatch, "collector.example:443", True)
+        assert captured["insecure"] is False
+
+    def test_explicit_false_forces_plaintext(self, monkeypatch):
+        """...and still opt into plaintext behind a TLS-terminating sidecar."""
+        captured = self._insecure_arg_for(
+            monkeypatch, "http://collector.example:4317", False
+        )
+        assert captured["insecure"] is True

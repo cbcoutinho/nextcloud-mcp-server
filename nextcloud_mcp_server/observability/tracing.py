@@ -35,7 +35,7 @@ _tracer: Tracer | None = None
 def setup_tracing(
     service_name: str = "nextcloud-mcp-server",
     otlp_endpoint: str | None = None,
-    otlp_verify_ssl: bool = False,
+    otlp_verify_ssl: bool | None = None,
     sampling_rate: float = 1.0,
 ) -> Tracer:
     """
@@ -43,10 +43,14 @@ def setup_tracing(
 
     Args:
         service_name: Service name for traces (default: "nextcloud-mcp-server")
-        otlp_endpoint: OTLP gRPC endpoint (e.g., "http://otel-collector:4317")
+        otlp_endpoint: OTLP gRPC endpoint (e.g., "https://collector:4317").
                       If None, tracing is initialized but no exporter is configured
-        otlp_verify_ssl: Enable TLS verification for otlp_endpoint. If True,
-                      `insecure` will eval to False
+        otlp_verify_ssl: Force the transport instead of deriving it from the
+                      endpoint. None (default) defers to the exporter, which
+                      follows the OTel spec: ``https://`` is secure, ``http://``
+                      is insecure. True forces TLS, False forces plaintext —
+                      needed only for a scheme-less endpoint, or plaintext
+                      behind a TLS-terminating sidecar.
         sampling_rate: Sampling rate (0.0-1.0). Default 1.0 (100% sampling)
 
     Returns:
@@ -69,9 +73,14 @@ def setup_tracing(
     # Configure OTLP exporter if endpoint is provided
     if otlp_endpoint:
         try:
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=otlp_endpoint, insecure=not otlp_verify_ssl
-            )
+            # Passing insecure=None hands the decision to the exporter, which
+            # implements the spec (`insecure = parsed_url.scheme == "http"`)
+            # and also honours OTEL_EXPORTER_OTLP_INSECURE. Passing a bool
+            # unconditionally — as this did — overrides that, so an https://
+            # endpoint was still dialled in plaintext and every export failed
+            # with StatusCode.UNAVAILABLE against a TLS collector.
+            insecure = None if otlp_verify_ssl is None else not otlp_verify_ssl
+            otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=insecure)
             span_processor = BatchSpanProcessor(otlp_exporter)
             provider.add_span_processor(span_processor)
             logger.info(
