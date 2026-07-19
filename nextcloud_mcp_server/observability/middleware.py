@@ -16,6 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
     http_request_duration_seconds,
     http_requests_in_progress,
@@ -23,7 +24,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import (
     add_span_attribute,
-    trace_operation,
+    trace_server_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,14 +76,24 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
 
         try:
             if should_trace:
-                # Create span for request (OpenTelemetry auto-instrumentation will create parent span)
-                with trace_operation(
+                # SERVER-kind span parented to the caller's traceparent, so an
+                # Astrolabe request and the work it triggers here land in one
+                # trace instead of two unrelated ones.
+                #
+                # http.route carries the normalized template (the same label the
+                # metrics use), not the raw path: it is what makes RED metrics
+                # and "show me 5xx by route" queries possible without the
+                # cardinality blowup of per-id paths.
+                with trace_server_request(
                     f"HTTP {method} {endpoint}",
+                    carrier=request.headers,
                     attributes={
                         "http.method": method,
+                        "http.route": endpoint,
                         "http.path": path,
                         "http.scheme": request.url.scheme,
                         "http.host": request.url.hostname,
+                        **self._tenant_attributes(),
                     },
                 ):
                     # Process request
@@ -143,6 +154,17 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         finally:
             # Decrement in-flight requests counter
             http_requests_in_progress.labels(method=method, endpoint=endpoint).dec()
+
+    def _tenant_attributes(self) -> dict[str, str]:
+        """Tenant identity for the span, when this deployment has one.
+
+        One Tempo/Loki stack aggregates every tenant, so without this a trace
+        cannot be attributed to a tenant without correlating on pod name.
+        Resolved per request rather than snapshotted at import so test overrides
+        of the setting take effect (single-tenant deployments leave it unset).
+        """
+        tenant_id = get_settings().tenant_id
+        return {"tenant.id": tenant_id} if tenant_id else {}
 
     def _get_endpoint_label(self, path: str) -> str:
         """

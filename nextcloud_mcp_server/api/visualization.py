@@ -1,10 +1,13 @@
-"""Visualization API endpoints for search and PDF preview.
+"""Visualization API endpoints for search and chunk context.
 
 ADR-018: Provides REST API endpoints for the Nextcloud PHP app (Astrolabe) to:
 - Execute unified search with semantic/BM25/hybrid algorithms
 - Execute vector search with PCA visualization coordinates
 - Fetch chunk context with surrounding text
-- Render PDF pages server-side (avoiding CSP/worker issues)
+
+None of these read file content: chunk bboxes and page numbers come from the
+Qdrant payload, and Astrolabe rasterizes PDF pages in the browser from the copy
+already in Nextcloud. See tests/unit/test_api_no_whole_file_reads.py.
 
 All endpoints require OAuth bearer token authentication via UnifiedTokenVerifier.
 """
@@ -54,19 +57,6 @@ from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 logger = logging.getLogger(__name__)
 
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
-
-
-class _PageOutOfRangeError(Exception):
-    """Requested preview page exceeds the document's page count.
-
-    Raised inside the off-loop render callable so the caller can map it to a
-    400 response after the (locked) PyMuPDF work has completed and the doc is
-    closed.
-    """
-
-    def __init__(self, total_pages: int) -> None:
-        self.total_pages = total_pages
-        super().__init__(f"page out of range (document has {total_pages} pages)")
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
@@ -457,7 +447,9 @@ async def unified_search(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error("Error in unified search: %s", e)
+        # exception() over error(): keeps the traceback and satisfies Sonar
+        # python:S8572 (logging.error with the exception object in an except).
+        logger.exception("Error in unified search")
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -667,6 +659,9 @@ async def vector_search(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
+        # The client only ever sees a sanitized message, so without this the
+        # traceback is lost entirely and a 500 leaves no trace anywhere.
+        logger.exception("Error in vector search")
         error_msg = _sanitize_error_for_client(e, "vector_search")
         return JSONResponse(
             {"error": error_msg},
@@ -866,6 +861,9 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
+        # Chunk-context 500s were previously invisible: the handler logged
+        # nothing, so a failing chunk view left no server-side evidence at all.
+        logger.exception("Error fetching chunk context")
         error_msg = _sanitize_error_for_client(e, "get_chunk_context")
         return JSONResponse(
             {"error": error_msg},

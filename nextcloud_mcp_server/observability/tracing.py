@@ -10,6 +10,7 @@ This module provides:
 """
 
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -17,10 +18,11 @@ from importlib_metadata import version
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
+from opentelemetry.propagate import extract
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import Status, StatusCode, Tracer
+from opentelemetry.trace import SpanKind, Status, StatusCode, Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,58 @@ def get_tracer() -> Tracer | None:
         Calling code should handle None gracefully.
     """
     return _tracer
+
+
+@contextmanager
+def trace_server_request(
+    operation_name: str,
+    carrier: Mapping[str, str],
+    attributes: dict[str, Any] | None = None,
+):
+    """Start a SERVER span parented to the caller's inbound trace context.
+
+    Without this every request started a brand-new trace: nothing linked an
+    Astrolabe request to the work this server did for it, and traces showed up
+    with ``<root span not yet received>``. Astrolabe runs on a separate host and
+    only reaches us over HTTP, so W3C ``traceparent`` on the request is the only
+    way the two halves can be stitched together.
+
+    Uses the globally configured propagator rather than instantiating
+    ``TraceContextTextMapPropagator`` directly, so a deployment that configures
+    additional propagators (e.g. baggage) keeps working. An absent or malformed
+    header yields an empty context, which starts a fresh root span — the
+    previous behaviour, so an uninstrumented caller degrades rather than breaks.
+
+    Args:
+        operation_name: Span name.
+        carrier: Inbound request headers to extract trace context from.
+        attributes: Optional attributes to set on the span.
+
+    Yields:
+        The span, or None when tracing is disabled.
+    """
+    tracer = get_tracer()
+
+    if tracer is None:
+        yield None
+        return
+
+    parent_context = extract(carrier)
+
+    with tracer.start_as_current_span(
+        operation_name, context=parent_context, kind=SpanKind.SERVER
+    ) as span:
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
+
+        try:
+            yield span
+            span.set_status(Status(StatusCode.OK))
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            raise
 
 
 @contextmanager
