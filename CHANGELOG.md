@@ -5,6 +5,29 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.142.0 (2026-07-19)
+
+### BREAKING CHANGE
+
+- GET /api/v1/pdf-preview is removed. Astrolabe releases
+that still call it must be upgraded first; see cbcoutinho/astrolabe#248.
+
+### Feat
+
+- **observability**: correlate requests with the caller's request id
+- **observability**: link inbound requests into the caller's trace
+- **api**: remove pdf-preview endpoint, rasterize in the browser
+
+### Fix
+
+- **observability**: keep the traceback on the uncaught-exception path
+- **observability**: mark handler-caught 5xx responses as error spans
+- **observability**: let the endpoint scheme select the OTLP transport
+
+### Refactor
+
+- drop code the pdf-preview removal orphaned
+
 ## v0.141.4 (2026-07-19)
 
 ### Fix
