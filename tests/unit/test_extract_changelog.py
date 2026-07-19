@@ -7,6 +7,7 @@ other coverage, hence these subprocess tests.
 """
 
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -109,12 +110,10 @@ def test_missing_changelog_fails_loudly(tmp_path: Path):
 def test_real_changelog_has_notes_for_the_current_version():
     """The shipped CHANGELOG must yield notes for the version being released."""
     repo_root = SCRIPT.parent.parent
-    pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
-    version = next(
-        line.split("=")[1].strip().strip('"')
-        for line in pyproject.splitlines()
-        if line.startswith("version =")
+    pyproject = tomllib.loads(
+        (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     )
+    version = pyproject["project"]["version"]
 
     result = run_extract(f"v{version}", repo_root / "CHANGELOG.md")
 

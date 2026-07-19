@@ -17,6 +17,9 @@ jobs:
   # pushed by hand.
   resolve-tag:
     runs-on: ubuntu-latest
+    # Branches on a string and never touches the token; scope it down explicitly
+    # like the two jobs below rather than inheriting the caller's grant.
+    permissions: {}
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
