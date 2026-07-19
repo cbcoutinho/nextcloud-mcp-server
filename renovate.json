@@ -46,6 +46,18 @@
       "packageNameTemplate": "docker.io/library/nextcloud",
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Unified pact CLI installer URL pinned in the pact workflows",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "https://github\\.com/pact-foundation/pact-cli/releases/download/(?<currentValue>v[^/]+)/pact-installer\\.sh"
+      ],
+      "depNameTemplate": "pact-foundation/pact-cli",
+      "datasourceTemplate": "github-releases"
     }
   ]
 }
