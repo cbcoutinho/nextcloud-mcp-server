@@ -156,9 +156,13 @@ services:
       #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
       #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
 
-      # Observability
-      #- OTEL_SERVICE_NAME=nextcloud-mcp-docker-compose
-      #- OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # Observability. Both pass through from the host so traces can be sent to
+      # a real collector without editing this file:
+      #   OTEL_EXPORTER_OTLP_ENDPOINT=http://<collector-host>:4317 docker compose up mcp
+      # Unset leaves the endpoint empty, which disables tracing (app.py gates on
+      # its truthiness) -- so the default stays no-op.
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-nextcloud-mcp-docker-compose}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
       # Collection naming: Auto-generated as {deployment-id}-{model-name}
       # - Deployment ID: OTEL_SERVICE_NAME (if set) or hostname (fallback)
@@ -392,6 +396,12 @@ services:
       # static `nextcloudMcpServerUIPublicClient` OIDC client) works for tests
       # against this profile too.
       - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
+
+      # Observability -- same host passthrough as the `mcp` service. This is the
+      # profile Astrolabe drives, so it is the one to point at a collector when
+      # tracing the search/chunk-context path end to end.
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-nextcloud-mcp-login-flow}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth

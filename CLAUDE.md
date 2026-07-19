@@ -416,6 +416,44 @@ The server supports three deployment modes, controlled by environment variables 
 - Best for: production multi-user deployments, OAuth MCP integration
 - See `docs/ADR-022-login-flow-v2.md` for architecture details
 
+## Breaking changes: gate on versions, never on merge order
+
+This service is **0.x**, so breaking changes are allowed. What is required is
+that a breaking change is **discoverable by version** — not that deploys happen
+in a particular sequence.
+
+**Do not write "merge X first" / "deploy A before B" in a PR description.** Merge
+order is a property of one moment; it is invalidated by a rollback, a staged
+rollout, a hotfix branch, or anyone deploying the two services independently —
+which is the normal case, since `astrolabe` ships through the Nextcloud App
+Store on its own cadence. A version recorded against the change stays true
+forever; an instruction about ordering is stale the day after it merges.
+
+### What is required
+
+1. **A `BREAKING CHANGE:` footer on the commit that lands it**, naming what was
+   removed or changed. Commitizen is configured with `major_version_zero = true`
+   and `update_changelog_on_bump = true` (see `[tool.commitizen]` in
+   `pyproject.toml`), so that footer bumps the **minor** version and writes the
+   entry into `CHANGELOG.md` keyed to the released version. That CHANGELOG entry
+   is the contract.
+2. **State the version in the PR description** — "removed in 0.142.0" — rather
+   than naming another PR to merge first. Cross-repo PRs may still link each
+   other for context; they must not claim an ordering requirement.
+3. **Where a consumer needs to adapt at runtime**, gate on an advertised
+   capability rather than an assumed deployment. `GET /api/v1/status` already
+   returns `management_api_version` and `supported_search_types` for exactly
+   this; astrolabe's `SearchCapabilities` is the existing precedent for reading
+   them and hiding UI the server cannot serve.
+
+### Why this matters here
+
+The two services are versioned and released independently. A consumer running an
+older release must degrade — a removed endpoint returns 404, and the caller
+handles it — rather than depend on having been upgraded first. If a change
+genuinely cannot degrade, that is a signal the endpoint needed a deprecation
+window (keep it, log on use, remove a version later), not a merge-order note.
+
 ## MCP Response Patterns (CRITICAL)
 
 **Never return raw `List[Dict]` from MCP tools** - FastMCP mangles them into dicts with numeric string keys.
@@ -544,7 +582,7 @@ Known gaps (tracked on board 11):
 
 - Provider verification currently covers only the **public** endpoints
   (`/api/v1/status`, `/api/v1/vector-sync/status`). The authenticated surface
-  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`, `/pdf-preview`,
+  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`,
   `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
   pending the ADR-029 phase-4 Bearer-token/provider-state hook.
 - The gateway **embeddings** consumer pact (`/v1/embeddings` + `/v1/models`) is

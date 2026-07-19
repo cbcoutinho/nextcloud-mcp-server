@@ -1,21 +1,21 @@
-"""Visualization API endpoints for search and PDF preview.
+"""Visualization API endpoints for search and chunk context.
 
 ADR-018: Provides REST API endpoints for the Nextcloud PHP app (Astrolabe) to:
 - Execute unified search with semantic/BM25/hybrid algorithms
 - Execute vector search with PCA visualization coordinates
 - Fetch chunk context with surrounding text
-- Render PDF pages server-side (avoiding CSP/worker issues)
+
+None of these read file content: chunk bboxes and page numbers come from the
+Qdrant payload, and Astrolabe rasterizes PDF pages in the browser from the copy
+already in Nextcloud. See tests/unit/test_api_no_whole_file_reads.py.
 
 All endpoints require OAuth bearer token authentication via UnifiedTokenVerifier.
 """
 
-import base64
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import anyio
-import pymupdf
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -45,7 +45,6 @@ from nextcloud_mcp_server.search.context import (
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import (
-    is_safe_webdav_file_path,
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
 )
@@ -58,19 +57,6 @@ from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 logger = logging.getLogger(__name__)
 
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
-
-
-class _PageOutOfRangeError(Exception):
-    """Requested preview page exceeds the document's page count.
-
-    Raised inside the off-loop render callable so the caller can map it to a
-    400 response after the (locked) PyMuPDF work has completed and the doc is
-    closed.
-    """
-
-    def __init__(self, total_pages: int) -> None:
-        self.total_pages = total_pages
-        super().__init__(f"page out of range (document has {total_pages} pages)")
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
@@ -461,7 +447,9 @@ async def unified_search(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error("Error in unified search: %s", e)
+        # exception() over error(): keeps the traceback and satisfies Sonar
+        # python:S8572 (logging.error with the exception object in an except).
+        logger.exception("Error in unified search")
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -671,6 +659,9 @@ async def vector_search(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
+        # The client only ever sees a sanitized message, so without this the
+        # traceback is lost entirely and a 500 leaves no trace anywhere.
+        logger.exception("Error in vector search")
         error_msg = _sanitize_error_for_client(e, "vector_search")
         return JSONResponse(
             {"error": error_msg},
@@ -870,187 +861,11 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
+        # Chunk-context 500s were previously invisible: the handler logged
+        # nothing, so a failing chunk view left no server-side evidence at all.
+        logger.exception("Error fetching chunk context")
         error_msg = _sanitize_error_for_client(e, "get_chunk_context")
         return JSONResponse(
             {"error": error_msg},
-            status_code=500,
-        )
-
-
-async def get_pdf_preview(request: Request) -> JSONResponse:
-    """GET /api/v1/pdf-preview - Render PDF page to PNG image.
-
-    Server-side PDF rendering using PyMuPDF. This endpoint allows Astrolabe
-    to display PDF pages without requiring client-side PDF.js, avoiding CSP
-    worker restrictions and ES private field issues in Chromium.
-
-    Query parameters:
-        file_path: WebDAV path to PDF file (e.g., "/Documents/report.pdf")
-        page: Page number (1-indexed, default: 1)
-        scale: Zoom factor for rendering (default: 2.0 = 144 DPI)
-
-    Returns:
-        {
-            "success": true,
-            "image": "<base64-encoded-png>",
-            "page_number": 1,
-            "total_pages": 10
-        }
-
-    Requires OAuth bearer token for authentication.
-    """
-    # Log incoming request
-    file_path_param = request.query_params.get("file_path", "<not provided>")
-    page_param = request.query_params.get("page", "1")
-    logger.debug(
-        "PDF preview request: file_path=%s, page=%s", file_path_param, page_param
-    )
-
-    try:
-        # Validate OAuth token and extract user
-        user_id, validated = await validate_token_and_get_user(request)
-        logger.debug("PDF preview authenticated for user: %s", user_id)
-    except Exception as e:
-        logger.warning("Unauthorized access to /api/v1/pdf-preview: %s", e)
-        return JSONResponse(
-            {
-                "success": False,
-                "error": "Unauthorized",
-                "message": _sanitize_error_for_client(e, "get_pdf_preview"),
-            },
-            status_code=401,
-        )
-
-    try:
-        # Parse and validate parameters
-        file_path = request.query_params.get("file_path")
-        if not file_path:
-            return JSONResponse(
-                {"success": False, "error": "Missing required parameter: file_path"},
-                status_code=400,
-            )
-
-        # Validate no path traversal sequences
-        if not is_safe_webdav_file_path(file_path):
-            return JSONResponse(
-                {"success": False, "error": "Invalid file path"},
-                status_code=400,
-            )
-
-        try:
-            page_num = _parse_int_param(
-                request.query_params.get("page"), 1, 1, 10000, "page"
-            )
-            scale = _parse_float_param(
-                request.query_params.get("scale"), 2.0, 0.5, 5.0, "scale"
-            )
-        except ValueError as e:
-            return JSONResponse({"success": False, "error": str(e)}, status_code=400)
-
-        # Get Nextcloud host from OAuth context
-        oauth_ctx = request.app.state.oauth_context
-        nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
-
-        if not nextcloud_host:
-            raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
-
-        # Use the user's stored app password for Nextcloud calls.
-        # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;
-        # MCP Server → Nextcloud always uses the app password provisioned
-        # during the authorization step.
-        try:
-            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
-        except NotProvisionedError as e:
-            return JSONResponse(
-                {"success": False, "error": str(e)},
-                status_code=401,
-            )
-
-        async with nc_client:
-            pdf_bytes, _ = await nc_client.webdav.read_file(file_path)
-
-        # Check file size limit (50 MB)
-        max_pdf_size = 50 * 1024 * 1024
-        if len(pdf_bytes) > max_pdf_size:
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": f"PDF file exceeds maximum size limit ({max_pdf_size // (1024 * 1024)} MB)",
-                },
-                status_code=413,
-            )
-
-        # Render page with PyMuPDF. MuPDF is not thread-safe, and with
-        # INGEST_QUEUE=memory the ingest workers run in-process and offload
-        # their PyMuPDF work under PYMUPDF_LOCK; serialize this render under the
-        # same lock (and run it off the event loop) so a preview request can't
-        # race a worker thread. Open/use/close happen entirely in one thread.
-        def _render_preview() -> tuple[bytes, int]:
-            from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
-                pymupdf_serialized,
-            )
-
-            with (
-                pymupdf_serialized(),
-                pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc,
-            ):
-                total = doc.page_count
-                if page_num > total:
-                    raise _PageOutOfRangeError(total)
-                page = doc[page_num - 1]  # 0-indexed
-                mat = pymupdf.Matrix(scale, scale)
-                pix = page.get_pixmap(matrix=mat, alpha=False)
-                return pix.tobytes("png"), total
-
-        try:
-            png_bytes, total_pages = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                _render_preview
-            )
-        except _PageOutOfRangeError as e:
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": f"Page {page_num} does not exist (document has {e.total_pages} pages)",
-                },
-                status_code=400,
-            )
-
-        # Encode as base64
-        image_b64 = base64.b64encode(png_bytes).decode("ascii")
-
-        logger.info(
-            "Rendered PDF preview: %s page %s/%s, %s bytes",
-            file_path,
-            page_num,
-            total_pages,
-            format(len(png_bytes), ","),
-        )
-
-        return JSONResponse(
-            {
-                "success": True,
-                "image": image_b64,
-                "page_number": page_num,
-                "total_pages": total_pages,
-            }
-        )
-
-    except FileNotFoundError:
-        logger.warning("PDF file not found: %s", file_path_param)
-        return JSONResponse(
-            {"success": False, "error": "PDF file not found"},
-            status_code=404,
-        )
-    except (pymupdf.FileDataError, pymupdf.EmptyFileError):
-        logger.warning("Invalid or corrupted PDF file: %s", file_path_param)
-        return JSONResponse(
-            {"success": False, "error": "Invalid or corrupted PDF file"},
-            status_code=400,
-        )
-    except Exception as e:
-        logger.error("PDF preview error: %s", e)
-        error_msg = _sanitize_error_for_client(e, "get_pdf_preview")
-        return JSONResponse(
-            {"success": False, "error": error_msg},
             status_code=500,
         )
