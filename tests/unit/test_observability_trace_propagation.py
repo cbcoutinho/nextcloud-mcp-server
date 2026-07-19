@@ -130,8 +130,15 @@ def test_tenant_id_is_attached_when_configured(client, exporter, monkeypatch):
 
 
 def test_handler_exception_marks_the_span_and_is_logged(client, exporter, caplog):
-    """A 500 must leave evidence: an error span and a logged traceback."""
-    with caplog.at_level(logging.ERROR, logger="nextcloud_mcp_server.observability"):
+    """A 500 must leave evidence: an error span and a log record.
+
+    Both halves are asserted. Silencing the middleware's log line while
+    keeping the span (or vice versa) is exactly the kind of half-regression
+    that made the original OOMKill so hard to diagnose.
+    """
+    with caplog.at_level(
+        logging.ERROR, logger="nextcloud_mcp_server.observability.middleware"
+    ):
         response = client.get("/api/v1/boom")
 
     assert response.status_code == 500
@@ -139,6 +146,15 @@ def test_handler_exception_marks_the_span_and_is_logged(client, exporter, caplog
     span = _finished_span(exporter)
     assert span.status.status_code is trace.StatusCode.ERROR
     assert any(event.name == "exception" for event in span.events)
+
+    failures = [
+        r
+        for r in caplog.records
+        if r.name == "nextcloud_mcp_server.observability.middleware"
+        and "Request failed" in r.getMessage()
+    ]
+    assert failures, "middleware must log the failing request"
+    assert "/api/v1/boom" in failures[0].getMessage()
 
 
 def test_health_endpoints_are_not_traced(client, exporter):
