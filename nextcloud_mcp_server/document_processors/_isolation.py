@@ -249,7 +249,7 @@ def _parse_pdf_worker(
     # tests do, so pytest workers get the same block. Nothing here needs real
     # layout mode; anything that later does must not share a process with this
     # function, because ``setdefault`` cannot be undone by a subsequent import.
-    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment]
+    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment, ty:no-matching-overload]
 
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
