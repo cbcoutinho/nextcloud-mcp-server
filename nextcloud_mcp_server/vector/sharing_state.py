@@ -374,6 +374,27 @@ async def release_document_for_user(
     settings = get_settings()
     collection = settings.get_collection_name()
 
+    # ADR-033 Phase 2: drop this reader's per-user display-path row (hygiene). A
+    # stale row is harmless — a released doc no longer surfaces to the user, so
+    # it is never joined — but cleaning it up keeps the table bounded. Best-effort
+    # and lazily imported to avoid a vector→DB import at module load.
+    try:
+        from nextcloud_mcp_server.vector.document_path_store import (  # noqa: PLC0415
+            DocumentPathStore,
+        )
+
+        await (await DocumentPathStore.shared()).delete(
+            user_id=user_id, doc_id=doc_id, doc_type=doc_type
+        )
+    except Exception as exc:  # noqa: BLE001 — display-only cleanup; non-fatal
+        logger.debug(
+            "Per-user path-row cleanup failed for %s_%s user:%s (%s)",
+            doc_type,
+            doc_id,
+            user_id,
+            exc,
+        )
+
     points, _ = await qdrant_client.scroll(
         collection_name=collection,
         scroll_filter=_document_filter(doc_id, doc_type, real_only=True),

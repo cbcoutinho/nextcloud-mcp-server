@@ -51,6 +51,7 @@ from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 if TYPE_CHECKING:
     from nextcloud_mcp_server.search.algorithms import NextcloudClientProtocol
 
+from nextcloud_mcp_server.vector.document_path_store import DocumentPathStore
 from nextcloud_mcp_server.vector.sharing_state import (
     ACL_PRINCIPALS_KEY,
     claim_existing_index,
@@ -1090,6 +1091,28 @@ async def scan_user_documents(
                 # "unknown" so the processor falls back to the post-download
                 # guard rather than gating on a bogus zero.
                 size_bytes = file_info.get("size") or None
+
+                # ADR-033 Phase 2: record THIS user's mount path for the file
+                # (dedup hit or fresh index below), so search can substitute the
+                # querying user's own path for the owner-pinned Qdrant scalar.
+                # Best-effort and non-security: a failed upsert only means a
+                # reader temporarily sees the owner's path — never a wrong ACL.
+                try:
+                    await (await DocumentPathStore.shared()).upsert(
+                        user_id=user_id,
+                        doc_id=file_id,
+                        doc_type="file",
+                        file_path=file_path,
+                    )
+                except Exception as exc:  # noqa: BLE001 — display-only; next scan retries
+                    logger.debug(
+                        "Per-user path upsert failed for file %s (ID: %s) (%s); "
+                        "next scan retries",
+                        file_path,
+                        file_id,
+                        exc,
+                    )
+
                 if etag and await claim_existing_index(
                     file_id,
                     "file",
