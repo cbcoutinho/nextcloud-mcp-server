@@ -1,11 +1,15 @@
-# CI-specific overrides for RAG evaluation pipeline
-# This file is used by the rag-evaluation.yml workflow to configure the MCP
-# container with OpenAI/GitHub Models API for vector embeddings.
+# Overrides for the RAG evaluation harness (tests/rag_evaluation, ADR-013):
+# configures the MCP container with the OpenAI/GitHub Models API for vector
+# embeddings.
+#
+# This was driven by .github/workflows/rag-evaluation.yml, which was removed
+# after sitting unused and failing since 2025-11. The harness itself is still
+# supported and this override is still the way to run it — manually, for now.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.ci.yml up
 #
-# Environment variables (set in CI workflow):
+# Environment variables:
 #   OPENAI_API_KEY - API key for embeddings (GitHub Models uses GITHUB_TOKEN)
 #   OPENAI_BASE_URL - API endpoint (e.g., https://models.github.ai/inference)
 #   OPENAI_EMBEDDING_MODEL - Model name (e.g., openai/text-embedding-3-small)
