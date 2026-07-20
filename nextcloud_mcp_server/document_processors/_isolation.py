@@ -243,6 +243,12 @@ def _parse_pdf_worker(
     # mode later needs its own memory budget plus a re-check of the chunk type
     # and the metadata key; test_worker_disables_pymupdf4llm_layout_mode fails
     # loudly if it turns back on by accident.
+    # NB: this is process-wide and sticky for the life of the process, not
+    # scoped to this call. That is intended in the parse subprocess, but note it
+    # also applies to any process that calls this function directly -- the unit
+    # tests do, so pytest workers get the same block. Nothing here needs real
+    # layout mode; anything that later does must not share a process with this
+    # function, because ``setdefault`` cannot be undone by a subsequent import.
     sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment]
 
     import pymupdf  # noqa: PLC0415
