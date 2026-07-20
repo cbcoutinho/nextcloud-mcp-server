@@ -149,7 +149,11 @@ class PyMuPDFProcessor(DocumentProcessor):
         current_offset = 0
         for chunk in page_chunks:
             text = chunk.get("text", "")
-            page_num = chunk.get("metadata", {}).get("page", len(page_texts) + 1)
+            # pymupdf4llm's layout path names this ``page_number`` (1-based);
+            # both parse paths are pinned to that spelling. ``page`` below is
+            # *our* page-boundary contract, shared with the OCR and pypdfium2
+            # processors, and is deliberately independent of it.
+            page_num = chunk.get("metadata", {}).get("page_number", len(page_texts) + 1)
             page_texts.append(text)
             page_boundaries.append(
                 {

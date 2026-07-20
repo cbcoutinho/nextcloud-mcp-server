@@ -187,6 +187,8 @@ class NextcloudClient:
         from nextcloud_mcp_server.config import cfg, get_settings  # noqa: PLC0415
 
         host = get_settings().nextcloud_host
+        if not host:
+            raise ValueError("NEXTCLOUD_HOST must be set to build a client from env")
         username = cfg("NEXTCLOUD_USERNAME")
         password = cfg("NEXTCLOUD_PASSWORD")
         # Pass username to constructor

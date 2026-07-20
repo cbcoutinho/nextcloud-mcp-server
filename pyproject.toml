@@ -40,8 +40,16 @@ dependencies = [
     "jinja2>=3.1.6",
     "langchain-text-splitters>=1.0.0",
     "markdownify>=0.14.1",  # HTML to Markdown conversion for News items
-    "pymupdf>=1.26.6",
-    "pymupdf4llm>=0.2.2",
+    # Pinned exactly, and upgraded deliberately rather than by range. The
+    # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
+    # hard dependency of our page-boundary/citation path, and it is not stable
+    # across releases: 1.27.2.1 made pymupdf4llm initialise pymupdf_layout on
+    # import, which switched the emitting code path from ``pymupdf_rag`` (key
+    # ``page``) to ``document_layout`` (key ``page_number``). Upstream pins its
+    # own pymupdf dependency exactly for the same reason (see their CHANGES for
+    # 1.27.2.1), so the two versions must move together.
+    "pymupdf==1.28.0",
+    "pymupdf4llm==1.28.0",
     "openai>=2.8.1",
     "dynaconf>=3.2.13,<4.0",
     "mistralai>=2.4.5",
@@ -128,7 +136,12 @@ dev = [
     "pytest-timeout>=2.3.1",
     "ruff>=0.11.13",
     "reportlab>=4.0.0",
-    "ty>=0.0.1a25",
+    # Upper bound pending the 0.0.61 migration: ty only honours bracketed
+    # suppression codes carrying a `ty:` prefix, so the repo's existing
+    # `# type: ignore[<mypy-code>]` comments stop suppressing (26 of them), and
+    # newer analyses surface 19 further diagnostics. Tracked separately -- drop
+    # the bound as part of that migration.
+    "ty>=0.0.1a25,<0.0.2",
     "pytest-otel>=2.0.1",
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",

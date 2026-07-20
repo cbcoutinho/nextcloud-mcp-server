@@ -244,7 +244,9 @@ class TestProcrastinateConninfo:
         monkeypatch.setattr(
             config_module,
             "get_database_url",
-            lambda: "postgresql+psycopg://mcp:s@db/mcp?sslmode=require&application_name=x",
+            lambda: (
+                "postgresql+psycopg://mcp:s@db/mcp?sslmode=require&application_name=x"
+            ),
         )
         with caplog.at_level(logging.WARNING):
             config_module.get_procrastinate_conninfo()

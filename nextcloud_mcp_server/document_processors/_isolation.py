@@ -117,11 +117,13 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
 
     Emits the same contract ``to_markdown(page_chunks=True)`` does, as far as
     callers actually consume it: ``PyMuPDFProcessor._build_page_boundaries``
-    reads only ``chunk["text"]`` and ``chunk["metadata"]["page"]`` (with a
-    positional fallback for the latter), so page boundaries, the chunker and
+    reads only ``chunk["text"]`` and ``chunk["metadata"]["page_number"]`` (with
+    a positional fallback for the latter), so page boundaries, the chunker and
     bbox computation are unaffected by which path produced the list.
 
-    ``metadata.page`` is 1-based to match pymupdf4llm.
+    ``metadata.page_number`` is 1-based, matching the key pymupdf4llm's
+    layout path emits (``document_layout``); the pin in ``pyproject.toml`` is
+    what makes that key a fixed target rather than a guess.
     """
     chunks: list[dict[str, Any]] = []
     for i in range(doc.page_count):
@@ -131,7 +133,7 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
         # unreadable page degrades to "" rather than failing the document.
         except Exception:  # noqa: BLE001
             text = ""
-        chunks.append({"text": text, "metadata": {"page": i + 1}})
+        chunks.append({"text": text, "metadata": {"page_number": i + 1}})
     return chunks
 
 
