@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.143.0 (2026-07-20)
+
+### Feat
+
+- **health**: probe the tenant collection, not cluster readyz, for Qdrant health
+
+### Fix
+
+- **health**: guard collection-name resolution and URL-encode the probe path
+
+### Refactor
+
+- **health**: drop the unreachable /readyz fallback, test the caller's gate
+
 ## v0.142.2 (2026-07-20)
 
 ### Fix
