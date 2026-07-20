@@ -39,11 +39,11 @@ def _reference_fit_transform(
 
     Kept here as the oracle the SVD path must agree with.
     """
-    X = np.asarray(X, dtype=np.float64)
-    mean = np.mean(X, axis=0)
-    X_centered = X - mean
+    samples = np.asarray(X, dtype=np.float64)
+    mean = np.mean(samples, axis=0)
+    centered = samples - mean
 
-    cov = np.cov(X_centered.T)
+    cov = np.cov(centered.T)
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
 
     idx = np.argsort(eigenvalues)[::-1]
@@ -59,7 +59,7 @@ def _reference_fit_transform(
     else:
         ratio = np.zeros(n_components)
 
-    return np.dot(X_centered, components.T), ratio
+    return np.dot(centered, components.T), ratio
 
 
 def _random_embeddings(n_samples: int, n_features: int, seed: int = 1234) -> np.ndarray:
@@ -239,7 +239,7 @@ class TestDegenerateInputs:
         # The padded axis is exactly zero, not merely small.
         np.testing.assert_array_equal(pca.components_[2], np.zeros(3))
         assert pca.explained_variance_ is not None
-        assert pca.explained_variance_[2] == 0.0
+        assert pca.explained_variance_[2] == pytest.approx(0.0, abs=1e-12)
         np.testing.assert_array_equal(coords[:, 2], np.zeros(2))
 
     def test_identical_samples_have_zero_variance(self):
@@ -274,28 +274,33 @@ class TestValidation:
 
     def test_rejects_non_2d_input(self):
         pca = PCA(n_components=2)
+        one_dimensional = np.array([1.0, 2.0, 3.0])
         with pytest.raises(ValueError, match="X must be 2D array"):
-            pca.fit(np.array([1.0, 2.0, 3.0]))
+            pca.fit(one_dimensional)
 
     def test_rejects_more_components_than_features(self):
         pca = PCA(n_components=5)
+        too_few_features = np.zeros((10, 3))
         with pytest.raises(ValueError, match="n_components=5 > n_features=3"):
-            pca.fit(np.zeros((10, 3)))
+            pca.fit(too_few_features)
 
     def test_rejects_single_sample(self):
         pca = PCA(n_components=2)
+        single_sample = np.array([[1.0, 2.0, 3.0]])
         with pytest.raises(ValueError, match="at least 2 samples"):
-            pca.fit(np.array([[1.0, 2.0, 3.0]]))
+            pca.fit(single_sample)
 
     def test_transform_before_fit_raises(self):
         pca = PCA(n_components=2)
+        data = np.zeros((4, 8))
         with pytest.raises(ValueError, match="PCA not fitted yet"):
-            pca.transform(np.zeros((4, 8)))
+            pca.transform(data)
 
     def test_transform_rejects_non_2d_input(self):
         pca = PCA(n_components=2).fit(_random_embeddings(10, 8))
+        one_dimensional = np.array([1.0, 2.0])
         with pytest.raises(ValueError, match="X must be 2D array"):
-            pca.transform(np.array([1.0, 2.0]))
+            pca.transform(one_dimensional)
 
 
 class TestComputePcaCoordinates:

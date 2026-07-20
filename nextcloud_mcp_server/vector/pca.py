@@ -41,9 +41,6 @@ def _flip_component_signs(components: np.ndarray) -> np.ndarray:
     Returns:
         The same components with signs normalized.
     """
-    if components.size == 0:
-        return components
-
     anchors = np.argmax(np.abs(components), axis=1)
     anchor_values = components[np.arange(components.shape[0]), anchors]
     signs = np.where(anchor_values < 0, -1.0, 1.0)
@@ -172,7 +169,7 @@ class PCA:
         if self.mean_ is None or self.components_ is None:
             raise ValueError("PCA not fitted yet. Call fit() first.")
 
-        X = np.asarray(X)
+        X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
             raise ValueError(f"X must be 2D array, got shape {X.shape}")
