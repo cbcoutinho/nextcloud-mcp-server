@@ -43,8 +43,8 @@ Observed on blackbox-demo, 2026-07-20, service 0.142.0.
    documents they can see, or match on a path that is not theirs.
 3. **Loose prefix semantics (card #739)** — the filter is
    `MatchText(key="file_path")`, which is token-containment (server Qdrant) or
-   substring (embedded), never a left-anchored prefix. `/TORS` matches any path
-   containing the `TORS` token at any depth.
+   substring (embedded), never a left-anchored prefix. `/Reports` matches any
+   path containing the `Reports` token at any depth.
 
 ## Decision
 
@@ -131,26 +131,36 @@ Add a user-agnostic `folder_ancestors` payload key: the list of ancestor folder
 `fileid`s (as strings) of the file's canonical path, KEYWORD-indexed in Qdrant.
 
 - **Resolution:** at index time, resolve each ancestor folder's `fileid` via a
-  `PROPFIND` (Depth 0, `oc:fileid`) walking up the file's path, memoised per
-  scan (folder→fileid is stable within a pass). Ancestors of the *shared* folder
-  resolve to the same `fileid`s for every user.
-- **Write:** stamp `folder_ancestors` on every chunk (processor + placeholder),
-  alongside the existing scalar `file_path`.
+  `PROPFIND` (Depth 0, `oc:fileid` — `WebDAVClient.get_fileid`) walking up the
+  file's path, memoisable per caller (folder→fileid is stable within a pass).
+  Ancestors of the *shared* folder resolve to the same `fileid`s for every user.
+- **Write:** stamp `folder_ancestors` on every **real (non-placeholder) file
+  chunk** in the processor, alongside the existing scalar `file_path`.
+  Placeholder points are excluded from search (`get_placeholder_filter`), so they
+  carry no scope key.
 - **Filter:** `path_prefix` is resolved to a `folder_id` (the prefix path's own
-  `fileid`, via the same PROPFIND lookup or the per-user path store), then the
-  Qdrant filter becomes `MatchAny(key="folder_ancestors", any=[folder_id])`.
-  This is a **true containment** filter (fixes card #739's loose match), applied
-  *inside* HNSW traversal (filtered-ANN, the only sound ordering), and
-  user-agnostic. The legacy `MatchText(file_path)` branch is retained as a
-  fallback for points that predate `folder_ancestors` (until backfilled) and for
-  free-text path search.
-- **Backfill:** a payload-only backfill re-resolves `folder_ancestors` for
-  existing points (no re-embed), gated behind admin tooling. **This step must be
-  validated against a live Qdrant** (the KEYWORD index on the new key, and the
-  `MatchAny` selectivity, are only meaningfully verifiable on a real instance —
-  see the design thread on card #737). Until backfilled, a collection degrades
-  to the `MatchText(file_path)` fallback — correct-ish for the owner, unchanged
-  from today for readers.
+  `fileid`, via `resolve_prefix_folder_ids` → `get_fileid`), then the Qdrant
+  filter ORs `MatchAny(key="folder_ancestors", any=[folder_id])` with the legacy
+  `MatchText(file_path)` branch. The `MatchAny` branch is a **true containment**
+  filter (fixes card #739's loose match), applied *inside* HNSW traversal
+  (filtered-ANN, the only sound ordering), and user-agnostic; the `MatchText`
+  branch is retained as a fallback for points that predate `folder_ancestors`
+  (until backfilled) and for free-text path search. **Cost:** resolution is a
+  synchronous PROPFIND per distinct prefix on the search path (currently
+  uncached — a per-user TTL cache like `list_accessible_owners` is the obvious
+  follow-up if it shows up in latency).
+- **Backfill:** rather than a separate admin job (which would lack a per-user
+  WebDAV client to resolve fileids *as that user*), the backfill is **lazy and
+  owner-scoped**, folded into `claim_existing_index`: on a dedup hit for a
+  pre-Phase-3 document, when the scanning user is the owner and the key is
+  absent, the owner's canonical path is resolved and written once
+  (`set_folder_ancestors`). It reuses the payload already fetched for the dedup
+  (no extra scroll), never re-embeds, and is owner-only so a reader's mount
+  prefix never pollutes the (bounded, user-agnostic) ancestor set. Until an owner
+  scan backfills a given doc, search degrades to the `MatchText(file_path)`
+  fallback for it. **The live behaviour of the new KEYWORD index + `MatchAny`
+  selectivity should still be validated against a real Qdrant** (only meaningfully
+  verifiable on a real instance — see the design thread on card #737).
 
 ### Measured budget (card #737 comments, throwaway Qdrant v1.18.3)
 
@@ -173,9 +183,10 @@ explicitly rejected in favour of the single-`folder_id` containment term.
   collection payloads and must be validated on a real Qdrant before running
   against a tenant.
 - **Migration:** existing collections need no re-embed. Phase 2's table
-  self-populates. Phase 3's `folder_ancestors` is forward-written immediately and
-  backfilled for old points via admin tooling; searches degrade gracefully to
-  the `file_path` fallback in the interim.
+  self-populates as scans run. Phase 3's `folder_ancestors` is forward-written
+  immediately for new/re-indexed docs and lazily backfilled for old points by the
+  owner's next scan (owner-scoped, in `claim_existing_index`); searches degrade
+  gracefully to the `file_path` fallback in the interim.
 
 ## Test strategy (repo test gate)
 
