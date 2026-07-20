@@ -1120,6 +1120,7 @@ async def scan_user_documents(
                     user_id,
                     index_mode=index_mode,
                     current_path=file_path,
+                    webdav=nc_client.webdav,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(

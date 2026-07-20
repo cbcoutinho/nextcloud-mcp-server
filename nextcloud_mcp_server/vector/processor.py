@@ -2052,6 +2052,30 @@ async def _index_document_inner(
         }
     )
 
+    # ADR-033 Phase 3: resolve the file's ancestor folder fileids once per
+    # document (identical for every chunk). Stamped on each file point as
+    # folder_ancestors so search can scope by a folder's canonical fileid — a
+    # user-agnostic, truly left-anchored containment. Best-effort: an empty list
+    # (resolution failure, or a non-file doc type) leaves search on the file_path
+    # MatchText fallback for this doc.
+    _folder_ancestors: list[str] = []
+    if doc_task.doc_type == "file" and file_path:
+        from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415
+            resolve_folder_ancestors,
+        )
+
+        try:
+            _folder_ancestors = await resolve_folder_ancestors(
+                nc_client.webdav, file_path
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; fall back to file_path
+            logger.debug(
+                "Folder-ancestor resolution failed for %s (%s); "
+                "search falls back to file_path for folder scope",
+                file_path,
+                exc,
+            )
+
     # Surface deck card data quality issues at indexing time rather than
     # only at verification time (where _verify_deck_cards falls through to
     # legacy-data pass-through when board_id/stack_id are missing). This is
@@ -2145,6 +2169,11 @@ async def _index_document_inner(
                     **(
                         {
                             "file_path": file_path,  # Store file path for retrieval
+                            # ADR-033 Phase 3: ancestor folder fileids for the
+                            # folder-scope search filter (same value on every
+                            # chunk). Omitted implicitly when resolution yielded
+                            # nothing — search then uses the file_path fallback.
+                            payload_keys.FOLDER_ANCESTORS: _folder_ancestors,
                             "mime_type": content_type,  # From WebDAV response
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,

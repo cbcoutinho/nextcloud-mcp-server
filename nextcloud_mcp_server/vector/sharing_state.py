@@ -28,8 +28,12 @@ one user untagging a shared file would evict it for everyone still reading it.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.vector.folder_ancestors import FileIdResolver
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector import payload_keys
@@ -276,6 +280,28 @@ async def reconcile_document_path(
     return True
 
 
+async def set_folder_ancestors(
+    doc_id: str,
+    doc_type: str,
+    ancestors: list[str],
+) -> None:
+    """Write ``folder_ancestors`` on every real chunk of a document.
+
+    A metadata-only ``set_payload`` (no re-fetch, no re-embed), mirroring
+    ``reconcile_document_path``. Used by the lazy owner-scoped backfill in
+    ``claim_existing_index`` to populate the ADR-033 Phase 3 folder-scope key on
+    documents indexed before it shipped.
+    """
+    qdrant_client = await get_qdrant_client()
+    settings = get_settings()
+    await qdrant_client.set_payload(
+        collection_name=settings.get_collection_name(),
+        payload={payload_keys.FOLDER_ANCESTORS: ancestors},
+        points=_document_filter(doc_id, doc_type, real_only=True),
+        wait=True,
+    )
+
+
 async def claim_existing_index(
     doc_id: str,
     doc_type: str,
@@ -283,6 +309,7 @@ async def claim_existing_index(
     user_id: str,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     current_path: str | None = None,
+    webdav: FileIdResolver | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -340,6 +367,43 @@ async def claim_existing_index(
                 doc_id,
                 exc,
             )
+
+    # ADR-033 Phase 3: lazily backfill folder_ancestors on a dedup hit for
+    # documents indexed before the key shipped. Owner-scoped and gated on the key
+    # being absent, so it (a) runs at most once per document, (b) uses the owner's
+    # canonical path (never a reader's mount prefix), keeping the ancestor set
+    # user-agnostic and bounded, and (c) reuses the payload already fetched here —
+    # no extra scroll, no re-embed. Best-effort: a failure leaves the doc on the
+    # file_path MatchText fallback until the next owner scan.
+    if (
+        webdav is not None
+        and current_path
+        and not (existing.get(payload_keys.FOLDER_ANCESTORS) or [])
+        and existing.get("owner_id") in (None, user_id)
+    ):
+        try:
+            from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415
+                resolve_folder_ancestors,
+            )
+
+            ancestors = await resolve_folder_ancestors(webdav, current_path)
+            if ancestors:
+                await set_folder_ancestors(doc_id, doc_type, ancestors)
+                logger.debug(
+                    "Backfilled %d folder ancestor(s) for %s_%s",
+                    len(ancestors),
+                    doc_type,
+                    doc_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — non-fatal; owner's next scan retries
+            logger.debug(
+                "Folder-ancestor backfill failed for %s_%s (%s); "
+                "search uses file_path fallback",
+                doc_type,
+                doc_id,
+                exc,
+            )
+
     try:
         await add_principal(doc_id, doc_type, user_id, existing.get(ACL_PRINCIPALS_KEY))
     except Exception as exc:  # noqa: BLE001 — non-fatal; recovered on next scan

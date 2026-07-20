@@ -514,3 +514,88 @@ class TestReleaseDocumentForUser:
 
         selector = client.delete.await_args.kwargs["points_selector"]
         assert _must_keys(selector) == ["user_id", "doc_id", "doc_type"]
+
+
+class _StubWebdav:
+    """Resolves ancestor folder paths to fileids for the backfill tests."""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+
+    async def get_fileid(self, path: str):
+        return self._mapping.get(path)
+
+
+def _folder_ancestor_payloads(client) -> list[list]:
+    """The folder_ancestors values from every set_payload call, in order."""
+    return [
+        call.kwargs["payload"][payload_keys.FOLDER_ANCESTORS]
+        for call in client.set_payload.await_args_list
+        if payload_keys.FOLDER_ANCESTORS in call.kwargs["payload"]
+    ]
+
+
+class TestClaimFolderAncestorBackfill:
+    def _hit(self, **extra) -> dict:
+        payload = {
+            payload_keys.EMBEDDING_IDENTITY: _MODEL,
+            ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+            "file_path": "/A/doc.pdf",
+            "owner_id": "alice",
+        }
+        payload.update(extra)
+        return payload
+
+    async def test_backfills_folder_ancestors_for_owner(self, client) -> None:
+        # Owner (alice) re-scans a pre-Phase-3 doc (no folder_ancestors); the
+        # ancestors are resolved from her canonical path and written once.
+        client.scroll.return_value = ([_point(self._hit())], None)
+        webdav = _StubWebdav({"/A": "100"})
+
+        claimed = await ss.claim_existing_index(
+            "42", "file", "abc", "alice", current_path="/A/doc.pdf", webdav=webdav
+        )
+        assert claimed is True
+        assert _folder_ancestor_payloads(client) == [["100"]]
+
+    async def test_skips_backfill_for_non_owner(self, client) -> None:
+        # A reader (bob) must NOT backfill — his mount prefix would pollute the
+        # canonical, user-agnostic ancestor set.
+        client.scroll.return_value = ([_point(self._hit())], None)
+        webdav = _StubWebdav({"/bob/A": "999"})
+
+        await ss.claim_existing_index(
+            "42", "file", "abc", "bob", current_path="/bob/A/doc.pdf", webdav=webdav
+        )
+        assert _folder_ancestor_payloads(client) == []
+
+    async def test_skips_backfill_when_already_present(self, client) -> None:
+        client.scroll.return_value = (
+            [_point(self._hit(**{payload_keys.FOLDER_ANCESTORS: ["777"]}))],
+            None,
+        )
+        webdav = _StubWebdav({"/A": "100"})
+
+        await ss.claim_existing_index(
+            "42", "file", "abc", "alice", current_path="/A/doc.pdf", webdav=webdav
+        )
+        assert _folder_ancestor_payloads(client) == []
+
+    async def test_no_backfill_without_webdav(self, client) -> None:
+        client.scroll.return_value = ([_point(self._hit())], None)
+        await ss.claim_existing_index(
+            "42", "file", "abc", "alice", current_path="/A/doc.pdf"
+        )
+        assert _folder_ancestor_payloads(client) == []
+
+    async def test_backfills_for_legacy_point_without_owner(self, client) -> None:
+        # owner_id unknown (pre-owner_id point) -> single-owner, safe to backfill.
+        payload = self._hit()
+        del payload["owner_id"]
+        client.scroll.return_value = ([_point(payload)], None)
+        webdav = _StubWebdav({"/A": "100"})
+
+        await ss.claim_existing_index(
+            "42", "file", "abc", "alice", current_path="/A/doc.pdf", webdav=webdav
+        )
+        assert _folder_ancestor_payloads(client) == [["100"]]

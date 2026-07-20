@@ -28,7 +28,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from qdrant_client.models import (
     Condition,
@@ -40,7 +40,11 @@ from qdrant_client.models import (
     Range,
 )
 
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.vector.folder_ancestors import FileIdResolver
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +267,7 @@ def build_base_filter_conditions(
     modified_before: int | None = None,
     path_prefix: str | None = None,
     path_prefixes: Iterable[str] | None = None,
+    path_prefix_folder_ids: list[str] | None = None,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
 
@@ -328,23 +333,77 @@ def build_base_filter_conditions(
             )
         )
 
-    # One folder ⇒ a single ``must`` condition (the original Phase 2 shape).
-    # Multiple folders ⇒ OR them in a nested ``Filter(should=...)`` so a file
-    # under any selected folder matches, while still AND-ing against the other
-    # ``must`` conditions (ACL, doc_type, date).
+    # Folder scoping (ADR-027 Phase 2 + ADR-033 Phase 3). Two branches are OR-ed:
+    #
+    #   * folder-ancestor containment — when the caller resolved the prefixes to
+    #     folder fileids (``path_prefix_folder_ids``), a single
+    #     ``MatchAny(folder_ancestors, folder_ids)`` gives a TRUE left-anchored
+    #     containment that is user-agnostic (a shared folder's canonical fileid is
+    #     identical for every reader) and evaluated inside HNSW traversal.
+    #   * legacy ``MatchText(file_path)`` per folder — retained as a fallback for
+    #     points that predate ``folder_ancestors`` (until an admin backfill
+    #     populates them) and for prefixes that could not be resolved to a fileid.
+    #
+    # OR-ing keeps recall during migration (an un-backfilled point still matches
+    # via file_path); once a collection is fully backfilled the folder-ancestor
+    # branch is authoritative and the MatchText branch only adds the same-or-
+    # looser matches. The whole disjunction is AND-ed against the other ``must``
+    # conditions (ACL, doc_type, date).
     folders = normalize_path_prefixes(path_prefix, path_prefixes)
-    if len(folders) == 1:
-        conditions.append(
-            FieldCondition(key="file_path", match=MatchText(text=folders[0]))
-        )
-    elif len(folders) > 1:
-        conditions.append(
-            Filter(
-                should=[
-                    FieldCondition(key="file_path", match=MatchText(text=folder))
-                    for folder in folders
-                ]
+    folder_ids = [fid for fid in (path_prefix_folder_ids or []) if fid and fid.strip()]
+    if folders or folder_ids:
+        should: list[Condition] = []
+        if folder_ids:
+            should.append(
+                FieldCondition(
+                    key=payload_keys.FOLDER_ANCESTORS, match=MatchAny(any=folder_ids)
+                )
             )
+        should.extend(
+            FieldCondition(key="file_path", match=MatchText(text=folder))
+            for folder in folders
         )
+        # A single branch attaches directly to ``must`` (the original Phase 2
+        # shape for one folder, no resolved id); multiple branches OR under a
+        # nested ``Filter(should=...)``.
+        if len(should) == 1:
+            conditions.append(should[0])
+        elif should:
+            conditions.append(Filter(should=should))
 
     return conditions
+
+
+async def resolve_prefix_folder_ids(
+    webdav: FileIdResolver,
+    path_prefix: str | None = None,
+    path_prefixes: Iterable[str] | None = None,
+) -> list[str]:
+    """Resolve folder path-prefixes to their canonical Nextcloud fileids.
+
+    ADR-033 Phase 3: the folder-scope filter matches on ``folder_ancestors``
+    (fileids), so a caller resolves the user's path prefixes to folder fileids
+    once, *before* the query, and passes them to
+    ``build_base_filter_conditions(path_prefix_folder_ids=...)``. A shared
+    folder's fileid is identical for every user who mounts it, so the resolved id
+    scopes correctly for owner and readers alike.
+
+    Best-effort: a prefix that does not resolve (404, not a folder, transport
+    error) is omitted — the query then falls back to that prefix's
+    ``MatchText(file_path)`` branch. Returns the resolved fileids in prefix order.
+    """
+    folders = normalize_path_prefixes(path_prefix, path_prefixes)
+    resolved: list[str] = []
+    for folder in folders:
+        try:
+            fileid = await webdav.get_fileid(folder)
+        except Exception as exc:  # noqa: BLE001 — best-effort; fall back to MatchText
+            logger.debug(
+                "Prefix folder-id resolve failed for %r (%s); using file_path match",
+                folder,
+                exc,
+            )
+            fileid = None
+        if fileid:
+            resolved.append(fileid)
+    return resolved

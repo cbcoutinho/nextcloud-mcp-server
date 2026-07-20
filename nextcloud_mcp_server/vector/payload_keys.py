@@ -42,6 +42,19 @@ INDEX_MODE_KEYWORD = "keyword"
 # reported via the ``uncovered_documents`` gauge until re-ingested.
 SOURCE_BYTES = "source_bytes"
 
+# Ancestor folder file-IDs of a file's canonical path (ADR-033 Phase 3, Deck
+# #740), as a list of stringified Nextcloud fileids from the immediate parent up
+# to the user root. A shared folder keeps ONE canonical fileid across every user
+# who mounts it, so this term is user-agnostic for the shared portion — which is
+# what makes the folder-scope filter both correct for every reader and flat in
+# corpus size. Search resolves a ``path_prefix`` to its folder's fileid and
+# applies MatchAny(folder_ancestors, [folder_id]) — a TRUE left-anchored
+# containment (unlike the token/substring MatchText on file_path, card #739),
+# evaluated inside HNSW traversal. Written forward-only for files; points indexed
+# before this key carry no value and fall back to the file_path MatchText branch
+# until an admin payload backfill populates them (no re-embed).
+FOLDER_ANCESTORS = "folder_ancestors"
+
 # Fixed platform namespace for deterministic chunk point IDs (design §2.2).
 # Derived once from ``uuid5(NAMESPACE_DNS, "astrolabe.cloud/mcp/point-id/v1")``
 # and pinned here as a literal so neither repo recomputes it. DO NOT CHANGE —

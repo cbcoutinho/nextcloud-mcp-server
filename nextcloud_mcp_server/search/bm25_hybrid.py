@@ -172,6 +172,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         modified_before: int | None = None,
         path_prefix: str | None = None,
         path_prefixes: Iterable[str] | None = None,
+        path_prefix_folder_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -252,6 +253,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             modified_before=modified_before,
             path_prefix=path_prefix,
             path_prefixes=path_prefixes,
+            path_prefix_folder_ids=path_prefix_folder_ids,
         )
 
         query_filter = Filter(must=filter_conditions)
