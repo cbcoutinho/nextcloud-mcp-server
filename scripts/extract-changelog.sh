@@ -10,7 +10,7 @@ set -euo pipefail
 TAG="${1:?Usage: $0 <tag>   e.g. $0 v0.142.0}"
 CHANGELOG="${2:-CHANGELOG.md}"
 
-if [ ! -f "$CHANGELOG" ]; then
+if [[ ! -f "$CHANGELOG" ]]; then
     echo "❌ Error: $CHANGELOG not found (run from repository root)" >&2
     exit 1
 fi
@@ -30,7 +30,7 @@ section=$(awk -v tag="$TAG" '
 # Strip leading and trailing blank lines so the release body starts on content.
 section=$(printf '%s\n' "$section" | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac)
 
-if [ -z "$section" ]; then
+if [[ -z "$section" ]]; then
     echo "❌ Error: no CHANGELOG section found for $TAG in $CHANGELOG" >&2
     exit 1
 fi
