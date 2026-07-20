@@ -20,10 +20,16 @@ if TYPE_CHECKING:
     from nextcloud_mcp_server.document_processors.base import ProcessingResult
     from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
 
+from contextlib import AsyncExitStack
+
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_processors.source import (
+    DocumentSource,
+    MemoryDocumentSource,
+)
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
@@ -33,6 +39,8 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_dead_lettered,
     record_document_escalation,
     record_document_escalation_suppressed,
+    record_document_ingest_rejected,
+    record_document_ingest_size,
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
@@ -75,6 +83,7 @@ from nextcloud_mcp_server.vector.sharing_state import (
     file_title_from_path,
     release_document_for_user,
 )
+from nextcloud_mcp_server.vector.spool import spooled_document
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +139,17 @@ def _drop_reason(exc: BaseException) -> str:
     return "other"
 
 
+PDF_MIME_TYPE = "application/pdf"
+
+
 def _is_pdf(content_type: str) -> bool:
     """Whether a MIME type is a PDF (parameter-tolerant)."""
-    return content_type.split(";")[0].strip().lower() == "application/pdf"
+    return content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE
 
 
 async def _parse_pdf_tier(
     registry: "ProcessorRegistry",
-    content: bytes,
-    content_type: str,
-    filename: str | None,
+    source: DocumentSource,
     tier: str,
     settings: Any,
     options: dict[str, Any] | None = None,
@@ -178,15 +188,12 @@ async def _parse_pdf_tier(
     # ``options`` threads per-document identity (user_id/doc_id/doc_type/etag) to
     # the OCR tier so batch mode can key its job-tracking table (Deck #332). Other
     # tiers ignore it. The inline path (registry.process) passes None.
-    result = await registry.process_tier(
-        content, content_type, filename, tier, options=options
-    )
+    filename = source.filename
+    result = await registry.process_tier_source(source, tier, options=options)
     if result.metadata.get(OCR_BATCH_PENDING_KEY):
         raise BatchPending(retry_in=int(result.metadata[OCR_BATCH_RETRY_IN_KEY]))
     if result.success:
-        decision = registry.evaluate_escalation(
-            result, content, tier, settings, filename=filename
-        )
+        decision = registry.evaluate_escalation_source(result, source, tier, settings)
         if decision is not None:
             if decision.kind == "suppressed":
                 # The ideal next tier (e.g. ocr) is disabled, so we do NOT hop:
@@ -328,17 +335,71 @@ def should_use_page_aware(
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
 
 
-def ingested_byte_size(content_bytes: bytes | None, content: str) -> int:
+def _download_ceiling(settings: Any) -> int | None:
+    """Hard byte ceiling for a streamed download, or ``None`` when uncapped.
+
+    The pre-flight gate acts on the size the server advertised at scan time;
+    this acts on what actually arrives, so it still holds when Content-Length is
+    absent or wrong. Sized generously above the parse cap -- its job is to stop
+    a runaway transfer filling the spool volume, not to duplicate the cap.
+    """
+    max_pdf_mb = settings.document_max_pdf_size_mb
+    if not max_pdf_mb or max_pdf_mb <= 0:
+        return None
+    return int(max_pdf_mb * 1024 * 1024 * 2)
+
+
+def preflight_oversize_result(
+    doc_task: Any, file_path: str | None, settings: Any
+) -> Any:
+    """Apply the PDF size cap to the scanned size, before any download.
+
+    ``DocumentTask.size_bytes`` carries the WebDAV ``getcontentlength`` captured
+    at scan time, so an over-cap document can be rejected without fetching it.
+    Previously the cap could only be applied to bytes already fully resident,
+    which meant the guard against pathological files was itself paid for in
+    memory: a 531 MB PDF OOMKilled a worker mid-download, before its size was
+    ever checked.
+
+    Returns the same ``oversize`` :class:`ProcessingResult` the post-download
+    guard produces (so the caller's terminal/dead-letter handling is unchanged),
+    or ``None`` when the size is unknown or within the cap -- in which case the
+    post-download guard still applies as the backstop.
+    """
+    # The cap is PDF-specific, but content type is not known before the download.
+    # Safe because file discovery is PDF-only: _discover_tagged_files passes
+    # mime_type_filter="application/pdf" (vector/scanner.py), so every
+    # doc_type="file" task is a PDF. If discovery is ever broadened to other MIME
+    # types, gate this on content type rather than silently applying a PDF cap.
+    size_bytes = getattr(doc_task, "size_bytes", None)
+    if not size_bytes:
+        return None
+    from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+        get_registry,
+    )
+
+    # Observe the size BEFORE the cap, so the corpus histogram shows the over-cap
+    # tail rather than only what we accepted.
+    record_document_ingest_size(doc_task.doc_type, size_bytes)
+    result = get_registry().oversize_result_for_size(size_bytes, file_path, settings)
+    if result is not None:
+        record_document_ingest_rejected(doc_task.doc_type, "oversize")
+    return result
+
+
+def ingested_byte_size(source_size: int | None, content: str) -> int:
     """Bytes ingested for one document (card #401).
 
-    Files carry their raw WebDAV binary in ``content_bytes`` — that raw size is
-    what the customer ingested. Text doc types (note, deck card, news item, mail
-    message) have no binary (``content_bytes is None``), so fall back to the
-    UTF-8 size of the extracted text. Selecting on ``content_bytes is not None``
-    (not ``doc_type``) keeps this correct for any future binary-backed type.
+    Files report the size of the raw WebDAV document — that is what the customer
+    ingested — which the caller reads off the document source rather than a
+    resident buffer, since a streamed document is never fully in memory. Text
+    doc types (note, deck card, news item, mail message) have no binary
+    (``source_size is None``), so fall back to the UTF-8 size of the extracted
+    text. Selecting on ``source_size is not None`` (not ``doc_type``) keeps this
+    correct for any future binary-backed type.
     """
-    if content_bytes is not None:
-        return len(content_bytes)
+    if source_size is not None:
+        return source_size
     return len(content.encode("utf-8"))
 
 
@@ -665,6 +726,12 @@ async def _reconcile_tag_event(
 
     doc_task.index_mode = match.get("_index_mode", payload_keys.INDEX_MODE_HYBRID)
     doc_task.file_path = match["path"]
+    # Mirror the scanner's assignment (vector/scanner.py): the SEARCH rows carry
+    # getcontentlength as "size". Without this a webhook-triggered index leaves
+    # size_bytes None, the pre-flight gate short-circuits, and the unbounded
+    # read_file runs -- so tagging a huge PDF for real-time indexing reproduces
+    # the OOM the gate exists to prevent. 0/absent means unknown.
+    doc_task.size_bytes = match.get("size") or None
     if not doc_task.etag:
         doc_task.etag = match.get("etag")
     last_modified = match.get("last_modified_timestamp")
@@ -931,6 +998,29 @@ async def _index_document(
     *,
     tier: str | None = None,
 ) -> bool | None:
+    """Index a single document, owning any spooled download for its lifetime.
+
+    A streamed document lives in a spool file that must survive parse, chunking,
+    embedding and bbox extraction, then be removed however this call ends. The
+    exit stack scopes exactly that, so the file cannot outlive the document it
+    belongs to and no caller has to remember to unlink it (see
+    ``document_processors.source.spool_target``).
+    """
+    async with AsyncExitStack() as stack:
+        return await _index_document_inner(
+            doc_task, nc_client, qdrant_client, tier=tier, exit_stack=stack
+        )
+    return None  # pragma: no cover - AsyncExitStack never swallows here
+
+
+async def _index_document_inner(
+    doc_task: DocumentTask,
+    nc_client: NextcloudClient,
+    qdrant_client,
+    *,
+    tier: str | None,
+    exit_stack: AsyncExitStack,
+) -> bool | None:
     """
     Index a single document (called by process_document with retry).
 
@@ -948,6 +1038,13 @@ async def _index_document(
         qdrant_client: Qdrant client instance
     """
     settings = get_settings()
+    # Set by the pre-flight size gate (files only) when a document is rejected
+    # from its scanned size; substituted for the parse result further down so the
+    # existing terminal/dead-letter handling is reached unchanged.
+    preflight_failure = None
+    # The document handle for files; None for text doc types (note, deck card,
+    # news item, mail message), which carry no binary.
+    source: DocumentSource | None = None
 
     # Fetch document content
     with trace_operation(
@@ -1216,15 +1313,50 @@ async def _index_document(
                 if retry_in is not None:
                     raise BatchPending(retry_in=retry_in)
 
-            # Read file content via WebDAV
-            content_bytes, content_type = await nc_client.webdav.read_file(file_path)
+            # Pre-flight size gate: reject an over-cap document from the size the
+            # scanner already captured, so the download is never paid for. Falls
+            # through to the post-download guard when the size is unknown.
+            preflight_failure = preflight_oversize_result(doc_task, file_path, settings)
+            if preflight_failure is not None:
+                content_bytes, content_type = b"", PDF_MIME_TYPE
+            elif settings.document_stream_download_enabled:
+                # Stream to a spool file: resident memory stays at one chunk
+                # instead of the whole document. The stack owns the file until
+                # this document is fully indexed.
+                source = await exit_stack.enter_async_context(
+                    spooled_document(
+                        nc_client,
+                        file_path,
+                        spool_dir=settings.document_spool_dir,
+                        max_bytes=_download_ceiling(settings),
+                    )
+                )
+                content_type = source.content_type
+                content_bytes = None
+            else:
+                # Buffered fallback (DOCUMENT_STREAM_DOWNLOAD_ENABLED=false).
+                content_bytes, content_type = await nc_client.webdav.read_file(
+                    file_path
+                )
+                source = MemoryDocumentSource(
+                    content_bytes,
+                    content_type,
+                    file_path,
+                    spool_dir=settings.document_spool_dir,
+                )
+                # Same lifetime guarantee as the streamed branch. path() lazily
+                # materialises the buffer to a temp file -- both PDF engines and
+                # the bbox step call it -- so without this the kill-switch path
+                # leaks one file per document, which is the very failure mode the
+                # streaming side's exit-stack scoping exists to prevent.
+                exit_stack.callback(source.cleanup)
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
     # Process file content (text extraction)
     if doc_task.doc_type == "file":
-        # Type narrowing: content_bytes and content_type are set for files
-        assert content_bytes is not None
+        # Type narrowing: content_type/file_path are set for files. content_bytes
+        # is None on the streamed path -- the document lives in ``source``.
         assert content_type is not None
         assert file_path is not None
 
@@ -1232,7 +1364,11 @@ async def _index_document(
             "vector_sync.document_process",
             attributes={
                 "vector_sync.content_type": content_type,
-                "vector_sync.file_size": len(content_bytes),
+                # The scanned size when known, so a document rejected before its
+                # download still reports its real size rather than 0.
+                "vector_sync.file_size": (
+                    source.size if source is not None else (doc_task.size_bytes or 0)
+                ),
             },
         ):
             # The registry runs the tiered PDF pipeline and records
@@ -1257,7 +1393,17 @@ async def _index_document(
                 # queue-hop to the next tier). Everything else -- non-PDF files,
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
-                if tier is not None and _is_pdf(content_type):
+                if preflight_failure is not None:
+                    # Rejected from its scanned size before the download, so
+                    # there is nothing to parse. Substituting the guard's result
+                    # here (rather than returning early) keeps oversize handling
+                    # on the single terminal/dead-letter path below, however the
+                    # size became known.
+                    result = preflight_failure
+                elif tier is not None and _is_pdf(content_type):
+                    # Narrowing: the download branch above always sets ``source``
+                    # when it did not short-circuit on the pre-flight gate.
+                    assert source is not None
                     # Per-document identity, forwarded to every tier's processor.
                     # Only the OCR tier reads it (batch mode keys its job-tracking
                     # table on it, Deck #332); fast/structured ignore it, so it's
@@ -1270,19 +1416,14 @@ async def _index_document(
                     }
                     result = await _parse_pdf_tier(
                         registry,
-                        content_bytes,
-                        content_type,
-                        file_path,
+                        source,
                         tier,
                         settings,
                         options=doc_identity_options,
                     )
                 else:
-                    result = await registry.process(
-                        content=content_bytes,
-                        content_type=content_type,
-                        filename=file_path,
-                    )
+                    assert source is not None
+                    result = await registry.process_source(source)
 
                 # A permanent parse failure (e.g. an isolated-worker OOM/timeout
                 # on a pathological PDF) returns success=False rather than
@@ -1558,7 +1699,7 @@ async def _index_document(
     bbox_source: str | None = None
 
     # Determine if we need PDF highlighting
-    is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
+    is_pdf = doc_task.doc_type == "file" and content_type == PDF_MIME_TYPE
 
     # Define async tasks for parallel execution
     async def generate_dense_embeddings():
@@ -1647,8 +1788,9 @@ async def _index_document(
         if not is_pdf:
             return
 
-        # Type narrowing: content_bytes is set for PDF files
-        assert content_bytes is not None
+        # The document is in ``source`` (streamed path) or ``content_bytes``
+        # (buffered fallback); both are set for PDF files.
+        assert source is not None
 
         # Lazy import (mirrors _parse_pdf_tier): keep the document stack off the
         # module load path; this runs only for PDFs on the indexing path.
@@ -1664,7 +1806,7 @@ async def _index_document(
             attributes={
                 _ATTR_CHUNK_COUNT: len(chunks),
                 "vector_sync.is_pdf": is_pdf,
-                "vector_sync.pdf_size": len(content_bytes),
+                "vector_sync.pdf_size": source.size,
             },
         ) as highlights_span:
 
@@ -1728,7 +1870,7 @@ async def _index_document(
                 "vector_sync.compute_chunk_bboxes",
                 attributes={
                     _ATTR_CHUNK_COUNT: len(chunks),
-                    "vector_sync.pdf_size": len(content_bytes),
+                    "vector_sync.pdf_size": source.size,
                 },
             ):
                 chunk_data: list[tuple[int, int, int, int | None, str]] = [
@@ -1764,7 +1906,8 @@ async def _index_document(
 
                     with pymupdf_serialized():
                         return PDFHighlighter.compute_chunk_bboxes_batch(
-                            pdf_bytes=content_bytes,
+                            pdf_bytes=None,
+                            pdf_path=source.path(),
                             chunks=chunk_data,
                             page_boundaries=page_boundaries_list,
                             full_text=content,
@@ -1839,7 +1982,7 @@ async def _index_document(
         # bytes_ingested: raw source size at ingestion (raw WebDAV binary for
         # files, UTF-8 text size for text doc types — note, deck_card,
         # news_item, mail_message). See helper.
-        bytes_ingested=ingested_byte_size(content_bytes, content),
+        bytes_ingested=ingested_byte_size(source.size if source else None, content),
         # bytes_stored: UTF-8 size of the chunk texts persisted as Qdrant payload
         # excerpts (includes chunk-overlap duplication).
         bytes_stored=sum(len(t.encode("utf-8")) for t in chunk_texts),
@@ -1854,7 +1997,7 @@ async def _index_document(
     # for text doc types). Computed once here and reused for both the ingest-time
     # density metric and the per-point payload (payload_keys.SOURCE_BYTES) so the
     # current-corpus density snapshot can recompute chunks-per-MB from Qdrant.
-    source_bytes = ingested_byte_size(content_bytes, content)
+    source_bytes = ingested_byte_size(source.size if source else None, content)
 
     # Observability-only cost signals (card #624), independent of USAGE_METERING.
     # Best-effort and self-contained in the helper so a metrics failure can never

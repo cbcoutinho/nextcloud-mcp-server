@@ -10,6 +10,7 @@ This module provides:
 """
 
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -17,10 +18,11 @@ from importlib_metadata import version
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
+from opentelemetry.propagate import extract
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import Status, StatusCode, Tracer
+from opentelemetry.trace import SpanKind, Status, StatusCode, Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ _tracer: Tracer | None = None
 def setup_tracing(
     service_name: str = "nextcloud-mcp-server",
     otlp_endpoint: str | None = None,
-    otlp_verify_ssl: bool = False,
+    otlp_verify_ssl: bool | None = None,
     sampling_rate: float = 1.0,
 ) -> Tracer:
     """
@@ -41,10 +43,14 @@ def setup_tracing(
 
     Args:
         service_name: Service name for traces (default: "nextcloud-mcp-server")
-        otlp_endpoint: OTLP gRPC endpoint (e.g., "http://otel-collector:4317")
+        otlp_endpoint: OTLP gRPC endpoint (e.g., "https://collector:4317").
                       If None, tracing is initialized but no exporter is configured
-        otlp_verify_ssl: Enable TLS verification for otlp_endpoint. If True,
-                      `insecure` will eval to False
+        otlp_verify_ssl: Force the transport instead of deriving it from the
+                      endpoint. None (default) defers to the exporter, which
+                      follows the OTel spec: ``https://`` is secure, ``http://``
+                      is insecure. True forces TLS, False forces plaintext —
+                      needed only for a scheme-less endpoint, or plaintext
+                      behind a TLS-terminating sidecar.
         sampling_rate: Sampling rate (0.0-1.0). Default 1.0 (100% sampling)
 
     Returns:
@@ -67,9 +73,14 @@ def setup_tracing(
     # Configure OTLP exporter if endpoint is provided
     if otlp_endpoint:
         try:
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=otlp_endpoint, insecure=not otlp_verify_ssl
-            )
+            # Passing insecure=None hands the decision to the exporter, which
+            # implements the spec (`insecure = parsed_url.scheme == "http"`)
+            # and also honours OTEL_EXPORTER_OTLP_INSECURE. Passing a bool
+            # unconditionally — as this did — overrides that, so an https://
+            # endpoint was still dialled in plaintext and every export failed
+            # with StatusCode.UNAVAILABLE against a TLS collector.
+            insecure = None if otlp_verify_ssl is None else not otlp_verify_ssl
+            otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=insecure)
             span_processor = BatchSpanProcessor(otlp_exporter)
             provider.add_span_processor(span_processor)
             logger.info(
@@ -110,6 +121,64 @@ def get_tracer() -> Tracer | None:
         Calling code should handle None gracefully.
     """
     return _tracer
+
+
+@contextmanager
+def trace_server_request(
+    operation_name: str,
+    carrier: Mapping[str, str],
+    attributes: dict[str, Any] | None = None,
+):
+    """Start a SERVER span parented to the caller's inbound trace context.
+
+    Without this every request started a brand-new trace: nothing linked an
+    Astrolabe request to the work this server did for it, and traces showed up
+    with ``<root span not yet received>``. Astrolabe runs on a separate host and
+    only reaches us over HTTP, so W3C ``traceparent`` on the request is the only
+    way the two halves can be stitched together.
+
+    Uses the globally configured propagator rather than instantiating
+    ``TraceContextTextMapPropagator`` directly, so a deployment that configures
+    additional propagators (e.g. baggage) keeps working. An absent or malformed
+    header yields an empty context, which starts a fresh root span — the
+    previous behaviour, so an uninstrumented caller degrades rather than breaks.
+
+    Args:
+        operation_name: Span name.
+        carrier: Inbound request headers to extract trace context from.
+        attributes: Optional attributes to set on the span.
+
+    Yields:
+        The span, or None when tracing is disabled.
+    """
+    tracer = get_tracer()
+
+    if tracer is None:
+        yield None
+        return
+
+    parent_context = extract(carrier)
+
+    with tracer.start_as_current_span(
+        operation_name, context=parent_context, kind=SpanKind.SERVER
+    ) as span:
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
+
+        try:
+            yield span
+            # Only claim success if the body did not already record a failure.
+            # The middleware marks 5xx responses as errors from inside this
+            # block — a handler that catches its own exception and returns a
+            # 500 never raises here — and an unconditional OK would overwrite
+            # that, leaving the failure invisible to `status=error` queries.
+            if span.status.status_code is StatusCode.UNSET:
+                span.set_status(Status(StatusCode.OK))
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            raise
 
 
 @contextmanager

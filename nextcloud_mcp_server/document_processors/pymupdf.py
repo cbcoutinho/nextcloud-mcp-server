@@ -17,9 +17,11 @@ import anyio
 import pymupdf
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.metrics import record_document_parse_mode
 
-from ._isolation import PdfParseFailed, run_isolated_pdf_parse
+from ._isolation import PdfParseFailed, run_isolated_pdf_parse, uses_markdown
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +96,99 @@ class PyMuPDFProcessor(DocumentProcessor):
             Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
         ] = None,
     ) -> ProcessingResult:
+        """Bytes-based entry point: materialise a path and delegate.
+
+        The parse itself is path-based (see :meth:`process_source`), because the
+        isolated worker must not be handed a copy of the document.
+        """
+        source = MemoryDocumentSource(content, content_type, filename)
+        try:
+            return await self.process_source(source, options, progress_callback)
+        finally:
+            source.cleanup()
+
+    def _read_metadata_sync(
+        self, source_path: str, filename: Optional[str], size: int
+    ) -> tuple[dict[str, Any], int]:
+        """Read metadata + page count, then close the document immediately.
+
+        Runs entirely inside ONE worker thread, serialized against other MuPDF
+        work: pymupdf is not thread-safe and a doc opened in one thread must not
+        be touched from another. The heavy page extraction re-opens the same path
+        in an isolated subprocess, so it needs no lock and ``doc`` is not needed
+        past this point. try/finally so a failure in _extract_metadata cannot
+        leak the handle.
+        """
+        from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+            pymupdf_serialized,
+        )
+
+        with pymupdf_serialized():
+            doc = pymupdf.open(source_path)
+            try:
+                meta = self._extract_metadata(doc, filename)
+                meta["file_size"] = size
+                return meta, doc.page_count
+            finally:
+                doc.close()
+
+    def _build_text_and_metadata(
+        self,
+        page_chunks: list[dict[str, Any]],
+        pdf_image_dir: Optional[pathlib.Path],
+        metadata: dict[str, Any],
+    ) -> str:
+        """Join per-page markdown and record boundaries + images on ``metadata``.
+
+        ``page_boundaries`` offsets index into the joined text with no separator,
+        so they stay exact -- the contract ``search/pdf_highlighter`` and the
+        chunker rely on.
+        """
+        page_texts: list[str] = []
+        page_boundaries: list[dict[str, Any]] = []
+        current_offset = 0
+        for chunk in page_chunks:
+            text = chunk.get("text", "")
+            # 1-based, from pymupdf4llm's classic extractor (the worker forces
+            # it via use_layout(False); layout mode would name this
+            # ``page_number`` instead). The ``page`` key written below is *our*
+            # page-boundary contract, shared with the OCR and pypdfium2
+            # processors, and is independent of the library's spelling.
+            page_num = chunk.get("metadata", {}).get("page", len(page_texts) + 1)
+            page_texts.append(text)
+            page_boundaries.append(
+                {
+                    "page": page_num,
+                    "start_offset": current_offset,
+                    "end_offset": current_offset + len(text),
+                }
+            )
+            current_offset += len(text)
+
+        image_paths = []
+        if pdf_image_dir and pdf_image_dir.exists():
+            image_paths = [str(p) for p in pdf_image_dir.glob("*")]
+
+        metadata["has_images"] = len(image_paths) > 0
+        if image_paths:
+            metadata["image_count"] = len(image_paths)
+            metadata["image_paths"] = image_paths
+        metadata["page_boundaries"] = page_boundaries
+        return "".join(page_texts)
+
+    async def process_source(
+        self,
+        source: "DocumentSource",
+        options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
+    ) -> ProcessingResult:
         """Process a PDF document and extract text, metadata, and images.
 
         Args:
-            content: PDF document bytes
-            content_type: MIME type (should be application/pdf)
-            filename: Optional filename for better error messages
+            source: File-backed handle to the PDF. Opened by path so neither the
+                metadata read nor the isolated worker holds a copy of it.
             options: Processing options (currently unused)
             progress_callback: Optional callback for progress updates
 
@@ -110,34 +199,16 @@ class PyMuPDFProcessor(DocumentProcessor):
             ProcessorError: If PDF processing fails
         """
 
+        # Off the event loop: materialising an in-memory source writes the
+        # whole buffer to disk, which would stall every other in-flight job.
+        source_path = str(await resolve_path(source))
+        filename = source.filename
         try:
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
-            # Open document only to read metadata + page count, then close it
-            # immediately (try/finally so a failure in _extract_metadata can't
-            # leak it). The heavy extraction below works from ``content`` bytes
-            # in the isolated worker, so ``doc`` is not needed past this point.
-            # Read metadata entirely inside ONE worker thread, serialized against
-            # other MuPDF work: pymupdf is not thread-safe, and a doc opened in one
-            # thread must not be touched from another. (The heavy page extraction
-            # below runs in an isolated subprocess, so it needs no lock.)
-            def _read_metadata() -> tuple[dict[str, Any], int]:
-                from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
-                    pymupdf_serialized,
-                )
-
-                with pymupdf_serialized():
-                    doc = pymupdf.open("pdf", content)
-                    try:
-                        meta = self._extract_metadata(doc, filename)
-                        meta["file_size"] = len(content)
-                        return meta, doc.page_count
-                    finally:
-                        doc.close()
-
             metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                _read_metadata
+                self._read_metadata_sync, source_path, filename, source.size
             )
 
             if progress_callback:
@@ -159,12 +230,14 @@ class PyMuPDFProcessor(DocumentProcessor):
             settings = get_settings()
             try:
                 page_chunks: list[dict[str, Any]] = await run_isolated_pdf_parse(
-                    content,
+                    source_path,
                     write_images=self.extract_images,
                     image_path=pdf_image_dir if self.extract_images else None,
                     graphics_limit=settings.document_pdf_graphics_limit,
                     timeout_seconds=settings.document_parse_timeout_seconds,
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
+                    process_slots=settings.document_parse_process_slots,
+                    markdown_max_pages=settings.document_markdown_max_pages,
                 )
             except PdfParseFailed as exc:
                 logger.warning(
@@ -188,38 +261,32 @@ class PyMuPDFProcessor(DocumentProcessor):
                     error=f"isolated parse failed ({exc.reason}): {exc}",
                 )
 
+            # Recompute the worker's decision here rather than have it report a
+            # mode back: a Counter incremented in the subprocess would never
+            # reach this process's registry. Uses ``page_count`` from the
+            # metadata read -- the same authoritative value the worker's own
+            # ``doc.page_count`` gate saw -- rather than ``len(page_chunks)``,
+            # which would silently mislabel the metric if pymupdf4llm ever
+            # stopped emitting exactly one chunk per page. Shares the worker's
+            # predicate so the label cannot drift from the actual decision.
+            #
+            # Note the gated path also writes no images, so ``has_images`` is
+            # False for a large PDF even with extract_images=True -- markdown
+            # reconstruction is what emits them.
+            mode = (
+                "markdown"
+                if uses_markdown(page_count, settings.document_markdown_max_pages)
+                else "text_only"
+            )
+            metadata["parse_mode"] = mode
+            record_document_parse_mode(mode)
+
             if progress_callback:
                 await progress_callback(90, 100, "Building result")
 
-            # Extract page texts and build boundaries from chunks
-            page_texts: list[str] = []
-            page_boundaries: list[dict[str, Any]] = []
-            current_offset = 0
-            for chunk in page_chunks:
-                text = chunk.get("text", "")
-                page_num = chunk.get("metadata", {}).get("page", len(page_texts) + 1)
-                page_texts.append(text)
-                page_boundaries.append(
-                    {
-                        "page": page_num,
-                        "start_offset": current_offset,
-                        "end_offset": current_offset + len(text),
-                    }
-                )
-                current_offset += len(text)
-
-            # Collect image paths
-            image_paths = []
-            if pdf_image_dir and pdf_image_dir.exists():
-                image_paths = [str(p) for p in pdf_image_dir.glob("*")]
-
-            # Build final text and metadata
-            md_text = "".join(page_texts)
-            metadata["has_images"] = len(image_paths) > 0
-            if image_paths:
-                metadata["image_count"] = len(image_paths)
-                metadata["image_paths"] = image_paths
-            metadata["page_boundaries"] = page_boundaries
+            md_text = self._build_text_and_metadata(
+                page_chunks, pdf_image_dir, metadata
+            )
 
             if progress_callback:
                 await progress_callback(100, 100, "Processing complete")
@@ -236,7 +303,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     "pages": metadata["page_count"],
                     "chars": len(md_text),
                     "images": metadata.get("image_count", 0),
-                    "byte_size": len(content),
+                    "byte_size": source.size,
                 },
             )
 

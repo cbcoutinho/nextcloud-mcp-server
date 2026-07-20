@@ -211,6 +211,16 @@ _DEFAULTS: dict[str, Any] = {
     # "oversize" instead of burning the OCR timeout to 0 chars on a pathological
     # file. 0 disables the guard.
     "document_max_pdf_size_mb": 50.0,
+    # Page ceiling for markdown reconstruction (see document_markdown_max_pages).
+    "document_markdown_max_pages": 150,
+    # Pages per pypdfium2 extraction window (see document_parse_page_window).
+    "document_parse_page_window": 100,
+    # Concurrent isolated parse subprocesses (see document_parse_process_slots).
+    "document_parse_process_slots": 2,
+    # Stream ingest downloads to disk instead of buffering them in memory.
+    "document_stream_download_enabled": True,
+    # Directory for ingest spool files (default: the system temp dir).
+    "document_spool_dir": None,
     # Tier-0 classifier (records classification metrics on the tiered path)
     "document_classify_enabled": True,
     # Tiered PDF pipeline: pypdfium2 is the default/only hot-path extractor;
@@ -264,7 +274,7 @@ _DEFAULTS: dict[str, Any] = {
     "metrics_enabled": True,
     "metrics_port": 9090,
     "otel_exporter_otlp_endpoint": None,
-    "otel_exporter_verify_ssl": False,
+    "otel_exporter_verify_ssl": None,
     "otel_service_name": "nextcloud-mcp-server",
     "otel_traces_sampler": "always_on",
     "otel_traces_sampler_arg": 1.0,
@@ -531,6 +541,14 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
         # 0 disables the pre-parse PDF size cap; otherwise it must be positive.
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
+        # 0 disables page-windowed extraction; otherwise it must be positive.
+        Validator("DOCUMENT_PARSE_PAGE_WINDOW", gte=0),
+        # 0 disables markdown reconstruction; otherwise it must be positive. A
+        # negative value must fail fast rather than silently disable markdown
+        # fleet-wide -- the same silent-disarm class this setting exists to fix.
+        Validator("DOCUMENT_MARKDOWN_MAX_PAGES", gte=0),
+        # At least one parse must be able to run.
+        Validator("DOCUMENT_PARSE_PROCESS_SLOTS", gte=1),
         # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
         # re-expose the OOM this guards against.
         Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=1),
@@ -1133,9 +1151,60 @@ class Settings:
     # being handed to the fast/OCR tiers, where a pathological large file burns
     # the OCR timeout for 0 chars. 0 disables the guard.
     document_max_pdf_size_mb: float = 50.0
+    # Page ceiling above which the structured tier skips pymupdf4llm.to_markdown
+    # and returns the raw text layer instead. 0 disables markdown entirely
+    # (every document takes the raw-text path), matching how
+    # document_max_pdf_size_mb treats 0 as "guard off"; a NEGATIVE value is
+    # rejected at startup by the DOCUMENT_MARKDOWN_MAX_PAGES validator, so a
+    # typo cannot silently turn markdown off everywhere.
+    #
+    # to_markdown is SUPERLINEAR in page count -- the per-page rate itself grows
+    # with document size. Measured across a 866-file scanned corpus: 0.48-1.48
+    # s/page at 22-31 pages, ~1.0 s/page at 400, 3.11 s/page at 1898, and 5.92
+    # s/page at 4003 (6.6 hours for one document). Raw ``get_text`` is ~4.5
+    # ms/page flat, and on that corpus recovered 116,375 of the 145,199 chars
+    # markdown produced -- markdown's value is structure, not completeness.
+    #
+    # Without a ceiling a large document burns the whole parse timeout and then
+    # dead-letters with reason="timeout", discarding a text layer that was
+    # already extractable in under a second (Deck #399). The gate is expressed in
+    # PAGES rather than predicted seconds deliberately: seconds depend on node
+    # CPU, so a seconds-based threshold silently drifts between node types and
+    # needs recalibration, while a page count is deterministic and reviewable.
+    #
+    # Default 150: roughly the point where markdown costs >~120s on a throttled
+    # 2-core pod, and it keeps markdown for the small/prose documents that
+    # actually benefit from table reconstruction.
+    document_markdown_max_pages: int = 150
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
+    # Pages per pypdfium2 extraction window. PDFium retains parsed page objects
+    # for the document's lifetime (~0.5 MB/page measured) and page.close() does
+    # not give them back, so extracting a large document in one open scales peak
+    # RSS with page count: a real 4003-page file cost 1914 MB. Re-opening the
+    # document every N pages caps that at one window's worth (100 pages -> 63 MB,
+    # a 30x reduction) with no measurable time cost and byte-identical output.
+    # 0 disables windowing (single open, pre-0.141 behaviour).
+    document_parse_page_window: int = 100
+    # Concurrent isolated parse subprocesses. anyio's default process limiter is
+    # os.cpu_count(), which is decoupled from both --concurrency and the pod
+    # memory limit: on an 8-core node that permits 8 x document_parse_mem_limit_mb
+    # (~12 GiB of address space) inside a 3 GiB pod. RLIMIT_AS bounds virtual
+    # address space rather than RSS, so that is a ceiling and not a reservation,
+    # but it is still far above anything the pod can survive. Bound it explicitly
+    # instead. 2 covers the per-tier worker concurrency actually deployed (1-3)
+    # while capping the pathological case; raise it only with headroom to spare.
+    document_parse_process_slots: int = 2
+    # Stream ingest downloads to a spool file rather than buffering the whole
+    # response in memory. read_file holds the entire document (a real 1040 MB
+    # file cost ~1.1 GB resident before a page was read); streaming keeps that
+    # at one chunk. Set false to fall back to the buffered path without a revert.
+    document_stream_download_enabled: bool = True
+    # Where spool files are written. None = tempfile.gettempdir(). In the
+    # container that is the /tmp emptyDir, which must have room for roughly
+    # (worker concurrency x the largest document).
+    document_spool_dir: str | None = None
     # Tier-0 classifier. Records classification metrics (recommended_tier,
     # text-quality) on the tiered path, derived from the tier-1 extraction.
     document_classify_enabled: bool = True
@@ -1192,7 +1261,11 @@ class Settings:
     metrics_enabled: bool = True
     metrics_port: int = 9090
     otel_exporter_otlp_endpoint: str | None = None
-    otel_exporter_verify_ssl: bool = False
+    # Tri-state. None (default) lets the OTLP exporter apply the OTel spec:
+    # the endpoint scheme decides, https:// secure and http:// insecure.
+    # Set explicitly only to force one or the other (e.g. a scheme-less
+    # endpoint, or plaintext behind a TLS-terminating sidecar).
+    otel_exporter_verify_ssl: bool | None = None
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
@@ -1940,7 +2013,12 @@ def _build_settings() -> Settings:
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
+        "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
+        "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
+        "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",
+        "document_stream_download_enabled": "DOCUMENT_STREAM_DOWNLOAD_ENABLED",
+        "document_spool_dir": "DOCUMENT_SPOOL_DIR",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",

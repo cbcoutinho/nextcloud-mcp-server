@@ -679,12 +679,116 @@ shorter OCR ceiling:
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
+DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
+DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
 ```
+
+`DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
+once. Without it anyio defaults to an `os.cpu_count()`-wide pool, which is
+constrained by neither the worker's `--concurrency` nor the pod memory limit: on
+an 8-core node that permits `8 × DOCUMENT_PARSE_MEM_LIMIT_MB` (~12 GiB of address
+space) inside a 3 GiB pod. `RLIMIT_AS` caps virtual address space rather than
+resident memory, so that is a ceiling rather than a reservation — but it is still
+well beyond what the pod can survive. Keep
+`DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
+memory limit. The limiter is created once per worker, so a change needs a restart.
 
 A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
+
+**Sizing the cap for a tenant.** Two metrics make the corpus visible instead of
+requiring a manual crawl:
+
+- `astrolabe_document_ingest_size_bytes{doc_type}` — a histogram of source sizes,
+  observed **before** the cap is applied, so the over-cap tail is included.
+  Buckets run to 2 GiB.
+- `astrolabe_document_ingest_rejected_total{doc_type,reason="oversize"}` — how
+  many documents the cap turned away.
+
+The fraction of a tenant's corpus blocked by the cap is then a query rather than
+an investigation, e.g.:
+
+```promql
+sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
+  / sum(rate(astrolabe_document_ingest_size_bytes_count[1h]))
+```
+
+> **Changing `DOCUMENT_MAX_PDF_SIZE_MB` re-drives dead-lettered documents.** The
+> cap is part of the escalation-tier signature that keys the document dead-letter
+> marker, so raising it makes previously-oversize documents retryable without
+> waiting for their etag to change (which, for an archive of scanned documents,
+> never happens). The trade-off is that a cap change invalidates *all* dead
+> letters for the tenant, not just oversize ones, so genuinely corrupt files are
+> re-attempted once too. On a large tenant that is a thundering herd — roll the
+> change out one tenant at a time and watch ingest queue depth.
+
+#### Markdown page ceiling (structured tier)
+
+`DOCUMENT_MARKDOWN_MAX_PAGES` bounds the **structured** tier. Above it, the tier
+skips `pymupdf4llm.to_markdown` and returns the raw text layer instead; `0`
+disables markdown entirely. A negative value is rejected at startup, so a typo
+cannot quietly turn markdown off across the fleet.
+
+`to_markdown` is **superlinear in page count** — the per-page rate itself grows
+with document size. Measured across an 866-file corpus of scanned documents:
+
+| Pages | to_markdown | Whole document |
+|---|---|---|
+| 22–31 | 0.48–1.48 s/page | 13–33 s |
+| 136–158 | 0.60–0.94 s/page | 95–149 s |
+| 364–419 | 0.91–1.06 s/page | 331–444 s |
+| 1111–1898 | 1.48–3.11 s/page | 27–98 min |
+| 4003 | 5.92 s/page | **6.6 hours** |
+
+Raw `get_text` is ~4.5 ms/page and flat. On that corpus it recovered 116,375 of
+the 145,199 characters markdown produced — markdown's value is structure, not
+completeness.
+
+Without a ceiling, a large document burns the whole
+`DOCUMENT_PARSE_TIMEOUT_SECONDS` and then dead-letters `reason="timeout"`,
+discarding a text layer that was extractable in under a second.
+
+The gate is expressed in **pages rather than predicted seconds** deliberately:
+seconds depend on node CPU, so a seconds-based threshold drifts silently between
+node types and needs recalibration, while a page count is deterministic and
+reviewable. Pick it from the tier's real budget — at ~1 s/page on a throttled
+2-core pod, a 120 s timeout is roughly 120 pages.
+
+Above the ceiling no images are written either, since markdown reconstruction is
+what emits them — so `has_images` is `False` for a gated document even when the
+processor was constructed with `extract_images=True`.
+
+Which path ran is exported on `astrolabe_document_parse_mode_total{mode}`
+(`markdown` | `text_only`) and recorded on the result as `parse_mode`. Skipping
+markdown is a **successful** parse, so it is deliberately not counted as a parse
+failure:
+
+```promql
+sum by (mode) (rate(astrolabe_document_parse_mode_total[1h]))
+```
+
+> **Changing `DOCUMENT_MARKDOWN_MAX_PAGES` also re-drives dead letters.** Like
+> the size cap it is part of the escalation-tier signature: lowering it lets a
+> previously-timing-out document take the raw-text path and succeed, so the
+> documents dead-lettered under the old value must become retryable. The same
+> thundering-herd caveat applies.
+
+`DOCUMENT_PARSE_PAGE_WINDOW` bounds the **fast** tier's peak memory. PDFium keeps
+parsed page objects for the lifetime of the open document and `page.close()` does
+not give them back, so extracting a long document in one open makes peak RSS scale
+with page count — measured at ~0.5 MB/page, i.e. 1.9 GB for a real 4003-page
+document, enough to OOM a 3 GiB worker on its own. The extractor therefore
+re-opens the document every `DOCUMENT_PARSE_PAGE_WINDOW` pages; the freed arena is
+reused by the next window, so peak stays flat at roughly one window's worth
+(100 pages ≈ 85 MB) with byte-identical output and no measurable slowdown.
+
+Lower it for very memory-constrained workers, raise it to trade memory for fewer
+re-opens. Note the cost is per *page*, not per byte — a 500 MB / 70-page scan is
+far cheaper than a 100 MB / 4000-page one, so page count, not file size, is what
+this setting tracks.
 
 #### OCR tier configuration
 

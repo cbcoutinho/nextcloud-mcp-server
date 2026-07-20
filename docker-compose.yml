@@ -58,7 +58,7 @@ services:
       retries: 30
 
   recipes:
-    image: docker.io/library/nginx:1.31.3-alpine@sha256:2776cd5b70d8983e27e9f5c90abee3d24c690014ae8ecbb529572d954a459096
+    image: docker.io/library/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
@@ -82,7 +82,7 @@ services:
   # runs on plain GitHub-hosted runners. CPU OCR is slow; give it a generous
   # DOCLING_TIMEOUT.
   docling:
-    image: ghcr.io/docling-project/docling-serve-cpu:v1.26.0@sha256:7e07522e0240c1db3ff5b837ffa969c2ecd5a71664c0e0369f5a69fc169e30ba
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.27.0@sha256:a70cd391c5d9e7ad23e8d76adffa5e5f03c536b4d1ea007f512c94e0b435ba45
     restart: always
     ports:
       - 127.0.0.1:5001:5001
@@ -156,9 +156,13 @@ services:
       #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
       #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
 
-      # Observability
-      #- OTEL_SERVICE_NAME=nextcloud-mcp-docker-compose
-      #- OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # Observability. Both pass through from the host so traces can be sent to
+      # a real collector without editing this file:
+      #   OTEL_EXPORTER_OTLP_ENDPOINT=http://<collector-host>:4317 docker compose up mcp
+      # Unset leaves the endpoint empty, which disables tracing (app.py gates on
+      # its truthiness) -- so the default stays no-op.
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-nextcloud-mcp-docker-compose}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
       # Collection naming: Auto-generated as {deployment-id}-{model-name}
       # - Deployment ID: OTEL_SERVICE_NAME (if set) or hostname (fallback)
@@ -392,6 +396,12 @@ services:
       # static `nextcloudMcpServerUIPublicClient` OIDC client) works for tests
       # against this profile too.
       - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
+
+      # Observability -- same host passthrough as the `mcp` service. This is the
+      # profile Astrolabe drives, so it is the one to point at a collector when
+      # tracing the search/chunk-context path end to end.
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-nextcloud-mcp-login-flow}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth
@@ -422,7 +432,7 @@ services:
       - claude-funnel
 
   nginx-claude-filter:
-    image: docker.io/library/nginx:1.31.3-alpine@sha256:2776cd5b70d8983e27e9f5c90abee3d24c690014ae8ecbb529572d954a459096
+    image: docker.io/library/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
     restart: always
     depends_on:
       - mcp-login-flow

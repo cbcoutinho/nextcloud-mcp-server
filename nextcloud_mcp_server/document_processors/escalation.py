@@ -49,16 +49,41 @@ def escalation_tiers_signature(settings: Any) -> str:
     pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
     re-attempted automatically.
 
+    ``document_max_pdf_size_mb`` is included for the same reason: an oversize PDF
+    is always-terminal (``vector/processor.py`` never escalates ``oversize``), so
+    without the cap here a document stays dead-lettered until its etag changes
+    even after an operator allows bigger files -- and for an archive of scanned
+    documents the etag never changes. Formatted with ``:g`` so ``50`` and ``50.0``
+    fingerprint identically and a float-repr change cannot spuriously invalidate
+    every dead letter.
+
+    Note the blast radius: changing the cap invalidates ALL dead letters, not just
+    oversize ones, so genuinely corrupt documents are re-attempted once too. That
+    is the intended trade -- the alternative is a bespoke backfill path -- but it
+    means a cap change is a thundering herd on a large tenant and should be rolled
+    out one tenant at a time.
+
+    ``document_markdown_max_pages`` is included for the same reason (Deck #399).
+    A structured-tier ``timeout`` is terminal, and lowering the page ceiling makes
+    a previously-timing-out document take the raw-text path and succeed -- so
+    without the ceiling here it would stay dead-lettered until its etag changed,
+    which for an archive of scanned documents never happens. Any change to the
+    value invalidates dead letters, in either direction: raising it can also turn
+    a text-only document back into a markdown parse. Formatted with ``:g`` for the
+    same reason as the cap: a settings source that yields ``150.0`` instead of
+    ``150`` must not change the fingerprint (and ``:d`` would raise on a float,
+    breaking the dead-letter key for the whole tenant).
+
     TODO: when a future setting can make a previously-terminal document parseable,
-    fold it in here so raising it auto-retries existing dead-letters. Two known
-    candidates: a new escalation tier becoming toggleable (e.g. the reserved
-    ``llm`` rung in ``TIER_LADDER``), and a raised oversize cap (an oversize PDF is
-    always-terminal, so without the cap in this signature it stays dead-lettered
-    until its etag changes even after an operator allows bigger files).
+    fold it in here so raising it auto-retries existing dead-letters. Known
+    remaining candidate: a new escalation tier becoming toggleable (e.g. the
+    reserved ``llm`` rung in ``TIER_LADDER``).
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
-        f"t1={settings.document_tier1_engine}"
+        f"t1={settings.document_tier1_engine};"
+        f"maxmb={settings.document_max_pdf_size_mb:g};"
+        f"mdpages={settings.document_markdown_max_pages:g}"
     )
 
 

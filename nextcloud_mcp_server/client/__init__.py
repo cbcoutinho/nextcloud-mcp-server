@@ -13,6 +13,7 @@ from httpx import (
 
 from ..controllers.notes_search import NotesSearchController
 from ..http import nextcloud_httpx_transport
+from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
 from .collectives import CollectivesClient
 from .contacts import ContactsClient
@@ -43,6 +44,29 @@ async def log_request(request: Request):
 
 
 async def log_response(response: Response):
+    """Log the response body at DEBUG, without ever consuming a streamed one.
+
+    Two bugs lived in the three lines this replaces, and together they defeated
+    the entire streamed-download path in production:
+
+    1. ``aread()`` ran **unconditionally**, while only the logging was gated by
+       DEBUG. Every response in the app was therefore fully buffered and
+       stringified regardless of log level, purely to serve a line nobody saw.
+    2. httpx invokes response hooks BEFORE the body is fetched, so on a streamed
+       GET that ``aread()`` pulled the whole document into memory and left the
+       caller's ``aiter_bytes()`` loop with nothing to stream. A 1 GB ingest
+       download became a 1 GB buffer plus its decoded ``.text`` copy -- ~3.6x the
+       file size resident -- which OOMKilled the fast-tier ingest workers.
+
+    So: bail out before the read when DEBUG is off, and never read a request the
+    caller marked as streaming.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    if response.request.extensions.get(STREAMING_REQUEST_EXTENSION):
+        # Reading here would consume the stream the caller is about to iterate.
+        logger.debug("Response [%s] <streaming; body not read>", response.status_code)
+        return
     await response.aread()
     logger.debug("Response [%s] %s", response.status_code, response.text)
 
@@ -163,6 +187,8 @@ class NextcloudClient:
         from nextcloud_mcp_server.config import cfg, get_settings  # noqa: PLC0415
 
         host = get_settings().nextcloud_host
+        if not host:
+            raise ValueError("NEXTCLOUD_HOST must be set to build a client from env")
         username = cfg("NEXTCLOUD_USERNAME")
         password = cfg("NEXTCLOUD_PASSWORD")
         # Pass username to constructor

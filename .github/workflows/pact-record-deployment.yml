@@ -5,16 +5,17 @@ name: Pact record deployment
 # checks the candidate against whatever is currently in `production`, and this
 # workflow tells the broker what `production` now contains.
 #
-# Trigger: tag push (v*). The release pipeline (bump-version -> tag -> docker /
-# app-store publish) cuts a tag for every shipped version, so a tag push is the
-# repo-controlled signal that this version is going to production.
+# Trigger: called by bump-version.yml after it cuts a tag. It deliberately does
+# NOT trigger on `push: tags: v*` — the bump workflow pushes tags with
+# GITHUB_TOKEN, and tags pushed with GITHUB_TOKEN do not trigger workflows. This
+# workflow was originally wired that way and consequently never ran once.
 #
-# Version identity: on a tag-push event GITHUB_SHA is the commit the tag points
-# to (the "bump: version ..." commit). pact.yml publishes consumer pacts and
-# provider verification results keyed by that same SHA when the bump commit
-# lands on master, so recording the deployment with ${{ github.sha }} links the
-# deployed version to its already-verified pacts. Recording the tag string
-# instead would NOT match and can-i-deploy would stay red.
+# Version identity: as a called workflow, ${{ github.sha }} is the caller's
+# triggering commit — the master commit that prompted the bump. That is exactly
+# the SHA pact.yml used when it published this repo's consumer pacts and
+# provider verification results for that master push, so the deployment record
+# lines up with already-verified pacts. Recording the "bump: version ..." commit
+# or the tag string instead would NOT match and can-i-deploy would stay red.
 #
 # The broker is only reachable over Tailscale; the step no-ops when the broker
 # secrets are absent (e.g. forks).
@@ -24,12 +25,10 @@ name: Pact record deployment
 #   PACT_BROKER / PACT_USERNAME / PACT_PASSWORD  - broker URL + basic auth
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
 
-# A re-tag (e.g. after a botched release) could push the same/overlapping tag
-# twice; don't cancel an in-flight recording — let it complete.
+# Two bumps landing close together could overlap; don't cancel an in-flight
+# recording — let it complete.
 concurrency:
   group: pact-record-deployment-${{ github.ref }}
   cancel-in-progress: false
@@ -64,7 +63,7 @@ jobs:
           # now and is no longer maintained). The cargo-dist installer appends
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the record-deployment step below.
-          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.7/pact-installer.sh | sh
           echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
           "$HOME/.pact/bin/pact" --help > /dev/null
 

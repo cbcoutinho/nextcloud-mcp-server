@@ -104,7 +104,8 @@ jobs:
       tag: ${{ needs.bump-version.outputs.tag }}
     permissions:
       id-token: write
-      contents: read
+      # write: the reusable workflow creates the GitHub Release for this tag.
+      contents: write
 
   docker:
     needs: bump-version
@@ -115,3 +116,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  # Must be called from here rather than triggered by the tag push: tags pushed
+  # with GITHUB_TOKEN do not trigger workflows, which is the same reason
+  # `release` and `docker` above are workflow_call rather than `on: push: tags`.
+  pact-record-deployment:
+    # Gated on `docker` as well as the bump: the record asserts "this version is
+    # in production", which is only true once the image has actually published.
+    needs: [bump-version, docker]
+    if: needs.bump-version.outputs.bumped == 'true'
+    uses: ./.github/workflows/pact-record-deployment.yml
+    secrets: inherit
+    permissions:
+      contents: read

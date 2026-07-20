@@ -63,7 +63,7 @@ jobs:
           # now and is no longer maintained). The cargo-dist installer appends
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the broker steps below.
-          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.7/pact-installer.sh | sh
           echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
           "$HOME/.pact/bin/pact" --help > /dev/null
 
@@ -117,7 +117,7 @@ jobs:
       # Stand up the MCP server. NOTE: single-user only exposes the *public*
       # management endpoints (/api/v1/status, /api/v1/vector-sync/status) — see
       # app.py:2248. The authenticated surface astrolabe also consumes
-      # (/api/v1/search, /webhooks, /apps, /chunk-context, /pdf-preview) needs
+      # (/api/v1/search, /webhooks, /apps, /chunk-context) needs
       # an OAuth-capable profile (login-flow) plus Bearer-token injection into
       # the verifier (Verifier.add_custom_header). That is the phase-4 follow-up;
       # this job currently verifies the public-endpoint pacts.
@@ -212,7 +212,7 @@ jobs:
           # now and is no longer maintained). The cargo-dist installer appends
           # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
           # for the broker steps below.
-          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.5/pact-installer.sh | sh
+          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.7/pact-installer.sh | sh
           echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
           "$HOME/.pact/bin/pact" --help > /dev/null
 

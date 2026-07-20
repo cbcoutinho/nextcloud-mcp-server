@@ -322,6 +322,26 @@ def classify_pdf(content: bytes) -> DocClassification:
     )
 
 
+def image_coverage_per_page_from_path(source_path: str) -> list[float]:
+    """:func:`image_coverage_per_page` reading from a path instead of bytes.
+
+    Scan detection re-opens the document, so on the streamed ingest path it can
+    read the spool file directly rather than forcing the caller to materialise a
+    large scan purely to classify it.
+    """
+    import pymupdf  # noqa: PLC0415
+
+    from nextcloud_mcp_server.document_processors._native_locks import (  # noqa: PLC0415
+        pymupdf_serialized,
+    )
+
+    cov: list[float] = []
+    with pymupdf_serialized(), pymupdf.open(source_path) as doc:
+        for n in range(min(doc.page_count, MAX_SAMPLED_PAGES)):
+            cov.append(_page_image_coverage(doc.load_page(n)))
+    return cov
+
+
 def image_coverage_per_page(content: bytes) -> list[float]:
     """Raster-image coverage in ``[0, 1]`` for every page (document order).
 

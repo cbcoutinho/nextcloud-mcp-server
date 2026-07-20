@@ -20,10 +20,17 @@ from nextcloud_mcp_server.vector import processor
 pytestmark = pytest.mark.unit
 
 
+def _source(content: bytes = b"%PDF", filename: str = "f.pdf"):
+    """A file-backed handle standing in for a spooled download."""
+    from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
+
+    return MemoryDocumentSource(content, "application/pdf", filename)
+
+
 def _registry(result: ProcessingResult, decision):
     reg = MagicMock()
-    reg.process_tier = AsyncMock(return_value=result)
-    reg.evaluate_escalation = MagicMock(return_value=decision)
+    reg.process_tier_source = AsyncMock(return_value=result)
+    reg.evaluate_escalation_source = MagicMock(return_value=decision)
     return reg
 
 
@@ -34,9 +41,7 @@ async def test_good_parse_returns_result(monkeypatch):
     monkeypatch.setattr(processor, "record_document_escalation_suppressed", sup)
     result = ProcessingResult(text="clean", metadata={}, processor="fast")
     reg = _registry(result, decision=None)
-    out = await processor._parse_pdf_tier(
-        reg, b"%PDF", "application/pdf", "f.pdf", "fast", settings=object()
-    )
+    out = await processor._parse_pdf_tier(reg, _source(), "fast", settings=object())
     assert out is result
     rec.assert_not_called()
     sup.assert_not_called()
@@ -48,9 +53,7 @@ async def test_low_quality_parse_raises_escalate(monkeypatch):
     result = ProcessingResult(text="", metadata={}, processor="fast")
     reg = _registry(result, decision=EscalationDecision("hop", "ocr", "empty_text"))
     with pytest.raises(EscalateError) as ei:
-        await processor._parse_pdf_tier(
-            reg, b"%PDF", "application/pdf", "f.pdf", "fast", settings=object()
-        )
+        await processor._parse_pdf_tier(reg, _source(), "fast", settings=object())
     assert ei.value.from_tier == "fast"
     assert ei.value.to_tier == "ocr"
     assert ei.value.reason == "empty_text"
@@ -69,9 +72,7 @@ async def test_suppressed_decision_indexes_without_hop(monkeypatch):
     reg = _registry(
         result, decision=EscalationDecision("suppressed", "ocr", "empty_text")
     )
-    out = await processor._parse_pdf_tier(
-        reg, b"%PDF", "application/pdf", "f.pdf", "fast", settings=object()
-    )
+    out = await processor._parse_pdf_tier(reg, _source(), "fast", settings=object())
     assert out is result  # indexed as terminal, no hop
     sup.assert_called_once_with("fast", "ocr", "empty_text")
     rec.assert_not_called()
@@ -90,11 +91,11 @@ async def test_hard_failure_returns_result_without_escalating(monkeypatch):
     )
     reg = _registry(result, decision=EscalationDecision("hop", "ocr", "empty_text"))
     out = await processor._parse_pdf_tier(
-        reg, b"%PDF", "application/pdf", "big.pdf", "fast", settings=object()
+        reg, _source(filename="big.pdf"), "fast", settings=object()
     )
     # success=False short-circuits: the gate is never consulted, no escalation.
     assert out is result
-    reg.evaluate_escalation.assert_not_called()
+    reg.evaluate_escalation_source.assert_not_called()
     rec.assert_not_called()
     sup.assert_not_called()
 
@@ -116,12 +117,13 @@ async def test_ocr_batch_pending_sentinel_raises_batch_pending():
         success=False,
     )
     reg = _registry(result, decision=None)
+    source = _source(filename="scan.pdf")
+    settings = object()
+
     with pytest.raises(BatchPending) as ei:
-        await processor._parse_pdf_tier(
-            reg, b"%PDF", "application/pdf", "scan.pdf", "ocr", settings=object()
-        )
+        await processor._parse_pdf_tier(reg, source, "ocr", settings=settings)
     assert ei.value.retry_in == 90
-    reg.evaluate_escalation.assert_not_called()
+    reg.evaluate_escalation_source.assert_not_called()
 
 
 async def test_options_threaded_to_process_tier():
@@ -130,7 +132,7 @@ async def test_options_threaded_to_process_tier():
     reg = _registry(result, decision=None)
     opts = {"user_id": "u", "doc_id": "d", "doc_type": "file", "etag": "v"}
     await processor._parse_pdf_tier(
-        reg, b"%PDF", "application/pdf", "f.pdf", "ocr", settings=object(), options=opts
+        reg, _source(), "ocr", settings=object(), options=opts
     )
-    # process_tier(content, content_type, filename, tier, options=...)
-    assert reg.process_tier.await_args.kwargs["options"] == opts
+    # process_tier_source(source, tier, options=...)
+    assert reg.process_tier_source.await_args.kwargs["options"] == opts

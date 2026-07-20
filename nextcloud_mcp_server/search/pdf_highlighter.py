@@ -783,10 +783,12 @@ class PDFHighlighter:
 
     @staticmethod
     def compute_chunk_bboxes_batch(
-        pdf_bytes: bytes,
+        pdf_bytes: bytes | None,
         chunks: list[tuple[int, int, int, int | None, str]],
         page_boundaries: list[dict],
         full_text: str,
+        pdf_path: Path | None = None,
+        page_window: int | None = None,
     ) -> dict[int, tuple[list[tuple[float, float, float, float]], int]]:
         """Compute normalized bounding boxes for chunks without rendering.
 
@@ -796,13 +798,32 @@ class PDFHighlighter:
         (one per text line). Skips the get_pixmap + PIL pipeline entirely, so
         no PNG bytes are produced.
 
+        **Extraction is page-windowed.** MuPDF retains parsed page objects for
+        the lifetime of the ``Document``, so holding one open across every page
+        of a long document accumulates without bound. Measured on a real
+        4003-page document, this stage cost **+353 MB unwindowed vs +53 MB at
+        the default window** (process peak 685 MB -> 359 MB) -- the allocation
+        that OOMKilled the fast-tier ingest workers. Reopening the document
+        every ``page_window`` pages bounds retention to one window, exactly as
+        ``pypdfium2_fast._extract`` does for text extraction.
+
+        Results are independent of the window: each chunk's bbox depends only on
+        its own page, so grouping by page and processing in windows returns the
+        same mapping as a single pass.
+
         Args:
-            pdf_bytes: PDF file bytes.
+            pdf_bytes: PDF file bytes. May be None when ``pdf_path`` is given.
             chunks: List of (chunk_index, start_offset, end_offset,
                 stored_page_number, chunk_text). chunk_index is the dict key.
             page_boundaries: Pre-computed page boundaries from the document
                 processor; each entry is {"page", "start_offset", "end_offset"}.
             full_text: Full document text (for cross-page chunk handling).
+            pdf_path: Path to the PDF, used in preference to ``pdf_bytes``. The
+                ingest path already has the document spooled on disk, so passing
+                the path skips writing a second copy of it to a temp file.
+            page_window: Pages to process per document open. Defaults to
+                ``document_parse_page_window``; ``0`` disables windowing (one
+                open for the whole document, the pre-fix behaviour).
 
         Returns:
             dict mapping chunk_index to (normalized_bboxes, page_number).
@@ -815,23 +836,29 @@ class PDFHighlighter:
         if not chunks:
             return results
 
+        if page_window is None:
+            from nextcloud_mcp_server.config import get_settings  # noqa: PLC0415
+
+            page_window = get_settings().document_parse_page_window
+
         temp_pdf_path = None
-        doc = None
         try:
-            temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
-            temp_pdf_path = temp_dir / "pdf.pdf"
-            temp_pdf_path.write_bytes(pdf_bytes)
+            if pdf_path is not None:
+                source_path = pdf_path
+            else:
+                if pdf_bytes is None:
+                    raise ValueError("one of pdf_bytes or pdf_path is required")
+                temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
+                temp_pdf_path = temp_dir / "pdf.pdf"
+                temp_pdf_path.write_bytes(pdf_bytes)
+                source_path = temp_pdf_path
 
-            doc = pymupdf.open(temp_pdf_path)
-
-            # Per-page (token, word) cache: get_text("words") + tokenisation is the
-            # dominant per-page cost. Extract each page once and reuse it across all
-            # of that page's chunks — O(pages) instead of O(chunks).
-            page_flat_cache: dict[
-                int,
-                list[tuple[str, tuple[float, float, float, float, str, int, int, int]]],
-            ] = {}
-
+            # Pass 1: resolve every chunk to its page WITHOUT opening the
+            # document. find_chunk_page needs only offsets, so the grouping
+            # costs no native state -- and it is what lets the render pass be
+            # ordered by page instead of by chunk, which is the prerequisite for
+            # windowing at all.
+            by_page: dict[int, list[tuple[int, str]]] = defaultdict(list)
             for (
                 chunk_index,
                 start_offset,
@@ -861,33 +888,57 @@ class PDFHighlighter:
                 # Page-relative slice (handles chunks that span page boundaries)
                 chunk_start_on_page = max(start_offset, page_boundary["start_offset"])
                 chunk_end_on_page = min(end_offset, page_boundary["end_offset"])
-                page_relative_text = full_text[chunk_start_on_page:chunk_end_on_page]
-
-                page = doc[page_num - 1]
-                flat = page_flat_cache.get(page_num)
-                if flat is None:
-                    flat = PDFHighlighter._page_flat_tokens(page)
-                    page_flat_cache[page_num] = flat
-                rects = PDFHighlighter._find_chunk_line_rects(
-                    page, page_relative_text, flat=flat
+                by_page[page_num].append(
+                    (chunk_index, full_text[chunk_start_on_page:chunk_end_on_page])
                 )
-                if not rects:
-                    continue
 
-                page_rect = page.rect
-                w = page_rect.width or 1.0
-                h = page_rect.height or 1.0
+            # Pass 2: render page by page, reopening every `page_window` pages so
+            # MuPDF's retained page objects are released with the Document.
+            pages = sorted(by_page)
+            if not pages:
+                # No chunk resolved to a page. Return before computing the window
+                # -- with windowing disabled the window is len(pages), and
+                # range(0, 0, 0) raises "arg 3 must not be zero", which the outer
+                # handler would report as a bogus bbox error.
+                logger.info("Computed bboxes for 0/%s chunks", len(chunks))
+                return results
+            window = page_window if page_window and page_window > 0 else len(pages)
+            for start in range(0, len(pages), window):
+                doc = pymupdf.open(source_path)
+                try:
+                    for page_num in pages[start : start + window]:
+                        page = doc[page_num - 1]
+                        # get_text("words") + tokenisation is the dominant
+                        # per-page cost, so extract once and reuse across every
+                        # chunk on this page -- O(pages), not O(chunks). Scoped
+                        # to the page (not a document-wide cache) so it is freed
+                        # with the window rather than growing to O(document).
+                        flat = PDFHighlighter._page_flat_tokens(page)
+                        page_rect = page.rect
+                        w = page_rect.width or 1.0
+                        h = page_rect.height or 1.0
+                        _c = PDFHighlighter._clamp01
 
-                _c = PDFHighlighter._clamp01
-                normalized = [
-                    (_c(r[0] / w), _c(r[1] / h), _c(r[2] / w), _c(r[3] / h))
-                    for r in rects
-                ]
-                # Drop any rect that clamped to zero area (off-page artifact).
-                normalized = [n for n in normalized if n[2] > n[0] and n[3] > n[1]]
-                if not normalized:
-                    continue
-                results[chunk_index] = (normalized, page_num)
+                        for chunk_index, page_relative_text in by_page[page_num]:
+                            rects = PDFHighlighter._find_chunk_line_rects(
+                                page, page_relative_text, flat=flat
+                            )
+                            if not rects:
+                                continue
+                            normalized = [
+                                (_c(r[0] / w), _c(r[1] / h), _c(r[2] / w), _c(r[3] / h))
+                                for r in rects
+                            ]
+                            # Drop any rect that clamped to zero area (off-page
+                            # artifact).
+                            normalized = [
+                                n for n in normalized if n[2] > n[0] and n[3] > n[1]
+                            ]
+                            if not normalized:
+                                continue
+                            results[chunk_index] = (normalized, page_num)
+                finally:
+                    doc.close()
 
             logger.info("Computed bboxes for %s/%s chunks", len(results), len(chunks))
             return results
@@ -897,8 +948,6 @@ class PDFHighlighter:
             return results
 
         finally:
-            if doc is not None:
-                doc.close()
             if temp_pdf_path and temp_pdf_path.parent.exists():
                 try:
                     shutil.rmtree(temp_pdf_path.parent)

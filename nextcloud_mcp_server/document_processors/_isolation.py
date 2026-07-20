@@ -19,7 +19,8 @@ from typing import Any, cast
 
 import anyio
 import anyio.to_process
-from anyio import BrokenWorkerProcess
+from anyio import BrokenWorkerProcess, CapacityLimiter
+from anyio.lowlevel import RunVar
 
 # ``resource`` is a Unix-only stdlib module -- it does not exist on Windows, and
 # importing it unconditionally crashed Windows startup (#877). The RLIMIT_AS cap
@@ -34,6 +35,31 @@ logger = logging.getLogger(__name__)
 
 # Guard so the address-space limit is applied once per (reused) worker process.
 _MEM_LIMIT_APPLIED = False
+
+# Bounds how many parse subprocesses may run at once. anyio's default process
+# limiter is os.cpu_count(), which is decoupled from both the worker's
+# --concurrency and the pod memory limit: on an 8-core node that allows 8 x
+# document_parse_mem_limit_mb of address space inside a 3 GiB pod. A CapacityLimiter
+# belongs to the event loop that created it, so hold it in a RunVar (the same
+# mechanism anyio uses for its own default) rather than a module global.
+_PARSE_LIMITER: RunVar[CapacityLimiter] = RunVar("_pdf_parse_process_limiter")
+
+
+def parse_process_limiter(slots: int) -> CapacityLimiter:
+    """The per-event-loop limiter bounding concurrent parse subprocesses.
+
+    Created on first use from ``document_parse_process_slots``. Later changes to
+    the setting do not resize an existing limiter -- like the RLIMIT_AS cap it
+    pairs with, it is fixed for the worker's lifetime and a change needs a
+    restart.
+    """
+    try:
+        return _PARSE_LIMITER.get()
+    except LookupError:
+        limiter = CapacityLimiter(max(1, slots))
+        _PARSE_LIMITER.set(limiter)
+        return limiter
+
 
 # pymupdf4llm reconstructs reading-order markdown, which can DROP most of the text
 # on non-prose layouts (engineering drawings, scattered labels): observed 598 of a
@@ -70,6 +96,46 @@ def _recover_underextracted_pages(doc: Any, chunks: list[dict[str, Any]]) -> Non
             _TEXTLAYER_FALLBACK_RATIO * max(len(md), 1)
         ):
             chunk["text"] = raw
+
+
+def uses_markdown(page_count: int, markdown_max_pages: int) -> bool:
+    """Whether a document of ``page_count`` pages gets markdown reconstruction.
+
+    Single source of truth for the page gate (Deck #399). The worker uses it to
+    choose the parse path; ``PyMuPDFProcessor`` uses it to label
+    ``astrolabe_document_parse_mode_total``. Duplicating the comparison would let
+    the metric drift from the decision it claims to describe.
+
+    ``markdown_max_pages <= 0`` disables markdown entirely; the bound is
+    inclusive, so a document exactly at the ceiling still gets markdown.
+    """
+    return markdown_max_pages > 0 and page_count <= markdown_max_pages
+
+
+def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
+    """Build ``page_chunks``-shaped output from the raw text layer alone.
+
+    Emits the same contract ``to_markdown(page_chunks=True)`` does, as far as
+    callers actually consume it: ``PyMuPDFProcessor._build_page_boundaries``
+    reads only ``chunk["text"]`` and ``chunk["metadata"]["page"]`` (with a
+    positional fallback for the latter), so page boundaries, the chunker and
+    bbox computation are unaffected by which path produced the list.
+
+    ``metadata.page`` is 1-based, matching what pymupdf4llm's classic
+    (``pymupdf_rag``) extractor emits -- the one the worker pins itself to via
+    ``use_layout(False)``. Layout mode names the same field ``page_number``, so
+    this pairing only holds while that call and the exact version pin do.
+    """
+    chunks: list[dict[str, Any]] = []
+    for i in range(doc.page_count):
+        try:
+            text = doc[i].get_text("text")
+        # Per-page best effort, mirroring the markdown path above: one
+        # unreadable page degrades to "" rather than failing the document.
+        except Exception:  # noqa: BLE001
+            text = ""
+        chunks.append({"text": text, "metadata": {"page": i + 1}})
+    return chunks
 
 
 class PdfParseFailed(Exception):
@@ -109,13 +175,27 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
 
 
 def _parse_pdf_worker(
-    content: bytes,
+    source_path: str,
     write_images: bool,
     image_path: str | None,
     graphics_limit: int,
     mem_limit_mb: int,
+    markdown_max_pages: int,
 ) -> list[dict[str, Any]]:
-    """Run pymupdf4llm.to_markdown in the worker subprocess (positional args only).
+    """Extract a PDF in the worker subprocess (positional args only).
+
+    Runs ``pymupdf4llm.to_markdown`` when :func:`uses_markdown` allows it for this
+    document's page count, and falls back to the raw text layer
+    (:func:`_text_only_chunks`) otherwise. Both paths return the same
+    ``page_chunks`` shape, so the caller does not branch.
+
+    Takes a PATH, not bytes. Passing bytes meant every argument crossing the
+    ``to_process`` pipe was a full copy of the document -- one in the parent, one
+    pickled into the pipe, one in the child -- so a large file breached the
+    child's RLIMIT_AS before pymupdf4llm ran at all. Measured on a real 1040 MB
+    document: the worker died during initialisation in 0.9s while the parent
+    peaked at 2185 MB. Opening the path uses ``fz_open_file``, which reads
+    incrementally, so the rlimit now bounds parse working set as intended.
 
     Returns the ``page_chunks`` list (picklable dicts of text + metadata). Imports
     pymupdf lazily so the parent process isn't forced to load them here.
@@ -125,12 +205,73 @@ def _parse_pdf_worker(
     # Imported inside the worker so the parent process (and any module that
     # imports this one) doesn't load pymupdf4llm -- which prints a banner to
     # stdout on import, the channel anyio's worker uses for IPC.
+    # Stay on pymupdf4llm's classic (pymupdf_rag) extractor.
+    #
+    # 1.27.2.1 made ``import pymupdf4llm`` initialise pymupdf_layout and route
+    # to_markdown through an ONNX layout-detection model. That default is a poor
+    # fit for this worker, in four independent ways:
+    #
+    # * The import alone costs ~1157 MiB of address space (VmSize 34 -> 1191
+    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~345 MiB for the parse
+    #   itself. That is what surfaces as "Error during worker process
+    #   initialization" classified as oom.
+    # * Inference aborts under the same cap with "[ONNXRuntimeError] Missing
+    #   Input: image_features", failing the parse. It is content-dependent, so
+    #   PDFs fail unpredictably rather than consistently. Raising the cap is not
+    #   an option; capping memory is why this worker exists (the OOM hotfix).
+    # * Its chunks are ``defaultdict(lambda: None)``, and a local lambda as
+    #   default_factory is unpicklable, so results cannot cross the
+    #   anyio.to_process boundary back to the parent at all.
+    # * It reconstructs from the visual layout, dropping text rendered outside
+    #   the page box that the classic extractor kept.
+    #
+    # Two mechanisms, because they do different things. pymupdf4llm decides at
+    # import time with
+    #     try: import pymupdf.layout
+    #     except ImportError: use_layout(False)
+    #     else: use_layout(True)
+    # so binding that name to None in sys.modules -- the standard way to make an
+    # import raise -- takes the classic branch and avoids the address-space cost
+    # entirely (VmSize 499 MiB). The explicit use_layout(False) then still
+    # disables inference if that block ever stops working (upstream renaming the
+    # module, say); it cannot undo the import, hence both. Both are
+    # worker-process-local and never affect the parent.
+    #
+    # Net effect: the extractor we were on before the bump -- plain picklable
+    # dicts, ``metadata["page"]``, no ML inference in the ingest path. The exact
+    # pin in pyproject.toml keeps that a fixed, known target. Adopting layout
+    # mode later needs its own memory budget plus a re-check of the chunk type
+    # and the metadata key; test_worker_disables_pymupdf4llm_layout_mode fails
+    # loudly if it turns back on by accident.
+    # NB: this is process-wide and sticky for the life of the process, not
+    # scoped to this call. That is intended in the parse subprocess, but note it
+    # also applies to any process that calls this function directly -- the unit
+    # tests do, so pytest workers get the same block. Nothing here needs real
+    # layout mode; anything that later does must not share a process with this
+    # function, because ``setdefault`` cannot be undone by a subsequent import.
+    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment, ty:no-matching-overload]
+
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
 
-    doc = pymupdf.open("pdf", content)
+    pymupdf4llm.use_layout(False)
+
+    doc = pymupdf.open(source_path)
     try:
-        # page_chunks=True makes to_markdown return list[dict], not str.
+        # Page gate (Deck #399). to_markdown is superlinear in page count, so a
+        # large document burns the entire parse timeout and then dead-letters
+        # reason="timeout" -- discarding a text layer that get_text extracts in
+        # ~4.5 ms/page. Decide from page_count BEFORE parsing: a runtime budget
+        # would still pay the full timeout on every doomed document to learn
+        # what page_count gives for free. page_count is metadata, so this costs
+        # nothing beyond the open we already did.
+        if not uses_markdown(doc.page_count, markdown_max_pages):
+            return _text_only_chunks(doc)
+
+        # page_chunks=True makes to_markdown return list[dict], not str. With
+        # layout disabled above these are plain, picklable dicts -- an invariant
+        # the boundary tests in tests/unit/test_pdf_parse_isolation.py assert
+        # directly, so flipping the extractor fails there rather than in prod.
         chunks = cast(
             "list[dict[str, Any]]",
             pymupdf4llm.to_markdown(
@@ -149,29 +290,41 @@ def _parse_pdf_worker(
 
 
 async def run_isolated_pdf_parse(
-    content: bytes,
+    source_path: str,
     *,
     write_images: bool,
     image_path: Path | None,
     graphics_limit: int,
     timeout_seconds: float,
     mem_limit_mb: int,
+    markdown_max_pages: int,
+    process_slots: int = 2,
 ) -> list[dict[str, Any]]:
     """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
 
     Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``error``) instead of
     taking the pod down. On timeout the worker process is killed (``cancellable``).
+
+    ``process_slots`` bounds how many parses run concurrently. Without it anyio
+    defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
+    ``--concurrency`` nor the pod memory limit constrains.
+
+    ``markdown_max_pages`` is required rather than defaulted: <=0 legitimately
+    means "never run to_markdown", so a default would silently pick a parse mode
+    for any caller that forgot to pass one.
     """
     with anyio.move_on_after(timeout_seconds):
         try:
             return await anyio.to_process.run_sync(
                 _parse_pdf_worker,
-                content,
+                source_path,
                 write_images,
                 str(image_path) if image_path is not None else None,
                 graphics_limit,
                 mem_limit_mb,
+                markdown_max_pages,
                 cancellable=True,
+                limiter=parse_process_limiter(process_slots),
             )
         except MemoryError as e:
             # A clean rlimit breach: the worker raised MemoryError and stays

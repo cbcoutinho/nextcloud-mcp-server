@@ -1,11 +1,14 @@
-"""Shared visualization utilities for PCA coordinate computation.
+"""PCA coordinate computation for search-result visualization.
 
-Extracts the PCA coordinate computation logic used by both:
-- viz_routes.py (session-based auth)
-- management.py (OAuth bearer token auth)
+Used by the OAuth bearer-token search endpoints in ``api/visualization.py``
+(``/api/v1/search`` and ``/api/v1/vector-viz/search``).
 
-Both endpoints need to compute 3D PCA coordinates for search results,
-so this module provides the shared implementation.
+Note that ``auth/viz_routes.py`` (session-based auth) does *not* call this
+module — it carries its own inline copy of the same retrieve/normalize/PCA
+sequence. Both go through :class:`~nextcloud_mcp_server.vector.pca.PCA`, so
+changes to the projection itself apply to both, but anything changed here
+(spans, payload fields, guards) must be mirrored there by hand until the two
+are deduplicated.
 """
 
 import logging
@@ -15,6 +18,7 @@ import anyio.to_thread
 import numpy as np
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.pca import PCA
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -27,9 +31,10 @@ async def compute_pca_coordinates(
 ) -> dict[str, Any]:
     """Compute PCA 3D coordinates for search results visualization.
 
-    This is the shared implementation used by both viz_routes.py and
-    the management API. It retrieves vectors from Qdrant and applies
-    PCA dimensionality reduction.
+    Retrieves the result vectors from Qdrant and applies PCA dimensionality
+    reduction. Called only by the OAuth bearer-token search endpoints in
+    ``api/visualization.py`` — ``auth/viz_routes.py`` runs its own inline copy
+    of this sequence rather than calling here (see the module docstring).
 
     Args:
         search_results: List of SearchResult objects with point_id
@@ -52,12 +57,15 @@ async def compute_pca_coordinates(
     qdrant_client = await get_qdrant_client()
 
     # Batch retrieve vectors from Qdrant
-    points_response = await qdrant_client.retrieve(
-        collection_name=settings.get_collection_name(),
-        ids=point_ids,
-        with_vectors=["dense"],
-        with_payload=["doc_id", "chunk_start_offset", "chunk_end_offset"],
-    )
+    with trace_operation(
+        "search.pca_retrieve_vectors", {"pca.num_point_ids": len(point_ids)}
+    ):
+        points_response = await qdrant_client.retrieve(
+            collection_name=settings.get_collection_name(),
+            ids=point_ids,
+            with_vectors=["dense"],
+            with_payload=["doc_id", "chunk_start_offset", "chunk_end_offset"],
+        )
 
     # Build chunk_vectors_map from batch response
     chunk_vectors_map: dict[tuple[Any, Any, Any], Any] = {}
@@ -155,9 +163,17 @@ async def compute_pca_coordinates(
         coords = pca.fit_transform(vectors)
         return coords, pca
 
-    coords_3d, pca = await anyio.to_thread.run_sync(
-        lambda: _compute_pca(all_vectors_normalized)
-    )
+    with trace_operation(
+        "search.pca_compute",
+        {
+            "pca.num_samples": int(all_vectors_normalized.shape[0]),
+            "pca.num_features": int(all_vectors_normalized.shape[1]),
+            "pca.n_components": 3,
+        },
+    ):
+        coords_3d, pca = await anyio.to_thread.run_sync(
+            lambda: _compute_pca(all_vectors_normalized)
+        )
 
     # After fit, these attributes are guaranteed to be set
     assert pca.explained_variance_ratio_ is not None

@@ -137,6 +137,39 @@ async def test_oversize_pdf_fails_fast_without_parsing(monkeypatch):
     assert ran is False, "size guard must short-circuit before the fast tier runs"
 
 
+def test_oversize_result_for_size_matches_byte_form(monkeypatch):
+    """The size-only guard must be behaviourally identical to the bytes form.
+
+    ``oversize_result_for_size`` is what the pre-download gate calls, so any
+    divergence would mean a document rejected before the fetch behaves
+    differently from one rejected after it.
+    """
+    settings = _Settings(max_pdf_size_mb=0.001)
+    r = _registry((_Fake("fast", "fast"), 20))
+    content = b"%PDF-1.7" + b"0" * 2048
+
+    by_bytes = r._oversize_result(content, "big.pdf", settings)
+    by_size = r.oversize_result_for_size(len(content), "big.pdf", settings)
+
+    assert by_bytes is not None and by_size is not None
+    assert by_size.success is by_bytes.success is False
+    assert by_size.metadata == by_bytes.metadata
+    assert by_size.processor == by_bytes.processor == "size_guard"
+    assert by_size.error == by_bytes.error
+
+
+def test_oversize_result_for_size_passes_under_cap_and_when_disabled():
+    r = _registry((_Fake("fast", "fast"), 20))
+
+    under = r.oversize_result_for_size(1024, "small.pdf", _Settings(max_pdf_size_mb=50))
+    disabled = r.oversize_result_for_size(
+        10 * 1024 * 1024 * 1024, "huge.pdf", _Settings(max_pdf_size_mb=0)
+    )
+
+    assert under is None
+    assert disabled is None, "cap of 0 disables the guard"
+
+
 async def test_under_cap_pdf_still_parses(monkeypatch):
     """A PDF under the cap is unaffected by the guard."""
     monkeypatch.setattr(
