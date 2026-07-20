@@ -31,9 +31,10 @@ async def compute_pca_coordinates(
 ) -> dict[str, Any]:
     """Compute PCA 3D coordinates for search results visualization.
 
-    This is the shared implementation used by both viz_routes.py and
-    the management API. It retrieves vectors from Qdrant and applies
-    PCA dimensionality reduction.
+    Retrieves the result vectors from Qdrant and applies PCA dimensionality
+    reduction. Called only by the OAuth bearer-token search endpoints in
+    ``api/visualization.py`` — ``auth/viz_routes.py`` runs its own inline copy
+    of this sequence rather than calling here (see the module docstring).
 
     Args:
         search_results: List of SearchResult objects with point_id
