@@ -269,7 +269,7 @@ async def test_page_boundaries_read_page_key_not_position(monkeypatch):
 
     # Must be a coroutine function (the production call site awaits it), which
     # is why it has no await of its own; same shape as _fake_parse_returning
-    # above. NOSONAR must sit on the flagged line itself to anchor.
+    # above. The suppression below has to sit on the flagged line to anchor.
     async def fake_parse(content, **kwargs):  # NOSONAR(S7503)
         # Pages 3 and 4 at positions 0 and 1 -- the positional fallback would
         # yield [1, 2] here.
