@@ -267,10 +267,10 @@ async def test_page_boundaries_read_page_key_not_position(monkeypatch):
     """
     from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
 
-    # NOSONAR(S7503) - must be a coroutine function (the production call site
-    # awaits it), which is why it has no await of its own; same shape as
-    # _fake_parse_returning above.
-    async def fake_parse(content, **kwargs):
+    # Must be a coroutine function (the production call site awaits it), which
+    # is why it has no await of its own; same shape as _fake_parse_returning
+    # above. NOSONAR must sit on the flagged line itself to anchor.
+    async def fake_parse(content, **kwargs):  # NOSONAR(S7503)
         # Pages 3 and 4 at positions 0 and 1 -- the positional fallback would
         # yield [1, 2] here.
         return [
