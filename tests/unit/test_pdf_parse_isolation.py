@@ -68,7 +68,7 @@ async def _run(monkeypatch, fake_run_sync) -> list:
 
 
 async def test_success_returns_worker_value(monkeypatch):
-    page_chunks = [{"text": "ok", "metadata": {"page_number": 1}}]
+    page_chunks = [{"text": "ok", "metadata": {"page": 1}}]
 
     async def fake(*args, **kwargs):
         return page_chunks
@@ -221,9 +221,7 @@ def _fake_parse_returning(n_pages: int):
     """
 
     async def fake_parse(content, **kwargs):
-        return [
-            {"text": "x", "metadata": {"page_number": i + 1}} for i in range(n_pages)
-        ]
+        return [{"text": "x", "metadata": {"page": i + 1}} for i in range(n_pages)]
 
     return fake_parse
 
@@ -238,7 +236,7 @@ async def test_processor_success_builds_page_boundaries(monkeypatch):
 
     async def fake_parse(content, **kwargs):
         seen.update(kwargs)
-        return [{"text": "Hello world", "metadata": {"page_number": 1}}]
+        return [{"text": "Hello world", "metadata": {"page": 1}}]
 
     monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
 
@@ -255,7 +253,7 @@ async def test_processor_success_builds_page_boundaries(monkeypatch):
     assert seen["markdown_max_pages"] == 150
 
 
-async def test_page_boundaries_read_page_number_not_position(monkeypatch):
+async def test_page_boundaries_read_page_key_not_position(monkeypatch):
     """``page_boundaries`` must come from the metadata key, not chunk position.
 
     ``_build_page_boundaries`` falls back to a positional page number when the
@@ -263,17 +261,21 @@ async def test_page_boundaries_read_page_number_not_position(monkeypatch):
     other test here uses chunks whose page numbers equal their positions, which
     the fallback reproduces exactly. Pinning the mapping with page numbers that
     deliberately differ from their positions is what makes this a real guard:
-    if pymupdf4llm renames the key again (as 1.27.2.1 did, ``page`` ->
-    ``page_number``), this fails instead of quietly emitting wrong citations.
+    If the worker ever switches to pymupdf4llm's layout extractor (which
+    names this field ``page_number``), this fails instead of quietly
+    emitting wrong citations off the positional fallback.
     """
     from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
 
+    # NOSONAR(S7503) - must be a coroutine function (the production call site
+    # awaits it), which is why it has no await of its own; same shape as
+    # _fake_parse_returning above.
     async def fake_parse(content, **kwargs):
         # Pages 3 and 4 at positions 0 and 1 -- the positional fallback would
         # yield [1, 2] here.
         return [
-            {"text": "page three", "metadata": {"page_number": 3}},
-            {"text": "page four", "metadata": {"page_number": 4}},
+            {"text": "page three", "metadata": {"page": 3}},
+            {"text": "page four", "metadata": {"page": 4}},
         ]
 
     monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
@@ -535,7 +537,7 @@ def test_gate_uses_text_only_above_ceiling(tmp_path):
 
     # One chunk per page, 1-based page numbers, real text recovered.
     assert len(chunks) == 5
-    assert [c["metadata"]["page_number"] for c in chunks] == [1, 2, 3, 4, 5]
+    assert [c["metadata"]["page"] for c in chunks] == [1, 2, 3, 4, 5]
     assert "Hello world 1" in chunks[0]["text"]
     assert "Hello world 5" in chunks[4]["text"]
 
@@ -548,9 +550,33 @@ def test_gate_runs_markdown_at_or_below_ceiling(tmp_path):
 
     # Boundary is inclusive: page_count == ceiling still gets markdown, which
     # carries pymupdf4llm's richer metadata (the text-only path emits only
-    # "page_number").
+    # "page").
     assert len(chunks) == 3
-    assert set(chunks[0]["metadata"]) > {"page_number"}
+    assert set(chunks[0]["metadata"]) > {"page"}
+
+
+def test_worker_disables_pymupdf4llm_layout_mode(tmp_path):
+    """The worker must stay on the classic (pymupdf_rag) extractor.
+
+    pymupdf4llm >= 1.27.2.1 enables an ONNX layout model on import. Under this
+    worker's RLIMIT_AS cap onnxruntime cannot reserve its address space and
+    aborts mid-inference ("Missing Input: image_features"), failing the parse
+    outright -- content-dependently, so some PDFs pass and others do not. It
+    also returns unpicklable ``defaultdict(lambda: None)`` chunks and renames
+    ``metadata["page"]`` to ``page_number``.
+
+    Asserted through the metadata key because that is the externally visible
+    difference between the two extractors: if ``use_layout(False)`` is dropped
+    or upstream changes the default, this fails here rather than as an opaque
+    parse error in production.
+    """
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 100)
+
+    assert "page" in chunks[0]["metadata"]
+    assert "page_number" not in chunks[0]["metadata"]
 
 
 def test_markdown_chunks_are_picklable(tmp_path):
@@ -599,7 +625,7 @@ def test_gate_zero_disables_markdown_entirely(tmp_path):
     chunks = _parse_pdf_worker(path, False, None, 1000, 0, 0)
 
     assert len(chunks) == 2
-    assert chunks[0]["metadata"] == {"page_number": 1}
+    assert chunks[0]["metadata"] == {"page": 1}
     assert "Hello world 1" in chunks[0]["text"]
 
 
@@ -612,9 +638,7 @@ def test_text_only_chunks_match_markdown_page_count_and_order(tmp_path):
     raw = _parse_pdf_worker(path, False, None, 1000, 0, 1)
 
     assert len(md) == len(raw) == 4
-    assert [c["metadata"]["page_number"] for c in md] == [
-        c["metadata"]["page_number"] for c in raw
-    ]
+    assert [c["metadata"]["page"] for c in md] == [c["metadata"]["page"] for c in raw]
     # Text layer is the source of truth: the raw path must not lose content.
     for m, r in zip(md, raw, strict=True):
         assert m["text"].strip()
@@ -642,7 +666,7 @@ def test_text_only_path_survives_a_page_that_cannot_be_read(monkeypatch):
 
     chunks = _text_only_chunks(_Doc())
     assert [c["text"] for c in chunks] == ["fine", "", "fine"]
-    assert [c["metadata"]["page_number"] for c in chunks] == [1, 2, 3]
+    assert [c["metadata"]["page"] for c in chunks] == [1, 2, 3]
 
 
 def test_uses_markdown_is_the_single_source_of_truth():

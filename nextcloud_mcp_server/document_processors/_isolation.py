@@ -117,13 +117,14 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
 
     Emits the same contract ``to_markdown(page_chunks=True)`` does, as far as
     callers actually consume it: ``PyMuPDFProcessor._build_page_boundaries``
-    reads only ``chunk["text"]`` and ``chunk["metadata"]["page_number"]`` (with
-    a positional fallback for the latter), so page boundaries, the chunker and
+    reads only ``chunk["text"]`` and ``chunk["metadata"]["page"]`` (with a
+    positional fallback for the latter), so page boundaries, the chunker and
     bbox computation are unaffected by which path produced the list.
 
-    ``metadata.page_number`` is 1-based, matching the key pymupdf4llm's
-    layout path emits (``document_layout``); the pin in ``pyproject.toml`` is
-    what makes that key a fixed target rather than a guess.
+    ``metadata.page`` is 1-based, matching what pymupdf4llm's classic
+    (``pymupdf_rag``) extractor emits -- the one the worker pins itself to via
+    ``use_layout(False)``. Layout mode names the same field ``page_number``, so
+    this pairing only holds while that call and the exact version pin do.
     """
     chunks: list[dict[str, Any]] = []
     for i in range(doc.page_count):
@@ -133,7 +134,7 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
         # unreadable page degrades to "" rather than failing the document.
         except Exception:  # noqa: BLE001
             text = ""
-        chunks.append({"text": text, "metadata": {"page_number": i + 1}})
+        chunks.append({"text": text, "metadata": {"page": i + 1}})
     return chunks
 
 
@@ -204,8 +205,50 @@ def _parse_pdf_worker(
     # Imported inside the worker so the parent process (and any module that
     # imports this one) doesn't load pymupdf4llm -- which prints a banner to
     # stdout on import, the channel anyio's worker uses for IPC.
+    # Stay on pymupdf4llm's classic (pymupdf_rag) extractor.
+    #
+    # 1.27.2.1 made ``import pymupdf4llm`` initialise pymupdf_layout and route
+    # to_markdown through an ONNX layout-detection model. That default is a poor
+    # fit for this worker, in four independent ways:
+    #
+    # * The import alone costs ~1157 MiB of address space (VmSize 34 -> 1191
+    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~345 MiB for the parse
+    #   itself. That is what surfaces as "Error during worker process
+    #   initialization" classified as oom.
+    # * Inference aborts under the same cap with "[ONNXRuntimeError] Missing
+    #   Input: image_features", failing the parse. It is content-dependent, so
+    #   PDFs fail unpredictably rather than consistently. Raising the cap is not
+    #   an option; capping memory is why this worker exists (the OOM hotfix).
+    # * Its chunks are ``defaultdict(lambda: None)``, and a local lambda as
+    #   default_factory is unpicklable, so results cannot cross the
+    #   anyio.to_process boundary back to the parent at all.
+    # * It reconstructs from the visual layout, dropping text rendered outside
+    #   the page box that the classic extractor kept.
+    #
+    # Two mechanisms, because they do different things. pymupdf4llm decides at
+    # import time with
+    #     try: import pymupdf.layout
+    #     except ImportError: use_layout(False)
+    #     else: use_layout(True)
+    # so binding that name to None in sys.modules -- the standard way to make an
+    # import raise -- takes the classic branch and avoids the address-space cost
+    # entirely (VmSize 499 MiB). The explicit use_layout(False) then still
+    # disables inference if that block ever stops working (upstream renaming the
+    # module, say); it cannot undo the import, hence both. Both are
+    # worker-process-local and never affect the parent.
+    #
+    # Net effect: the extractor we were on before the bump -- plain picklable
+    # dicts, ``metadata["page"]``, no ML inference in the ingest path. The exact
+    # pin in pyproject.toml keeps that a fixed, known target. Adopting layout
+    # mode later needs its own memory budget plus a re-check of the chunk type
+    # and the metadata key; test_worker_disables_pymupdf4llm_layout_mode fails
+    # loudly if it turns back on by accident.
+    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment]
+
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
+
+    pymupdf4llm.use_layout(False)
 
     doc = pymupdf.open(source_path)
     try:
@@ -219,8 +262,11 @@ def _parse_pdf_worker(
         if not uses_markdown(doc.page_count, markdown_max_pages):
             return _text_only_chunks(doc)
 
-        # page_chunks=True makes to_markdown return list[dict], not str.
-        raw_chunks = cast(
+        # page_chunks=True makes to_markdown return list[dict], not str. With
+        # layout disabled above these are plain, picklable dicts -- an invariant
+        # the boundary tests in tests/unit/test_pdf_parse_isolation.py assert
+        # directly, so flipping the extractor fails there rather than in prod.
+        chunks = cast(
             "list[dict[str, Any]]",
             pymupdf4llm.to_markdown(
                 doc,
@@ -230,16 +276,6 @@ def _parse_pdf_worker(
                 graphics_limit=graphics_limit,
             ),
         )
-        # This return value is pickled back to the parent by anyio.to_process, and
-        # pymupdf4llm 1.28 builds each chunk as ``defaultdict(lambda: None)``
-        # (helpers/document_layout.py, make_page_chunk). A local lambda as
-        # default_factory is not picklable, so returning the chunks as-is fails
-        # the whole parse with "Can't pickle local object
-        # 'make_page_chunk.<locals>.<lambda>'". Copy to plain dicts at the
-        # boundary. Note this drops defaultdict's None-for-missing-key
-        # behaviour, which is what we want: consumers use .get() and a silent
-        # None for a typo'd key is the failure mode we would rather raise on.
-        chunks = [dict(chunk) for chunk in raw_chunks]
         # Recover pages where markdown reconstruction dropped most of the text layer.
         _recover_underextracted_pages(doc, chunks)
         return chunks
