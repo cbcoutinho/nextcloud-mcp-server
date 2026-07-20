@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.142.2 (2026-07-20)
+
+### Fix
+
+- **vector**: clear the SonarCloud quality gate on the PCA tests
+
+### Perf
+
+- **vector**: fit PCA via thin SVD instead of a covariance eigendecomposition
+
 ## v0.142.1 (2026-07-20)
 
 ### Fix
