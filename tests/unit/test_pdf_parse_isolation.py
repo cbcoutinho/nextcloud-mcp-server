@@ -253,6 +253,39 @@ async def test_processor_success_builds_page_boundaries(monkeypatch):
     assert seen["markdown_max_pages"] == 150
 
 
+async def test_page_boundaries_read_page_key_not_position(monkeypatch):
+    """``page_boundaries`` must come from the metadata key, not chunk position.
+
+    ``_build_page_boundaries`` falls back to a positional page number when the
+    key is missing, so a wrong/renamed key degrades *silently* -- and every
+    other test here uses chunks whose page numbers equal their positions, which
+    the fallback reproduces exactly. Pinning the mapping with page numbers that
+    deliberately differ from their positions is what makes this a real guard:
+    If the worker ever switches to pymupdf4llm's layout extractor (which
+    names this field ``page_number``), this fails instead of quietly
+    emitting wrong citations off the positional fallback.
+    """
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+
+    # Must be a coroutine function (the production call site awaits it), which
+    # is why it has no await of its own; same shape as _fake_parse_returning
+    # above. The suppression below has to sit on the flagged line to anchor.
+    async def fake_parse(content, **kwargs):  # NOSONAR(S7503)
+        # Pages 3 and 4 at positions 0 and 1 -- the positional fallback would
+        # yield [1, 2] here.
+        return [
+            {"text": "page three", "metadata": {"page": 3}},
+            {"text": "page four", "metadata": {"page": 4}},
+        ]
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    result = await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
+
+    assert [b["page"] for b in result.metadata["page_boundaries"]] == [3, 4]
+
+
 async def test_processor_reports_parse_mode(monkeypatch):
     """The mode must be observable: a silent gate is untunable.
 
@@ -520,6 +553,69 @@ def test_gate_runs_markdown_at_or_below_ceiling(tmp_path):
     # "page").
     assert len(chunks) == 3
     assert set(chunks[0]["metadata"]) > {"page"}
+
+
+def test_worker_disables_pymupdf4llm_layout_mode(tmp_path):
+    """The worker must stay on the classic (pymupdf_rag) extractor.
+
+    pymupdf4llm >= 1.27.2.1 enables an ONNX layout model on import. Under this
+    worker's RLIMIT_AS cap onnxruntime cannot reserve its address space and
+    aborts mid-inference ("Missing Input: image_features"), failing the parse
+    outright -- content-dependently, so some PDFs pass and others do not. It
+    also returns unpicklable ``defaultdict(lambda: None)`` chunks and renames
+    ``metadata["page"]`` to ``page_number``.
+
+    Asserted through the metadata key because that is the externally visible
+    difference between the two extractors: if ``use_layout(False)`` is dropped
+    or upstream changes the default, this fails here rather than as an opaque
+    parse error in production.
+    """
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 100)
+
+    assert "page" in chunks[0]["metadata"]
+    assert "page_number" not in chunks[0]["metadata"]
+
+
+def test_markdown_chunks_are_picklable(tmp_path):
+    """The worker's return value crosses a process boundary, so it must pickle.
+
+    ``run_isolated_pdf_parse`` hands this list back through
+    ``anyio.to_process.run_sync``, which pickles it. pymupdf4llm 1.28 builds
+    each chunk as ``defaultdict(lambda: None)``, and a local lambda as
+    default_factory is unpicklable -- returning the chunks unconverted failed
+    every real parse with "Can't pickle local object
+    'make_page_chunk.<locals>.<lambda>'" while every unit test still passed,
+    because they all call ``_parse_pdf_worker`` in-process.
+
+    Asserting picklability directly keeps that gap closed without paying for a
+    subprocess in the unit tier.
+    """
+    import pickle
+
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 100)
+
+    # Plain dicts, not defaultdicts carrying an unpicklable factory.
+    assert all(type(c) is dict for c in chunks)
+    assert pickle.loads(pickle.dumps(chunks)) == chunks
+
+
+def test_text_only_chunks_are_picklable(tmp_path):
+    """The text-only path returns through the same pickling boundary."""
+    import pickle
+
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 0)
+
+    assert all(type(c) is dict for c in chunks)
+    assert pickle.loads(pickle.dumps(chunks)) == chunks
 
 
 def test_gate_zero_disables_markdown_entirely(tmp_path):

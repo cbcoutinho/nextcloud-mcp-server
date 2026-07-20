@@ -6,6 +6,7 @@ Currently covers ``find_files_by_tag``: the wrapper that combines
 folders) into a flat list of files.
 """
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -424,3 +425,33 @@ class TestFindFilesByTag:
         )
 
         assert {f["id"] for f in result} == {51}
+
+
+class TestFromEnv:
+    def test_raises_when_nextcloud_host_unset(self, monkeypatch):
+        """``from_env`` must fail loudly, not build a client with a ``None`` URL.
+
+        ``Settings.nextcloud_host`` is ``str | None``, so an unset
+        NEXTCLOUD_HOST used to flow straight into
+        ``NextcloudClient(base_url=...)`` and only surface later as a confusing
+        httpx error on the first request. Mirrors the guard ``context.py``
+        already applies for multi-user BasicAuth mode.
+
+        ``cfg`` and ``__init__`` are both stubbed so the *only* thing that can
+        raise is the host guard: drop the guard and ``from_env`` returns a
+        client instead of raising, failing this test on "DID NOT RAISE". That
+        is what makes it a real guard rather than one satisfied by an
+        incidental error from a thin settings stub.
+        """
+        from nextcloud_mcp_server import config as config_module
+
+        monkeypatch.setattr(
+            config_module, "get_settings", lambda: SimpleNamespace(nextcloud_host=None)
+        )
+        monkeypatch.setattr(config_module, "cfg", lambda key, *a, **kw: "stub")
+        monkeypatch.setattr(
+            NextcloudClient, "__init__", lambda self, *a, **kw: None, raising=True
+        )
+
+        with pytest.raises(ValueError, match="NEXTCLOUD_HOST"):
+            NextcloudClient.from_env()

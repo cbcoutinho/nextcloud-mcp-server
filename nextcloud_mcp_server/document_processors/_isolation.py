@@ -121,7 +121,10 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
     positional fallback for the latter), so page boundaries, the chunker and
     bbox computation are unaffected by which path produced the list.
 
-    ``metadata.page`` is 1-based to match pymupdf4llm.
+    ``metadata.page`` is 1-based, matching what pymupdf4llm's classic
+    (``pymupdf_rag``) extractor emits -- the one the worker pins itself to via
+    ``use_layout(False)``. Layout mode names the same field ``page_number``, so
+    this pairing only holds while that call and the exact version pin do.
     """
     chunks: list[dict[str, Any]] = []
     for i in range(doc.page_count):
@@ -202,8 +205,56 @@ def _parse_pdf_worker(
     # Imported inside the worker so the parent process (and any module that
     # imports this one) doesn't load pymupdf4llm -- which prints a banner to
     # stdout on import, the channel anyio's worker uses for IPC.
+    # Stay on pymupdf4llm's classic (pymupdf_rag) extractor.
+    #
+    # 1.27.2.1 made ``import pymupdf4llm`` initialise pymupdf_layout and route
+    # to_markdown through an ONNX layout-detection model. That default is a poor
+    # fit for this worker, in four independent ways:
+    #
+    # * The import alone costs ~1157 MiB of address space (VmSize 34 -> 1191
+    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~345 MiB for the parse
+    #   itself. That is what surfaces as "Error during worker process
+    #   initialization" classified as oom.
+    # * Inference aborts under the same cap with "[ONNXRuntimeError] Missing
+    #   Input: image_features", failing the parse. It is content-dependent, so
+    #   PDFs fail unpredictably rather than consistently. Raising the cap is not
+    #   an option; capping memory is why this worker exists (the OOM hotfix).
+    # * Its chunks are ``defaultdict(lambda: None)``, and a local lambda as
+    #   default_factory is unpicklable, so results cannot cross the
+    #   anyio.to_process boundary back to the parent at all.
+    # * It reconstructs from the visual layout, dropping text rendered outside
+    #   the page box that the classic extractor kept.
+    #
+    # Two mechanisms, because they do different things. pymupdf4llm decides at
+    # import time with
+    #     try: import pymupdf.layout
+    #     except ImportError: use_layout(False)
+    #     else: use_layout(True)
+    # so binding that name to None in sys.modules -- the standard way to make an
+    # import raise -- takes the classic branch and avoids the address-space cost
+    # entirely (VmSize 499 MiB). The explicit use_layout(False) then still
+    # disables inference if that block ever stops working (upstream renaming the
+    # module, say); it cannot undo the import, hence both. Both are
+    # worker-process-local and never affect the parent.
+    #
+    # Net effect: the extractor we were on before the bump -- plain picklable
+    # dicts, ``metadata["page"]``, no ML inference in the ingest path. The exact
+    # pin in pyproject.toml keeps that a fixed, known target. Adopting layout
+    # mode later needs its own memory budget plus a re-check of the chunk type
+    # and the metadata key; test_worker_disables_pymupdf4llm_layout_mode fails
+    # loudly if it turns back on by accident.
+    # NB: this is process-wide and sticky for the life of the process, not
+    # scoped to this call. That is intended in the parse subprocess, but note it
+    # also applies to any process that calls this function directly -- the unit
+    # tests do, so pytest workers get the same block. Nothing here needs real
+    # layout mode; anything that later does must not share a process with this
+    # function, because ``setdefault`` cannot be undone by a subsequent import.
+    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment, ty:no-matching-overload]
+
     import pymupdf  # noqa: PLC0415
     import pymupdf4llm  # noqa: PLC0415
+
+    pymupdf4llm.use_layout(False)
 
     doc = pymupdf.open(source_path)
     try:
@@ -217,7 +268,10 @@ def _parse_pdf_worker(
         if not uses_markdown(doc.page_count, markdown_max_pages):
             return _text_only_chunks(doc)
 
-        # page_chunks=True makes to_markdown return list[dict], not str.
+        # page_chunks=True makes to_markdown return list[dict], not str. With
+        # layout disabled above these are plain, picklable dicts -- an invariant
+        # the boundary tests in tests/unit/test_pdf_parse_isolation.py assert
+        # directly, so flipping the extractor fails there rather than in prod.
         chunks = cast(
             "list[dict[str, Any]]",
             pymupdf4llm.to_markdown(

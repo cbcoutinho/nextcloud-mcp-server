@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import abc
 import logging
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from anyio.abc import TaskGroup
@@ -69,7 +69,9 @@ logger = logging.getLogger(__name__)
 # by host). anyio's ``TaskGroup.start`` injects a ``task_status`` keyword, which
 # the closure must forward to the underlying ``processor_task`` /
 # ``multi_user_processor_task`` (else ``start`` blocks forever); hence ``...``.
-SpawnWorker = Callable[..., Awaitable[None]]
+# ``Coroutine`` (not the broader ``Awaitable``) because ``TaskGroup.start``
+# accepts only coroutine functions, which every spawn closure already is.
+SpawnWorker = Callable[..., Coroutine[Any, Any, None]]
 
 
 class IngestTransport(abc.ABC):
