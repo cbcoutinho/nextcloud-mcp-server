@@ -132,8 +132,13 @@ Add a user-agnostic `folder_ancestors` payload key: the list of ancestor folder
 
 - **Resolution:** at index time, resolve each ancestor folder's `fileid` via a
   `PROPFIND` (Depth 0, `oc:fileid` — `WebDAVClient.get_fileid`) walking up the
-  file's path, memoisable per caller (folder→fileid is stable within a pass).
-  Ancestors of the *shared* folder resolve to the same `fileid`s for every user.
+  file's path. `resolve_folder_ancestors` takes a `cache` dict so shared parent
+  folders resolve once. The scanner threads one per-scan-pass cache into the
+  lazy backfill (`claim_existing_index`); the fresh-index write runs in the
+  queue worker, one `DocumentTask` at a time (decoupled from the scan pass), so
+  it resolves per-document — a per-worker TTL cache is the follow-up if the bulk
+  initial scan's PROPFIND volume shows up. Ancestors of the *shared* folder
+  resolve to the same `fileid`s for every user.
 - **Write:** stamp `folder_ancestors` on every **real (non-placeholder) file
   chunk** in the processor, alongside the existing scalar `file_path`.
   Placeholder points are excluded from search (`get_placeholder_filter`), so they

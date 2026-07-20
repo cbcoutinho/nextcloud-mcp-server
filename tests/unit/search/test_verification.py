@@ -1317,12 +1317,12 @@ async def test_verify_search_results_passes_semaphore_to_verifier(mocker):
 
 
 class _StubPathStore:
-    """Stands in for DocumentPathStore; returns a fixed per-user path map."""
+    """Stands in for DocumentPathStore; returns a fixed {doc_id: path} map."""
 
     def __init__(self, paths: dict) -> None:
         self._paths = paths
 
-    async def get_paths_for_user(self, user_id, docs):
+    async def get_paths_for_user(self, user_id, doc_type, doc_ids):
         return self._paths
 
 
@@ -1340,7 +1340,7 @@ async def test_apply_display_paths_overrides_file_with_user_path(mocker):
     r_file = _make_result(1, "file", metadata={"path": "/alice/doc.pdf"})
     r_file.title = "doc.pdf"
     r_note = _make_result(2, "note", metadata={"foo": "bar"})
-    _patch_store(mocker, _StubPathStore({("file", "1"): "/bob/alice/doc.pdf"}))
+    _patch_store(mocker, _StubPathStore({"1": "/bob/alice/doc.pdf"}))
 
     await verification._apply_user_display_paths("bob", [r_file, r_note])
 

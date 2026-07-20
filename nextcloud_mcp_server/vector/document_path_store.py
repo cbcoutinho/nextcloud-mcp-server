@@ -88,33 +88,34 @@ class DocumentPathStore:
     async def get_paths_for_user(
         self,
         user_id: str,
-        docs: list[tuple[str, str]],
-    ) -> dict[tuple[str, str], str]:
-        """Return ``{(doc_type, doc_id): file_path}`` for a user's returned docs.
+        doc_type: str,
+        doc_ids: list[str],
+    ) -> dict[str, str]:
+        """Return ``{doc_id: file_path}`` for a user's returned docs of one type.
 
-        ``docs`` is the ``(doc_type, doc_id)`` list of the current result page
-        (bounded by the search limit), so the ``IN`` list is small. Documents with
-        no stored row are simply absent from the result — the caller falls back to
-        the Qdrant scalar for those.
+        ``doc_ids`` is the id list of the current result page (bounded by the
+        search limit), so the ``IN`` list is small. Callers only ever query one
+        ``doc_type`` at a time (only files carry per-user paths), and the query
+        constrains on it so a stored row for a different type whose id collides
+        with this one's can never be returned. Documents with no stored row are
+        simply absent — the caller falls back to the Qdrant scalar for those.
         """
-        if not docs:
+        if not doc_ids:
             return {}
         # De-dupe while preserving the small bounded size; a result page can carry
         # several chunks of the same document.
-        unique_ids = sorted({doc_id for _doc_type, doc_id in docs})
+        unique_ids = sorted(set(doc_ids))
         placeholders = ", ".join("?" for _ in unique_ids)
-        # Restrict to file doc_types: only files carry per-user paths (notes/deck
-        # cards are user-agnostic). Callers pass file docs, but scope defensively.
         sql = (
-            "SELECT doc_type, doc_id, file_path FROM document_paths "
-            f"WHERE user_id = ? AND doc_id IN ({placeholders})"
+            "SELECT doc_id, file_path FROM document_paths "
+            f"WHERE user_id = ? AND doc_type = ? AND doc_id IN ({placeholders})"
         )
-        params: list[str] = [user_id, *unique_ids]
-        result: dict[tuple[str, str], str] = {}
+        params: list[str] = [user_id, doc_type, *unique_ids]
+        result: dict[str, str] = {}
         async with self._storage.acquire() as db:
             async with db.execute(sql, params) as cursor:
                 for row in await cursor.fetchall():
-                    result[(row[0], row[1])] = row[2]
+                    result[row[0]] = row[1]
         return result
 
     async def delete(self, *, user_id: str, doc_id: str, doc_type: str) -> None:

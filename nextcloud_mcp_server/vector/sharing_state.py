@@ -310,6 +310,7 @@ async def claim_existing_index(
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     current_path: str | None = None,
     webdav: FileIdResolver | None = None,
+    folder_ancestor_cache: dict[str, str | None] | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -386,7 +387,9 @@ async def claim_existing_index(
                 resolve_folder_ancestors,
             )
 
-            ancestors = await resolve_folder_ancestors(webdav, current_path)
+            ancestors = await resolve_folder_ancestors(
+                webdav, current_path, cache=folder_ancestor_cache
+            )
             if ancestors:
                 await set_folder_ancestors(doc_id, doc_type, ancestors)
                 logger.debug(

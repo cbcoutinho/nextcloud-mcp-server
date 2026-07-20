@@ -1053,6 +1053,12 @@ async def scan_user_documents(
 
             tiers_sig = escalation_tiers_signature(get_settings())
 
+            # ADR-033 Phase 3: one folder-path -> fileid cache for this whole scan
+            # pass, so the lazy folder-ancestor backfill (in claim_existing_index)
+            # resolves each shared parent folder once instead of re-walking the
+            # ancestor chain per file under the same tree.
+            folder_ancestor_cache: dict[str, str | None] = {}
+
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
@@ -1121,6 +1127,7 @@ async def scan_user_documents(
                     index_mode=index_mode,
                     current_path=file_path,
                     webdav=nc_client.webdav,
+                    folder_ancestor_cache=folder_ancestor_cache,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(

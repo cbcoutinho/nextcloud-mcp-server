@@ -2058,6 +2058,14 @@ async def _index_document_inner(
     # user-agnostic, truly left-anchored containment. Best-effort: an empty list
     # (resolution failure, or a non-file doc type) leaves search on the file_path
     # MatchText fallback for this doc.
+    #
+    # No cross-document ancestor cache here: this runs in the queue worker, one
+    # DocumentTask at a time, decoupled from the scanner's scan pass — so unlike
+    # the scanner-side backfill (which threads a per-scan folder_ancestor_cache
+    # into claim_existing_index), sibling files under a shared tree can't share a
+    # lookup here. A per-worker TTL cache is the follow-up if the bulk initial
+    # scan's PROPFIND volume shows up (tracked with the search-side resolution
+    # cache in ADR-033).
     _folder_ancestors: list[str] = []
     if doc_task.doc_type == "file" and file_path:
         from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415

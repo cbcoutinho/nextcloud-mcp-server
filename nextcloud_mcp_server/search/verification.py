@@ -636,8 +636,8 @@ async def _apply_user_display_paths(user_id: str, results: list[SearchResult]) -
     mutable dataclass). Lazy imports keep the vector/DB layers off this module's
     import path.
     """
-    file_docs = [(r.doc_type, r.id) for r in results if r.doc_type == "file"]
-    if not file_docs:
+    file_ids = [r.id for r in results if r.doc_type == "file"]
+    if not file_ids:
         return
     try:
         from nextcloud_mcp_server.vector.document_path_store import (  # noqa: PLC0415
@@ -648,7 +648,7 @@ async def _apply_user_display_paths(user_id: str, results: list[SearchResult]) -
         )
 
         store = await DocumentPathStore.shared()
-        paths = await store.get_paths_for_user(user_id, file_docs)
+        paths = await store.get_paths_for_user(user_id, "file", file_ids)
     except Exception as exc:  # noqa: BLE001 — display-only; fall back to the scalar
         logger.debug(
             "Per-user display-path override skipped (%s); using stored scalar", exc
@@ -659,7 +659,7 @@ async def _apply_user_display_paths(user_id: str, results: list[SearchResult]) -
     for r in results:
         if r.doc_type != "file":
             continue
-        path = paths.get((r.doc_type, r.id))
+        path = paths.get(r.id)
         if not path:
             continue
         if r.metadata is None:

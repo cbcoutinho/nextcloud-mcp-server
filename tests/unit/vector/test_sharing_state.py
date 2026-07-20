@@ -599,3 +599,51 @@ class TestClaimFolderAncestorBackfill:
             "42", "file", "abc", "alice", current_path="/A/doc.pdf", webdav=webdav
         )
         assert _folder_ancestor_payloads(client) == [["100"]]
+
+
+class _CountingWebdav:
+    """Counts get_fileid calls to prove the per-scan cache collapses lookups."""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+        self.calls: list[str] = []
+
+    async def get_fileid(self, path: str):
+        self.calls.append(path)
+        return self._mapping.get(path)
+
+
+class TestBackfillCacheThreading:
+    async def test_shared_cache_resolves_common_ancestor_once(self, client) -> None:
+        # Two files under the same folder /A, both needing a Phase-3 backfill.
+        # A shared folder_ancestor_cache must resolve /A exactly once.
+        payload = {
+            payload_keys.EMBEDDING_IDENTITY: _MODEL,
+            ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+            "owner_id": "alice",
+        }
+        client.scroll.return_value = ([_point(dict(payload))], None)
+        webdav = _CountingWebdav({"/A": "100"})
+        cache: dict = {}
+
+        await ss.claim_existing_index(
+            "1",
+            "file",
+            "abc",
+            "alice",
+            current_path="/A/one.pdf",
+            webdav=webdav,
+            folder_ancestor_cache=cache,
+        )
+        await ss.claim_existing_index(
+            "2",
+            "file",
+            "abc",
+            "alice",
+            current_path="/A/two.pdf",
+            webdav=webdav,
+            folder_ancestor_cache=cache,
+        )
+        # /A resolved once across the two files, not twice.
+        assert webdav.calls == ["/A"]
+        assert cache == {"/A": "100"}
