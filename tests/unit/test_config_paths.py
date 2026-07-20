@@ -24,13 +24,23 @@ from nextcloud_mcp_server.config import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_ephemeral_state(monkeypatch):
+def _reset_ephemeral_state(monkeypatch, tmp_path):
     """Reset module-global ephemeral tempfile state between tests.
 
     get_token_db_path() memoizes its result in a module-level global and
     registers an atexit hook for cleanup. Tests need an isolated slate so
     assertions about "already allocated" vs "not yet" are meaningful.
+
+    Also pin ``tempfile.tempdir`` to a per-test directory: get_token_db_path
+    allocates its ephemeral db via ``tempfile.mkstemp`` in the system tempdir,
+    and the ``nextcloud-mcp-tokens-<pid>-*.db`` glob assertions below would
+    otherwise pick up stray ephemeral dbs leaked into that shared tempdir by
+    *other* tests in a full-suite run (a pytest-ordering flake — the assertions
+    pass in isolation but not always under the CI collection order). Isolating
+    the tempdir per test makes both the allocation and the glob see only this
+    test's own files.
     """
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     old = cfg._ephemeral_db_path
     cfg._ephemeral_db_path = None
     monkeypatch.delenv("TOKEN_STORAGE_DB", raising=False)
