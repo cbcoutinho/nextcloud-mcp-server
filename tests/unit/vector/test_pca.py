@@ -198,8 +198,15 @@ class TestDeterministicSigns:
 
 
 class TestDegenerateInputs:
-    def test_more_components_than_rank_pads_with_zero_axes(self):
-        """3 samples span a 2D affine subspace; PC3 must still exist, at zero."""
+    def test_rank_deficient_data_yields_a_zero_axis(self):
+        """3 samples span a 2D affine subspace; PC3 must still exist, at zero.
+
+        This is the production shape (n_samples < n_features), so the SVD
+        returns a full n_components axes and the zero comes from its own
+        near-zero singular value — the padding branch is *not* what produces
+        it here. See ``test_padding_fills_axes_the_svd_cannot_supply`` for
+        that branch.
+        """
         X = _random_embeddings(3, 64)
 
         pca = PCA(n_components=3)
@@ -211,6 +218,29 @@ class TestDegenerateInputs:
         assert pca.explained_variance_ is not None
         assert pca.explained_variance_[2] == pytest.approx(0.0, abs=1e-8)
         np.testing.assert_allclose(coords[:, 2], 0.0, atol=1e-8)
+
+    def test_padding_fills_axes_the_svd_cannot_supply(self):
+        """n_components > min(n_samples, n_features) ⇒ the padding branch runs.
+
+        With 2 samples of 3 features the thin SVD yields only 2 axes, so the
+        third must be zero-filled rather than returned short. No real caller
+        reaches this (both feed >= 3 samples with n_components=3), but the
+        branch exists to keep the output shape a function of n_components
+        alone.
+        """
+        X = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 7.0]])
+
+        pca = PCA(n_components=3)
+        coords = pca.fit_transform(X)
+
+        assert coords.shape == (2, 3)
+        assert pca.components_ is not None
+        assert pca.components_.shape == (3, 3)
+        # The padded axis is exactly zero, not merely small.
+        np.testing.assert_array_equal(pca.components_[2], np.zeros(3))
+        assert pca.explained_variance_ is not None
+        assert pca.explained_variance_[2] == 0.0
+        np.testing.assert_array_equal(coords[:, 2], np.zeros(2))
 
     def test_identical_samples_have_zero_variance(self):
         X = np.tile(np.array([0.3, 0.4, 0.5, 0.7]), (6, 1))

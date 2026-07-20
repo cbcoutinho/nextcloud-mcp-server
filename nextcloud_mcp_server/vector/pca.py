@@ -10,7 +10,9 @@ equivalent, but covariance costs O(n_features^3): at the shapes this module
 actually sees (a few dozen embeddings of 1024 dims) that meant building a
 1024x1024 matrix and eigendecomposing it to recover 3 components, which
 measured at ~5.6s and was over half the latency of a hybrid search request.
-The thin SVD is O(n_samples^2 * n_features) instead.
+The thin SVD is O(min(n, d)^2 * max(n, d)) instead, which for this module's
+shapes (n_samples much smaller than n_features) means O(n_samples^2 *
+n_features).
 """
 
 import logging
@@ -27,6 +29,11 @@ def _flip_component_signs(components: np.ndarray) -> np.ndarray:
     the visualization between requests. Anchor each component on its
     largest-magnitude entry and make that entry positive. All-zero components
     (padding for degenerate axes) are left untouched.
+
+    Note this is not sklearn's ``svd_flip``, which anchors on the largest
+    entry of the corresponding *left* singular vector instead. Both are
+    deterministic; they can disagree on which sign a given axis gets, so don't
+    expect coordinate-level parity with sklearn.
 
     Args:
         components: Array of shape (n_components, n_features)
