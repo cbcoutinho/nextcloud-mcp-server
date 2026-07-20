@@ -553,6 +553,45 @@ def test_gate_runs_markdown_at_or_below_ceiling(tmp_path):
     assert set(chunks[0]["metadata"]) > {"page_number"}
 
 
+def test_markdown_chunks_are_picklable(tmp_path):
+    """The worker's return value crosses a process boundary, so it must pickle.
+
+    ``run_isolated_pdf_parse`` hands this list back through
+    ``anyio.to_process.run_sync``, which pickles it. pymupdf4llm 1.28 builds
+    each chunk as ``defaultdict(lambda: None)``, and a local lambda as
+    default_factory is unpicklable -- returning the chunks unconverted failed
+    every real parse with "Can't pickle local object
+    'make_page_chunk.<locals>.<lambda>'" while every unit test still passed,
+    because they all call ``_parse_pdf_worker`` in-process.
+
+    Asserting picklability directly keeps that gap closed without paying for a
+    subprocess in the unit tier.
+    """
+    import pickle
+
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 100)
+
+    # Plain dicts, not defaultdicts carrying an unpicklable factory.
+    assert all(type(c) is dict for c in chunks)
+    assert pickle.loads(pickle.dumps(chunks)) == chunks
+
+
+def test_text_only_chunks_are_picklable(tmp_path):
+    """The text-only path returns through the same pickling boundary."""
+    import pickle
+
+    from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
+
+    path = _write(tmp_path, _pdf_with_pages(2))
+    chunks = _parse_pdf_worker(path, False, None, 1000, 0, 0)
+
+    assert all(type(c) is dict for c in chunks)
+    assert pickle.loads(pickle.dumps(chunks)) == chunks
+
+
 def test_gate_zero_disables_markdown_entirely(tmp_path):
     from nextcloud_mcp_server.document_processors._isolation import _parse_pdf_worker
 

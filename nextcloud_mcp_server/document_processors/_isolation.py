@@ -220,7 +220,7 @@ def _parse_pdf_worker(
             return _text_only_chunks(doc)
 
         # page_chunks=True makes to_markdown return list[dict], not str.
-        chunks = cast(
+        raw_chunks = cast(
             "list[dict[str, Any]]",
             pymupdf4llm.to_markdown(
                 doc,
@@ -230,6 +230,16 @@ def _parse_pdf_worker(
                 graphics_limit=graphics_limit,
             ),
         )
+        # This return value is pickled back to the parent by anyio.to_process, and
+        # pymupdf4llm 1.28 builds each chunk as ``defaultdict(lambda: None)``
+        # (helpers/document_layout.py, make_page_chunk). A local lambda as
+        # default_factory is not picklable, so returning the chunks as-is fails
+        # the whole parse with "Can't pickle local object
+        # 'make_page_chunk.<locals>.<lambda>'". Copy to plain dicts at the
+        # boundary. Note this drops defaultdict's None-for-missing-key
+        # behaviour, which is what we want: consumers use .get() and a silent
+        # None for a typo'd key is the failure mode we would rather raise on.
+        chunks = [dict(chunk) for chunk in raw_chunks]
         # Recover pages where markdown reconstruction dropped most of the text layer.
         _recover_underextracted_pages(doc, chunks)
         return chunks
