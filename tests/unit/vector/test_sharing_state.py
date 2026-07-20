@@ -160,6 +160,65 @@ class TestReconcileDocumentPath:
         kwargs = client.set_payload.await_args.kwargs
         assert kwargs["payload"]["title"] == "new.pdf"
 
+    async def test_suppresses_non_owner_divergent_path(self, client) -> None:
+        # ADR-033 Phase 1: a reader (bob) observing the shared file at their own
+        # mount path must NOT overwrite the owner-pinned scalar. This is the
+        # thrash guard — no set_payload is issued.
+        changed = await ss.reconcile_document_path(
+            "42",
+            "file",
+            "/alice/doc.pdf",
+            "/bob/alice/doc.pdf",
+            caller_user_id="bob",
+            owner_id="alice",
+        )
+        assert changed is False
+        client.set_payload.assert_not_called()
+
+    async def test_rewrites_for_owner_rename(self, client) -> None:
+        # The owner renaming their own file is a genuine change -> reconcile.
+        changed = await ss.reconcile_document_path(
+            "42",
+            "file",
+            "/alice/old.pdf",
+            "/alice/new.pdf",
+            caller_user_id="alice",
+            owner_id="alice",
+        )
+        assert changed is True
+        kwargs = client.set_payload.await_args.kwargs
+        assert kwargs["payload"]["file_path"] == "/alice/new.pdf"
+
+    async def test_legacy_point_without_owner_still_reconciles(self, client) -> None:
+        # owner_id unknown (pre-owner_id point) -> fall through to the old
+        # always-reconcile behaviour (single-owner, so no thrash to guard).
+        changed = await ss.reconcile_document_path(
+            "42",
+            "file",
+            "/a/old.pdf",
+            "/a/new.pdf",
+            caller_user_id="bob",
+            owner_id=None,
+        )
+        assert changed is True
+        client.set_payload.assert_awaited_once()
+
+    async def test_backfill_empty_stored_path_regardless_of_caller(
+        self, client
+    ) -> None:
+        # An empty stored path has nothing to thrash: a non-owner may backfill it
+        # (the owner's next scan re-pins it if it diverges).
+        changed = await ss.reconcile_document_path(
+            "42",
+            "file",
+            "",
+            "/bob/alice/doc.pdf",
+            caller_user_id="bob",
+            owner_id="alice",
+        )
+        assert changed is True
+        client.set_payload.assert_awaited_once()
+
 
 class TestClaimExistingIndex:
     async def test_true_and_grants_principal_on_hit(self, client) -> None:

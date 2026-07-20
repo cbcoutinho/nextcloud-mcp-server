@@ -1272,11 +1272,19 @@ async def scan_user_documents(
                         # a not-yet-indexed file would just incur a 0-point
                         # set_payload (the real index writes the current path).
                         try:
+                            # existing_metadata is user_id-scoped to this caller
+                            # (query_document_metadata filters on user_id), so this
+                            # path only ever fires for the point's own indexer —
+                            # never the thrash source. Pass the owner-gate params
+                            # (ADR-033 Phase 1) for consistency with the dedup-path
+                            # caller; a no-op today since owner_id == user_id here.
                             await reconcile_document_path(
                                 file_id,
                                 "file",
                                 existing_metadata.get("file_path"),
                                 file_path,
+                                caller_user_id=user_id,
+                                owner_id=existing_metadata.get("owner_id"),
                             )
                         except Exception as exc:  # noqa: BLE001 — non-fatal
                             logger.warning(

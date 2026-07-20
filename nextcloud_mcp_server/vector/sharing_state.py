@@ -199,6 +199,9 @@ async def reconcile_document_path(
     doc_type: str,
     stored_path: str | None,
     current_path: str,
+    *,
+    caller_user_id: str | None = None,
+    owner_id: str | None = None,
 ) -> bool:
     """Refresh ``file_path``/``title`` on a renamed/moved file's existing points.
 
@@ -209,13 +212,48 @@ async def reconcile_document_path(
     rewrites ``file_path`` and the derived ``title`` on every real chunk via a
     single metadata-only ``set_payload`` (no re-fetch, no re-embed).
 
-    Returns False (no write attempted) only when the path is unchanged or empty.
-    When the path differs it returns True after issuing the ``set_payload``; that
-    write is itself a Qdrant-side no-op if no real chunks exist yet (e.g. only a
-    placeholder), which the callers tolerate. A legacy point with no stored
-    ``file_path`` is treated as changed, backfilling both fields.
+    Owner-gating (ADR-033 Phase 1): a file visible to more than one user is
+    mounted at a *different* path per user, but the deduped point set stores a
+    single scalar ``file_path``. Without gating, every reader's scan rewrites the
+    scalar to their own mount path, so it flips back and forth once per user per
+    pass (write amplification + a non-deterministic path that breaks the
+    ``path_prefix`` filter). We therefore pin the scalar to the **indexer of
+    record** (``owner_id``): the write is only issued when the caller *is* the
+    canonical owner (a genuine owner-side rename), when the stored path is empty
+    (legacy/placeholder backfill), or when ``owner_id`` is unknown (legacy points
+    predating ``owner_id`` — single-owner, so no thrash to guard against). A
+    non-owner reader observing a divergent path is now a no-op; their per-user
+    display path is served relationally (ADR-033 Phase 2).
+
+    Returns False (no write attempted) when the path is unchanged/empty or the
+    owner-gate suppresses a non-owner's divergent path. When a write is issued it
+    returns True; that write is itself a Qdrant-side no-op if no real chunks exist
+    yet (e.g. only a placeholder), which the callers tolerate. A legacy point with
+    no stored ``file_path`` is treated as changed, backfilling both fields.
     """
     if not current_path or stored_path == current_path:
+        return False
+    # Owner-gate: suppress a non-owner reader's divergent path so the scalar stays
+    # pinned to the owner's path. ``owner_id is None`` (legacy point) and an empty
+    # ``stored_path`` (nothing to thrash) fall through to the old always-reconcile
+    # behaviour so genuine renames and backfills are never missed.
+    if (
+        owner_id is not None
+        and stored_path
+        and caller_user_id is not None
+        and caller_user_id != owner_id
+    ):
+        logger.debug(
+            "Skipping path reconcile for %s_%s: caller user:%s is not the owner "
+            "(user:%s); keeping owner-pinned path %r (reader path %r served "
+            "relationally)",
+            doc_type,
+            doc_id,
+            caller_user_id,
+            owner_id,
+            stored_path,
+            current_path,
+        )
         return False
     qdrant_client = await get_qdrant_client()
     settings = get_settings()
@@ -288,7 +326,12 @@ async def claim_existing_index(
     if current_path:
         try:
             await reconcile_document_path(
-                doc_id, doc_type, existing.get("file_path"), current_path
+                doc_id,
+                doc_type,
+                existing.get("file_path"),
+                current_path,
+                caller_user_id=user_id,
+                owner_id=existing.get("owner_id"),
             )
         except Exception as exc:  # noqa: BLE001 — non-fatal; retried next scan
             logger.warning(
