@@ -1,7 +1,18 @@
 """Custom PCA implementation for dimensionality reduction.
 
 Implements Principal Component Analysis without scikit-learn dependency.
-Used for reducing high-dimensional embeddings (768-dim) to 2D for visualization.
+Used for reducing high-dimensional embeddings (768/1024-dim) to 2D/3D for
+visualization.
+
+Fitting goes through a thin SVD of the centered sample matrix rather than an
+eigendecomposition of the feature covariance matrix. The two are mathematically
+equivalent, but covariance costs O(n_features^3): at the shapes this module
+actually sees (a few dozen embeddings of 1024 dims) that meant building a
+1024x1024 matrix and eigendecomposing it to recover 3 components, which
+measured at ~5.6s and was over half the latency of a hybrid search request.
+The thin SVD is O(min(n, d)^2 * max(n, d)) instead, which for this module's
+shapes (n_samples much smaller than n_features) means O(n_samples^2 *
+n_features).
 """
 
 import logging
@@ -11,11 +22,38 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _flip_component_signs(components: np.ndarray) -> np.ndarray:
+    """Fix the sign of each component deterministically.
+
+    An SVD determines each axis only up to sign, so equivalent fits can mirror
+    the visualization between requests. Anchor each component on its
+    largest-magnitude entry and make that entry positive. All-zero components
+    (padding for degenerate axes) are left untouched.
+
+    Note this is not sklearn's ``svd_flip``, which anchors on the largest
+    entry of the corresponding *left* singular vector instead. Both are
+    deterministic; they can disagree on which sign a given axis gets, so don't
+    expect coordinate-level parity with sklearn.
+
+    Args:
+        components: Array of shape (n_components, n_features)
+
+    Returns:
+        The same components with signs normalized.
+    """
+    anchors = np.argmax(np.abs(components), axis=1)
+    anchor_values = components[np.arange(components.shape[0]), anchors]
+    signs = np.where(anchor_values < 0, -1.0, 1.0)
+    return components * signs[:, np.newaxis]
+
+
 class PCA:
     """Principal Component Analysis for dimensionality reduction.
 
-    Simple implementation that finds principal components via eigendecomposition
-    of the covariance matrix. Suitable for small-to-medium datasets.
+    Finds principal components via a thin SVD of the centered sample matrix.
+    Component signs follow a deterministic convention (the largest-magnitude
+    entry of each component is made positive), so repeated fits of the same
+    data produce identical coordinates rather than arbitrarily mirrored axes.
 
     Attributes:
         n_components: Number of principal components to keep
@@ -50,9 +88,10 @@ class PCA:
             self (for method chaining)
 
         Raises:
-            ValueError: If X has fewer features than n_components
+            ValueError: If X is not 2D, has fewer features than n_components,
+                or holds fewer than 2 samples (variance is undefined).
         """
-        X = np.asarray(X)
+        X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
             raise ValueError(f"X must be 2D array, got shape {X.shape}")
@@ -64,28 +103,42 @@ class PCA:
                 f"n_components={self.n_components} > n_features={n_features}"
             )
 
+        if n_samples < 2:
+            raise ValueError(f"PCA needs at least 2 samples, got {n_samples}")
+
         # Center data
         self.mean_ = np.mean(X, axis=0)
         X_centered = X - self.mean_
 
-        # Compute covariance matrix
-        # Use (X^T X) / (n-1) for numerical stability with high-dim data
-        cov = np.cov(X_centered.T)
+        # Thin SVD of the centered samples. The right singular vectors are the
+        # principal axes and the singular values give the variances directly, so
+        # we never materialize the n_features x n_features covariance matrix.
+        _u, singular_values, vt = np.linalg.svd(X_centered, full_matrices=False)
 
-        # Eigendecomposition
-        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # Variance along each axis. Matches the eigenvalues of the covariance
+        # matrix, which uses the same (n_samples - 1) denominator.
+        variances = (singular_values**2) / (n_samples - 1)
 
-        # Sort by eigenvalue (descending)
-        idx = np.argsort(eigenvalues)[::-1]
-        eigenvalues = eigenvalues[idx]
-        eigenvectors = eigenvectors[:, idx]
+        # np.linalg.svd already returns singular values in descending order, so
+        # the components are ordered by explained variance without a sort.
+        components = vt[: self.n_components]
+        explained_variance = variances[: self.n_components]
 
-        # Keep top n_components
-        self.components_ = eigenvectors[:, : self.n_components].T
-        self.explained_variance_ = eigenvalues[: self.n_components]
+        # The SVD yields at most min(n_samples, n_features) axes. When more
+        # components were requested than the data can span, pad with zero axes:
+        # projecting onto them contributes a constant-zero coordinate, which is
+        # what a degenerate axis should produce.
+        missing = self.n_components - components.shape[0]
+        if missing > 0:
+            components = np.vstack([components, np.zeros((missing, n_features))])
+            explained_variance = np.concatenate([explained_variance, np.zeros(missing)])
 
-        # Calculate explained variance ratio
-        total_variance = np.sum(eigenvalues)
+        self.components_ = _flip_component_signs(components)
+        self.explained_variance_ = explained_variance
+
+        # Calculate explained variance ratio against the total variance across
+        # *all* axes, not just the retained ones.
+        total_variance = np.sum(variances)
         if total_variance > 0:
             self.explained_variance_ratio_ = self.explained_variance_ / total_variance
         else:
@@ -116,7 +169,7 @@ class PCA:
         if self.mean_ is None or self.components_ is None:
             raise ValueError("PCA not fitted yet. Call fit() first.")
 
-        X = np.asarray(X)
+        X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
             raise ValueError(f"X must be 2D array, got shape {X.shape}")
