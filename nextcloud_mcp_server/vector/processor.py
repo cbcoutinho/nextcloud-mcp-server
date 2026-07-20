@@ -2066,6 +2066,17 @@ async def _index_document_inner(
     # lookup here. A per-worker TTL cache is the follow-up if the bulk initial
     # scan's PROPFIND volume shows up (tracked with the search-side resolution
     # cache in ADR-033).
+    #
+    # This first-index write is intentionally ungated (symmetric with file_path /
+    # owner_id, which the processor also writes unconditionally on first index):
+    # it *establishes* the value, so there is nothing to clobber. Only a LATER
+    # divergent overwrite needs guarding, which is exactly what the owner-scoped
+    # backfill does (it fires only when the key is absent, and only for the
+    # indexer-of-record). A shared folder resolves to the same canonical fileid
+    # for whoever walks up to it, so even a non-owner first-indexer yields the
+    # correct shared-folder ids; the only divergence is a bounded handful of that
+    # one principal's own mount-wrapper folder ids, which are harmless (only that
+    # principal can resolve them at query time).
     _folder_ancestors: list[str] = []
     if doc_task.doc_type == "file" and file_path:
         from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415

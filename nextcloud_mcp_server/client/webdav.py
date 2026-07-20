@@ -1581,11 +1581,15 @@ class WebDAVClient(BaseNextcloudClient):
                 return None
             raise
         root = ET.fromstring(response.content)
-        ns = {"d": "DAV:", "oc": "http://owncloud.org/ns"}
-        fileid_elem = root.find(".//oc:fileid", ns)
-        if fileid_elem is None or not fileid_elem.text:
-            return None
-        return fileid_elem.text.strip()
+        # Match oc:fileid by local name (namespace-agnostic) rather than a
+        # namespace map, so the owncloud namespace URL is not embedded as a
+        # standalone string literal (it stays only inside the request-body XML).
+        for elem in root.iter():
+            if isinstance(elem.tag, str) and elem.tag.rsplit("}", 1)[-1] == "fileid":
+                text = (elem.text or "").strip()
+                if text:
+                    return text
+        return None
 
     async def _get_file_info_by_id(self, file_id: int) -> Dict[str, Any]:
         """Get file information by Nextcloud file ID using WebDAV.
