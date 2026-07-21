@@ -178,7 +178,7 @@ async def seeded(monkeypatch, shared_file):
         "nextcloud_mcp_server.search.context.get_qdrant_client",
         AsyncMock(return_value=client),
     )
-    yield file_id, folder_id
+    yield file_id, folder_id, alice_path
     await client.close()
 
 
@@ -199,54 +199,60 @@ async def _search_as(user_client, *, folder_ids=None):
     return kept
 
 
+async def _bob_share_mount(bob) -> str:
+    """bob's own mount path for the folder alice shared with him (OCS file_target,
+    e.g. ``/share_paths_<suffix>``) — the recipient-side path, resolved without
+    the DAV meta endpoint (which does not resolve a shared file by global id)."""
+    shares = await bob.sharing.list_shares(shared_with_me=True)
+    for share in shares:
+        target = str(share.get("file_target") or "").rstrip("/")
+        if target.strip("/").startswith("share_paths_"):
+            return target
+    raise AssertionError("bob has no share_paths_* mount from alice")
+
+
 async def test_recipient_sees_own_path_for_shared_file(acl_users, seeded, path_store):
-    """bob's result shows HIS mount path, not alice's owner-pinned scalar."""
-    file_id, _folder_id = seeded
+    """bob's result shows HIS own stored path, not alice's owner-pinned scalar."""
+    file_id, _folder_id, alice_path = seeded
     bob = acl_users["bob"]
 
-    # bob's scanner would have recorded his own mount path; simulate that upsert
-    # by resolving his actual view of the shared file (by its global id).
-    bob_view = await bob.webdav._get_file_info_by_id(int(file_id))
-    bob_relpath = bob_view["path"]
+    # bob's scanner would have recorded his own mount path for the shared file;
+    # simulate that upsert with a path distinct from alice's owner-pinned scalar.
+    bob_path = f"{await _bob_share_mount(bob)}/reports/budget.pdf"
     await path_store.upsert(
-        user_id="bob", doc_id=str(file_id), doc_type="file", file_path=bob_relpath
+        user_id="bob", doc_id=str(file_id), doc_type="file", file_path=bob_path
     )
 
     kept = await _search_as(bob)
     assert kept, "bob should find the file alice shared with him"
     result = next(r for r in kept if r.id == str(file_id))
-    # Phase 2: the displayed path is bob's own, not alice's owner-pinned scalar.
-    assert result.metadata["path"] == bob_relpath
+    # Phase 2: the displayed path is bob's own, substituted over the scalar.
+    assert result.metadata["path"] == bob_path
+    assert result.metadata["path"] != alice_path
 
 
-async def test_owner_still_sees_own_path(acl_users, seeded, path_store):
-    """alice (owner) sees her own path — the store row matches the scalar."""
-    file_id, _folder_id = seeded
+async def test_owner_falls_back_to_scalar_path(acl_users, seeded, path_store):
+    """alice (owner) has no store row, so the display path falls back to the
+    Qdrant scalar — her own owner-pinned path (Phase 2 fallback)."""
+    file_id, _folder_id, alice_path = seeded
     alice = acl_users["alice"]
-    alice_view = await alice.webdav._get_file_info_by_id(int(file_id))
-    await path_store.upsert(
-        user_id="alice",
-        doc_id=str(file_id),
-        doc_type="file",
-        file_path=alice_view["path"],
-    )
     kept = await _search_as(alice)
     result = next(r for r in kept if r.id == str(file_id))
-    assert result.metadata["path"] == alice_view["path"]
+    assert result.metadata["path"] == alice_path
 
 
-async def test_folder_filter_matches_by_ancestor_id(acl_users, seeded, path_store):
-    """bob filtering on the shared folder (by its fileid) finds the file; an
-    unrelated folder id does not — true user-agnostic containment (Phase 3)."""
-    file_id, folder_id = seeded
+async def test_folder_filter_matches_by_ancestor_id(acl_users, seeded):
+    """bob resolves the shared folder to the SAME canonical fileid as alice and
+    filters on it to find the file; an unrelated id does not — true user-agnostic
+    containment (Phase 3)."""
+    file_id, folder_id, _alice_path = seeded
     bob = acl_users["bob"]
 
-    # bob resolves the SAME shared folder to the SAME canonical fileid, via the
-    # production resolver (resolve_prefix_folder_ids) exactly as the search tool.
-    bob_view = await bob.webdav._get_file_info_by_id(int(file_id))
-    bob_folder = "/".join(bob_view["path"].split("/")[:-1])
+    # bob resolves his OWN view of the shared /reports folder to a fileid via the
+    # production resolver — it must equal alice's canonical folder_id.
+    bob_reports = f"{await _bob_share_mount(bob)}/reports"
     bob_folder_ids = await resolve_prefix_folder_ids(
-        bob.webdav, path_prefixes=[f"/{bob_folder}"]
+        bob.webdav, path_prefixes=[bob_reports]
     )
     assert bob_folder_ids == [folder_id], (
         "a shared folder must resolve to one canonical fileid for every user"

@@ -193,6 +193,33 @@ explicitly rejected in favour of the single-`folder_id` containment term.
   owner's next scan (owner-scoped, in `claim_existing_index`); searches degrade
   gracefully to the `file_path` fallback in the interim.
 
+## Future cleanup (version-gated, NOT part of this change)
+
+This change is **purely additive** — it removes no index or payload field. It
+does, however, set up two retirements that a **later version** can make, each
+discoverable by version (per "gate on versions, never on merge order") and each
+with a hard precondition that is unsafe to skip:
+
+1. **Retire the `file_path` TEXT payload index** (`qdrant_client.py`
+   `_PAYLOAD_INDEX_FIELDS`). Precondition: every point carries `folder_ancestors`
+   (a completed backfill across all collections) **and** the `MatchText(file_path)`
+   fallback branch in `build_base_filter_conditions` has been dropped **and**
+   free-text path search has been re-homed off `file_path`. Until all three hold,
+   dropping the index breaks folder scoping / free-text path search for
+   un-backfilled points.
+2. **Drop the `MatchText(file_path)` fallback branch** in the folder-scope filter
+   (and, optionally, stop writing the scalar `file_path` once per-user display
+   paths are sourced entirely from `document_paths` with a guaranteed backfill).
+   Precondition: same completed `folder_ancestors` backfill, plus a
+   `document_paths` row guaranteed for every (user, file) that can be returned.
+
+Neither is safe today: un-backfilled points would silently drop out of
+folder-scoped results, and files with no `document_paths` row would lose their
+display path. The trigger to do the cleanup is "a `folder_ancestors` backfill has
+run to completion on all live collections" — record that in the `BREAKING CHANGE:`
+footer / CHANGELOG of the version that performs the removal, and gate any
+consumer on the advertised capability rather than assuming the removal shipped.
+
 ## Test strategy (repo test gate)
 
 - **Unit:** `reconcile_document_path` owner-gating (Phase 1); `document_paths`

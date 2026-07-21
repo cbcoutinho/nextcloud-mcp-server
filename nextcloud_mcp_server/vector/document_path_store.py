@@ -9,8 +9,14 @@ their own path.
 
 It is a derived, **non-security** cache: Qdrant remains the system of record, and
 a missing/stale row degrades a *displayed* path only — never a permission or a
-retrieval result. So the writer is best-effort (a failed upsert is logged, not
-raised) and the reader falls back to the Qdrant scalar when no row exists.
+retrieval result. The methods here surface errors normally (so a caller can see a
+genuine DB failure); the *best-effort* contract — a failed write is logged, not
+raised — is applied at the write sites (`scanner.py` wraps the upsert, and
+`release_document_for_user` the delete), since those run on the sync/search hot
+paths where a display-cache hiccup must never be fatal. A new write site must
+wrap the call the same way. The reader (`get_paths_for_user`, via
+`verify_search_results._apply_user_display_paths`) likewise degrades to the
+Qdrant scalar when a row is absent or the lookup fails.
 
 Engine reuse mirrors :class:`BatchOcrJobStore` /
 :class:`~nextcloud_mcp_server.usage.store.UsageEventStore`: rather than open its

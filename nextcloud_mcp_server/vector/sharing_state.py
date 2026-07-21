@@ -376,6 +376,15 @@ async def claim_existing_index(
     # user-agnostic and bounded, and (c) reuses the payload already fetched here —
     # no extra scroll, no re-embed. Best-effort: a failure leaves the doc on the
     # file_path MatchText fallback until the next owner scan.
+    #
+    # The gate treats a stored empty list the same as an absent key, so a
+    # root-level file (no ancestor folders -> ancestor_dir_paths returns []) or a
+    # doc whose earlier resolution failed re-enters this branch on every owner
+    # scan. That is intentional and cheap: for the root-level case
+    # resolve_folder_ancestors returns [] immediately with no PROPFIND, and for
+    # the resolution-failure case the retry is exactly what lets it self-heal once
+    # WebDAV recovers. Distinguishing "resolved-but-empty" from "unresolved" would
+    # trade that self-healing for a marginal saving on a no-op.
     if (
         webdav is not None
         and current_path
