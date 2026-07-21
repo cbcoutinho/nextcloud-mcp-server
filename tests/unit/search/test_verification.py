@@ -1,6 +1,7 @@
 """Unit tests for verify-on-read (ADR-019)."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import anyio
 import httpx
@@ -1308,3 +1309,71 @@ async def test_verify_search_results_passes_semaphore_to_verifier(mocker):
     await verify_search_results(client, [_make_result(1)], max_concurrent=5)
 
     assert isinstance(captured["sem"], anyio.Semaphore)
+
+
+# ---------------------------------------------------------------------------
+# ADR-033 Phase 2 — per-user display-path override
+# ---------------------------------------------------------------------------
+
+
+class _StubPathStore:
+    """Stands in for DocumentPathStore; returns a fixed {doc_id: path} map."""
+
+    def __init__(self, paths: dict) -> None:
+        self._paths = paths
+
+    async def get_paths_for_user(self, user_id, doc_type, doc_ids):
+        return self._paths
+
+
+def _patch_store(mocker, stub_or_exc) -> None:
+    target = "nextcloud_mcp_server.vector.document_path_store.DocumentPathStore.shared"
+    if isinstance(stub_or_exc, Exception):
+        mocker.patch(target, new=AsyncMock(side_effect=stub_or_exc))
+    else:
+        mocker.patch(target, new=AsyncMock(return_value=stub_or_exc))
+
+
+async def test_apply_display_paths_overrides_file_with_user_path(mocker):
+    # A shared file whose Qdrant scalar carries the OWNER's path; the reader gets
+    # their own mount path substituted.
+    r_file = _make_result(1, "file", metadata={"path": "/alice/doc.pdf"})
+    r_file.title = "doc.pdf"
+    r_note = _make_result(2, "note", metadata={"foo": "bar"})
+    _patch_store(mocker, _StubPathStore({"1": "/bob/alice/doc.pdf"}))
+
+    await verification._apply_user_display_paths("bob", [r_file, r_note])
+
+    assert r_file.metadata["path"] == "/bob/alice/doc.pdf"
+    assert r_file.title == "doc.pdf"  # basename recomputed from the reader's path
+    # Non-file results are untouched.
+    assert r_note.metadata == {"foo": "bar"}
+
+
+async def test_apply_display_paths_keeps_scalar_when_no_row(mocker):
+    r_file = _make_result(1, "file", metadata={"path": "/alice/doc.pdf"})
+    _patch_store(mocker, _StubPathStore({}))  # no per-user row for this file
+
+    await verification._apply_user_display_paths("bob", [r_file])
+
+    assert r_file.metadata["path"] == "/alice/doc.pdf"  # unchanged fallback
+
+
+async def test_apply_display_paths_best_effort_on_store_error(mocker):
+    r_file = _make_result(1, "file", metadata={"path": "/alice/doc.pdf"})
+    _patch_store(mocker, RuntimeError("db down"))
+
+    # Must not raise — display-only override degrades to the stored scalar.
+    await verification._apply_user_display_paths("bob", [r_file])
+
+    assert r_file.metadata["path"] == "/alice/doc.pdf"
+
+
+async def test_apply_display_paths_noop_without_file_results(mocker):
+    # No file results -> the store is never consulted.
+    shared = mocker.patch(
+        "nextcloud_mcp_server.vector.document_path_store.DocumentPathStore.shared",
+        new=AsyncMock(),
+    )
+    await verification._apply_user_display_paths("bob", [_make_result(1, "note")])
+    shared.assert_not_awaited()

@@ -847,3 +847,59 @@ async def test_find_by_tag_escapes_special_chars_in_tag(mocker):
     )
     assert "R&amp;D" in where
     assert "R&D" not in where  # no bare ampersand
+
+
+@pytest.mark.unit
+async def test_get_fileid_parses_oc_fileid(mocker):
+    """get_fileid returns the oc:fileid of a folder path (ADR-033 Phase 3)."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp = mocker.Mock()
+    resp.content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/Documents/</d:href>
+            <d:propstat><d:prop><oc:fileid>98765</oc:fileid></d:prop></d:propstat>
+        </d:response>
+    </d:multistatus>"""
+    resp.raise_for_status = mocker.Mock()
+    mocker.patch.object(client, "_make_request", AsyncMock(return_value=resp))
+
+    assert await client.get_fileid("/Documents") == "98765"
+
+
+@pytest.mark.unit
+async def test_get_fileid_returns_none_on_404(mocker):
+    """A gone/inaccessible path resolves to None so the caller degrades."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp404 = mocker.Mock(spec=Response)
+    resp404.status_code = 404
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp404)
+        ),
+    )
+
+    assert await client.get_fileid("/gone") is None
+
+
+@pytest.mark.unit
+async def test_get_fileid_returns_none_when_absent(mocker):
+    """A response with no oc:fileid element yields None, not an error."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp = mocker.Mock()
+    resp.content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response><d:href>/remote.php/dav/files/testuser/x/</d:href>
+        <d:propstat><d:prop></d:prop></d:propstat></d:response>
+    </d:multistatus>"""
+    resp.raise_for_status = mocker.Mock()
+    mocker.patch.object(client, "_make_request", AsyncMock(return_value=resp))
+
+    assert await client.get_fileid("/x") is None

@@ -28,8 +28,12 @@ one user untagging a shared file would evict it for everyone still reading it.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.vector.folder_ancestors import FileIdResolver
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector import payload_keys
@@ -199,6 +203,9 @@ async def reconcile_document_path(
     doc_type: str,
     stored_path: str | None,
     current_path: str,
+    *,
+    caller_user_id: str | None = None,
+    owner_id: str | None = None,
 ) -> bool:
     """Refresh ``file_path``/``title`` on a renamed/moved file's existing points.
 
@@ -209,13 +216,48 @@ async def reconcile_document_path(
     rewrites ``file_path`` and the derived ``title`` on every real chunk via a
     single metadata-only ``set_payload`` (no re-fetch, no re-embed).
 
-    Returns False (no write attempted) only when the path is unchanged or empty.
-    When the path differs it returns True after issuing the ``set_payload``; that
-    write is itself a Qdrant-side no-op if no real chunks exist yet (e.g. only a
-    placeholder), which the callers tolerate. A legacy point with no stored
-    ``file_path`` is treated as changed, backfilling both fields.
+    Owner-gating (ADR-033 Phase 1): a file visible to more than one user is
+    mounted at a *different* path per user, but the deduped point set stores a
+    single scalar ``file_path``. Without gating, every reader's scan rewrites the
+    scalar to their own mount path, so it flips back and forth once per user per
+    pass (write amplification + a non-deterministic path that breaks the
+    ``path_prefix`` filter). We therefore pin the scalar to the **indexer of
+    record** (``owner_id``): the write is only issued when the caller *is* the
+    canonical owner (a genuine owner-side rename), when the stored path is empty
+    (legacy/placeholder backfill), or when ``owner_id`` is unknown (legacy points
+    predating ``owner_id`` — single-owner, so no thrash to guard against). A
+    non-owner reader observing a divergent path is now a no-op; their per-user
+    display path is served relationally (ADR-033 Phase 2).
+
+    Returns False (no write attempted) when the path is unchanged/empty or the
+    owner-gate suppresses a non-owner's divergent path. When a write is issued it
+    returns True; that write is itself a Qdrant-side no-op if no real chunks exist
+    yet (e.g. only a placeholder), which the callers tolerate. A legacy point with
+    no stored ``file_path`` is treated as changed, backfilling both fields.
     """
     if not current_path or stored_path == current_path:
+        return False
+    # Owner-gate: suppress a non-owner reader's divergent path so the scalar stays
+    # pinned to the owner's path. ``owner_id is None`` (legacy point) and an empty
+    # ``stored_path`` (nothing to thrash) fall through to the old always-reconcile
+    # behaviour so genuine renames and backfills are never missed.
+    if (
+        owner_id is not None
+        and stored_path
+        and caller_user_id is not None
+        and caller_user_id != owner_id
+    ):
+        logger.debug(
+            "Skipping path reconcile for %s_%s: caller user:%s is not the owner "
+            "(user:%s); keeping owner-pinned path %r (reader path %r served "
+            "relationally)",
+            doc_type,
+            doc_id,
+            caller_user_id,
+            owner_id,
+            stored_path,
+            current_path,
+        )
         return False
     qdrant_client = await get_qdrant_client()
     settings = get_settings()
@@ -238,6 +280,28 @@ async def reconcile_document_path(
     return True
 
 
+async def set_folder_ancestors(
+    doc_id: str,
+    doc_type: str,
+    ancestors: list[str],
+) -> None:
+    """Write ``folder_ancestors`` on every real chunk of a document.
+
+    A metadata-only ``set_payload`` (no re-fetch, no re-embed), mirroring
+    ``reconcile_document_path``. Used by the lazy owner-scoped backfill in
+    ``claim_existing_index`` to populate the ADR-033 Phase 3 folder-scope key on
+    documents indexed before it shipped.
+    """
+    qdrant_client = await get_qdrant_client()
+    settings = get_settings()
+    await qdrant_client.set_payload(
+        collection_name=settings.get_collection_name(),
+        payload={payload_keys.FOLDER_ANCESTORS: ancestors},
+        points=_document_filter(doc_id, doc_type, real_only=True),
+        wait=True,
+    )
+
+
 async def claim_existing_index(
     doc_id: str,
     doc_type: str,
@@ -245,6 +309,8 @@ async def claim_existing_index(
     user_id: str,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     current_path: str | None = None,
+    webdav: FileIdResolver | None = None,
+    folder_ancestor_cache: dict[str, str | None] | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -288,7 +354,12 @@ async def claim_existing_index(
     if current_path:
         try:
             await reconcile_document_path(
-                doc_id, doc_type, existing.get("file_path"), current_path
+                doc_id,
+                doc_type,
+                existing.get("file_path"),
+                current_path,
+                caller_user_id=user_id,
+                owner_id=existing.get("owner_id"),
             )
         except Exception as exc:  # noqa: BLE001 — non-fatal; retried next scan
             logger.warning(
@@ -297,6 +368,54 @@ async def claim_existing_index(
                 doc_id,
                 exc,
             )
+
+    # ADR-033 Phase 3: lazily backfill folder_ancestors on a dedup hit for
+    # documents indexed before the key shipped. Owner-scoped and gated on the key
+    # being absent, so it (a) runs at most once per document, (b) uses the owner's
+    # canonical path (never a reader's mount prefix), keeping the ancestor set
+    # user-agnostic and bounded, and (c) reuses the payload already fetched here —
+    # no extra scroll, no re-embed. Best-effort: a failure leaves the doc on the
+    # file_path MatchText fallback until the next owner scan.
+    #
+    # The gate treats a stored empty list the same as an absent key, so a
+    # root-level file (no ancestor folders -> ancestor_dir_paths returns []) or a
+    # doc whose earlier resolution failed re-enters this branch on every owner
+    # scan. That is intentional and cheap: for the root-level case
+    # resolve_folder_ancestors returns [] immediately with no PROPFIND, and for
+    # the resolution-failure case the retry is exactly what lets it self-heal once
+    # WebDAV recovers. Distinguishing "resolved-but-empty" from "unresolved" would
+    # trade that self-healing for a marginal saving on a no-op.
+    if (
+        webdav is not None
+        and current_path
+        and not (existing.get(payload_keys.FOLDER_ANCESTORS) or [])
+        and existing.get("owner_id") in (None, user_id)
+    ):
+        try:
+            from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415
+                resolve_folder_ancestors,
+            )
+
+            ancestors = await resolve_folder_ancestors(
+                webdav, current_path, cache=folder_ancestor_cache
+            )
+            if ancestors:
+                await set_folder_ancestors(doc_id, doc_type, ancestors)
+                logger.debug(
+                    "Backfilled %d folder ancestor(s) for %s_%s",
+                    len(ancestors),
+                    doc_type,
+                    doc_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — non-fatal; owner's next scan retries
+            logger.debug(
+                "Folder-ancestor backfill failed for %s_%s (%s); "
+                "search uses file_path fallback",
+                doc_type,
+                doc_id,
+                exc,
+            )
+
     try:
         await add_principal(doc_id, doc_type, user_id, existing.get(ACL_PRINCIPALS_KEY))
     except Exception as exc:  # noqa: BLE001 — non-fatal; recovered on next scan
@@ -330,6 +449,27 @@ async def release_document_for_user(
     qdrant_client = await get_qdrant_client()
     settings = get_settings()
     collection = settings.get_collection_name()
+
+    # ADR-033 Phase 2: drop this reader's per-user display-path row (hygiene). A
+    # stale row is harmless — a released doc no longer surfaces to the user, so
+    # it is never joined — but cleaning it up keeps the table bounded. Best-effort
+    # and lazily imported to avoid a vector→DB import at module load.
+    try:
+        from nextcloud_mcp_server.vector.document_path_store import (  # noqa: PLC0415
+            DocumentPathStore,
+        )
+
+        await (await DocumentPathStore.shared()).delete(
+            user_id=user_id, doc_id=doc_id, doc_type=doc_type
+        )
+    except Exception as exc:  # noqa: BLE001 — display-only cleanup; non-fatal
+        logger.debug(
+            "Per-user path-row cleanup failed for %s_%s user:%s (%s)",
+            doc_type,
+            doc_id,
+            user_id,
+            exc,
+        )
 
     points, _ = await qdrant_client.scroll(
         collection_name=collection,

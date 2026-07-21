@@ -58,6 +58,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         modified_before: int | None = None,
         path_prefix: str | None = None,
         path_prefixes: Iterable[str] | None = None,
+        path_prefix_folder_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
@@ -129,6 +130,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             modified_before=modified_before,
             path_prefix=path_prefix,
             path_prefixes=path_prefixes,
+            path_prefix_folder_ids=path_prefix_folder_ids,
         )
 
         # ACL pre-filter (design §11), opt-in via ACL_PREFILTER_ENABLED and OFF

@@ -51,6 +51,7 @@ from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 if TYPE_CHECKING:
     from nextcloud_mcp_server.search.algorithms import NextcloudClientProtocol
 
+from nextcloud_mcp_server.vector.document_path_store import DocumentPathStore
 from nextcloud_mcp_server.vector.sharing_state import (
     ACL_PRINCIPALS_KEY,
     claim_existing_index,
@@ -1052,6 +1053,12 @@ async def scan_user_documents(
 
             tiers_sig = escalation_tiers_signature(get_settings())
 
+            # ADR-033 Phase 3: one folder-path -> fileid cache for this whole scan
+            # pass, so the lazy folder-ancestor backfill (in claim_existing_index)
+            # resolves each shared parent folder once instead of re-walking the
+            # ancestor chain per file under the same tree.
+            folder_ancestor_cache: dict[str, str | None] = {}
+
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
@@ -1090,6 +1097,33 @@ async def scan_user_documents(
                 # "unknown" so the processor falls back to the post-download
                 # guard rather than gating on a bogus zero.
                 size_bytes = file_info.get("size") or None
+
+                # ADR-033 Phase 2: record THIS user's mount path for the file
+                # (dedup hit or fresh index below), so search can substitute the
+                # querying user's own path for the owner-pinned Qdrant scalar.
+                # Best-effort and non-security: a failed upsert only means a
+                # reader temporarily sees the owner's path — never a wrong ACL.
+                #
+                # Unconditional by design here (accepted trade-off): this fires
+                # for every file/user/scan, not only shared docs, so the table is
+                # not sparse (see migration 009's write-volume note). Scoping it to
+                # genuine cross-user readers is a tracked ADR-033 follow-up.
+                try:
+                    await (await DocumentPathStore.shared()).upsert(
+                        user_id=user_id,
+                        doc_id=file_id,
+                        doc_type="file",
+                        file_path=file_path,
+                    )
+                except Exception as exc:  # noqa: BLE001 — display-only; next scan retries
+                    logger.debug(
+                        "Per-user path upsert failed for file %s (ID: %s) (%s); "
+                        "next scan retries",
+                        file_path,
+                        file_id,
+                        exc,
+                    )
+
                 if etag and await claim_existing_index(
                     file_id,
                     "file",
@@ -1097,6 +1131,8 @@ async def scan_user_documents(
                     user_id,
                     index_mode=index_mode,
                     current_path=file_path,
+                    webdav=nc_client.webdav,
+                    folder_ancestor_cache=folder_ancestor_cache,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
@@ -1272,11 +1308,19 @@ async def scan_user_documents(
                         # a not-yet-indexed file would just incur a 0-point
                         # set_payload (the real index writes the current path).
                         try:
+                            # existing_metadata is user_id-scoped to this caller
+                            # (query_document_metadata filters on user_id), so this
+                            # path only ever fires for the point's own indexer —
+                            # never the thrash source. Pass the owner-gate params
+                            # (ADR-033 Phase 1) for consistency with the dedup-path
+                            # caller; a no-op today since owner_id == user_id here.
                             await reconcile_document_path(
                                 file_id,
                                 "file",
                                 existing_metadata.get("file_path"),
                                 file_path,
+                                caller_user_id=user_id,
+                                owner_id=existing_metadata.get("owner_id"),
                             )
                         except Exception as exc:  # noqa: BLE001 — non-fatal
                             logger.warning(

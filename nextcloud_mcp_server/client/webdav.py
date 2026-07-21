@@ -1553,6 +1553,44 @@ class WebDAVClient(BaseNextcloudClient):
         )
         return len(results) > 0
 
+    async def get_fileid(self, path: str) -> str | None:
+        """Return the Nextcloud fileid of a file/folder path, or None if absent.
+
+        A Depth-0 ``PROPFIND`` for ``oc:fileid`` on the principal-scoped path.
+        Used by the folder-ancestor resolver (ADR-033 Phase 3) to map an ancestor
+        folder path to its canonical fileid — stable across every user who mounts
+        a shared folder, which is what makes the folder-scope search filter
+        user-agnostic. A 404 (path gone/inaccessible) returns None so callers
+        degrade gracefully rather than aborting an index.
+        """
+        await self._ensure_principal_id()
+        webdav_path = self._webdav_path(path)
+        propfind_body = (
+            '<?xml version="1.0"?>'
+            '<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+            "<d:prop><oc:fileid/></d:prop></d:propfind>"
+        )
+        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        try:
+            response = await self._make_request(
+                "PROPFIND", webdav_path, content=propfind_body, headers=headers
+            )
+            response.raise_for_status()
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+        root = ET.fromstring(response.content)
+        # Match oc:fileid by local name (namespace-agnostic) rather than a
+        # namespace map, so the owncloud namespace URL is not embedded as a
+        # standalone string literal (it stays only inside the request-body XML).
+        for elem in root.iter():
+            if isinstance(elem.tag, str) and elem.tag.rsplit("}", 1)[-1] == "fileid":
+                text = (elem.text or "").strip()
+                if text:
+                    return text
+        return None
+
     async def _get_file_info_by_id(self, file_id: int) -> Dict[str, Any]:
         """Get file information by Nextcloud file ID using WebDAV.
 

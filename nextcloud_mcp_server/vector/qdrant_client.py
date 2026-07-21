@@ -101,6 +101,17 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # search/access_filter.build_ownership_filter); KEYWORD indexes match array
     # membership element-wise. Idempotent startup migration.
     "acl_principals": PayloadSchemaType.KEYWORD,
+    # folder_ancestors is the ADR-033 Phase 3 folder-scope filter field (Deck
+    # #740): a list of ancestor folder fileids on every file point. Search
+    # resolves a path_prefix to a folder fileid and applies
+    # MatchAny(key="folder_ancestors", any=[folder_id]) — a true left-anchored
+    # containment (contrast the token/substring MatchText on file_path). KEYWORD
+    # indexes match array membership element-wise, exactly like acl_principals.
+    # Written forward-only on file points; Qdrant strict/server mode requires an
+    # index for every filtered field, so the folder filter 400s without it.
+    # Idempotent startup migration like the fields above — existing collections
+    # gain the index with no content re-index (payload backfill populates values).
+    "folder_ancestors": PayloadSchemaType.KEYWORD,
     # index_mode ("hybrid" | "keyword") is the per-document indexing mode written
     # to every non-placeholder point (payload_keys.INDEX_MODE). The vector-RAM
     # observability path (card #624) counts hybrid, dense-bearing chunks via

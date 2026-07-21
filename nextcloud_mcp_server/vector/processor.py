@@ -2052,6 +2052,49 @@ async def _index_document_inner(
         }
     )
 
+    # ADR-033 Phase 3: resolve the file's ancestor folder fileids once per
+    # document (identical for every chunk). Stamped on each file point as
+    # folder_ancestors so search can scope by a folder's canonical fileid — a
+    # user-agnostic, truly left-anchored containment. Best-effort: an empty list
+    # (resolution failure, or a non-file doc type) leaves search on the file_path
+    # MatchText fallback for this doc.
+    #
+    # No cross-document ancestor cache here: this runs in the queue worker, one
+    # DocumentTask at a time, decoupled from the scanner's scan pass — so unlike
+    # the scanner-side backfill (which threads a per-scan folder_ancestor_cache
+    # into claim_existing_index), sibling files under a shared tree can't share a
+    # lookup here. A per-worker TTL cache is the follow-up if the bulk initial
+    # scan's PROPFIND volume shows up (tracked with the search-side resolution
+    # cache in ADR-033).
+    #
+    # This first-index write is intentionally ungated (symmetric with file_path /
+    # owner_id, which the processor also writes unconditionally on first index):
+    # it *establishes* the value, so there is nothing to clobber. Only a LATER
+    # divergent overwrite needs guarding, which is exactly what the owner-scoped
+    # backfill does (it fires only when the key is absent, and only for the
+    # indexer-of-record). A shared folder resolves to the same canonical fileid
+    # for whoever walks up to it, so even a non-owner first-indexer yields the
+    # correct shared-folder ids; the only divergence is a bounded handful of that
+    # one principal's own mount-wrapper folder ids, which are harmless (only that
+    # principal can resolve them at query time).
+    _folder_ancestors: list[str] = []
+    if doc_task.doc_type == "file" and file_path:
+        from nextcloud_mcp_server.vector.folder_ancestors import (  # noqa: PLC0415
+            resolve_folder_ancestors,
+        )
+
+        try:
+            _folder_ancestors = await resolve_folder_ancestors(
+                nc_client.webdav, file_path
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; fall back to file_path
+            logger.debug(
+                "Folder-ancestor resolution failed for %s (%s); "
+                "search falls back to file_path for folder scope",
+                file_path,
+                exc,
+            )
+
     # Surface deck card data quality issues at indexing time rather than
     # only at verification time (where _verify_deck_cards falls through to
     # legacy-data pass-through when board_id/stack_id are missing). This is
@@ -2145,6 +2188,11 @@ async def _index_document_inner(
                     **(
                         {
                             "file_path": file_path,  # Store file path for retrieval
+                            # ADR-033 Phase 3: ancestor folder fileids for the
+                            # folder-scope search filter (same value on every
+                            # chunk). Omitted implicitly when resolution yielded
+                            # nothing — search then uses the file_path fallback.
+                            payload_keys.FOLDER_ANCESTORS: _folder_ancestors,
                             "mime_type": content_type,  # From WebDAV response
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,

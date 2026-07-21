@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from qdrant_client.models import FieldCondition, Filter, MatchText, Range
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchText, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
@@ -16,7 +16,9 @@ from nextcloud_mcp_server.search.access_filter import (
     clear_accessible_owners_cache,
     list_accessible_owners,
     normalize_path_prefixes,
+    resolve_prefix_folder_ids,
 )
+from nextcloud_mcp_server.vector import payload_keys
 
 
 @pytest.fixture(autouse=True)
@@ -392,3 +394,139 @@ class TestNormalizePathPrefixes:
         result = normalize_path_prefixes(None, folders)
         assert len(result) == MAX_PATH_PREFIXES
         assert result == folders[:MAX_PATH_PREFIXES]
+
+
+# ---------------------------------------------------------------------------
+# ADR-033 Phase 3 — folder-ancestor scope filter
+# ---------------------------------------------------------------------------
+
+
+def _folder_ancestor_matchany(conditions) -> list[str] | None:
+    """Return the folder_ancestors MatchAny values from a filter list.
+
+    Looks both at bare must FieldConditions and inside a nested should Filter.
+    """
+    for cond in conditions:
+        if (
+            isinstance(cond, FieldCondition)
+            and cond.key == payload_keys.FOLDER_ANCESTORS
+            and isinstance(cond.match, MatchAny)
+        ):
+            return list(cond.match.any)
+        if isinstance(cond, Filter) and cond.should:
+            for c in cond.should:
+                if (
+                    isinstance(c, FieldCondition)
+                    and c.key == payload_keys.FOLDER_ANCESTORS
+                    and isinstance(c.match, MatchAny)
+                ):
+                    return list(c.match.any)
+    return None
+
+
+class TestFolderAncestorFilter:
+    @pytest.mark.unit
+    def test_folder_id_only_attaches_bare_matchany(self) -> None:
+        # A resolved folder id with no textual prefix -> a single bare
+        # MatchAny(folder_ancestors) condition on must (len(should) == 1).
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefix_folder_ids=["500"]
+        )
+        assert _folder_ancestor_matchany(conditions) == ["500"]
+        # No file_path condition when there was no textual prefix.
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
+        )
+
+    @pytest.mark.unit
+    def test_folder_id_and_prefix_or_together(self) -> None:
+        # A resolved folder id AND the original prefix string OR under one nested
+        # should: an un-backfilled point still matches via file_path (recall),
+        # a backfilled point matches via folder_ancestors (precision).
+        conditions = build_base_filter_conditions(
+            "alice",
+            None,
+            path_prefix="/Projects/Reports",
+            path_prefix_folder_ids=["500"],
+        )
+        assert _folder_ancestor_matchany(conditions) == ["500"]
+        # The file_path MatchText fallback is retained in the same OR.
+        nested = [
+            c for c in conditions if isinstance(c, Filter) and c.should is not None
+        ]
+        file_path_texts = {
+            c.match.text
+            for f in nested
+            for c in f.should
+            if isinstance(c, FieldCondition)
+            and c.key == "file_path"
+            and isinstance(c.match, MatchText)
+        }
+        assert "/Projects/Reports" in file_path_texts
+
+    @pytest.mark.unit
+    def test_no_folder_ids_keeps_legacy_matchtext_only(self) -> None:
+        # Backward compat: without resolved ids, only the file_path MatchText
+        # branch is emitted (no folder_ancestors condition).
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefix="/Projects"
+        )
+        assert _folder_ancestor_matchany(conditions) is None
+        path_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "file_path"
+        ]
+        assert len(path_conds) == 1
+        assert isinstance(path_conds[0].match, MatchText)
+
+    @pytest.mark.unit
+    def test_blank_folder_ids_are_ignored(self) -> None:
+        # Defensive: empty strings in the resolved list must not create a bogus
+        # MatchAny(any=[""]) branch.
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefix_folder_ids=["", "  "]
+        )
+        assert _folder_ancestor_matchany(conditions) is None
+
+
+class _StubWebdav:
+    def __init__(self, mapping, raises=None):
+        self._mapping = mapping
+        self._raises = raises or set()
+
+    async def get_fileid(self, path: str):
+        if path in self._raises:
+            raise RuntimeError("boom")
+        return self._mapping.get(path)
+
+
+class TestResolvePrefixFolderIds:
+    @pytest.mark.unit
+    async def test_resolves_each_prefix(self) -> None:
+        webdav = _StubWebdav({"/Projects": "500", "/Archive": "600"})
+        got = await resolve_prefix_folder_ids(
+            webdav, path_prefixes=["/Projects", "/Archive"]
+        )
+        assert got == ["500", "600"]
+
+    @pytest.mark.unit
+    async def test_unresolved_prefix_skipped(self) -> None:
+        webdav = _StubWebdav({"/Projects": "500", "/Gone": None})
+        got = await resolve_prefix_folder_ids(
+            webdav, path_prefixes=["/Projects", "/Gone"]
+        )
+        assert got == ["500"]  # falls back to MatchText for /Gone
+
+    @pytest.mark.unit
+    async def test_error_is_best_effort(self) -> None:
+        webdav = _StubWebdav({"/Projects": "500"}, raises={"/Bad"})
+        got = await resolve_prefix_folder_ids(
+            webdav, path_prefixes=["/Projects", "/Bad"]
+        )
+        assert got == ["500"]
+
+    @pytest.mark.unit
+    async def test_no_prefixes_returns_empty(self) -> None:
+        webdav = _StubWebdav({})
+        assert await resolve_prefix_folder_ids(webdav, path_prefixes=[]) == []

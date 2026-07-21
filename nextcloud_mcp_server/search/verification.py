@@ -622,6 +622,52 @@ def get_supported_doc_types() -> set[str]:
     return set(_VERIFIERS.keys())
 
 
+async def _apply_user_display_paths(user_id: str, results: list[SearchResult]) -> None:
+    """Override file results' path/title with the querying user's own mount path.
+
+    ADR-033 Phase 2: a shared file's Qdrant scalar ``file_path`` is pinned to the
+    owner (Phase 1), so a non-owner reader would otherwise see the *owner's* path.
+    Here we look up each returned file's per-user path in the ``document_paths``
+    store and substitute it into the result the reader receives.
+
+    Best-effort and non-security: on any store error, or for a file with no stored
+    row (legacy / not-yet-scanned-by-this-user), the Qdrant scalar already carried
+    on the result stands unchanged. Mutates ``results`` in place (SearchResult is a
+    mutable dataclass). Lazy imports keep the vector/DB layers off this module's
+    import path.
+    """
+    file_ids = [r.id for r in results if r.doc_type == "file"]
+    if not file_ids:
+        return
+    try:
+        from nextcloud_mcp_server.vector.document_path_store import (  # noqa: PLC0415
+            DocumentPathStore,
+        )
+        from nextcloud_mcp_server.vector.sharing_state import (  # noqa: PLC0415
+            file_title_from_path,
+        )
+
+        store = await DocumentPathStore.shared()
+        paths = await store.get_paths_for_user(user_id, "file", file_ids)
+    except Exception as exc:  # noqa: BLE001 — display-only; fall back to the scalar
+        logger.debug(
+            "Per-user display-path override skipped (%s); using stored scalar", exc
+        )
+        return
+    if not paths:
+        return
+    for r in results:
+        if r.doc_type != "file":
+            continue
+        path = paths.get(r.id)
+        if not path:
+            continue
+        if r.metadata is None:
+            r.metadata = {}
+        r.metadata["path"] = path
+        r.title = file_title_from_path(path)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -802,5 +848,10 @@ async def verify_search_results(
             async with anyio.create_task_group() as tg:
                 for doc_id, doc_type in inaccessible:
                     tg.start_soon(evict, doc_id, doc_type)
+
+    # ADR-033 Phase 2: substitute each returned file's per-user display path
+    # (the owner-pinned Qdrant scalar would otherwise show the owner's path to a
+    # non-owner reader). Best-effort — a store miss leaves the scalar in place.
+    await _apply_user_display_paths(user_id, kept)
 
     return kept, len(inaccessible)
