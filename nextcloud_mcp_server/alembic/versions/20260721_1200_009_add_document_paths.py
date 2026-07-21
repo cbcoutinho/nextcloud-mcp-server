@@ -15,7 +15,18 @@ per-chunk Qdrant ``set_payload`` path-thrash.
 
 Portable types only (Text + unix-epoch BigInteger), like the rest of this schema
 (cf. ``batch_ocr_jobs``, migration 008), so the same migration runs on both
-self-host SQLite and cloud Postgres. Idle and empty for single-owner corpora.
+self-host SQLite and cloud Postgres.
+
+Write-volume note (accepted trade-off): the scanner currently upserts one row per
+tagged file **per scanning user, on every scan pass** — not only for
+multi-reader documents — so the table holds ~Σ(files × readers) rows, each
+rewritten every scan interval, even on a single-owner corpus. This is a
+deliberate swap of a small, idempotent relational upsert for the per-chunk Qdrant
+``set_payload`` path-thrash it replaces (a shared doc's path used to be rewritten
+across *every chunk* on every reader's pass). Scoping the upsert to actual
+cross-user readers (owner content needs no row — the owner's path is the Qdrant
+scalar the reader falls back to) would make the table genuinely sparse; it is a
+tracked follow-up in ADR-033 rather than part of this change.
 
 Revision ID: 009
 Revises: 008

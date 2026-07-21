@@ -1103,6 +1103,11 @@ async def scan_user_documents(
                 # querying user's own path for the owner-pinned Qdrant scalar.
                 # Best-effort and non-security: a failed upsert only means a
                 # reader temporarily sees the owner's path — never a wrong ACL.
+                #
+                # Unconditional by design here (accepted trade-off): this fires
+                # for every file/user/scan, not only shared docs, so the table is
+                # not sparse (see migration 009's write-volume note). Scoping it to
+                # genuine cross-user readers is a tracked ADR-033 follow-up.
                 try:
                     await (await DocumentPathStore.shared()).upsert(
                         user_id=user_id,

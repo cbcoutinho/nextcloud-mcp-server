@@ -113,12 +113,19 @@ New table `document_paths`, one row per `(doc_type, doc_id, user_id)`:
 
 Portable types only (Text + epoch BigInteger), so the one migration runs on both
 self-host SQLite and cloud Postgres via the ADR-026 abstraction — exactly like
-`batch_ocr_jobs` (migration 008). Empty and idle for single-owner corpora.
+`batch_ocr_jobs` (migration 008).
 
 - **Write:** the scanner upserts `(doc_type, doc_id, user_id) -> current_path`
   for every file it sees (dedup hit *or* fresh index). One row per doc per user,
   updated with a single `INSERT ... ON CONFLICT DO UPDATE`. This replaces the
   per-chunk `set_payload` thrash with a single bounded relational write.
+  **Write-volume trade-off:** the upsert is currently *unconditional*, so the
+  table holds ~Σ(files × readers) rows rewritten each scan pass — including for
+  single-owner content, which does not strictly need a row (the owner's path is
+  the Qdrant scalar the fallback serves). This is an accepted swap of a small
+  idempotent relational upsert for the per-chunk Qdrant write it removes; scoping
+  the upsert to genuine cross-user readers (see *Follow-ups*) would make the
+  table sparse and is deferred.
 - **Read:** after Qdrant returns the top-K, batch-fetch the querying user's rows
   for the returned `doc_id`s and override the displayed `file_path`/`title`.
   Falls back to the Qdrant scalar when no row exists (legacy / not-yet-scanned).
@@ -192,6 +199,29 @@ explicitly rejected in favour of the single-`folder_id` containment term.
   immediately for new/re-indexed docs and lazily backfilled for old points by the
   owner's next scan (owner-scoped, in `claim_existing_index`); searches degrade
   gracefully to the `file_path` fallback in the interim.
+
+## Deferred follow-ups (accepted, not part of this change)
+
+These are known, non-blocking, and each documented at its call site:
+
+1. **Scope the `document_paths` upsert to genuine cross-user readers.** Today the
+   scanner upserts unconditionally for every (user, file) on every scan, so the
+   table is not sparse (see the migration's write-volume note). Owner content
+   needs no row — the owner-pinned Qdrant scalar is the fallback — so upserting
+   only when the scanning user is *not* the document's `owner_id` (a real reader
+   of a shared file) would make the table idle for single-owner corpora without
+   changing displayed results.
+2. **Cache / parallelize the search-time `path_prefix -> folder_id` resolution.**
+   `resolve_prefix_folder_ids` issues one synchronous `PROPFIND` per prefix in a
+   sequential loop on the search hot path. A per-user TTL cache (like
+   `list_accessible_owners`) and/or an `anyio` task group to resolve prefixes
+   concurrently would cut worst-case latency; prefix count is typically 1–2, so
+   this is low priority.
+3. **Share an ancestor-resolution cache on the fresh-index path.** The processor
+   resolves `folder_ancestors` per `DocumentTask` (queue worker, decoupled from
+   the scan pass), so sibling files under one tree don't share lookups the way
+   the scanner-side backfill does. A per-worker TTL cache is the fix if the bulk
+   initial scan's PROPFIND volume shows up.
 
 ## Future cleanup (version-gated, NOT part of this change)
 
