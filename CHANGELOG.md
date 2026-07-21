@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.144.0 (2026-07-21)
+
+### Feat
+
+- **vector**: folder-ancestor scope filter for shared docs (ADR-033 Phase 3)
+- **vector**: per-user display paths for shared docs (ADR-033 Phase 2)
+- **vector**: pin shared-doc file_path to the owner (ADR-033 Phase 1)
+
+### Fix
+
+- **client**: namespace-agnostic get_fileid parse + clarify ancestor first-write
+- **vector**: address review round 1 (ADR-033)
+
 ## v0.143.1 (2026-07-20)
 
 ### Fix
