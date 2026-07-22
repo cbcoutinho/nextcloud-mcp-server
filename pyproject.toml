@@ -141,7 +141,7 @@ dev = [
     # `# type: ignore[<mypy-code>]` comments stop suppressing (26 of them), and
     # newer analyses surface 19 further diagnostics. Tracked separately -- drop
     # the bound as part of that migration.
-    "ty>=0.0.1a25,<0.0.2",
+    "ty>=0.0.62,<0.0.63",
     "pytest-otel>=2.0.1",
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
