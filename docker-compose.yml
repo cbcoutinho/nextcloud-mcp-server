@@ -65,7 +65,7 @@ services:
       - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   unstructured:
-    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.8@sha256:cd18ed5ac5e0284f4d7647774e63863190b0bad4b765a049cfc91c643c55396c
+    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.9@sha256:658e8dc98468c9af513cd4a3fa01b95b04c2916aeb744cdd047b820ba719e7fd
     restart: always
     ports:
       - 127.0.0.1:8005:8000
