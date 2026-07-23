@@ -321,3 +321,93 @@ async def test_list_calendars_model_round_trip(mocker):
     holidays = next(c for c in calendars if c.name == "holidays")
     assert holidays.read_only is True
     assert holidays.source == "https://example.com/holidays.ics"
+
+
+def _calendar_client(mocker):
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    return CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+
+
+def test_event_reminders_round_trip_and_preserve_on_unrelated_update(mocker):
+    client = _calendar_client(mocker)
+
+    ical = client._create_ical_event(
+        {
+            "title": "Fundraising",
+            "start_datetime": "2026-06-26T12:00:00+03:00",
+            "end_datetime": "2026-06-26T13:00:00+03:00",
+            "reminders": [
+                {
+                    "trigger_at": "2026-06-26T10:00:00+03:00",
+                    "description": "absolute reminder",
+                },
+                {"minutes_before": 30, "related": "START"},
+            ],
+        },
+        "event-uid",
+    )
+
+    parsed = client._parse_ical_event(ical)
+    assert parsed is not None
+    assert [r["index"] for r in parsed["reminders"]] == [0, 1]
+    assert parsed["reminders"][0]["action"] == "DISPLAY"
+    assert parsed["reminders"][0]["trigger_at"].startswith("2026-06-26T10:00:00")
+    assert parsed["reminders"][1]["trigger"] == "-PT30M"
+    assert parsed["reminders"][1]["minutes_before"] == 30
+    assert parsed["reminders"][1]["related"] == "START"
+
+    updated = client._merge_ical_properties(ical, {"location": "Office"}, "event-uid")
+    reparsed = client._parse_ical_event(updated)
+    assert reparsed is not None
+    assert reparsed["reminders"] == parsed["reminders"]
+
+
+def test_event_reminders_empty_list_clears_valarms(mocker):
+    client = _calendar_client(mocker)
+    ical = client._create_ical_event(
+        {
+            "title": "Fundraising",
+            "start_datetime": "2026-06-26T12:00:00+03:00",
+            "reminder_minutes": 15,
+        },
+        "event-uid",
+    )
+
+    cleared = client._merge_ical_properties(ical, {"reminders": []}, "event-uid")
+    parsed = client._parse_ical_event(cleared)
+    assert parsed is not None
+    assert "reminders" not in parsed
+    assert "VALARM" not in cleared
+
+
+def test_todo_reminders_round_trip_and_update_by_ordered_list(mocker):
+    client = _calendar_client(mocker)
+    ical = client._create_ical_todo(
+        {
+            "summary": "Submit funding request",
+            "reminders": [{"trigger": "-PT6H", "description": "relative reminder"}],
+        },
+        "todo-uid",
+    )
+
+    parsed = client._parse_ical_todo(ical)
+    assert parsed is not None
+    assert parsed["reminders"][0]["trigger"] == "-PT6H"
+    assert parsed["reminders"][0]["minutes_before"] == 360
+
+    updated = client._merge_ical_todo_properties(
+        ical,
+        {
+            "reminders": [
+                {"trigger": "-PT1H", "description": "updated"},
+                {"offset_seconds": -300},
+            ]
+        },
+        "todo-uid",
+    )
+    reparsed = client._parse_ical_todo(updated)
+    assert reparsed is not None
+    assert [r["trigger"] for r in reparsed["reminders"]] == ["-PT1H", "-PT5M"]
+    assert reparsed["reminders"][0]["description"] == "updated"
