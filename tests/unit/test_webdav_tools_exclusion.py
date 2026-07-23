@@ -523,6 +523,58 @@ async def test_write_file_passes_if_match_through_to_client(
     )
 
 
+async def test_write_file_passes_force_star_through_to_client(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+):
+    """if_match='*' (explicit force-overwrite) reaches the client unchanged so
+    it becomes a bare If-Match: * PUT."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.write_file = AsyncMock(return_value={"status_code": 204})
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings",
+        return_value=SimpleNamespace(webdav_write_max_mb=50.0),
+    )
+
+    fn = webdav_tools["nc_webdav_write_file"].fn
+    await fn(
+        path="/Public/notes.md",
+        content="hi",
+        ctx=_mock_ctx(fake_client),
+        if_match="*",
+    )
+
+    fake_client.webdav.write_file.assert_awaited_once_with(
+        "/Public/notes.md", b"hi", None, if_match="*"
+    )
+
+
+async def test_write_file_raises_toolerror_when_file_already_exists(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+):
+    """The fail-closed default: an if_match-less write over an existing file
+    (client returns the 'already exists' 412) surfaces as an actionable
+    ToolError telling the caller to read first or pass if_match='*'."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.write_file = AsyncMock(
+        return_value={
+            "status_code": 412,
+            "message": "File already exists — read it first to get its etag and "
+            "pass if_match to overwrite safely, or pass if_match='*' to "
+            "overwrite deliberately",
+        }
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings",
+        return_value=SimpleNamespace(webdav_write_max_mb=50.0),
+    )
+
+    fn = webdav_tools["nc_webdav_write_file"].fn
+    with pytest.raises(ToolError, match="already exists"):
+        await fn(path="/Public/notes.md", content="hi", ctx=_mock_ctx(fake_client))
+
+
 async def test_write_file_raises_toolerror_on_precondition_failed(
     webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
 ):

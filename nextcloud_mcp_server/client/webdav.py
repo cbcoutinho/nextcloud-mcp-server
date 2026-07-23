@@ -400,6 +400,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:getcontentlength/>
                 <d:getcontenttype/>
                 <d:getlastmodified/>
+                <d:getetag/>
                 <d:resourcetype/>
             </d:prop>
         </d:propfind>"""
@@ -464,6 +465,16 @@ class WebDAVClient(BaseNextcloudClient):
                 modified_elem = prop.find(".//{DAV:}getlastmodified")
                 modified = modified_elem.text if modified_elem is not None else None
 
+                # Strip surrounding quotes to match every other etag path in
+                # this client (a caller feeds this straight into write_file's
+                # if_match, which re-adds the quotes for the If-Match header).
+                etag_elem = prop.find(".//{DAV:}getetag")
+                etag = (
+                    etag_elem.text.strip('"')
+                    if etag_elem is not None and etag_elem.text
+                    else None
+                )
+
                 items.append(
                     {
                         "name": name,
@@ -472,6 +483,7 @@ class WebDAVClient(BaseNextcloudClient):
                         "size": size if not is_directory else None,
                         "content_type": content_type,
                         "last_modified": modified,
+                        "etag": etag,
                     }
                 )
 
@@ -586,22 +598,34 @@ class WebDAVClient(BaseNextcloudClient):
     ) -> Dict[str, Any]:
         """Write content to a file via WebDAV PUT.
 
+        Every PUT is conditional: the write is fail-closed so an existing file
+        is never silently overwritten. Exactly one precondition header is sent,
+        chosen by ``if_match``:
+
+        =================  ====================  ======================================
+        ``if_match``       Header sent           Behaviour (412 = precondition failed)
+        =================  ====================  ======================================
+        ``None`` (default) ``If-None-Match: *``  Create-only. 412 if the path already
+                                                 exists -- read it first to get an etag.
+        an etag, e.g. abc  ``If-Match: "abc"``   Conditional overwrite. 412 if the file
+                                                 changed since that etag (or is gone).
+        ``"*"``            ``If-Match: *``       Force-overwrite an existing file. 412 if
+                                                 it does not exist.
+        =================  ====================  ======================================
+
         Args:
             path: Destination path.
             content: Raw bytes to write.
             content_type: MIME type (guessed from ``path`` if omitted).
-            if_match: ETag previously returned by :meth:`read_file` for this
-                same path. When given, the PUT is conditional (``If-Match``):
-                Nextcloud rejects it with 412 if the file changed since that
-                read instead of silently overwriting the newer content.
-                Omit for the previous unconditional (last-write-wins) PUT.
+            if_match: ``None`` to create a new file (fails if it exists); an
+                etag from :meth:`read_file` to overwrite only if unchanged; or
+                the literal ``"*"`` to force-overwrite an existing file.
 
         Returns:
-            ``{"status_code": ...}`` on success. On a 412 (etag mismatch,
-            i.e. the file was modified since ``if_match`` was read) or a 423
-            (WebDAV lock held by another client, e.g. the file is open in the
-            Nextcloud web editor), returns ``{"status_code": ..., "message":
-            ...}`` instead of raising, matching ``move_resource``/
+            ``{"status_code": ...}`` on success. On a 412 (a precondition above
+            failed) or a 423 (WebDAV lock held by another client, e.g. the file
+            is open in the Nextcloud web editor), returns ``{"status_code": ...,
+            "message": ...}`` instead of raising, matching ``move_resource``/
             ``copy_resource``'s handling of their own known conflict statuses
             -- both are conditions a caller should react to, not a transport
             failure. Any other error status still raises ``HTTPStatusError``.
@@ -617,8 +641,15 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = "application/octet-stream"
 
         headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
-        if if_match is not None:
-            headers["If-Match"] = f'"{if_match}"'
+        # Always send a precondition so a write can never silently clobber an
+        # existing file. The server (Sabre checkPreconditions) evaluates it
+        # atomically before the PUT, so this is race-free.
+        if if_match is None:
+            headers["If-None-Match"] = "*"  # create-only
+        elif if_match == "*":
+            headers["If-Match"] = "*"  # force-overwrite an existing file
+        else:
+            headers["If-Match"] = f'"{if_match}"'  # overwrite iff unchanged
 
         try:
             response = await self._make_request(
@@ -631,6 +662,32 @@ class WebDAVClient(BaseNextcloudClient):
 
         except HTTPStatusError as e:
             if e.response.status_code == 412:
+                # Which precondition failed depends on which header we sent --
+                # the client knows, so give a cause-specific, actionable message
+                # rather than parsing the server's response body.
+                if if_match is None:
+                    logger.debug(
+                        "Precondition failed writing '%s': file already exists "
+                        "(create-only If-None-Match)",
+                        path,
+                    )
+                    return {
+                        "status_code": 412,
+                        "message": "File already exists — read it first to get its "
+                        "etag and pass if_match to overwrite safely, or pass "
+                        "if_match='*' to overwrite deliberately",
+                    }
+                if if_match == "*":
+                    logger.debug(
+                        "Precondition failed writing '%s': file does not exist "
+                        "(force-overwrite If-Match: *)",
+                        path,
+                    )
+                    return {
+                        "status_code": 412,
+                        "message": "File does not exist — cannot force-overwrite a "
+                        "missing file; omit if_match to create it",
+                    }
                 logger.debug(
                     "Precondition failed writing '%s': file changed since if_match "
                     "etag was read",

@@ -480,6 +480,53 @@ async def test_list_directory_decodes_non_ascii_names(mocker):
 
 
 @pytest.mark.unit
+async def test_list_directory_requests_and_parses_etag(mocker):
+    """list_directory must request <d:getetag/> and expose each file's etag
+    (quotes stripped) so a caller can obtain one for write_file's if_match
+    without a full read -- parity with the search/find paths."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/notes.txt</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>notes.txt</d:displayname>
+                    <d:getcontentlength>10</d:getcontentlength>
+                    <d:getcontenttype>text/plain</d:getcontenttype>
+                    <d:getetag>"abc123"</d:getetag>
+                    <d:resourcetype/>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    mock_response = AsyncMock()
+    mock_response.content = xml_content
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    items = await client.list_directory("")
+
+    # The PROPFIND body must ask for the etag.
+    sent_body = mock_http_client.request.call_args.kwargs["content"]
+    assert "getetag" in sent_body
+
+    by_name = {item["name"]: item for item in items}
+    assert by_name["notes.txt"]["etag"] == "abc123"
+
+
+@pytest.mark.unit
 def test_parse_search_response_decodes_non_ascii_paths(mocker):
     """_parse_search_response must percent-decode <d:href> for non-ASCII paths (issue #776).
 
@@ -746,9 +793,31 @@ async def test_write_file_sends_if_match_header_when_provided(mocker):
 
 
 @pytest.mark.unit
-async def test_write_file_omits_if_match_header_by_default(mocker):
-    """Unconditional overwrite (the pre-existing behavior) when if_match is
-    omitted -- no If-Match header sent."""
+async def test_write_file_sends_create_only_header_by_default(mocker):
+    """Fail-closed default: with no if_match, a create-only ``If-None-Match: *``
+    is sent so an existing file is never silently overwritten (no unconditional
+    last-write-wins PUT anymore)."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 201
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.write_file("Documents/new.txt", b"new")
+
+    headers = mock_http_client.request.call_args.kwargs["headers"]
+    assert headers["If-None-Match"] == "*"
+    assert "If-Match" not in headers
+
+
+@pytest.mark.unit
+async def test_write_file_sends_force_header_for_star(mocker):
+    """if_match='*' is the explicit force-overwrite escape hatch: send a bare
+    (unquoted) ``If-Match: *`` so the PUT overwrites an existing file but still
+    fails if the file does not exist."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
     client._principal_discovered = True
@@ -758,17 +827,19 @@ async def test_write_file_omits_if_match_header_by_default(mocker):
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
-    await client.write_file("Documents/notes.txt", b"new")
+    await client.write_file("Documents/notes.txt", b"new", if_match="*")
 
     headers = mock_http_client.request.call_args.kwargs["headers"]
-    assert "If-Match" not in headers
+    assert headers["If-Match"] == "*"
+    assert "If-None-Match" not in headers
 
 
 @pytest.mark.unit
-async def test_write_file_returns_structured_result_on_precondition_failed(mocker):
-    """412 (etag mismatch -- the file changed since if_match was read) is a
-    known conflict status: return a structured dict, don't raise, matching
-    move_resource/copy_resource's handling of their own conflict statuses."""
+async def test_write_file_returns_structured_result_on_stale_etag(mocker):
+    """412 from an If-Match etag (the file changed since if_match was read) is a
+    known conflict status: return a structured 'concurrent edit' dict, don't
+    raise, matching move_resource/copy_resource's handling of their own
+    conflict statuses."""
     from httpx import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
@@ -785,7 +856,53 @@ async def test_write_file_returns_structured_result_on_precondition_failed(mocke
 
     result = await client.write_file("Documents/notes.txt", b"new", if_match="stale")
     assert result["status_code"] == 412
-    assert "message" in result
+    assert "modified" in result["message"]
+
+
+@pytest.mark.unit
+async def test_write_file_returns_already_exists_on_create_conflict(mocker):
+    """412 from the create-only default (If-None-Match: *) means the path
+    already exists -- surface a distinct, actionable 'read it first' message."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp412 = mocker.Mock(spec=Response)
+    resp412.status_code = 412
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp412)
+        ),
+    )
+
+    result = await client.write_file("Documents/notes.txt", b"new")
+    assert result["status_code"] == 412
+    assert "already exists" in result["message"]
+
+
+@pytest.mark.unit
+async def test_write_file_returns_missing_on_force_overwrite_of_absent_file(mocker):
+    """412 from a force-overwrite (If-Match: *) means the file does not exist --
+    surface a distinct message rather than the generic conflict text."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp412 = mocker.Mock(spec=Response)
+    resp412.status_code = 412
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp412)
+        ),
+    )
+
+    result = await client.write_file("Documents/notes.txt", b"new", if_match="*")
+    assert result["status_code"] == 412
+    assert "does not exist" in result["message"]
 
 
 @pytest.mark.unit

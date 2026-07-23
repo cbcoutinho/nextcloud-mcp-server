@@ -61,26 +61,45 @@ await nc_webdav_copy_resource("document.txt", "Backup/document.txt")
 await nc_webdav_copy_resource("Projects/ProjectA", "Projects/ProjectA_Backup")
 ```
 
-### Detecting Concurrent Edits and Locks
+### Safe Writes: Concurrent Edits and Locks
 
-`nc_webdav_read_file` returns an `etag` for the file it read. Pass it back
-into `nc_webdav_write_file`'s `if_match` when writing that same path later:
-the write is then conditional and fails with a clear error instead of
-silently overwriting a change made elsewhere in the meantime (e.g. someone
-editing the file directly in the Nextcloud web UI).
+`nc_webdav_write_file` is **fail-closed** — it never silently overwrites an
+existing file. Every write is a conditional PUT; the `if_match` argument
+selects one of three modes:
+
+| `if_match`            | Behaviour |
+|-----------------------|-----------|
+| omitted (`None`)      | **Create-only.** Fails if the path already exists. |
+| an `etag`             | **Safe overwrite.** Fails if the file changed since that etag was read. |
+| `"*"`                 | **Force-overwrite.** Overwrites unconditionally; fails only if the file does not exist. |
+
+To change an existing file, read it first to obtain its `etag`
+(`nc_webdav_read_file` returns one), then pass that `etag` back into the
+write. If the file changed in the meantime (e.g. someone edited it directly
+in the Nextcloud web UI), the write fails instead of clobbering their change.
+`nc_webdav_list_directory` and the search/find tools also return an `etag`
+per file, so you can obtain one without a full read.
 
 ```python
-# Read, capture the etag, and write back conditionally
+# Read, capture the etag, and write back safely
 result = await nc_webdav_read_file("Documents/notes.md")
 await nc_webdav_write_file(
     "Documents/notes.md", result["content"] + "\nMore.", if_match=result["etag"]
 )
 # Raises ToolError if the file changed since the read (etag mismatch, HTTP 412)
 # or if it's locked by another client, e.g. open in the web editor (HTTP 423).
+
+# Create a brand-new file (fails with ToolError if it already exists):
+await nc_webdav_write_file("Documents/new.md", "# New")
+
+# Deliberately replace an existing file wholesale, without reading it first:
+await nc_webdav_write_file("Documents/notes.md", "# Regenerated", if_match="*")
 ```
 
-Omit `if_match` for a fresh file or a deliberate unconditional overwrite —
-this keeps the previous last-write-wins behavior.
+> **Breaking change (0.x):** an `if_match`-less write over an *existing* file
+> now fails with a `ToolError` rather than overwriting it (the previous
+> last-write-wins behaviour). Pass the file's `etag`, or `if_match="*"` to
+> force the overwrite.
 
 ### Write Size Limit
 

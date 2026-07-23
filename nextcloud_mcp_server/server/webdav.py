@@ -251,8 +251,11 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Write File",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # true unconditionally; with if_match a repeat
-            # call after a real conflict returns 412 both times, still idempotent
+            # Not idempotent: the write is fail-closed. A create (no if_match)
+            # succeeds once then returns 412 ("already exists") on repeat, and
+            # an if_match overwrite is invalidated by its own success (the etag
+            # changes) -- mirroring nc_notes_update_note's etag-guarded update.
+            idempotentHint=False,
             openWorldHint=True,
         ),
     )
@@ -267,25 +270,31 @@ def configure_webdav_tools(mcp: FastMCP):
     ):
         """Write content to a file in NextCloud.
 
+        Writes are **fail-closed**: an existing file is never silently
+        overwritten. What happens depends on ``if_match`` (see below).
+
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
         target path (or an ancestor folder) carries an excluded system tag;
         when the decoded content exceeds ``WEBDAV_WRITE_MAX_MB``; when the
-        write conflicts with a concurrent edit (412); or when the file is
-        locked by another client (423) -- see ``if_match`` below.
+        write conflicts with a concurrent edit or an existing/missing file
+        (412); or when the file is locked by another client (423) -- see
+        ``if_match`` below.
 
         Args:
             path: Full path where to write the file
             content: File content (text or base64 for binary)
             content_type: MIME type (auto-detected if not provided, use 'type;base64' for binary)
-            if_match: Etag previously returned by ``nc_webdav_read_file`` for
-                this same path. Pass it whenever you read this file earlier
-                in the conversation before writing it back: if the file
-                changed since that read (e.g. someone edited it manually in
-                the Nextcloud web UI), the write is rejected with a
-                ``ToolError`` instead of silently overwriting the newer
-                content -- re-read the file and retry deliberately rather
-                than looping automatically. Omit only for a fresh file, or
-                a deliberate unconditional overwrite.
+            if_match: Controls overwrite safety.
+                - Omit (``None``) to **create a new file**: the write fails
+                  with a ``ToolError`` if the path already exists. To change an
+                  existing file you must first read it with
+                  ``nc_webdav_read_file`` and pass the etag it returned.
+                - Pass that **etag** to overwrite the file only if it has not
+                  changed since you read it; if someone edited it in the
+                  meantime (e.g. in the Nextcloud web UI) the write fails --
+                  re-read and retry deliberately rather than looping.
+                - Pass the literal ``"*"`` to **force-overwrite** an existing
+                  file unconditionally (fails if the file does not exist).
 
         Returns:
             Dict with status_code indicating success

@@ -214,7 +214,9 @@ async def test_create_nested_directories(
 
 
 async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_path: str):
-    """Test overwriting an existing file."""
+    """Writes are fail-closed: an existing file can only be overwritten with a
+    matching etag (safe) or if_match='*' (force). An etag-less write over an
+    existing file fails; a stale etag fails; the fresh etag succeeds."""
     test_file = f"{test_base_path}/overwrite_test.txt"
     original_content = "Original content"
     new_content = "New content after overwrite"
@@ -223,24 +225,52 @@ async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_pat
         # Create base directory
         await nc_client.webdav.create_directory(test_base_path)
 
-        # Write original file
+        # Write original file (create-only default; the path does not exist yet)
         await nc_client.webdav.write_file(
             test_file, original_content.encode("utf-8"), content_type="text/plain"
         )
 
-        # Verify original content
+        # Verify original content and capture the etag
+        content, _, original_etag = await nc_client.webdav.read_file(test_file)
+        assert content.decode("utf-8") == original_content
+        assert original_etag
+
+        # An etag-less write over the now-existing file is refused (fail-closed).
+        create_conflict = await nc_client.webdav.write_file(
+            test_file, new_content.encode("utf-8"), content_type="text/plain"
+        )
+        assert create_conflict["status_code"] == 412
+        # Content is untouched.
         content, _, _ = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == original_content
 
-        # Overwrite with new content
+        # A stale etag is also refused.
+        stale = await nc_client.webdav.write_file(
+            test_file,
+            new_content.encode("utf-8"),
+            content_type="text/plain",
+            if_match="deadbeef-not-the-real-etag",
+        )
+        assert stale["status_code"] == 412
+
+        # The fresh etag succeeds.
         overwrite_result = await nc_client.webdav.write_file(
-            test_file, new_content.encode("utf-8"), content_type="text/plain"
+            test_file,
+            new_content.encode("utf-8"),
+            content_type="text/plain",
+            if_match=original_etag,
         )
         assert overwrite_result["status_code"] in [200, 204]  # OK or No Content
 
         # Verify new content
         content, _, _ = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == new_content
+
+        # if_match='*' force-overwrites an existing file unconditionally.
+        force_result = await nc_client.webdav.write_file(
+            test_file, b"Forced", content_type="text/plain", if_match="*"
+        )
+        assert force_result["status_code"] in [200, 204]
 
         logger.info("Successfully overwrote file: %s", test_file)
 
