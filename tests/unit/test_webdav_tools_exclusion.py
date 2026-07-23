@@ -571,8 +571,9 @@ async def test_write_file_raises_toolerror_when_file_already_exists(
     )
 
     fn = webdav_tools["nc_webdav_write_file"].fn
+    ctx = _mock_ctx(fake_client)
     with pytest.raises(ToolError, match="already exists"):
-        await fn(path="/Public/notes.md", content="hi", ctx=_mock_ctx(fake_client))
+        await fn(path="/Public/notes.md", content="hi", ctx=ctx)
 
 
 async def test_write_file_raises_toolerror_on_precondition_failed(
@@ -595,11 +596,12 @@ async def test_write_file_raises_toolerror_on_precondition_failed(
     )
 
     fn = webdav_tools["nc_webdav_write_file"].fn
+    ctx = _mock_ctx(fake_client)
     with pytest.raises(ToolError, match="modified since"):
         await fn(
             path="/Public/notes.md",
             content="hi",
-            ctx=_mock_ctx(fake_client),
+            ctx=ctx,
             if_match="stale",
         )
 
@@ -623,8 +625,9 @@ async def test_write_file_raises_toolerror_on_locked(
     )
 
     fn = webdav_tools["nc_webdav_write_file"].fn
+    ctx = _mock_ctx(fake_client)
     with pytest.raises(ToolError, match="locked"):
-        await fn(path="/Public/notes.md", content="hi", ctx=_mock_ctx(fake_client))
+        await fn(path="/Public/notes.md", content="hi", ctx=ctx)
 
 
 async def test_write_file_raises_toolerror_when_content_exceeds_configured_max_size(
@@ -641,8 +644,9 @@ async def test_write_file_raises_toolerror_when_content_exceeds_configured_max_s
     )
 
     fn = webdav_tools["nc_webdav_write_file"].fn
+    ctx = _mock_ctx(fake_client)
     with pytest.raises(ToolError, match="WEBDAV_WRITE_MAX_MB"):
-        await fn(path="/Public/notes.md", content="hi", ctx=_mock_ctx(fake_client))
+        await fn(path="/Public/notes.md", content="hi", ctx=ctx)
 
     fake_client.webdav.write_file.assert_not_called()
 
