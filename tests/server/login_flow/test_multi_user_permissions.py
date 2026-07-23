@@ -133,24 +133,30 @@ class TestFilePermissions:
             assert not result.isError
             bob_share_id = json.loads(result.content[0].text)["id"]
 
-            # Charlie can write
+            # Charlie can write. Writes are fail-closed, so overwriting the
+            # existing shared file needs an explicit if_match -- use "*" to
+            # force the overwrite; success proves he has write permission.
             result = await charlie_login_flow_mcp_client.call_tool(
                 "nc_webdav_write_file",
                 arguments={
                     "path": file_path,
                     "content": f"{file_content}\nCharlie added this line.",
+                    "if_match": "*",
                 },
             )
             assert not result.isError, (
                 f"Charlie should be able to write: {result.content}"
             )
 
-            # Bob cannot write
+            # Bob cannot write. Same force-overwrite request, so the failure is
+            # a genuine permission denial (read-only share), not the fail-closed
+            # create-only guard tripping on the existing file.
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_webdav_write_file",
                 arguments={
                     "path": file_path,
                     "content": "Bob tries to overwrite this.",
+                    "if_match": "*",
                 },
             )
             assert result.isError, "Bob should be denied write access (read-only)"
