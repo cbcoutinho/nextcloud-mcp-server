@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.144.1 (2026-07-23)
+
+### Fix
+
+- **api**: resolve SonarCloud findings on the new webhook 400 path
+- **auth**: capture tracebacks in webhook_routes catch-alls + document raise
+- **api**: stop broad handlers masking faults in the webhook/admin surface
+
 ## v0.144.0 (2026-07-21)
 
 ### Feat
