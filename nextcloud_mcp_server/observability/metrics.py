@@ -664,14 +664,68 @@ document_download_truncated_total = Counter(
 db_operations_total = Counter(
     "mcp_db_operations_total",
     "Total database operations",
-    ["db", "operation", "status"],  # db: sqlite | qdrant; operation varies
+    # db: sqlite | postgresql | qdrant; operation varies
+    ["db", "operation", "status"],
 )
 
+# Buckets deliberately reach 10s. The original ceiling was 1.0s, which made this
+# histogram blind to the only incident it ever needed to catch: a per-operation
+# regression from 65ms to ~1.9s (Deck #678) put ~50% of Postgres samples in the
+# +Inf bucket, so p95/p99 were unusable and the regression was visible only in
+# Tempo. Every original edge is retained so historical series stay comparable.
+# The 0.75/1.5 edges straddle a 1s TCP RTO on purpose: a network-retry stall
+# piles up against them, which distinguishes it from genuinely slow DB work.
 db_operation_duration_seconds = Histogram(
     "mcp_db_operation_duration_seconds",
-    "Database operation duration in seconds",
+    "Database operation duration in seconds (includes connection acquisition)",
     ["db", "operation"],
-    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+    buckets=(
+        0.001,
+        0.0025,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        1.0,
+        1.5,
+        2.5,
+        5.0,
+        10.0,
+    ),
+)
+
+# Connection acquisition, split out from the operation it serves. Under NullPool
+# (ADR-026) every operation opens a fresh connection, so this is a real per-op
+# cost, not a startup cost — and `db_operation_duration_seconds` above bundles it
+# with execute, which is exactly why a ~600ms connect hid inside a "slow insert"
+# for a day (Deck #678: one PgBouncer replica was scheduled in another
+# continent; ~50% of connections paid a transatlantic TLS handshake).
+# Labelled by dialect only: an "operation" is meaningless for a connect.
+db_connect_duration_seconds = Histogram(
+    "mcp_db_connect_duration_seconds",
+    "Database connection acquisition duration in seconds",
+    ["db"],
+    buckets=(
+        0.001,
+        0.0025,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        1.0,
+        1.5,
+        2.5,
+        5.0,
+        10.0,
+    ),
 )
 
 # pypdfium2 / pymupdf are not thread-safe; concurrent ingest jobs serialize their
@@ -819,14 +873,32 @@ def record_db_operation(
     """
     Record a database operation.
 
+    Note that ``duration`` covers connection acquisition as well as execution;
+    use :func:`record_db_connect` to attribute the acquire half.
+
     Args:
-        db: Database type ("sqlite" or "qdrant")
+        db: Database type ("sqlite", "postgresql", or "qdrant")
         operation: Operation type (e.g., "insert", "select", "upsert", "search")
         duration: Operation duration in seconds
         status: "success" or "error"
     """
     db_operations_total.labels(db=db, operation=operation, status=status).inc()
     db_operation_duration_seconds.labels(db=db, operation=operation).observe(duration)
+
+
+def record_db_connect(db: str, duration: float) -> None:
+    """
+    Record a database connection acquisition.
+
+    Under NullPool this fires once per operation, so a rising ``_count`` rate is
+    normal. If connection pooling is ever reintroduced, that rate collapsing
+    toward zero is the signal the pool is actually being reused.
+
+    Args:
+        db: Database type ("sqlite" or "postgresql")
+        duration: Time to acquire the connection, in seconds
+    """
+    db_connect_duration_seconds.labels(db=db).observe(duration)
 
 
 def set_dependency_health(dependency: str, is_healthy: bool) -> None:

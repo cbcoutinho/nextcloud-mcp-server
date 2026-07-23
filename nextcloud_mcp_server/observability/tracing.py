@@ -364,7 +364,7 @@ def trace_db_operation(
             pass
 
     Args:
-        db: Database type (sqlite, qdrant)
+        db: Database type (sqlite, postgresql, qdrant)
         operation: Operation type (insert, select, update, delete, upsert, search)
         table: Optional table/collection name
 
@@ -380,6 +380,29 @@ def trace_db_operation(
         attributes["db.table"] = table
 
     return trace_operation(f"db.{db}.{operation}", attributes)
+
+
+def trace_db_connect(db: str):
+    """
+    Create a span for acquiring a database connection.
+
+    Nests inside :func:`trace_db_operation`, splitting "how long did the query
+    take" from "how long did it take to get a connection at all". Deck #678: a
+    single span covering both hid a ~600ms connect inside an apparently slow
+    insert, because under NullPool (ADR-026) every operation opens a fresh
+    connection and pays the full TCP + TLS + auth handshake.
+
+    Usage:
+        with trace_db_connect("postgresql"):
+            conn = await engine.connect()
+
+    Args:
+        db: Database type (sqlite, postgresql)
+
+    Returns:
+        Context manager for the span
+    """
+    return trace_operation(f"db.{db}.connect", {"db.system": db})
 
 
 def add_span_attribute(key: str, value: Any) -> None:

@@ -104,8 +104,27 @@ Corpus shape, recorded before the oversize gate so the over-cap tail is visible:
 
 ### Database Metrics
 
-- `mcp_db_operations_total` - DB operations (SQLite, Qdrant)
-- `mcp_db_operation_duration_seconds` - DB latency
+- `mcp_db_operations_total` - DB operations (SQLite, Postgres, Qdrant)
+- `mcp_db_operation_duration_seconds` - DB latency, **including connection
+  acquisition**
+- `mcp_db_connect_duration_seconds` - Connection-acquisition latency alone
+
+Postgres uses `NullPool` (ADR-026), so a connection is opened per operation and
+`mcp_db_connect_duration_seconds` fires once per op — its `_count` rate tracking
+the operation rate is expected, not a leak. Compare the two histograms to split
+"the query is slow" from "getting a connection is slow":
+
+```promql
+# What fraction of an operation is spent just getting a connection?
+sum(rate(mcp_db_connect_duration_seconds_sum{db="postgresql"}[5m]))
+  / sum(rate(mcp_db_operation_duration_seconds_sum{db="postgresql"}[5m]))
+```
+
+A high ratio means the cost is the handshake (network path, TLS, pooler
+placement), not the SQL. Deck #678 was exactly this: a PgBouncer replica
+scheduled in another region made ~50% of connects pay a transatlantic TLS
+handshake (~600ms vs ~30ms), which presented as a "slow `usage_events` insert"
+because one span covered both halves.
 
 ### Dependency Health
 
