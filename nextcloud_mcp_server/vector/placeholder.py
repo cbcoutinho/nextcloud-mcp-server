@@ -192,7 +192,7 @@ async def query_document_metadata(
 
         if scroll_result[0]:
             point = scroll_result[0][0]
-            return dict(point.payload) if point.payload else None
+            return dict(point.payload) if point.payload is not None else None
 
         return None
 
