@@ -259,6 +259,31 @@ async def test_list_directory_filters_excluded_children(
     assert [f.path for f in result.files] == ["/Public/visible.md"]
 
 
+async def test_list_directory_surfaces_etag_on_fileinfo(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    """The etag the client parses from PROPFIND must reach the MCP tool's
+    FileInfo, so a caller can obtain one for write_file's if_match from a
+    listing (wire-through of the client dict into FileInfo(**result))."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.list_directory = AsyncMock(
+        return_value=[
+            {
+                "path": "/Public/notes.md",
+                "name": "notes.md",
+                "is_directory": False,
+                "etag": "abc123",
+            },
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_list_directory"].fn
+    result = await fn(path="/Public", ctx=_mock_ctx(fake_client))
+
+    assert result.files[0].etag == "abc123"
+
+
 async def test_list_directory_raises_when_listed_path_itself_excluded(
     webdav_tools, fake_client, patch_get_client, patch_excluded
 ):

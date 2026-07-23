@@ -633,7 +633,8 @@ class WebDAVClient(BaseNextcloudClient):
         write the file back can pass it as ``write_file``'s ``if_match`` and
         detect a concurrent edit (made e.g. directly in the Nextcloud web UI)
         instead of silently overwriting it -- there was previously no way for
-        a caller to even notice that race.
+        a caller to even notice that race. The etag is ``None`` if the server
+        did not return an ``ETag`` header.
         """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
