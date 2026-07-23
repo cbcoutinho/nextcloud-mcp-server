@@ -340,3 +340,47 @@ async def test_get_basic_auth_for_user_raises_when_unprovisioned(mocker):
 
     with pytest.raises(ProvisioningRequiredError):
         await get_basic_auth_for_user("admin")
+
+
+class TestCreateWebhookMalformedBody:
+    """A malformed request body is a caller fault (400), not a server fault (500).
+
+    ``await request.json()`` used to sit inside the handler's catch-all, so a bad
+    payload surfaced as 500 "Internal error" — telling the client the server is
+    broken when the client sent bad JSON, and burying a routine 400 in the error
+    logs. ``delete_webhook`` already guarded its ``int()`` parse this way.
+    """
+
+    def test_malformed_json_returns_400_not_500(self, mocker):
+        _patch_token_validation(mocker)
+        client = TestClient(_build_test_app())
+
+        response = client.post(
+            "/api/v1/webhooks",
+            content=b"{not json",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "Bad request"
+
+    def test_non_object_json_body_returns_400_not_500(self, mocker):
+        """A JSON array parses fine but has no .get() — previously an AttributeError
+        inside the catch-all, i.e. another 500."""
+        _patch_token_validation(mocker)
+        client = TestClient(_build_test_app())
+
+        response = client.post("/api/v1/webhooks", json=[])
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "Bad request"
+
+    def test_missing_fields_still_returns_400(self, mocker):
+        """The pre-existing required-field check must survive the refactor."""
+        _patch_token_validation(mocker)
+        client = TestClient(_build_test_app())
+
+        response = client.post("/api/v1/webhooks", json={"event": "SomeEvent"})
+
+        assert response.status_code == 400
+        assert "Missing required fields" in response.json()["message"]

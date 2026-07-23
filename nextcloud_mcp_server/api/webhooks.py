@@ -38,6 +38,9 @@ from ..http import nextcloud_httpx_client
 
 logger = logging.getLogger(__name__)
 
+# Client-fault error label, shared by every 400 in this module (python:S1192).
+_BAD_REQUEST = "Bad request"
+
 
 async def get_installed_apps(request: Request) -> JSONResponse:
     """GET /api/v1/apps - Get list of installed Nextcloud apps.
@@ -188,23 +191,43 @@ async def create_webhook(request: Request) -> JSONResponse:
             status_code=401,
         )
 
+    # Parse the body before the try below: a malformed payload is a *caller* fault
+    # (400), but inside that block it would be swallowed by the catch-all and
+    # reported as 500 "Internal error" — telling the client the server is broken
+    # when the client sent bad JSON. Mirrors the int() guard in delete_webhook.
     try:
-        # Parse request body
         body = await request.json()
-        event = body.get("event")
-        uri = body.get("uri")
-        # Accept both camelCase (eventFilter) and snake_case (event_filter)
-        event_filter = body.get("eventFilter") or body.get("event_filter")
+    except ValueError as e:
+        # ValueError alone covers both realistic failures: json.JSONDecodeError and
+        # UnicodeDecodeError are each a ValueError subclass (python:S5713).
+        logger.warning("Create-webhook payload was not valid JSON: %s", e)
+        return JSONResponse(
+            {"error": _BAD_REQUEST, "message": "Invalid JSON"},
+            status_code=400,
+        )
 
-        if not event or not uri:
-            return JSONResponse(
-                {
-                    "error": "Bad request",
-                    "message": "Missing required fields: event, uri",
-                },
-                status_code=400,
-            )
+    # A JSON scalar/array parses fine but has no .get — also a caller fault, not a 500.
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": _BAD_REQUEST, "message": "Request body must be a JSON object"},
+            status_code=400,
+        )
 
+    event = body.get("event")
+    uri = body.get("uri")
+    # Accept both camelCase (eventFilter) and snake_case (event_filter)
+    event_filter = body.get("eventFilter") or body.get("event_filter")
+
+    if not event or not uri:
+        return JSONResponse(
+            {
+                "error": _BAD_REQUEST,
+                "message": "Missing required fields: event, uri",
+            },
+            status_code=400,
+        )
+
+    try:
         username, app_password = await get_basic_auth_for_user(user_id)
 
         oauth_ctx = request.app.state.oauth_context
@@ -285,7 +308,7 @@ async def delete_webhook(request: Request) -> JSONResponse:
         webhook_id = request.path_params.get("webhook_id")
         if not webhook_id:
             return JSONResponse(
-                {"error": "Bad request", "message": "Missing webhook_id"},
+                {"error": _BAD_REQUEST, "message": "Missing webhook_id"},
                 status_code=400,
             )
 
@@ -293,7 +316,7 @@ async def delete_webhook(request: Request) -> JSONResponse:
             webhook_id = int(webhook_id)
         except ValueError:
             return JSONResponse(
-                {"error": "Bad request", "message": "Invalid webhook_id"},
+                {"error": _BAD_REQUEST, "message": "Invalid webhook_id"},
                 status_code=400,
             )
 
