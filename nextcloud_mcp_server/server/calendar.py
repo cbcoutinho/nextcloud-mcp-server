@@ -1131,6 +1131,50 @@ def configure_calendar_tools(mcp: FastMCP):
         return await client.calendar.delete_todo(calendar_name, todo_uid)
 
     @mcp.tool(
+        title="Complete Todo Task",
+        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+    )
+    @require_scopes("todo.write", "calendar.read")
+    @instrument_tool
+    async def nc_calendar_complete_todo(
+        calendar_name: str,
+        todo_uid: str,
+        ctx: Context,
+        completed_at: Optional[str] = None,
+    ):
+        """Mark a todo/task as completed.
+
+        Convenience wrapper around nc_calendar_update_todo that sets
+        STATUS=COMPLETED, PERCENT-COMPLETE=100, and the COMPLETED
+        timestamp in one call. Equivalent to invoking update_todo with
+        those three fields populated; useful for AI clients where
+        "complete this task" is a more natural phrasing than "set status
+        to COMPLETED, set percent_complete to 100, set completed
+        timestamp".
+
+        Args:
+            calendar_name: Name of the calendar containing the todo
+            todo_uid: UID of the todo to mark complete
+            ctx: MCP context
+            completed_at: Optional ISO 8601 completion timestamp.
+                Defaults to the current UTC time if not provided.
+
+        Returns:
+            Dict with the update result.
+        """
+        client = await get_client(ctx)
+        if completed_at is None:
+            completed_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        todo_data = {
+            "status": "COMPLETED",
+            "percent_complete": 100,
+            "completed": completed_at,
+        }
+        return await client.calendar.update_todo(
+            calendar_name, todo_uid, todo_data
+        )
+
+    @mcp.tool(
         title="Search Todo Tasks",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
