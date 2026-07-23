@@ -153,7 +153,7 @@ async def test_webdav_equal_principal_keeps_username_path(mocker):
         side_effect=[_http_response(_principal_body("alice")), file_response]
     )
 
-    content, _ = await client.read_file("notes.txt")
+    content, _, _ = await client.read_file("notes.txt")
 
     assert content == b"hello"
     calls = client._make_request.await_args_list
@@ -169,7 +169,7 @@ async def test_webdav_discovery_failure_falls_back_to_username(mocker):
         side_effect=[_request_error(), file_response]
     )
 
-    content, _ = await client.read_file("notes.txt")
+    content, _, _ = await client.read_file("notes.txt")
 
     assert content == b"fallback"
     calls = client._make_request.await_args_list
@@ -209,7 +209,7 @@ async def test_webdav_principal_href_is_unquoted(mocker):
         ]
     )
 
-    content, _ = await client.read_file("notes.txt")
+    content, _, _ = await client.read_file("notes.txt")
 
     assert content == b"mailbox"
     assert client._principal_id == "alice@example.com"
@@ -234,8 +234,8 @@ async def test_webdav_missing_principal_href_falls_back_without_caching(mocker):
         ]
     )
 
-    first_content, _ = await client.read_file("one.txt")
-    second_content, _ = await client.read_file("two.txt")
+    first_content, _, _ = await client.read_file("one.txt")
+    second_content, _, _ = await client.read_file("two.txt")
 
     assert first_content == b"fallback"
     assert second_content == b"discovered"

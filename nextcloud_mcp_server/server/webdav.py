@@ -108,10 +108,15 @@ def configure_webdav_tools(mcp: FastMCP):
                 raises ``ToolError`` otherwise. ``None`` = auto-select.
 
         Returns:
-            Dict with path, content, content_type, size, and optional parsing metadata
+            Dict with path, content, content_type, size, etag, and optional
+            parsing metadata
             - Text files are decoded to UTF-8
             - Documents (PDF, DOCX, etc.) are parsed and text is extracted
             - Other binary files are base64 encoded
+            - ``etag``: pass this back into ``nc_webdav_write_file``'s
+              ``if_match`` when writing this same path later, so a manual
+              edit made elsewhere in the meantime (e.g. in the Nextcloud web
+              UI) is detected as a conflict instead of silently overwritten.
         """
         client = await get_client(ctx)
 
@@ -120,7 +125,7 @@ def configure_webdav_tools(mcp: FastMCP):
         if is_path_excluded(path, excluded):
             raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
 
-        content, content_type = await client.webdav.read_file(path)
+        content, content_type, etag = await client.webdav.read_file(path)
 
         # Imported lazily so server startup never loads the document-parsing
         # stack (document_processors -> pymupdf -> _isolation). That stack is an
@@ -189,6 +194,7 @@ def configure_webdav_tools(mcp: FastMCP):
                     "size": len(content),
                     "parsed": True,
                     "parsing_metadata": metadata,
+                    "etag": etag,
                 }
             except TimeoutError as e:
                 # Caught before the generic Exception (subclass-first). When the cap
@@ -226,6 +232,7 @@ def configure_webdav_tools(mcp: FastMCP):
                     "content": decoded_content,
                     "content_type": content_type,
                     "size": len(content),
+                    "etag": etag,
                 }
             except UnicodeDecodeError:
                 pass
@@ -238,29 +245,47 @@ def configure_webdav_tools(mcp: FastMCP):
             "content_type": content_type,
             "size": len(content),
             "encoding": "base64",
+            "etag": etag,
         }
 
     @mcp.tool(
         title="Write File",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # HTTP PUT without version control is idempotent
+            idempotentHint=True,  # true unconditionally; with if_match a repeat
+            # call after a real conflict returns 412 both times, still idempotent
             openWorldHint=True,
         ),
     )
     @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_write_file(
-        path: str, content: str, ctx: Context, content_type: str | None = None
+        path: str,
+        content: str,
+        ctx: Context,
+        content_type: str | None = None,
+        if_match: str | None = None,
     ):
         """Write content to a file in NextCloud.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
-        target path (or an ancestor folder) carries an excluded system tag.
+        target path (or an ancestor folder) carries an excluded system tag;
+        when the decoded content exceeds ``WEBDAV_WRITE_MAX_MB``; when the
+        write conflicts with a concurrent edit (412); or when the file is
+        locked by another client (423) -- see ``if_match`` below.
 
         Args:
             path: Full path where to write the file
             content: File content (text or base64 for binary)
             content_type: MIME type (auto-detected if not provided, use 'type;base64' for binary)
+            if_match: Etag previously returned by ``nc_webdav_read_file`` for
+                this same path. Pass it whenever you read this file earlier
+                in the conversation before writing it back: if the file
+                changed since that read (e.g. someone edited it manually in
+                the Nextcloud web UI), the write is rejected with a
+                ``ToolError`` instead of silently overwriting the newer
+                content -- re-read the file and retry deliberately rather
+                than looping automatically. Omit only for a fresh file, or
+                a deliberate unconditional overwrite.
 
         Returns:
             Dict with status_code indicating success
@@ -279,7 +304,32 @@ def configure_webdav_tools(mcp: FastMCP):
         else:
             content_bytes = content.encode("utf-8")
 
-        return await client.webdav.write_file(path, content_bytes, content_type)
+        # Pre-flight size gate: a single-shot PUT built from one in-memory MCP
+        # tool argument has no chunked/streaming path, so fail fast with a
+        # clear error rather than risk a timeout or OOM on a huge file.
+        max_mb = get_settings().webdav_write_max_mb
+        if max_mb:
+            size_mb = len(content_bytes) / (1024 * 1024)
+            if size_mb > max_mb:
+                raise ToolError(
+                    f"Refusing to write {path!r}: {size_mb:.1f} MB exceeds the "
+                    f"configured WEBDAV_WRITE_MAX_MB ({max_mb} MB). Write the "
+                    "file directly via the Nextcloud web UI or a synced client "
+                    "instead, or raise WEBDAV_WRITE_MAX_MB if this size is "
+                    "expected."
+                )
+
+        result = await client.webdav.write_file(
+            path, content_bytes, content_type, if_match=if_match
+        )
+        # write_file returns (rather than raises) on 412/423 -- known
+        # conflict statuses the caller must react to, mirroring
+        # move_resource/copy_resource. Raise here so they surface exactly
+        # like any other actionable failure of this tool.
+        status_code = result.get("status_code")
+        if status_code in (412, 423):
+            raise ToolError(f"{result['message']} ({path!r})")
+        return result
 
     @mcp.tool(
         title="Create Directory",

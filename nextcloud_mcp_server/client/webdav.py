@@ -541,8 +541,15 @@ class WebDAVClient(BaseNextcloudClient):
         logger.debug("Streamed '%s' to %s (%s bytes)", path, dest, written)
         return written, content_type
 
-    async def read_file(self, path: str) -> Tuple[bytes, str]:
-        """Read a file's content via WebDAV GET."""
+    async def read_file(self, path: str) -> Tuple[bytes, str, Optional[str]]:
+        """Read a file's content via WebDAV GET.
+
+        Returns the ``ETag`` alongside the content so a caller that intends to
+        write the file back can pass it as ``write_file``'s ``if_match`` and
+        detect a concurrent edit (made e.g. directly in the Nextcloud web UI)
+        instead of silently overwriting it -- there was previously no way for
+        a caller to even notice that race.
+        """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
 
@@ -556,9 +563,12 @@ class WebDAVClient(BaseNextcloudClient):
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
+            etag = response.headers.get("etag")
+            if etag is not None:
+                etag = etag.strip('"')
 
             logger.debug("Successfully read file '%s' (%s bytes)", path, len(content))
-            return content, content_type
+            return content, content_type, etag
 
         except HTTPStatusError as e:
             logger.error("HTTP error reading file '%s': %s", path, e)
@@ -568,9 +578,34 @@ class WebDAVClient(BaseNextcloudClient):
             raise e
 
     async def write_file(
-        self, path: str, content: bytes, content_type: Optional[str] = None
+        self,
+        path: str,
+        content: bytes,
+        content_type: Optional[str] = None,
+        if_match: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Write content to a file via WebDAV PUT."""
+        """Write content to a file via WebDAV PUT.
+
+        Args:
+            path: Destination path.
+            content: Raw bytes to write.
+            content_type: MIME type (guessed from ``path`` if omitted).
+            if_match: ETag previously returned by :meth:`read_file` for this
+                same path. When given, the PUT is conditional (``If-Match``):
+                Nextcloud rejects it with 412 if the file changed since that
+                read instead of silently overwriting the newer content.
+                Omit for the previous unconditional (last-write-wins) PUT.
+
+        Returns:
+            ``{"status_code": ...}`` on success. On a 412 (etag mismatch,
+            i.e. the file was modified since ``if_match`` was read) or a 423
+            (WebDAV lock held by another client, e.g. the file is open in the
+            Nextcloud web editor), returns ``{"status_code": ..., "message":
+            ...}`` instead of raising, matching ``move_resource``/
+            ``copy_resource``'s handling of their own known conflict statuses
+            -- both are conditions a caller should react to, not a transport
+            failure. Any other error status still raises ``HTTPStatusError``.
+        """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
 
@@ -582,6 +617,8 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = "application/octet-stream"
 
         headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
+        if if_match is not None:
+            headers["If-Match"] = f'"{if_match}"'
 
         try:
             response = await self._make_request(
@@ -593,6 +630,24 @@ class WebDAVClient(BaseNextcloudClient):
             return {"status_code": response.status_code}
 
         except HTTPStatusError as e:
+            if e.response.status_code == 412:
+                logger.debug(
+                    "Precondition failed writing '%s': file changed since if_match "
+                    "etag was read",
+                    path,
+                )
+                return {
+                    "status_code": 412,
+                    "message": "File was modified since the given etag was read "
+                    "(concurrent edit) — re-read before writing",
+                }
+            if e.response.status_code == 423:
+                logger.debug("Resource locked writing '%s'", path)
+                return {
+                    "status_code": 423,
+                    "message": "File is locked by another client (e.g. open in "
+                    "the Nextcloud web editor) — not retried automatically",
+                }
             logger.error("HTTP error writing file '%s': %s", path, e)
             raise e
         except Exception as e:

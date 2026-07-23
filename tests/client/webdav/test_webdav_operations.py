@@ -70,9 +70,10 @@ async def test_write_read_delete_file(nc_client: NextcloudClient, test_base_path
         logger.info("Wrote file: %s", test_file)
 
         # Read file back
-        content, content_type = await nc_client.webdav.read_file(test_file)
+        content, content_type, etag = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == test_content
         assert "text/plain" in content_type
+        assert etag
         logger.info("Read file: %s", test_file)
 
         # Verify file appears in directory listing
@@ -228,7 +229,7 @@ async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_pat
         )
 
         # Verify original content
-        content, _ = await nc_client.webdav.read_file(test_file)
+        content, _, _ = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == original_content
 
         # Overwrite with new content
@@ -238,7 +239,7 @@ async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_pat
         assert overwrite_result["status_code"] in [200, 204]  # OK or No Content
 
         # Verify new content
-        content, _ = await nc_client.webdav.read_file(test_file)
+        content, _, _ = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == new_content
 
         logger.info("Successfully overwrote file: %s", test_file)

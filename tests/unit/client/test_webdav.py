@@ -647,7 +647,7 @@ async def test_read_file_accepts_matching_content_length(mocker):
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
-    content, content_type = await client.read_file("Documents/report.pdf")
+    content, content_type, _ = await client.read_file("Documents/report.pdf")
     assert content == body
     assert content_type == "application/pdf"
 
@@ -672,7 +672,7 @@ async def test_read_file_accepts_gzip_response_shorter_than_content_length(mocke
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
-    content, _ = await client.read_file("Documents/index.json")
+    content, _, _ = await client.read_file("Documents/index.json")
     assert content == body
 
 
@@ -689,8 +689,149 @@ async def test_read_file_skips_check_without_content_length(mocker):
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
-    content, _ = await client.read_file("Documents/stream.txt")
+    content, _, _ = await client.read_file("Documents/stream.txt")
     assert content == body
+
+
+@pytest.mark.unit
+async def test_read_file_returns_etag_stripped_of_quotes(mocker):
+    """The ETag header is surfaced so callers can round-trip it into write_file's
+    if_match and detect a concurrent edit instead of silently overwriting it."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"hello"
+    mock_response.headers = {"content-type": "text/plain", "etag": '"abc123"'}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    _, _, etag = await client.read_file("Documents/notes.txt")
+    assert etag == "abc123"
+
+
+@pytest.mark.unit
+async def test_read_file_returns_none_etag_when_absent(mocker):
+    """No ETag header (unlikely on Nextcloud, but not every WebDAV server sends
+    one) must not raise -- callers simply can't pass if_match for this read."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"hello"
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    _, _, etag = await client.read_file("Documents/notes.txt")
+    assert etag is None
+
+
+@pytest.mark.unit
+async def test_write_file_sends_if_match_header_when_provided(mocker):
+    """if_match must reach the server as a quoted If-Match header."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 204
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.write_file("Documents/notes.txt", b"new", if_match="abc123")
+
+    headers = mock_http_client.request.call_args.kwargs["headers"]
+    assert headers["If-Match"] == '"abc123"'
+
+
+@pytest.mark.unit
+async def test_write_file_omits_if_match_header_by_default(mocker):
+    """Unconditional overwrite (the pre-existing behavior) when if_match is
+    omitted -- no If-Match header sent."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 204
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.write_file("Documents/notes.txt", b"new")
+
+    headers = mock_http_client.request.call_args.kwargs["headers"]
+    assert "If-Match" not in headers
+
+
+@pytest.mark.unit
+async def test_write_file_returns_structured_result_on_precondition_failed(mocker):
+    """412 (etag mismatch -- the file changed since if_match was read) is a
+    known conflict status: return a structured dict, don't raise, matching
+    move_resource/copy_resource's handling of their own conflict statuses."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp412 = mocker.Mock(spec=Response)
+    resp412.status_code = 412
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp412)
+        ),
+    )
+
+    result = await client.write_file("Documents/notes.txt", b"new", if_match="stale")
+    assert result["status_code"] == 412
+    assert "message" in result
+
+
+@pytest.mark.unit
+async def test_write_file_returns_structured_result_on_locked(mocker):
+    """423 (WebDAV lock held by another client, e.g. the file is open in the
+    Nextcloud web editor) is a known conflict status: return a structured
+    dict, don't raise -- a caller retrying the same write automatically would
+    otherwise be indistinguishable from any other transport failure."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp423 = mocker.Mock(spec=Response)
+    resp423.status_code = 423
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp423)
+        ),
+    )
+
+    result = await client.write_file("Documents/notes.txt", b"new")
+    assert result["status_code"] == 423
+    assert "message" in result
+
+
+@pytest.mark.unit
+async def test_write_file_still_raises_on_other_http_errors(mocker):
+    """Any status other than 412/423 keeps the pre-existing raise behavior."""
+    from httpx import HTTPStatusError, Response
+
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
+    resp500 = mocker.Mock(spec=Response)
+    resp500.status_code = 500
+    mocker.patch.object(
+        client,
+        "_make_request",
+        AsyncMock(
+            side_effect=HTTPStatusError("x", request=mocker.Mock(), response=resp500)
+        ),
+    )
+
+    with pytest.raises(HTTPStatusError):
+        await client.write_file("Documents/notes.txt", b"new")
 
 
 @pytest.mark.unit

@@ -123,7 +123,7 @@ def configure_collectives_tools(mcp: FastMCP):
             parts.append(page.fileName)
             webdav_path = "/".join(p.strip("/") for p in parts)
             try:
-                file_bytes, _ = await client.webdav.read_file(webdav_path)
+                file_bytes, _, _ = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
             except (HTTPStatusError, OSError, UnicodeDecodeError) as e:
                 logger.warning(
