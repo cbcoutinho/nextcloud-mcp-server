@@ -5,6 +5,24 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.145.0 (2026-07-23)
+
+### BREAKING CHANGE
+
+- nc_webdav_write_file no longer silently overwrites an
+existing file. Omitting if_match now creates a file and fails if it already
+exists; to overwrite, pass the etag from nc_webdav_read_file, or if_match="*"
+to force it.
+
+### Fix
+
+- **webdav**: make writes fail-closed to guarantee zero data loss
+- **webdav**: detect concurrent edits and locks on write, guard oversized writes
+
+### Refactor
+
+- **webdav**: extract write precondition/conflict helpers (Sonar S3776)
+
 ## v0.144.2 (2026-07-23)
 
 ### Perf
