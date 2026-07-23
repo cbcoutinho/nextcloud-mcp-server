@@ -211,6 +211,12 @@ _DEFAULTS: dict[str, Any] = {
     # "oversize" instead of burning the OCR timeout to 0 chars on a pathological
     # file. 0 disables the guard.
     "document_max_pdf_size_mb": 50.0,
+    # Pre-flight cap (MB) on nc_webdav_write_file's content: a huge PUT built
+    # from a single in-memory MCP tool argument (no chunked/streaming upload
+    # exists for writes, unlike the read-side stream_to_file path) risks
+    # timing out or exhausting memory rather than failing predictably. 0
+    # disables the guard.
+    "webdav_write_max_mb": 50.0,
     # Page ceiling for markdown reconstruction (see document_markdown_max_pages).
     "document_markdown_max_pages": 150,
     # Pages per pypdfium2 extraction window (see document_parse_page_window).
@@ -1151,6 +1157,9 @@ class Settings:
     # being handed to the fast/OCR tiers, where a pathological large file burns
     # the OCR timeout for 0 chars. 0 disables the guard.
     document_max_pdf_size_mb: float = 50.0
+    # Pre-flight cap (MB) on nc_webdav_write_file's content (see _DEFAULTS
+    # for rationale). 0 disables the guard.
+    webdav_write_max_mb: float = 50.0
     # Page ceiling above which the structured tier skips pymupdf4llm.to_markdown
     # and returns the raw text layer instead. 0 disables markdown entirely
     # (every document takes the raw-text path), matching how
@@ -2013,6 +2022,7 @@ def _build_settings() -> Settings:
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
+        "webdav_write_max_mb": "WEBDAV_WRITE_MAX_MB",
         "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",

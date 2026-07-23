@@ -121,11 +121,14 @@ async def test_update_operations_not_idempotent(nc_mcp_client: ClientSession):
             )
 
 
-async def test_webdav_write_is_idempotent(nc_mcp_client: ClientSession):
-    """Verify nc_webdav_write_file is marked as idempotent (ADR-017 decision).
+async def test_webdav_write_is_not_idempotent(nc_mcp_client: ClientSession):
+    """Verify nc_webdav_write_file is marked as non-idempotent.
 
-    WebDAV write uses HTTP PUT without version control, making it idempotent.
-    Writing same content to same path repeatedly produces same end state.
+    The write is fail-closed (every PUT is conditional): a create (no if_match)
+    succeeds once then returns 412 on repeat, and an if_match overwrite is
+    invalidated by its own success (the etag changes) -- so writing the same
+    content to the same path repeatedly does NOT produce the same result,
+    mirroring the etag-guarded nc_notes_update_note.
     """
     tools = await nc_mcp_client.list_tools()
 
@@ -134,8 +137,8 @@ async def test_webdav_write_is_idempotent(nc_mcp_client: ClientSession):
     )
     assert write_tool is not None, "nc_webdav_write_file tool not found"
     assert write_tool.annotations is not None, "write_file missing annotations"
-    assert write_tool.annotations.idempotentHint is True, (
-        "nc_webdav_write_file should be idempotent (HTTP PUT without version control)"
+    assert write_tool.annotations.idempotentHint is not True, (
+        "nc_webdav_write_file should not be idempotent (fail-closed conditional PUT)"
     )
 
 

@@ -1335,7 +1335,7 @@ async def _index_document_inner(
                 content_bytes = None
             else:
                 # Buffered fallback (DOCUMENT_STREAM_DOWNLOAD_ENABLED=false).
-                content_bytes, content_type = await nc_client.webdav.read_file(
+                content_bytes, content_type, _ = await nc_client.webdav.read_file(
                     file_path
                 )
                 source = MemoryDocumentSource(

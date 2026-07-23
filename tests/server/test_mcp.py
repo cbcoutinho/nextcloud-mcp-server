@@ -452,7 +452,7 @@ async def test_mcp_webdav_workflow(
         assert "text/plain" in read_data["content_type"]
 
         # 6. Verify file content via direct WebDAV
-        direct_content, direct_content_type = await nc_client.webdav.read_file(
+        direct_content, direct_content_type, _ = await nc_client.webdav.read_file(
             test_file_path
         )
         assert direct_content.decode("utf-8") == test_content

@@ -142,6 +142,79 @@ def _encode_dav_path(path: str) -> str:
     return quote(path, safe="/")
 
 
+def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
+    """Pick the single conditional header for a fail-closed PUT.
+
+    A write always carries a precondition so it can never silently clobber an
+    existing file (the server evaluates it atomically before the PUT):
+
+    - ``None``  -> ``If-None-Match: *`` (create-only)
+    - ``"*"``   -> ``If-Match: *`` (force-overwrite an existing file)
+    - an etag   -> ``If-Match: "<etag>"`` (overwrite iff unchanged)
+    """
+    if if_match is None:
+        return {"If-None-Match": "*"}
+    if if_match == "*":
+        return {"If-Match": "*"}
+    return {"If-Match": f'"{if_match}"'}
+
+
+def _write_conflict_result(
+    if_match: Optional[str], status_code: int, path: str
+) -> Optional[Dict[str, Any]]:
+    """Map a known write-conflict status to a structured result, else ``None``.
+
+    412 and 423 are conditions a caller must react to (not transport failures),
+    so :meth:`WebDAVClient.write_file` returns them rather than raising, matching
+    ``move_resource``/``copy_resource``. Which 412 message applies depends on
+    which precondition we sent -- the client knows, so it gives a cause-specific,
+    actionable message instead of parsing the server's response body. Any other
+    status returns ``None`` so the caller re-raises.
+    """
+    if status_code == 412:
+        if if_match is None:
+            logger.debug(
+                "Precondition failed writing '%s': file already exists "
+                "(create-only If-None-Match)",
+                path,
+            )
+            return {
+                "status_code": 412,
+                "message": "File already exists — read it first to get its etag "
+                "and pass if_match to overwrite safely, or pass if_match='*' to "
+                "overwrite deliberately",
+            }
+        if if_match == "*":
+            logger.debug(
+                "Precondition failed writing '%s': file does not exist "
+                "(force-overwrite If-Match: *)",
+                path,
+            )
+            return {
+                "status_code": 412,
+                "message": "File does not exist — cannot force-overwrite a missing "
+                "file; omit if_match to create it",
+            }
+        logger.debug(
+            "Precondition failed writing '%s': file changed since if_match etag "
+            "was read",
+            path,
+        )
+        return {
+            "status_code": 412,
+            "message": "File was modified since the given etag was read "
+            "(concurrent edit) — re-read before writing",
+        }
+    if status_code == 423:
+        logger.debug("Resource locked writing '%s'", path)
+        return {
+            "status_code": 423,
+            "message": "File is locked by another client (e.g. open in the "
+            "Nextcloud web editor) — not retried automatically",
+        }
+    return None
+
+
 class WebDAVClient(BaseNextcloudClient):
     """Client for Nextcloud WebDAV operations."""
 
@@ -400,6 +473,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:getcontentlength/>
                 <d:getcontenttype/>
                 <d:getlastmodified/>
+                <d:getetag/>
                 <d:resourcetype/>
             </d:prop>
         </d:propfind>"""
@@ -464,6 +538,16 @@ class WebDAVClient(BaseNextcloudClient):
                 modified_elem = prop.find(".//{DAV:}getlastmodified")
                 modified = modified_elem.text if modified_elem is not None else None
 
+                # Strip surrounding quotes to match every other etag path in
+                # this client (a caller feeds this straight into write_file's
+                # if_match, which re-adds the quotes for the If-Match header).
+                etag_elem = prop.find(".//{DAV:}getetag")
+                etag = (
+                    etag_elem.text.strip('"')
+                    if etag_elem is not None and etag_elem.text
+                    else None
+                )
+
                 items.append(
                     {
                         "name": name,
@@ -472,6 +556,7 @@ class WebDAVClient(BaseNextcloudClient):
                         "size": size if not is_directory else None,
                         "content_type": content_type,
                         "last_modified": modified,
+                        "etag": etag,
                     }
                 )
 
@@ -541,8 +626,16 @@ class WebDAVClient(BaseNextcloudClient):
         logger.debug("Streamed '%s' to %s (%s bytes)", path, dest, written)
         return written, content_type
 
-    async def read_file(self, path: str) -> Tuple[bytes, str]:
-        """Read a file's content via WebDAV GET."""
+    async def read_file(self, path: str) -> Tuple[bytes, str, Optional[str]]:
+        """Read a file's content via WebDAV GET.
+
+        Returns the ``ETag`` alongside the content so a caller that intends to
+        write the file back can pass it as ``write_file``'s ``if_match`` and
+        detect a concurrent edit (made e.g. directly in the Nextcloud web UI)
+        instead of silently overwriting it -- there was previously no way for
+        a caller to even notice that race. The etag is ``None`` if the server
+        did not return an ``ETag`` header.
+        """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
 
@@ -556,9 +649,12 @@ class WebDAVClient(BaseNextcloudClient):
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
+            etag = response.headers.get("etag")
+            if etag is not None:
+                etag = etag.strip('"')
 
             logger.debug("Successfully read file '%s' (%s bytes)", path, len(content))
-            return content, content_type
+            return content, content_type, etag
 
         except HTTPStatusError as e:
             logger.error("HTTP error reading file '%s': %s", path, e)
@@ -568,9 +664,46 @@ class WebDAVClient(BaseNextcloudClient):
             raise e
 
     async def write_file(
-        self, path: str, content: bytes, content_type: Optional[str] = None
+        self,
+        path: str,
+        content: bytes,
+        content_type: Optional[str] = None,
+        if_match: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Write content to a file via WebDAV PUT."""
+        """Write content to a file via WebDAV PUT.
+
+        Every PUT is conditional: the write is fail-closed so an existing file
+        is never silently overwritten. Exactly one precondition header is sent,
+        chosen by ``if_match``:
+
+        =================  ====================  ======================================
+        ``if_match``       Header sent           Behaviour (412 = precondition failed)
+        =================  ====================  ======================================
+        ``None`` (default) ``If-None-Match: *``  Create-only. 412 if the path already
+                                                 exists -- read it first to get an etag.
+        an etag, e.g. abc  ``If-Match: "abc"``   Conditional overwrite. 412 if the file
+                                                 changed since that etag (or is gone).
+        ``"*"``            ``If-Match: *``       Force-overwrite an existing file. 412 if
+                                                 it does not exist.
+        =================  ====================  ======================================
+
+        Args:
+            path: Destination path.
+            content: Raw bytes to write.
+            content_type: MIME type (guessed from ``path`` if omitted).
+            if_match: ``None`` to create a new file (fails if it exists); an
+                etag from :meth:`read_file` to overwrite only if unchanged; or
+                the literal ``"*"`` to force-overwrite an existing file.
+
+        Returns:
+            ``{"status_code": ...}`` on success. On a 412 (a precondition above
+            failed) or a 423 (WebDAV lock held by another client, e.g. the file
+            is open in the Nextcloud web editor), returns ``{"status_code": ...,
+            "message": ...}`` instead of raising, matching ``move_resource``/
+            ``copy_resource``'s handling of their own known conflict statuses
+            -- both are conditions a caller should react to, not a transport
+            failure. Any other error status still raises ``HTTPStatusError``.
+        """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
 
@@ -582,6 +715,10 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = "application/octet-stream"
 
         headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
+        # Always send a precondition so a write can never silently clobber an
+        # existing file. The server (Sabre checkPreconditions) evaluates it
+        # atomically before the PUT, so this is race-free.
+        headers.update(_write_precondition_header(if_match))
 
         try:
             response = await self._make_request(
@@ -593,6 +730,11 @@ class WebDAVClient(BaseNextcloudClient):
             return {"status_code": response.status_code}
 
         except HTTPStatusError as e:
+            # 412/423 are actionable conflicts the caller must handle -> return
+            # a structured result. Anything else is a genuine transport error.
+            conflict = _write_conflict_result(if_match, e.response.status_code, path)
+            if conflict is not None:
+                return conflict
             logger.error("HTTP error writing file '%s': %s", path, e)
             raise e
         except Exception as e:
