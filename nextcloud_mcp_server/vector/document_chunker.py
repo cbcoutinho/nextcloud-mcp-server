@@ -78,7 +78,7 @@ class DocumentChunker:
             return [ChunkWithPosition(text="", start_offset=0, end_offset=0)]
 
         # Run CPU-bound text splitting in thread pool to avoid blocking event loop
-        docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+        docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
             self.splitter.create_documents,
             [content],
         )
@@ -192,7 +192,7 @@ class PageAwareChunker:
         # production this branch is only reached by direct callers/tests, not
         # the indexing path.
         if not page_boundaries:
-            docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
                 self.splitter.create_documents,
                 [content],
             )
@@ -209,7 +209,7 @@ class PageAwareChunker:
         splitter = (
             self._chunk_by_page_packed if self.pack_pages else self._chunk_by_page
         )
-        chunks = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+        chunks = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
             splitter,
             content,
             page_boundaries,

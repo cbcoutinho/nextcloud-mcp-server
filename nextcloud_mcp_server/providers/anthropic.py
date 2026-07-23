@@ -3,6 +3,7 @@
 import logging
 
 from anthropic import AsyncAnthropic
+from anthropic.types import TextBlock
 
 from .base import Provider
 
@@ -92,7 +93,12 @@ class AnthropicProvider(Provider):
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text
+        block = message.content[0]
+        if not isinstance(block, TextBlock):
+            raise ValueError(
+                f"Expected a text block from Anthropic, got {type(block).__name__}"
+            )
+        return block.text
 
     async def close(self) -> None:
         """Close the client (no-op for Anthropic SDK)."""

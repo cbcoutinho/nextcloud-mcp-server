@@ -207,7 +207,7 @@ class PyMuPDFProcessor(DocumentProcessor):
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
-            metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
                 self._read_metadata_sync, source_path, filename, source.size
             )
 
@@ -336,7 +336,7 @@ class PyMuPDFProcessor(DocumentProcessor):
         # Basic document info
         metadata["page_count"] = doc.page_count
         metadata["format"] = "PDF 1." + str(
-            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"  # type: ignore[call-non-callable]
+            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
         )
 
         if filename:

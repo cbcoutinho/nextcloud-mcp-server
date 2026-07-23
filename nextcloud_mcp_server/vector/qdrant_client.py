@@ -754,7 +754,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
             # Detect dimension dynamically (for OllamaEmbeddingProvider)
             if hasattr(embedding_service.provider, "_detect_dimension"):
-                await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
+                await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
 
             expected_dimension = embedding_service.get_dimension()
 

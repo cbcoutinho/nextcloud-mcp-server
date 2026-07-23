@@ -306,6 +306,8 @@ class OpenAIProvider(Provider):
             raise NotImplementedError(
                 "Text generation not supported - no generation_model configured"
             )
+        # supports_generation is True iff generation_model is set; narrow for the type checker.
+        assert self.generation_model is not None
 
         response = await self.client.chat.completions.create(
             model=self.generation_model,

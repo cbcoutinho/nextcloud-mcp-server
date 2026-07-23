@@ -184,7 +184,7 @@ class Pypdfium2FastProcessor(DocumentProcessor):
             await progress_callback(0, 100, "Extracting text (pypdfium2)")
         settings = get_settings()
         try:
-            full_text, metadata = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            full_text, metadata = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
                 _extract, content, settings.document_parse_page_window
             )
         except Exception as e:

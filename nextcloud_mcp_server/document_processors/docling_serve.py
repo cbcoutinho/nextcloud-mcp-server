@@ -332,7 +332,10 @@ class DoclingProcessor(DocumentProcessor):
                 self._run_progress_poller, stop_event, progress_callback, start_time
             )
 
-        return result  # type: ignore[return-value]
+        # capture_result either sets result or raises out of the task group, so
+        # reaching here means result is populated.
+        assert result is not None
+        return result
 
     async def _run_progress_poller(
         self,

@@ -425,7 +425,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         embedding_dim = None
         for vector in chunk_vectors_map.values():
             if vector is not None:
-                embedding_dim = len(vector)
+                embedding_dim = len(vector)  # ty: ignore[invalid-argument-type]  # runtime vectors here are always dense lists (Sized); the map's value union widens to SparseVector
                 break
 
         if embedding_dim is None:
@@ -520,7 +520,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 "pca.embedding_dim": embedding_dim,
             },
         ):
-            coords_3d, pca = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            coords_3d, pca = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
                 lambda: _compute_pca(all_vectors_normalized)
             )
         pca_duration = time.perf_counter() - pca_start
