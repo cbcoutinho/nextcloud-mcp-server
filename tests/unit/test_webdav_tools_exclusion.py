@@ -114,7 +114,7 @@ async def test_read_file_passes_through_when_not_excluded(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
 
-    assert result["content"] == "hello"
+    assert result.content == "hello"
     fake_client.webdav.read_file.assert_awaited_once_with("/Public/notes.md")
 
 
@@ -467,9 +467,9 @@ async def test_read_file_interactive_cap_falls_back_to_base64(
     result = await fn(path="/scan.png", ctx=ctx)
 
     # Graceful base64 fallback, not the parsed-document shape.
-    assert result["encoding"] == "base64"
-    assert result["content"] == base64.b64encode(b"\x89PNG").decode("ascii")
-    assert "parsed" not in result
+    assert result.encoding == "base64"
+    assert result.content == base64.b64encode(b"\x89PNG").decode("ascii")
+    assert result.parsed is False
 
 
 async def test_read_file_no_cap_returns_parsed(
@@ -501,9 +501,9 @@ async def test_read_file_no_cap_returns_parsed(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/doc.pdf", ctx=ctx)
 
-    assert result["parsed"] is True
-    assert result["content"] == "parsed text"
-    assert result["parsing_metadata"]["parsing_method"] == "docling"
+    assert result.parsed is True
+    assert result.content == "parsed text"
+    assert result.parsing_metadata["parsing_method"] == "docling"
 
 
 # ── Write conflict handling (etag / lock) and size gate ─────────────────
@@ -521,7 +521,7 @@ async def test_read_file_includes_etag_in_response(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
 
-    assert result["etag"] == "abc123"
+    assert result.etag == "abc123"
 
 
 async def test_write_file_passes_if_match_through_to_client(
