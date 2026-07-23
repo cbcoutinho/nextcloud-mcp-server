@@ -317,12 +317,15 @@ class DoclingProcessor(DocumentProcessor):
         # runs -- mirrors UnstructuredProcessor.
         stop_event = anyio.Event()
         start_time = time.time()
-        result: ProcessingResult | None = None
+        # Single-slot holder rather than a `nonlocal` Optional: capture_result
+        # either fills it or raises out of the task group before we read it, so
+        # the value stays a plain ProcessingResult for both the type checker and
+        # the caller (no post-hoc None-narrowing needed).
+        holder: dict[str, ProcessingResult] = {}
 
         async def capture_result() -> None:
-            nonlocal result
             try:
-                result = await self._convert(content, content_type, filename)
+                holder["result"] = await self._convert(content, content_type, filename)
             finally:
                 stop_event.set()
 
@@ -332,10 +335,7 @@ class DoclingProcessor(DocumentProcessor):
                 self._run_progress_poller, stop_event, progress_callback, start_time
             )
 
-        # capture_result either sets result or raises out of the task group, so
-        # reaching here means result is populated.
-        assert result is not None
-        return result
+        return holder["result"]
 
     async def _run_progress_poller(
         self,
