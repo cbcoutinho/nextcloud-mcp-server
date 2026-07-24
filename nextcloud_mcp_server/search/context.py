@@ -78,7 +78,7 @@ async def _get_chunk_from_qdrant(
 
         if scroll_result[0]:
             point = scroll_result[0][0]
-            excerpt = point.payload.get("excerpt")
+            excerpt = (point.payload or {}).get("excerpt")
             if excerpt:
                 logger.debug(
                     "Retrieved chunk from Qdrant for %s %s: %s chars",
@@ -152,7 +152,7 @@ async def _get_chunk_by_index_from_qdrant(
 
         if scroll_result[0]:
             point = scroll_result[0][0]
-            excerpt = point.payload.get("excerpt")
+            excerpt = (point.payload or {}).get("excerpt")
             if excerpt:
                 logger.debug(
                     "Retrieved adjacent chunk %s from Qdrant for %s %s: %s chars",
@@ -215,8 +215,9 @@ async def _get_deck_metadata_from_qdrant(
 
         if scroll_result[0]:
             point = scroll_result[0][0]
-            board_id = point.payload.get("board_id")
-            stack_id = point.payload.get("stack_id")
+            payload = point.payload or {}
+            board_id = payload.get("board_id")
+            stack_id = payload.get("stack_id")
             if board_id is not None and stack_id is not None:
                 logger.debug(
                     "Retrieved deck metadata for card %s: board_id=%s, stack_id=%s",

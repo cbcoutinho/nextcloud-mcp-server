@@ -17,7 +17,7 @@ from caldav.lib import error as caldav_error
 from icalendar import Alarm, Calendar, Timezone, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
-from lxml import etree  # type: ignore[import-untyped]
+from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
 from ..config import get_nextcloud_ssl_verify
 
@@ -95,7 +95,7 @@ class CalendarClient:
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=auth_username,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
             headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )
@@ -196,7 +196,7 @@ class CalendarClient:
         """Get an AsyncCalendar object for the given calendar name."""
         calendar_url = self._get_calendar_url(calendar_name)
         return AsyncCalendar(
-            client=self._dav_client,  # type: ignore[arg-type]  # AsyncDAVClient is valid for async mode
+            client=self._dav_client,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # AsyncDAVClient is valid for async mode
             url=calendar_url,
             name=calendar_name,
         )
@@ -214,7 +214,7 @@ class CalendarClient:
         # _hacks="insist" mirrors upstream's Calendar.get_object_by_uid pattern:
         # retries with per-component-type searches if the initial search returns
         # nothing, handling CalDAV servers with incomplete search support.
-        items_found = await calendar.search(  # type: ignore[misc]  # dual-mode: returns coroutine for async clients
+        items_found = await calendar.search(  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode: returns coroutine for async clients
             uid=uid, xml=comp_filter, post_filter=True, _hacks="insist"
         )
         items_found = [o for o in items_found if o.id == uid]
@@ -492,7 +492,7 @@ class CalendarClient:
             # everything to UTC and erase the original timezone context.
             do_expand = bool(start_datetime and end_datetime)
         else:
-            events = await calendar.events()  # type: ignore[misc]  # dual-mode
+            events = await calendar.events()  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
             do_expand = False
 
         result = []
@@ -597,7 +597,7 @@ class CalendarClient:
             query.xmlelement(), encoding="utf-8", xml_declaration=True
         )
         assert calendar.client is not None
-        response = await calendar.client.report(str(calendar.url), body, depth=1)  # type: ignore[misc]  # dual-mode
+        response = await calendar.client.report(str(calendar.url), body, depth=1)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
         # Parse response (same pattern as AsyncCalendar.search)
         objects = []
@@ -609,7 +609,7 @@ class CalendarClient:
             if cal_data:
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(href),  # type: ignore[union-attr]  # url is always set for calendars
+                    url=calendar.url.join(href),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                 )
@@ -628,7 +628,7 @@ class CalendarClient:
         ical_content = self._create_ical_event(event_data, event_uid)
 
         # caldav v3's _async_put raises PutError on HTTP failure
-        event = await calendar.save_event(ical=ical_content)  # type: ignore[misc]  # dual-mode
+        event = await calendar.save_event(ical=ical_content)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
         logger.debug("Created event %s", event_uid)
 
@@ -760,7 +760,7 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         # Get all todos including completed ones (filtering is done client-side)
-        todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # dual-mode
+        todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
         result = []
         for todo in todos:
@@ -793,7 +793,7 @@ class CalendarClient:
         ical_content = self._create_ical_todo(todo_data, todo_uid)
 
         # caldav v3's _async_put raises PutError on HTTP failure
-        todo = await calendar.save_todo(ical=ical_content)  # type: ignore[misc]  # dual-mode
+        todo = await calendar.save_todo(ical=ical_content)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
         logger.debug("Created todo %s", todo_uid)
 

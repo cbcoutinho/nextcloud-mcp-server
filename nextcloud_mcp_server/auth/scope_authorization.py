@@ -100,7 +100,7 @@ def require_scopes(*required_scopes: str):
 
     def decorator(func: Callable) -> Callable:
         # Store scope requirements as function metadata for dynamic filtering
-        func._required_scopes = list(required_scopes)  # type: ignore[attr-defined]
+        func._required_scopes = list(required_scopes)  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
         # Get function name for logging (works for any callable)
         func_name = getattr(func, "__name__", repr(func))

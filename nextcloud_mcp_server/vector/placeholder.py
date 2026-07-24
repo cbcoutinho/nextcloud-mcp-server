@@ -192,7 +192,7 @@ async def query_document_metadata(
 
         if scroll_result[0]:
             point = scroll_result[0][0]
-            return dict(point.payload)
+            return dict(point.payload) if point.payload is not None else None
 
         return None
 
@@ -414,7 +414,7 @@ async def sweep_orphan_placeholders(
         if orphan_ids:
             await qdrant_client.delete(
                 collection_name=collection,
-                points_selector=orphan_ids,
+                points_selector=orphan_ids,  # ty: ignore[invalid-argument-type]  # list[int|str] vs invariant PointsSelector element type; accepted at runtime
             )
             swept += len(orphan_ids)
 

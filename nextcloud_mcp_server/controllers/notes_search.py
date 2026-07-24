@@ -14,7 +14,7 @@ class NotesSearchController:
         Returns notes sorted by relevance score.
         If query is empty, returns all notes.
         """
-        search_results = []
+        search_results: List[Dict[str, Any]] = []
         query_tokens = self._process_query(query)
 
         # If empty query after processing, return all notes

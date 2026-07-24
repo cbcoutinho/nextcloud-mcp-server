@@ -53,7 +53,8 @@ class DocumentSource(Protocol):
     #: attribute read and :meth:`read_bytes` costs a full read. False when it is
     #: already in memory, where the costs are reversed. Sync callers use this to
     #: pick the access that does no I/O, rather than blocking the event loop.
-    is_file_backed: bool
+    #: Declared ``ClassVar`` because every implementation fixes it per class.
+    is_file_backed: ClassVar[bool]
 
     @property
     def size(self) -> int:

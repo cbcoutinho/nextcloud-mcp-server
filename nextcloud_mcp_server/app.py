@@ -984,7 +984,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     # Include vector sync state from module singleton (set by starlette_lifespan)
     try:
         yield AppContext(
-            client=client,  # type: ignore[arg-type]  # None in multi-user mode
+            client=client,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # None in multi-user mode
             storage=storage,
             document_send_stream=_vector_sync_state.document_send_stream,
             document_receive_stream=_vector_sync_state.document_receive_stream,
@@ -1848,7 +1848,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             return allowed_tools
 
         # Replace the tool manager's list_tools method
-        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
+        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         logger.info(
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
@@ -2289,7 +2289,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 # Store token broker in oauth_context for management API (revoke endpoint)
                 if hasattr(app.state, "oauth_context"):
-                    app.state.oauth_context["token_broker"] = token_broker
+                    app.state.oauth_context["token_broker"] = token_broker  # ty: ignore[invalid-assignment]  # Starlette app.state bag is heterogeneous; the inferred value union is too narrow
                     logger.info(
                         "Token broker added to oauth_context for management API"
                     )

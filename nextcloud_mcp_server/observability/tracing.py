@@ -173,7 +173,7 @@ def trace_server_request(
             # block — a handler that catches its own exception and returns a
             # 500 never raises here — and an unconditional OK would overwrite
             # that, leaving the failure invisible to `status=error` queries.
-            if span.status.status_code is StatusCode.UNSET:
+            if span.status.status_code is StatusCode.UNSET:  # ty: ignore[unresolved-attribute]  # OTel API Span type omits .status; the runtime SDK span provides it
                 span.set_status(Status(StatusCode.OK))
         except Exception as e:
             span.record_exception(e)
