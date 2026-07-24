@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.145.1 (2026-07-24)
+
+### Fix
+
+- **docling**: capture progress result via holder to satisfy Sonar flow analysis
+- **types**: resolve ty 0.0.62 diagnostics after the version bump
+
+### Refactor
+
+- **webdav**: return typed BaseResponse models from read/write tools
+
 ## v0.145.0 (2026-07-23)
 
 ### BREAKING CHANGE
