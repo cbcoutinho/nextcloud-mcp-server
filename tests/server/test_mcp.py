@@ -428,6 +428,11 @@ async def test_mcp_webdav_workflow(
         assert write_result.isError is False, (
             f"MCP file write failed: {write_result.content}"
         )
+        # WriteFileResponse (BaseResponse) structured fields, not a raw dict.
+        write_data = json.loads(write_result.content[0].text)
+        assert write_data["path"] == test_file_path
+        assert write_data["created"] is True  # new file (create-only default)
+        assert write_data["success"] is True
 
         # 4. Verify file creation via direct WebDAV
         file_listing = await nc_client.webdav.list_directory(test_dir)
@@ -450,6 +455,9 @@ async def test_mcp_webdav_workflow(
         assert read_data["content"] == test_content, "File content mismatch"
         assert read_data["path"] == test_file_path
         assert "text/plain" in read_data["content_type"]
+        # ReadFileResponse (BaseResponse) structured fields.
+        assert read_data["etag"], "read response should carry an etag"
+        assert read_data["success"] is True
 
         # 6. Verify file content via direct WebDAV
         direct_content, direct_content_type, _ = await nc_client.webdav.read_file(
