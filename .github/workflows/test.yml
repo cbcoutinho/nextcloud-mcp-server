@@ -75,7 +75,7 @@ jobs:
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.12@sha256:c7debbbf65f84e9691e209ec834b67dd438e80d04be98c2c63b94ecf483d3d05"
           - nextcloud_version: "33"
-            nextcloud_image: "docker.io/library/nextcloud:33.0.6@sha256:d234808c4e63aad6889922228d64612a28682183dccaeac251db4db0be368aab"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.7@sha256:cd41e70d34a945e1d434b3481bf83e3475cbc2675e9978a49cc22f543bfa3e3d"
           # NOTE: the nc34 lanes are EXPECTED TO FAIL until Astrolabe publishes an
           # NC-34-compatible release to the app store. cbcoutinho/astrolabe#242
           # (max-version="34") is merged but not yet released, so
