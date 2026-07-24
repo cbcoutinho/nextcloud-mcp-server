@@ -72,7 +72,11 @@ class WriteFileResponse(StatusResponse):
     """Response model for writing files."""
 
     path: str = Field(description="File path that was written")
-    size: Optional[int] = Field(None, description="Size of the written file")
+    size: Optional[int] = Field(
+        None,
+        description="Size of the written file in bytes (decoded content, not the "
+        "caller-supplied string length)",
+    )
     created: bool = Field(description="Whether a new file was created (vs overwritten)")
 
 
