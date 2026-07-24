@@ -53,9 +53,16 @@ class ReadFileResponse(BaseResponse):
     path: str = Field(description="File path")
     content: str = Field(description="File content (text or base64 for binary)")
     content_type: str = Field(description="MIME content type")
-    size: int = Field(description="File size in bytes")
+    size: int = Field(description="File size in bytes (raw, pre-parse)")
     encoding: Optional[str] = Field(
         None, description="Encoding used (e.g., 'base64' for binary files)"
+    )
+    parsed: bool = Field(
+        default=False,
+        description="Whether content was extracted from a document (PDF, DOCX, ...)",
+    )
+    parsing_metadata: Optional[dict] = Field(
+        None, description="Document-processor metadata when parsed=True"
     )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")
@@ -65,7 +72,11 @@ class WriteFileResponse(StatusResponse):
     """Response model for writing files."""
 
     path: str = Field(description="File path that was written")
-    size: Optional[int] = Field(None, description="Size of the written file")
+    size: Optional[int] = Field(
+        None,
+        description="Size of the written file in bytes (decoded content, not the "
+        "caller-supplied string length)",
+    )
     created: bool = Field(description="Whether a new file was created (vs overwritten)")
 
 

@@ -456,19 +456,40 @@ window (keep it, log on use, remove a version later), not a merge-order note.
 
 ## MCP Response Patterns (CRITICAL)
 
-**Never return raw `List[Dict]` from MCP tools** - FastMCP mangles them into dicts with numeric string keys.
+**Every MCP tool MUST return a Pydantic model that inherits from `BaseResponse`
+(`nextcloud_mcp_server/models/base.py`) — never a raw `dict`, `list`, or
+`List[Dict]`.** Raw `list`/`List[Dict]` returns are mangled by FastMCP into dicts
+with numeric string keys; raw `dict` returns silently bypass the typed schema and
+the `success`/`timestamp` envelope every other tool provides, so clients can't rely
+on a consistent contract. This applies to **all** tools — list/search *and*
+single-resource reads, writes, and status results alike.
+
+**This is a review gate.** A new or modified `@mcp.tool` that returns a bare
+`dict`/`list` — or that lacks a `-> <SomeResponse>` return annotation — is a
+required-changes finding (reviewers, including the Claude review bot, must flag it).
 
 **Correct Pattern**:
-1. Client methods return `List[Dict]` (raw data)
-2. MCP tools convert to Pydantic models and wrap in response object
-3. Response models inherit from `BaseResponse`, include `results` field + metadata
+1. Client methods return raw data (`dict` / `list[dict]`).
+2. MCP tools convert that into a Pydantic model and return it.
+3. The model inherits from `BaseResponse` — list/search tools expose a `results`
+   field + metadata; single-resource tools return a purpose-built model (e.g.
+   `ReadFileResponse`, `WriteFileResponse`, `UpdateNoteResponse`).
+4. The tool's signature carries the `-> <Model>` return annotation.
 
 **Reference implementations**:
-- `nextcloud_mcp_server/models/notes.py:80` - `SearchNotesResponse`
-- `nextcloud_mcp_server/models/webdav.py:113` - `SearchFilesResponse`
+- `nextcloud_mcp_server/models/notes.py` - `SearchNotesResponse`, `UpdateNoteResponse`
+- `nextcloud_mcp_server/models/webdav.py` - `SearchFilesResponse`, `ReadFileResponse`, `WriteFileResponse`
 - `nextcloud_mcp_server/server/{notes,webdav}.py` - Tool examples
 
-**Testing**: Extract `data["results"]` from MCP responses, not `data` directly.
+**Testing**:
+- Through the MCP client the response is JSON — extract the field you need
+  (`data["results"]`, `data["content"]`, ...) from the parsed object, not `data`.
+- Calling a tool's `.fn` directly in a unit test returns the **model instance** —
+  use attribute access (`result.content`), not `result["content"]`.
+
+> Any remaining tools that still return raw dicts are pre-existing debt being
+> migrated to typed `BaseResponse` models (tracked on Deck board 12). New code must
+> not add to that debt.
 
 ## MCP Sampling for RAG (ADR-008)
 

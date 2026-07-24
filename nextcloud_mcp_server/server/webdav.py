@@ -10,7 +10,13 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
+from nextcloud_mcp_server.models import (
+    DirectoryListing,
+    FileInfo,
+    ReadFileResponse,
+    SearchFilesResponse,
+    WriteFileResponse,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
@@ -92,7 +98,7 @@ def configure_webdav_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_webdav_read_file(
         path: str, ctx: Context, force_processor: str | None = None
-    ):
+    ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
@@ -108,15 +114,16 @@ def configure_webdav_tools(mcp: FastMCP):
                 raises ``ToolError`` otherwise. ``None`` = auto-select.
 
         Returns:
-            Dict with path, content, content_type, size, etag, and optional
-            parsing metadata
-            - Text files are decoded to UTF-8
-            - Documents (PDF, DOCX, etc.) are parsed and text is extracted
-            - Other binary files are base64 encoded
+            ``ReadFileResponse`` with ``path``, ``content``, ``content_type``,
+            ``size`` and ``etag``. Depending on the file:
+            - Text files are decoded to UTF-8.
+            - Documents (PDF, DOCX, ...) are parsed to text with
+              ``parsed=True`` and ``parsing_metadata`` set.
+            - Other binary files are base64-encoded with ``encoding="base64"``.
             - ``etag``: pass this back into ``nc_webdav_write_file``'s
-              ``if_match`` when writing this same path later, so a manual
-              edit made elsewhere in the meantime (e.g. in the Nextcloud web
-              UI) is detected as a conflict instead of silently overwritten.
+              ``if_match`` when writing this same path later, so a manual edit
+              made elsewhere in the meantime (e.g. in the Nextcloud web UI) is
+              detected as a conflict instead of silently overwritten.
         """
         client = await get_client(ctx)
 
@@ -187,15 +194,15 @@ def configure_webdav_tools(mcp: FastMCP):
                         progress_callback=ctx.report_progress,
                         processor_name=force_processor,
                     )
-                return {
-                    "path": path,
-                    "content": parsed_text,
-                    "content_type": content_type,
-                    "size": len(content),
-                    "parsed": True,
-                    "parsing_metadata": metadata,
-                    "etag": etag,
-                }
+                return ReadFileResponse(
+                    path=path,
+                    content=parsed_text,
+                    content_type=content_type,
+                    size=len(content),
+                    parsed=True,
+                    parsing_metadata=metadata,
+                    etag=etag,
+                )
             except TimeoutError as e:
                 # Caught before the generic Exception (subclass-first). When the cap
                 # is set this is our anyio.fail_after tripping; when it is None the
@@ -227,26 +234,26 @@ def configure_webdav_tools(mcp: FastMCP):
         if content_type and content_type.startswith("text/"):
             try:
                 decoded_content = content.decode("utf-8")
-                return {
-                    "path": path,
-                    "content": decoded_content,
-                    "content_type": content_type,
-                    "size": len(content),
-                    "etag": etag,
-                }
+                return ReadFileResponse(
+                    path=path,
+                    content=decoded_content,
+                    content_type=content_type,
+                    size=len(content),
+                    etag=etag,
+                )
             except UnicodeDecodeError:
                 pass
 
         # For binary files, return metadata and base64 encoded content
 
-        return {
-            "path": path,
-            "content": base64.b64encode(content).decode("ascii"),
-            "content_type": content_type,
-            "size": len(content),
-            "encoding": "base64",
-            "etag": etag,
-        }
+        return ReadFileResponse(
+            path=path,
+            content=base64.b64encode(content).decode("ascii"),
+            content_type=content_type,
+            size=len(content),
+            encoding="base64",
+            etag=etag,
+        )
 
     @mcp.tool(
         title="Write File",
@@ -267,7 +274,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ctx: Context,
         content_type: str | None = None,
         if_match: str | None = None,
-    ):
+    ) -> WriteFileResponse:
         """Write content to a file in NextCloud.
 
         Writes are **fail-closed**: an existing file is never silently
@@ -297,7 +304,9 @@ def configure_webdav_tools(mcp: FastMCP):
                   file unconditionally (fails if the file does not exist).
 
         Returns:
-            Dict with status_code indicating success
+            ``WriteFileResponse`` with ``path``, ``status_code``, ``size`` and
+            ``created`` (True when a new file was created, i.e. HTTP 201; False
+            when an existing file was overwritten, i.e. HTTP 204).
         """
         client = await get_client(ctx)
 
@@ -338,7 +347,14 @@ def configure_webdav_tools(mcp: FastMCP):
         status_code = result.get("status_code")
         if status_code in (412, 423):
             raise ToolError(f"{result['message']} ({path!r})")
-        return result
+        # 201 Created for a new file (create-only / If-None-Match), 204 No
+        # Content when an existing file was overwritten (If-Match).
+        return WriteFileResponse(
+            path=path,
+            status_code=status_code,
+            created=status_code == 201,
+            size=len(content_bytes),
+        )
 
     @mcp.tool(
         title="Create Directory",

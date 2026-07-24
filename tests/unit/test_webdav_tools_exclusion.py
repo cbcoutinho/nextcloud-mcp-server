@@ -21,6 +21,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from nextcloud_mcp_server.models.webdav import WriteFileResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 
 pytestmark = pytest.mark.unit
@@ -114,7 +115,7 @@ async def test_read_file_passes_through_when_not_excluded(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
 
-    assert result["content"] == "hello"
+    assert result.content == "hello"
     fake_client.webdav.read_file.assert_awaited_once_with("/Public/notes.md")
 
 
@@ -467,9 +468,9 @@ async def test_read_file_interactive_cap_falls_back_to_base64(
     result = await fn(path="/scan.png", ctx=ctx)
 
     # Graceful base64 fallback, not the parsed-document shape.
-    assert result["encoding"] == "base64"
-    assert result["content"] == base64.b64encode(b"\x89PNG").decode("ascii")
-    assert "parsed" not in result
+    assert result.encoding == "base64"
+    assert result.content == base64.b64encode(b"\x89PNG").decode("ascii")
+    assert result.parsed is False
 
 
 async def test_read_file_no_cap_returns_parsed(
@@ -501,9 +502,9 @@ async def test_read_file_no_cap_returns_parsed(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/doc.pdf", ctx=ctx)
 
-    assert result["parsed"] is True
-    assert result["content"] == "parsed text"
-    assert result["parsing_metadata"]["parsing_method"] == "docling"
+    assert result.parsed is True
+    assert result.content == "parsed text"
+    assert result.parsing_metadata["parsing_method"] == "docling"
 
 
 # ── Write conflict handling (etag / lock) and size gate ─────────────────
@@ -521,7 +522,7 @@ async def test_read_file_includes_etag_in_response(
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
 
-    assert result["etag"] == "abc123"
+    assert result.etag == "abc123"
 
 
 async def test_write_file_passes_if_match_through_to_client(
@@ -536,7 +537,7 @@ async def test_write_file_passes_if_match_through_to_client(
     )
 
     fn = webdav_tools["nc_webdav_write_file"].fn
-    await fn(
+    result = await fn(
         path="/Public/notes.md",
         content="hi",
         ctx=_mock_ctx(fake_client),
@@ -546,6 +547,36 @@ async def test_write_file_passes_if_match_through_to_client(
     fake_client.webdav.write_file.assert_awaited_once_with(
         "/Public/notes.md", b"hi", None, if_match="abc123"
     )
+    # A 204 (overwrite of an existing file) is reported as created=False on the
+    # typed WriteFileResponse; size is the decoded byte count.
+    assert isinstance(result, WriteFileResponse)
+    assert result.status_code == 204
+    assert result.created is False
+    assert result.size == 2
+    assert result.success is True
+
+
+async def test_write_file_create_only_success_returns_created(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+):
+    """A create-only write (no if_match) that the server answers 201 is reported
+    as created=True on the WriteFileResponse -- the overwrite path (204) above
+    is created=False."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.write_file = AsyncMock(return_value={"status_code": 201})
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings",
+        return_value=SimpleNamespace(webdav_write_max_mb=50.0),
+    )
+
+    fn = webdav_tools["nc_webdav_write_file"].fn
+    result = await fn(path="/Public/new.md", content="hi", ctx=_mock_ctx(fake_client))
+
+    assert isinstance(result, WriteFileResponse)
+    assert result.status_code == 201
+    assert result.created is True
+    assert result.path == "/Public/new.md"
 
 
 async def test_write_file_passes_force_star_through_to_client(
