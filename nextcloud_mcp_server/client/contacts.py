@@ -182,6 +182,23 @@ def _existing_parameters(line: str) -> str:
     return head[param_start:] if param_start != -1 else ""
 
 
+# Properties pythonvCard4 stashes in ``Contact.custom`` that the projection
+# already surfaces under their own key. Everything else in ``custom`` is a
+# genuine extension (``X-*``) and is passed through. PHOTO is excluded
+# deliberately: it is already returned as ``photo``, and re-emitting a base64
+# image per contact would roughly double every list_contacts response.
+_CUSTOM_KEYS_ALREADY_SURFACED = frozenset({"FN", "N", "ORG", "TITLE", "PHOTO"})
+
+
+def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
+    """Return the ``X-*`` extensions from ``Contact.custom``, minus duplicates."""
+    return {
+        key: value
+        for key, value in custom.items()
+        if key.upper() not in _CUSTOM_KEYS_ALREADY_SURFACED
+    }
+
+
 def _project_contact(contact: Contact) -> dict[str, Any]:
     """Project a parsed vCard into the flat dict the server layer maps to a model.
 
@@ -208,6 +225,12 @@ def _project_contact(contact: Contact) -> dict[str, Any]:
         "url": contact.url,
         "categories": contact.categories,
         "photo": contact.photo_data or _first_custom(contact.custom, "PHOTO"),
+        # ADR and N are parsed by the library but were never projected, so the
+        # model's ``addresses`` list was declared and permanently empty and
+        # ``given_name``/``family_name`` were never populated.
+        "adr": contact.adr,
+        "n": contact.n,
+        "custom": _custom_extras(contact.custom),
     }
 
 
@@ -663,13 +686,31 @@ class ContactsClient(BaseNextcloudClient):
                 logger.info("Skip missing addressdata")
                 continue
 
+            # Isolate the parse per contact. pythonvCard4 raises on shapes real
+            # servers store — e.g. a vCard 3.0 ``GEO:lat,lon`` (RFC 2426 uses a
+            # comma; the library splits on ";"). Unguarded, one such contact made
+            # the entire addressbook unlistable. Degrade to the raw card instead:
+            # ``addressdata`` still carries everything, so the caller loses the
+            # parsed convenience fields for that one contact, not the listing.
+            try:
+                contact_projection = _project_contact(Contact.from_vcard(addressdata))
+            except Exception:
+                logger.warning(
+                    "Could not parse vCard for %s in addressbook %s; returning it "
+                    "with raw addressdata only",
+                    object_name,
+                    addressbook,
+                    exc_info=True,
+                )
+                contact_projection = {}
+
             contacts.append(
                 {
                     "vcard_id": vcard_id,
                     "object_path": object_path,
                     "object_name": object_name,
                     "getetag": getetag,
-                    "contact": _project_contact(Contact.from_vcard(addressdata)),
+                    "contact": contact_projection,
                     "addressdata": addressdata,
                 }
             )
