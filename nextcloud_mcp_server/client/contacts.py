@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
 
-from pythonvCard4.vcard import Contact
+from pythonvCard4.vcard import Contact, fold_line, unfold_lines
 
 from .base import BaseNextcloudClient
 
@@ -135,6 +135,51 @@ def _first_custom(custom: dict[str, str | list[str]], key: str) -> str | None:
     if isinstance(values, str):
         return values or None
     return None
+
+
+def _split_property_head(line: str) -> tuple[str, str]:
+    """Split a logical vCard line into its group prefix and upper-cased name.
+
+    ``FN:Alice``                   -> ``("", "FN")``
+    ``email;TYPE=WORK:a@b``        -> ``("", "EMAIL")``
+    ``item1.URL:https://x``        -> ``("item1.", "URL")``
+
+    Property names are case-insensitive per RFC 6350 §3.3, and Apple-produced
+    cards group related properties (``item1.URL`` + ``item1.X-ABLabel``). Matching
+    on the raw text missed both shapes, so a lower-cased ``fn:`` or a grouped
+    ``item1.EMAIL:`` was treated as unknown — preserved verbatim *and* then
+    duplicated by the add-new loop. The group prefix is returned so a rewritten
+    line can keep it and stay attached to its ``X-ABLabel``.
+    """
+    head = line.split(":", 1)[0].split(";", 1)[0]
+    group, sep, name = head.rpartition(".")
+    return group + sep, name.upper()
+
+
+def _existing_parameters(line: str) -> str:
+    """Return a logical line's parameter section verbatim, including the leading ``;``.
+
+    ``EMAIL;PREF=1;TYPE=work:a@b`` -> ``";PREF=1;TYPE=work"``
+    ``item1.EMAIL:a@b``            -> ``""``
+
+    Copying the whole section rather than re-deriving a single ``TYPE=`` value
+    preserves *every* parameter on a rewritten line. The previous approach
+    reconstructed the line as ``EMAIL;TYPE=<value>:``, which silently dropped any
+    other parameter — ``PREF``, ``X-ABLabel``, ``CHARSET`` — and dropped ``TYPE``
+    itself whenever it was not the parameter being matched. Verbatim copying also
+    sidesteps casing entirely: no case-insensitive search, so no dependence on
+    ``str.upper()`` being length-preserving (it isn't — ``"ß".upper() == "SS"``).
+
+    Known limitation, unchanged from the original: the value separator is taken
+    as the first ``:``, so a quoted parameter value containing a colon
+    (``TYPE="a:b"``, legal per RFC 6350 §3.3) would split early. No producer we
+    have seen emits one.
+    """
+    head, separator, _ = line.partition(":")
+    if not separator:
+        return ""
+    param_start = head.find(";")
+    return head[param_start:] if param_start != -1 else ""
 
 
 def _project_contact(contact: Contact) -> dict[str, Any]:
@@ -668,6 +713,14 @@ class ContactsClient(BaseNextcloudClient):
         to update EMAIL/TEL here, or recreate via ``create_contact`` for full
         multi-entry support with TYPE annotations.
 
+        Unrecognised properties are copied through verbatim, but a property this
+        method *rewrites* is re-emitted with its name upper-cased — a lower-cased
+        ``fn:`` comes back as ``FN:``. Property names are case-insensitive per
+        RFC 6350 §3.3 so this is semantically identical, but it is a visible
+        formatting change and the only place the "preserve exact formatting"
+        intent above does not hold literally. Group prefixes and the whole
+        parameter section are copied verbatim.
+
         Raises on any merge failure rather than substituting a synthesised card.
         This function previously caught every exception and returned a four-line
         vCard built from ``fn``/``email``/``tel``, which silently destroyed PHOTO,
@@ -690,29 +743,36 @@ class ContactsClient(BaseNextcloudClient):
                     _key.upper(),
                 )
         # Instead of using pythonvCard4 which has formatting issues,
-        # let's do a simple text-based merge to preserve exact formatting
-
-        # Start with the original vCard
-        lines = raw_vcard.strip().split("\n")
+        # let's do a simple text-based merge to preserve exact formatting.
+        #
+        # Unfold first: RFC 6350 §3.2 continuation lines start with a single
+        # space/tab and belong to the property above them. The previous code
+        # split on "\n" and ``.strip()``ed each physical line, which stripped that
+        # leading space and re-emitted the continuation as a standalone property —
+        # corrupting every long NOTE/ADR and every base64 PHOTO on any update.
+        # ``splitlines()`` also handles CRLF, which ``split("\n")`` left as a
+        # trailing "\r" on every line.
+        lines = unfold_lines(raw_vcard.strip().splitlines())
         updated_lines = []
 
         # Track what we've updated to avoid duplicates
         updated_properties = set()
 
         for line in lines:
-            line = line.strip()
-            if not line:
+            if not line.strip():
                 continue
+
+            group_prefix, property_name = _split_property_head(line)
 
             # Skip the END:VCARD line for now
-            if line == "END:VCARD":
+            if property_name == "END":
                 continue
-
-            property_name = line.split(":")[0].split(";")[0]
 
             # Handle updates for specific properties
             if property_name == "FN" and "fn" in contact_data:
-                updated_lines.append(f"FN:{_safe_vcard_value(contact_data['fn'])}")
+                updated_lines.append(
+                    f"{group_prefix}FN:{_safe_vcard_value(contact_data['fn'])}"
+                )
                 updated_properties.add("fn")
             elif property_name == "EMAIL" and "email" in contact_data:
                 # Replace first email with new one, preserve others
@@ -720,13 +780,10 @@ class ContactsClient(BaseNextcloudClient):
                     if isinstance(contact_data["email"], str):
                         email_value = _safe_vcard_value(contact_data["email"])
                         # Try to preserve the original format as much as possible
-                        if ";TYPE=" in line:
-                            type_part = line.split(";TYPE=")[1].split(":")[0]
-                            updated_lines.append(
-                                f"EMAIL;TYPE={type_part}:{email_value}"
-                            )
-                        else:
-                            updated_lines.append(f"EMAIL:{email_value}")
+                        params = _existing_parameters(line)
+                        updated_lines.append(
+                            f"{group_prefix}EMAIL{params}:{email_value}"
+                        )
                         updated_properties.add("email")
                     else:
                         # Dict / list inputs aren't translatable to a single
@@ -741,11 +798,8 @@ class ContactsClient(BaseNextcloudClient):
                 if "tel" not in updated_properties:
                     if isinstance(contact_data["tel"], str):
                         tel_value = _safe_vcard_value(contact_data["tel"])
-                        if ";TYPE=" in line:
-                            type_part = line.split(";TYPE=")[1].split(":")[0]
-                            updated_lines.append(f"TEL;TYPE={type_part}:{tel_value}")
-                        else:
-                            updated_lines.append(f"TEL:{tel_value}")
+                        params = _existing_parameters(line)
+                        updated_lines.append(f"{group_prefix}TEL{params}:{tel_value}")
                         updated_properties.add("tel")
                     else:
                         # Same reasoning as the EMAIL branch above: don't drop.
@@ -754,18 +808,24 @@ class ContactsClient(BaseNextcloudClient):
                     # Keep additional phone numbers unchanged
                     updated_lines.append(line)
             elif property_name == "NOTE" and "note" in contact_data:
-                updated_lines.append(f"NOTE:{_safe_vcard_value(contact_data['note'])}")
+                updated_lines.append(
+                    f"{group_prefix}NOTE:{_safe_vcard_value(contact_data['note'])}"
+                )
                 updated_properties.add("note")
             elif property_name == "NICKNAME" and "nickname" in contact_data:
                 nickname_value = contact_data["nickname"]
                 if isinstance(nickname_value, list):
                     nickname_value = ",".join(nickname_value)
-                updated_lines.append(f"NICKNAME:{_safe_vcard_value(nickname_value)}")
+                updated_lines.append(
+                    f"{group_prefix}NICKNAME:{_safe_vcard_value(nickname_value)}"
+                )
                 updated_properties.add("nickname")
             elif property_name == "BDAY" and "bday" in contact_data:
                 parsed_bday = _parse_bday(contact_data["bday"])
                 if parsed_bday is not None:
-                    updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
+                    updated_lines.append(
+                        f"{group_prefix}BDAY:{parsed_bday.isoformat()}"
+                    )
                     updated_properties.add("bday")
                 else:
                     # Invalid input — keep the existing BDAY rather than
@@ -776,7 +836,7 @@ class ContactsClient(BaseNextcloudClient):
                 if isinstance(categories_value, list):
                     categories_value = ",".join(categories_value)
                 updated_lines.append(
-                    f"CATEGORIES:{_safe_vcard_value(categories_value)}"
+                    f"{group_prefix}CATEGORIES:{_safe_vcard_value(categories_value)}"
                 )
                 updated_properties.add("categories")
             elif property_name == "ORG" and "org" in contact_data:
@@ -786,11 +846,13 @@ class ContactsClient(BaseNextcloudClient):
                 # ``_build_contact_from_data`` accepts don't get a Python repr.
                 if isinstance(org_value, list):
                     org_value = ";".join(org_value)
-                updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
+                updated_lines.append(
+                    f"{group_prefix}ORG:{_safe_vcard_value(org_value)}"
+                )
                 updated_properties.add("org")
             elif property_name == "TITLE" and "title" in contact_data:
                 updated_lines.append(
-                    f"TITLE:{_safe_vcard_value(contact_data['title'])}"
+                    f"{group_prefix}TITLE:{_safe_vcard_value(contact_data['title'])}"
                 )
                 updated_properties.add("title")
             elif property_name == "URL" and "url" in contact_data:
@@ -802,7 +864,9 @@ class ContactsClient(BaseNextcloudClient):
                     if isinstance(url_value, list):
                         url_value = url_value[0] if url_value else ""
                     if url_value:
-                        updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
+                        updated_lines.append(
+                            f"{group_prefix}URL:{_safe_vcard_value(url_value)}"
+                        )
                     updated_properties.add("url")
                 else:
                     # Keep additional URLs unchanged
@@ -856,5 +920,13 @@ class ContactsClient(BaseNextcloudClient):
         # Add the END:VCARD line
         updated_lines.append("END:VCARD")
 
-        # Join all lines
-        return "\n".join(updated_lines)
+        # Re-fold on the way out and join with CRLF, so an updated card is framed
+        # exactly like a created one (``Contact.to_vcard()``) instead of the LF
+        # this used to emit. Caveat: ``fold_line`` counts characters, not octets,
+        # so a multibyte line can exceed RFC 6350's 75-octet target — it never
+        # splits a codepoint, Sabre accepts it, and using the library helper keeps
+        # create and update on one folding rule rather than inventing a second.
+        physical_lines: list[str] = []
+        for logical_line in updated_lines:
+            physical_lines.extend(fold_line(logical_line))
+        return "\r\n".join(physical_lines) + "\r\n"
