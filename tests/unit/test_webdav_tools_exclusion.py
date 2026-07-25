@@ -7,14 +7,14 @@ Their purpose is **not** to re-test the path-matching logic (covered in
 tool actually consults ``get_excluded_file_paths`` / ``is_path_excluded``
 at the right point and raises / filters as expected.
 
-The decorators on each tool (``@require_scopes``, ``@instrument_tool``)
-are transparent under our mocked ``Context`` (no ``access_token`` set →
-BasicAuth pass-through path).
+The decorators on each tool (``@require_scopes``, ``@instrument_tool``) are
+made transparent by the ``basicauth_mode`` fixture below, which pins the
+deployment mode so these tests exercise path exclusion rather than auth.
 """
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
@@ -25,6 +25,28 @@ from nextcloud_mcp_server.models.webdav import WriteFileResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def basicauth_mode():
+    """Pin ``require_scopes`` to the BasicAuth pass-through path.
+
+    These tests invoke tool functions directly, with no transport and so no
+    verified token. Under any OAuth-style mode the decorator now (correctly)
+    denies such a call, so the mode has to be explicit — otherwise the result
+    depends on ambient environment: ``enable_login_flow`` is derived from
+    ``MCP_DEPLOYMENT_MODE`` and defaults to **True** when no Nextcloud
+    credentials are set, so these tests passed on a developer machine with
+    ``NEXTCLOUD_USERNAME``/``PASSWORD`` exported and failed in CI without them.
+
+    Patched narrowly on the scope_authorization module so the WebDAV tools'
+    own ``get_settings()`` calls (size caps, exclusion tags) are untouched.
+    """
+    with patch(
+        "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+        return_value=SimpleNamespace(enable_login_flow=False),
+    ):
+        yield
 
 
 @pytest.fixture

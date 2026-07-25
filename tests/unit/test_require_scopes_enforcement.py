@@ -28,6 +28,7 @@ from mcp.shared.context import RequestContext
 from nextcloud_mcp_server.auth.scope_authorization import (
     InsufficientScopeError,
     ProvisioningRequiredError,
+    check_scopes,
     require_scopes,
 )
 
@@ -147,3 +148,51 @@ async def test_offline_access_allows_token_carrying_nextcloud_scopes():
     """The same mode must let a provisioned (Flow 2) token through."""
     with _settings(offline_access=True), _authenticated_with(["notes.write"]):
         assert await _write_tool(ctx=_make_ctx()) == "executed"
+
+
+# ---------------------------------------------------------------------------
+# check_scopes — the same latent bug lived here, keyed on an always-None
+# getattr. It has no call sites today, so these are its only guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_check_scopes_reports_missing_scope():
+    with _settings(), _authenticated_with(["notes.read"]):
+        has_all, missing = check_scopes(_make_ctx(), "notes.write")
+
+    assert has_all is False
+    assert missing == {"notes.write"}
+
+
+@pytest.mark.unit
+async def test_check_scopes_passes_when_covered():
+    with _settings(), _authenticated_with(["notes.read", "notes.write"]):
+        has_all, missing = check_scopes(_make_ctx(), "notes.write")
+
+    assert has_all is True
+    assert missing == set()
+
+
+@pytest.mark.unit
+async def test_check_scopes_denies_verified_token_carrying_no_scopes():
+    """A verified token with an empty scope set is not BasicAuth.
+
+    The old guard was ``not token_scopes and getattr(...) is None``; because the
+    getattr always returned None it collapsed to "no scopes → allow", waving
+    through a real OAuth token that legitimately carried none.
+    """
+    with _settings(), _authenticated_with([]):
+        has_all, missing = check_scopes(_make_ctx(), "notes.write")
+
+    assert has_all is False
+    assert missing == {"notes.write"}
+
+
+@pytest.mark.unit
+async def test_check_scopes_allows_basicauth_without_token():
+    with _settings():
+        has_all, missing = check_scopes(_make_ctx(), "notes.write")
+
+    assert has_all is True
+    assert missing == set()
