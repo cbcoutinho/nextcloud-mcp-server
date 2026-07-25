@@ -657,7 +657,7 @@ class CalendarClient:
         await _maybe_await(event.load(only_if_unloaded=True))
 
         # Merge updates into existing iCal data
-        updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)  # type: ignore[arg-type]
+        updated_ical = self._merge_ical_properties(event.data, event_data)  # type: ignore[arg-type]
         event.data = updated_ical  # type: ignore[misc]
 
         await _maybe_await(event.save())
@@ -1164,6 +1164,27 @@ class CalendarClient:
             logger.error("Error parsing iCalendar event: %s", e)
             return None
 
+    @staticmethod
+    def _validate_all_day_flip(
+        target_all_day: bool, has_start: bool, has_end: bool
+    ) -> None:
+        """Reject flips between all-day and timed that can't produce valid iCal.
+
+        Only called when the update actually changes the value type.
+        """
+        if (has_start or has_end) and not (has_start and has_end):
+            raise ValueError(
+                "changing an event between all-day and timed requires both "
+                "start_datetime and end_datetime, so DTSTART and DTEND cannot "
+                "end up with mismatched value types"
+            )
+        if not has_start and not has_end and not target_all_day:
+            raise ValueError(
+                "converting an all-day event to a timed one requires "
+                "start_datetime and end_datetime — there is no defensible "
+                "time-of-day to invent"
+            )
+
     def _apply_date_updates(
         self, component, event_data: dict[str, Any]
     ) -> set[ZoneInfo]:
@@ -1206,24 +1227,13 @@ class CalendarClient:
 
         flipping = stored_all_day is not None and target_all_day != stored_all_day
 
-        if flipping and (has_start or has_end) and not (has_start and has_end):
-            raise ValueError(
-                "changing an event between all-day and timed requires both "
-                "start_datetime and end_datetime, so DTSTART and DTEND cannot "
-                "end up with mismatched value types"
-            )
-
-        if flipping and not has_start and not has_end:
-            if target_all_day:
+        if flipping:
+            self._validate_all_day_flip(target_all_day, has_start, has_end)
+            if not has_start and not has_end:
                 # Timed -> all-day with no new datetimes is well defined: take the
-                # dates off the stored values.
+                # dates off the stored values. (The converse already raised.)
                 self._convert_component_to_all_day(component)
                 return used_timezones
-            raise ValueError(
-                "converting an all-day event to a timed one requires "
-                "start_datetime and end_datetime — there is no defensible "
-                "time-of-day to invent"
-            )
 
         if has_start:
             self._write_date_property(
@@ -1293,10 +1303,12 @@ class CalendarClient:
         end_date = end_date.date() if isinstance(end_date, dt.datetime) else end_date
         component["DTEND"] = vDDDTypes(max(end_date, start_date + dt.timedelta(days=1)))
 
-    def _merge_ical_properties(
-        self, raw_ical: str, event_data: dict[str, Any], event_uid: str
-    ) -> str:
+    def _merge_ical_properties(self, raw_ical: str, event_data: dict[str, Any]) -> str:
         """Merge new event data into existing raw iCal while preserving all properties.
+
+        The event's own ``UID`` is carried through from ``raw_ical`` like any other
+        preserved property, so no ``event_uid`` argument is needed. (One used to be
+        required solely by the removed rebuild fallback.)
 
         Raises on any merge failure rather than substituting a synthesised event.
         This previously caught every exception and fell back to

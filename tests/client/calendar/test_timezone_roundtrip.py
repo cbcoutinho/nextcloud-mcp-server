@@ -255,7 +255,7 @@ def _merge(mocker, vevent_body: str, event_data: dict, vtimezone: str = ""):
 
     client = _make_client(mocker)
     merged = client._merge_ical_properties(
-        _wrap_vevent(vevent_body, vtimezone), event_data, "test-event"
+        _wrap_vevent(vevent_body, vtimezone), event_data
     )
     cal = Calendar.from_ical(merged)
     return next(c for c in cal.walk() if c.name == "VEVENT")
@@ -386,7 +386,7 @@ def test_flip_with_only_one_datetime_raises(mocker):
     event_data = {"all_day": False, "start_datetime": "2026-01-01T09:00:00Z"}
 
     with pytest.raises(ValueError, match="requires both"):
-        client._merge_ical_properties(raw, event_data, "test-event")
+        client._merge_ical_properties(raw, event_data)
 
 
 def test_flip_to_timed_without_datetimes_raises(mocker):
@@ -397,7 +397,7 @@ def test_flip_to_timed_without_datetimes_raises(mocker):
     event_data = {"all_day": False}
 
     with pytest.raises(ValueError, match="no defensible time-of-day"):
-        client._merge_ical_properties(raw, event_data, "test-event")
+        client._merge_ical_properties(raw, event_data)
 
 
 def test_merge_preserves_properties_absent_from_event_data(mocker):
