@@ -1,6 +1,7 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -160,17 +161,23 @@ def _existing_type_param(line: str) -> str | None:
     """Return the raw ``TYPE=`` parameter value of a logical line, or ``None``.
 
     Parameter names are case-insensitive (RFC 6350 §3.3) just like property
-    names, so the lookup runs on an upper-cased copy while the value is sliced
-    from the original to preserve its casing. A case-sensitive ``";TYPE=" in
-    line`` test would miss ``email;type=work:`` — which, now that property names
-    match case-insensitively, *is* reached by the EMAIL branch and would have its
-    TYPE parameter silently dropped on rewrite.
+    names. A case-sensitive ``";TYPE=" in line`` test would miss
+    ``email;type=work:`` — which, now that property names match
+    case-insensitively, *is* reached by the EMAIL branch and would have its TYPE
+    parameter silently dropped on rewrite.
+
+    The match is done with a case-insensitive regex rather than
+    ``line.upper().find(...)``: ``str.upper()`` is not length-preserving for all
+    Unicode (``"ß".upper() == "SS"``), so an index taken from the upper-cased copy
+    can be off by one or more in the original. With
+    ``EMAIL;X-LABEL=straße;TYPE=work:...`` that misalignment sliced ``"ork"``
+    instead of ``"work"``. A regex match position always refers to the original
+    string, which sidesteps it entirely.
     """
-    marker = ";TYPE="
-    index = line.upper().find(marker)
-    if index == -1:
+    match = re.search(r";TYPE=", line, re.IGNORECASE)
+    if match is None:
         return None
-    return line[index + len(marker) :].split(":")[0]
+    return line[match.end() :].split(":")[0]
 
 
 def _project_contact(contact: Contact) -> dict[str, Any]:

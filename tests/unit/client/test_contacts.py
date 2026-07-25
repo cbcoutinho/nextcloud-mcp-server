@@ -926,6 +926,45 @@ class TestVcardLineFolding:
 
         assert "EMAIL;TYPE=WORK:new@example.com" in result
 
+    def test_type_param_survives_length_expanding_uppercase(self):
+        """Regression: str.upper() is not length-preserving for all Unicode.
+
+        With ``EMAIL;X-LABEL=straße;TYPE=work:...`` the 'ß' expands to 'SS' under
+        upper(), so an index taken from the upper-cased copy pointed one character
+        too far into the original and sliced 'ork' instead of 'work'. The regex
+        match position always refers to the original string.
+        """
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:x\r\n"
+            "FN:Alice\r\n"
+            "EMAIL;X-LABEL=stra\u00dfe;TYPE=work:old@example.com\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"email": "new@example.com"})
+
+        assert "EMAIL;TYPE=work:new@example.com" in result
+        assert "TYPE=ork" not in result
+
+    def test_grouped_and_lowercase_property_combined(self):
+        """The two behaviours are proven independently; this guards their
+        interaction (round-2 reviewer suggestion)."""
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:x\r\n"
+            "FN:Alice\r\n"
+            "item1.email;type=work:old@example.com\r\n"
+            "item1.X-ABLabel:work email\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"email": "new@example.com"})
+
+        assert "item1.EMAIL;TYPE=work:new@example.com" in result
+        assert "item1.X-ABLabel:work email" in result
+        assert "old@example.com" not in result
+
     def test_grouped_property_is_updated_in_place_keeping_its_group(self):
         """Apple cards group related properties (``item1.URL`` + ``item1.X-ABLabel``).
 
