@@ -359,47 +359,44 @@ async def test_move_with_destination_etag_guards_the_destination(
     """The acceptance test for the destination precondition.
 
     This is the check that matters: `If-Match` on a MOVE would guard the SOURCE
-    and pass happily while clobbering a changed destination, so a unit test
-    asserting header bytes proves only that we send something. Only a live
-    server can show the condition is actually enforced.
+    and pass happily while clobbering the destination, so a unit test asserting
+    header bytes proves only that we send something. Only a live server shows the
+    condition is actually enforced.
+
+    The mismatching case uses a fabricated etag rather than a superseded one.
+    Nextcloud does not reliably change a file's ETag between writes (observed in
+    CI: two writes with different content and length returned the same value), so
+    "write again to make the etag stale" is not a dependable way to produce a
+    mismatch. A value that was never the destination's etag is unambiguous.
     """
     suffix = uuid.uuid4().hex[:8]
     src = f"{test_base_path}/dest-guard-src-{suffix}.txt"
     dst = f"{test_base_path}/dest-guard-dst-{suffix}.txt"
 
-    # Lengths differ deliberately: Nextcloud derives an ETag from size and mtime,
-    # so two same-length writes in the same mtime tick yield the *same* ETag — and
-    # then the "stale" etag below is still current, the move succeeds, and the
-    # assertion that matters silently passes for the wrong reason.
-    source_body = b"source-v1"
-    dest_v1 = b"dest-v1"
-    dest_v2 = b"dest-v2-deliberately-longer-so-the-etag-changes"
+    source_body = b"source-payload"
+    dest_body = b"destination-payload"
 
     await nc_client.webdav.write_file(src, source_body, "text/plain")
-    dst_write = await nc_client.webdav.write_file(dst, dest_v1, "text/plain")
-    dst_etag = dst_write["etag"]
-    assert dst_etag
+    await nc_client.webdav.write_file(dst, dest_body, "text/plain")
 
-    # Someone else edits the destination after we read its etag.
-    await nc_client.webdav.write_file(dst, dest_v2, "text/plain", if_match=dst_etag)
-
-    # Our now-stale etag must stop the move rather than clobbering dest-v2.
-    stale = await nc_client.webdav.move_resource(
-        src, dst, overwrite=True, if_destination_match=dst_etag
+    # A non-matching destination etag must stop the move.
+    blocked = await nc_client.webdav.move_resource(
+        src, dst, overwrite=True, if_destination_match="deadbeef-not-the-real-etag"
     )
-    assert stale["status_code"] == 412, (
-        "stale destination etag did not block the move — the If: header is a no-op"
+    assert blocked["status_code"] == 412, (
+        "a non-matching destination etag did not block the move — the If: header "
+        "is a no-op and the precondition is not being enforced"
     )
 
-    content, _, current_etag = await nc_client.webdav.read_file(dst)
-    assert content == dest_v2, "destination was clobbered despite a stale etag"
-    # The source must still be there: a blocked MOVE moves nothing.
+    # Nothing moved: the destination keeps its content and the source survives.
+    dst_content, _, dst_etag = await nc_client.webdav.read_file(dst)
+    assert dst_content == dest_body, "destination was clobbered despite a mismatch"
     src_content, _, _ = await nc_client.webdav.read_file(src)
-    assert src_content == source_body
+    assert src_content == source_body, "source was moved despite a blocked MOVE"
 
-    # With the current etag the move goes through.
+    # With the destination's real etag the move goes through.
     ok = await nc_client.webdav.move_resource(
-        src, dst, overwrite=True, if_destination_match=current_etag
+        src, dst, overwrite=True, if_destination_match=dst_etag
     )
     assert ok["status_code"] in (201, 204)
     moved, _, _ = await nc_client.webdav.read_file(dst)
