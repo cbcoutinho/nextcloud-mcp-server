@@ -161,6 +161,61 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return raw.strip('"') if raw is not None else None
 
 
+def _destination_precondition_header(
+    destination_webdav_path: str, if_destination_match: str
+) -> dict[str, str]:
+    """Build the tagged-list ``If:`` header that conditions the *destination*.
+
+    ``If-Match`` is the obvious choice here and it is **wrong**: per RFC 9110 it
+    applies to the request-URI, which for MOVE/COPY is the *source*. Conditioning
+    the destination needs RFC 4918 §10.4's tagged-list form, where the resource
+    the condition applies to is named explicitly::
+
+        If: <destination-uri> (["etag"])
+
+    Three details are load-bearing, all dictated by sabre/dav's parser
+    (``Server::getIfConditions``)::
+
+        /(?:\\<(?P<uri>.*?)\\>\\s)?\\((?P<not>Not\\s)?...(?:\\[(?P<etag>[^\\]]*)\\])?\\)/im
+
+    * the **space after ``>``** is required by the regex — without it the URI is
+      not captured and the condition silently applies to the request-URI instead,
+      i.e. it guards the wrong resource;
+    * the etag **keeps its quotes inside the brackets**, because the comparison is
+      ``$node->getETag() == $token['etag']`` and Nextcloud's ``Node::getETag()``
+      returns a quoted value;
+    * the URI is resolved with ``calculateUri()``, so it must be the same
+      percent-encoded absolute DAV path used in ``Destination``.
+    """
+    return {"If": f'<{destination_webdav_path}> (["{if_destination_match}"])'}
+
+
+def _validate_destination_precondition(
+    if_destination_match: Optional[str], overwrite: bool
+) -> None:
+    """Reject combinations the WebDAV ``If:`` grammar cannot express.
+
+    Raised at the client boundary rather than silently reinterpreted, so a
+    caller never believes a guard is in force when it is not.
+    """
+    if if_destination_match is None:
+        return
+    if if_destination_match == "*":
+        raise ValueError(
+            "if_destination_match='*' is not expressible: RFC 4918's tagged-list "
+            "If: grammar has no wildcard, and 'the destination must exist' cannot "
+            "be asserted this way — an If: condition naming a missing URI returns "
+            "404, not 412. Use overwrite=True without a destination etag."
+        )
+    if not overwrite:
+        raise ValueError(
+            "if_destination_match with overwrite=False is contradictory: the etag "
+            "asserts which version of the destination to replace, while "
+            "overwrite=False refuses to replace it at all. Pass overwrite=True to "
+            "replace exactly that version."
+        )
+
+
 def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
     """Pick the single conditional header for a fail-closed PUT.
 
@@ -825,7 +880,12 @@ class WebDAVClient(BaseNextcloudClient):
             raise e
 
     async def move_resource(
-        self, source_path: str, destination_path: str, overwrite: bool = False
+        self,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+        *,
+        if_destination_match: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Move or rename a resource (file or directory) via WebDAV MOVE.
 
@@ -833,6 +893,19 @@ class WebDAVClient(BaseNextcloudClient):
             source_path: The path of the file or directory to move
             destination_path: The new path for the file or directory
             overwrite: Whether to overwrite the destination if it exists
+            if_destination_match: Optional ETag of the destination. When given,
+                the move replaces the destination only if it is still that exact
+                version, closing the window where ``overwrite=True`` clobbers a
+                file someone else changed in the meantime.
+
+                Requires ``overwrite=True`` (the two are contradictory otherwise)
+                and does not accept ``"*"``; both raise ``ValueError``.
+
+                Two limitations, both from sabre/dav and neither hideable:
+                the etag condition is evaluated only for files
+                (``$node instanceof IFile``), so a **directory** destination
+                always fails it with 412; and an ``If:`` condition naming a URI
+                that does not exist yields **404, not 412**.
 
         Returns:
             Dict with status_code and optional message
@@ -849,11 +922,19 @@ class WebDAVClient(BaseNextcloudClient):
 
         logger.debug("Moving resource from '%s' to '%s'", source_path, destination_path)
 
+        _validate_destination_precondition(if_destination_match, overwrite)
+
         headers = {
             "OCS-APIRequest": "true",
             "Destination": destination_webdav_path,
             "Overwrite": "T" if overwrite else "F",
         }
+        if if_destination_match is not None:
+            headers.update(
+                _destination_precondition_header(
+                    destination_webdav_path, if_destination_match
+                )
+            )
 
         try:
             response = await self._make_request(
@@ -871,12 +952,35 @@ class WebDAVClient(BaseNextcloudClient):
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 logger.debug("Source resource '%s' not found", source_path)
+                # With a destination etag in play, 404 is ambiguous: sabre's
+                # getNodeForPath on the tagged URI raises NotFound, which
+                # surfaces as 404 rather than 412. Say so instead of asserting
+                # the source is missing.
+                if if_destination_match is not None:
+                    return {
+                        "status_code": 404,
+                        "message": (
+                            "Source not found, or the destination whose etag was "
+                            "asserted does not exist (an If: condition naming a "
+                            "missing URI yields 404, not 412)."
+                        ),
+                    }
                 return {"status_code": 404, "message": "Source resource not found"}
             elif e.response.status_code == 412:
                 logger.debug(
                     "Destination '%s' already exists and overwrite is false",
                     destination_path,
                 )
+                if if_destination_match is not None:
+                    return {
+                        "status_code": 412,
+                        "message": (
+                            "Destination changed since that etag was read — "
+                            "re-read it before retrying. Note the etag condition "
+                            "applies to files only: a directory destination "
+                            "always fails this check."
+                        ),
+                    }
                 return {
                     "status_code": 412,
                     "message": "Destination already exists and overwrite is false",
@@ -908,7 +1012,12 @@ class WebDAVClient(BaseNextcloudClient):
             raise e
 
     async def copy_resource(
-        self, source_path: str, destination_path: str, overwrite: bool = False
+        self,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+        *,
+        if_destination_match: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Copy a resource (file or directory) via WebDAV COPY.
 
@@ -916,6 +1025,19 @@ class WebDAVClient(BaseNextcloudClient):
             source_path: The path of the file or directory to copy
             destination_path: The destination path for the copy
             overwrite: Whether to overwrite the destination if it exists
+            if_destination_match: Optional ETag of the destination. When given,
+                the copy replaces the destination only if it is still that exact
+                version, closing the window where ``overwrite=True`` clobbers a
+                file someone else changed in the meantime.
+
+                Requires ``overwrite=True`` (the two are contradictory otherwise)
+                and does not accept ``"*"``; both raise ``ValueError``.
+
+                Two limitations, both from sabre/dav and neither hideable:
+                the etag condition is evaluated only for files
+                (``$node instanceof IFile``), so a **directory** destination
+                always fails it with 412; and an ``If:`` condition naming a URI
+                that does not exist yields **404, not 412**.
 
         Returns:
             Dict with status_code and optional message
@@ -934,11 +1056,19 @@ class WebDAVClient(BaseNextcloudClient):
             "Copying resource from '%s' to '%s'", source_path, destination_path
         )
 
+        _validate_destination_precondition(if_destination_match, overwrite)
+
         headers = {
             "OCS-APIRequest": "true",
             "Destination": destination_webdav_path,
             "Overwrite": "T" if overwrite else "F",
         }
+        if if_destination_match is not None:
+            headers.update(
+                _destination_precondition_header(
+                    destination_webdav_path, if_destination_match
+                )
+            )
 
         try:
             response = await self._make_request(
@@ -956,12 +1086,35 @@ class WebDAVClient(BaseNextcloudClient):
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 logger.debug("Source resource '%s' not found", source_path)
+                # With a destination etag in play, 404 is ambiguous: sabre's
+                # getNodeForPath on the tagged URI raises NotFound, which
+                # surfaces as 404 rather than 412. Say so instead of asserting
+                # the source is missing.
+                if if_destination_match is not None:
+                    return {
+                        "status_code": 404,
+                        "message": (
+                            "Source not found, or the destination whose etag was "
+                            "asserted does not exist (an If: condition naming a "
+                            "missing URI yields 404, not 412)."
+                        ),
+                    }
                 return {"status_code": 404, "message": "Source resource not found"}
             elif e.response.status_code == 412:
                 logger.debug(
                     "Destination '%s' already exists and overwrite is false",
                     destination_path,
                 )
+                if if_destination_match is not None:
+                    return {
+                        "status_code": 412,
+                        "message": (
+                            "Destination changed since that etag was read — "
+                            "re-read it before retrying. Note the etag condition "
+                            "applies to files only: a directory destination "
+                            "always fails this check."
+                        ),
+                    }
                 return {
                     "status_code": 412,
                     "message": "Destination already exists and overwrite is false",

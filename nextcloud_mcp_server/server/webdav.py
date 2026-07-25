@@ -577,7 +577,11 @@ def configure_webdav_tools(mcp: FastMCP):
     @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_move_resource(
-        source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
+        source_path: str,
+        destination_path: str,
+        ctx: Context,
+        overwrite: bool = False,
+        if_destination_match: str | None = None,
     ) -> MoveResourceResponse:
         """Move or rename a file or directory in NextCloud.
 
@@ -589,6 +593,20 @@ def configure_webdav_tools(mcp: FastMCP):
             source_path: Full path of the file or directory to move
             destination_path: New path for the file or directory
             overwrite: Whether to overwrite the destination if it exists (default: False)
+            if_destination_match: Optional ETag of the destination (from
+                nc_webdav_read_file or nc_webdav_write_file). The copy then
+                replaces the destination only if it is still that exact version,
+                so ``overwrite=True`` cannot clobber a file someone else changed
+                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
+                accepted. Files only — a directory destination always fails the
+                check with 412.
+            if_destination_match: Optional ETag of the destination (from
+                nc_webdav_read_file or nc_webdav_write_file). The move then
+                replaces the destination only if it is still that exact version,
+                so ``overwrite=True`` cannot clobber a file someone else changed
+                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
+                accepted. Files only — a directory destination always fails the
+                check with 412.
 
         Returns:
             ``MoveResourceResponse``. ``success`` is
@@ -612,7 +630,10 @@ def configure_webdav_tools(mcp: FastMCP):
             )
 
         result = await client.webdav.move_resource(
-            source_path, destination_path, overwrite
+            source_path,
+            destination_path,
+            overwrite,
+            if_destination_match=if_destination_match,
         )
         status_code = result.get("status_code")
         return MoveResourceResponse(
@@ -634,7 +655,11 @@ def configure_webdav_tools(mcp: FastMCP):
     @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_copy_resource(
-        source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
+        source_path: str,
+        destination_path: str,
+        ctx: Context,
+        overwrite: bool = False,
+        if_destination_match: str | None = None,
     ) -> CopyResourceResponse:
         """Copy a file or directory in NextCloud.
 
@@ -669,7 +694,10 @@ def configure_webdav_tools(mcp: FastMCP):
             )
 
         result = await client.webdav.copy_resource(
-            source_path, destination_path, overwrite
+            source_path,
+            destination_path,
+            overwrite,
+            if_destination_match=if_destination_match,
         )
         status_code = result.get("status_code")
         return CopyResourceResponse(

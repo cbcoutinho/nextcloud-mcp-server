@@ -121,3 +121,45 @@ argument — there is no chunked/streaming upload for writes (unlike the
 read/ingest path). A pre-flight size gate rejects content over
 `WEBDAV_WRITE_MAX_MB` (default 50, `0` disables) with a clear error rather
 than risking a timeout or out-of-memory failure on a very large PUT.
+
+## Conditional move and copy
+
+`nc_webdav_move_resource` and `nc_webdav_copy_resource` accept an optional
+`if_destination_match`. With `overwrite=True` alone the destination is replaced
+unconditionally; supplying the destination's ETag replaces it **only if it is
+still that exact version**, so a file someone else changed in the meantime is not
+clobbered.
+
+```python
+info = await nc_webdav_read_file(path="Docs/report.txt")
+await nc_webdav_move_resource(
+    source_path="Drafts/report.txt",
+    destination_path="Docs/report.txt",
+    overwrite=True,
+    if_destination_match=info["etag"],
+)
+```
+
+### Why not `If-Match`?
+
+`If-Match` applies to the **request-URI**, which for MOVE/COPY is the *source*.
+Conditioning the destination requires RFC 4918 §10.4's tagged-list `If:` form,
+which names the resource explicitly:
+
+```
+If: </remote.php/dav/files/user/Docs/report.txt> (["etag"])
+```
+
+### Limitations
+
+Both come from sabre/dav and are surfaced rather than hidden:
+
+- **Files only.** The etag is checked with `$node instanceof IFile`, so a
+  **directory** destination always fails the condition with 412.
+- **A missing destination yields 404, not 412.** An `If:` condition naming a URI
+  that does not exist raises `NotFound` inside sabre. "The destination must
+  exist" is therefore not expressible this way — `overwrite=False` already covers
+  "must not exist".
+
+`if_destination_match="*"` and combining it with `overwrite=False` both raise
+`ValueError` at the client boundary rather than being silently reinterpreted.
