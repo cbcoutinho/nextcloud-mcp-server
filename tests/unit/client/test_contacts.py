@@ -907,8 +907,10 @@ class TestVcardLineFolding:
         )
         result = self._merge(raw, {"email": "new@example.com", "tel": "555-1111"})
 
-        assert "EMAIL;TYPE=work:new@example.com" in result
-        assert "TEL;TYPE=cell:555-1111" in result
+        # Parameters are copied verbatim, so the original lower-case ``type=``
+        # survives rather than being normalised to ``TYPE=``.
+        assert "EMAIL;type=work:new@example.com" in result
+        assert "TEL;type=cell:555-1111" in result
         assert "old@example.com" not in result
         assert "555-0000" not in result
 
@@ -926,25 +928,27 @@ class TestVcardLineFolding:
 
         assert "EMAIL;TYPE=WORK:new@example.com" in result
 
-    def test_type_param_survives_length_expanding_uppercase(self):
-        """Regression: str.upper() is not length-preserving for all Unicode.
+    def test_all_parameters_survive_rewrite(self):
+        """Every parameter on a rewritten line is preserved, not just TYPE.
 
-        With ``EMAIL;X-LABEL=straße;TYPE=work:...`` the 'ß' expands to 'SS' under
-        upper(), so an index taken from the upper-cased copy pointed one character
-        too far into the original and sliced 'ork' instead of 'work'. The regex
-        match position always refers to the original string.
+        Two bugs converged here. The line was reconstructed as
+        ``EMAIL;TYPE=<value>:``, so any *other* parameter (``PREF``, ``X-LABEL``)
+        was silently dropped. And the TYPE value itself was located by index into
+        ``line.upper()``, which is not length-preserving for all Unicode — the
+        'ß' below expands to 'SS' and shifted the slice to 'ork' instead of
+        'work'. Copying the parameter section verbatim fixes both at once.
         """
         raw = (
             "BEGIN:VCARD\r\n"
             "VERSION:3.0\r\n"
             "UID:x\r\n"
             "FN:Alice\r\n"
-            "EMAIL;X-LABEL=stra\u00dfe;TYPE=work:old@example.com\r\n"
+            "EMAIL;PREF=1;X-LABEL=stra\u00dfe;TYPE=work:old@example.com\r\n"
             "END:VCARD\r\n"
         )
         result = self._merge(raw, {"email": "new@example.com"})
 
-        assert "EMAIL;TYPE=work:new@example.com" in result
+        assert "EMAIL;PREF=1;X-LABEL=stra\u00dfe;TYPE=work:new@example.com" in result
         assert "TYPE=ork" not in result
 
     def test_grouped_and_lowercase_property_combined(self):
@@ -961,7 +965,7 @@ class TestVcardLineFolding:
         )
         result = self._merge(raw, {"email": "new@example.com"})
 
-        assert "item1.EMAIL;TYPE=work:new@example.com" in result
+        assert "item1.EMAIL;type=work:new@example.com" in result
         assert "item1.X-ABLabel:work email" in result
         assert "old@example.com" not in result
 

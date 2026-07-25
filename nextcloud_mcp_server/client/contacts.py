@@ -1,7 +1,6 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
-import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -157,27 +156,30 @@ def _split_property_head(line: str) -> tuple[str, str]:
     return group + sep, name.upper()
 
 
-def _existing_type_param(line: str) -> str | None:
-    """Return the raw ``TYPE=`` parameter value of a logical line, or ``None``.
+def _existing_parameters(line: str) -> str:
+    """Return a logical line's parameter section verbatim, including the leading ``;``.
 
-    Parameter names are case-insensitive (RFC 6350 §3.3) just like property
-    names. A case-sensitive ``";TYPE=" in line`` test would miss
-    ``email;type=work:`` — which, now that property names match
-    case-insensitively, *is* reached by the EMAIL branch and would have its TYPE
-    parameter silently dropped on rewrite.
+    ``EMAIL;PREF=1;TYPE=work:a@b`` -> ``";PREF=1;TYPE=work"``
+    ``item1.EMAIL:a@b``            -> ``""``
 
-    The match is done with a case-insensitive regex rather than
-    ``line.upper().find(...)``: ``str.upper()`` is not length-preserving for all
-    Unicode (``"ß".upper() == "SS"``), so an index taken from the upper-cased copy
-    can be off by one or more in the original. With
-    ``EMAIL;X-LABEL=straße;TYPE=work:...`` that misalignment sliced ``"ork"``
-    instead of ``"work"``. A regex match position always refers to the original
-    string, which sidesteps it entirely.
+    Copying the whole section rather than re-deriving a single ``TYPE=`` value
+    preserves *every* parameter on a rewritten line. The previous approach
+    reconstructed the line as ``EMAIL;TYPE=<value>:``, which silently dropped any
+    other parameter — ``PREF``, ``X-ABLabel``, ``CHARSET`` — and dropped ``TYPE``
+    itself whenever it was not the parameter being matched. Verbatim copying also
+    sidesteps casing entirely: no case-insensitive search, so no dependence on
+    ``str.upper()`` being length-preserving (it isn't — ``"ß".upper() == "SS"``).
+
+    Known limitation, unchanged from the original: the value separator is taken
+    as the first ``:``, so a quoted parameter value containing a colon
+    (``TYPE="a:b"``, legal per RFC 6350 §3.3) would split early. No producer we
+    have seen emits one.
     """
-    match = re.search(r";TYPE=", line, re.IGNORECASE)
-    if match is None:
-        return None
-    return line[match.end() :].split(":")[0]
+    head, separator, _ = line.partition(":")
+    if not separator:
+        return ""
+    param_start = head.find(";")
+    return head[param_start:] if param_start != -1 else ""
 
 
 def _project_contact(contact: Contact) -> dict[str, Any]:
@@ -716,8 +718,8 @@ class ContactsClient(BaseNextcloudClient):
         ``fn:`` comes back as ``FN:``. Property names are case-insensitive per
         RFC 6350 §3.3 so this is semantically identical, but it is a visible
         formatting change and the only place the "preserve exact formatting"
-        intent above does not hold literally. Group prefixes and ``TYPE``
-        parameters are preserved as written.
+        intent above does not hold literally. Group prefixes and the whole
+        parameter section are copied verbatim.
 
         Raises on any merge failure rather than substituting a synthesised card.
         This function previously caught every exception and returned a four-line
@@ -778,13 +780,10 @@ class ContactsClient(BaseNextcloudClient):
                     if isinstance(contact_data["email"], str):
                         email_value = _safe_vcard_value(contact_data["email"])
                         # Try to preserve the original format as much as possible
-                        type_part = _existing_type_param(line)
-                        if type_part is not None:
-                            updated_lines.append(
-                                f"{group_prefix}EMAIL;TYPE={type_part}:{email_value}"
-                            )
-                        else:
-                            updated_lines.append(f"{group_prefix}EMAIL:{email_value}")
+                        params = _existing_parameters(line)
+                        updated_lines.append(
+                            f"{group_prefix}EMAIL{params}:{email_value}"
+                        )
                         updated_properties.add("email")
                     else:
                         # Dict / list inputs aren't translatable to a single
@@ -799,13 +798,8 @@ class ContactsClient(BaseNextcloudClient):
                 if "tel" not in updated_properties:
                     if isinstance(contact_data["tel"], str):
                         tel_value = _safe_vcard_value(contact_data["tel"])
-                        type_part = _existing_type_param(line)
-                        if type_part is not None:
-                            updated_lines.append(
-                                f"{group_prefix}TEL;TYPE={type_part}:{tel_value}"
-                            )
-                        else:
-                            updated_lines.append(f"{group_prefix}TEL:{tel_value}")
+                        params = _existing_parameters(line)
+                        updated_lines.append(f"{group_prefix}TEL{params}:{tel_value}")
                         updated_properties.add("tel")
                     else:
                         # Same reasoning as the EMAIL branch above: don't drop.
