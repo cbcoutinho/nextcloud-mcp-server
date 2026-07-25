@@ -351,5 +351,3 @@ async def test_write_returns_etag_usable_without_reread(
     assert content_after == b"v2-longer-body", "a rejected write must not overwrite"
 
     await nc_client.webdav.delete_resource(path)
-
-    await nc_client.webdav.delete_resource(path)
