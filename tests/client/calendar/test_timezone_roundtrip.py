@@ -454,3 +454,44 @@ def test_all_day_update_with_distinct_dates_is_not_clamped(mocker):
 
     assert component["DTSTART"].dt.isoformat() == "2026-02-01"
     assert component["DTEND"].dt.isoformat() == "2026-02-05"
+
+
+def test_non_iana_stored_tzid_is_not_inherited_and_does_not_warn(mocker, caplog):
+    """Round-3 finding: a stored TZID need not be an IANA name.
+
+    icalendar renders a fixed-offset tzinfo as ``TZID="UTC-04:00"`` with no
+    VTIMEZONE (the limitation documented on this PR), so inheriting one is
+    *expected* to fail. Routing that through ``_resolve_timezone`` logged
+    "Unknown IANA timezone", which reads as an error when falling back to
+    floating time is the correct outcome.
+    """
+    import logging
+
+    vevent = 'DTSTART;TZID="UTC-04:00":20260101T090000\r\n'
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
+    ):
+        component = _merge(mocker, vevent, {"start_datetime": "2026-03-10T09:00:00"})
+
+    assert component["DTSTART"].dt.replace(tzinfo=None).isoformat() == (
+        "2026-03-10T09:00:00"
+    )
+    assert not any("Unknown IANA timezone" in r.message for r in caplog.records)
+
+
+def test_explicit_unknown_timezone_still_warns(mocker, caplog):
+    """The quiet path is scoped to *inherited* zones — an explicit bad
+    ``timezone=`` from the caller is a real mistake and must still surface."""
+    import logging
+
+    vevent = "DTSTART:20260101T090000Z\r\n"
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
+    ):
+        _merge(
+            mocker,
+            vevent,
+            {"start_datetime": "2026-03-10T09:00:00", "timezone": "Not/AZone"},
+        )
+
+    assert any("Unknown IANA timezone" in r.message for r in caplog.records)

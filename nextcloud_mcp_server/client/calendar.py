@@ -982,7 +982,21 @@ class CalendarClient:
             return parsed.replace(tzinfo=zi), zi
 
         if inherited_tz:
-            inherited_zi = cls._resolve_timezone(inherited_tz)
+            # Resolve quietly. A stored TZID is not guaranteed to be an IANA name:
+            # icalendar renders a fixed-offset tzinfo as TZID="UTC-04:00" with no
+            # VTIMEZONE, so inheriting one is expected to fail. Routing that
+            # through _resolve_timezone would log "Unknown IANA timezone", which
+            # reads as an error when the floating-time fallback below is the
+            # correct, harmless outcome. An explicit `timezone=` from the caller
+            # still warns — that one really is a mistake worth surfacing.
+            try:
+                inherited_zi = ZoneInfo(inherited_tz)
+            except (ZoneInfoNotFoundError, ValueError):
+                logger.debug(
+                    "Stored TZID %r is not an IANA name; not inheriting it",
+                    inherited_tz,
+                )
+                inherited_zi = None
             if inherited_zi is not None:
                 # Inheriting is the expected behaviour, not a problem — debug, not
                 # warning. Without this, updating the time of a TZID-bound event
