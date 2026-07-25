@@ -770,7 +770,10 @@ async def test_move_copy_return_typed_success(
     getattr(fake_client.webdav, f"{verb}_resource").return_value = {"status_code": 201}
 
     result = await webdav_tools[tool_name].fn(
-        source_path="/a.txt", destination_path="/b.txt", ctx=object(), overwrite=False
+        source_path="/a.txt",
+        destination_path="/b.txt",
+        ctx=_mock_ctx(fake_client),
+        overwrite=False,
     )
 
     assert result.success is True
@@ -799,7 +802,10 @@ async def test_move_copy_report_conflicts_as_unsuccessful(
     }
 
     result = await webdav_tools[tool_name].fn(
-        source_path="/a.txt", destination_path="/b.txt", ctx=object(), overwrite=False
+        source_path="/a.txt",
+        destination_path="/b.txt",
+        ctx=_mock_ctx(fake_client),
+        overwrite=False,
     )
 
     assert result.success is False
