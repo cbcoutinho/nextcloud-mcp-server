@@ -10,6 +10,8 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     Calendar,
     CalendarEventSummary,
+    DeleteEventResponse,
+    DeleteTodoResponse,
     ListCalendarsResponse,
     ListEventsResponse,
     ListTodosResponse,
@@ -396,10 +398,23 @@ def configure_calendar_tools(mcp: FastMCP):
         calendar_name: str,
         event_uid: str,
         ctx: Context,
-    ):
-        """Delete a calendar event"""
+    ) -> DeleteEventResponse:
+        """Delete a calendar event.
+
+        A missing event is reported as success (status 404) so retries are safe.
+        A server *refusal* — a scheduled/iMIP object, or a stale entry in the
+        calendar trashbin holding the UID — comes back with ``success=False`` and
+        a message explaining the likely cause, rather than raising.
+        """
         client = await get_client(ctx)
-        return await client.calendar.delete_event(calendar_name, event_uid)
+        result = await client.calendar.delete_event(calendar_name, event_uid)
+        return DeleteEventResponse(
+            success=result.get("success", True),
+            status_code=result.get("status_code"),
+            message=result.get("message"),
+            deleted_uid=event_uid,
+            calendar_name=calendar_name,
+        )
 
     @mcp.tool(
         title="Create Meeting",
@@ -739,9 +754,23 @@ def configure_calendar_tools(mcp: FastMCP):
 
             for event in events:
                 try:
-                    await client.calendar.delete_event(
+                    outcome = await client.calendar.delete_event(
                         event.get("calendar_name", calendar_name), event["uid"]
                     )
+                    # A server refusal is now a structured result rather than an
+                    # exception, so it has to be counted explicitly — otherwise it
+                    # would be tallied as a successful delete.
+                    if not outcome.get("success", True):
+                        failed_count += 1
+                        results.append(
+                            {
+                                "uid": event["uid"],
+                                "status": "failed",
+                                "error": outcome.get("message", "delete refused"),
+                                "title": event.get("title", ""),
+                            }
+                        )
+                        continue
                     deleted_count += 1
                     results.append(
                         {
@@ -837,9 +866,30 @@ def configure_calendar_tools(mcp: FastMCP):
                     await client.calendar.create_event(target_calendar, event_data)
 
                     # Delete from source calendar
-                    await client.calendar.delete_event(
+                    outcome = await client.calendar.delete_event(
                         event.get("calendar_name", calendar_name), event["uid"]
                     )
+                    # The copy has already landed in the target. If the source
+                    # delete is refused, the event now exists in *both* calendars,
+                    # so this must be reported as a failure with the duplicate
+                    # named — counting it as "moved" would hide it.
+                    if not outcome.get("success", True):
+                        failed_count += 1
+                        results.append(
+                            {
+                                "uid": event["uid"],
+                                "status": "failed",
+                                "error": (
+                                    "copied to "
+                                    f"{target_calendar} but the source copy could "
+                                    "not be deleted, so the event now exists in "
+                                    "both calendars: "
+                                    f"{outcome.get('message', 'delete refused')}"
+                                ),
+                                "title": event.get("title", ""),
+                            }
+                        )
+                        continue
 
                     moved_count += 1
                     results.append(
@@ -1116,8 +1166,13 @@ def configure_calendar_tools(mcp: FastMCP):
         calendar_name: str,
         todo_uid: str,
         ctx: Context,
-    ):
+    ) -> DeleteTodoResponse:
         """Delete a todo/task from a calendar.
+
+        A missing todo is reported as success (status 404) so retries are safe.
+        A server *refusal* — a scheduled/iMIP object, or a stale entry in the
+        calendar trashbin holding the UID — comes back with ``success=False`` and
+        a message explaining the likely cause, rather than raising.
 
         Args:
             calendar_name: Name of the calendar containing the todo
@@ -1125,10 +1180,17 @@ def configure_calendar_tools(mcp: FastMCP):
             ctx: MCP context
 
         Returns:
-            Dict with deletion status
+            DeleteTodoResponse carrying the status and, on refusal, why.
         """
         client = await get_client(ctx)
-        return await client.calendar.delete_todo(calendar_name, todo_uid)
+        result = await client.calendar.delete_todo(calendar_name, todo_uid)
+        return DeleteTodoResponse(
+            success=result.get("success", True),
+            status_code=result.get("status_code"),
+            message=result.get("message"),
+            deleted_uid=todo_uid,
+            calendar_name=calendar_name,
+        )
 
     @mcp.tool(
         title="Search Todo Tasks",
