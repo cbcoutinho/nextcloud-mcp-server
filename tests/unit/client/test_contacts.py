@@ -886,6 +886,46 @@ class TestVcardLineFolding:
         assert len(fn_lines) == 1
         assert self._value_of(result, "FN") == "Alice Updated"
 
+    def test_lowercase_type_param_is_preserved_on_rewrite(self):
+        """Regression for the case-insensitivity half-fix.
+
+        Once ``_split_property_head`` matched property names case-insensitively,
+        a ``email;type=work:`` line started being picked up by the EMAIL update
+        branch — but the ``TYPE=`` lookup was still a case-sensitive substring
+        test, so the parameter was silently dropped on rewrite. Before the
+        name-matching change the line wasn't matched at all and the parameter
+        survived by accident, so this was a real regression.
+        """
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:x\r\n"
+            "FN:Alice\r\n"
+            "email;type=work:old@example.com\r\n"
+            "tel;type=cell:555-0000\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"email": "new@example.com", "tel": "555-1111"})
+
+        assert "EMAIL;TYPE=work:new@example.com" in result
+        assert "TEL;TYPE=cell:555-1111" in result
+        assert "old@example.com" not in result
+        assert "555-0000" not in result
+
+    def test_uppercase_type_param_still_preserved(self):
+        """The pre-existing uppercase path must keep working."""
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:x\r\n"
+            "FN:Alice\r\n"
+            "EMAIL;TYPE=WORK:old@example.com\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"email": "new@example.com"})
+
+        assert "EMAIL;TYPE=WORK:new@example.com" in result
+
     def test_grouped_property_is_updated_in_place_keeping_its_group(self):
         """Apple cards group related properties (``item1.URL`` + ``item1.X-ABLabel``).
 

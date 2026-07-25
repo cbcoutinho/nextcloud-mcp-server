@@ -156,6 +156,23 @@ def _split_property_head(line: str) -> tuple[str, str]:
     return group + sep, name.upper()
 
 
+def _existing_type_param(line: str) -> str | None:
+    """Return the raw ``TYPE=`` parameter value of a logical line, or ``None``.
+
+    Parameter names are case-insensitive (RFC 6350 §3.3) just like property
+    names, so the lookup runs on an upper-cased copy while the value is sliced
+    from the original to preserve its casing. A case-sensitive ``";TYPE=" in
+    line`` test would miss ``email;type=work:`` — which, now that property names
+    match case-insensitively, *is* reached by the EMAIL branch and would have its
+    TYPE parameter silently dropped on rewrite.
+    """
+    marker = ";TYPE="
+    index = line.upper().find(marker)
+    if index == -1:
+        return None
+    return line[index + len(marker) :].split(":")[0]
+
+
 def _project_contact(contact: Contact) -> dict[str, Any]:
     """Project a parsed vCard into the flat dict the server layer maps to a model.
 
@@ -687,6 +704,14 @@ class ContactsClient(BaseNextcloudClient):
         to update EMAIL/TEL here, or recreate via ``create_contact`` for full
         multi-entry support with TYPE annotations.
 
+        Unrecognised properties are copied through verbatim, but a property this
+        method *rewrites* is re-emitted with its name upper-cased — a lower-cased
+        ``fn:`` comes back as ``FN:``. Property names are case-insensitive per
+        RFC 6350 §3.3 so this is semantically identical, but it is a visible
+        formatting change and the only place the "preserve exact formatting"
+        intent above does not hold literally. Group prefixes and ``TYPE``
+        parameters are preserved as written.
+
         Raises on any merge failure rather than substituting a synthesised card.
         This function previously caught every exception and returned a four-line
         vCard built from ``fn``/``email``/``tel``, which silently destroyed PHOTO,
@@ -746,8 +771,8 @@ class ContactsClient(BaseNextcloudClient):
                     if isinstance(contact_data["email"], str):
                         email_value = _safe_vcard_value(contact_data["email"])
                         # Try to preserve the original format as much as possible
-                        if ";TYPE=" in line:
-                            type_part = line.split(";TYPE=")[1].split(":")[0]
+                        type_part = _existing_type_param(line)
+                        if type_part is not None:
                             updated_lines.append(
                                 f"{group_prefix}EMAIL;TYPE={type_part}:{email_value}"
                             )
@@ -767,8 +792,8 @@ class ContactsClient(BaseNextcloudClient):
                 if "tel" not in updated_properties:
                     if isinstance(contact_data["tel"], str):
                         tel_value = _safe_vcard_value(contact_data["tel"])
-                        if ";TYPE=" in line:
-                            type_part = line.split(";TYPE=")[1].split(":")[0]
+                        type_part = _existing_type_param(line)
+                        if type_part is not None:
                             updated_lines.append(
                                 f"{group_prefix}TEL;TYPE={type_part}:{tel_value}"
                             )
