@@ -408,15 +408,20 @@ def check_scopes(ctx: Context, *required_scopes: str) -> tuple[bool, set[str]]:
         ```
     """
     token_scopes = get_access_token_scopes(ctx)
+    required_scopes_set = set(required_scopes)
 
-    # No verified token at all → BasicAuth mode, where Nextcloud enforces its
-    # own ACLs. A token that merely carries no scopes is a different case and
-    # must still be checked against the requirement, so key this on the token
-    # rather than on the scope set being empty.
+    # No verified token at all. Under BasicAuth that is expected — Nextcloud
+    # enforces its own ACLs — but under OAuth it means the auth middleware never
+    # populated one, so report nothing granted rather than everything. Same
+    # fail-closed rule as require_scopes: reporting "all granted" here would
+    # reintroduce, for any future caller, exactly the bug this module was fixed
+    # for. (A token that merely carries no scopes is a different case and is
+    # still checked against the requirement below.)
     if get_access_token() is None:
+        if get_settings().enable_login_flow:
+            return False, required_scopes_set
         return True, set()
 
-    required_scopes_set = set(required_scopes)
     missing_scopes = required_scopes_set - token_scopes
 
     return len(missing_scopes) == 0, missing_scopes

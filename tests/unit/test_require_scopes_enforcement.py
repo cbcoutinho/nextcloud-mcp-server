@@ -196,3 +196,18 @@ async def test_check_scopes_allows_basicauth_without_token():
 
     assert has_all is True
     assert missing == set()
+
+
+@pytest.mark.unit
+async def test_check_scopes_oauth_mode_without_token_fails_closed():
+    """Mirrors ``test_oauth_mode_without_token_fails_closed`` for check_scopes.
+
+    Without the mode gate this returned "all granted" under OAuth — the same
+    fail-open the decorator was fixed for, left latent for the first caller to
+    wire it up.
+    """
+    with _settings(login_flow=True):
+        has_all, missing = check_scopes(_make_ctx(), "notes.write")
+
+    assert has_all is False
+    assert missing == {"notes.write"}
