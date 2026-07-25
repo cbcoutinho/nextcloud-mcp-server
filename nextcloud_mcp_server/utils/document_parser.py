@@ -113,87 +113,100 @@ class ParseSummary:
     notes: list[str] = field(default_factory=list)
 
 
-def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
-    """Describe a :class:`ProcessingResult` honestly.
-
-    Pure: no I/O, no globals beyond the ``settings`` handed in, so every
-    degradation path is unit-testable without a running pipeline.
-    """
-    metadata = result.metadata or {}
-    tier = metadata.get("pipeline_tier")
-    notes: list[str] = []
-
-    if not result.success:
-        # A failed parse is never dressed up as content. The tier/processor are
-        # still reported so the caller can see what was attempted.
-        reason = metadata.get("parse_failed_reason", "error")
-        if result.processor == "size_guard" or reason == "oversize":
-            notes.append(
-                f"The document was not parsed: it exceeds the "
-                f"{settings.document_max_pdf_size_mb:g} MB parse cap "
-                f"(DOCUMENT_MAX_PDF_SIZE_MB)."
-            )
-        else:
-            where = f" in the '{tier}' tier" if tier else ""
-            notes.append(f"Parsing failed ({reason}){where}; no text was extracted.")
-        return ParseSummary(
-            status="failed",
-            tier=tier,
-            processor=result.processor,
-            content_format="text",
-            notes=notes,
+def _failure_note(result: ProcessingResult, tier: str | None, settings: Any) -> str:
+    """Why a parse that did not succeed produced no text."""
+    reason = (result.metadata or {}).get("parse_failed_reason", "error")
+    if result.processor == "size_guard" or reason == "oversize":
+        return (
+            f"The document was not parsed: it exceeds the "
+            f"{settings.document_max_pdf_size_mb:g} MB parse cap "
+            f"(DOCUMENT_MAX_PDF_SIZE_MB)."
         )
+    where = f" in the '{tier}' tier" if tier else ""
+    return f"Parsing failed ({reason}){where}; no text was extracted."
 
-    content_format: ContentFormat = (
-        "markdown" if metadata.get("parse_mode") == "markdown" else "text"
-    )
 
-    skipped = metadata.get("markdown_skipped_reason")
-    if skipped == "page_ceiling":
-        pages = metadata.get("page_count")
-        notes.append(
+def _markdown_note(metadata: dict, settings: Any) -> str | None:
+    """Why the markdown the caller asked for is not in the content."""
+    reason = metadata.get("markdown_skipped_reason")
+    if reason == "page_ceiling":
+        return (
             f"Markdown structure was not reconstructed: this document has "
-            f"{pages} pages, above DOCUMENT_MARKDOWN_MAX_PAGES="
-            f"{settings.document_markdown_max_pages}. The raw per-page text layer "
-            f"is returned instead."
+            f"{metadata.get('page_count')} pages, above "
+            f"DOCUMENT_MARKDOWN_MAX_PAGES={settings.document_markdown_max_pages}. "
+            f"The raw per-page text layer is returned instead."
         )
-    elif skipped == "disabled":
-        notes.append(
+    if reason == "disabled":
+        return (
             "Markdown reconstruction is switched off on this server "
             "(DOCUMENT_MARKDOWN_MAX_PAGES=0); the raw text layer is returned."
         )
-    elif skipped == "not_registered":
-        notes.append(
+    if reason == "not_registered":
+        return (
             "No structured-parse engine is available on this server, so the raw "
             "text layer is returned without markdown structure."
         )
-    elif skipped == "parse_failed":
-        notes.append(
+    if reason == "parse_failed":
+        return (
             "Markdown reconstruction was attempted and failed; the raw text layer "
             "is returned instead."
         )
+    return None
 
-    ocr_skipped = metadata.get("ocr_escalation_skipped")
-    if ocr_skipped == "disabled":
-        notes.append(
+
+def _ocr_note(metadata: dict) -> str | None:
+    """Why a document the classifier wanted OCR'd was not OCR'd (or failed)."""
+    skipped = metadata.get("ocr_escalation_skipped")
+    if skipped == "disabled":
+        return (
             "This document has little or no usable text layer and OCR is not "
             "enabled on this server (DOCUMENT_OCR_ENABLED), so the text below is "
             "only what a text extractor could recover -- it may be incomplete or "
             "empty."
         )
-    elif ocr_skipped == "not_registered":
-        notes.append(
+    if skipped == "not_registered":
+        return (
             "This document needs OCR, but no OCR backend is configured on this "
             "server (DOCUMENT_OCR_PROVIDER); the text below may be incomplete or "
             "empty."
         )
-    elif metadata.get("ocr_escalation_failed"):
-        notes.append(
-            f"OCR was attempted and did not succeed "
-            f"({metadata['ocr_escalation_failed']}); the text below is what a text "
-            f"extractor could recover."
+    failed = metadata.get("ocr_escalation_failed")
+    if failed:
+        return (
+            f"OCR was attempted and did not succeed ({failed}); the text below is "
+            f"what a text extractor could recover."
+        )
+    return None
+
+
+def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
+    """Describe a :class:`ProcessingResult` honestly.
+
+    Pure: no I/O, no globals beyond the ``settings`` handed in, so every
+    degradation path is unit-testable without a running pipeline. The note
+    wording lives in the three ``_*_note`` helpers above -- one per thing that
+    can degrade -- so a caller never has to infer the difference between "OCR is
+    off here" and "OCR ran and failed".
+    """
+    metadata = result.metadata or {}
+    tier = metadata.get("pipeline_tier")
+
+    if not result.success:
+        # A failed parse is never dressed up as content. The tier/processor are
+        # still reported so the caller can see what was attempted.
+        return ParseSummary(
+            status="failed",
+            tier=tier,
+            processor=result.processor,
+            content_format="text",
+            notes=[_failure_note(result, tier, settings)],
         )
 
+    notes = [
+        note
+        for note in (_markdown_note(metadata, settings), _ocr_note(metadata))
+        if note is not None
+    ]
     if not result.text:
         notes.append("The parse succeeded but extracted 0 characters of text.")
 
@@ -201,6 +214,8 @@ def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
         status="parsed",
         tier=tier,
         processor=result.processor,
-        content_format=content_format,
+        content_format=(
+            "markdown" if metadata.get("parse_mode") == "markdown" else "text"
+        ),
         notes=notes,
     )

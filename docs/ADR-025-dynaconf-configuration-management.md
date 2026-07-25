@@ -159,9 +159,7 @@ document_chunk_size = 2048
 document_chunk_overlap = 200
 
 # === Document Processing ===
-enable_document_processing = false
 document_processor = "unstructured"
-enable_pymupdf = true
 pymupdf_extract_images = true
 enable_unstructured = false
 unstructured_api_url = "http://unstructured:8000"

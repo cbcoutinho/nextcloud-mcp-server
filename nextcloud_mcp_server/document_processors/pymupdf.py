@@ -26,6 +26,37 @@ from .source import DocumentSource, MemoryDocumentSource, resolve_path
 logger = logging.getLogger(__name__)
 
 
+def _record_parse_mode(
+    metadata: dict[str, Any], page_count: int, settings: Any
+) -> None:
+    """Stamp what this parse actually produced, and why, on ``metadata``.
+
+    Recomputes the worker's decision here rather than having it report a mode
+    back: a Counter incremented in the subprocess would never reach this
+    process's registry. Uses ``page_count`` from the metadata read -- the same
+    authoritative value the worker's own ``doc.page_count`` gate saw -- rather
+    than ``len(page_chunks)``, which would silently mislabel the metric if
+    pymupdf4llm ever stopped emitting exactly one chunk per page. Shares the
+    worker's predicate (``uses_markdown``) so the label cannot drift from the
+    actual decision.
+
+    Note the gated path also writes no images, so ``has_images`` is False for a
+    large PDF even with extract_images=True -- markdown reconstruction is what
+    emits them.
+    """
+    markdown = uses_markdown(page_count, settings.document_markdown_max_pages)
+    mode = "markdown" if markdown else "text_only"
+    metadata["parse_mode"] = mode
+    record_document_parse_mode(mode)
+    if not markdown:
+        # Why the structure is missing, decided where the predicate is already
+        # evaluated so an interactive caller can be told plainly (0 = markdown
+        # switched off entirely; otherwise the page ceiling).
+        metadata["markdown_skipped_reason"] = (
+            "disabled" if settings.document_markdown_max_pages <= 0 else "page_ceiling"
+        )
+
+
 class PyMuPDFProcessor(DocumentProcessor):
     """Document processor using PyMuPDF library for PDF processing.
 
@@ -273,22 +304,7 @@ class PyMuPDFProcessor(DocumentProcessor):
             # Note the gated path also writes no images, so ``has_images`` is
             # False for a large PDF even with extract_images=True -- markdown
             # reconstruction is what emits them.
-            mode = (
-                "markdown"
-                if uses_markdown(page_count, settings.document_markdown_max_pages)
-                else "text_only"
-            )
-            metadata["parse_mode"] = mode
-            record_document_parse_mode(mode)
-            if mode == "text_only":
-                # Why the structure is missing, decided where the predicate is
-                # already evaluated so an interactive caller can be told plainly
-                # (0 = markdown switched off entirely; otherwise the ceiling).
-                metadata["markdown_skipped_reason"] = (
-                    "disabled"
-                    if settings.document_markdown_max_pages <= 0
-                    else "page_ceiling"
-                )
+            _record_parse_mode(metadata, page_count, settings)
 
             if progress_callback:
                 await progress_callback(90, 100, "Building result")

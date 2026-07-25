@@ -770,8 +770,9 @@ async def test_read_file_rejects_a_download_past_the_transfer_ceiling(
     )
 
     fn = webdav_tools["nc_webdav_read_file"].fn
+    ctx = _read_ctx(fake_client)
     with pytest.raises(ToolError, match="transfer ceiling"):
-        await fn(path="/enormous.pdf", ctx=_read_ctx(fake_client))
+        await fn(path="/enormous.pdf", ctx=ctx)
 
 
 async def test_read_file_schema_replaces_force_processor(webdav_tools):

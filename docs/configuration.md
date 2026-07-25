@@ -690,7 +690,13 @@ DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default:
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
 DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
+PYMUPDF_EXTRACT_IMAGES=true           # Extract embedded images during markdown reconstruction (default: true)
+PYMUPDF_IMAGE_DIR=                    # Where extracted images are written; empty = system temp dir
 ```
+
+`PYMUPDF_*` tune the built-in `structured` tier, which is always available — there
+is no enable flag for it. Image extraction only happens on the markdown path, so
+a document past `DOCUMENT_MARKDOWN_MAX_PAGES` writes no images regardless.
 
 `DOCUMENT_PARSE_PROCESS_SLOTS` bounds how many isolated parse subprocesses run at
 once. Without it anyio defaults to an `os.cpu_count()`-wide pool, which is
