@@ -998,3 +998,47 @@ def test_contact_mapping_accepts_bare_dict_address():
 
     assert len(contact.addresses) == 1
     assert contact.addresses[0].components[2] == "1 Main St"
+
+
+@pytest.mark.unit
+def test_contact_mapping_pads_short_address_to_seven_components():
+    """Lenient producers emit fewer than seven ADR parts.
+
+    ``ContactField.components`` documents the seven RFC 6350 §6.3.1 components in
+    order, so a short list is padded rather than silently breaking that contract
+    for a consumer indexing ``components[6]`` for country.
+    """
+    contact = _map_contact(
+        {
+            "vcard_id": "adr-short",
+            "getetag": '"e"',
+            "contact": {
+                "fullname": "Alice",
+                "adr": [{"value": ["", "", "1 Main St", "Springfield"], "type": []}],
+            },
+        }
+    )
+
+    assert len(contact.addresses[0].components) == 7
+    assert contact.addresses[0].components[2] == "1 Main St"
+    assert contact.addresses[0].components[6] == ""
+    # The flat display value reflects the padded form, consistent with components.
+    assert contact.addresses[0].value == ";;1 Main St;Springfield;;;"
+
+
+@pytest.mark.unit
+def test_contact_mapping_truncates_overlong_address_components():
+    """An over-long ADR is truncated to seven so the promised shape holds."""
+    contact = _map_contact(
+        {
+            "vcard_id": "adr-long",
+            "getetag": '"e"',
+            "contact": {
+                "fullname": "Alice",
+                "adr": [{"value": [str(i) for i in range(10)], "type": []}],
+            },
+        }
+    )
+
+    assert len(contact.addresses[0].components) == 7
+    assert contact.addresses[0].components == ["0", "1", "2", "3", "4", "5", "6"]

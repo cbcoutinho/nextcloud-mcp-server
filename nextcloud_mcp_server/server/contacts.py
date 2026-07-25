@@ -65,6 +65,12 @@ def _parse_vcard_fields(
     return fields
 
 
+# RFC 6350 §6.3.1: PO box, extended address, street, locality, region, postal
+# code, country. Fixed at seven so `ContactField.components` can promise a stable
+# shape regardless of how many parts the producing client emitted.
+_ADR_COMPONENT_COUNT = 7
+
+
 def _parse_address_fields(raw_values: dict | list | None) -> list[ContactField]:
     """Parse pythonvCard4's ADR shape into ContactField entries.
 
@@ -93,6 +99,11 @@ def _parse_address_fields(raw_values: dict | list | None) -> list[ContactField]:
         components = [str(c) for c in components]
         if not any(c.strip() for c in components):
             continue
+        # Pad (or truncate) to exactly the seven RFC 6350 §6.3.1 components, so a
+        # consumer can index `components[6]` for country without length-checking.
+        # Lenient real-world producers emit fewer parts; the model documents seven,
+        # and an unpadded short list would silently break that contract.
+        components = (components + [""] * _ADR_COMPONENT_COUNT)[:_ADR_COMPONENT_COUNT]
         raw_types: list[str] = item.get("type") or []
         preferred = any(t.upper() == "PREF" for t in raw_types)
         labels = [t.lower() for t in raw_types if t.upper() != "PREF"]
