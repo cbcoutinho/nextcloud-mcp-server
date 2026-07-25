@@ -20,6 +20,43 @@ from nextcloud_mcp_server.client.contacts import (
 pytestmark = pytest.mark.unit
 
 
+def _update_client(
+    mocker, *, object_name: str | None, raw_vcard: str, etag: str = '"srv"'
+):
+    """Build a ContactsClient wired for ``update_contact`` with no HTTP.
+
+    ``_resolve_object_name`` and ``_fetch_raw_vcard`` are patched; ``_make_request``
+    returns a response whose ``etag`` header is a real string so the returned
+    projection is realistic.
+    """
+    client = ContactsClient.__new__(ContactsClient)
+    client.username = "testuser"
+    client._principal_discovered = True
+    mocker.patch.object(
+        client, "_resolve_object_name", mocker.AsyncMock(return_value=object_name)
+    )
+    mocker.patch.object(
+        client, "_fetch_raw_vcard", mocker.AsyncMock(return_value=(raw_vcard, etag))
+    )
+    response = mocker.Mock()
+    response.headers = {"etag": '"new-etag"'}
+    mocker.patch.object(
+        client, "_make_request", mocker.AsyncMock(return_value=response)
+    )
+    return client
+
+
+def _put_call(client) -> tuple[str, str]:
+    """Return the (method, url) of the client's single ``_make_request`` call."""
+    args = client._make_request.await_args.args
+    return args[0], args[1]
+
+
+def _put_body(client) -> str:
+    """Return the vCard text sent in the PUT."""
+    return client._make_request.await_args.kwargs["content"]
+
+
 def _vcard(**kwargs) -> str:
     """Build a vCard from ``contact_data`` with a fixed uid, return the serialised text.
 
@@ -302,50 +339,40 @@ class TestObjectNameResolution:
         """Regression for #874: update must PUT to ``.../default`` not
         ``.../default.vcf`` (parallels the delete coverage).
         """
-        client = ContactsClient.__new__(ContactsClient)
-        client.username = "testuser"
-        client._principal_discovered = True
-        mocker.patch.object(
-            client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
+        client = _update_client(
+            mocker,
+            object_name="default",
+            raw_vcard="BEGIN:VCARD\nVERSION:3.0\nUID:default\nFN:No Ext\nEND:VCARD\n",
         )
-        mocker.patch.object(
-            client,
-            "_fetch_raw_vcard",
-            mocker.AsyncMock(
-                return_value=(
-                    "BEGIN:VCARD\nVERSION:3.0\nUID:default\nFN:No Ext\nEND:VCARD\n",
-                    '"etag"',
-                )
-            ),
-        )
-        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
         await client.update_contact(
             addressbook="contacts", uid="default", contact_data={"fn": "Updated"}
         )
-        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        method, url = _put_call(client)
         assert method == "PUT"
         assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/default"
 
     async def test_update_falls_back_to_vcf_when_unresolved(self, mocker):
         """When resolution finds nothing, update falls back to ``<uid>.vcf`` so
-        the caller still gets a clean 404 from the PUT (mirrors delete).
+        the caller still gets a clean 404 from the fetch or the PUT (mirrors
+        delete).
+
+        Previously this test asserted that supplying an etag *skipped* the
+        existing-vCard fetch — i.e. it encoded the data-loss bug. The fetch is
+        now unconditional, so the fallback path is asserted on the GET target.
         """
-        client = ContactsClient.__new__(ContactsClient)
-        client.username = "testuser"
-        client._principal_discovered = True
-        mocker.patch.object(
-            client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
+        client = _update_client(
+            mocker,
+            object_name=None,
+            raw_vcard="BEGIN:VCARD\nVERSION:3.0\nUID:ghost\nFN:Ghost\nEND:VCARD\n",
         )
-        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
-        # Supplying an etag skips the existing-vCard fetch; update builds a fresh
-        # vCard and PUTs it to the fallback path.
         await client.update_contact(
             addressbook="contacts",
             uid="ghost",
-            contact_data={"fn": "Ghost"},
+            contact_data={"fn": "Ghost Updated"},
             etag='"x"',
         )
-        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        client._fetch_raw_vcard.assert_awaited_once_with("contacts", "ghost.vcf")
+        method, url = _put_call(client)
         assert method == "PUT"
         assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/ghost.vcf"
 
@@ -413,7 +440,7 @@ class TestMergeVcardProperties:
         from nextcloud_mcp_server.client.contacts import ContactsClient
 
         client = ContactsClient.__new__(ContactsClient)  # no HTTP / no __init__
-        return client._merge_vcard_properties(raw, data, uid="merge-test")
+        return client._merge_vcard_properties(raw, data)
 
     def test_nickname_overwrites_existing_line(self):
         """Existing NICKNAME must be replaced with the new value, not preserved."""
@@ -583,3 +610,154 @@ class TestMergeVcardProperties:
             result = self._merge(existing, {"email": "alice@work.com"})
         assert "EMAIL:alice@work.com" in result
         assert not any("dict/list shape" in r.message for r in caplog.records)
+
+
+class TestUpdatePreservesUnsupportedProperties:
+    """Regression guard for the update-path data loss.
+
+    ``update_contact`` used to fetch the existing vCard **only when the caller
+    omitted an etag**. Supplying one — the concurrency-correct call — fell
+    through to ``_build_contact_from_data(...).to_vcard()``, rebuilding the card
+    from the ~10 supported keys and silently destroying every other property.
+    """
+
+    # A card carrying exactly the properties the rebuild path had no vocabulary
+    # for, so their survival proves the merge ran.
+    RICH_VCARD = (
+        "BEGIN:VCARD\n"
+        "VERSION:3.0\n"
+        "UID:alice\n"
+        "FN:Alice Original\n"
+        "N:Doe;Alice;;;\n"
+        "ADR;TYPE=HOME:;;1 Main St;Springfield;;12345;US\n"
+        "PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQ==\n"
+        "X-ABLabel:custom-label\n"
+        "REV:20240101T000000Z\n"
+        "END:VCARD\n"
+    )
+
+    async def test_etag_supplied_still_merges_into_existing_card(self, mocker):
+        """The headline regression: an etag must not bypass the fetch."""
+        client = _update_client(
+            mocker, object_name="alice.vcf", raw_vcard=self.RICH_VCARD
+        )
+
+        await client.update_contact(
+            addressbook="contacts",
+            uid="alice",
+            contact_data={"fn": "Alice Updated"},
+            etag='"caller-etag"',
+        )
+
+        # The fetch is the whole point — it was skipped before.
+        client._fetch_raw_vcard.assert_awaited_once_with("contacts", "alice.vcf")
+
+        body = _put_body(client)
+        assert "N:Doe;Alice;;;" in body
+        assert "ADR;TYPE=HOME:;;1 Main St;Springfield;;12345;US" in body
+        assert "PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQ==" in body
+        assert "X-ABLabel:custom-label" in body
+        assert "REV:20240101T000000Z" in body
+        # ...and the requested change actually landed.
+        assert "FN:Alice Updated" in body
+        assert "FN:Alice Original" not in body
+
+    async def test_caller_etag_wins_over_fetched_etag(self, mocker):
+        """The caller's etag is their concurrency assertion — honouring the
+        freshly-read one instead would defeat the check they asked for."""
+        client = _update_client(
+            mocker,
+            object_name="alice.vcf",
+            raw_vcard=self.RICH_VCARD,
+            etag='"server-etag"',
+        )
+
+        await client.update_contact(
+            addressbook="contacts",
+            uid="alice",
+            contact_data={"fn": "Alice Updated"},
+            etag='"caller-etag"',
+        )
+
+        headers = client._make_request.await_args.kwargs["headers"]
+        assert headers["If-Match"] == '"caller-etag"'
+
+    async def test_fetched_etag_used_when_caller_omits_one(self, mocker):
+        client = _update_client(
+            mocker,
+            object_name="alice.vcf",
+            raw_vcard=self.RICH_VCARD,
+            etag='"server-etag"',
+        )
+
+        await client.update_contact(
+            addressbook="contacts", uid="alice", contact_data={"fn": "Alice Updated"}
+        )
+
+        headers = client._make_request.await_args.kwargs["headers"]
+        assert headers["If-Match"] == '"server-etag"'
+
+    async def test_fetch_failure_raises_and_writes_nothing(self, mocker):
+        """Fail closed: a fetch failure must not fall back to a destructive
+        rebuild-and-replace."""
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        client._principal_discovered = True
+        mocker.patch.object(
+            client,
+            "_resolve_object_name",
+            mocker.AsyncMock(return_value="alice.vcf"),
+        )
+        mocker.patch.object(
+            client,
+            "_fetch_raw_vcard",
+            mocker.AsyncMock(side_effect=RuntimeError("boom")),
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        update = client.update_contact(
+            addressbook="contacts", uid="alice", contact_data={"fn": "Alice"}
+        )
+
+        with pytest.raises(RuntimeError):
+            await update
+
+        make_request.assert_not_awaited()
+
+    async def test_merge_failure_propagates_instead_of_rebuilding(self, mocker):
+        """``_merge_vcard_properties`` used to catch everything and return a
+        four-line card; a merge failure must now surface."""
+        client = _update_client(
+            mocker, object_name="alice.vcf", raw_vcard=self.RICH_VCARD
+        )
+        mocker.patch.object(
+            client,
+            "_merge_vcard_properties",
+            mocker.Mock(side_effect=ValueError("merge blew up")),
+        )
+        update = client.update_contact(
+            addressbook="contacts", uid="alice", contact_data={"fn": "Alice"}
+        )
+
+        with pytest.raises(ValueError, match="merge blew up"):
+            await update
+
+        client._make_request.assert_not_awaited()
+
+    async def test_returns_projection_with_new_etag(self, mocker):
+        """The result carries the new ETag so updates can be chained without a
+        re-read."""
+        client = _update_client(
+            mocker, object_name="alice.vcf", raw_vcard=self.RICH_VCARD
+        )
+
+        result = await client.update_contact(
+            addressbook="contacts",
+            uid="alice",
+            contact_data={"fn": "Alice Updated"},
+        )
+
+        assert result["getetag"] == '"new-etag"'
+        assert result["vcard_id"] == "alice"
+        assert result["object_name"] == "alice.vcf"
+        assert result["contact"]["fullname"] == "Alice Updated"
+        assert "X-ABLabel:custom-label" in result["addressdata"]

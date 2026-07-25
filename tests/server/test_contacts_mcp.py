@@ -96,12 +96,55 @@ async def test_mcp_contacts_workflow(
             },
         )
         assert update_result.isError is False
+        # The tool now returns a typed UpdateContactResponse carrying the new etag.
+        update_payload = _extract_payload(update_result)
+        assert update_payload["success"] is True
+        assert update_payload["addressbook"] == addressbook_name
+        assert update_payload["contact"]["uid"] == contact_uid
+        chained_etag = update_payload["contact"]["etag"]
+        assert chained_etag
+
         contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
         updated = next(c for c in contacts if c["vcard_id"] == contact_uid)
         updated_vcard = updated.get("addressdata", "")
         assert "mcp-test.example.com" in updated_vcard
         # Prior properties must not have been clobbered by the merge.
         assert "ORG:MCP Test Corp" in updated_vcard
+
+        # 4c. Chain a second update using the etag the previous one returned —
+        # no intervening read. Supplying an etag used to skip the existing-vCard
+        # fetch entirely and rebuild the card from the supplied keys, destroying
+        # every property not passed in. Guard that the merge still runs.
+        chained_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"note": "Updated with etag"},
+                "etag": chained_etag,
+            },
+        )
+        assert chained_result.isError is False
+        contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
+        chained_vcard = next(c for c in contacts if c["vcard_id"] == contact_uid).get(
+            "addressdata", ""
+        )
+        assert "NOTE:Updated with etag" in chained_vcard
+        # Properties absent from contact_data must survive the etag path.
+        assert "ORG:MCP Test Corp" in chained_vcard
+        assert "mcp-test.example.com" in chained_vcard
+
+        # 4d. A stale etag must be rejected, not silently applied.
+        stale_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"note": "Should not land"},
+                "etag": chained_etag,
+            },
+        )
+        assert stale_result.isError is True
 
         # 5. Delete contact via MCP
         logger.info("Deleting contact %s via MCP", contact_uid)
