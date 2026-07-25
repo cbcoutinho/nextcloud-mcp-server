@@ -572,7 +572,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def stream_to_file(
         self, path: str, dest: Path, *, max_bytes: int | None = None
-    ) -> Tuple[int, str]:
+    ) -> Tuple[int, str, Optional[str]]:
         """Stream a WebDAV GET straight to ``dest``, never holding the whole body.
 
         :meth:`read_file` buffers the entire response (``response.content``), so
@@ -586,8 +586,11 @@ class WebDAVClient(BaseNextcloudClient):
         the server advertised at scan time, whereas this acts on what actually
         arrives.
 
-        Returns ``(bytes_written, content_type)``. Raises
-        :class:`OversizeDownload` if ``max_bytes`` is exceeded, or
+        Returns ``(bytes_written, content_type, etag)`` -- the same triple
+        :meth:`read_file` returns, so a caller that streams a document can still
+        hand the etag back as ``write_file``'s ``if_match`` (or report it) without
+        a second request. The etag is ``None`` if the server sent no ``ETag``.
+        Raises :class:`OversizeDownload` if ``max_bytes`` is exceeded, or
         :class:`httpx.RemoteProtocolError` on a short read (#965).
         """
         await self._ensure_principal_id()
@@ -601,6 +604,9 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
+                etag = response.headers.get("etag")
+                if etag is not None:
+                    etag = etag.strip('"')
                 # anyio's async file wrapper, not pathlib.Path.open: the writes
                 # run on a worker thread, so streaming a multi-hundred-MB
                 # document does not block the event loop (and with it every other
@@ -624,7 +630,7 @@ class WebDAVClient(BaseNextcloudClient):
             raise
 
         logger.debug("Streamed '%s' to %s (%s bytes)", path, dest, written)
-        return written, content_type
+        return written, content_type, etag
 
     async def read_file(self, path: str) -> Tuple[bytes, str, Optional[str]]:
         """Read a file's content via WebDAV GET.

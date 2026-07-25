@@ -157,19 +157,22 @@ HTTPXClientInstrumentor().instrument()
 def initialize_document_processors():
     """Initialize and register document processors based on configuration.
 
-    This function reads the environment configuration and registers available
-    processors (Unstructured, Tesseract, Custom HTTP, Docling) with the global
-    registry.
+    This function reads the environment configuration and registers the available
+    OPTIONAL processors (Unstructured, Tesseract, Custom HTTP, Docling) with the
+    global registry, each gated by its own ``ENABLE_*`` flag. The built-in PDF
+    tiers (pypdfium2 / pymupdf / OCR) self-register on first import of
+    ``document_processors`` and need nothing here.
     """
     config = get_document_processor_config()
 
-    if not config["enabled"]:
-        logger.info("Document processing disabled")
+    if not config["processors"]:
+        logger.info("No optional document processors configured")
         return
 
     # Imported lazily so the API startup path never loads the ingest document
-    # stack (document_processors -> pymupdf -> _isolation) unless document
-    # processing is actually enabled -- see #877 / the API-vs-ingest split.
+    # stack (document_processors -> pymupdf -> _isolation) unless an optional
+    # processor actually has to be registered -- see #877 / the API-vs-ingest
+    # split. Nothing to register means nothing to import.
     from nextcloud_mcp_server.document_processors import get_registry  # noqa: PLC0415
 
     registry = get_registry()
@@ -214,26 +217,9 @@ def initialize_document_processors():
         except Exception as e:
             logger.warning("Failed to register Tesseract processor: %s", e)
 
-    # Register PyMuPDF processor (high priority, local, no API required)
-    if "pymupdf" in config["processors"]:
-        pymupdf_config = config["processors"]["pymupdf"]
-        try:
-            from nextcloud_mcp_server.document_processors.pymupdf import (  # noqa: PLC0415
-                PyMuPDFProcessor,
-            )
-
-            processor = PyMuPDFProcessor(
-                extract_images=pymupdf_config.get("extract_images", True),
-                image_dir=pymupdf_config.get("image_dir"),
-            )
-            registry.register(processor, priority=15)  # Higher than unstructured
-            logger.info(
-                "Registered PyMuPDF processor: extract_images=%s",
-                pymupdf_config.get("extract_images", True),
-            )
-            registered_count += 1
-        except Exception as e:
-            logger.warning("Failed to register PyMuPDF processor: %s", e)
+    # PyMuPDF is NOT registered here: it is the built-in ``structured`` tier and
+    # registers itself (from Settings.pymupdf_*) when document_processors is
+    # first imported, which is on the first parse rather than at startup (#877).
 
     # Register custom processor
     if "custom" in config["processors"]:
@@ -287,12 +273,16 @@ def initialize_document_processors():
 
     if registered_count > 0:
         logger.info(
-            "Document processing initialized with %s processor(s): %s",
+            "Document processing initialized with %s optional processor(s); "
+            "registry now holds: %s",
             registered_count,
             ", ".join(registry.list_processors()),
         )
     else:
-        logger.warning("Document processing enabled but no processors registered")
+        logger.warning(
+            "Optional document processors were configured but none could be "
+            "registered; only the built-in tiers are available"
+        )
 
 
 def validate_pkce_support(discovery: dict, discovery_url: str) -> None:

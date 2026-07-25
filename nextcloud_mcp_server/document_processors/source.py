@@ -96,6 +96,12 @@ class SpooledDocumentSource:
     content_type: str
     filename: str | None = None
     _size: int | None = None
+    #: The origin's ``ETag`` for the bytes that were spooled, when the transport
+    #: reported one. Carried here so a caller that streamed the document (rather
+    #: than buffering it via ``read_file``, which returns the etag directly) can
+    #: still identify the exact version it parsed -- e.g. to hand back as an
+    #: ``If-Match`` precondition for a later write.
+    etag: str | None = None
 
     @property
     def size(self) -> int:

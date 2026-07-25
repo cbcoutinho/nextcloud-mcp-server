@@ -289,8 +289,8 @@ _DEFAULTS: dict[str, Any] = {
     "log_format": "text",
     "log_level": "INFO",
     "log_include_trace_context": True,
-    # Document processing
-    "enable_document_processing": False,
+    # Document processing (no master switch: each optional processor has its own
+    # ENABLE_* flag, and parsing on read is the caller's per-call decision)
     "document_processor": "unstructured",
     "enable_unstructured": False,
     "unstructured_api_url": "http://unstructured:8000",
@@ -301,7 +301,8 @@ _DEFAULTS: dict[str, Any] = {
     "enable_tesseract": False,
     "tesseract_cmd": None,
     "tesseract_lang": "eng",
-    "enable_pymupdf": True,
+    # pymupdf is the built-in "structured" tier and is always available -- there
+    # is no enable flag for it, only these two knobs.
     "pymupdf_extract_images": True,
     "pymupdf_image_dir": None,
     "enable_custom_processor": False,
@@ -772,10 +773,16 @@ def setup_logging():
 def get_document_processor_config() -> dict[str, Any]:
     """Get document processor configuration from dynaconf.
 
+    Each optional processor is gated by its own ``ENABLE_*`` flag. There is no
+    master switch: parsing a document on read is a per-call decision made by the
+    caller (``nc_webdav_read_file``'s ``parse_document`` argument), not an
+    instance-wide setting. The built-in PDF tiers (pypdfium2 / pymupdf / OCR)
+    self-register when ``document_processors`` is first imported and never appear
+    here.
+
     Returns:
         Dict with processor configs:
         {
-            "enabled": bool,
             "default_processor": str,
             "processors": {
                 "unstructured": {...},
@@ -785,7 +792,6 @@ def get_document_processor_config() -> dict[str, Any]:
         }
     """
     config: dict[str, Any] = {
-        "enabled": _dynaconf.get("ENABLE_DOCUMENT_PROCESSING"),
         "default_processor": _dynaconf.get("DOCUMENT_PROCESSOR"),
         "processors": {},
     }
@@ -810,14 +816,12 @@ def get_document_processor_config() -> dict[str, Any]:
             "lang": _dynaconf.get("TESSERACT_LANG"),
         }
 
-    # PyMuPDF configuration (local PDF processing)
-    if _dynaconf.get("ENABLE_PYMUPDF"):  # Enabled by default
-        config["processors"]["pymupdf"] = {
-            "extract_images": _dynaconf.get("PYMUPDF_EXTRACT_IMAGES"),
-            "image_dir": _dynaconf.get(
-                "PYMUPDF_IMAGE_DIR"
-            ),  # None = use temp directory
-        }
+    # NB: pymupdf is deliberately absent. It is the built-in ``structured`` tier,
+    # registered when ``document_processors`` is first imported (lazily, on the
+    # first parse) and tuned from ``Settings.pymupdf_*``. Listing it here would
+    # make ``processors`` non-empty on every deployment, which is what tells app
+    # startup whether it has anything to register -- and so whether it must
+    # import the parse stack at all (#877).
 
     # Custom processor (via HTTP API)
     if _dynaconf.get("ENABLE_CUSTOM_PROCESSOR"):
@@ -839,8 +843,9 @@ def get_document_processor_config() -> dict[str, Any]:
     # Docling configuration (docling-serve HTTP API). Registered only when a URL is
     # set, so a bare ENABLE_DOCLING doesn't shadow other image processors with a
     # dead endpoint (mirrors the custom_url guard above). The standalone processor
-    # auto-serves images; PDFs go through the OCR backend (provider=docling) or an
-    # explicit per-call force_processor override.
+    # auto-serves images; PDFs go through the OCR backend
+    # (DOCUMENT_OCR_PROVIDER=docling) -- docling is an OCR provider, not a tier of
+    # its own.
     if _dynaconf.get("ENABLE_DOCLING"):
         docling_url = _dynaconf.get("DOCLING_API_URL")
         if docling_url:
@@ -1185,6 +1190,12 @@ class Settings:
     # 2-core pod, and it keeps markdown for the small/prose documents that
     # actually benefit from table reconstruction.
     document_markdown_max_pages: int = 150
+    # Structured-tier (pymupdf) image extraction. Read where that tier registers
+    # itself rather than at app startup: it is a built-in tier, not an optional
+    # processor, so nothing about it may pull the parse stack onto the API
+    # startup path (#877).
+    pymupdf_extract_images: bool = True
+    pymupdf_image_dir: str | None = None
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
@@ -2024,6 +2035,8 @@ def _build_settings() -> Settings:
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
         "webdav_write_max_mb": "WEBDAV_WRITE_MAX_MB",
         "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
+        "pymupdf_extract_images": "PYMUPDF_EXTRACT_IMAGES",
+        "pymupdf_image_dir": "PYMUPDF_IMAGE_DIR",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
         "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",

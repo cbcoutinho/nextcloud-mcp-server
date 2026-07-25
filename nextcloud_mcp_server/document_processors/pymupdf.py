@@ -280,6 +280,15 @@ class PyMuPDFProcessor(DocumentProcessor):
             )
             metadata["parse_mode"] = mode
             record_document_parse_mode(mode)
+            if mode == "text_only":
+                # Why the structure is missing, decided where the predicate is
+                # already evaluated so an interactive caller can be told plainly
+                # (0 = markdown switched off entirely; otherwise the ceiling).
+                metadata["markdown_skipped_reason"] = (
+                    "disabled"
+                    if settings.document_markdown_max_pages <= 0
+                    else "page_ceiling"
+                )
 
             if progress_callback:
                 await progress_callback(90, 100, "Building result")

@@ -81,9 +81,11 @@ independent** timeout.
   a tool call. **This is the right home for VLM at any volume** — raise
   `DOCUMENT_OCR_TIMEOUT_SECONDS` here freely.
 - **Interactive read (on-demand, synchronous).** `nc_webdav_read_file` parses inline
-  (`await parse_document(...)`), so an image (auto-routed to `DoclingProcessor`) or a
-  `force_processor="docling"` PDF makes a **blocking** POST to docling-serve for up to
+  (`await parse_document_source(...)`), so an image (auto-routed to
+  `DoclingProcessor`) makes a **blocking** POST to docling-serve for up to
   **`DOCLING_TIMEOUT`**. Under VLM (~90–200s/page) this call blocks for minutes.
+  (The `force_processor="docling"` PDF route this section also described was
+  removed in 0.151.0 — see ADR-031 touchpoint 3 and Deck #894.)
 
 **Explicit callout (the operative constraint):** raising `DOCLING_TIMEOUT` for VLM
 directly increases how long `nc_webdav_read_file` blocks, and MCP clients typically

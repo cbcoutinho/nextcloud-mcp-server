@@ -46,7 +46,7 @@ async def spooled_document(
     time, whereas this acts on what actually arrives.
     """
     with spool_target(spool_dir) as target:
-        written, content_type = await nc_client.webdav.stream_to_file(
+        written, content_type, etag = await nc_client.webdav.stream_to_file(
             file_path, target, max_bytes=max_bytes
         )
         logger.debug(
@@ -57,4 +57,23 @@ async def spooled_document(
             content_type=content_type,
             filename=file_path,
             _size=written,
+            etag=etag,
         )
+
+
+def download_ceiling(settings: Any) -> int | None:
+    """Hard byte ceiling for a streamed download, or ``None`` when uncapped.
+
+    The pre-flight gate acts on the size the server advertised at scan time;
+    this acts on what actually arrives, so it still holds when Content-Length is
+    absent or wrong. Sized generously above the parse cap -- its job is to stop
+    a runaway transfer filling the spool volume, not to duplicate the cap.
+
+    Lives here rather than in ``vector.processor`` so an interactive caller (the
+    ``nc_webdav_read_file`` tool) can spool a document under the same ceiling
+    without importing the ingest/procrastinate stack.
+    """
+    max_pdf_mb = settings.document_max_pdf_size_mb
+    if not max_pdf_mb or max_pdf_mb <= 0:
+        return None
+    return int(max_pdf_mb * 1024 * 1024 * 2)

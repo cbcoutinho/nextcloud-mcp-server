@@ -12,22 +12,19 @@ pytestmark = pytest.mark.unit
 class TestDocumentProcessorConfig:
     """Test document processor configuration system."""
 
-    def test_config_disabled_by_default(self):
-        """Test that document processing is disabled by default."""
-        os.environ.pop("ENABLE_DOCUMENT_PROCESSING", None)
+    def test_no_optional_processors_by_default(self):
+        """Nothing optional is configured out of the box.
+
+        There is no master switch any more (Deck #894): whether to parse a
+        document on read is the caller's per-call decision, and each optional
+        processor is gated only by its own ENABLE_* flag. An empty ``processors``
+        dict is what tells app startup it has nothing to register -- and so
+        nothing to import (#877).
+        """
         _reload_config()
         config = get_document_processor_config()
-        assert config["enabled"] is False
-
-    def test_config_enabled(self):
-        """Test enabling document processing."""
-        os.environ["ENABLE_DOCUMENT_PROCESSING"] = "true"
-        try:
-            _reload_config()
-            config = get_document_processor_config()
-            assert config["enabled"] is True
-        finally:
-            os.environ.pop("ENABLE_DOCUMENT_PROCESSING", None)
+        assert config["processors"] == {}
+        assert "enabled" not in config
 
     def test_unstructured_processor_config(self):
         """Test Unstructured processor configuration."""
@@ -169,18 +166,15 @@ class TestDocumentProcessorConfig:
 
     def test_multiple_processors(self):
         """Test configuration with multiple processors enabled."""
-        os.environ["ENABLE_DOCUMENT_PROCESSING"] = "true"
         os.environ["ENABLE_UNSTRUCTURED"] = "true"
         os.environ["ENABLE_TESSERACT"] = "true"
 
         try:
             _reload_config()
             config = get_document_processor_config()
-            assert config["enabled"] is True
             assert "unstructured" in config["processors"]
             assert "tesseract" in config["processors"]
         finally:
-            os.environ.pop("ENABLE_DOCUMENT_PROCESSING", None)
             os.environ.pop("ENABLE_UNSTRUCTURED", None)
             os.environ.pop("ENABLE_TESSERACT", None)
 

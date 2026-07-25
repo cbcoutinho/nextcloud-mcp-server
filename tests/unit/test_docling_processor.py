@@ -14,6 +14,7 @@ from nextcloud_mcp_server.document_processors.docling_serve import (
     docling_pages,
 )
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
+from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
 
 pytestmark = pytest.mark.unit
 
@@ -230,8 +231,9 @@ async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
 def test_supported_mime_types_images_only():
     proc = DoclingProcessor("https://docling:5001")
     assert "image/png" in proc.supported_mime_types
-    # PDFs are deliberately excluded from auto-selection (handled by the OCR
-    # backend or an explicit force_processor), so it never hijacks PDF tiering.
+    # PDFs are deliberately excluded from auto-selection -- docling serves PDFs
+    # as an OCR provider (DOCUMENT_OCR_PROVIDER=docling), never as a tier of its
+    # own, so it can't hijack PDF tiering.
     assert "application/pdf" not in proc.supported_mime_types
     assert proc.name == "docling"
     assert proc.tier == "fast"
@@ -378,32 +380,24 @@ def test_docling_wins_image_routing_but_not_pdf():
         assert picked is None or picked.name != "docling"
 
 
-def test_docling_force_selectable_by_name():
-    registry = ProcessorRegistry()
-    registry.register(DoclingProcessor("https://docling:5001"), priority=20)
-    # get_processor("docling") is what the forced-processor path resolves; it must
-    # be found even for a PDF (supports() is bypassed on the forced path).
-    assert registry.get_processor("docling") is not None
-
-
-async def test_parse_document_threads_processor_name(monkeypatch):
-    """parse_document forwards processor_name to registry.process -- the wire that
-    lets nc_webdav_read_file(force_processor="docling") reach the forced path."""
+async def test_parse_document_source_threads_prefer_markdown(monkeypatch):
+    """parse_document_source forwards the markdown request to the registry -- the
+    wire that lets nc_webdav_read_file(parse_document="markdown") reach the
+    structured tier."""
     from nextcloud_mcp_server.utils import document_parser
 
     captured: dict = {}
 
-    async def _fake_process(**kwargs):
-        captured.update(kwargs)
-        return ProcessingResult(text="ok", metadata={}, processor="docling")
+    async def _fake_process_source(source, options=None, progress_callback=None):
+        captured["options"] = options
+        return ProcessingResult(text="ok", metadata={}, processor="pymupdf")
 
     monkeypatch.setattr(
-        document_parser, "get_document_processor_config", lambda: {"enabled": True}
+        document_parser.get_registry(), "process_source", _fake_process_source
     )
-    monkeypatch.setattr(document_parser.get_registry(), "process", _fake_process)
 
-    text, meta = await document_parser.parse_document(
-        b"x", "application/pdf", "f.pdf", processor_name="docling"
-    )
-    assert captured["processor_name"] == "docling"
-    assert text == "ok"
+    source = MemoryDocumentSource(b"x", "application/pdf", "f.pdf")
+    result = await document_parser.parse_document_source(source, prefer_markdown=True)
+
+    assert captured["options"] == {"prefer_markdown": True}
+    assert result.text == "ok"

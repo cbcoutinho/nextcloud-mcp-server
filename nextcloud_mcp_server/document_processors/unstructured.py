@@ -203,6 +203,8 @@ class UnstructuredProcessor(DocumentProcessor):
                     "element_types": element_types,
                     "strategy": strategy,
                     "languages": languages,
+                    # Elements are joined as plain paragraphs, not markdown.
+                    "parse_mode": "text_only",
                 }
 
                 logger.debug(

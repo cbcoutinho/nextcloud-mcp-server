@@ -44,8 +44,8 @@ multipart) is the client; `GET /health` is the probe.
    (`supported_mime_types` = images only, `tier="fast"`) is registered at
    **priority 20** (above `unstructured`'s 10) in `initialize_document_processors()`
    when `ENABLE_DOCLING=true` **and** `DOCLING_API_URL` is set. Images therefore
-   always route to docling when enabled. Gated only by `ENABLE_DOCUMENT_PROCESSING`
-   + `ENABLE_DOCLING` (the image/`find_processor` path has no OCR gate).
+   always route to docling when enabled. Gated only by `ENABLE_DOCLING` +
+   `DOCLING_API_URL` (the image/`find_processor` path has no OCR gate).
 
 2. **Scanned PDFs → docling (automatic, opt-in).** A `_DoclingServeBackend`
    (`_OcrBackend`) is added to `ocr.py` and selected by
@@ -55,14 +55,18 @@ multipart) is the client; `GET /health` is the probe.
    per-page `page_boundaries` by grouping `DoclingDocument.texts[].prov[].page_no`,
    falling back to a single whole-text page when provenance is absent.
 
-3. **Text-layer PDFs → docling (on demand).** `nc_webdav_read_file` gains a
-   `force_processor` argument threaded through `parse_document(processor_name=...)`
-   to the registry's forced path. `force_processor="docling"` re-parses any file
-   with docling even when it has a usable text layer — for tables/figures the text
-   layer misses. `DoclingProcessor.process()` handles PDFs (deriving
-   `from_formats` from the MIME type) even though PDFs are excluded from its
-   `supported_mime_types` (the forced path ignores `supports()`). An unknown/
-   unconfigured processor name raises a `ToolError` with the available names.
+3. ~~**Text-layer PDFs → docling (on demand).**~~ **Superseded in 0.151.0 (Deck
+   #894).** This touchpoint was a `force_processor` argument on
+   `nc_webdav_read_file`, threaded to the registry's forced path so
+   `force_processor="docling"` re-parsed any file with docling. It was removed:
+   it asked the caller (an LLM) to name an extraction engine it had no basis to
+   choose, and the forced path bypassed both tiering and the pre-parse size
+   guard. The two needs it served are now met without it — a text layer that
+   misses tables is handled locally by `parse_document="markdown"` (the
+   `structured`/pymupdf4llm tier), and a genuinely scanned PDF reaches docling
+   through touchpoint 2, where docling belongs as an OCR *provider*.
+   `DoclingProcessor` still handles PDFs internally (deriving `from_formats` from
+   the MIME type), but nothing routes one to it any more.
 
 ### Key design points
 

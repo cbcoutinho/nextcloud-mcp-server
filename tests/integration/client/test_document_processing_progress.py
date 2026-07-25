@@ -72,9 +72,14 @@ class TestDocumentProcessingProgress:
     ):
         """Test that reading a document via WebDAV MCP tool sends progress notifications."""
 
-        # Skip if document processing is not enabled
-        if os.getenv("ENABLE_DOCUMENT_PROCESSING", "false").lower() != "true":
-            pytest.skip("Document processing not enabled")
+        # An image needs an image-capable processor. The built-in tiers are
+        # PDF-only, so without one of these the read returns the file unparsed and
+        # there is no progress to report.
+        if not any(
+            os.getenv(flag, "false").lower() == "true"
+            for flag in ("ENABLE_DOCLING", "ENABLE_UNSTRUCTURED", "ENABLE_TESSERACT")
+        ):
+            pytest.skip("No image-capable document processor is configured")
 
         # Create a test image file in Nextcloud via WebDAV
         from PIL import Image

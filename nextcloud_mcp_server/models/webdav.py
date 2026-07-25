@@ -1,11 +1,17 @@
 """Pydantic models for WebDAV responses."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from .base import BaseResponse, StatusResponse
+
+#: Outcome of a document parse, and the shape of what came back. Defined here
+#: (the response contract) so the tool, the parser and the model cannot drift
+#: into three slightly different vocabularies.
+ParseStatus = Literal["parsed", "failed", "skipped", "not_applicable"]
+ContentFormat = Literal["text", "markdown", "base64"]
 
 
 class FileInfo(BaseModel):
@@ -59,10 +65,49 @@ class ReadFileResponse(BaseResponse):
     )
     parsed: bool = Field(
         default=False,
-        description="Whether content was extracted from a document (PDF, DOCX, ...)",
+        description=(
+            "Whether text was successfully extracted from a document "
+            "(PDF, DOCX, ...). Equivalent to parse_status == 'parsed'."
+        ),
+    )
+    parse_status: ParseStatus = Field(
+        default="not_applicable",
+        description=(
+            "Outcome of the document parse: 'parsed' (content is extracted text), "
+            "'failed' (a parse was attempted and did not produce text -- see "
+            "parse_notes), 'skipped' (the caller asked for the raw file), or "
+            "'not_applicable' (nothing here needed parsing, e.g. a text file or a "
+            "type no processor handles)."
+        ),
+    )
+    parse_tier: Optional[str] = Field(
+        None,
+        description=(
+            "Extraction tier that produced the content: 'fast' (plain text layer), "
+            "'structured' (markdown reconstruction) or 'ocr'."
+        ),
+    )
+    parse_processor: Optional[str] = Field(
+        None, description="Name of the processor that produced the content"
+    )
+    content_format: ContentFormat = Field(
+        default="text",
+        description=(
+            "What `content` actually is: markdown with headings/tables, plain "
+            "text, or base64-encoded bytes."
+        ),
+    )
+    parse_notes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Plain statements about anything that degraded this read -- OCR "
+            "unavailable, markdown structure not reconstructed, size cap hit, "
+            "parse failed. When non-empty, report them; the content is not the "
+            "whole document."
+        ),
     )
     parsing_metadata: Optional[dict] = Field(
-        None, description="Document-processor metadata when parsed=True"
+        None, description="Raw document-processor metadata when a parse ran"
     )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")

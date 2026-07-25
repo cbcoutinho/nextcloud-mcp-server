@@ -20,7 +20,9 @@ pytestmark = pytest.mark.unit
 
 
 def _nc_client(
-    body: bytes = b"%PDF-1.7 spooled", content_type: str = "application/pdf"
+    body: bytes = b"%PDF-1.7 spooled",
+    content_type: str = "application/pdf",
+    etag: str | None = "spooled-etag",
 ):
     """A client whose stream_to_file writes ``body`` to the destination."""
     nc = MagicMock()
@@ -30,7 +32,7 @@ def _nc_client(
         # rather than leaving a bare `async def` with no await in it.
         await anyio.lowlevel.checkpoint()
         dest.write_bytes(body)
-        return len(body), content_type
+        return len(body), content_type, etag
 
     nc.webdav.stream_to_file = AsyncMock(side_effect=_stream_to_file)
     return nc
@@ -46,6 +48,9 @@ async def test_yields_a_source_backed_by_the_spool_file(tmp_path):
         assert source.size == len(body)
         assert source.content_type == "application/pdf"
         assert source.filename == "/f.pdf"
+        # Carried from the transport so a caller that streamed the document can
+        # still identify the exact version it parsed.
+        assert source.etag == "spooled-etag"
 
 
 async def test_spool_is_removed_on_success(tmp_path):

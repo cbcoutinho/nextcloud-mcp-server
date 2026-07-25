@@ -112,6 +112,74 @@ def fake_client():
     return client
 
 
+def _spool(client, body: bytes, content_type: str, etag: str | None = None):
+    """Make ``client.webdav.stream_to_file`` deliver ``body``.
+
+    ``nc_webdav_read_file`` streams the document to a spool file rather than
+    buffering it, so the fake has to write to the destination the tool chose and
+    return the transport triple.
+    """
+
+    async def _stream_to_file(path, dest, *, max_bytes=None):
+        await anyio.lowlevel.checkpoint()
+        dest.write_bytes(body)
+        return len(body), content_type, etag
+
+    client.webdav.stream_to_file = AsyncMock(side_effect=_stream_to_file)
+
+
+def _settings(**overrides) -> SimpleNamespace:
+    """Settings the read path touches, with production defaults."""
+    values = {
+        "document_read_timeout_seconds": None,
+        "document_spool_dir": None,
+        "document_max_pdf_size_mb": 50.0,
+        "document_markdown_max_pages": 150,
+        "webdav_write_max_mb": 50.0,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _result(
+    text="parsed text", metadata=None, processor="pypdfium2_fast", success=True
+):
+    from nextcloud_mcp_server.document_processors import ProcessingResult
+
+    return ProcessingResult(
+        text=text,
+        metadata=metadata if metadata is not None else {},
+        processor=processor,
+        success=success,
+    )
+
+
+@pytest.fixture
+def parsing(mocker):
+    """Drive the read tool's parse branch with a canned ProcessingResult.
+
+    Returns the ``parse_document_source`` mock so a test can assert on how the
+    pipeline was invoked (e.g. that ``prefer_markdown`` was threaded through).
+    """
+
+    def _install(result=None, *, parseable=True, side_effect=None, settings=None):
+        mocker.patch(
+            "nextcloud_mcp_server.server.webdav.get_settings",
+            return_value=settings or _settings(),
+        )
+        mocker.patch(
+            "nextcloud_mcp_server.utils.document_parser.is_parseable_document",
+            return_value=parseable,
+        )
+        return mocker.patch(
+            "nextcloud_mcp_server.utils.document_parser.parse_document_source",
+            side_effect=side_effect,
+            return_value=result,
+        )
+
+    return _install
+
+
 # ── Read / mutate guards ────────────────────────────────────────────────
 
 
@@ -125,23 +193,23 @@ async def test_read_file_raises_when_path_excluded(
     with pytest.raises(ToolError, match="excluded tag"):
         await fn(path="/Secret.txt", ctx=_mock_ctx(fake_client))
 
-    fake_client.webdav.read_file.assert_not_called()
+    fake_client.webdav.stream_to_file.assert_not_called()
 
 
 async def test_read_file_passes_through_when_not_excluded(
-    webdav_tools, fake_client, patch_get_client, patch_excluded
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):
     patch_get_client(fake_client)
     patch_excluded({"Secret.txt"})
-    fake_client.webdav.read_file = AsyncMock(
-        return_value=(b"hello", "text/plain", "abc123")
-    )
+    parsing(parseable=False)
+    _spool(fake_client, b"hello", "text/plain", "abc123")
 
     fn = webdav_tools["nc_webdav_read_file"].fn
     result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
 
     assert result.content == "hello"
-    fake_client.webdav.read_file.assert_awaited_once_with("/Public/notes.md")
+    assert result.parse_status == "not_applicable"
+    assert fake_client.webdav.stream_to_file.await_args.args[0] == "/Public/notes.md"
 
 
 async def test_write_file_raises_when_path_excluded(
@@ -455,97 +523,298 @@ async def test_list_favorites_raises_when_scope_excluded(
     fake_client.webdav.list_favorites.assert_not_called()
 
 
-# ── Interactive read-parse cap (ADR-032) ────────────────────────────────
+# ── Document reads: parse_document + honest degradation (Deck #894) ─────
 
 
-async def test_read_file_interactive_cap_falls_back_to_base64(
-    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+def _read_ctx(fake_client) -> SimpleNamespace:
+    ctx = _mock_ctx(fake_client)
+    ctx.report_progress = AsyncMock()
+    return ctx
+
+
+async def test_read_file_interactive_cap_returns_the_raw_file(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):
     """With DOCUMENT_READ_TIMEOUT_SECONDS set, a slow synchronous parse is aborted
-    at the cap and the tool returns base64 fast instead of blocking past the MCP
-    client's own timeout (ADR-032)."""
+    at the cap and the tool returns the file fast instead of blocking past the MCP
+    client's own timeout (ADR-032) -- saying so, rather than silently."""
     patch_get_client(fake_client)
     patch_excluded(set())
-    fake_client.webdav.read_file = AsyncMock(
-        return_value=(b"\x89PNG", "image/png", None)
-    )
-
-    mocker.patch(
-        "nextcloud_mcp_server.server.webdav.get_settings",
-        return_value=SimpleNamespace(document_read_timeout_seconds=0.05),
-    )
-    mocker.patch(
-        "nextcloud_mcp_server.utils.document_parser.is_parseable_document",
-        return_value=True,
-    )
+    _spool(fake_client, b"\x89PNG", "image/png")
 
     async def slow_parse(*_a, **_k):
         await anyio.sleep(5)  # far beyond the 0.05s cap; fail_after cancels it
 
-    mocker.patch(
-        "nextcloud_mcp_server.utils.document_parser.parse_document",
+    parsing(
         side_effect=slow_parse,
+        settings=_settings(document_read_timeout_seconds=0.05),
     )
 
-    ctx = _mock_ctx(fake_client)
-    ctx.report_progress = AsyncMock()
     fn = webdav_tools["nc_webdav_read_file"].fn
-    result = await fn(path="/scan.png", ctx=ctx)
+    result = await fn(path="/scan.png", ctx=_read_ctx(fake_client))
 
-    # Graceful base64 fallback, not the parsed-document shape.
     assert result.encoding == "base64"
     assert result.content == base64.b64encode(b"\x89PNG").decode("ascii")
     assert result.parsed is False
+    assert result.parse_status == "failed"
+    assert any("DOCUMENT_READ_TIMEOUT_SECONDS" in n for n in result.parse_notes)
 
 
-async def test_read_file_no_cap_returns_parsed(
-    webdav_tools, fake_client, patch_get_client, patch_excluded, mocker
+async def test_read_file_defaults_to_parsing(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):
-    """With the cap disabled (None, the default), a normal parse is returned
-    unchanged -- the nullcontext path adds no behavior."""
+    """The default reads a document as text; the caller does not have to ask."""
     patch_get_client(fake_client)
     patch_excluded(set())
-    fake_client.webdav.read_file = AsyncMock(
-        return_value=(b"%PDF-1.7", "application/pdf", "etag-1")
+    _spool(fake_client, b"%PDF-1.7", "application/pdf", "etag-1")
+    parse = parsing(
+        _result(metadata={"pipeline_tier": "fast", "parse_mode": "text_only"})
     )
 
-    mocker.patch(
-        "nextcloud_mcp_server.server.webdav.get_settings",
-        return_value=SimpleNamespace(document_read_timeout_seconds=None),
-    )
-    mocker.patch(
-        "nextcloud_mcp_server.utils.document_parser.is_parseable_document",
-        return_value=True,
-    )
-    mocker.patch(
-        "nextcloud_mcp_server.utils.document_parser.parse_document",
-        return_value=("parsed text", {"parsing_method": "docling"}),
-    )
-
-    ctx = _mock_ctx(fake_client)
-    ctx.report_progress = AsyncMock()
     fn = webdav_tools["nc_webdav_read_file"].fn
-    result = await fn(path="/doc.pdf", ctx=ctx)
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client))
 
+    parse.assert_awaited_once()
     assert result.parsed is True
+    assert result.parse_status == "parsed"
     assert result.content == "parsed text"
-    assert result.parsing_metadata["parsing_method"] == "docling"
+    assert result.parse_tier == "fast"
+    assert result.parse_processor == "pypdfium2_fast"
+    assert result.content_format == "text"
+    assert result.parse_notes == []
+    assert result.etag == "etag-1"
+
+
+async def test_read_file_raw_skips_the_parse_entirely(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """``parse_document="raw"`` must reach the bytes without touching the
+    pipeline -- and must not be shadowed by the same-named lazy import."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parse = parsing(_result())
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client), parse_document="raw")
+
+    parse.assert_not_called()
+    assert result.parse_status == "skipped"
+    assert result.parsed is False
+    assert result.encoding == "base64"
+    assert result.content_format == "base64"
+
+
+async def test_read_file_markdown_asks_the_pipeline_for_structure(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parse = parsing(
+        _result(
+            text="# Heading",
+            metadata={"pipeline_tier": "structured", "parse_mode": "markdown"},
+            processor="pymupdf",
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/doc.pdf", ctx=_read_ctx(fake_client), parse_document="markdown"
+    )
+
+    assert parse.await_args.kwargs["prefer_markdown"] is True
+    assert result.content_format == "markdown"
+    assert result.parse_tier == "structured"
+
+
+async def test_read_file_reports_markdown_page_ceiling(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """A document past the ceiling gets text, and is told it got text."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            metadata={
+                "pipeline_tier": "fast",
+                "parse_mode": "text_only",
+                "markdown_skipped_reason": "page_ceiling",
+                "page_count": 412,
+            }
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/big.pdf", ctx=_read_ctx(fake_client), parse_document="markdown"
+    )
+
+    assert result.content_format == "text"
+    note = " ".join(result.parse_notes)
+    assert "412 pages" in note
+    assert "DOCUMENT_MARKDOWN_MAX_PAGES=150" in note
+
+
+async def test_read_file_reports_ocr_unavailable(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """A scan read on a tenant without OCR must not look like an empty document."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            text="",
+            metadata={
+                "pipeline_tier": "fast",
+                "parse_mode": "text_only",
+                "ocr_escalation_skipped": "disabled",
+                "ocr_recommended_reason": "empty_text",
+            },
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/scan.pdf", ctx=_read_ctx(fake_client))
+
+    assert result.parse_status == "parsed"
+    note = " ".join(result.parse_notes)
+    assert "DOCUMENT_OCR_ENABLED" in note
+    assert "0 characters" in note
+
+
+async def test_read_file_failed_parse_is_not_reported_as_parsed(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """Regression: a failed parse used to return empty content with parsed=True."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            text="",
+            metadata={"pipeline_tier": "structured", "parse_failed_reason": "timeout"},
+            processor="pymupdf",
+            success=False,
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client))
+
+    assert result.parsed is False
+    assert result.parse_status == "failed"
+    assert result.parse_tier == "structured"
+    assert any("timeout" in n for n in result.parse_notes)
+    # The file itself is still available to the caller.
+    assert result.encoding == "base64"
+
+
+async def test_read_file_reports_the_size_cap(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            text="",
+            metadata={"parse_failed_reason": "oversize"},
+            processor="size_guard",
+            success=False,
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/huge.pdf", ctx=_read_ctx(fake_client))
+
+    assert result.parse_status == "failed"
+    assert result.parse_tier is None
+    assert any("DOCUMENT_MAX_PDF_SIZE_MB" in n for n in result.parse_notes)
+
+
+async def test_read_file_will_not_inline_a_huge_unparsed_file(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, mocker
+):
+    """Base64 of a large binary is unusable by the time it reaches a model, so the
+    read reports the file rather than burying the response in it."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    parsing(parseable=False)
+    mocker.patch("nextcloud_mcp_server.server.webdav.RAW_CONTENT_MAX_BYTES", 16)
+    _spool(fake_client, b"x" * 64, "application/zip")
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/big.zip", ctx=_read_ctx(fake_client))
+
+    assert result.content == ""
+    assert result.size == 64
+    assert any("too large to return inline" in n for n in result.parse_notes)
+
+
+async def test_read_file_rejects_a_download_past_the_transfer_ceiling(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """An aborted transfer leaves nothing to describe, so it is an error rather
+    than an empty response that reads like an empty document."""
+    from nextcloud_mcp_server.client.webdav import OversizeDownload
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    parsing(parseable=False)
+    fake_client.webdav.stream_to_file = AsyncMock(
+        side_effect=OversizeDownload("aborted after 104857601")
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="transfer ceiling"):
+        await fn(path="/enormous.pdf", ctx=_read_ctx(fake_client))
+
+
+async def test_read_file_schema_replaces_force_processor(webdav_tools):
+    """The breaking change, in machine-checkable form (Deck #894)."""
+    properties = webdav_tools["nc_webdav_read_file"].parameters["properties"]
+
+    assert "parse_document" in properties
+    assert "force_processor" not in properties
+
+
+async def test_read_file_streams_instead_of_buffering(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """The API role cannot hold a large document in memory, so the read must go
+    through the streaming spool -- never the buffered ``read_file``."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(_result(metadata={"pipeline_tier": "fast"}))
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    await fn(path="/doc.pdf", ctx=_read_ctx(fake_client))
+
+    fake_client.webdav.read_file.assert_not_called()
+    # Bounded by the same ceiling ingest streams under (2x the parse cap).
+    assert fake_client.webdav.stream_to_file.await_args.kwargs["max_bytes"] == int(
+        50.0 * 1024 * 1024 * 2
+    )
 
 
 # ── Write conflict handling (etag / lock) and size gate ─────────────────
 
 
 async def test_read_file_includes_etag_in_response(
-    webdav_tools, fake_client, patch_get_client, patch_excluded
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):
     patch_get_client(fake_client)
     patch_excluded(set())
-    fake_client.webdav.read_file = AsyncMock(
-        return_value=(b"hello", "text/plain", "abc123")
-    )
+    parsing(parseable=False)
+    _spool(fake_client, b"hello", "text/plain", "abc123")
 
     fn = webdav_tools["nc_webdav_read_file"].fn
-    result = await fn(path="/Public/notes.md", ctx=_mock_ctx(fake_client))
+    result = await fn(path="/Public/notes.md", ctx=_read_ctx(fake_client))
 
     assert result.etag == "abc123"
 

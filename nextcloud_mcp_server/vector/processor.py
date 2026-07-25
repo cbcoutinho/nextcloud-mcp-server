@@ -83,7 +83,7 @@ from nextcloud_mcp_server.vector.sharing_state import (
     file_title_from_path,
     release_document_for_user,
 )
-from nextcloud_mcp_server.vector.spool import spooled_document
+from nextcloud_mcp_server.vector.spool import download_ceiling, spooled_document
 
 logger = logging.getLogger(__name__)
 
@@ -333,20 +333,6 @@ def should_use_page_aware(
         page_boundaries: The extractor's page-boundary list (or ``None``).
     """
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
-
-
-def _download_ceiling(settings: Any) -> int | None:
-    """Hard byte ceiling for a streamed download, or ``None`` when uncapped.
-
-    The pre-flight gate acts on the size the server advertised at scan time;
-    this acts on what actually arrives, so it still holds when Content-Length is
-    absent or wrong. Sized generously above the parse cap -- its job is to stop
-    a runaway transfer filling the spool volume, not to duplicate the cap.
-    """
-    max_pdf_mb = settings.document_max_pdf_size_mb
-    if not max_pdf_mb or max_pdf_mb <= 0:
-        return None
-    return int(max_pdf_mb * 1024 * 1024 * 2)
 
 
 def preflight_oversize_result(
@@ -1328,7 +1314,7 @@ async def _index_document_inner(
                         nc_client,
                         file_path,
                         spool_dir=settings.document_spool_dir,
-                        max_bytes=_download_ceiling(settings),
+                        max_bytes=download_ceiling(settings),
                     )
                 )
                 content_type = source.content_type
