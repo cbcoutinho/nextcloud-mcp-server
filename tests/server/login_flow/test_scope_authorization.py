@@ -2,19 +2,41 @@
 
 These tests verify:
 1. Dynamic tool filtering based on user's token scopes (using JWT tokens)
-2. Scope enforcement (403 responses for insufficient scopes)
+2. Scope enforcement on the tools/call path (stored app-password scopes)
 3. Protected Resource Metadata (PRM) endpoint (RFC 9728)
-4. WWW-Authenticate challenge headers
-5. BasicAuth bypass (all tools visible)
+4. BasicAuth bypass (all tools visible)
 
 Note: Tests use JWT OAuth tokens because scopes are embedded in the token payload,
 enabling efficient scope-based tool filtering without additional API calls.
+
+FILTERING VS ENFORCEMENT — these are separate layers and both need coverage.
+``list_tools`` filtering is advisory: it changes what a well-behaved client is
+offered, but a client can still invoke a tool it was never shown. Only
+``@require_scopes`` on the tools/call path actually denies. For a long time
+every test in this file asserted filtering alone and none called a tool, which
+is why a regression that made ``@require_scopes`` a runtime no-op went
+unnoticed. ``test_stored_scopes_enforced_on_tool_call`` closes that gap here;
+tests/unit/test_require_scopes_enforcement.py covers the decorator directly.
+
+Enforcement in login-flow mode keys on the *stored app-password* scopes, not on
+the OAuth token's scopes. Nextcloud app passwords are unscoped — they are
+all-or-nothing against the Nextcloud API — so the per-user scope set stored
+alongside the password is the only thing that can restrict a session, and it
+must hold on the call path.
+
+Not covered here: WWW-Authenticate challenge headers for step-up auth.
 """
 
+import json
 import logging
+import os
 
 import httpx
 import pytest
+from mcp.types import CallToolResult
+
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from tests.server.login_flow.conftest import LOGIN_FLOW_MCP_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +129,117 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
         "✅ Read-only token properly filters tools: %s read tools visible, write tools hidden",
         len(tool_names),
     )
+
+
+async def _set_stored_scopes(user_id: str, password: str, scopes: list[str]) -> None:
+    """Rewrite the caller's stored app-password scopes via the management API.
+
+    PATCH /api/v1/users/{user_id}/scopes changes only the stored scope set —
+    the app password itself is untouched and stays valid — and invalidates the
+    server's scope cache, so the next tool call sees the new set immediately.
+    That makes it the cheapest way to put a provisioned session into a
+    restricted state without driving a second browser login flow.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.patch(
+            f"{LOGIN_FLOW_MCP_BASE_URL}/api/v1/users/{user_id}/scopes",
+            json={"scopes": scopes},
+            auth=(user_id, password),
+            timeout=30.0,
+        )
+
+    assert response.status_code == 200, (
+        f"Could not set stored scopes for {user_id!r} "
+        f"(HTTP {response.status_code}): {response.text}. "
+        "A 403 'User ID mismatch' means the OIDC sub differs from the Nextcloud "
+        "UID, so the management API and @require_scopes key the app-password "
+        "record differently — that is a real bug, not a test-setup problem."
+    )
+
+
+def _tool_text(result: CallToolResult) -> str:
+    """Flatten a tool result's content blocks into one searchable string."""
+    return " ".join(
+        block.text for block in result.content if getattr(block, "text", None)
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.login_flow
+async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
+    """A tool call must be DENIED when the stored scopes don't cover it.
+
+    This is the property that actually protects data. Nextcloud app passwords
+    carry no scopes of their own, so once a session holds one it can reach the
+    whole Nextcloud API; the per-user scope set this server stores alongside
+    the password is the only limit, and it is enforced application-side by
+    ``@require_scopes`` on the tools/call path.
+
+    Restricting the stored scopes to notes.read and then calling a write tool
+    exercises exactly that. Asserting the read tool still succeeds afterwards
+    keeps the test honest: it proves the write was refused *for lack of scope*,
+    not because the session broke.
+    """
+    session = nc_mcp_login_flow_client
+
+    status_result = await session.call_tool("nc_auth_check_status", {})
+    status = json.loads(status_result.content[0].text)
+    assert status.get("status") == "provisioned", (
+        f"fixture session is not provisioned: {status}"
+    )
+
+    user_id = status["user_id"]
+    original_scopes = status.get("scopes")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+    assert password, "NEXTCLOUD_PASSWORD env var not set"
+
+    try:
+        await _set_stored_scopes(user_id, password, ["notes.read"])
+
+        write_result = await session.call_tool(
+            "nc_notes_create_note",
+            {
+                "title": "scope-enforcement-probe",
+                "content": "must never be created",
+                "category": "testing",
+            },
+        )
+        assert write_result.isError, (
+            "nc_notes_create_note succeeded with stored scopes ['notes.read'] — "
+            "@require_scopes is not enforcing on the tools/call path"
+        )
+        message = _tool_text(write_result)
+        assert "notes.write" in message, (
+            f"expected the missing scope to be named in the denial, got: {message}"
+        )
+
+        read_result = await session.call_tool(
+            "nc_notes_search_notes", {"query": "scope-enforcement-probe"}
+        )
+        assert not read_result.isError, (
+            "notes.read was granted but the read tool was refused: "
+            f"{_tool_text(read_result)}"
+        )
+    finally:
+        # Session-scoped fixture: other tests reuse this provisioning, so put
+        # the scope set back. Fall back to the full set rather than [], which
+        # would leave every later test denied. Never raise from here — an
+        # exception in `finally` would replace whatever the test was actually
+        # failing on.
+        try:
+            await _set_stored_scopes(
+                user_id,
+                password,
+                original_scopes
+                if isinstance(original_scopes, list) and original_scopes
+                else sorted(ALL_SUPPORTED_SCOPES),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to restore stored scopes for %s — later login_flow "
+                "tests in this session may see a restricted scope set",
+                user_id,
+            )
 
 
 @pytest.mark.integration

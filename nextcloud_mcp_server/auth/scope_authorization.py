@@ -123,13 +123,27 @@ def require_scopes(*required_scopes: str):
                 )
                 return await func(*args, **kwargs)
 
-            # Check if we're in OAuth mode (access token available)
-            access_token: AccessToken | None = getattr(
-                ctx.request_context, "access_token", None
-            )
+            # Resolve the verified token from the SDK auth contextvar. It is
+            # never an attribute of RequestContext — reading it from there
+            # always yielded None, which silently disabled every check below.
+            access_token: AccessToken | None = get_access_token()
 
             if access_token is None:
-                # No OAuth token — BasicAuth mode bypasses scope checks
+                # BasicAuth deployments carry no OAuth token: there are no token
+                # scopes to check, and Nextcloud enforces its own ACLs.
+                # Under OAuth a missing token means the auth middleware never
+                # populated one, so deny instead of granting every scope.
+                if get_settings().enable_login_flow:
+                    logger.warning(
+                        "Access denied to %s: OAuth mode but no verified access "
+                        "token on this request",
+                        func_name,
+                    )
+                    raise InsufficientScopeError(
+                        list(required_scopes),
+                        f"Access denied to {func_name}: no verified access token "
+                        f"on this request.",
+                    )
                 logger.debug(
                     "No access token for %s - allowing (BasicAuth mode)", func_name
                 )
@@ -394,12 +408,20 @@ def check_scopes(ctx: Context, *required_scopes: str) -> tuple[bool, set[str]]:
         ```
     """
     token_scopes = get_access_token_scopes(ctx)
+    required_scopes_set = set(required_scopes)
 
-    # If no access token, assume BasicAuth mode (all operations allowed)
-    if not token_scopes and getattr(ctx.request_context, "access_token", None) is None:
+    # No verified token at all. Under BasicAuth that is expected — Nextcloud
+    # enforces its own ACLs — but under OAuth it means the auth middleware never
+    # populated one, so report nothing granted rather than everything. Same
+    # fail-closed rule as require_scopes: reporting "all granted" here would
+    # reintroduce, for any future caller, exactly the bug this module was fixed
+    # for. (A token that merely carries no scopes is a different case and is
+    # still checked against the requirement below.)
+    if get_access_token() is None:
+        if get_settings().enable_login_flow:
+            return False, required_scopes_set
         return True, set()
 
-    required_scopes_set = set(required_scopes)
     missing_scopes = required_scopes_set - token_scopes
 
     return len(missing_scopes) == 0, missing_scopes
