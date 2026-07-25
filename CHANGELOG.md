@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.150.0 (2026-07-25)
+
+### BREAKING CHANGE
+
+- nc_webdav_move_resource and nc_webdav_copy_resource now return
+MoveResourceResponse / CopyResourceResponse instead of a raw dict. The
+status_code field keeps its meaning, so field-level consumers are unaffected;
+callers treating the result as a plain mapping must switch to attribute access.
+
+### Fix
+
+- **deck**: preserve order and due date on partial card updates
+
+### Refactor
+
+- **webdav**: typed responses for move and copy tools
+
 ## v0.149.0 (2026-07-25)
 
 ### Feat
