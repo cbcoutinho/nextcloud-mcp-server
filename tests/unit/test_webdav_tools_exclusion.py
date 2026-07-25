@@ -749,3 +749,65 @@ async def test_write_file_size_gate_disabled_when_max_mb_is_zero(
     await fn(path="/Public/notes.md", content="hi", ctx=_mock_ctx(fake_client))
 
     fake_client.webdav.write_file.assert_awaited_once()
+
+
+# ============= Typed responses for move/copy =============
+#
+# Both tools previously returned the client's raw dict with no return
+# annotation, which the CLAUDE.md response-pattern gate treats as a defect: raw
+# dicts bypass the success/timestamp envelope every other tool provides.
+
+
+@pytest.mark.parametrize(
+    "tool_name,verb",
+    [("nc_webdav_move_resource", "move"), ("nc_webdav_copy_resource", "copy")],
+)
+async def test_move_copy_return_typed_success(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, tool_name, verb
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    getattr(fake_client.webdav, f"{verb}_resource").return_value = {"status_code": 201}
+
+    result = await webdav_tools[tool_name].fn(
+        source_path="/a.txt",
+        destination_path="/b.txt",
+        ctx=_mock_ctx(fake_client),
+        overwrite=False,
+    )
+
+    assert result.success is True
+    assert result.status_code == 201
+    assert result.source_path == "/a.txt"
+    assert result.destination_path == "/b.txt"
+    assert result.overwrite is False
+
+
+@pytest.mark.parametrize(
+    "tool_name,verb",
+    [("nc_webdav_move_resource", "move"), ("nc_webdav_copy_resource", "copy")],
+)
+@pytest.mark.parametrize("status", [404, 409, 412])
+async def test_move_copy_report_conflicts_as_unsuccessful(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, tool_name, verb, status
+):
+    """The client returns rather than raises on these, so the typed response has
+    to carry the failure — otherwise a 412 would arrive inside a success
+    envelope."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    getattr(fake_client.webdav, f"{verb}_resource").return_value = {
+        "status_code": status,
+        "message": "nope",
+    }
+
+    result = await webdav_tools[tool_name].fn(
+        source_path="/a.txt",
+        destination_path="/b.txt",
+        ctx=_mock_ctx(fake_client),
+        overwrite=False,
+    )
+
+    assert result.success is False
+    assert result.status_code == status
+    assert result.message == "nope"

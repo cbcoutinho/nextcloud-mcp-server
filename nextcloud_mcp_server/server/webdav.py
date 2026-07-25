@@ -11,8 +11,10 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import (
+    CopyResourceResponse,
     DirectoryListing,
     FileInfo,
+    MoveResourceResponse,
     ReadFileResponse,
     SearchFilesResponse,
     WriteFileResponse,
@@ -24,6 +26,11 @@ from nextcloud_mcp_server.server.tag_exclusion import (
 )
 
 logger = logging.getLogger(__name__)
+
+# move_resource/copy_resource return (rather than raise) on these, since they
+# are conditions a caller reacts to rather than transport failures. They are
+# what makes ``success`` False on the typed response.
+_WEBDAV_CONFLICT_STATUSES = frozenset({404, 409, 412})
 
 
 def configure_webdav_tools(mcp: FastMCP):
@@ -431,7 +438,7 @@ def configure_webdav_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_webdav_move_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
-    ):
+    ) -> MoveResourceResponse:
         """Move or rename a file or directory in NextCloud.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and either
@@ -444,7 +451,11 @@ def configure_webdav_tools(mcp: FastMCP):
             overwrite: Whether to overwrite the destination if it exists (default: False)
 
         Returns:
-            Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
+            ``MoveResourceResponse``. ``success`` is
+            False for the known conflicts — 404 when the source does not
+            exist, 412 when the destination exists and ``overwrite`` is
+            False, 409 for a missing parent — with ``message`` explaining
+            which. Other failures raise.
         """
         client = await get_client(ctx)
 
@@ -460,8 +471,17 @@ def configure_webdav_tools(mcp: FastMCP):
                 "inside a path tagged with an excluded tag"
             )
 
-        return await client.webdav.move_resource(
+        result = await client.webdav.move_resource(
             source_path, destination_path, overwrite
+        )
+        status_code = result.get("status_code")
+        return MoveResourceResponse(
+            success=status_code not in _WEBDAV_CONFLICT_STATUSES,
+            status_code=status_code,
+            message=result.get("message"),
+            source_path=source_path,
+            destination_path=destination_path,
+            overwrite=overwrite,
         )
 
     @mcp.tool(
@@ -475,7 +495,7 @@ def configure_webdav_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_webdav_copy_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
-    ):
+    ) -> CopyResourceResponse:
         """Copy a file or directory in NextCloud.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and either
@@ -488,7 +508,11 @@ def configure_webdav_tools(mcp: FastMCP):
             overwrite: Whether to overwrite the destination if it exists (default: False)
 
         Returns:
-            Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
+            ``CopyResourceResponse``. ``success`` is
+            False for the known conflicts — 404 when the source does not
+            exist, 412 when the destination exists and ``overwrite`` is
+            False, 409 for a missing parent — with ``message`` explaining
+            which. Other failures raise.
         """
         client = await get_client(ctx)
 
@@ -504,8 +528,17 @@ def configure_webdav_tools(mcp: FastMCP):
                 "inside a path tagged with an excluded tag"
             )
 
-        return await client.webdav.copy_resource(
+        result = await client.webdav.copy_resource(
             source_path, destination_path, overwrite
+        )
+        status_code = result.get("status_code")
+        return CopyResourceResponse(
+            success=status_code not in _WEBDAV_CONFLICT_STATUSES,
+            status_code=status_code,
+            message=result.get("message"),
+            source_path=source_path,
+            destination_path=destination_path,
+            overwrite=overwrite,
         )
 
     @mcp.tool(
