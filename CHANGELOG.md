@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.148.0 (2026-07-25)
+
+### BREAKING CHANGE
+
+- OAuth scope enforcement now actually applies to tool calls.
+Sessions whose token or stored app-password scopes do not cover a tool were
+silently allowed and are now denied with InsufficientScopeError; under OAuth,
+a request arriving without a verified token is denied rather than treated as
+BasicAuth. Deployments relying on the previous permissive behaviour must grant
+the required scopes (nc_auth_update_scopes, or
+PATCH /api/v1/users/{user_id}/scopes).
+
+### Fix
+
+- **auth**: fail closed in check_scopes when OAuth has no token
+- **auth**: enforce @require_scopes at runtime
+
 ## v0.147.2 (2026-07-25)
 
 ### Fix
