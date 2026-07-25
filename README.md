@@ -4,6 +4,8 @@
 
 # Nextcloud MCP Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fcbcoutinho%2Fnextcloud-mcp-server.svg)](https://mcptoplist.com/server/glama%2Fcbcoutinho%2Fnextcloud-mcp-server)
+
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
 
 **A production-ready MCP server that connects AI assistants to your Nextcloud instance.**
