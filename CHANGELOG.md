@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.147.1 (2026-07-25)
+
+### Fix
+
+- **calendar**: don't warn when a stored TZID isn't an IANA name
+- **calendar**: clamp all-day DTEND on the explicit flip path too
+- **calendar**: preserve value type and timezone when updating events
+
+### Refactor
+
+- **calendar**: address SonarCloud findings on the update path
+
 ## v0.147.0 (2026-07-25)
 
 ### Feat
