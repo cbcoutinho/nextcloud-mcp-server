@@ -3,6 +3,7 @@
 import datetime as dt
 import inspect
 import logging
+import re
 import uuid
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -670,21 +671,106 @@ class CalendarClient:
             "status_code": 200,
         }
 
-    async def delete_event(self, calendar_name: str, event_uid: str) -> dict[str, Any]:
-        """Delete a calendar event."""
+    @staticmethod
+    def _status_from_dav_error(exc: caldav_error.DAVError) -> int | None:
+        """Best-effort HTTP status from a caldav DAVError, or ``None``.
+
+        caldav offers nothing structured here. ``_post_delete`` raises
+        ``DeleteError(errmsg(r))``, and ``errmsg`` formats
+        ``"<status> <reason>\\n\\n<body>"`` — which lands in the exception's
+        ``url`` slot, because ``DAVError.__init__``'s first positional parameter
+        is ``url``. So the status is the leading integer of ``exc.url``, with
+        ``str(exc)`` as a fallback in case a future caldav populates it properly.
+
+        Returns ``None`` when nothing parses; callers must treat that as an
+        unknown refusal rather than substituting a plausible-looking code.
+        """
+        for candidate in (getattr(exc, "url", None), str(exc)):
+            if not candidate:
+                continue
+            match = re.search(r"\b(\d{3})\b", str(candidate))
+            if match:
+                return int(match.group(1))
+        return None
+
+    async def _delete_dav_object(
+        self,
+        calendar_name: str,
+        uid: str,
+        comp_filter: Any,
+        kind: str,
+    ) -> dict[str, Any]:
+        """Delete one CalDAV object, mapping refusals to a structured result.
+
+        Only ``NotFoundError`` used to be caught, so a 403 (Nextcloud refuses to
+        delete iMIP/scheduled objects) or a 409/412 (a stale entry in the calendar
+        trashbin colliding with the delete) escaped as a raw caldav traceback out
+        of the MCP tool.
+
+        Only ``DeleteError`` is treated as a refusal: it is precisely what
+        ``DAVObject._post_delete`` raises when the server rejects the DELETE.
+        caldav's other error classes are flat siblings under ``DAVError``, not
+        subclasses of it, so ``AuthorizationError`` (expired credential) and
+        ``RateLimitError`` (retryable) keep propagating instead of being flattened
+        into a per-object "the server refused this event" message. Catching the
+        ``DAVError`` base would have masked exactly those.
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
         try:
-            event = await self._async_object_by_uid(
-                calendar, event_uid, cdav.CompFilter("VEVENT")
-            )
-            await _maybe_await(event.delete())
-            logger.debug("Deleted event %s", event_uid)
-            return {"status_code": 204}
+            obj = await self._async_object_by_uid(calendar, uid, comp_filter)
+            await _maybe_await(obj.delete())
+            logger.debug("Deleted %s %s", kind, uid)
+            return {"success": True, "status_code": 204}
         except caldav_error.NotFoundError as e:
-            logger.debug("Event %s not found: %s", event_uid, e)
-            return {"status_code": 404}
+            logger.debug("%s %s not found: %s", kind.capitalize(), uid, e)
+            return {"success": True, "status_code": 404}
+        except caldav_error.DeleteError as e:
+            status = self._status_from_dav_error(e)
+            logger.warning(
+                "Server refused to delete %s %s (status %s)",
+                kind,
+                uid,
+                status if status is not None else "unknown",
+            )
+            return {
+                "success": False,
+                "status_code": status if status is not None else 500,
+                "message": self._delete_refusal_message(status, kind),
+                "reason": str(e),
+            }
+
+    @staticmethod
+    def _delete_refusal_message(status: int | None, kind: str) -> str:
+        """Explain a delete refusal in terms of its likely cause."""
+        if status == 403:
+            return (
+                f"The server refused to delete this {kind}. Nextcloud rejects "
+                "deletion of scheduled (iMIP) objects — if you are an attendee, "
+                "decline the invitation instead; if you are the organizer, cancel "
+                "it so attendees are notified."
+            )
+        if status in (409, 412, 500):
+            return (
+                f"The server refused to delete this {kind}, most likely because a "
+                "previously-deleted object with the same UID is still in the "
+                "calendar trashbin. Empty the trashbin in the Nextcloud Calendar "
+                "UI and retry."
+            )
+        return f"The server refused to delete this {kind}" + (
+            f" (HTTP {status})." if status is not None else "."
+        )
+
+    async def delete_event(self, calendar_name: str, event_uid: str) -> dict[str, Any]:
+        """Delete a calendar event.
+
+        Returns a structured result rather than raising on a server refusal —
+        see :meth:`_delete_dav_object`.
+        """
+        return await self._delete_dav_object(
+            calendar_name, event_uid, cdav.CompFilter("VEVENT"), "event"
+        )
 
     async def get_event(
         self, calendar_name: str, event_uid: str
@@ -851,20 +937,14 @@ class CalendarClient:
             raise
 
     async def delete_todo(self, calendar_name: str, todo_uid: str) -> dict[str, Any]:
-        """Delete a todo/task."""
-        await self._ensure_calendar_home()
-        calendar = self._get_calendar(calendar_name)
+        """Delete a todo/task.
 
-        try:
-            todo = await self._async_object_by_uid(
-                calendar, todo_uid, cdav.CompFilter("VTODO")
-            )
-            await _maybe_await(todo.delete())
-            logger.debug("Deleted todo %s", todo_uid)
-            return {"status_code": 204}
-        except caldav_error.NotFoundError as e:
-            logger.debug("Todo %s not found: %s", todo_uid, e)
-            return {"status_code": 404}
+        Returns a structured result rather than raising on a server refusal —
+        see :meth:`_delete_dav_object`.
+        """
+        return await self._delete_dav_object(
+            calendar_name, todo_uid, cdav.CompFilter("VTODO"), "todo"
+        )
 
     async def search_todos_across_calendars(
         self, filters: dict[str, Any] | None = None
