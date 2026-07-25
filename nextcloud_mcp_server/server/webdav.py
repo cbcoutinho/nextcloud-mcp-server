@@ -304,9 +304,14 @@ def configure_webdav_tools(mcp: FastMCP):
                   file unconditionally (fails if the file does not exist).
 
         Returns:
-            ``WriteFileResponse`` with ``path``, ``status_code``, ``size`` and
+            ``WriteFileResponse`` with ``path``, ``status_code``, ``size``,
             ``created`` (True when a new file was created, i.e. HTTP 201; False
-            when an existing file was overwritten, i.e. HTTP 204).
+            when an existing file was overwritten, i.e. HTTP 204) and ``etag``.
+
+            ``etag`` is the file as just written — pass it straight back as
+            ``if_match`` on the next write to chain edits without an intervening
+            read. It is ``None`` when the server did not return one (some
+            proxies strip it); re-read the file to obtain it in that case.
         """
         client = await get_client(ctx)
 
@@ -354,6 +359,7 @@ def configure_webdav_tools(mcp: FastMCP):
             status_code=status_code,
             created=status_code == 201,
             size=len(content_bytes),
+            etag=result.get("etag"),
         )
 
     @mcp.tool(
