@@ -362,7 +362,15 @@ async def test_deck_update_card(mocker):
     put_call = mock_make_request.call_args_list[1]
     assert put_call[0][0] == "PUT"
     assert "/boards/123/stacks/456/cards/789" in put_call[0][1]
-    assert put_call[1]["json"]["title"] == "Updated Card"
+    body = put_call[1]["json"]
+    assert body["title"] == "Updated Card"
+    # Deck's PUT is a full replacement, so the fields the caller did NOT pass
+    # must still be carried over. Asserting only `title` is what let a bug
+    # through where order was reset to 0 and the due date cleared on every
+    # partial update; see test_deck_update_card_payload.py.
+    assert body["order"] == 999  # from the mocked current card
+    assert "duedate" in body
+    assert body["archived"] is False
 
 
 # Label Tests
