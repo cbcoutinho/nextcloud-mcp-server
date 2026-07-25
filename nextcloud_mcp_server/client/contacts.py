@@ -468,6 +468,11 @@ class ContactsClient(BaseNextcloudClient):
         ETag so callers can chain updates without a re-read. ``getetag`` is an
         empty string when the server omitted the header from the PUT response
         (some proxies strip it); chaining then requires a fresh read first.
+
+        Failures before the PUT raise. Failures *after* it do not: once the write
+        has landed, an error building the response projection would misreport a
+        successful update, so ``contact`` degrades to ``{}`` and the raw
+        ``addressdata`` plus the new ETag are still returned.
         """
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
@@ -501,13 +506,34 @@ class ContactsClient(BaseNextcloudClient):
             "PUT", url, content=vcard_content, headers=headers
         )
 
+        # Re-parse the card we just wrote rather than issuing a second GET.
+        #
+        # Deliberately fail-open, unlike every other error path in this method:
+        # the PUT has already landed, so raising here would report a *successful*
+        # write as a failure and invite a pointless — possibly destructive —
+        # retry. The contract this method exists to protect ("never silently lose
+        # data") is already satisfied at this point; only the convenience
+        # projection is at risk. The caller still gets the new ETag and the full
+        # ``addressdata``, so nothing is withheld.
+        try:
+            contact_projection = _project_contact(Contact.from_vcard(vcard_content))
+        except Exception:
+            # Broad by intent: pythonvCard4 is third-party and its parse failure
+            # modes aren't enumerable. Whatever it raises, the write stands.
+            logger.exception(
+                "Contact %s was updated successfully but the written vCard could "
+                "not be re-parsed for the response projection; returning the raw "
+                "card and ETag instead",
+                uid,
+            )
+            contact_projection = {}
+
         return {
             "vcard_id": object_name.removesuffix(".vcf"),
             "object_path": url,
             "object_name": object_name,
-            # Re-parse the card we just wrote rather than issuing a second GET.
             "getetag": response.headers.get("etag", ""),
-            "contact": _project_contact(Contact.from_vcard(vcard_content)),
+            "contact": contact_projection,
             "addressdata": vcard_content,
         }
 

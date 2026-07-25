@@ -743,6 +743,33 @@ class TestUpdatePreservesUnsupportedProperties:
 
         client._make_request.assert_not_awaited()
 
+    async def test_reparse_failure_after_write_does_not_report_failure(self, mocker):
+        """The PUT has already landed, so a projection error must not surface as a
+        failed update — that would invite a pointless, possibly destructive retry.
+
+        This is the one deliberate fail-open path in update_contact; everything
+        before the PUT fails closed.
+        """
+        client = _update_client(
+            mocker, object_name="alice.vcf", raw_vcard=self.RICH_VCARD
+        )
+        mocker.patch(
+            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            side_effect=ValueError("unparseable"),
+        )
+
+        result = await client.update_contact(
+            addressbook="contacts",
+            uid="alice",
+            contact_data={"fn": "Alice Updated"},
+        )
+
+        # The write stands and nothing is withheld from the caller.
+        client._make_request.assert_awaited_once()
+        assert result["getetag"] == '"new-etag"'
+        assert "FN:Alice Updated" in result["addressdata"]
+        assert result["contact"] == {}
+
     async def test_returns_projection_with_new_etag(self, mocker):
         """The result carries the new ETag so updates can be chained without a
         re-read."""
