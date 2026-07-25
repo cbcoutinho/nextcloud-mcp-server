@@ -65,49 +65,126 @@ def _parse_vcard_fields(
     return fields
 
 
-def _raw_contact_to_model(raw: dict) -> Contact:
-    """Convert a raw contact dict from the contacts client to a Contact model.
+def _parse_address_fields(raw_values: dict | list | None) -> list[ContactField]:
+    """Parse pythonvCard4's ADR shape into ContactField entries.
 
-    Maps fullname, nickname, birthday, email, tel, org, title, note, url,
-    categories, and photo fields. Email/tel values may be plain strings, dicts
-    with ``value``/``type`` keys, or lists of either – see
-    :func:`_parse_vcard_fields`.
+    The library yields ``[{'value': [7 components], 'type': ['HOME', 'PREF']}]``
+    — verified to be a list even for a single ADR. A bare dict is normalised
+    anyway so this stays symmetric with :func:`_parse_vcard_fields`, which
+    handles the same polymorphism for EMAIL/TEL; relying on the list shape alone
+    would fail silently (iterating a dict yields its keys, each skipped by the
+    isinstance check) if the library ever changed.
+
+    ``value`` is joined with ';' for a flat display string while ``components``
+    keeps the structured form, so a consumer isn't forced to re-split it.
     """
-    contact_info = raw.get("contact", {})
+    if not raw_values:
+        return []
+    if isinstance(raw_values, dict):
+        raw_values = [raw_values]
 
-    emails = _parse_vcard_fields(contact_info.get("email"), "email")
-    phones = _parse_vcard_fields(contact_info.get("tel"), "phone")
+    fields: list[ContactField] = []
+    for item in raw_values:
+        if not isinstance(item, dict):
+            continue
+        components = item.get("value") or []
+        if isinstance(components, str):
+            components = components.split(";")
+        components = [str(c) for c in components]
+        if not any(c.strip() for c in components):
+            continue
+        raw_types: list[str] = item.get("type") or []
+        preferred = any(t.upper() == "PREF" for t in raw_types)
+        labels = [t.lower() for t in raw_types if t.upper() != "PREF"]
+        fields.append(
+            ContactField(
+                type="address",
+                value=";".join(components),
+                label=", ".join(labels) if labels else None,
+                preferred=preferred,
+                components=components,
+            )
+        )
+    return fields
 
-    # URL is parsed by pythonvCard4 into a plain ``list[str]``. Single-string
-    # inputs surface as such too. Either way wrap each into a ContactField.
-    raw_urls = contact_info.get("url")
+
+def _parse_url_fields(raw_urls: str | list | None) -> list[ContactField]:
+    """Wrap URL values into ContactFields.
+
+    pythonvCard4 parses URL into a plain ``list[str]``; single-string inputs
+    surface as such too.
+    """
     if isinstance(raw_urls, str):
         raw_urls = [raw_urls] if raw_urls else []
-    urls = [
+    return [
         ContactField(type="url", value=u)
         for u in (raw_urls or [])
         if isinstance(u, str) and u
     ]
 
-    # CATEGORIES is parsed as ``list[str]``. Accept a comma-separated string
-    # too for forward-compat with library updates that might change shape.
-    raw_categories = contact_info.get("categories") or []
-    if isinstance(raw_categories, str):
-        categories = [c.strip() for c in raw_categories.split(",") if c.strip()]
-    else:
-        categories = [c for c in raw_categories if isinstance(c, str) and c]
 
-    # Nickname goes into custom_fields (no dedicated model field)
+def _parse_categories(raw_categories: str | list | None) -> list[str]:
+    """Normalise CATEGORIES to a list of non-empty strings.
+
+    Parsed as ``list[str]``; a comma-separated string is also accepted for
+    forward-compat with library updates that might change shape.
+    """
+    raw_categories = raw_categories or []
+    if isinstance(raw_categories, str):
+        return [c.strip() for c in raw_categories.split(",") if c.strip()]
+    return [c for c in raw_categories if isinstance(c, str) and c]
+
+
+def _build_custom_fields(contact_info: dict) -> dict[str, Any]:
+    """Merge the nickname and any X-* extensions into one custom-field map.
+
+    The ``nickname`` key is lower-case and extension keys are upper-case
+    property names, so they cannot collide.
+    """
     custom_fields: dict[str, Any] = {}
     nickname = contact_info.get("nickname")
     if nickname:
         custom_fields["nickname"] = nickname
+    custom_fields.update(contact_info.get("custom") or {})
+    return custom_fields
+
+
+def _split_name_parts(raw_n: list | None) -> tuple[str | None, str | None]:
+    """Return ``(family_name, given_name)`` from the N component list.
+
+    N is ``[family, given, additional, prefix, suffix]``; index-guarded since a
+    malformed card can carry fewer components. Empty strings become ``None``.
+    """
+    name_parts = raw_n or []
+    family = name_parts[0] if len(name_parts) > 0 else None
+    given = name_parts[1] if len(name_parts) > 1 else None
+    return (family or None), (given or None)
+
+
+def _raw_contact_to_model(raw: dict) -> Contact:
+    """Convert a raw contact dict from the contacts client to a Contact model.
+
+    Maps fullname, name parts, nickname, birthday, email, tel, address, org,
+    title, note, url, categories, photo and X-* extension fields. Email/tel
+    values may be plain strings, dicts with ``value``/``type`` keys, or lists of
+    either – see :func:`_parse_vcard_fields`.
+    """
+    contact_info = raw.get("contact", {})
+
+    emails = _parse_vcard_fields(contact_info.get("email"), "email")
+    phones = _parse_vcard_fields(contact_info.get("tel"), "phone")
+    urls = _parse_url_fields(contact_info.get("url"))
+    categories = _parse_categories(contact_info.get("categories"))
+    custom_fields = _build_custom_fields(contact_info)
+    family_name, given_name = _split_name_parts(contact_info.get("n"))
 
     return Contact(
         uid=raw["vcard_id"],
         resource_path=raw.get("object_path"),
         fn=contact_info.get("fullname", ""),
         etag=raw.get("getetag"),
+        given_name=given_name,
+        family_name=family_name,
         organization=contact_info.get("org"),
         title=contact_info.get("title"),
         note=contact_info.get("note"),
@@ -117,6 +194,7 @@ def _raw_contact_to_model(raw: dict) -> Contact:
         else contact_info.get("birthday"),
         emails=emails,
         phones=phones,
+        addresses=_parse_address_fields(contact_info.get("adr")),
         urls=urls,
         categories=categories,
         custom_fields=custom_fields,

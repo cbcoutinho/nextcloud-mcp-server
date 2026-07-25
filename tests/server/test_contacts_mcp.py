@@ -175,3 +175,93 @@ async def test_mcp_contacts_workflow(
             await nc_client.contacts.delete_addressbook(name=addressbook_name)
         except Exception:
             pass
+
+
+async def test_mcp_contacts_surfaces_structured_fields_and_survives_bad_cards(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """ADR / N / X-* reach the model, and one unparseable card can't kill the list.
+
+    Two contacts are injected by raw CardDAV PUT because ``create_contact`` has no
+    vocabulary for ADR or X-* properties:
+
+    * ``rich`` carries ADR, N and X-* — previously parsed by pythonvCard4 but
+      never projected, so ``addresses`` was declared and permanently empty.
+    * ``geo`` carries a vCard 3.0 ``GEO:lat,lon`` (RFC 2426 uses a comma;
+      pythonvCard4 splits on ";" and raises). Unguarded, this one contact made the
+      whole addressbook unlistable.
+    """
+    addressbook_name = f"mcp-struct-{uuid.uuid4().hex[:8]}"
+    suffix = uuid.uuid4().hex[:8]
+    rich_uid = f"rich-{suffix}"
+    geo_uid = f"geo-{suffix}"
+
+    base = f"/remote.php/dav/addressbooks/users/{nc_client.contacts.username}/{addressbook_name}"
+
+    rich_vcard = (
+        "BEGIN:VCARD\r\n"
+        "VERSION:3.0\r\n"
+        f"UID:{rich_uid}\r\n"
+        "FN:Alice Doe\r\n"
+        "N:Doe;Alice;Q;Dr;Jr\r\n"
+        "ADR;TYPE=HOME:;;1 Main St;Springfield;IL;12345;US\r\n"
+        "X-ABLabel:custom-label\r\n"
+        "END:VCARD\r\n"
+    )
+    # GEO in vCard 3.0 comma form — the shape that used to break the listing.
+    geo_vcard = (
+        "BEGIN:VCARD\r\n"
+        "VERSION:3.0\r\n"
+        f"UID:{geo_uid}\r\n"
+        "FN:Geo Person\r\n"
+        "GEO:37.386013,-122.082932\r\n"
+        "END:VCARD\r\n"
+    )
+
+    try:
+        await nc_client.contacts.create_addressbook(
+            name=addressbook_name, display_name=f"Struct {addressbook_name}"
+        )
+        for uid_, vcard in ((rich_uid, rich_vcard), (geo_uid, geo_vcard)):
+            await nc_client.contacts._make_request(
+                "PUT",
+                f"{base}/{uid_}.vcf",
+                content=vcard,
+                headers={"Content-Type": "text/vcard; charset=utf-8"},
+            )
+
+        list_result = await nc_mcp_client.call_tool(
+            "nc_contacts_list_contacts", {"addressbook": addressbook_name}
+        )
+        assert list_result.isError is False
+        payload = _extract_payload(list_result)
+
+        by_uid = {c["uid"]: c for c in payload["contacts"]}
+        # Both contacts come back — the unparseable one no longer takes the
+        # listing down with it.
+        assert rich_uid in by_uid, "structured contact missing from listing"
+        assert geo_uid in by_uid, "unparseable contact took down the whole listing"
+
+        rich = by_uid[rich_uid]
+        assert rich["given_name"] == "Alice"
+        assert rich["family_name"] == "Doe"
+        assert len(rich["addresses"]) == 1
+        address = rich["addresses"][0]
+        assert address["type"] == "address"
+        assert address["components"] == [
+            "",
+            "",
+            "1 Main St",
+            "Springfield",
+            "IL",
+            "12345",
+            "US",
+        ]
+        assert address["label"] == "home"
+        assert rich["custom_fields"]["X-ABLABEL"] == ["custom-label"]
+
+    finally:
+        try:
+            await nc_client.contacts.delete_addressbook(name=addressbook_name)
+        except Exception:
+            pass

@@ -28,6 +28,15 @@ class ContactField(BaseModel):
     preferred: bool = Field(
         default=False, description="Whether this is the preferred field of this type"
     )
+    components: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Structured components, populated for addresses only. The seven ADR "
+            "components in RFC 6350 §6.3.1 order: PO box, extended address, "
+            "street, locality, region, postal code, country. None for every other "
+            "field type."
+        ),
+    )
 
 
 class Contact(BaseModel):

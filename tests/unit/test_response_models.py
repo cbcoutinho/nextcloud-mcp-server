@@ -847,3 +847,154 @@ def test_table_parses_with_owner_display_name():
     }
     table = Table(**raw)
     assert table.owner_display_name == "Bob the Builder"
+
+
+@pytest.mark.unit
+def test_contact_mapping_surfaces_addresses_name_parts_and_extensions():
+    """ADR / N / X-* are parsed by pythonvCard4 but were never projected.
+
+    ``Contact.addresses`` was declared and permanently empty, and
+    ``given_name``/``family_name`` were never populated, so structured address
+    and name data was invisible to every MCP consumer even though the raw
+    ``addressdata`` carried it.
+    """
+    raw_contact = {
+        "vcard_id": "adr-1",
+        "getetag": '"e"',
+        "contact": {
+            "fullname": "Alice Doe",
+            "n": ["Doe", "Alice", "Q", "Dr", "Jr"],
+            "adr": [
+                {
+                    "value": ["", "", "1 Main St", "Springfield", "IL", "12345", "US"],
+                    "type": ["HOME", "PREF"],
+                },
+                {
+                    "value": [
+                        "",
+                        "Suite 5",
+                        "2 Oak Ave",
+                        "Shelbyville",
+                        "IL",
+                        "54321",
+                        "US",
+                    ],
+                    "type": ["WORK"],
+                },
+            ],
+            "custom": {"X-ABLABEL": ["custom"], "X-SOCIALPROFILE": ["https://t.co/x"]},
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.given_name == "Alice"
+    assert contact.family_name == "Doe"
+
+    assert len(contact.addresses) == 2
+    home = contact.addresses[0]
+    assert home.type == "address"
+    assert home.components == [
+        "",
+        "",
+        "1 Main St",
+        "Springfield",
+        "IL",
+        "12345",
+        "US",
+    ]
+    assert home.value == ";;1 Main St;Springfield;IL;12345;US"
+    assert home.preferred is True
+    assert home.label == "home"
+
+    work = contact.addresses[1]
+    assert work.preferred is False
+    assert work.label == "work"
+
+    assert contact.custom_fields["X-ABLABEL"] == ["custom"]
+    assert contact.custom_fields["X-SOCIALPROFILE"] == ["https://t.co/x"]
+
+
+@pytest.mark.unit
+def test_contact_mapping_excludes_photo_from_custom_fields():
+    """PHOTO is already surfaced as ``photo``; re-emitting the base64 blob in
+    custom_fields would roughly double every list_contacts response."""
+    raw_contact = {
+        "vcard_id": "photo-1",
+        "getetag": '"e"',
+        "contact": {
+            "fullname": "Alice",
+            "photo": "AAAA",
+            # The client's _custom_extras drops PHOTO before it reaches here.
+            "custom": {"X-KEEP": ["yes"]},
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.photo == "AAAA"
+    assert "PHOTO" not in contact.custom_fields
+    assert contact.custom_fields["X-KEEP"] == ["yes"]
+
+
+@pytest.mark.unit
+def test_contact_mapping_tolerates_short_and_empty_structured_values():
+    """A malformed card can carry fewer N components or an all-empty ADR."""
+    raw_contact = {
+        "vcard_id": "short-1",
+        "getetag": '"e"',
+        "contact": {
+            "fullname": "Mononym",
+            "n": ["OnlyFamily"],
+            "adr": [
+                {"value": ["", "", "", "", "", "", ""], "type": ["HOME"]},
+                "not-a-dict",
+            ],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.family_name == "OnlyFamily"
+    assert contact.given_name is None
+    # The all-empty ADR and the non-dict entry are both dropped.
+    assert contact.addresses == []
+
+
+@pytest.mark.unit
+def test_contact_mapping_handles_missing_structured_keys():
+    """Contacts projected before this change (or by a degraded parse) carry no
+    ``n``/``adr``/``custom`` keys at all."""
+    contact = _map_contact(
+        {"vcard_id": "bare-1", "getetag": '"e"', "contact": {"fullname": "Alice"}}
+    )
+
+    assert contact.given_name is None
+    assert contact.family_name is None
+    assert contact.addresses == []
+    assert contact.custom_fields == {}
+
+
+@pytest.mark.unit
+def test_contact_mapping_accepts_bare_dict_address():
+    """A single ADR arrives as a list from pythonvCard4, but the parser accepts a
+    bare dict too — staying symmetric with _parse_vcard_fields, which handles the
+    same polymorphism for EMAIL/TEL. Without the normalisation, iterating a dict
+    would yield its keys and silently produce zero addresses.
+    """
+    contact = _map_contact(
+        {
+            "vcard_id": "adr-dict",
+            "getetag": '"e"',
+            "contact": {
+                "fullname": "Alice",
+                "adr": {
+                    "value": ["", "", "1 Main St", "Springfield", "", "", "US"],
+                    "type": ["HOME"],
+                },
+            },
+        }
+    )
+
+    assert len(contact.addresses) == 1
+    assert contact.addresses[0].components[2] == "1 Main St"
