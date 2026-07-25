@@ -38,11 +38,14 @@ def webdav_tools() -> dict:
 def _mock_ctx(client) -> SimpleNamespace:
     """Build a minimal Context-shaped object for the tool decorators.
 
-    Setting ``request_context.access_token = None`` causes ``require_scopes``
-    to take the BasicAuth pass-through branch (see scope_authorization.py).
+    With no auth contextvar set and OAuth mode off, ``require_scopes`` takes
+    the BasicAuth pass-through branch (see scope_authorization.py). Note the
+    token is read from the SDK ``auth_context`` contextvar, never from
+    ``request_context`` — setting an ``access_token`` attribute here would
+    have no effect on the decorator.
     """
     ctx = SimpleNamespace()
-    ctx.request_context = SimpleNamespace(access_token=None)
+    ctx.request_context = SimpleNamespace()
     ctx._client = client  # only used by tools that fetch via get_client(ctx)
     return ctx
 

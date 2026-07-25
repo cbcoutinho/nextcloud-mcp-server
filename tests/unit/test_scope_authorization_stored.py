@@ -8,6 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp.server.auth.middleware.auth_context import auth_context_var
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 
 from nextcloud_mcp_server.auth.scope_authorization import (
@@ -97,17 +100,35 @@ async def test_get_stored_scopes_storage_error():
         await _get_stored_scopes("alice")
 
 
-def _make_login_flow_ctx() -> MagicMock:
-    """Build a minimal Context shaped like the Login-Flow-v2 / OAuth case.
+@pytest.fixture(autouse=True)
+def authenticated_request():
+    """Populate the auth contextvar as AuthContextMiddleware does per request.
 
-    request_context.access_token must be non-None to pass the BasicAuth-mode
-    short-circuit in require_scopes; the token's actual scopes don't matter
-    because the Login-Flow-v2 branch checks stored scopes instead.
+    ``require_scopes`` reads the token from this contextvar. Fabricating a
+    ``request_context.access_token`` attribute instead (as these tests once
+    did) asserts a contract that does not exist at runtime — ``RequestContext``
+    has no such field, so the decorator silently allowed every call.
+    The token's own scopes don't matter here: the Login-Flow-v2 branch checks
+    the stored app-password scopes instead.
     """
-    ctx = MagicMock()
-    ctx.request_context = SimpleNamespace(
-        access_token=SimpleNamespace(scopes=[], token="opaque")
+    token = AccessToken(
+        token="opaque",
+        client_id="test-client",
+        scopes=[],
+        expires_at=None,
+        resource="alice",
     )
+    reset = auth_context_var.set(AuthenticatedUser(token))
+    try:
+        yield
+    finally:
+        auth_context_var.reset(reset)
+
+
+def _make_login_flow_ctx() -> MagicMock:
+    """Build a minimal Context shaped like the Login-Flow-v2 / OAuth case."""
+    ctx = MagicMock()
+    ctx.request_context = SimpleNamespace()
     ctx.elicit = AsyncMock(return_value=SimpleNamespace(action="accept", data=None))
     return ctx
 
