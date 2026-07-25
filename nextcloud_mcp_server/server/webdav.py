@@ -451,7 +451,7 @@ def configure_webdav_tools(mcp: FastMCP):
             overwrite: Whether to overwrite the destination if it exists (default: False)
 
         Returns:
-            ``MoveResourceResponse``/``CopyResourceResponse``. ``success`` is
+            ``MoveResourceResponse``. ``success`` is
             False for the known conflicts — 404 when the source does not
             exist, 412 when the destination exists and ``overwrite`` is
             False, 409 for a missing parent — with ``message`` explaining
@@ -508,7 +508,7 @@ def configure_webdav_tools(mcp: FastMCP):
             overwrite: Whether to overwrite the destination if it exists (default: False)
 
         Returns:
-            ``MoveResourceResponse``/``CopyResourceResponse``. ``success`` is
+            ``CopyResourceResponse``. ``success`` is
             False for the known conflicts — 404 when the source does not
             exist, 412 when the destination exists and ``overwrite`` is
             False, 409 for a missing parent — with ``message`` explaining
