@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.146.0 (2026-07-25)
+
+### BREAKING CHANGE
+
+- nc_contacts_update_contact now returns an
+UpdateContactResponse instead of None, and no longer rebuilds the vCard from
+the supplied fields when the existing card cannot be fetched — it raises. A
+caller that relied on update creating a missing contact must call
+nc_contacts_create_contact instead.
+
+### Fix
+
+- **contacts**: don't report a landed update as failed
+- **contacts**: stop rebuilding vCards on update
+
 ## v0.145.1 (2026-07-24)
 
 ### Fix
