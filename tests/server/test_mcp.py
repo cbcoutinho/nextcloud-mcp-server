@@ -61,6 +61,7 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         "nc_calendar_create_todo",
         "nc_calendar_update_todo",
         "nc_calendar_delete_todo",
+        "nc_calendar_complete_todo",
         "nc_calendar_search_todos",
         "deck_create_board",
         "nc_cookbook_import_recipe",
@@ -717,8 +718,9 @@ async def test_mcp_calendar_workflow(
         # 6. Test list events across all calendars
         logger.info("Testing nc_calendar_list_events across all calendars")
 
+        # calendar_name is deliberately omitted: it is optional when searching
+        # every calendar, and omitting it is what proves the schema change.
         all_calendars_data = {
-            "calendar_name": "",  # Will be ignored
             "search_all_calendars": True,
             "start_date": start_date,
             "end_date": end_date,

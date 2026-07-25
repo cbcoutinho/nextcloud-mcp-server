@@ -545,3 +545,73 @@ async def test_mcp_todo_href_mismatch(
             await nc_client.calendar.delete_todo(calendar_name, todo_uid)
         except Exception:
             pass
+
+
+async def test_mcp_complete_todo_sets_all_three_properties(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """nc_calendar_complete_todo must set STATUS, PERCENT-COMPLETE and COMPLETED.
+
+    Doing this via nc_calendar_update_todo requires knowing all three are needed;
+    passing status="COMPLETED" alone leaves PERCENT-COMPLETE stale and writes no
+    completion timestamp.
+    """
+    calendar_name = temporary_calendar
+    unique = uuid.uuid4().hex[:8]
+
+    create_result = await nc_mcp_client.call_tool(
+        "nc_calendar_create_todo",
+        {
+            "calendar_name": calendar_name,
+            "summary": f"Complete-me {unique}",
+            "percent_complete": 25,
+        },
+    )
+    assert create_result.isError is False
+    todo_uid = json.loads(create_result.content[0].text)["uid"]
+
+    complete_result = await nc_mcp_client.call_tool(
+        "nc_calendar_complete_todo",
+        {"calendar_name": calendar_name, "todo_uid": todo_uid},
+    )
+    assert complete_result.isError is False
+    payload = json.loads(complete_result.content[0].text)
+    assert payload["success"] is True
+    assert payload["status"] == "COMPLETED"
+    assert payload["percent_complete"] == 100
+    assert payload["completed"]
+
+    # Verify against the server, not just the response envelope.
+    todos = await nc_client.calendar.list_todos(calendar_name)
+    stored = next(t for t in todos if t["uid"] == todo_uid)
+    assert stored["status"] == "COMPLETED"
+    assert stored["percent_complete"] == 100
+
+
+async def test_mcp_complete_todo_accepts_explicit_timestamp(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """A caller-supplied COMPLETED timestamp is written verbatim."""
+    calendar_name = temporary_calendar
+    unique = uuid.uuid4().hex[:8]
+
+    create_result = await nc_mcp_client.call_tool(
+        "nc_calendar_create_todo",
+        {"calendar_name": calendar_name, "summary": f"Backdated {unique}"},
+    )
+    assert create_result.isError is False
+    todo_uid = json.loads(create_result.content[0].text)["uid"]
+
+    complete_result = await nc_mcp_client.call_tool(
+        "nc_calendar_complete_todo",
+        {
+            "calendar_name": calendar_name,
+            "todo_uid": todo_uid,
+            "completed": "2026-01-01T09:00:00+00:00",
+        },
+    )
+    assert complete_result.isError is False
+    assert (
+        json.loads(complete_result.content[0].text)["completed"]
+        == "2026-01-01T09:00:00+00:00"
+    )

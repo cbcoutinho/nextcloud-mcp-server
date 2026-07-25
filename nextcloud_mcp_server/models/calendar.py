@@ -277,6 +277,21 @@ class UpdateTodoResponse(BaseResponse):
     calendar_name: str = Field(description="Name of the calendar the todo belongs to")
 
 
+class CompleteTodoResponse(BaseResponse):
+    """Response model for marking a todo complete."""
+
+    uid: str = Field(description="UID of the completed todo")
+    calendar_name: str = Field(description="Calendar the todo belongs to")
+    status: str = Field(
+        default="COMPLETED", description="VTODO STATUS value that was written"
+    )
+    percent_complete: int = Field(
+        default=100, description="PERCENT-COMPLETE value that was written"
+    )
+    completed: str = Field(description="ISO-8601 COMPLETED timestamp that was written")
+    href: str = Field(default="", description="CalDAV href of the todo")
+
+
 class DeleteTodoResponse(StatusResponse):
     """Response model for todo deletion."""
 
