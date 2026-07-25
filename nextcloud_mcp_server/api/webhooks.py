@@ -30,8 +30,10 @@ from nextcloud_mcp_server.api.management import (
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 from nextcloud_mcp_server.auth.webhook_routes import (
     WebhookSecretNotConfigured,
+    get_webhook_uri,
     webhook_auth_pair,
 )
+from nextcloud_mcp_server.client.users import UsersClient
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
 from ..http import nextcloud_httpx_client
@@ -170,13 +172,23 @@ async def create_webhook(request: Request) -> JSONResponse:
     Request body:
     {
         "event": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-        "uri": "http://mcp:8000/webhooks/nextcloud",
         "eventFilter": {"event.node.path": "/^\\/.*\\/files\\/Notes\\//"}
     }
 
     Returns the created webhook data including the webhook ID.
 
-    Requires OAuth bearer token for authentication.
+    Requires an OAuth bearer token, and the caller must be a Nextcloud
+    administrator — verified with their own app password, mirroring
+    ``/api/v1/vector-sync/purge``.
+
+    The delivery ``uri`` is resolved **server-side** via ``get_webhook_uri()``
+    and any client-supplied value is ignored. Registrations carry the global
+    ``WEBHOOK_SECRET`` as a delivery ``Authorization`` header, so honouring a
+    caller-chosen URI would hand that secret to an arbitrary host on the first
+    delivery — and the secret is the only thing guarding the ingress endpoint,
+    which trusts the ``user.uid`` in the payload it receives
+    (GHSA-8vh3-g2qg-2h2c). There is no legitimate reason for a caller to pick
+    the destination: it is always this server's own ingress.
     """
     try:
         # Validate OAuth token and extract user
@@ -214,17 +226,29 @@ async def create_webhook(request: Request) -> JSONResponse:
         )
 
     event = body.get("event")
-    uri = body.get("uri")
     # Accept both camelCase (eventFilter) and snake_case (event_filter)
     event_filter = body.get("eventFilter") or body.get("event_filter")
 
-    if not event or not uri:
+    if not event:
         return JSONResponse(
             {
                 "error": _BAD_REQUEST,
-                "message": "Missing required fields: event, uri",
+                "message": "Missing required field: event",
             },
             status_code=400,
+        )
+
+    # Always our own ingress. `uri` is still accepted in the body so existing
+    # callers don't break, but it is never used — a caller that supplies a
+    # different one is either misconfigured or probing for the delivery secret,
+    # so say so in the log rather than failing the request silently.
+    uri = get_webhook_uri()
+    requested_uri = body.get("uri")
+    if requested_uri and requested_uri != uri:
+        logger.warning(
+            "Ignoring client-supplied webhook uri from user %s (registering %s)",
+            user_id,
+            uri,
         )
 
     try:
@@ -240,6 +264,25 @@ async def create_webhook(request: Request) -> JSONResponse:
             auth=httpx.BasicAuth(username, app_password),
             timeout=30.0,
         ) as client:
+            # Verify admin with the caller's own app password before registering
+            # anything — a registration attaches WEBHOOK_SECRET to its delivery
+            # headers, so its blast radius is global, matching the reasoning on
+            # /api/v1/vector-sync/purge. Nextcloud gates webhook_listeners on
+            # admin too; checking here fails earlier and more clearly.
+            users_client = UsersClient(client, username)
+            user_groups = await users_client.get_user_groups(username)
+            if "admin" not in user_groups:
+                logger.warning(
+                    "Non-admin user %s attempted webhook registration", user_id
+                )
+                return JSONResponse(
+                    {
+                        "error": "Forbidden",
+                        "message": "Administrator privileges required",
+                    },
+                    status_code=403,
+                )
+
             # Inject delivery auth headers when WEBHOOK_SECRET is configured so
             # that webhook deliveries from Nextcloud back to us are authenticated.
             webhooks_client = WebhooksClient(client, username)

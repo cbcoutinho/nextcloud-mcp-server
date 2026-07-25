@@ -69,6 +69,20 @@ def _patch_webhooks_client(mocker, **methods) -> MagicMock:
     return cls
 
 
+def _patch_users_client(mocker, groups: list[str] | None = None) -> MagicMock:
+    """Replace UsersClient so the admin gate on create_webhook resolves.
+
+    Defaults to an admin caller; pass ``groups=[]`` to exercise the 403 path.
+    """
+    instance = MagicMock()
+    instance.get_user_groups = AsyncMock(
+        return_value=["admin"] if groups is None else groups
+    )
+    cls = MagicMock(return_value=instance)
+    mocker.patch("nextcloud_mcp_server.api.webhooks.UsersClient", cls)
+    return cls
+
+
 def _patch_outbound_client_factory(mocker) -> MagicMock:
     """Patch nextcloud_httpx_client so we can assert on the kwargs (esp.
     ``auth=``) the handler called it with."""
@@ -140,6 +154,7 @@ async def test_create_webhook_uses_basic_auth(mocker):
     _patch_token_validation(mocker)
     _patch_basic_auth(mocker, username="bob", app_password="bob-pwd")
     factory = _patch_outbound_client_factory(mocker)
+    _patch_users_client(mocker)
     _patch_webhooks_client(
         mocker,
         create_webhook={"id": 42, "event": "OCP\\Events\\NodeCreated"},
@@ -170,21 +185,17 @@ async def test_create_webhook_returns_503_when_secret_unset(mocker):
     _patch_token_validation(mocker)
     _patch_basic_auth(mocker, username="bob", app_password="bob-pwd")
     _patch_outbound_client_factory(mocker)
+    _patch_users_client(mocker)
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
         side_effect=WebhookSecretNotConfigured("WEBHOOK_SECRET must be set"),
     )
 
     client = TestClient(_build_test_app())
-    # https example URL — registration is refused before the uri is used, and
-    # an https literal avoids a spurious S5332 "use https" hotspot in new code.
     resp = client.post(
         "/api/v1/webhooks",
         headers={"Authorization": "Bearer mcp-token"},
-        json={
-            "event": "OCP\\Events\\NodeCreated",
-            "uri": "https://mcp.example.com/webhooks/nextcloud",
-        },
+        json={"event": "OCP\\Events\\NodeCreated"},
     )
 
     assert resp.status_code == 503
@@ -192,6 +203,7 @@ async def test_create_webhook_returns_503_when_secret_unset(mocker):
 
 
 async def test_create_webhook_validates_required_fields(mocker):
+    """``event`` is required; ``uri`` is not — it is resolved server-side."""
     _patch_token_validation(mocker)
     _patch_basic_auth(mocker)
 
@@ -199,7 +211,7 @@ async def test_create_webhook_validates_required_fields(mocker):
     resp = client.post(
         "/api/v1/webhooks",
         headers={"Authorization": "Bearer mcp-token"},
-        json={"event": "X"},  # missing uri
+        json={},  # missing event
     )
 
     assert resp.status_code == 400
@@ -216,11 +228,76 @@ async def test_create_webhook_returns_428_when_unprovisioned(mocker):
     resp = client.post(
         "/api/v1/webhooks",
         headers={"Authorization": "Bearer mcp-token"},
-        json={"event": "X", "uri": "http://x"},
+        json={"event": "X"},
     )
 
     assert resp.status_code == 428
     assert resp.json()["error"] == "Provisioning required"
+
+
+async def test_create_webhook_ignores_client_supplied_uri(mocker):
+    """A caller must not be able to choose the delivery destination.
+
+    Registrations attach the global ``WEBHOOK_SECRET`` as a delivery
+    ``Authorization`` header, so honouring a caller-chosen URI would hand that
+    secret to an arbitrary host on the first delivery — and the secret is the
+    only guard on the ingress endpoint, which trusts the ``user.uid`` in the
+    payloads it receives (GHSA-8vh3-g2qg-2h2c).
+    """
+    _patch_token_validation(mocker)
+    _patch_basic_auth(mocker, username="mallory", app_password="mallory-pwd")
+    _patch_outbound_client_factory(mocker)
+    _patch_users_client(mocker)
+    cls = _patch_webhooks_client(mocker, create_webhook={"id": 7})
+    mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.get_webhook_uri",
+        return_value="https://mcp.internal.test/webhooks/nextcloud",
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
+        return_value=("header", {"Authorization": "Bearer supersecret"}),
+    )
+
+    client = TestClient(_build_test_app())
+    resp = client.post(
+        "/api/v1/webhooks",
+        headers={"Authorization": "Bearer mcp-token"},
+        json={
+            "event": "OCP\\Events\\NodeCreated",
+            "uri": "https://attacker.example/collect",
+        },
+    )
+
+    assert resp.status_code == 200
+    registered_uri = cls.return_value.create_webhook.call_args.kwargs["uri"]
+    assert registered_uri == "https://mcp.internal.test/webhooks/nextcloud"
+    assert "attacker.example" not in registered_uri
+
+
+async def test_create_webhook_rejects_non_admin(mocker):
+    """Registration is admin-only: its blast radius is global (the shared secret)."""
+    _patch_token_validation(mocker, user_id="carol")
+    _patch_basic_auth(mocker, username="carol", app_password="carol-pwd")
+    _patch_outbound_client_factory(mocker)
+    _patch_users_client(mocker, groups=["users"])
+    cls = _patch_webhooks_client(mocker, create_webhook={"id": 9})
+    auth_pair = mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
+        return_value=("header", {"Authorization": "Bearer supersecret"}),
+    )
+
+    client = TestClient(_build_test_app())
+    resp = client.post(
+        "/api/v1/webhooks",
+        headers={"Authorization": "Bearer mcp-token"},
+        json={"event": "OCP\\Events\\NodeCreated"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "Forbidden"
+    # The secret must not even be resolved for a non-admin caller.
+    auth_pair.assert_not_called()
+    cls.return_value.create_webhook.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -376,11 +453,15 @@ class TestCreateWebhookMalformedBody:
         assert response.json()["error"] == "Bad request"
 
     def test_missing_fields_still_returns_400(self, mocker):
-        """The pre-existing required-field check must survive the refactor."""
+        """The required-field check must survive the refactor.
+
+        Only ``event`` is required now — ``uri`` is resolved server-side and a
+        client-supplied one is ignored, so its absence is no longer a 400.
+        """
         _patch_token_validation(mocker)
         client = TestClient(_build_test_app())
 
-        response = client.post("/api/v1/webhooks", json={"event": "SomeEvent"})
+        response = client.post("/api/v1/webhooks", json={})
 
         assert response.status_code == 400
-        assert "Missing required fields" in response.json()["message"]
+        assert "Missing required field" in response.json()["message"]

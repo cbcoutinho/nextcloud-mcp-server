@@ -1,4 +1,4 @@
-"""Unit tests for ``_get_webhook_uri`` priority order and the
+"""Unit tests for ``get_webhook_uri`` priority order and the
 ``webhook_auth_pair`` registration helper.
 
 Cloud deployments register the webhook URI returned by this function with
@@ -15,7 +15,7 @@ import pytest
 from nextcloud_mcp_server.auth import webhook_routes
 from nextcloud_mcp_server.auth.webhook_routes import (
     WebhookSecretNotConfigured,
-    _get_webhook_uri,
+    get_webhook_uri,
     webhook_auth_pair,
 )
 from nextcloud_mcp_server.config import Settings
@@ -67,7 +67,7 @@ def test_webhook_internal_url_wins_over_everything(monkeypatch):
     )
     _docker_markers(monkeypatch)
 
-    assert _get_webhook_uri() == "https://internal.example.com/webhooks/nextcloud"
+    assert get_webhook_uri() == "https://internal.example.com/webhooks/nextcloud"
 
 
 @pytest.mark.unit
@@ -81,7 +81,7 @@ def test_public_url_wins_over_docker_detection(monkeypatch):
     _docker_markers(monkeypatch)
 
     assert (
-        _get_webhook_uri()
+        get_webhook_uri()
         == "https://holy-bluegill.astrolabecloud.com/webhooks/nextcloud"
     )
 
@@ -93,7 +93,7 @@ def test_docker_detection_used_when_no_public_url(monkeypatch):
     _patch_settings(monkeypatch)
     _docker_markers(monkeypatch)
 
-    assert _get_webhook_uri() == "http://mcp:8000/webhooks/nextcloud"
+    assert get_webhook_uri() == "http://mcp:8000/webhooks/nextcloud"
 
 
 @pytest.mark.unit
@@ -107,7 +107,7 @@ def test_docker_detection_honors_service_name_and_port_overrides(monkeypatch):
     _reload_config()
     _docker_markers(monkeypatch)
 
-    assert _get_webhook_uri() == "http://mcp-login-flow:8004/webhooks/nextcloud"
+    assert get_webhook_uri() == "http://mcp-login-flow:8004/webhooks/nextcloud"
 
 
 @pytest.mark.unit
@@ -120,7 +120,7 @@ def test_docker_container_env_var_triggers_docker_branch(monkeypatch):
     _reload_config()
     _no_docker_markers(monkeypatch)
 
-    assert _get_webhook_uri() == "http://mcp:8000/webhooks/nextcloud"
+    assert get_webhook_uri() == "http://mcp:8000/webhooks/nextcloud"
 
 
 @pytest.mark.unit
@@ -128,7 +128,7 @@ def test_localhost_fallback_when_nothing_set(monkeypatch):
     _patch_settings(monkeypatch)
     _no_docker_markers(monkeypatch)
 
-    assert _get_webhook_uri() == "http://localhost:8000/webhooks/nextcloud"
+    assert get_webhook_uri() == "http://localhost:8000/webhooks/nextcloud"
 
 
 # --- webhook_auth_pair() --------------------------------------------------

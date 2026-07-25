@@ -77,7 +77,7 @@ async def _get_installed_apps(http_client: httpx.AsyncClient) -> list[str]:
         return []
 
 
-def _get_webhook_uri() -> str:
+def get_webhook_uri() -> str:
     """Get the webhook endpoint URI for this MCP server.
 
     Priority (highest first):
@@ -319,7 +319,7 @@ async def _get_enabled_presets(
 
         # Fallback to API query
         registered_webhooks = await webhooks_client.list_webhooks()
-        webhook_uri = _get_webhook_uri()
+        webhook_uri = get_webhook_uri()
 
         # Group webhooks by preset based on matching events
         enabled_presets: dict[str, list[int]] = {}
@@ -449,7 +449,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
             """
 
         # Get webhook endpoint URL for display
-        webhook_uri = _get_webhook_uri()
+        webhook_uri = get_webhook_uri()
 
         html_content = f"""
         <h2>Webhook Management</h2>
@@ -516,7 +516,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
 
         # Register webhooks
         webhooks_client = WebhooksClient(http_client, username)
-        webhook_uri = _get_webhook_uri()
+        webhook_uri = get_webhook_uri()
         registered_ids = await _register_preset_webhooks(
             webhooks_client, preset, webhook_uri
         )
