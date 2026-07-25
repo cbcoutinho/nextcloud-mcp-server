@@ -71,7 +71,11 @@ class Table(BaseModel):
     id: int = Field(description="Table ID")
     title: str = Field(description="Table title")
     emoji: Optional[str] = Field(None, description="Table emoji")
-    ownership: str = Field(description="Table ownership")
+    # Same failure mode as owner_display_name below: a required field here fails
+    # the *whole* nc_tables_list_tables call (server/tables.py splats each dict
+    # straight into Table), so one absent key costs every table. Nothing in this
+    # codebase reads `ownership`, so Optional costs nothing.
+    ownership: Optional[str] = Field(None, description="Table ownership")
     # Tables app v2.0.1 stopped emitting owner_display_name at the top level
     # (still present inside views via get_schema). Optional avoids a 100% failure
     # rate on list_tables — see #728.
@@ -99,8 +103,13 @@ class TableSchema(BaseModel):
     """Model for complete table schema including columns and views."""
 
     table: Table = Field(description="Table information")
-    columns: List[TableColumn] = Field(description="Table columns")
-    views: List[TableView] = Field(description="Table views")
+    # default_factory for the same reason: a schema response that omits either
+    # list (an empty table has no views) should degrade to an empty list rather
+    # than failing the call.
+    columns: List[TableColumn] = Field(
+        default_factory=list, description="Table columns"
+    )
+    views: List[TableView] = Field(default_factory=list, description="Table views")
 
 
 class ListTablesResponse(BaseResponse):

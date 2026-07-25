@@ -6,6 +6,7 @@ from typing import Any
 
 try:
     import boto3
+    from botocore.config import Config as BotoConfig
     from botocore.exceptions import BotoCoreError, ClientError
 
     BOTO3_AVAILABLE = True
@@ -30,6 +31,10 @@ class BedrockProvider(Provider):
     - AWS credentials file (~/.aws/credentials)
     - IAM role (when running on AWS)
     """
+
+    # Matches ollama.py / openai.py / anthropic.py.
+    DEFAULT_TIMEOUT_SECONDS = 120
+    DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 
     def __init__(
         self,
@@ -63,8 +68,18 @@ class BedrockProvider(Provider):
         self.generation_model = generation_model
         self._dimension: int | None = None  # Detected dynamically
 
-        # Initialize bedrock-runtime client
-        client_kwargs: dict[str, Any] = {}
+        # Initialize bedrock-runtime client.
+        #
+        # botocore's defaults are 60s connect and 60s read with 3 retries, so a
+        # wedged endpoint can hold a request for minutes. Pin the same 120s read
+        # / 5s connect the other providers use; retries stay at botocore's
+        # default since Bedrock throttling is expected and handled upstream.
+        client_kwargs: dict[str, Any] = {
+            "config": BotoConfig(
+                connect_timeout=self.DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=self.DEFAULT_TIMEOUT_SECONDS,
+            )
+        }
         if region_name:
             client_kwargs["region_name"] = region_name
         if aws_access_key_id:

@@ -18,7 +18,7 @@ from nextcloud_mcp_server.models.semantic import (
     SamplingSearchResponse,
     SemanticSearchResult,
 )
-from nextcloud_mcp_server.models.tables import Table
+from nextcloud_mcp_server.models.tables import Table, TableSchema
 from nextcloud_mcp_server.server.calendar import _event_dict_to_summary
 from nextcloud_mcp_server.server.contacts import _raw_contact_to_model
 
@@ -1042,3 +1042,26 @@ def test_contact_mapping_truncates_overlong_address_components():
 
     assert len(contact.addresses[0].components) == 7
     assert contact.addresses[0].components == ["0", "1", "2", "3", "4", "5", "6"]
+
+
+@pytest.mark.unit
+def test_table_tolerates_missing_ownership():
+    """A required `ownership` failed the *entire* nc_tables_list_tables call.
+
+    server/tables.py splats each raw dict straight into Table, so one table
+    missing the key costs every table in the response — the same failure mode as
+    owner_display_name in #728. Nothing in the codebase reads `ownership`.
+    """
+    table = Table(id=1, title="Budget")
+
+    assert table.ownership is None
+    assert table.owner_display_name is None
+
+
+@pytest.mark.unit
+def test_table_schema_tolerates_missing_columns_and_views():
+    """An empty table has no views; a schema response may omit either list."""
+    schema = TableSchema(table=Table(id=1, title="Budget"))
+
+    assert schema.columns == []
+    assert schema.views == []
