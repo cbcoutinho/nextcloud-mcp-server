@@ -915,21 +915,62 @@ class CalendarClient:
             )
             return None
 
+    @staticmethod
+    def _stored_is_all_day(component, prop: str = "DTSTART") -> bool | None:
+        """Whether ``prop`` on the stored component is a DATE (all-day) value.
+
+        Returns ``None`` when the property is absent, so callers can distinguish
+        "unknown" from "timed" — the update path needs that difference to decide
+        whether to inherit the stored value type or fall back to a default.
+        """
+        value = component.get(prop)
+        if value is None:
+            return None
+        inner = getattr(value, "dt", None)
+        if inner is None:
+            return None
+        return isinstance(inner, dt.date) and not isinstance(inner, dt.datetime)
+
+    @staticmethod
+    def _stored_tzid(component, prop: str = "DTSTART") -> str | None:
+        """Return the TZID parameter on ``prop``, if the stored value carries one.
+
+        ``None`` for all-day, floating and UTC values — none of which should have
+        a zone inherited onto them.
+        """
+        value = component.get(prop)
+        if value is None:
+            return None
+        tzid = getattr(value, "params", {}).get("TZID")
+        return str(tzid) if tzid else None
+
     @classmethod
     def _parse_event_datetime(
-        cls, dt_str: str, tz_name: str | None = None
+        cls,
+        dt_str: str,
+        tz_name: str | None = None,
+        *,
+        inherited_tz: str | None = None,
     ) -> tuple[dt.datetime, ZoneInfo | None]:
         """Parse an ISO datetime string with optional TZID application.
 
         Returns ``(parsed_dt, applied_zoneinfo)`` where ``applied_zoneinfo``
-        is non-None only when ``tz_name`` was applied to a naive input — the
+        is non-None only when a zone was applied to a naive input — the
         caller uses this to know whether to emit a VTIMEZONE component.
+
+        ``tz_name`` is the caller's explicit request; ``inherited_tz`` is the TZID
+        already on the stored property. They are separate parameters on purpose:
+        passing the stored zone as ``tz_name`` would fire the "explicit offset;
+        ignoring timezone" warning spuriously on every offset-bearing update, and
+        would override a caller who deliberately wants floating time. Explicit
+        always wins over inherited.
         """
         parsed = dt.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
         zi = cls._resolve_timezone(tz_name) if tz_name else None
 
         if parsed.tzinfo is not None:
-            if zi is not None:
+            # Only complain about a zone the caller actually asked for.
+            if tz_name:
                 logger.warning(
                     "Datetime %r has an explicit offset; ignoring timezone=%r",
                     dt_str,
@@ -939,6 +980,19 @@ class CalendarClient:
 
         if zi is not None:
             return parsed.replace(tzinfo=zi), zi
+
+        if inherited_tz:
+            inherited_zi = cls._resolve_timezone(inherited_tz)
+            if inherited_zi is not None:
+                # Inheriting is the expected behaviour, not a problem — debug, not
+                # warning. Without this, updating the time of a TZID-bound event
+                # without re-passing `timezone` silently produced floating time.
+                logger.debug(
+                    "Datetime %r is naive; inheriting stored TZID=%r",
+                    dt_str,
+                    inherited_tz,
+                )
+                return parsed.replace(tzinfo=inherited_zi), inherited_zi
 
         logger.warning(
             "Datetime %r is naive and no timezone was supplied — storing as RFC 5545 floating local time",
@@ -1110,130 +1164,230 @@ class CalendarClient:
             logger.error("Error parsing iCalendar event: %s", e)
             return None
 
+    def _apply_date_updates(
+        self, component, event_data: dict[str, Any]
+    ) -> set[ZoneInfo]:
+        """Write DTSTART/DTEND onto ``component``, preserving its stored shape.
+
+        Returns the set of zones applied, so the caller can emit the matching
+        VTIMEZONE components.
+
+        Two properties of the stored event are inherited when the caller does not
+        override them, because reading them from ``event_data`` alone is what made
+        updates lossy:
+
+        * **Value type.** ``all_day`` was previously read as
+          ``event_data.get("all_day", False)`` independently in each branch, so
+          updating an all-day event's start without re-passing ``all_day=True``
+          rewrote DTSTART as a naive DATE-TIME — RFC 5545 floating time — and could
+          leave DTSTART and DTEND with mismatched value types, which is invalid
+          iCalendar.
+        * **TZID.** Inherited *per property*: DTSTART and DTEND may legally carry
+          different zones, so sharing DTSTART's would silently relocate the end.
+        """
+        tz_name = event_data.get("timezone", "")
+        used_timezones: set[ZoneInfo] = set()
+
+        has_start = "start_datetime" in event_data
+        has_end = "end_datetime" in event_data
+        if not has_start and not has_end and "all_day" not in event_data:
+            return used_timezones
+
+        stored_all_day = self._stored_is_all_day(component, "DTSTART")
+        if stored_all_day is None:
+            stored_all_day = self._stored_is_all_day(component, "DTEND")
+
+        # Computed once. Falling back to the *stored* type is the fix: absent an
+        # explicit `all_day`, the event keeps the shape it already had.
+        if "all_day" in event_data:
+            target_all_day = bool(event_data["all_day"])
+        else:
+            target_all_day = bool(stored_all_day)
+
+        flipping = stored_all_day is not None and target_all_day != stored_all_day
+
+        if flipping and (has_start or has_end) and not (has_start and has_end):
+            raise ValueError(
+                "changing an event between all-day and timed requires both "
+                "start_datetime and end_datetime, so DTSTART and DTEND cannot "
+                "end up with mismatched value types"
+            )
+
+        if flipping and not has_start and not has_end:
+            if target_all_day:
+                # Timed -> all-day with no new datetimes is well defined: take the
+                # dates off the stored values.
+                self._convert_component_to_all_day(component)
+                return used_timezones
+            raise ValueError(
+                "converting an all-day event to a timed one requires "
+                "start_datetime and end_datetime — there is no defensible "
+                "time-of-day to invent"
+            )
+
+        if has_start:
+            self._write_date_property(
+                component,
+                "DTSTART",
+                event_data["start_datetime"],
+                target_all_day,
+                tz_name,
+                used_timezones,
+            )
+        if has_end:
+            self._write_date_property(
+                component,
+                "DTEND",
+                event_data["end_datetime"],
+                target_all_day,
+                tz_name,
+                used_timezones,
+            )
+
+        return used_timezones
+
+    def _write_date_property(
+        self,
+        component,
+        prop: str,
+        value: str,
+        all_day: bool,
+        tz_name: str,
+        used_timezones: set[ZoneInfo],
+    ) -> None:
+        """Write one DATE or DATE-TIME property, inheriting that property's TZID."""
+        if all_day:
+            component[prop] = vDDDTypes(
+                dt.datetime.fromisoformat(value.split("T")[0]).date()
+            )
+            return
+
+        parsed, zi = self._parse_event_datetime(
+            value, tz_name, inherited_tz=self._stored_tzid(component, prop)
+        )
+        if zi is not None:
+            used_timezones.add(zi)
+        component[prop] = vDDDTypes(parsed)
+
+    @staticmethod
+    def _convert_component_to_all_day(component) -> None:
+        """Re-write stored DTSTART/DTEND as DATE values.
+
+        ``DTEND`` is clamped to at least the day after ``DTSTART``: a 09:00-10:00
+        event naively ``.date()``-ed on both ends would yield ``DTEND == DTSTART``,
+        a zero-length DATE range and invalid per RFC 5545.
+        """
+        start_value = component.get("DTSTART")
+        if start_value is None:
+            return
+        start_date = start_value.dt
+        start_date = (
+            start_date.date() if isinstance(start_date, dt.datetime) else start_date
+        )
+        component["DTSTART"] = vDDDTypes(start_date)
+
+        end_value = component.get("DTEND")
+        if end_value is None:
+            return
+        end_date = end_value.dt
+        end_date = end_date.date() if isinstance(end_date, dt.datetime) else end_date
+        component["DTEND"] = vDDDTypes(max(end_date, start_date + dt.timedelta(days=1)))
+
     def _merge_ical_properties(
         self, raw_ical: str, event_data: dict[str, Any], event_uid: str
     ) -> str:
-        """Merge new event data into existing raw iCal while preserving all properties."""
-        try:
-            cal = Calendar.from_ical(raw_ical)
+        """Merge new event data into existing raw iCal while preserving all properties.
 
-            for component in cal.walk():
-                if component.name == "VEVENT":
-                    # Update only provided properties
-                    if "title" in event_data:
-                        component["SUMMARY"] = event_data["title"]
-                    if "description" in event_data:
-                        component["DESCRIPTION"] = event_data["description"]
-                    if "location" in event_data:
-                        component["LOCATION"] = event_data["location"]
-                    if "status" in event_data:
-                        component["STATUS"] = event_data["status"].upper()
-                    if "priority" in event_data:
-                        component["PRIORITY"] = event_data["priority"]
-                    if "privacy" in event_data:
-                        component["CLASS"] = event_data["privacy"].upper()
-                    if "url" in event_data:
-                        component["URL"] = event_data["url"]
+        Raises on any merge failure rather than substituting a synthesised event.
+        This previously caught every exception and fell back to
+        ``_create_ical_event(event_data, ...)``, which rebuilds the event from the
+        *partial update dict* — destroying summary, location, attendees, alarms,
+        RRULE and every custom property the caller did not happen to pass, while
+        reporting success.
+        """
+        cal = Calendar.from_ical(raw_ical)
 
-                    # Handle categories
-                    if "categories" in event_data:
-                        categories_str = event_data["categories"]
-                        if categories_str:
-                            component["CATEGORIES"] = [
-                                c.strip() for c in categories_str.split(",")
-                            ]
-                        elif "CATEGORIES" in component:
-                            del component["CATEGORIES"]
+        for component in cal.walk():
+            if component.name == "VEVENT":
+                # Update only provided properties
+                if "title" in event_data:
+                    component["SUMMARY"] = event_data["title"]
+                if "description" in event_data:
+                    component["DESCRIPTION"] = event_data["description"]
+                if "location" in event_data:
+                    component["LOCATION"] = event_data["location"]
+                if "status" in event_data:
+                    component["STATUS"] = event_data["status"].upper()
+                if "priority" in event_data:
+                    component["PRIORITY"] = event_data["priority"]
+                if "privacy" in event_data:
+                    component["CLASS"] = event_data["privacy"].upper()
+                if "url" in event_data:
+                    component["URL"] = event_data["url"]
 
-                    # Handle recurrence rule
-                    if "recurrence_rule" in event_data:
-                        rrule_str = event_data["recurrence_rule"]
-                        if rrule_str:
-                            component["RRULE"] = vRecur.from_ical(rrule_str)
-                        elif "RRULE" in component:
-                            del component["RRULE"]
-
-                    # Handle attendees
-                    if "attendees" in event_data:
-                        attendees_str = event_data["attendees"]
-                        # Remove all existing attendees first
-                        while "ATTENDEE" in component:
-                            del component["ATTENDEE"]
-                        if attendees_str:
-                            for email in attendees_str.split(","):
-                                if email.strip():
-                                    component.add("attendee", f"mailto:{email.strip()}")
-
-                    # Handle reminder (VALARM)
-                    if "reminder_minutes" in event_data:
-                        component.subcomponents = [
-                            sub
-                            for sub in component.subcomponents
-                            if sub.name != "VALARM"
+                # Handle categories
+                if "categories" in event_data:
+                    categories_str = event_data["categories"]
+                    if categories_str:
+                        component["CATEGORIES"] = [
+                            c.strip() for c in categories_str.split(",")
                         ]
-                        minutes = event_data["reminder_minutes"]
-                        if minutes > 0:
-                            alarm = Alarm()
-                            alarm.add("action", "DISPLAY")
-                            alarm.add("description", "Event reminder")
-                            alarm.add("trigger", dt.timedelta(minutes=-minutes))
-                            component.add_component(alarm)
+                    elif "CATEGORIES" in component:
+                        del component["CATEGORIES"]
 
-                    # Handle dates
-                    tz_name = event_data.get("timezone", "")
-                    used_timezones: set[ZoneInfo] = set()
-                    if "start_datetime" in event_data:
-                        start_str = event_data["start_datetime"]
-                        all_day = event_data.get("all_day", False)
-                        if all_day:
-                            start_date = dt.datetime.fromisoformat(
-                                start_str.split("T")[0]
-                            ).date()
-                            component["DTSTART"] = vDDDTypes(start_date)
-                        else:
-                            start_dt, zi = self._parse_event_datetime(
-                                start_str, tz_name
-                            )
-                            if zi is not None:
-                                used_timezones.add(zi)
-                            component["DTSTART"] = vDDDTypes(start_dt)
+                # Handle recurrence rule
+                if "recurrence_rule" in event_data:
+                    rrule_str = event_data["recurrence_rule"]
+                    if rrule_str:
+                        component["RRULE"] = vRecur.from_ical(rrule_str)
+                    elif "RRULE" in component:
+                        del component["RRULE"]
 
-                    if "end_datetime" in event_data:
-                        end_str = event_data["end_datetime"]
-                        all_day = event_data.get("all_day", False)
-                        if all_day:
-                            end_date = dt.datetime.fromisoformat(
-                                end_str.split("T")[0]
-                            ).date()
-                            component["DTEND"] = vDDDTypes(end_date)
-                        else:
-                            end_dt, zi = self._parse_event_datetime(end_str, tz_name)
-                            if zi is not None:
-                                used_timezones.add(zi)
-                            component["DTEND"] = vDDDTypes(end_dt)
+                # Handle attendees
+                if "attendees" in event_data:
+                    attendees_str = event_data["attendees"]
+                    # Remove all existing attendees first
+                    while "ATTENDEE" in component:
+                        del component["ATTENDEE"]
+                    if attendees_str:
+                        for email in attendees_str.split(","):
+                            if email.strip():
+                                component.add("attendee", f"mailto:{email.strip()}")
 
-                    # Update timestamps
-                    now = dt.datetime.now(dt.UTC)
-                    component["LAST-MODIFIED"] = vDDDTypes(now)
-                    component["DTSTAMP"] = vDDDTypes(now)
+                # Handle reminder (VALARM)
+                if "reminder_minutes" in event_data:
+                    component.subcomponents = [
+                        sub for sub in component.subcomponents if sub.name != "VALARM"
+                    ]
+                    minutes = event_data["reminder_minutes"]
+                    if minutes > 0:
+                        alarm = Alarm()
+                        alarm.add("action", "DISPLAY")
+                        alarm.add("description", "Event reminder")
+                        alarm.add("trigger", dt.timedelta(minutes=-minutes))
+                        component.add_component(alarm)
 
-                    # Ensure VTIMEZONE definitions exist for any TZID we just attached.
-                    existing_tzids = {
-                        str(sub.get("TZID", ""))
-                        for sub in cal.subcomponents
-                        if sub.name == "VTIMEZONE"
-                    }
-                    for zi in used_timezones:
-                        if str(zi) not in existing_tzids:
-                            cal.add_component(Timezone.from_tzinfo(zi))
+                # Handle dates
+                used_timezones = self._apply_date_updates(component, event_data)
 
-                    break
+                # Update timestamps
+                now = dt.datetime.now(dt.UTC)
+                component["LAST-MODIFIED"] = vDDDTypes(now)
+                component["DTSTAMP"] = vDDDTypes(now)
 
-            return cal.to_ical().decode("utf-8")
+                # Ensure VTIMEZONE definitions exist for any TZID we just attached.
+                existing_tzids = {
+                    str(sub.get("TZID", ""))
+                    for sub in cal.subcomponents
+                    if sub.name == "VTIMEZONE"
+                }
+                for zi in used_timezones:
+                    if str(zi) not in existing_tzids:
+                        cal.add_component(Timezone.from_tzinfo(zi))
 
-        except Exception as e:
-            logger.error("Error merging iCal properties: %s", e)
-            return self._create_ical_event(event_data, event_uid)
+                break
+
+        return cal.to_ical().decode("utf-8")
 
     # ============= Helper Methods - Todo iCalendar =============
 
