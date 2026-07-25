@@ -367,13 +367,21 @@ async def test_move_with_destination_etag_guards_the_destination(
     src = f"{test_base_path}/dest-guard-src-{suffix}.txt"
     dst = f"{test_base_path}/dest-guard-dst-{suffix}.txt"
 
-    await nc_client.webdav.write_file(src, b"source-v1", "text/plain")
-    dst_write = await nc_client.webdav.write_file(dst, b"dest-v1", "text/plain")
+    # Lengths differ deliberately: Nextcloud derives an ETag from size and mtime,
+    # so two same-length writes in the same mtime tick yield the *same* ETag — and
+    # then the "stale" etag below is still current, the move succeeds, and the
+    # assertion that matters silently passes for the wrong reason.
+    source_body = b"source-v1"
+    dest_v1 = b"dest-v1"
+    dest_v2 = b"dest-v2-deliberately-longer-so-the-etag-changes"
+
+    await nc_client.webdav.write_file(src, source_body, "text/plain")
+    dst_write = await nc_client.webdav.write_file(dst, dest_v1, "text/plain")
     dst_etag = dst_write["etag"]
     assert dst_etag
 
     # Someone else edits the destination after we read its etag.
-    await nc_client.webdav.write_file(dst, b"dest-v2", "text/plain", if_match=dst_etag)
+    await nc_client.webdav.write_file(dst, dest_v2, "text/plain", if_match=dst_etag)
 
     # Our now-stale etag must stop the move rather than clobbering dest-v2.
     stale = await nc_client.webdav.move_resource(
@@ -384,10 +392,10 @@ async def test_move_with_destination_etag_guards_the_destination(
     )
 
     content, _, current_etag = await nc_client.webdav.read_file(dst)
-    assert content == b"dest-v2", "destination was clobbered despite a stale etag"
+    assert content == dest_v2, "destination was clobbered despite a stale etag"
     # The source must still be there: a blocked MOVE moves nothing.
     src_content, _, _ = await nc_client.webdav.read_file(src)
-    assert src_content == b"source-v1"
+    assert src_content == source_body
 
     # With the current etag the move goes through.
     ok = await nc_client.webdav.move_resource(
@@ -395,7 +403,7 @@ async def test_move_with_destination_etag_guards_the_destination(
     )
     assert ok["status_code"] in (201, 204)
     moved, _, _ = await nc_client.webdav.read_file(dst)
-    assert moved == b"source-v1"
+    assert moved == source_body
 
     await nc_client.webdav.delete_resource(dst)
 
