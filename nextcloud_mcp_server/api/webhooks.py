@@ -245,9 +245,15 @@ async def create_webhook(request: Request) -> JSONResponse:
     uri = get_webhook_uri()
     requested_uri = body.get("uri")
     if requested_uri and requested_uri != uri:
+        # Log what they asked for, not just what we did: the threat model here is
+        # a caller probing for the delivery secret with their own host, so the
+        # requested value is the part worth having during incident triage.
+        # Lazy %s keeps the untrusted value out of the format string.
         logger.warning(
-            "Ignoring client-supplied webhook uri from user %s (registering %s)",
+            "Ignoring client-supplied webhook uri from user %s: requested %s, "
+            "registering %s",
             user_id,
+            requested_uri,
             uri,
         )
 
