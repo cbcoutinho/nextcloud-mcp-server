@@ -1225,6 +1225,11 @@ class CalendarClient:
         else:
             target_all_day = bool(stored_all_day)
 
+        # ``stored_all_day is None`` means neither DTSTART nor DTEND gave a
+        # definitive type — a VEVENT with no dates at all. There is nothing to
+        # flip *from*, so flip validation is deliberately skipped rather than
+        # guessing; ``bool(None)`` then treats the target as timed, matching the
+        # pre-existing default.
         flipping = stored_all_day is not None and target_all_day != stored_all_day
 
         if flipping:
@@ -1254,6 +1259,13 @@ class CalendarClient:
                 used_timezones,
             )
 
+        if target_all_day:
+            # Apply the same zero-length guard the implicit conversion path uses.
+            # An explicit ``all_day=True`` with start and end resolving to the same
+            # calendar date would otherwise write ``DTEND == DTSTART`` — the very
+            # zero-length DATE range this method rejects elsewhere.
+            self._clamp_all_day_end(component)
+
         return used_timezones
 
     def _write_date_property(
@@ -1280,13 +1292,28 @@ class CalendarClient:
         component[prop] = vDDDTypes(parsed)
 
     @staticmethod
-    def _convert_component_to_all_day(component) -> None:
-        """Re-write stored DTSTART/DTEND as DATE values.
+    def _clamp_all_day_end(component) -> None:
+        """Ensure an all-day ``DTEND`` is at least the day after ``DTSTART``.
 
-        ``DTEND`` is clamped to at least the day after ``DTSTART``: a 09:00-10:00
-        event naively ``.date()``-ed on both ends would yield ``DTEND == DTSTART``,
-        a zero-length DATE range and invalid per RFC 5545.
+        ``DTEND == DTSTART`` is a zero-length DATE range and invalid per RFC 5545.
+        Shared by both routes that can produce one: the implicit timed -> all-day
+        conversion (``.date()`` on a 09:00-10:00 event collapses both ends onto the
+        same day) and an explicit ``all_day=True`` whose supplied start and end
+        resolve to the same calendar date. A no-op unless both are DATE values.
         """
+        start_value = component.get("DTSTART")
+        end_value = component.get("DTEND")
+        if start_value is None or end_value is None:
+            return
+        start_date, end_date = start_value.dt, end_value.dt
+        if isinstance(start_date, dt.datetime) or isinstance(end_date, dt.datetime):
+            return  # not an all-day pair; nothing to clamp
+        if end_date <= start_date:
+            component["DTEND"] = vDDDTypes(start_date + dt.timedelta(days=1))
+
+    @classmethod
+    def _convert_component_to_all_day(cls, component) -> None:
+        """Re-write stored DTSTART/DTEND as DATE values."""
         start_value = component.get("DTSTART")
         if start_value is None:
             return
@@ -1297,11 +1324,14 @@ class CalendarClient:
         component["DTSTART"] = vDDDTypes(start_date)
 
         end_value = component.get("DTEND")
-        if end_value is None:
-            return
-        end_date = end_value.dt
-        end_date = end_date.date() if isinstance(end_date, dt.datetime) else end_date
-        component["DTEND"] = vDDDTypes(max(end_date, start_date + dt.timedelta(days=1)))
+        if end_value is not None:
+            end_date = end_value.dt
+            end_date = (
+                end_date.date() if isinstance(end_date, dt.datetime) else end_date
+            )
+            component["DTEND"] = vDDDTypes(end_date)
+
+        cls._clamp_all_day_end(component)
 
     def _merge_ical_properties(self, raw_ical: str, event_data: dict[str, Any]) -> str:
         """Merge new event data into existing raw iCal while preserving all properties.

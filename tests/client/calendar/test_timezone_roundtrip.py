@@ -15,6 +15,8 @@ pin the post-fix contract so the regression cannot return.
 
 from __future__ import annotations
 
+import datetime
+
 import httpx
 import pytest
 
@@ -416,3 +418,39 @@ def test_merge_preserves_properties_absent_from_event_data(mocker):
     assert component["LOCATION"] == "Room 1"
     assert "RRULE" in component
     assert component["X-CUSTOM-PROP"] == "keep me"
+
+
+def test_explicit_all_day_flip_with_same_date_is_clamped(mocker):
+    """Round-2 finding: the zero-length guard must apply to the explicit path too.
+
+    Passing ``all_day=True`` with a start and end that resolve to the same calendar
+    date would otherwise write ``DTEND == DTSTART`` — the same zero-length DATE
+    range the implicit conversion path already guards against.
+    """
+    vevent = "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {
+            "all_day": True,
+            "start_datetime": "2026-03-10T09:00:00Z",
+            "end_datetime": "2026-03-10T10:00:00Z",
+        },
+    )
+
+    assert _is_date_only(component["DTSTART"])
+    assert _is_date_only(component["DTEND"])
+    assert component["DTEND"].dt == component["DTSTART"].dt + datetime.timedelta(days=1)
+
+
+def test_all_day_update_with_distinct_dates_is_not_clamped(mocker):
+    """A genuine multi-day all-day range must be left exactly as supplied."""
+    vevent = "DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260105\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {"start_datetime": "2026-02-01", "end_datetime": "2026-02-05"},
+    )
+
+    assert component["DTSTART"].dt.isoformat() == "2026-02-01"
+    assert component["DTEND"].dt.isoformat() == "2026-02-05"
