@@ -15,6 +15,8 @@ pin the post-fix contract so the regression cannot return.
 
 from __future__ import annotations
 
+import datetime
+
 import httpx
 import pytest
 
@@ -240,3 +242,256 @@ def test_roundtrip_tzid_event_preserves_iana_name(mocker):
     assert parsed is not None
     assert parsed["start_tz"] == "America/New_York"
     assert parsed["start_datetime"] == "2026-05-14T10:00:00-04:00"
+
+
+# ============= Update path: _merge_ical_properties preserves stored shape =============
+#
+# The update path had no unit coverage at all, which is why the value-type and
+# TZID bugs below survived. Assertions are on the parsed value type and params,
+# not on rendered strings.
+
+
+def _merge(mocker, vevent_body: str, event_data: dict, vtimezone: str = ""):
+    """Run _merge_ical_properties over a stored VEVENT and parse the result back."""
+    from icalendar import Calendar
+
+    client = _make_client(mocker)
+    merged = client._merge_ical_properties(
+        _wrap_vevent(vevent_body, vtimezone), event_data
+    )
+    cal = Calendar.from_ical(merged)
+    return next(c for c in cal.walk() if c.name == "VEVENT")
+
+
+def _is_date_only(value) -> bool:
+    import datetime as _dt
+
+    return isinstance(value.dt, _dt.date) and not isinstance(value.dt, _dt.datetime)
+
+
+def test_all_day_event_stays_all_day_when_all_day_not_repassed(mocker):
+    """Headline regression: updating an all-day event's start without re-passing
+    ``all_day=True`` used to rewrite DTSTART as naive floating DATE-TIME."""
+    vevent = "DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260102\r\n"
+    component = _merge(mocker, vevent, {"start_datetime": "2026-02-02"})
+
+    assert _is_date_only(component["DTSTART"])
+    assert component["DTSTART"].dt.isoformat() == "2026-02-02"
+    # The untouched end keeps its DATE type too.
+    assert _is_date_only(component["DTEND"])
+
+
+def test_timed_event_stays_timed_when_all_day_not_passed(mocker):
+    vevent = "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n"
+    component = _merge(mocker, vevent, {"start_datetime": "2026-02-02T09:00:00Z"})
+
+    assert not _is_date_only(component["DTSTART"])
+
+
+def test_stored_tzid_is_inherited_when_timezone_not_repassed(mocker):
+    """Updating a TZID-bound event with a naive value used to produce floating time."""
+    vtimezone = (
+        "BEGIN:VTIMEZONE\r\nTZID:America/New_York\r\n"
+        "BEGIN:STANDARD\r\nDTSTART:19701101T020000\r\n"
+        "TZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nTZNAME:EST\r\n"
+        "END:STANDARD\r\nEND:VTIMEZONE\r\n"
+    )
+    vevent = (
+        "DTSTART;TZID=America/New_York:20260101T090000\r\n"
+        "DTEND;TZID=America/New_York:20260101T100000\r\n"
+    )
+    component = _merge(
+        mocker, vevent, {"start_datetime": "2026-03-10T09:00:00"}, vtimezone
+    )
+
+    assert str(component["DTSTART"].dt.tzinfo) == "America/New_York"
+
+
+def test_explicit_timezone_beats_inherited(mocker):
+    vevent = "DTSTART;TZID=America/New_York:20260101T090000\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {"start_datetime": "2026-03-10T09:00:00", "timezone": "Europe/Berlin"},
+    )
+
+    assert str(component["DTSTART"].dt.tzinfo) == "Europe/Berlin"
+
+
+def test_explicit_offset_does_not_inherit_and_does_not_warn(mocker, caplog):
+    """An offset-bearing value must not inherit the stored TZID, and must not log
+    the 'ignoring timezone' warning — the caller never asked for a zone.
+
+    The warning previously fired on *every* offset-bearing update of a TZID-bound
+    event, because the stored zone was about to be passed as ``tz_name``.
+
+    Only the wall-clock is asserted: icalendar renders a fixed-offset tzinfo as
+    ``TZID="UTC-04:00"`` with no matching VTIMEZONE, so the offset is dropped on
+    re-parse. That is pre-existing behaviour shared with the create path
+    (``_create_ical_event``) and out of scope here — see the follow-up card.
+    """
+    import logging
+
+    vevent = "DTSTART;TZID=America/New_York:20260101T090000\r\n"
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
+    ):
+        component = _merge(
+            mocker, vevent, {"start_datetime": "2026-03-10T09:00:00-04:00"}
+        )
+
+    # Wall-clock is the caller's, and America/New_York was NOT inherited onto it.
+    assert component["DTSTART"].dt.replace(tzinfo=None).isoformat() == (
+        "2026-03-10T09:00:00"
+    )
+    assert str(component["DTSTART"].dt.tzinfo) != "America/New_York"
+    assert not any("ignoring timezone" in r.message for r in caplog.records)
+
+
+def test_dtstart_and_dtend_inherit_their_own_zones(mocker):
+    """DTSTART and DTEND may legally carry different TZIDs; sharing DTSTART's
+    would silently relocate the end of a cross-zone event."""
+    vevent = (
+        "DTSTART;TZID=America/New_York:20260101T090000\r\n"
+        "DTEND;TZID=Europe/Berlin:20260101T180000\r\n"
+    )
+    component = _merge(
+        mocker,
+        vevent,
+        {
+            "start_datetime": "2026-03-10T09:00:00",
+            "end_datetime": "2026-03-10T18:00:00",
+        },
+    )
+
+    assert str(component["DTSTART"].dt.tzinfo) == "America/New_York"
+    assert str(component["DTEND"].dt.tzinfo) == "Europe/Berlin"
+
+
+def test_flip_to_all_day_without_datetimes_converts_stored_values(mocker):
+    """Timed -> all-day with no new datetimes is well defined, and DTEND must be
+    clamped so the DATE range isn't zero-length."""
+    vevent = "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n"
+    component = _merge(mocker, vevent, {"all_day": True})
+
+    assert _is_date_only(component["DTSTART"])
+    assert _is_date_only(component["DTEND"])
+    assert component["DTEND"].dt > component["DTSTART"].dt
+
+
+def test_flip_with_only_one_datetime_raises(mocker):
+    """A half-supplied flip would leave DTSTART/DTEND with mismatched value
+    types, which is invalid iCalendar."""
+    vevent = "DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260102\r\n"
+    client = _make_client(mocker)
+    raw = _wrap_vevent(vevent)
+    event_data = {"all_day": False, "start_datetime": "2026-01-01T09:00:00Z"}
+
+    with pytest.raises(ValueError, match="requires both"):
+        client._merge_ical_properties(raw, event_data)
+
+
+def test_flip_to_timed_without_datetimes_raises(mocker):
+    """There is no defensible time-of-day to invent for an all-day event."""
+    vevent = "DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260102\r\n"
+    client = _make_client(mocker)
+    raw = _wrap_vevent(vevent)
+    event_data = {"all_day": False}
+
+    with pytest.raises(ValueError, match="no defensible time-of-day"):
+        client._merge_ical_properties(raw, event_data)
+
+
+def test_merge_preserves_properties_absent_from_event_data(mocker):
+    """The removed except-Exception fallback rebuilt the event from the partial
+    update dict, destroying everything the caller didn't pass."""
+    vevent = (
+        "DTSTART:20260101T090000Z\r\n"
+        "DTEND:20260101T100000Z\r\n"
+        "LOCATION:Room 1\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=5\r\n"
+        "X-CUSTOM-PROP:keep me\r\n"
+    )
+    component = _merge(mocker, vevent, {"title": "Renamed"})
+
+    assert component["SUMMARY"] == "Renamed"
+    assert component["LOCATION"] == "Room 1"
+    assert "RRULE" in component
+    assert component["X-CUSTOM-PROP"] == "keep me"
+
+
+def test_explicit_all_day_flip_with_same_date_is_clamped(mocker):
+    """Round-2 finding: the zero-length guard must apply to the explicit path too.
+
+    Passing ``all_day=True`` with a start and end that resolve to the same calendar
+    date would otherwise write ``DTEND == DTSTART`` — the same zero-length DATE
+    range the implicit conversion path already guards against.
+    """
+    vevent = "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {
+            "all_day": True,
+            "start_datetime": "2026-03-10T09:00:00Z",
+            "end_datetime": "2026-03-10T10:00:00Z",
+        },
+    )
+
+    assert _is_date_only(component["DTSTART"])
+    assert _is_date_only(component["DTEND"])
+    assert component["DTEND"].dt == component["DTSTART"].dt + datetime.timedelta(days=1)
+
+
+def test_all_day_update_with_distinct_dates_is_not_clamped(mocker):
+    """A genuine multi-day all-day range must be left exactly as supplied."""
+    vevent = "DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260105\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {"start_datetime": "2026-02-01", "end_datetime": "2026-02-05"},
+    )
+
+    assert component["DTSTART"].dt.isoformat() == "2026-02-01"
+    assert component["DTEND"].dt.isoformat() == "2026-02-05"
+
+
+def test_non_iana_stored_tzid_is_not_inherited_and_does_not_warn(mocker, caplog):
+    """Round-3 finding: a stored TZID need not be an IANA name.
+
+    icalendar renders a fixed-offset tzinfo as ``TZID="UTC-04:00"`` with no
+    VTIMEZONE (the limitation documented on this PR), so inheriting one is
+    *expected* to fail. Routing that through ``_resolve_timezone`` logged
+    "Unknown IANA timezone", which reads as an error when falling back to
+    floating time is the correct outcome.
+    """
+    import logging
+
+    vevent = 'DTSTART;TZID="UTC-04:00":20260101T090000\r\n'
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
+    ):
+        component = _merge(mocker, vevent, {"start_datetime": "2026-03-10T09:00:00"})
+
+    assert component["DTSTART"].dt.replace(tzinfo=None).isoformat() == (
+        "2026-03-10T09:00:00"
+    )
+    assert not any("Unknown IANA timezone" in r.message for r in caplog.records)
+
+
+def test_explicit_unknown_timezone_still_warns(mocker, caplog):
+    """The quiet path is scoped to *inherited* zones — an explicit bad
+    ``timezone=`` from the caller is a real mistake and must still surface."""
+    import logging
+
+    vevent = "DTSTART:20260101T090000Z\r\n"
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
+    ):
+        _merge(
+            mocker,
+            vevent,
+            {"start_datetime": "2026-03-10T09:00:00", "timezone": "Not/AZone"},
+        )
+
+    assert any("Unknown IANA timezone" in r.message for r in caplog.records)
