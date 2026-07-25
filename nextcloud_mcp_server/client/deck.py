@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from httpx import HTTPStatusError, RequestError
@@ -17,6 +18,35 @@ from nextcloud_mcp_server.models.deck import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_duedate(duedate: Optional[str]) -> Optional[str]:
+    """Convert an offset-aware due date to the UTC ``Z`` form Deck parses reliably.
+
+    Deck's PHP date handling is unreliable with non-UTC offsets, so an
+    offset-aware value is converted to the same instant in UTC. Naive and
+    unparseable strings are passed through untouched — this normalises, it does
+    not validate, and rejecting a format Deck might accept would be worse than
+    forwarding it.
+
+    An empty string maps to ``None`` so "clear the due date" is expressible;
+    previously it went on the wire as ``""``, where Deck's behaviour is undefined.
+
+    ``strftime`` rather than ``isoformat()``: the latter yields ``+00:00`` and
+    keeps microseconds, neither of which is what Deck stores.
+    """
+    if duedate is None:
+        return None
+    if not duedate.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(duedate.replace("Z", "+00:00"))
+    except ValueError:
+        logger.debug("Passing through unparseable duedate %r unchanged", duedate)
+        return duedate
+    if parsed.tzinfo is None:
+        return duedate
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class DeckClient(BaseNextcloudClient):
@@ -266,7 +296,7 @@ class DeckClient(BaseNextcloudClient):
         if description is not None:
             json_data["description"] = description
         if duedate is not None:
-            json_data["duedate"] = duedate
+            json_data["duedate"] = _normalize_duedate(duedate)
         headers = self._get_deck_headers()
         response = await self._make_request(
             "POST",
@@ -275,6 +305,59 @@ class DeckClient(BaseNextcloudClient):
             headers=headers,
         )
         return DeckCard(**response.json())
+
+    @staticmethod
+    def _card_update_payload(
+        current: DeckCard,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        type: Optional[str] = None,
+        owner: Optional[str] = None,
+        order: Optional[int] = None,
+        duedate: Optional[str] = None,
+        archived: Optional[bool] = None,
+        done: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Build the full-replacement body for a card update.
+
+        Deck's card PUT replaces the whole card, so every field the caller did
+        *not* supply has to be carried over from ``current``. ``order``,
+        ``duedate`` and ``archived`` were previously only sent when explicitly
+        passed, so a title-only update reset the card's order to 0 and cleared its
+        due date. ``move_card_to_board`` already sent order and duedate
+        unconditionally — the two payload builders simply disagreed.
+
+        Every fallback tests ``is not None``, never truthiness: ``order=0`` is a
+        legitimate first position and ``archived=False`` is meaningful, so
+        ``order or current.order`` would silently discard both.
+
+        ``done`` is deliberately not carried over. ``move_card_to_board``'s
+        docstring records that the internal route does not accept a ``done``
+        value, so the two routes genuinely differ here; preserving it blind could
+        re-stamp a done timestamp. Left as an explicit omission pending an
+        integration test that shows whether this route clears it.
+        """
+        return {
+            # Title is required by the API
+            "title": title if title is not None else current.title,
+            # Type is required by the API
+            "type": type if type is not None else current.type,
+            # Owner is required by the API (model validator ensures it's a string)
+            "owner": owner if owner is not None else current.owner,
+            # Description must be sent to preserve it (PUT clears omitted fields)
+            "description": description
+            if description is not None
+            else (current.description or ""),
+            "order": order if order is not None else current.order,
+            "duedate": _normalize_duedate(
+                duedate
+                if duedate is not None
+                else (current.duedate.isoformat() if current.duedate else None)
+            ),
+            "archived": archived if archived is not None else current.archived,
+            **({"done": done} if done is not None else {}),
+        }
 
     async def update_card(
         self,
@@ -294,27 +377,17 @@ class DeckClient(BaseNextcloudClient):
         # Fetch current card to preserve values for fields not being updated.
         current_card = await self.get_card(board_id, stack_id, card_id)
 
-        # Build payload with required fields always included
-        json_data = {
-            # Title is required by the API
-            "title": title if title is not None else current_card.title,
-            # Type is required by the API
-            "type": type if type is not None else current_card.type,
-            # Owner is required by the API (model validator ensures it's a string)
-            "owner": owner if owner is not None else current_card.owner,
-            # Description must be sent to preserve it (PUT clears omitted fields)
-            "description": description
-            if description is not None
-            else (current_card.description or ""),
-        }
-        if order is not None:
-            json_data["order"] = order
-        if duedate is not None:
-            json_data["duedate"] = duedate
-        if archived is not None:
-            json_data["archived"] = archived
-        if done is not None:
-            json_data["done"] = done
+        json_data = self._card_update_payload(
+            current_card,
+            title=title,
+            description=description,
+            type=type,
+            owner=owner,
+            order=order,
+            duedate=duedate,
+            archived=archived,
+            done=done,
+        )
         headers = self._get_deck_headers()
         await self._make_request(
             "PUT",
@@ -483,7 +556,9 @@ class DeckClient(BaseNextcloudClient):
             # Sent explicitly as None when absent (update_card omits the key);
             # both are equivalent here — the route reads duedate and there's
             # nothing to clear on a card that never had one.
-            "duedate": current.duedate.isoformat() if current.duedate else None,
+            "duedate": _normalize_duedate(
+                current.duedate.isoformat() if current.duedate else None
+            ),
             # 0 keeps the card live (a positive value would soft-delete it)
             "deletedAt": current.deletedAt or 0,
         }

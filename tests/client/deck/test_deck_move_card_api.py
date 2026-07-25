@@ -77,7 +77,13 @@ async def test_move_card_to_board_sends_id_and_target_stack(mocker):
 
 
 async def test_move_card_to_board_preserves_duedate(mocker):
-    """A due date on the source card is forwarded as an ISO-8601 string."""
+    """A due date on the source card is forwarded, normalised to UTC "Z" form.
+
+    move_card_to_board now shares `_normalize_duedate` with create_card and
+    update_card, so all three put the same representation on the wire. The
+    instant is unchanged — "+00:00" and "Z" are the same time — but the shape is
+    now consistent, which is the point of having one normalisation helper.
+    """
     mock_make_request = mocker.patch.object(
         DeckClient,
         "_make_request",
@@ -100,7 +106,7 @@ async def test_move_card_to_board_preserves_duedate(mocker):
     )
 
     body = mock_make_request.call_args_list[2].kwargs["json"]
-    assert body["duedate"] == "2030-01-02T03:04:05+00:00"
+    assert body["duedate"] == "2030-01-02T03:04:05Z"
 
 
 async def test_move_card_to_board_restores_done_state(mocker):

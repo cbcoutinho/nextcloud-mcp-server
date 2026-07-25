@@ -11,6 +11,8 @@ Related issues:
 - deck #4106: Provide a working example of API usage to update a cards details
 """
 
+import datetime as dt
+
 import pytest
 
 pytestmark = [pytest.mark.integration]
@@ -117,6 +119,41 @@ class TestDeckClientUpdateCard:
         )
         assert updated.title == "Original Title"
         assert updated.description == "Original description"
+        # Assert the actual instant, not merely that *a* date is set — the old
+        # `is not None` check passed whether or not the offset was mishandled.
+        assert updated.duedate is not None
+        assert updated.duedate.tzinfo is not None
+        assert updated.duedate.astimezone(dt.timezone.utc).replace(
+            tzinfo=None
+        ) == dt.datetime(2025, 12, 31, 23, 59, 59)
+
+    async def test_update_title_preserves_order_and_duedate(
+        self, nc_client, deck_test_card
+    ):
+        """The inverse of the per-field tests: updating one field must not
+        silently reset the others."""
+        await nc_client.deck.update_card(
+            board_id=deck_test_card["board_id"],
+            stack_id=deck_test_card["stack_id"],
+            card_id=deck_test_card["card_id"],
+            order=42,
+            duedate="2030-06-01T12:00:00+00:00",
+        )
+
+        await nc_client.deck.update_card(
+            board_id=deck_test_card["board_id"],
+            stack_id=deck_test_card["stack_id"],
+            card_id=deck_test_card["card_id"],
+            title="Renamed Only",
+        )
+
+        updated = await nc_client.deck.get_card(
+            deck_test_card["board_id"],
+            deck_test_card["stack_id"],
+            deck_test_card["card_id"],
+        )
+        assert updated.title == "Renamed Only"
+        assert updated.order == 42
         assert updated.duedate is not None
 
     async def test_update_archived_only(self, nc_client, deck_test_card):
