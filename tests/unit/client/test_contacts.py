@@ -788,3 +788,126 @@ class TestUpdatePreservesUnsupportedProperties:
         assert result["object_name"] == "alice.vcf"
         assert result["contact"]["fullname"] == "Alice Updated"
         assert "X-ABLabel:custom-label" in result["addressdata"]
+
+
+class TestVcardLineFolding:
+    """RFC 6350 §3.2 line folding must survive the text merge.
+
+    The merge split on ``"\\n"`` and ``.strip()``ed every physical line, so a
+    continuation line (which begins with a single space) lost that space and was
+    re-emitted as a standalone property — corrupting every long NOTE/ADR and every
+    base64 PHOTO on any update. Output was also LF-joined, so a CRLF card silently
+    changed framing on every write.
+    """
+
+    @staticmethod
+    def _merge(raw: str, data: dict) -> str:
+        from nextcloud_mcp_server.client.contacts import ContactsClient
+
+        client = ContactsClient.__new__(ContactsClient)
+        return client._merge_vcard_properties(raw, data)
+
+    @staticmethod
+    def _value_of(vcard: str, prop: str) -> str:
+        """Return the unfolded value of ``prop`` from a serialised vCard."""
+        from pythonvCard4.vcard import unfold_lines
+
+        for line in unfold_lines(vcard.splitlines()):
+            head, _, value = line.partition(":")
+            if head.split(";")[0].upper() == prop:
+                return value
+        raise AssertionError(f"{prop} not found in {vcard!r}")
+
+    def test_folded_note_survives_unrelated_update(self):
+        """A folded NOTE must round-trip to the same logical value."""
+        note = "A" * 60 + "B" * 60 + "C" * 60
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:fold-test\r\n"
+            "FN:Alice\r\n"
+            f"NOTE:{note[:60]}\r\n {note[60:120]}\r\n {note[120:]}\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"fn": "Alice Updated"})
+        assert self._value_of(result, "NOTE") == note
+
+    def test_folded_base64_photo_survives_byte_for_byte(self):
+        """The canonical corruption case: PHOTO is always folded on real cards."""
+        photo = "/9j/4AAQSkZJRgABAQEAYABgAAD" * 8
+        folded = "\r\n ".join(photo[i : i + 60] for i in range(0, len(photo), 60))
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:fold-test\r\n"
+            "FN:Alice\r\n"
+            f"PHOTO;ENCODING=b;TYPE=JPEG:{folded}\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"fn": "Alice Updated"})
+        assert self._value_of(result, "PHOTO") == photo
+
+    def test_output_is_crlf_framed(self):
+        """Update must frame like create (``Contact.to_vcard()``), not LF."""
+        raw = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Alice\r\nEND:VCARD\r\n"
+        result = self._merge(raw, {"fn": "Alice Updated"})
+        assert result.endswith("END:VCARD\r\n")
+        # No bare LF anywhere: every \n is preceded by \r.
+        assert "\n" in result
+        assert result.replace("\r\n", "").count("\n") == 0
+
+    def test_lf_input_still_parses(self):
+        """Cards from clients that emit bare LF must not break."""
+        raw = "BEGIN:VCARD\nVERSION:3.0\nUID:x\nFN:Alice\nNOTE:hi\nEND:VCARD\n"
+        result = self._merge(raw, {"fn": "Alice Updated"})
+        assert self._value_of(result, "FN") == "Alice Updated"
+        assert self._value_of(result, "NOTE") == "hi"
+
+    def test_long_updated_value_is_refolded(self):
+        """A newly written long value must be folded, and unfold to the input."""
+        long_note = "x" * 300
+        raw = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Alice\r\nEND:VCARD\r\n"
+        result = self._merge(raw, {"note": long_note})
+        # Folded: at least one continuation line starting with a single space.
+        assert any(line.startswith(" ") for line in result.split("\r\n"))
+        # No physical line exceeds the 75-char target.
+        assert all(len(line) <= 75 for line in result.split("\r\n"))
+        assert self._value_of(result, "NOTE") == long_note
+
+    def test_lowercase_property_is_updated_not_duplicated(self):
+        """Property names are case-insensitive (RFC 6350 §3.3)."""
+        raw = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nfn:Alice\r\nEND:VCARD\r\n"
+        result = self._merge(raw, {"fn": "Alice Updated"})
+        fn_lines = [
+            line
+            for line in result.split("\r\n")
+            if line.split(":")[0].split(";")[0].upper() == "FN"
+        ]
+        assert len(fn_lines) == 1
+        assert self._value_of(result, "FN") == "Alice Updated"
+
+    def test_grouped_property_is_updated_in_place_keeping_its_group(self):
+        """Apple cards group related properties (``item1.URL`` + ``item1.X-ABLabel``).
+
+        The grouped line was previously unmatched, so it was preserved *and* a
+        duplicate ungrouped line was appended. It must be updated in place, and
+        keep its group so the X-ABLabel stays attached.
+        """
+        raw = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "UID:x\r\n"
+            "FN:Alice\r\n"
+            "item1.URL:https://old.example.com\r\n"
+            "item1.X-ABLabel:homepage\r\n"
+            "END:VCARD\r\n"
+        )
+        result = self._merge(raw, {"url": "https://new.example.com"})
+        url_lines = [
+            line
+            for line in result.split("\r\n")
+            if line.split(":")[0].split(";")[0].rpartition(".")[2].upper() == "URL"
+        ]
+        assert len(url_lines) == 1
+        assert url_lines[0] == "item1.URL:https://new.example.com"
+        assert "item1.X-ABLabel:homepage" in result
