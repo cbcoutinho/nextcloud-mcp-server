@@ -10,6 +10,7 @@ merged and is incompatible with admin endpoints gated by
 ``@PasswordConfirmationRequired`` (e.g. ``webhook_listeners``).
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -272,6 +273,43 @@ async def test_create_webhook_ignores_client_supplied_uri(mocker):
     registered_uri = cls.return_value.create_webhook.call_args.kwargs["uri"]
     assert registered_uri == "https://mcp.internal.test/webhooks/nextcloud"
     assert "attacker.example" not in registered_uri
+
+
+async def test_create_webhook_rejected_uri_is_escaped_in_logs(mocker, caplog):
+    """A rejected uri must not be able to forge log lines.
+
+    The value is attacker-chosen by definition, and it is logged specifically to
+    support incident triage — so letting an embedded CRLF inject a fabricated
+    line would undermine the thing the log exists for.
+    """
+    _patch_token_validation(mocker)
+    _patch_basic_auth(mocker, username="mallory", app_password="mallory-pwd")
+    _patch_outbound_client_factory(mocker)
+    _patch_users_client(mocker)
+    _patch_webhooks_client(mocker, create_webhook={"id": 7})
+    mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.get_webhook_uri",
+        return_value="https://mcp.internal.test/webhooks/nextcloud",
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
+        return_value=("header", {"Authorization": "Bearer supersecret"}),
+    )
+
+    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.api.webhooks")
+    client = TestClient(_build_test_app())
+    client.post(
+        "/api/v1/webhooks",
+        headers={"Authorization": "Bearer mcp-token"},
+        json={
+            "event": "OCP\\Events\\NodeCreated",
+            "uri": "https://evil.test/x\r\nCRITICAL forged entry",
+        },
+    )
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "\\r\\n" in logged, "CR/LF should be escaped, not emitted raw"
+    assert "\nCRITICAL forged entry" not in logged, "log line forging must not work"
 
 
 async def test_create_webhook_rejects_non_admin(mocker):

@@ -248,9 +248,11 @@ async def create_webhook(request: Request) -> JSONResponse:
         # Log what they asked for, not just what we did: the threat model here is
         # a caller probing for the delivery secret with their own host, so the
         # requested value is the part worth having during incident triage.
-        # Lazy %s keeps the untrusted value out of the format string.
+        # %.200r, not %s: the value is attacker-chosen, and repr escapes any
+        # embedded CR/LF that would otherwise forge extra lines in the very log
+        # this line exists to support. The precision caps runaway input.
         logger.warning(
-            "Ignoring client-supplied webhook uri from user %s: requested %s, "
+            "Ignoring client-supplied webhook uri from user %s: requested %.200r, "
             "registering %s",
             user_id,
             requested_uri,
