@@ -168,3 +168,28 @@ async def test_tables_missing_table_error(nc_mcp_client: ClientSession):
         assert response.structuredContent["result"]["success"] is False
     else:
         assert response.isError is True
+
+
+async def test_calendar_list_events_requires_calendar_name(
+    nc_mcp_client: ClientSession,
+):
+    """calendar_name is optional in the schema but still required in practice.
+
+    Omitting it without search_all_calendars must fail loudly rather than
+    silently searching a default calendar.
+    """
+    response = await nc_mcp_client.call_tool("nc_calendar_list_events", {})
+
+    assert response.isError is True
+    assert "calendar_name is required" in str(response.content)
+
+
+async def test_calendar_list_events_calendar_name_not_schema_required(
+    nc_mcp_client: ClientSession,
+):
+    """The whole point of the change: MCP clients must not be forced to invent a
+    throwaway calendar_name when searching every calendar."""
+    tools = await nc_mcp_client.list_tools()
+    tool = next(t for t in tools.tools if t.name == "nc_calendar_list_events")
+
+    assert "calendar_name" not in (tool.inputSchema.get("required") or [])

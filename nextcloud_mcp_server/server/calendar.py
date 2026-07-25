@@ -1,6 +1,6 @@
 import datetime as dt
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -10,6 +10,7 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     Calendar,
     CalendarEventSummary,
+    CompleteTodoResponse,
     DeleteEventResponse,
     DeleteTodoResponse,
     ListCalendarsResponse,
@@ -21,6 +22,25 @@ from nextcloud_mcp_server.models.calendar import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _completion_payload(completed: str | None = None) -> dict[str, Any]:
+    """Assemble the three properties a VTODO needs to actually read as complete.
+
+    RFC 5545 treats STATUS, PERCENT-COMPLETE and COMPLETED as independent
+    properties, and ``_merge_ical_todo_properties`` gates each on its own key —
+    so setting ``status="COMPLETED"`` alone leaves PERCENT-COMPLETE at its old
+    value and writes no COMPLETED timestamp. Clients that surface progress or
+    completion dates then disagree about whether the task is done.
+
+    ``completed`` defaults to now in UTC.
+    """
+    return {
+        "status": "COMPLETED",
+        "percent_complete": 100,
+        "completed": completed
+        or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
+    }
 
 
 def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
@@ -171,8 +191,8 @@ def configure_calendar_tools(mcp: FastMCP):
     @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_list_events(
-        calendar_name: str,
         ctx: Context,
+        calendar_name: str = "",
         start_date: str = "",
         end_date: str = "",
         limit: int = 50,
@@ -187,8 +207,9 @@ def configure_calendar_tools(mcp: FastMCP):
         """List events in a calendar (or all calendars) within date range with advanced filtering.
 
         Args:
-            calendar_name: Name of the calendar to search. Ignored if search_all_calendars=True.
             ctx: MCP context
+            calendar_name: Name of the calendar to search. Required unless
+                search_all_calendars=True, in which case it is ignored.
             start_date: Start date for search (YYYY-MM-DD format, e.g., "2025-01-01")
             end_date: End date for search (YYYY-MM-DD format, e.g., "2025-01-31")
             limit: Maximum number of events to return
@@ -203,6 +224,15 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of events matching the filters
         """
+        # ``calendar_name`` is genuinely unused when searching every calendar
+        # (the response even reports it as None), so requiring it forced callers
+        # to invent a throwaway value. It stays required otherwise — falling back
+        # to a default calendar would silently search the wrong one.
+        if not search_all_calendars and not calendar_name.strip():
+            raise ValueError(
+                "calendar_name is required when search_all_calendars is False"
+            )
+
         client = await get_client(ctx)
 
         # Convert YYYY-MM-DD format dates to datetime objects
@@ -1153,6 +1183,51 @@ def configure_calendar_tools(mcp: FastMCP):
             todo_data["categories"] = categories
 
         return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
+
+    @mcp.tool(
+        title="Complete Todo Task",
+        annotations=ToolAnnotations(
+            # Not idempotent: a second call with completed=None restamps COMPLETED
+            # with a fresh timestamp, so the same inputs produce a different card.
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("todo.write", "calendar.read")
+    @instrument_tool
+    async def nc_calendar_complete_todo(
+        calendar_name: str,
+        todo_uid: str,
+        ctx: Context,
+        completed: Optional[str] = None,
+    ) -> CompleteTodoResponse:
+        """Mark a todo/task complete.
+
+        Sets STATUS, PERCENT-COMPLETE and COMPLETED together. Doing this through
+        nc_calendar_update_todo requires knowing that all three are needed and
+        setting each explicitly — passing status="COMPLETED" alone leaves
+        PERCENT-COMPLETE stale and writes no completion timestamp.
+
+        Args:
+            calendar_name: Name of the calendar containing the todo
+            todo_uid: UID of the todo to complete
+            ctx: MCP context
+            completed: Completion timestamp (ISO format). Defaults to now (UTC).
+
+        Returns:
+            CompleteTodoResponse carrying the three values actually written.
+        """
+        client = await get_client(ctx)
+        payload = _completion_payload(completed)
+        result = await client.calendar.update_todo(calendar_name, todo_uid, payload)
+        return CompleteTodoResponse(
+            uid=todo_uid,
+            calendar_name=calendar_name,
+            status=payload["status"],
+            percent_complete=payload["percent_complete"],
+            completed=payload["completed"],
+            href=result.get("href", ""),
+        )
 
     @mcp.tool(
         title="Delete Todo Task",
