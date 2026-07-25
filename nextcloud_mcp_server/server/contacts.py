@@ -2,7 +2,9 @@ import logging
 from datetime import date
 from typing import Any
 
+from httpx import HTTPStatusError
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -13,6 +15,7 @@ from nextcloud_mcp_server.models.contacts import (
     ContactField,
     ListAddressBooksResponse,
     ListContactsResponse,
+    UpdateContactResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
@@ -351,7 +354,7 @@ def configure_contacts_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_contacts_update_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
-    ):
+    ) -> UpdateContactResponse:
         """Update an existing contact while preserving all existing properties.
 
         Args:
@@ -383,9 +386,28 @@ def configure_contacts_tools(mcp: FastMCP):
                   on update; multi-URL contacts should use create_contact.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
-            etag: Optional ETag for optimistic concurrency control.
+            etag: Optional ETag for optimistic concurrency control. Pass the
+                value from a previous read or update; the update is rejected if
+                the contact changed since.
+
+        Returns:
+            The updated contact and its new ETag, so updates can be chained
+            without an intervening read.
         """
         client = await get_client(ctx)
-        return await client.contacts.update_contact(
-            addressbook=addressbook, uid=uid, contact_data=contact_data, etag=etag
+        try:
+            raw = await client.contacts.update_contact(
+                addressbook=addressbook, uid=uid, contact_data=contact_data, etag=etag
+            )
+        except HTTPStatusError as e:
+            if e.response.status_code == 412:
+                raise ToolError(
+                    f"Contact {uid!r} changed since etag {etag!r} was read. "
+                    "Re-read it and retry the update."
+                ) from e
+            raise
+
+        return UpdateContactResponse(
+            contact=_raw_contact_to_model(raw),
+            addressbook=addressbook,
         )

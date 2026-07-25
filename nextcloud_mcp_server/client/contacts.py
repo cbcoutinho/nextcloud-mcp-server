@@ -137,6 +137,35 @@ def _first_custom(custom: dict[str, str | list[str]], key: str) -> str | None:
     return None
 
 
+def _project_contact(contact: Contact) -> dict[str, Any]:
+    """Project a parsed vCard into the flat dict the server layer maps to a model.
+
+    Single projection point shared by ``list_contacts`` and ``update_contact`` so
+    the read-after-write shape cannot drift from the read shape.
+
+    pythonvCard4's parser has no branch for ORG / TITLE — they fall through into
+    ``contact.custom`` as a list of raw values. PHOTO only gets typed-parsed when
+    the line carries an ``ENCODING=`` parameter; otherwise it lands in ``custom``
+    too. Pull them out here so the read side surfaces what the write side
+    persisted (issue #716 follow-up).
+    """
+    return {
+        "fullname": contact.fn,
+        "nickname": contact.nickname,
+        "birthday": contact.bday.isoformat()
+        if isinstance(contact.bday, date)
+        else contact.bday,
+        "email": contact.email,
+        "tel": contact.tel,
+        "org": _first_custom(contact.custom, "ORG"),
+        "title": _first_custom(contact.custom, "TITLE"),
+        "note": contact.note,
+        "url": contact.url,
+        "categories": contact.categories,
+        "photo": contact.photo_data or _first_custom(contact.custom, "PHOTO"),
+    }
+
+
 def _safe_vcard_value(value: Any) -> Any:
     """Escape newlines in a value so it can't inject additional vCard properties.
 
@@ -425,8 +454,26 @@ class ContactsClient(BaseNextcloudClient):
         uid: str,
         contact_data: dict[str, Any],
         etag: str = "",
-    ):
-        """Update an existing contact while preserving all existing properties."""
+    ) -> dict[str, Any]:
+        """Update an existing contact while preserving all existing properties.
+
+        The existing vCard is **always** fetched and merged into. Previously the
+        fetch was skipped whenever the caller supplied an ``etag``, so the
+        concurrency-correct call silently fell through to a rebuild from the
+        handful of supported keys — destroying PHOTO, ADR, N, X-*, IMPP, GEO and
+        REV. There is no rebuild path any more: if the existing card cannot be
+        read, this raises rather than replacing it with a synthesised one.
+
+        Returns the same shape as one ``list_contacts`` entry, carrying the new
+        ETag so callers can chain updates without a re-read. ``getetag`` is an
+        empty string when the server omitted the header from the PUT response
+        (some proxies strip it); chaining then requires a fresh read first.
+
+        Failures before the PUT raise. Failures *after* it do not: once the write
+        has landed, an error building the response projection would misreport a
+        successful update, so ``contact`` degrades to ``{}`` and the raw
+        ``addressdata`` plus the new ETag are still returned.
+        """
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         # Resolve the real object filename (may differ from ``<uid>.vcf``) so the
@@ -434,32 +481,20 @@ class ContactsClient(BaseNextcloudClient):
         object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
         url = f"{carddav_path}/{addressbook}/{object_name}"
 
-        # Canonicalise aliases up front so both code paths (merge + fallback) agree.
         contact_data = _normalize_contact_data(contact_data)
 
-        # Get raw vCard content to preserve all properties including extended ones
-        raw_vcard_content = ""
+        # Always read the current card: it is the only source of the properties
+        # this method has no vocabulary for. A failure here propagates — a raised
+        # error is recoverable, a silent rebuild is not.
+        raw_vcard_content, current_etag = await self._fetch_raw_vcard(
+            addressbook, object_name
+        )
+        # The caller's etag wins: it is their concurrency assertion, and honouring
+        # the freshly-read one instead would defeat the check they asked for.
         if not etag:
-            try:
-                raw_vcard_content, current_etag = await self._fetch_raw_vcard(
-                    addressbook, object_name
-                )
-                etag = current_etag
-            except Exception:
-                # Fall back to creating new vCard if we can't get existing
-                logger.warning(
-                    "Could not fetch existing vCard for %s, creating new", uid
-                )
-                raw_vcard_content = ""
+            etag = current_etag
 
-        # Create updated vCard preserving existing properties
-        if raw_vcard_content:
-            vcard_content = self._merge_vcard_properties(
-                raw_vcard_content, contact_data, uid
-            )
-        else:
-            # Fallback to creating new vCard if we couldn't get existing
-            vcard_content = _build_contact_from_data(contact_data, uid).to_vcard()
+        vcard_content = self._merge_vcard_properties(raw_vcard_content, contact_data)
 
         headers = {
             "Content-Type": "text/vcard; charset=utf-8",
@@ -467,7 +502,40 @@ class ContactsClient(BaseNextcloudClient):
         if etag:
             headers["If-Match"] = etag
 
-        await self._make_request("PUT", url, content=vcard_content, headers=headers)
+        response = await self._make_request(
+            "PUT", url, content=vcard_content, headers=headers
+        )
+
+        # Re-parse the card we just wrote rather than issuing a second GET.
+        #
+        # Deliberately fail-open, unlike every other error path in this method:
+        # the PUT has already landed, so raising here would report a *successful*
+        # write as a failure and invite a pointless — possibly destructive —
+        # retry. The contract this method exists to protect ("never silently lose
+        # data") is already satisfied at this point; only the convenience
+        # projection is at risk. The caller still gets the new ETag and the full
+        # ``addressdata``, so nothing is withheld.
+        try:
+            contact_projection = _project_contact(Contact.from_vcard(vcard_content))
+        except Exception:
+            # Broad by intent: pythonvCard4 is third-party and its parse failure
+            # modes aren't enumerable. Whatever it raises, the write stands.
+            logger.exception(
+                "Contact %s was updated successfully but the written vCard could "
+                "not be re-parsed for the response projection; returning the raw "
+                "card and ETag instead",
+                uid,
+            )
+            contact_projection = {}
+
+        return {
+            "vcard_id": object_name.removesuffix(".vcf"),
+            "object_path": url,
+            "object_name": object_name,
+            "getetag": response.headers.get("etag", ""),
+            "contact": contact_projection,
+            "addressdata": vcard_content,
+        }
 
     async def list_contacts(self, *, addressbook: str):
         """List all available contacts for addressbook."""
@@ -550,39 +618,13 @@ class ContactsClient(BaseNextcloudClient):
                 logger.info("Skip missing addressdata")
                 continue
 
-            contact = Contact.from_vcard(addressdata)
-
-            # pythonvCard4's parser has no branch for ORG / TITLE — they fall
-            # through into ``contact.custom`` as a list of raw values. PHOTO
-            # only gets typed-parsed when the line carries an ``ENCODING=``
-            # parameter; otherwise it lands in ``custom`` too. Pull them out
-            # here so the read side surfaces what the write side persisted
-            # (issue #716 follow-up).
-            org_value = _first_custom(contact.custom, "ORG")
-            title_value = _first_custom(contact.custom, "TITLE")
-            photo_value = contact.photo_data or _first_custom(contact.custom, "PHOTO")
-
             contacts.append(
                 {
                     "vcard_id": vcard_id,
                     "object_path": object_path,
                     "object_name": object_name,
                     "getetag": getetag,
-                    "contact": {
-                        "fullname": contact.fn,
-                        "nickname": contact.nickname,
-                        "birthday": contact.bday.isoformat()
-                        if isinstance(contact.bday, date)
-                        else contact.bday,
-                        "email": contact.email,
-                        "tel": contact.tel,
-                        "org": org_value,
-                        "title": title_value,
-                        "note": contact.note,
-                        "url": contact.url,
-                        "categories": contact.categories,
-                        "photo": photo_value,
-                    },
+                    "contact": _project_contact(Contact.from_vcard(addressdata)),
                     "addressdata": addressdata,
                 }
             )
@@ -612,15 +654,25 @@ class ContactsClient(BaseNextcloudClient):
             raise
 
     def _merge_vcard_properties(
-        self, raw_vcard: str, contact_data: dict[str, Any], uid: str
+        self, raw_vcard: str, contact_data: dict[str, Any]
     ) -> str:
         """Merge new contact data into existing raw vCard while preserving all properties.
+
+        The card's own ``UID`` line is carried through from ``raw_vcard`` like any
+        other unrecognised property, so no ``uid`` argument is needed. (One used to
+        be required solely by the removed rebuild fallback.)
 
         Limitation: dict / list-form ``email`` and ``tel`` inputs are not applied
         by this text-merge path. Existing EMAIL/TEL lines are preserved unchanged,
         and no new lines are written for the dict/list inputs. Pass plain strings
         to update EMAIL/TEL here, or recreate via ``create_contact`` for full
         multi-entry support with TYPE annotations.
+
+        Raises on any merge failure rather than substituting a synthesised card.
+        This function previously caught every exception and returned a four-line
+        vCard built from ``fn``/``email``/``tel``, which silently destroyed PHOTO,
+        ADR, N, X-* and every other property while reporting success. A raised
+        error is recoverable; a silent rebuild is not.
         """
         # Surface dict/list email/tel up front rather than silently no-op in the
         # add-new loop below (where the isinstance(value, str) guard skips them).
@@ -637,199 +689,172 @@ class ContactsClient(BaseNextcloudClient):
                     _key.upper(),
                     _key.upper(),
                 )
-        try:
-            # Instead of using pythonvCard4 which has formatting issues,
-            # let's do a simple text-based merge to preserve exact formatting
+        # Instead of using pythonvCard4 which has formatting issues,
+        # let's do a simple text-based merge to preserve exact formatting
 
-            # Start with the original vCard
-            lines = raw_vcard.strip().split("\n")
-            updated_lines = []
+        # Start with the original vCard
+        lines = raw_vcard.strip().split("\n")
+        updated_lines = []
 
-            # Track what we've updated to avoid duplicates
-            updated_properties = set()
+        # Track what we've updated to avoid duplicates
+        updated_properties = set()
 
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
 
-                # Skip the END:VCARD line for now
-                if line == "END:VCARD":
-                    continue
+            # Skip the END:VCARD line for now
+            if line == "END:VCARD":
+                continue
 
-                property_name = line.split(":")[0].split(";")[0]
+            property_name = line.split(":")[0].split(";")[0]
 
-                # Handle updates for specific properties
-                if property_name == "FN" and "fn" in contact_data:
-                    updated_lines.append(f"FN:{_safe_vcard_value(contact_data['fn'])}")
-                    updated_properties.add("fn")
-                elif property_name == "EMAIL" and "email" in contact_data:
-                    # Replace first email with new one, preserve others
-                    if "email" not in updated_properties:
-                        if isinstance(contact_data["email"], str):
-                            email_value = _safe_vcard_value(contact_data["email"])
-                            # Try to preserve the original format as much as possible
-                            if ";TYPE=" in line:
-                                type_part = line.split(";TYPE=")[1].split(":")[0]
-                                updated_lines.append(
-                                    f"EMAIL;TYPE={type_part}:{email_value}"
-                                )
-                            else:
-                                updated_lines.append(f"EMAIL:{email_value}")
-                            updated_properties.add("email")
+            # Handle updates for specific properties
+            if property_name == "FN" and "fn" in contact_data:
+                updated_lines.append(f"FN:{_safe_vcard_value(contact_data['fn'])}")
+                updated_properties.add("fn")
+            elif property_name == "EMAIL" and "email" in contact_data:
+                # Replace first email with new one, preserve others
+                if "email" not in updated_properties:
+                    if isinstance(contact_data["email"], str):
+                        email_value = _safe_vcard_value(contact_data["email"])
+                        # Try to preserve the original format as much as possible
+                        if ";TYPE=" in line:
+                            type_part = line.split(";TYPE=")[1].split(":")[0]
+                            updated_lines.append(
+                                f"EMAIL;TYPE={type_part}:{email_value}"
+                            )
                         else:
-                            # Dict / list inputs aren't translatable to a single
-                            # text-merge replacement; keep the original line so we
-                            # don't silently drop the contact's email.
-                            updated_lines.append(line)
+                            updated_lines.append(f"EMAIL:{email_value}")
+                        updated_properties.add("email")
                     else:
-                        # Keep additional emails unchanged
+                        # Dict / list inputs aren't translatable to a single
+                        # text-merge replacement; keep the original line so we
+                        # don't silently drop the contact's email.
                         updated_lines.append(line)
-                elif property_name == "TEL" and "tel" in contact_data:
-                    # Similar handling for phone numbers
-                    if "tel" not in updated_properties:
-                        if isinstance(contact_data["tel"], str):
-                            tel_value = _safe_vcard_value(contact_data["tel"])
-                            if ";TYPE=" in line:
-                                type_part = line.split(";TYPE=")[1].split(":")[0]
-                                updated_lines.append(
-                                    f"TEL;TYPE={type_part}:{tel_value}"
-                                )
-                            else:
-                                updated_lines.append(f"TEL:{tel_value}")
-                            updated_properties.add("tel")
+                else:
+                    # Keep additional emails unchanged
+                    updated_lines.append(line)
+            elif property_name == "TEL" and "tel" in contact_data:
+                # Similar handling for phone numbers
+                if "tel" not in updated_properties:
+                    if isinstance(contact_data["tel"], str):
+                        tel_value = _safe_vcard_value(contact_data["tel"])
+                        if ";TYPE=" in line:
+                            type_part = line.split(";TYPE=")[1].split(":")[0]
+                            updated_lines.append(f"TEL;TYPE={type_part}:{tel_value}")
                         else:
-                            # Same reasoning as the EMAIL branch above: don't drop.
-                            updated_lines.append(line)
+                            updated_lines.append(f"TEL:{tel_value}")
+                        updated_properties.add("tel")
                     else:
-                        # Keep additional phone numbers unchanged
+                        # Same reasoning as the EMAIL branch above: don't drop.
                         updated_lines.append(line)
-                elif property_name == "NOTE" and "note" in contact_data:
-                    updated_lines.append(
-                        f"NOTE:{_safe_vcard_value(contact_data['note'])}"
+                else:
+                    # Keep additional phone numbers unchanged
+                    updated_lines.append(line)
+            elif property_name == "NOTE" and "note" in contact_data:
+                updated_lines.append(f"NOTE:{_safe_vcard_value(contact_data['note'])}")
+                updated_properties.add("note")
+            elif property_name == "NICKNAME" and "nickname" in contact_data:
+                nickname_value = contact_data["nickname"]
+                if isinstance(nickname_value, list):
+                    nickname_value = ",".join(nickname_value)
+                updated_lines.append(f"NICKNAME:{_safe_vcard_value(nickname_value)}")
+                updated_properties.add("nickname")
+            elif property_name == "BDAY" and "bday" in contact_data:
+                parsed_bday = _parse_bday(contact_data["bday"])
+                if parsed_bday is not None:
+                    updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
+                    updated_properties.add("bday")
+                else:
+                    # Invalid input — keep the existing BDAY rather than
+                    # writing a malformed line or silently dropping it.
+                    updated_lines.append(line)
+            elif property_name == "CATEGORIES" and "categories" in contact_data:
+                categories_value = contact_data["categories"]
+                if isinstance(categories_value, list):
+                    categories_value = ",".join(categories_value)
+                updated_lines.append(
+                    f"CATEGORIES:{_safe_vcard_value(categories_value)}"
+                )
+                updated_properties.add("categories")
+            elif property_name == "ORG" and "org" in contact_data:
+                org_value = contact_data["org"]
+                # ORG is structured (Company;Department;…) per RFC 6350 §6.6.4;
+                # join list components with ';' so callers using the same shape
+                # ``_build_contact_from_data`` accepts don't get a Python repr.
+                if isinstance(org_value, list):
+                    org_value = ";".join(org_value)
+                updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
+                updated_properties.add("org")
+            elif property_name == "TITLE" and "title" in contact_data:
+                updated_lines.append(
+                    f"TITLE:{_safe_vcard_value(contact_data['title'])}"
+                )
+                updated_properties.add("title")
+            elif property_name == "URL" and "url" in contact_data:
+                if "url" not in updated_properties:
+                    url_value = contact_data["url"]
+                    # Only the first URL from a list is written; multi-URL
+                    # contacts are rare and this text merge doesn't attempt
+                    # position-stable mapping to existing URL lines.
+                    if isinstance(url_value, list):
+                        url_value = url_value[0] if url_value else ""
+                    if url_value:
+                        updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
+                    updated_properties.add("url")
+                else:
+                    # Keep additional URLs unchanged
+                    updated_lines.append(line)
+            else:
+                # Keep all other properties unchanged (preserves all extended/custom fields)
+                updated_lines.append(line)
+
+        # Add any new properties that weren't in the original vCard
+        for key, value in contact_data.items():
+            if key not in updated_properties:
+                if key == "fn":
+                    updated_lines.append(f"FN:{_safe_vcard_value(value)}")
+                elif key == "email" and isinstance(value, str):
+                    updated_lines.append(f"EMAIL:{_safe_vcard_value(value)}")
+                elif key == "tel" and isinstance(value, str):
+                    updated_lines.append(f"TEL:{_safe_vcard_value(value)}")
+                elif key == "note":
+                    updated_lines.append(f"NOTE:{_safe_vcard_value(value)}")
+                elif key == "nickname":
+                    nickname_value = (
+                        value if isinstance(value, str) else ",".join(value)
                     )
-                    updated_properties.add("note")
-                elif property_name == "NICKNAME" and "nickname" in contact_data:
-                    nickname_value = contact_data["nickname"]
-                    if isinstance(nickname_value, list):
-                        nickname_value = ",".join(nickname_value)
                     updated_lines.append(
                         f"NICKNAME:{_safe_vcard_value(nickname_value)}"
                     )
-                    updated_properties.add("nickname")
-                elif property_name == "BDAY" and "bday" in contact_data:
-                    parsed_bday = _parse_bday(contact_data["bday"])
+                elif key == "bday":
+                    parsed_bday = _parse_bday(value)
                     if parsed_bday is not None:
                         updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
-                        updated_properties.add("bday")
-                    else:
-                        # Invalid input — keep the existing BDAY rather than
-                        # writing a malformed line or silently dropping it.
-                        updated_lines.append(line)
-                elif property_name == "CATEGORIES" and "categories" in contact_data:
-                    categories_value = contact_data["categories"]
-                    if isinstance(categories_value, list):
-                        categories_value = ",".join(categories_value)
+                elif key == "categories":
+                    categories_value = (
+                        value if isinstance(value, str) else ",".join(value)
+                    )
                     updated_lines.append(
                         f"CATEGORIES:{_safe_vcard_value(categories_value)}"
                     )
-                    updated_properties.add("categories")
-                elif property_name == "ORG" and "org" in contact_data:
-                    org_value = contact_data["org"]
-                    # ORG is structured (Company;Department;…) per RFC 6350 §6.6.4;
-                    # join list components with ';' so callers using the same shape
-                    # ``_build_contact_from_data`` accepts don't get a Python repr.
-                    if isinstance(org_value, list):
-                        org_value = ";".join(org_value)
+                elif key == "org":
+                    # See ORG note in update-existing branch above.
+                    org_value = ";".join(value) if isinstance(value, list) else value
                     updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
-                    updated_properties.add("org")
-                elif property_name == "TITLE" and "title" in contact_data:
-                    updated_lines.append(
-                        f"TITLE:{_safe_vcard_value(contact_data['title'])}"
-                    )
-                    updated_properties.add("title")
-                elif property_name == "URL" and "url" in contact_data:
-                    if "url" not in updated_properties:
-                        url_value = contact_data["url"]
-                        # Only the first URL from a list is written; multi-URL
-                        # contacts are rare and this text merge doesn't attempt
-                        # position-stable mapping to existing URL lines.
-                        if isinstance(url_value, list):
-                            url_value = url_value[0] if url_value else ""
-                        if url_value:
-                            updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
-                        updated_properties.add("url")
-                    else:
-                        # Keep additional URLs unchanged
-                        updated_lines.append(line)
-                else:
-                    # Keep all other properties unchanged (preserves all extended/custom fields)
-                    updated_lines.append(line)
+                elif key == "title":
+                    updated_lines.append(f"TITLE:{_safe_vcard_value(value)}")
+                elif key == "url":
+                    # Only the first URL is written on add-new; see note in the
+                    # update-existing branch above.
+                    url_value = value[0] if isinstance(value, list) and value else value
+                    if url_value:
+                        updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
 
-            # Add any new properties that weren't in the original vCard
-            for key, value in contact_data.items():
-                if key not in updated_properties:
-                    if key == "fn":
-                        updated_lines.append(f"FN:{_safe_vcard_value(value)}")
-                    elif key == "email" and isinstance(value, str):
-                        updated_lines.append(f"EMAIL:{_safe_vcard_value(value)}")
-                    elif key == "tel" and isinstance(value, str):
-                        updated_lines.append(f"TEL:{_safe_vcard_value(value)}")
-                    elif key == "note":
-                        updated_lines.append(f"NOTE:{_safe_vcard_value(value)}")
-                    elif key == "nickname":
-                        nickname_value = (
-                            value if isinstance(value, str) else ",".join(value)
-                        )
-                        updated_lines.append(
-                            f"NICKNAME:{_safe_vcard_value(nickname_value)}"
-                        )
-                    elif key == "bday":
-                        parsed_bday = _parse_bday(value)
-                        if parsed_bday is not None:
-                            updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
-                    elif key == "categories":
-                        categories_value = (
-                            value if isinstance(value, str) else ",".join(value)
-                        )
-                        updated_lines.append(
-                            f"CATEGORIES:{_safe_vcard_value(categories_value)}"
-                        )
-                    elif key == "org":
-                        # See ORG note in update-existing branch above.
-                        org_value = (
-                            ";".join(value) if isinstance(value, list) else value
-                        )
-                        updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
-                    elif key == "title":
-                        updated_lines.append(f"TITLE:{_safe_vcard_value(value)}")
-                    elif key == "url":
-                        # Only the first URL is written on add-new; see note in the
-                        # update-existing branch above.
-                        url_value = (
-                            value[0] if isinstance(value, list) and value else value
-                        )
-                        if url_value:
-                            updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
+        # Add the END:VCARD line
+        updated_lines.append("END:VCARD")
 
-            # Add the END:VCARD line
-            updated_lines.append("END:VCARD")
-
-            # Join all lines
-            return "\n".join(updated_lines)
-
-        except Exception as e:
-            logger.error("Error merging vCard properties: %s", e)
-            # Fallback to creating basic vCard matching Nextcloud format
-            basic_vcard = f"""BEGIN:VCARD
-VERSION:3.0
-UID:{uid}
-FN:{contact_data.get("fn", "Unknown")}"""
-
-            if "email" in contact_data:
-                basic_vcard += f"\nEMAIL:{contact_data['email']}"
-            if "tel" in contact_data:
-                basic_vcard += f"\nTEL:{contact_data['tel']}"
-
-            basic_vcard += "\nEND:VCARD"
-            return basic_vcard
+        # Join all lines
+        return "\n".join(updated_lines)
