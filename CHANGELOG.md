@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.147.0 (2026-07-25)
+
+### Feat
+
+- **contacts**: pad ADR components to the documented seven
+- **contacts**: surface addresses, name parts and X-* extensions
+
+### Fix
+
+- **contacts**: copy the whole parameter section when rewriting a line
+- **contacts**: match TYPE parameter with a regex, not an upper-cased index
+- **contacts**: preserve lowercase TYPE parameters on rewrite
+- **contacts**: preserve vCard line folding on update
+
 ## v0.146.0 (2026-07-25)
 
 ### BREAKING CHANGE
