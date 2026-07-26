@@ -69,6 +69,7 @@ def test_page_ceiling_names_the_document_and_the_limit():
             }
         ),
         _settings(),
+        markdown_requested=True,
     )
 
     assert summary.content_format == "text"
@@ -82,6 +83,7 @@ def test_markdown_disabled_is_distinguished_from_the_ceiling():
             metadata={"parse_mode": "text_only", "markdown_skipped_reason": "disabled"}
         ),
         _settings(document_markdown_max_pages=0),
+        markdown_requested=True,
     )
 
     assert "DOCUMENT_MARKDOWN_MAX_PAGES=0" in summary.notes[0]
@@ -96,6 +98,7 @@ def test_markdown_promotion_failure_is_stated():
             }
         ),
         _settings(),
+        markdown_requested=True,
     )
 
     assert "attempted and failed" in summary.notes[0]
@@ -174,3 +177,45 @@ def test_oversize_names_the_cap_and_has_no_tier():
     assert summary.tier is None
     assert "50 MB parse cap" in summary.notes[0]
     assert "DOCUMENT_MAX_PDF_SIZE_MB" in summary.notes[0]
+
+
+def test_markdown_bookkeeping_is_not_reported_to_a_caller_who_wanted_text():
+    """The structured tier is also reached to recover a corrupt text layer, and it
+    stamps ``markdown_skipped_reason`` whenever it runs past the page ceiling. A
+    caller that asked for text ("auto") got exactly what it asked for -- reporting
+    that as a degradation would be a false alarm, and would invite a pointless
+    re-request for markdown that hits the same ceiling."""
+    summary = summarize_parse(
+        _result(
+            metadata={
+                "pipeline_tier": "structured",
+                "parse_mode": "text_only",
+                "markdown_skipped_reason": "page_ceiling",
+                "page_count": 300,
+            },
+            processor="pymupdf",
+        ),
+        _settings(),
+    )
+
+    assert summary.status == "parsed"
+    assert summary.content_format == "text"
+    assert summary.notes == []
+
+
+def test_real_degradations_still_reported_to_a_text_caller():
+    """Guard against over-correcting: silencing the markdown note must not silence
+    the OCR one, which matters regardless of what the caller asked for."""
+    summary = summarize_parse(
+        _result(
+            metadata={
+                "pipeline_tier": "structured",
+                "markdown_skipped_reason": "page_ceiling",
+                "ocr_escalation_skipped": "disabled",
+            }
+        ),
+        _settings(),
+    )
+
+    assert len(summary.notes) == 1
+    assert "DOCUMENT_OCR_ENABLED" in summary.notes[0]

@@ -658,6 +658,39 @@ async def test_read_file_reports_markdown_page_ceiling(
     assert "DOCUMENT_MARKDOWN_MAX_PAGES=150" in note
 
 
+async def test_read_file_auto_mode_says_nothing_about_markdown(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    """The same metadata as the test above, but the caller asked for text.
+
+    The structured tier stamps ``markdown_skipped_reason`` whenever it runs past
+    the ceiling -- including when it was reached to recover a corrupt text layer
+    in auto mode. Reporting that would be a false alarm, and would invite a
+    pointless re-request for markdown that hits the identical ceiling.
+    """
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            metadata={
+                "pipeline_tier": "structured",
+                "parse_mode": "text_only",
+                "markdown_skipped_reason": "page_ceiling",
+                "page_count": 412,
+            },
+            processor="pymupdf",
+        )
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/big.pdf", ctx=_read_ctx(fake_client))
+
+    assert result.parse_status == "parsed"
+    assert result.content_format == "text"
+    assert result.parse_notes == []
+
+
 async def test_read_file_reports_ocr_unavailable(
     webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):

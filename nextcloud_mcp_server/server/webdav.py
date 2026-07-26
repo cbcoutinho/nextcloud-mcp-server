@@ -343,7 +343,11 @@ def configure_webdav_tools(mcp: FastMCP):
                             ],
                         )
 
-                    summary = document_parser.summarize_parse(result, settings)
+                    summary = document_parser.summarize_parse(
+                        result,
+                        settings,
+                        markdown_requested=(parse_document == "markdown"),
+                    )
                     if summary.status == "failed":
                         # An unsuccessful parse is never reported as content: hand
                         # back the raw file with the reason attached.

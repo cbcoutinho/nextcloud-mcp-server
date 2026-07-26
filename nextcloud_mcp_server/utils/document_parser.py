@@ -126,8 +126,21 @@ def _failure_note(result: ProcessingResult, tier: str | None, settings: Any) -> 
     return f"Parsing failed ({reason}){where}; no text was extracted."
 
 
-def _markdown_note(metadata: dict, settings: Any) -> str | None:
-    """Why the markdown the caller asked for is not in the content."""
+def _markdown_note(
+    metadata: dict, settings: Any, *, markdown_requested: bool
+) -> str | None:
+    """Why the markdown the caller asked for is not in the content.
+
+    Only ever fires when the caller actually asked for markdown.
+    ``markdown_skipped_reason`` records a fact about the parse -- structure was
+    not reconstructed -- and the structured tier stamps it whenever it runs past
+    the page ceiling, INCLUDING when it was reached to recover a glyph-corrupt
+    text layer in ``auto`` mode. Surfacing it there would report a
+    non-degradation as one: a caller that asked for text got exactly the text it
+    asked for, and ``content_format`` already says it is not markdown.
+    """
+    if not markdown_requested:
+        return None
     reason = metadata.get("markdown_skipped_reason")
     if reason == "page_ceiling":
         return (
@@ -179,7 +192,9 @@ def _ocr_note(metadata: dict) -> str | None:
     return None
 
 
-def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
+def summarize_parse(
+    result: ProcessingResult, settings: Any, *, markdown_requested: bool = False
+) -> ParseSummary:
     """Describe a :class:`ProcessingResult` honestly.
 
     Pure: no I/O, no globals beyond the ``settings`` handed in, so every
@@ -187,6 +202,11 @@ def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
     wording lives in the three ``_*_note`` helpers above -- one per thing that
     can degrade -- so a caller never has to infer the difference between "OCR is
     off here" and "OCR ran and failed".
+
+    ``markdown_requested`` is what the CALLER asked for, which the result alone
+    cannot tell you: the structured tier is also reached to recover a corrupt
+    text layer, and its "no markdown here" bookkeeping must not be reported as a
+    degradation to someone who only ever asked for text.
     """
     metadata = result.metadata or {}
     tier = metadata.get("pipeline_tier")
@@ -204,7 +224,10 @@ def summarize_parse(result: ProcessingResult, settings: Any) -> ParseSummary:
 
     notes = [
         note
-        for note in (_markdown_note(metadata, settings), _ocr_note(metadata))
+        for note in (
+            _markdown_note(metadata, settings, markdown_requested=markdown_requested),
+            _ocr_note(metadata),
+        )
         if note is not None
     ]
     if not result.text:

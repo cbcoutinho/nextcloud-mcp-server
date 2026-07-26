@@ -21,6 +21,7 @@ from nextcloud_mcp_server.document_processors.source import (
     MemoryDocumentSource,
     SpooledDocumentSource,
 )
+from nextcloud_mcp_server.utils.document_parser import summarize_parse
 
 pytestmark = pytest.mark.unit
 
@@ -151,6 +152,42 @@ async def test_oversize_is_rejected_from_the_size_without_reading_the_file(
     assert result.success is False
     assert result.processor == "size_guard"
     assert result.metadata["parse_failed_reason"] == "oversize"
+
+
+async def test_auto_mode_escalation_past_the_ceiling_reports_nothing_to_the_caller(
+    spooled, settings
+):
+    """A read that never asked for markdown must not be told it was denied any.
+
+    The structured tier is reached two ways: to honour a markdown request, and --
+    as here -- to recover a text layer the classifier distrusts. It stamps
+    ``markdown_skipped_reason`` whenever it runs past the page ceiling either way,
+    so the *fact* is recorded; what must not happen is surfacing it as a
+    degradation to a caller who asked for text and got text.
+
+    Drives the real pymupdf tier: ``min_text_quality=1.1`` is unsatisfiable, so
+    every page reads as low-confidence and the ladder escalates fast->structured
+    with non-empty text, exactly as a glyph-corrupt document would.
+    """
+    stub = settings(document_markdown_max_pages=1, document_ocr_min_text_quality=1.1)
+
+    result = await get_registry().process_source(spooled(_digital_pdf(pages=3)))
+
+    # Escalated for recovery, not for markdown, and past the ceiling.
+    assert result.metadata["pipeline_tier"] == "structured"
+    assert result.metadata["parse_mode"] == "text_only"
+    assert result.metadata["markdown_skipped_reason"] == "page_ceiling"
+
+    # parse_document="auto" -> the caller hears nothing about markdown. (It does
+    # hear that OCR was unavailable: the same distrusted text layer is a real
+    # degradation of what it DID ask for, so that note must survive.)
+    auto = summarize_parse(result, stub)
+    assert not any("markdown" in note.lower() for note in auto.notes)
+    assert any("DOCUMENT_OCR_ENABLED" in note for note in auto.notes)
+
+    # parse_document="markdown" -> the same result does explain itself.
+    requested = summarize_parse(result, stub, markdown_requested=True)
+    assert any("DOCUMENT_MARKDOWN_MAX_PAGES" in note for note in requested.notes)
 
 
 async def test_in_memory_source_still_works(settings):
