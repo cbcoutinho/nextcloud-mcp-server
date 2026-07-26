@@ -5,6 +5,39 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.151.0 (2026-07-26)
+
+### BREAKING CHANGE
+
+- nc_webdav_read_file no longer accepts `force_processor`; it is
+replaced by `parse_document` ("auto" | "markdown" | "raw", default "auto").
+ENABLE_DOCUMENT_PROCESSING is removed -- parsing on read is a per-call decision
+and each optional processor registers from its own ENABLE_* flag.
+utils.document_parser.parse_document(bytes, ...) -> (text, metadata) is replaced
+by parse_document_source(source, ...) -> ProcessingResult, and
+WebDavClient.stream_to_file now returns (written, content_type, etag).
+
+### Feat
+
+- **webdav**: destination etag precondition for move and copy
+- **security**: configurable transport security and CORS origins
+- **webdav**: return the new etag from write_file
+- **webdav**: read documents as text/markdown, not base64
+
+### Fix
+
+- optional Table.ownership and explicit provider timeouts
+- **api**: escape the rejected webhook uri in logs
+- **api**: log the rejected webhook uri, not just the resolved one
+- **api**: resolve webhook uri server-side and gate registration on admin
+- **webdav**: only report a markdown gap to a caller who asked for markdown
+
+### Refactor
+
+- **webdav**: extract the shared MOVE/COPY implementation
+- **webdav**: route stream_to_file's etag through _normalize_etag
+- **webdav**: split the PDF ladder into one method per rung
+
 ## v0.150.0 (2026-07-25)
 
 ### BREAKING CHANGE
