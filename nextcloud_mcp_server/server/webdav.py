@@ -594,13 +594,6 @@ def configure_webdav_tools(mcp: FastMCP):
             destination_path: New path for the file or directory
             overwrite: Whether to overwrite the destination if it exists (default: False)
             if_destination_match: Optional ETag of the destination (from
-                nc_webdav_read_file or nc_webdav_write_file). The copy then
-                replaces the destination only if it is still that exact version,
-                so ``overwrite=True`` cannot clobber a file someone else changed
-                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
-                accepted. Files only — a directory destination always fails the
-                check with 412.
-            if_destination_match: Optional ETag of the destination (from
                 nc_webdav_read_file or nc_webdav_write_file). The move then
                 replaces the destination only if it is still that exact version,
                 so ``overwrite=True`` cannot clobber a file someone else changed
@@ -671,6 +664,13 @@ def configure_webdav_tools(mcp: FastMCP):
             source_path: Full path of the file or directory to copy
             destination_path: Destination path for the copy
             overwrite: Whether to overwrite the destination if it exists (default: False)
+            if_destination_match: Optional ETag of the destination (from
+                nc_webdav_read_file or nc_webdav_write_file). The copy then
+                replaces the destination only if it is still that exact version,
+                so ``overwrite=True`` cannot clobber a file someone else changed
+                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
+                accepted. Files only — a directory destination always fails the
+                check with 412.
 
         Returns:
             ``CopyResourceResponse``. ``success`` is
