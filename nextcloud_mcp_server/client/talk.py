@@ -123,6 +123,30 @@ class TalkClient(BaseNextcloudClient):
         )
         return TalkConversation(**response.json()["ocs"]["data"])
 
+    async def add_participant(
+        self,
+        token: str,
+        *,
+        user_id: str,
+        source: str = "users",
+    ) -> None:
+        """Invite a user (or circle/group) into an existing conversation.
+
+        Args:
+            token: Conversation token.
+            user_id: Nextcloud user id (or group/circle id when source differs).
+            source: spreed participant source; usually ``users``.
+        """
+        _validate_token(token)
+        if not (user_id or "").strip():
+            raise ValueError("user_id must not be empty")
+        await self._make_request(
+            "POST",
+            f"{self._ROOM_BASE}/{token}/participants",
+            json={"newParticipant": user_id.strip(), "source": source},
+            headers=self._talk_headers(),
+        )
+
     async def delete_conversation(self, token: str) -> None:
         """Delete a conversation. Used by integration test cleanup."""
         _validate_token(token)

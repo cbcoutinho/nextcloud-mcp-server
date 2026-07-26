@@ -137,6 +137,14 @@ class CreateConversationResponse(BaseResponse):
     )
 
 
+class AddParticipantResponse(StatusResponse):
+    """Response model after inviting someone into a Talk conversation."""
+
+    conversation_token: str = Field(description="Token of the conversation")
+    user_id: str = Field(description="Invited user (or group) id")
+    source: str = Field(description="Participant source (usually users)")
+
+
 class ListMessagesResponse(BaseResponse):
     """Response model for fetching chat history of a conversation."""
 
