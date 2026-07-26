@@ -1,6 +1,6 @@
 # MCP Server Comparison: Nextcloud MCP Server vs Context Agent
 
-This document compares the two MCP server implementations in the Nextcloud ecosystem:
+This document compares the MCP server implementations in the Nextcloud ecosystem:
 
 1. **Nextcloud MCP Server** (this project) - Standalone MCP server for external access to Nextcloud
 2. **Context Agent MCP Server** - MCP server embedded within Nextcloud as an External App
@@ -11,6 +11,19 @@ Both projects expose Nextcloud functionality via the Model Context Protocol (MCP
 
 - **Nextcloud MCP Server**: Brings Nextcloud OUT to external MCP clients (Claude Code, etc.)
 - **Context Agent**: Brings external MCP servers IN to Nextcloud's AI Assistant
+
+> [!IMPORTANT]
+> **A third path exists as of Astrolabe 0.39.0**, and it breaks the neat
+> out-vs-in split above: the [Astrolabe](https://github.com/cbcoutinho/astrolabe)
+> Nextcloud app registers itself as a provider for the **core**
+> `core:contextagent:interaction` task type, which is what the Assistant asks for
+> when it needs an agent. Astrolabe then drives *this* server's `/mcp` endpoint.
+>
+> So the Assistant can be backed by Context Agent **or** by Astrolabe + this
+> server, with no AppAPI and no ExApp in the second case. See
+> [Two ways to back the Assistant](#two-ways-to-back-the-assistant) below; the
+> sections after it describe Context Agent and this server on their own terms,
+> which remains accurate.
 
 ## Architecture Overview
 
@@ -114,6 +127,54 @@ graph LR
 - **Deployment**: Managed by Nextcloud AppAPI
 - **Connection**: Native nc-py-api integration
 - **Integration**: Deep Nextcloud integration
+
+## Two ways to back the Assistant
+
+Nextcloud's Assistant does not depend on Context Agent specifically. It asks
+whether *any* provider has registered for the core task type
+`core:contextagent:interaction` (`ChatService::isContextAgentAvailable()`), and
+uses whatever it finds. Two implementations answer that call:
+
+| | **Context Agent** | **Astrolabe + this server** |
+|---|---|---|
+| Registers as | ExApp providing the task type | PHP app providing the task type |
+| Needs AppAPI / a container | Yes | No |
+| Reaches Nextcloud via | `nc-py-api`, in-process | This server's `/mcp`, over HTTP |
+| Can write | Yes — with a confirmation round-trip for dangerous tools | No: the token carries read scopes only, so `tools/list` returns nothing that writes |
+| Cites its sources | Not by design | Yes — citations are built from tool results and deep-link to the passage |
+| Aggregates other MCP servers | Yes | No — it consumes this one |
+| Identity model | ExApp session, `nc.set_user()` per request | A short-lived OIDC token minted per user, per turn |
+
+Both can be installed at once. They then both claim the task type, and the admin
+picks one under **Administration → Artificial intelligence**; Astrolabe's
+registration is additionally gated on an admin opt-in, so installing it does not
+silently rewire an instance's chat.
+
+The trade is roughly: Context Agent is an **actor** that can change things on the
+user's behalf, while Astrolabe is a **reader** that answers from the user's own
+documents and shows its evidence. Neither replaces the other's core strength.
+
+### How Astrolabe reaches this server
+
+```mermaid
+graph LR
+    User[User] --> Assistant[Assistant<br/>Chat with AI]
+    Assistant -->|core:contextagent:interaction| Astrolabe[Astrolabe app<br/>inside Nextcloud]
+    Astrolabe -->|per-user OIDC token| MCP[Nextcloud MCP Server<br/>/mcp]
+    MCP -->|read scopes only| Apps[Notes, Files, Calendar,<br/>Deck, Contacts]
+    Astrolabe -->|tool results| Citations[Citations that<br/>link to the passage]
+
+    classDef internal fill:#e8f5e9
+    classDef standalone fill:#fff4e1
+
+    class User,Assistant,Astrolabe,Apps,Citations internal
+    class MCP standalone
+```
+
+The token is minted per user and per turn through Nextcloud's `oidc` app, so
+results are scoped to whoever is asking — a shared credential would leak one
+user's content into another's answer. Setup is documented in the
+[Astrolabe setup guide](https://docs.astrolabecloud.com/using/assistant).
 
 ## Authentication Architecture
 
@@ -692,7 +753,20 @@ Both MCP servers serve important but different roles in the Nextcloud ecosystem:
 - **Strength**: Action-oriented, safe/dangerous tools, MCP aggregation
 - **Audience**: Nextcloud users via Assistant app, AI-driven workflows
 
-**Key Insight**: These are complementary, not competing. Context Agent could even consume Nextcloud MCP Server as one of its external MCP sources, creating a unified ecosystem where:
-- External clients access Nextcloud via Nextcloud MCP Server
-- Internal users leverage Context Agent for AI assistance
-- Context Agent aggregates both internal tools and external MCP servers (including Nextcloud MCP Server)
+### Astrolabe (Nextcloud app)
+- **Purpose**: Let the Assistant answer from the user's own content, with citations
+- **Strength**: No AppAPI or ExApp, per-user tokens, read-only by construction, evidence the user can open
+- **Audience**: Nextcloud users via the Assistant app, on instances that want retrieval rather than actions
+
+**Key Insight**: These are complementary, not competing. There are two distinct
+ways to combine them, and they are often confused:
+
+- **Context Agent consuming this server** as one of its external MCP sources —
+  the Assistant gains Nextcloud CRUD tools alongside its own, and keeps its
+  write/confirmation model.
+- **Astrolabe providing the agent instead**, driving this server's `/mcp` — the
+  Assistant answers from the user's documents and cites them, with no ExApp in
+  the picture.
+
+Either way, external clients keep talking to this server directly, which is what
+it was built for.

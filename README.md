@@ -13,7 +13,7 @@ Enable Large Language Models like Claude, GPT, and Gemini to interact with your 
 This is a **dedicated standalone MCP server** designed for external MCP clients like Claude Code and IDEs. It runs independently of Nextcloud (Docker, VM, Kubernetes, or local) and provides deep CRUD operations across Nextcloud apps.
 
 > [!NOTE]
-> **Looking for AI features inside Nextcloud?** Nextcloud also provides [Context Agent](https://github.com/nextcloud/context_agent), which powers the Assistant app and runs as an ExApp inside Nextcloud. See [docs/comparison-context-agent.md](docs/comparison-context-agent.md) for a detailed comparison of use cases.
+> **Want AI features inside Nextcloud instead?** You can point Nextcloud's own Assistant at this server — see [AI inside Nextcloud](#ai-inside-nextcloud) below.
 
 > [!TIP]
 > **Don't want to self-host?** [Astrolabe Cloud](https://astrolabecloud.com) is a managed hosting service for this MCP server, aimed at users and teams who want advanced features like background sync and semantic search without operating the infrastructure themselves. The service is currently under development — sign up on the landing page to join the early-adopter list.
@@ -110,6 +110,21 @@ The MCP server authenticates to Nextcloud using **app-specific passwords** (Basi
 OAuth-direct-to-Nextcloud is no longer supported (it required upstream patches to `user_oidc` that were never merged). Login Flow v2 replaces it for multi-user deployments and works with stock Nextcloud.
 
 See [docs/authentication.md](docs/authentication.md) for setup instructions.
+
+## AI inside Nextcloud
+
+This server was built for AI assistants that live *outside* Nextcloud — Claude Code, an IDE, a desktop client. But Nextcloud has its own chat, the **Assistant** app, and there are two ways to give it access to your content.
+
+| Answering the Assistant's "Chat with AI" | What it needs | What it does |
+|---|---|---|
+| **[Context Agent](https://github.com/nextcloud/context_agent)** (by Nextcloud) | AppAPI and a separate container to run the ExApp | Acts on your Nextcloud — sends Talk messages, creates events, and other write actions, with a confirmation step |
+| **[Astrolabe](https://github.com/cbcoutinho/astrolabe)** + this server | The Astrolabe app, and this server reachable from it | Answers *from your own documents* and cites them: every claim links to the file, note or card it came from. Read-only |
+
+Astrolabe is a Nextcloud app that registers itself as the Assistant's agent provider, so no AppAPI and no extra container are involved — the Assistant talks to it, and it searches your content through this server. Each user's questions run under their own identity, so nobody sees anything they couldn't already open.
+
+You can install both and pick per instance, or neither: none of this is required to use this server from an external MCP client.
+
+To set it up, see the [Astrolabe setup guide](https://docs.astrolabecloud.com/using/assistant). For the architectural detail behind the comparison, see [docs/comparison-context-agent.md](docs/comparison-context-agent.md).
 
 ## Semantic Search
 
