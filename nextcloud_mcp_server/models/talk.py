@@ -129,6 +129,14 @@ class GetConversationResponse(BaseResponse):
     conversation: TalkConversation = Field(description="The Talk conversation")
 
 
+class CreateConversationResponse(BaseResponse):
+    """Response model returned after creating a Talk conversation."""
+
+    conversation: TalkConversation = Field(
+        description="The newly created Talk conversation (includes token)"
+    )
+
+
 class ListMessagesResponse(BaseResponse):
     """Response model for fetching chat history of a conversation."""
 

@@ -9,6 +9,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
+    CreateConversationResponse,
     GetConversationResponse,
     ListConversationsResponse,
     ListMessagesResponse,
@@ -158,6 +159,46 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         )
 
     # Write tools
+
+    @mcp.tool(
+        title="Create Talk Conversation",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("talk.write")
+    @instrument_tool
+    async def talk_create_conversation(
+        ctx: Context,
+        room_type: int = 2,
+        room_name: str = "",
+        invite: str | None = None,
+    ) -> CreateConversationResponse:
+        """Create a new Talk conversation (one-to-one, group, or public).
+
+        Use this when the agent needs to start a chat that does not yet
+        appear in ``talk_list_conversations``. The returned conversation
+        includes ``token`` for a follow-up ``talk_send_message``.
+
+        Args:
+            room_type: 1=one-to-one, 2=group, 3=public. Defaults to 2.
+            room_name: Display name. Required for group/public rooms.
+                For one-to-one (room_type=1) may be empty; ``invite``
+                must be the other user's id.
+            invite: User id (or group id) to invite at creation time.
+                Required for one-to-one rooms.
+        """
+        if room_type == 1 and not (invite or "").strip():
+            raise ValueError(
+                "invite (other user id) is required for one-to-one conversations"
+            )
+        if room_type in (2, 3) and not (room_name or "").strip():
+            raise ValueError("room_name is required for group/public conversations")
+        client = await get_client(ctx)
+        conversation = await client.talk.create_conversation(
+            room_type=room_type,
+            room_name=room_name or (invite or ""),
+            invite=invite,
+        )
+        return CreateConversationResponse(conversation=conversation)
 
     @mcp.tool(
         title="Send Talk Message",
