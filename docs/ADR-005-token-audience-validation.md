@@ -854,7 +854,7 @@ the Astrolabe client id in `ALLOWED_MCP_CLIENTS`?".
 
 | Surface | Verification entry point | Client allowlist |
 |---|---|---|
-| `/oauth/authorize`, `/oauth/register` (AS proxy, ADR-023) | `ClientRegistry.validate_client` (`auth/client_registry.py:158`), called from `auth/oauth_routes.py:260`. The DCR proxy consults the same registry by other methods — `find_client_for_redirect_uris` (`:1360`) and `register_proxy_client` (`:1439`) | **`ALLOWED_MCP_CLIENTS`**, fail-closed (empty ⇒ every client rejected) |
+| `/oauth/authorize`, `/oauth/register` (AS proxy, ADR-023) | `ClientRegistry.validate_client` (`auth/client_registry.py:158`), called from `auth/oauth_routes.py:260`. The DCR proxy consults the same registry by other methods — `find_client_for_redirect_uris` (`:1360`) and `register_proxy_client` (`:1440`) | **`ALLOWED_MCP_CLIENTS`**, fail-closed (empty ⇒ every client rejected) |
 | `/api/v1/*` (management API, ADR-018) | `UnifiedTokenVerifier.verify_token_for_management_api` (`auth/unified_verifier.py:169`) | **`ALLOWED_MGMT_CLIENT`**, fail-closed, checked against the token's `client_id` claim at `:275` — relaxed *only* for opaque tokens validated via the userinfo fallback, which carry no verifiable `client_id` |
 | `/mcp` | `UnifiedTokenVerifier.verify_token` → `_verify_mcp_audience` (`auth/unified_verifier.py:144`, `:284`) | **none** |
 
