@@ -217,6 +217,18 @@ _DEFAULTS: dict[str, Any] = {
     # timing out or exhausting memory rather than failing predictably. 0
     # disables the guard.
     "webdav_write_max_mb": 50.0,
+    # Transport security (MCP SDK TransportSecuritySettings). Default False
+    # preserves the behaviour hardcoded before these knobs existed: MCP 1.23+
+    # auto-enables localhost-only host checking, which breaks k8s/Docker service
+    # DNS names (docs/MCP-1.23-DNS-REBINDING-FIX.md). Enable it plus
+    # MCP_ALLOWED_HOSTS when the server is reachable from a browser.
+    "mcp_dns_rebinding_protection": False,
+    # Comma-separated Host / Origin allowlists, honoured only when the above is
+    # enabled. Empty means "the SDK's own defaults".
+    "mcp_allowed_hosts": "",
+    "mcp_allowed_origins": "",
+    # Comma-separated CORS origin allowlist. "*" preserves today's behaviour.
+    "cors_allow_origins": "*",
     # Page ceiling for markdown reconstruction (see document_markdown_max_pages).
     "document_markdown_max_pages": 150,
     # Pages per pypdfium2 extraction window (see document_parse_page_window).
@@ -1160,6 +1172,12 @@ class Settings:
     # Pre-flight cap (MB) on nc_webdav_write_file's content (see _DEFAULTS
     # for rationale). 0 disables the guard.
     webdav_write_max_mb: float = 50.0
+    # Transport security. See _DEFAULTS for why the protection defaults off.
+    mcp_dns_rebinding_protection: bool = False
+    mcp_allowed_hosts: str = ""
+    mcp_allowed_origins: str = ""
+    # CORS origin allowlist; "*" is today's behaviour.
+    cors_allow_origins: str = "*"
     # Page ceiling above which the structured tier skips pymupdf4llm.to_markdown
     # and returns the raw text layer instead. 0 disables markdown entirely
     # (every document takes the raw-text path), matching how
@@ -2023,6 +2041,10 @@ def _build_settings() -> Settings:
         "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
         "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
         "webdav_write_max_mb": "WEBDAV_WRITE_MAX_MB",
+        "mcp_dns_rebinding_protection": "MCP_DNS_REBINDING_PROTECTION",
+        "mcp_allowed_hosts": "MCP_ALLOWED_HOSTS",
+        "mcp_allowed_origins": "MCP_ALLOWED_ORIGINS",
+        "cors_allow_origins": "CORS_ALLOW_ORIGINS",
         "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",

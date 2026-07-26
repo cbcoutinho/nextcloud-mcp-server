@@ -1488,6 +1488,65 @@ async def setup_oauth_config_for_multi_user_basic(
     return (token_verifier, refresh_token_storage, client_id, client_secret)
 
 
+def _csv_setting(raw: str) -> list[str]:
+    """Split a comma-separated setting into a list, dropping blanks."""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _build_transport_security() -> TransportSecuritySettings:
+    """Assemble TransportSecuritySettings from configuration.
+
+    Defaults to protection *off*, which is what was hardcoded here before these
+    knobs existed: MCP 1.23+ auto-enables localhost-only host checking, and that
+    breaks k8s/Docker service DNS names (docs/MCP-1.23-DNS-REBINDING-FIX.md).
+    Keeping the default preserves every existing deployment's behaviour; the
+    point of this is that re-enabling it no longer requires editing the source.
+
+    ``allowed_hosts``/``allowed_origins`` are only meaningful when the protection
+    is on, so an allowlist set without it is a misconfiguration worth warning
+    about rather than silently ignoring.
+    """
+    settings = get_settings()
+    enabled = settings.mcp_dns_rebinding_protection
+    hosts = _csv_setting(settings.mcp_allowed_hosts)
+    origins = _csv_setting(settings.mcp_allowed_origins)
+
+    if not enabled and (hosts or origins):
+        logger.warning(
+            "MCP_ALLOWED_HOSTS/MCP_ALLOWED_ORIGINS are set but "
+            "MCP_DNS_REBINDING_PROTECTION is false, so they have no effect. "
+            "Set MCP_DNS_REBINDING_PROTECTION=true to enforce them."
+        )
+
+    if enabled and not hosts:
+        # The SDK defaults allowed_hosts to [] and TransportSecurityMiddleware's
+        # _validate_host returns False for a host that is not in the list — with
+        # an empty list that is *every* request. Turning the flag on without an
+        # allowlist therefore yields a server that rejects all traffic, which
+        # presents as a total outage rather than a configuration error. Refuse to
+        # start instead, with the fix in the message.
+        raise ValueError(
+            "MCP_DNS_REBINDING_PROTECTION is enabled but MCP_ALLOWED_HOSTS is "
+            "empty. The MCP SDK rejects any Host not in the allowlist, so an "
+            "empty list would reject every request. Set MCP_ALLOWED_HOSTS to the "
+            "hostnames this server is reached by, e.g. "
+            "'mcp.example.com,mcp.svc.cluster.local' (a ':*' suffix allows any "
+            "port, e.g. 'localhost:*')."
+        )
+
+    kwargs: dict[str, Any] = {"enable_dns_rebinding_protection": enabled}
+    if enabled:
+        kwargs["allowed_hosts"] = hosts
+        if origins:
+            kwargs["allowed_origins"] = origins
+        logger.info(
+            "DNS rebinding protection enabled (allowed_hosts=%s, allowed_origins=%s)",
+            hosts,
+            origins or "any (Origin unset or unchecked)",
+        )
+    return TransportSecuritySettings(**kwargs)
+
+
 def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
@@ -1736,11 +1795,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
-            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
-            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=False
-            ),
+            transport_security=_build_transport_security(),
         )
     else:
         # BasicAuth modes (single-user or multi-user)
@@ -1748,11 +1803,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         mcp = FastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_basic,
-            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
-            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=False
-            ),
+            transport_security=_build_transport_security(),
         )
 
     @mcp.resource("nc://capabilities")
@@ -3068,10 +3119,26 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
         return await call_next(request)
 
-    # Add CORS middleware to allow browser-based clients like MCP Inspector
+    # Add CORS middleware to allow browser-based clients like MCP Inspector.
+    #
+    # The default is still "*", so behaviour is unchanged — but it is now a
+    # setting rather than a literal, and the wildcard is called out at startup.
+    # "*" together with allow_credentials=True is not the permissive-but-inert
+    # combination it looks like: Starlette echoes the request's Origin back
+    # instead of "*" (a bare "*" is invalid with credentials per the CORS spec),
+    # so *any* origin may send credentialed requests. Fine behind a private
+    # network or for local Inspector use; not something to leave unexamined on a
+    # server reachable from a browser.
+    cors_origins = _csv_setting(get_settings().cors_allow_origins)
+    if "*" in cors_origins:
+        logger.warning(
+            "CORS allows any origin with credentials (CORS_ALLOW_ORIGINS='*'). "
+            "Set CORS_ALLOW_ORIGINS to an explicit comma-separated list if this "
+            "server is reachable from a browser."
+        )
     app.add_middleware(
         CORSMiddleware,  # type: ignore[invalid-argument-type]
-        allow_origins=["*"],  # Allow all origins for development
+        allow_origins=cors_origins or ["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

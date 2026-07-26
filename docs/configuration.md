@@ -1563,3 +1563,45 @@ Use Docker secrets for sensitive values in production (`TOKEN_ENCRYPTION_KEY`, `
 - [Troubleshooting](troubleshooting.md) - Common configuration issues
 - [ADR-021](ADR-021-configuration-consolidation.md) - Configuration consolidation architecture decision
 - [ADR-022](ADR-022-deployment-mode-consolidation.md) - Deployment mode consolidation
+
+## Transport security
+
+The MCP SDK's DNS-rebinding protection validates the `Host` and `Origin` headers.
+It is **off by default**, which is what this server hardcoded before these
+settings existed: MCP SDK 1.23+ auto-enables localhost-only host checking, and
+that breaks Kubernetes/Docker service DNS names (see
+`docs/MCP-1.23-DNS-REBINDING-FIX.md`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MCP_DNS_REBINDING_PROTECTION` | `false` | Enable `Host`/`Origin` validation |
+| `MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated `Host` allowlist. **Required** when the protection is on |
+| `MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated `Origin` allowlist. Optional |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated CORS origin allowlist |
+
+```bash
+MCP_DNS_REBINDING_PROTECTION=true
+MCP_ALLOWED_HOSTS=mcp.example.com,mcp.svc.cluster.local,localhost:*
+```
+
+A `:*` suffix allows any port (`localhost:*`).
+
+**Enabling the protection without `MCP_ALLOWED_HOSTS` fails at startup**, on
+purpose. The SDK rejects any `Host` not in the allowlist, and the default list is
+empty — so the flag alone would produce a server that rejects every request,
+which presents as a total outage rather than a misconfiguration. `MCP_ALLOWED_ORIGINS`
+has no such requirement: `Origin` is absent on same-origin requests and the SDK
+allows that case.
+
+Setting either allowlist while the protection is off logs a warning, since the
+values have no effect.
+
+### CORS
+
+`CORS_ALLOW_ORIGINS` defaults to `*`, unchanged from before. Note that `*`
+combined with credentials is not the inert wildcard it appears to be: Starlette
+echoes the request's `Origin` back rather than `*` (a bare `*` is invalid with
+credentials per the CORS spec), so **any** origin may send credentialed requests.
+That is fine on a private network or for local MCP Inspector use; set an explicit
+list if the server is reachable from a browser. A warning is logged at startup
+while the wildcard is in effect.
