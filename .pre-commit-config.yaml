@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/commitizen-tools/commitizen
-  rev: v4.9.0
+  rev: v4.16.5
   hooks:
   - id: commitizen
   - id: commitizen-branch
