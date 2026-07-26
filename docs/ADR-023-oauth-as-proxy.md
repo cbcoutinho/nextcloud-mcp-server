@@ -102,6 +102,8 @@ The `authorization_servers` field in the PRM response now points to the MCP serv
 
 Client registration requests at `/oauth/register` are proxied to Nextcloud's DCR endpoint. The resulting `client_id` is stored in the local `ClientRegistry` so that `/oauth/authorize` can validate it. The client receives the same DCR response it would get from Nextcloud directly.
 
+The `ClientRegistry` — and therefore `ALLOWED_MCP_CLIENTS` — gates **only** these AS-proxy endpoints. `/mcp` never consults it: it authorizes by audience and `sub`, so a client that obtains its token straight from the IdP (as the Astrolabe Nextcloud app does) needs no entry. See [ADR-005 → *Client Identity Is Not an Authorization Gate on `/mcp`*](ADR-005-token-audience-validation.md#client-identity-is-not-an-authorization-gate-on-mcp).
+
 ## Alternatives Considered
 
 ### 1. Relax Audience Validation

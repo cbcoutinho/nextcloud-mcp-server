@@ -2,8 +2,8 @@
 
 **Status**: Implemented
 **Date**: 2025-01-05
-**Updated**: 2025-11-05
-**Related**: Issue #261, ADR-004, upstream-oauth.md, RFC 7519, RFC 8707, RFC 9728
+**Updated**: 2026-07-26
+**Related**: Issue #261, ADR-004, ADR-018 (management API), ADR-023 (AS proxy), upstream-oauth.md, RFC 7519, RFC 8707, RFC 9728
 **Supersedes**: Token passthrough mode in ADR-004
 
 ## Implementation Note
@@ -841,6 +841,125 @@ This implementation ensures **full compliance** with:
 - [MCP Security Best Practices - Token Passthrough](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#token-passthrough)
 - OAuth 2.0 Resource Indicators (RFC 8707)
 - OAuth 2.0 Token Exchange (RFC 8693)
+
+## Client Identity Is Not an Authorization Gate on `/mcp`
+
+**Added 2026-07-26.** `/mcp` authorizes by **audience and `sub`**, never by client
+identity. This section records that explicitly, because the server has two
+client-allowlist env vars and neither one gates `/mcp` — a shape that reads as an
+oversight until you trace it, and that has already prompted the question "why isn't
+the Astrolabe client id in `ALLOWED_MCP_CLIENTS`?".
+
+### Three surfaces, two allowlists
+
+| Surface | Verification entry point | Client allowlist |
+|---|---|---|
+| `/oauth/authorize`, `/oauth/register` (AS proxy, ADR-023) | `ClientRegistry.validate_client` (`auth/client_registry.py:158`), called from `auth/oauth_routes.py:260`. The DCR proxy consults the same registry by other methods — `find_client_for_redirect_uris` (`:1360`) and `register_proxy_client` (`:1440`) | **`ALLOWED_MCP_CLIENTS`**, fail-closed (empty ⇒ every client rejected) |
+| `/api/v1/*` (management API, ADR-018) | `UnifiedTokenVerifier.verify_token_for_management_api` (`auth/unified_verifier.py:169`) | **`ALLOWED_MGMT_CLIENT`**, fail-closed, checked against the token's `client_id` claim at `:275` — relaxed *only* for opaque tokens validated via the userinfo fallback, which carry no verifiable `client_id` |
+| `/mcp` | `UnifiedTokenVerifier.verify_token` → `_verify_mcp_audience` (`auth/unified_verifier.py:144`, `:284`) | **none** |
+
+`ALLOWED_MCP_CLIENTS` is an **authorization-server** gate, not a resource-server gate.
+It exists because the MCP server acts as its own AS proxy (ADR-023): it decides which
+`client_id` may drive *our* `/oauth/authorize` and which redirect URIs that client may
+use. It says nothing about tokens obtained anywhere else, and it is not consulted on
+any request to `/mcp`.
+
+### What `/mcp` actually validates
+
+For a JWT (`_verify_jwt_signature`, `auth/unified_verifier.py:516`):
+
+1. **Signature** against the IdP's JWKS, plus `exp` and `iat`.
+2. **Issuer**, checked manually against `valid_issuers` — `OIDC_ISSUER` and
+   `NEXTCLOUD_HOST` — so internal and public URLs can both be accepted.
+3. **Audience**, via `_has_mcp_audience` (`:462`): the token must name the MCP server's
+   own `oidc_client_id`, or `NEXTCLOUD_MCP_SERVER_URL`, or `<NEXTCLOUD_MCP_SERVER_URL>/mcp`
+   (with a `client_id` fallback for IdPs like Cognito that omit `aud` on access tokens).
+4. **Identity** from `sub`, stored as `AccessToken.resource`
+   (`_create_access_token_with_cache_key`) and read back by `auth/context_helper.py` —
+   this is what scopes every result to one user.
+5. **Capability** from the `scope` claim, which `@require_scopes` uses to filter the
+   tool catalogue and reject individual calls; in `login_flow` mode
+   `@require_provisioning` additionally requires that the user has completed Flow 2.
+
+There is **no `azp`/`client_id` comparison** anywhere on this path. That is deliberate
+and RFC-correct: per RFC 7519 §4.1.3 a resource server validates its own presence in
+`aud`. Which client obtained the token is the authorization server's business.
+
+### Worked example: Astrolabe needs no `ALLOWED_MCP_CLIENTS` entry
+
+The Astrolabe Nextcloud app talks to this server over two channels, and neither one
+goes through our AS proxy:
+
+- **Management API** — `lib/Service/McpServerClient.php` → `/api/v1/*`. Its token's
+  `client_id` claim **must** appear in `ALLOWED_MGMT_CLIENT` (see the dev stack's
+  `docker-compose.yml`).
+- **`/mcp`** — `lib/Service/Mcp/McpClientFactory.php`, used by the Assistant agent
+  (`ContextAgentProvider`, registering for the core `core:contextagent:interaction`
+  task type). Its token comes from `lib/Service/McpTokenMinter.php`, which dispatches
+  the Nextcloud `oidc` app's `TokenGenerationRequestEvent` in-process: no browser, no
+  redirect, no PKCE, no call to `/oauth/*`. The `oidc` app looks the client up in *its
+  own* registry (`astrolabe_client_id` system config) and mints a JWT whose `aud` is
+  the RFC 8707 resource indicator Astrolabe passed — `mcp_server_public_url`.
+
+So when that bearer arrives at `/mcp`, the only questions asked are the five above, and
+all five are answerable. There is nothing for `ALLOWED_MCP_CLIENTS` to match — and no
+entry could be written even if one were wanted, since its entry format is
+`client_id|redirect_uri` and this client has no redirect URI.
+
+The corollary is a configuration invariant worth stating plainly: Astrolabe's
+`mcp_server_public_url` must equal this server's `NEXTCLOUD_MCP_SERVER_URL`, because
+that string is the token audience. When they disagree, `/mcp` returns 401 for every
+call **while the management API keeps working** — `/api/v1/*` deliberately skips both
+the audience and the issuer check — so half the integration looks healthy.
+
+### `/mcp` requires a JWT
+
+The opaque-token escape hatches are management-only. `_verify_without_audience_check`
+(`:356`) falls back from introspection to the userinfo endpoint (`:641`) precisely to
+accept opaque tokens minted for a *different* OIDC client, which our own introspection
+reports `active=false` cross-client. `_verify_mcp_audience` has no such fallback: an
+opaque cross-client token is rejected at `/mcp`. Deployments driving `/mcp` from a
+Nextcloud-app-minted token therefore depend on the `oidc` app issuing **JWT** access
+tokens.
+
+### The trust boundary this implies
+
+Any OIDC client registered in Nextcloud can request `resource=<mcp url>` and reach
+`/mcp` as the consenting user. The gates on that are:
+
+- **Nextcloud's own client registry**, which only an administrator can add to;
+- the **`sub` binding** — a token is bound to one user, and every tool call resolves
+  its Nextcloud credentials for that user only;
+- **scope filtering**, which bounds what the holder can do with it.
+
+This is the intended model, but note what it does *not* do: `ALLOWED_MCP_CLIENTS` is
+**not** a perimeter around the tool surface. A reader who assumes it is will
+mis-estimate the blast radius of registering a new OIDC client in Nextcloud.
+
+### Alternatives considered
+
+#### Enforce an `azp`/`client_id` allowlist on `/mcp`
+
+**Not taken.** The gate would duplicate Nextcloud's own OIDC client registry — already
+admin-controlled — while any token that reaches `/mcp` is already bound to a single
+`sub` with a scope-filtered tool catalogue. It would also have to fail *open* when
+unset to avoid breaking every existing deployment, which makes it a weak control.
+Revisit only if a deployment needs to admit a Nextcloud-registered client to
+`/api/v1/*` but not to `/mcp`.
+
+### If the two allowlist env vars are consolidated
+
+`auth/client_registry.py:78` and `auth/unified_verifier.py:107` both note that
+`ALLOWED_MCP_CLIENTS` and `ALLOWED_MGMT_CLIENT` are separate "for now". If they are
+merged, the merged list must remain an **AS-proxy** gate:
+
+- Applying it to `/mcp` would break Astrolabe and every other resource-indicator
+  client that legitimately obtains its token from the IdP directly.
+- The redirect-URI validation `ALLOWED_MCP_CLIENTS` performs is meaningless for such
+  clients — they have no redirect URI.
+- `ALLOWED_MGMT_CLIENT` matches a token's `client_id` **claim**; `ALLOWED_MCP_CLIENTS`
+  matches a `client_id` **request parameter** at the authorize endpoint. They are the
+  same word for two different things, and a merged var must pick one meaning.
 
 ## Migration Guide
 
