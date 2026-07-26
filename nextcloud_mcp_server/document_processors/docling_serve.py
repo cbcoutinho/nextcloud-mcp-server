@@ -243,13 +243,13 @@ class DoclingProcessor(DocumentProcessor):
             self.ocr_lang,
             do_ocr,
         )
-        # DoclingProcessor is the INTERACTIVE path (nc_webdav_read_file on images /
-        # force_processor="docling"). Under VLM a convert is slow (~30-150s/page) and
-        # blocks the tool call for up to DOCLING_TIMEOUT, which can exceed an MCP
-        # client's own timeout. Don't inflate DOCLING_TIMEOUT to "fix" this: for bulk
-        # VLM use the async ingest path (DOCUMENT_OCR_PROVIDER=docling, its own
-        # DOCUMENT_OCR_TIMEOUT_SECONDS), and set DOCUMENT_READ_TIMEOUT_SECONDS for a
-        # graceful base64 fallback on interactive reads (ADR-032).
+        # DoclingProcessor is the INTERACTIVE path (nc_webdav_read_file on images).
+        # Under VLM a convert is slow (~30-150s/page) and blocks the tool call for
+        # up to DOCLING_TIMEOUT, which can exceed an MCP client's own timeout. Don't
+        # inflate DOCLING_TIMEOUT to "fix" this: for bulk VLM use the async ingest
+        # path (DOCUMENT_OCR_PROVIDER=docling, its own DOCUMENT_OCR_TIMEOUT_SECONDS),
+        # and set DOCUMENT_READ_TIMEOUT_SECONDS so an interactive read degrades to
+        # the raw file with an explicit note instead (ADR-032).
         if pipeline == "vlm":
             logger.warning(
                 "DOCLING_PIPELINE=vlm makes nc_webdav_read_file a slow synchronous "
@@ -296,6 +296,8 @@ class DoclingProcessor(DocumentProcessor):
                 "parsing_method": "docling",
                 "docling_pipeline": self.pipeline,
                 "text_length": len(text),
+                # ``to_formats=["md"]`` above: docling always returns markdown.
+                "parse_mode": "markdown",
             },
             processor=self.name,
         )

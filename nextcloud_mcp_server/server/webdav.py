@@ -1,8 +1,10 @@
 import base64
 import contextlib
 import logging
+from typing import TYPE_CHECKING, Literal
 
 import anyio
+from anyio.to_thread import run_sync
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -19,11 +21,15 @@ from nextcloud_mcp_server.models import (
     SearchFilesResponse,
     WriteFileResponse,
 )
+from nextcloud_mcp_server.models.webdav import ParseStatus
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
+    from nextcloud_mcp_server.document_processors.source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,105 @@ logger = logging.getLogger(__name__)
 # are conditions a caller reacts to rather than transport failures. They are
 # what makes ``success`` False on the typed response.
 _WEBDAV_CONFLICT_STATUSES = frozenset({404, 409, 412})
+
+#: Ceiling on the bytes an unparsed file may contribute to one MCP response.
+#: Base64 inflates by ~4/3 and the whole thing lands in a model's context, so a
+#: large binary is not merely expensive to return -- it is unusable once it
+#: arrives. Past this the response carries the file's metadata and says why the
+#: content is absent. A constant rather than a setting: the useful bound is the
+#: client's context, not anything an operator knows better.
+RAW_CONTENT_MAX_BYTES = 5 * 1024 * 1024
+
+
+async def _raw_response(
+    source: "DocumentSource",
+    path: str,
+    parse_status: ParseStatus,
+    notes: list[str],
+    *,
+    parse_tier: str | None = None,
+    parse_processor: str | None = None,
+    parsing_metadata: dict | None = None,
+) -> ReadFileResponse:
+    """Return the file itself: decoded text, or base64 bytes.
+
+    Reads back from the spool rather than from a download buffer held across the
+    parse -- that buffer is what used to make peak memory scale with document
+    size -- and stops at :data:`RAW_CONTENT_MAX_BYTES` so the "we could not parse
+    it" fallback cannot itself blow up the response.
+
+    Peak here is bounded accordingly: on the only path that reaches this with a
+    parse behind it (a FAILED parse), the failed result carries no text, so what
+    is resident is one capped read. A successful parse returns its text directly
+    and never calls this.
+
+    The read runs on a worker thread: it is a synchronous disk read that would
+    otherwise stall every other request on this event loop.
+    """
+    size = source.size
+    content_type = source.content_type
+    # Genuinely optional: only a streamed (spooled) source carries the origin's
+    # etag; an in-memory one has no transport response to have read it from.
+    etag = getattr(source, "etag", None)
+
+    def _read_capped() -> bytes | None:
+        if size > RAW_CONTENT_MAX_BYTES:
+            return None
+        with source.open() as fh:
+            return fh.read()
+
+    content = await run_sync(_read_capped)
+
+    if content is None:
+        return ReadFileResponse(
+            path=path,
+            content="",
+            content_type=content_type,
+            size=size,
+            parse_status=parse_status,
+            parse_tier=parse_tier,
+            parse_processor=parse_processor,
+            parse_notes=[
+                *notes,
+                f"The file itself ({size / (1024 * 1024):.1f} MB) is too large to "
+                f"return inline; download it from Nextcloud directly.",
+            ],
+            parsing_metadata=parsing_metadata,
+            etag=etag,
+        )
+
+    if content_type.startswith("text/"):
+        try:
+            return ReadFileResponse(
+                path=path,
+                content=content.decode("utf-8"),
+                content_type=content_type,
+                size=size,
+                parse_status=parse_status,
+                parse_tier=parse_tier,
+                parse_processor=parse_processor,
+                parse_notes=notes,
+                parsing_metadata=parsing_metadata,
+                etag=etag,
+            )
+        except UnicodeDecodeError:
+            # Mislabelled text/*: fall through and hand back the bytes.
+            pass
+
+    return ReadFileResponse(
+        path=path,
+        content=base64.b64encode(content).decode("ascii"),
+        content_type=content_type,
+        size=size,
+        encoding="base64",
+        content_format="base64",
+        parse_status=parse_status,
+        parse_tier=parse_tier,
+        parse_processor=parse_processor,
+        parse_notes=notes,
+        parsing_metadata=parsing_metadata,
+        etag=etag,
+    )
 
 
 def configure_webdav_tools(mcp: FastMCP):
@@ -104,7 +209,9 @@ def configure_webdav_tools(mcp: FastMCP):
     @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_read_file(
-        path: str, ctx: Context, force_processor: str | None = None
+        path: str,
+        ctx: Context,
+        parse_document: Literal["auto", "markdown", "raw"] = "auto",
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
@@ -113,20 +220,34 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Args:
             path: Full path to the file to read
-            force_processor: Force a specific document processor by name instead of
-                auto-selecting. Set to ``"docling"`` to parse the file with a
-                docling-serve instance even when it is a PDF that already has a text
-                layer -- useful when the text layer misses tables/figures or is
-                incomplete. Requires that processor to be enabled/registered;
-                raises ``ToolError`` otherwise. ``None`` = auto-select.
+            parse_document: How to handle a document (PDF, DOCX, image, ...):
+
+                - ``"auto"`` (default): extract its text. Cheapest route that
+                  works -- a PDF with a good text layer is read directly, and a
+                  scanned one escalates to OCR when the server has OCR enabled.
+                - ``"markdown"``: additionally reconstruct structure (headings,
+                  tables) rather than returning a flat text layer. Costs a
+                  second, slower parse and is bounded by a page ceiling; when it
+                  cannot be honoured the response says so instead of pretending.
+                - ``"raw"``: do not parse. Text files are decoded, anything else
+                  comes back base64-encoded.
+
+                Files no processor handles (plain text, JSON, archives) are
+                unaffected by this argument.
 
         Returns:
-            ``ReadFileResponse`` with ``path``, ``content``, ``content_type``,
-            ``size`` and ``etag``. Depending on the file:
-            - Text files are decoded to UTF-8.
-            - Documents (PDF, DOCX, ...) are parsed to text with
-              ``parsed=True`` and ``parsing_metadata`` set.
-            - Other binary files are base64-encoded with ``encoding="base64"``.
+            ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
+            ``size``/``etag`` it always describes what you are actually holding:
+
+            - ``parse_status``: ``parsed`` / ``failed`` / ``skipped`` /
+              ``not_applicable``.
+            - ``content_format``: ``markdown``, ``text`` or ``base64``.
+            - ``parse_tier`` / ``parse_processor``: which extraction tier
+              produced the content (``fast``, ``structured``, ``ocr``).
+            - ``parse_notes``: **if this is non-empty, tell the user what
+              degraded** (OCR unavailable, structure not reconstructed, size cap,
+              parse failure) rather than presenting the content as the complete
+              document.
             - ``etag``: pass this back into ``nc_webdav_write_file``'s
               ``if_match`` when writing this same path later, so a manual edit
               made elsewhere in the meantime (e.g. in the Nextcloud web UI) is
@@ -139,128 +260,141 @@ def configure_webdav_tools(mcp: FastMCP):
         if is_path_excluded(path, excluded):
             raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
 
-        content, content_type, etag = await client.webdav.read_file(path)
-
         # Imported lazily so server startup never loads the document-parsing
         # stack (document_processors -> pymupdf -> _isolation). That stack is an
         # ingest-layer concern and, before this, broke Windows startup via a
         # Unix-only ``import resource`` (#877). It is only needed when a file is
         # actually read and parsed.
-        from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
-            get_registry,
+        #
+        # Imported as a MODULE, not by name: this tool has a parameter called
+        # ``parse_document``, and ``from ... import parse_document`` would rebind
+        # it and silently discard the caller's choice.
+        from nextcloud_mcp_server.client.webdav import OversizeDownload  # noqa: PLC0415
+        from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
+        from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
+            download_ceiling,
+            spooled_document,
         )
-        from nextcloud_mcp_server.utils.document_parser import (  # noqa: PLC0415
-            is_parseable_document,
-            parse_document,
-        )
 
-        # force_processor is client/LLM-controlled: validate it against the
-        # registered-processor allowlist (a dict-key lookup, never interpolated
-        # into a URL/path) and surface a clear error with the available names
-        # rather than the opaque base64 fallback parse_document would otherwise
-        # return for an unknown/unconfigured processor.
-        if force_processor is not None:
-            registry = get_registry()
-            if registry.get_processor(force_processor) is None:
-                available = ", ".join(registry.list_processors()) or "none"
-                raise ToolError(
-                    f"Unknown document processor {force_processor!r}. Ensure document "
-                    f"processing is enabled (ENABLE_DOCUMENT_PROCESSING) and the "
-                    f"processor is configured (e.g. ENABLE_DOCLING + DOCLING_API_URL "
-                    f"for 'docling'). Available: {available}"
-                )
+        settings = get_settings()
+        ceiling = download_ceiling(settings)
 
-        # Parse when the type is auto-parseable OR the caller forced a processor.
-        # is_parseable_document() also checks that document processing is enabled.
-        if force_processor is not None or is_parseable_document(content_type):
-            # Optional interactive cap (ADR-032): bound the SYNCHRONOUS parse so a
-            # slow VLM/OCR convert returns base64 quickly instead of blocking past
-            # the MCP client's own timeout. Read lazily so test/env overrides apply.
-            # Disabled (None) -> nullcontext, i.e. unchanged behavior. Only wraps this
-            # interactive tool; the async ingest/worker path is never bounded here.
-            read_cap = get_settings().document_read_timeout_seconds
-            cap_ctx = (
-                anyio.fail_after(read_cap)
-                if read_cap is not None
-                else contextlib.nullcontext()
-            )
-            try:
-                logger.info(
-                    "Parsing document %r of type %r%s",
-                    path,
-                    content_type,
-                    f" with forced processor {force_processor!r}"
-                    if force_processor
-                    else "",
-                )
-                with cap_ctx:
-                    parsed_text, metadata = await parse_document(
-                        content,
-                        content_type,
-                        filename=path,
-                        progress_callback=ctx.report_progress,
-                        processor_name=force_processor,
+        # Stream the document to a spool file instead of buffering the whole
+        # response: this tool runs in the API role, which is not sized to hold a
+        # multi-hundred-MB document in memory, and the tiered pipeline parses
+        # straight from the path (page-windowed) once it is there. The ceiling is
+        # the same one ingest streams under, so a runaway transfer is aborted
+        # rather than filling the disk. The block owns the spool file: everything
+        # that touches the document must happen inside it.
+        try:
+            async with spooled_document(
+                client,
+                path,
+                spool_dir=settings.document_spool_dir,
+                max_bytes=ceiling,
+            ) as source:
+                content_type = source.content_type
+                etag = source.etag
+
+                if parse_document != "raw" and document_parser.is_parseable_document(
+                    content_type
+                ):
+                    # Optional interactive cap (ADR-032): bound the SYNCHRONOUS
+                    # parse so a slow VLM/OCR convert returns the raw file quickly
+                    # instead of blocking past the MCP client's own timeout.
+                    # Disabled (None) -> nullcontext. Only wraps this interactive
+                    # tool; the async ingest/worker path is never bounded here.
+                    read_cap = settings.document_read_timeout_seconds
+                    cap_ctx = (
+                        anyio.fail_after(read_cap)
+                        if read_cap is not None
+                        else contextlib.nullcontext()
                     )
-                return ReadFileResponse(
-                    path=path,
-                    content=parsed_text,
-                    content_type=content_type,
-                    size=len(content),
-                    parsed=True,
-                    parsing_metadata=metadata,
-                    etag=etag,
-                )
-            except TimeoutError as e:
-                # Caught before the generic Exception (subclass-first). When the cap
-                # is set this is our anyio.fail_after tripping; when it is None the
-                # TimeoutError bubbled from a backend's own anyio timeout (e.g. the
-                # Mistral OCR path) -- either way base64 is the right fallback.
-                if read_cap is not None:
-                    logger.warning(
-                        "Parsing document %r exceeded the interactive read cap "
-                        "(%ss), falling back to base64",
-                        path,
-                        read_cap,
+                    try:
+                        logger.info(
+                            "Parsing document %r of type %r (mode=%s)",
+                            path,
+                            content_type,
+                            parse_document,
+                        )
+                        with cap_ctx:
+                            result = await document_parser.parse_document_source(
+                                source,
+                                prefer_markdown=(parse_document == "markdown"),
+                                progress_callback=ctx.report_progress,
+                            )
+                    except TimeoutError as e:
+                        # Caught before the generic Exception (subclass-first). When
+                        # the cap is set this is our anyio.fail_after tripping; when
+                        # it is None the TimeoutError bubbled from a backend's own
+                        # anyio timeout (e.g. the Mistral OCR path).
+                        note = (
+                            f"Parsing was aborted after {read_cap}s "
+                            f"(DOCUMENT_READ_TIMEOUT_SECONDS); the raw file is "
+                            f"returned instead."
+                            if read_cap is not None
+                            else f"Parsing timed out ({e}); the raw file is returned "
+                            f"instead."
+                        )
+                        logger.warning("Parsing document %r timed out: %s", path, e)
+                        return await _raw_response(source, path, "failed", [note])
+                    except Exception as e:
+                        logger.warning("Failed to parse document %r: %s", path, e)
+                        return await _raw_response(
+                            source,
+                            path,
+                            "failed",
+                            [
+                                f"Parsing failed ({type(e).__name__}: {e}); the raw "
+                                f"file is returned instead."
+                            ],
+                        )
+
+                    summary = document_parser.summarize_parse(
+                        result,
+                        settings,
+                        markdown_requested=(parse_document == "markdown"),
                     )
-                else:
-                    logger.warning(
-                        "Failed to parse document %r, falling back to base64: %s",
-                        path,
-                        e,
+                    if summary.status == "failed":
+                        # An unsuccessful parse is never reported as content: hand
+                        # back the raw file with the reason attached.
+                        return await _raw_response(
+                            source,
+                            path,
+                            "failed",
+                            summary.notes,
+                            parse_tier=summary.tier,
+                            parse_processor=summary.processor,
+                            parsing_metadata=result.metadata,
+                        )
+                    return ReadFileResponse(
+                        path=path,
+                        content=result.text,
+                        content_type=content_type,
+                        size=source.size,
+                        parsed=True,
+                        parse_status="parsed",
+                        parse_tier=summary.tier,
+                        parse_processor=summary.processor,
+                        content_format=summary.content_format,
+                        parse_notes=summary.notes,
+                        parsing_metadata=result.metadata,
+                        etag=etag,
                     )
-                # Fall through to base64 encoding on timeout
-            except Exception as e:
-                logger.warning(
-                    "Failed to parse document %r, falling back to base64: %s",
-                    path,
-                    e,
+
+                status: ParseStatus = (
+                    "skipped" if parse_document == "raw" else "not_applicable"
                 )
-                # Fall through to base64 encoding on parse failure
-
-        # For text files, decode content for easier viewing
-        if content_type and content_type.startswith("text/"):
-            try:
-                decoded_content = content.decode("utf-8")
-                return ReadFileResponse(
-                    path=path,
-                    content=decoded_content,
-                    content_type=content_type,
-                    size=len(content),
-                    etag=etag,
-                )
-            except UnicodeDecodeError:
-                pass
-
-        # For binary files, return metadata and base64 encoded content
-
-        return ReadFileResponse(
-            path=path,
-            content=base64.b64encode(content).decode("ascii"),
-            content_type=content_type,
-            size=len(content),
-            encoding="base64",
-            etag=etag,
-        )
+                return await _raw_response(source, path, status, [])
+        except OversizeDownload as e:
+            # The transfer was aborted mid-flight, so there is no file left to
+            # describe -- not even its content type. Say that plainly rather than
+            # returning an empty response that reads like an empty document.
+            raise ToolError(
+                f"{path!r} was not downloaded: it exceeds the {ceiling} byte "
+                f"transfer ceiling for a single read (twice "
+                f"DOCUMENT_MAX_PDF_SIZE_MB). {e}"
+            ) from e
 
     @mcp.tool(
         title="Write File",

@@ -1,5 +1,7 @@
 """Document processing plugins for extracting text from various file formats."""
 
+from nextcloud_mcp_server.config import get_settings
+
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .ocr import OcrProcessor
 from .pymupdf import PyMuPDFProcessor
@@ -13,9 +15,19 @@ from .registry import ProcessorRegistry, get_registry
 # …), and sync/batch mode are all chosen from settings. It is reached only when
 # ``document_ocr_enabled`` is set. OCR gets the lowest priority so it's never the
 # non-tiered default for PDFs.
+#
+# This module is imported lazily (first parse), never at app startup, so reading
+# settings here does not drag the parse stack onto the startup path (#877).
+_settings = get_settings()
 _registry = get_registry()
 _registry.register(Pypdfium2FastProcessor(), priority=20)
-_registry.register(PyMuPDFProcessor(), priority=10)
+_registry.register(
+    PyMuPDFProcessor(
+        extract_images=_settings.pymupdf_extract_images,
+        image_dir=_settings.pymupdf_image_dir,
+    ),
+    priority=10,
+)
 _registry.register(
     OcrProcessor(
         name="ocr",

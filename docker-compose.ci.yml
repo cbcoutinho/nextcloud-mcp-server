@@ -25,5 +25,5 @@ services:
       - OPENAI_GENERATION_MODEL=${OPENAI_GENERATION_MODEL:-openai/gpt-4o-mini}
       # Faster sync for CI
       - VECTOR_SYNC_SCAN_INTERVAL=${VECTOR_SYNC_SCAN_INTERVAL:-5}
-      # Enable document processing for PDF parsing
-      - ENABLE_DOCUMENT_PROCESSING=true
+      # PDF parsing needs no flag: the built-in tiers are always available and
+      # parsing on read is the caller's per-call choice (Deck #894).

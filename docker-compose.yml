@@ -184,15 +184,18 @@ services:
 
       # Docling OCR-strong parsing backend (docling-serve HTTP API, ADR-031).
       # Off by default so the normal single-user lane is unchanged. The CI
-      # "docling" lane starts the `docling` profile and sets
-      # ENABLE_DOCUMENT_PROCESSING=true + ENABLE_DOCLING=true +
+      # "docling" lane starts the `docling` profile and sets ENABLE_DOCLING=true +
       # DOCLING_API_URL=http://docling:5001 to exercise the gated
       # tests/integration/test_docling_api.py suite. DOCLING_TIMEOUT is bumped in
-      # CI because CPU OCR is slow. ENABLE_DOCUMENT_PROCESSING is the master
-      # switch: initialize_document_processors() no-ops without it, so docling
-      # never registers on the webdav read_file path if it is unset.
-      - ENABLE_DOCUMENT_PROCESSING=${ENABLE_DOCUMENT_PROCESSING:-false}
+      # CI because CPU OCR is slow. Note docling serves PDFs as an OCR provider
+      # (DOCUMENT_OCR_PROVIDER=docling), never as a tier of its own; this
+      # standalone processor handles images.
       - ENABLE_DOCLING=${ENABLE_DOCLING:-false}
+      # OCR tier (opt-in). The docling lane turns it on with provider=docling so a
+      # scanned PDF escalates fast -> ocr and comes back as docling markdown.
+      - DOCUMENT_OCR_ENABLED=${DOCUMENT_OCR_ENABLED:-false}
+      - DOCUMENT_OCR_PROVIDER=${DOCUMENT_OCR_PROVIDER:-auto}
+      - DOCUMENT_OCR_TIMEOUT_SECONDS=${DOCUMENT_OCR_TIMEOUT_SECONDS:-180}
       - DOCLING_API_URL=${DOCLING_API_URL:-}
       - DOCLING_TIMEOUT=${DOCLING_TIMEOUT:-120}
       # Opt-in VLM pipeline (ADR-032): point docling-serve at its VLM presets
@@ -203,8 +206,8 @@ services:
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
       - DOCLING_VLM_PRESET=${DOCLING_VLM_PRESET:-}
       # Opt-in cap on the synchronous nc_webdav_read_file parse; empty = disabled.
-      # A client-friendly bound (e.g. 45-60) makes a slow VLM/OCR read fall back to
-      # base64 fast instead of blocking past the MCP client's own timeout.
+      # A client-friendly bound (e.g. 45-60) makes a slow VLM/OCR read return the
+      # raw file fast instead of blocking past the MCP client's own timeout.
       - DOCUMENT_READ_TIMEOUT_SECONDS=${DOCUMENT_READ_TIMEOUT_SECONDS:-}
     profiles:
       - single-user

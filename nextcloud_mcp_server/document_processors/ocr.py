@@ -756,6 +756,8 @@ class OcrProcessor(DocumentProcessor):
                 "page_count": len(boundaries),
                 "page_boundaries": boundaries,
                 "file_size": len(content),
+                # Every OCR backend returns GitHub-flavoured markdown per page.
+                "parse_mode": "markdown",
                 # Only when the backend returned layout geometry (surya); absent for
                 # markdown-only backends so generate_highlights uses pymupdf.
                 **({OCR_BLOCK_SPANS_KEY: block_spans} if block_spans else {}),
@@ -938,6 +940,7 @@ class OcrProcessor(DocumentProcessor):
                 "page_count": len(boundaries),
                 "page_boundaries": boundaries,
                 "file_size": len(content),
+                "parse_mode": "markdown",
                 **({OCR_BLOCK_SPANS_KEY: block_spans} if block_spans else {}),
             },
             processor=self.name,

@@ -142,9 +142,11 @@ def configure_sharing_tools(mcp: FastMCP):
     ) -> PublicDownloadLinkResponse:
         """Create a short-lived, read-only public download link for a file.
 
-        Use this for binary files (especially images) instead of reading them
-        inline: ``nc_webdav_read_file`` returns base64, which can exceed the MCP
-        client response budget and get truncated, leaving the file undecodable.
+        Use this for binary files (especially images) the client needs as bytes
+        rather than as text: ``nc_webdav_read_file`` base64s anything it cannot
+        extract text from, which can exceed the MCP client response budget and get
+        truncated, leaving the file undecodable. (For documents -- PDF, DOCX --
+        prefer reading them: that tool returns their text or markdown.)
         A public link keeps the MCP response small and lets the client download
         the exact original bytes from ``download_url``.
 

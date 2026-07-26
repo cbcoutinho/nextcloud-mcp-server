@@ -377,15 +377,18 @@ jobs:
           up-flags: "--build"
         env:
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
-          # Master switch: without it initialize_document_processors() no-ops and
-          # docling never registers on the webdav read_file path.
-          ENABLE_DOCUMENT_PROCESSING: "true"
           # Enable the docling backend in the single-user mcp service and point it
           # at the docling-serve container on the compose network.
           ENABLE_DOCLING: "true"
           DOCLING_API_URL: "http://docling:5001"
           # CPU OCR is slow; give the sync convert call generous headroom.
           DOCLING_TIMEOUT: "300"
+          # Docling serves PDFs as the OCR provider, so the OCR tier has to be on
+          # for a scanned PDF to reach it (there is no per-call processor override
+          # any more -- Deck #894).
+          DOCUMENT_OCR_ENABLED: "true"
+          DOCUMENT_OCR_PROVIDER: "docling"
+          DOCUMENT_OCR_TIMEOUT_SECONDS: "300"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -447,7 +450,12 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
           # Selects the skipif-gated assertions in tests/integration/test_docling_api.py.
+          # These must mirror what the compose step gave the MCP service: the
+          # skipifs read this process's environment, not the container's, so a
+          # value set only on compose leaves the test silently skipped.
           ENABLE_DOCLING: "true"
+          DOCUMENT_OCR_ENABLED: "true"
+          DOCUMENT_OCR_PROVIDER: "docling"
         run: |
           uv run pytest -v \
             --log-cli-level=WARN \

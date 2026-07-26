@@ -119,6 +119,10 @@ def _extract(
     metadata: dict[str, Any] = {
         "page_count": len(page_texts),
         "page_boundaries": page_boundaries,
+        # This tier is a text-layer extractor by design: no headings, no tables.
+        # Stated here so every processor reports its output shape the same way
+        # and a caller never has to infer markdown-ness from the processor name.
+        "parse_mode": "text_only",
     }
     title = doc_meta.get("Title")
     if title:

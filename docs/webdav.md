@@ -5,7 +5,7 @@
 | Tool | Description |
 |------|-------------|
 | `nc_webdav_list_directory` | List files and directories in any NextCloud path |
-| `nc_webdav_read_file` | Read file content (text files decoded, binary as base64) |
+| `nc_webdav_read_file` | Read file content (documents extracted to text/markdown, text decoded, other binary as base64) |
 | `nc_webdav_write_file` | Create or update files in NextCloud |
 | `nc_webdav_create_directory` | Create new directories |
 | `nc_webdav_delete_resource` | Delete files or directories |
@@ -32,6 +32,19 @@ await nc_webdav_list_directory("Documents/Projects")
 
 # Read a text file
 content = await nc_webdav_read_file("Documents/readme.txt")
+
+# Read a document: extracted text by default, no base64
+result = await nc_webdav_read_file("Documents/report.pdf")
+result.content          # the document's text
+result.parse_tier       # "fast" | "structured" | "ocr" -- what produced it
+result.content_format   # "text" | "markdown" | "base64"
+result.parse_notes      # non-empty => say what degraded; this is not the whole document
+
+# Ask for structure (headings, tables) instead of a flat text layer
+await nc_webdav_read_file("Documents/report.pdf", parse_document="markdown")
+
+# Or take the file itself, unparsed
+await nc_webdav_read_file("Documents/report.pdf", parse_document="raw")
 
 # Create a new directory
 await nc_webdav_create_directory("NewProject/docs")

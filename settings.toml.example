@@ -93,7 +93,9 @@ log_level = "INFO"
 log_include_trace_context = true
 
 # --- Document processing ---
-enable_document_processing = false
+# No master switch: PDF extraction is built in, each optional processor below has
+# its own enable flag, and whether a read parses a document is the caller's
+# per-call choice (nc_webdav_read_file's parse_document argument).
 document_processor = "unstructured"
 enable_unstructured = false
 unstructured_api_url = "http://unstructured:8000"
@@ -104,7 +106,8 @@ progress_interval = 10
 enable_tesseract = false
 tesseract_cmd = "@none"
 tesseract_lang = "eng"
-enable_pymupdf = true
+# pymupdf is the built-in "structured" tier and is always available; these two
+# knobs tune it.
 pymupdf_extract_images = true
 pymupdf_image_dir = "@none"
 enable_custom_processor = false

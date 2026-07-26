@@ -116,13 +116,32 @@ async def test_streams_body_to_disk(tmp_path):
     body = b"%PDF-1.7" + b"x" * 500
     dest = tmp_path / "out.pdf"
 
-    written, content_type = await _client(
-        body, {"content-length": str(len(body)), "content-type": "application/pdf"}
+    written, content_type, etag = await _client(
+        body,
+        {
+            "content-length": str(len(body)),
+            "content-type": "application/pdf",
+            "etag": '"abc123"',
+        },
     ).stream_to_file("/f.pdf", dest)
 
     assert written == len(body)
     assert content_type == "application/pdf"
     assert dest.read_bytes() == body
+    # Same triple read_file returns, quotes stripped: a caller that streams a
+    # document can still hand the etag back as an If-Match precondition.
+    assert etag == "abc123"
+
+
+async def test_streamed_etag_is_none_when_absent(tmp_path):
+    body = b"%PDF-1.7"
+    dest = tmp_path / "out.pdf"
+
+    _, _, etag = await _client(body, {"content-length": str(len(body))}).stream_to_file(
+        "/f.pdf", dest
+    )
+
+    assert etag is None
 
 
 async def test_short_read_raises_and_removes_partial_file(tmp_path):
@@ -143,7 +162,7 @@ async def test_streaming_compressed_response_skips_the_length_check(tmp_path):
     packed = gzip.compress(raw)
     dest = tmp_path / "out.pdf"
 
-    written, _ = await _client(
+    written, _, _ = await _client(
         packed, {"content-length": str(len(packed)), "content-encoding": "gzip"}
     ).stream_to_file("/f.pdf", dest)
 
@@ -185,7 +204,7 @@ async def test_exactly_at_the_limit_is_allowed(tmp_path):
     body = b"x" * 100
     dest = tmp_path / "out.pdf"
 
-    written, _ = await _client(body, {"content-length": "100"}).stream_to_file(
+    written, _, _ = await _client(body, {"content-length": "100"}).stream_to_file(
         "/f.pdf", dest, max_bytes=100
     )
 
@@ -236,7 +255,7 @@ async def test_stream_retries_on_429_then_succeeds(tmp_path, mocker):
     mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
     dest = tmp_path / "out.pdf"
 
-    written, _ = await client.stream_to_file("/f.pdf", dest)
+    written, _, _ = await client.stream_to_file("/f.pdf", dest)
 
     assert len(calls) == 2, "should have retried once after the 429"
     assert written == len(body)
