@@ -112,7 +112,7 @@ mismatches across them.
 | Client | Required? | What it represents |
 |---|---|---|
 | **MCP server** | Yes | The MCP server's RP relationship with the IdP. Configured via `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET`. Used for OIDC discovery, JWKS retrieval, and token validation. |
-| **Astrolabe** | Only if Astrolabe is installed | Used by the Astrolabe Nextcloud app for its own per-user OAuth flow against the MCP server. |
+| **Astrolabe** | Only if Astrolabe is installed | Used by the Astrolabe Nextcloud app for its own per-user OAuth flow against the MCP server. Its `client_id` must be listed in `ALLOWED_MGMT_CLIENT` (the management API matches it against the token's `client_id` claim), but **not** in `ALLOWED_MCP_CLIENTS` — Astrolabe never uses the MCP server's AS proxy, and `/mcp` authorizes by audience + `sub` rather than by client identity. See [ADR-005 → *Client Identity Is Not an Authorization Gate on `/mcp`*](ADR-005-token-audience-validation.md#client-identity-is-not-an-authorization-gate-on-mcp). |
 | **MCP client** (e.g. Claude.ai, Claude Code) | Optional | The MCP server supports RFC 7591 Dynamic Client Registration, so MCP clients are auto-registered on first connect. Only register a static client if your IdP rejects DCR-issued clients or your MCP client cannot do DCR (see [#752 thread](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/752#issuecomment-4362197279) for the Claude Code workarounds). When pre-allowlisting static MCP clients, set `ALLOWED_MCP_CLIENTS` — see [`auth/client_registry.py`](../nextcloud_mcp_server/auth/client_registry.py) for the format. |
 
 #### Scopes the IdP must advertise on the MCP-server client
