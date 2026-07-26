@@ -36,12 +36,31 @@ async def test_base_path(nc_client: NextcloudClient):
         pass  # Ignore cleanup errors
 
 
+#: Ordinary prose, on purpose. The tier-0 classifier scores the extracted text
+#: layer, and a page holding one short unspaced token reads as low-quality: it
+#: escalates fast->structured (verified — a single ``drawString(MARKER)`` page
+#: lands on the structured tier and comes back as markdown). That would make this
+#: file a test of classifier heuristics rather than of the read path, and would
+#: let the markdown test below pass without markdown ever being requested. Keep
+#: the body realistic if you touch it.
+_BODY = [
+    "This document exists so an integration test can read a real PDF back",
+    "through the MCP tool and check that its text comes out as text rather",
+    "than as base64, which is what this tool used to return for any document.",
+    "The wording is deliberately ordinary: several lines of normal words give",
+    "the tier-0 classifier a text layer it can be confident about, so the read",
+    "stops at the cheap fast tier instead of escalating to recover it.",
+]
+
+
 @pytest.fixture
 async def text_layer_pdf(nc_client: NextcloudClient, test_base_path: str):
-    """A born-digital single-page PDF uploaded to Nextcloud."""
+    """A born-digital single-page PDF with a healthy text layer."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
-    c.drawString(100, 750, MARKER)
+    c.drawString(72, 750, f"Quarterly Report {MARKER}")
+    for offset, line in enumerate(_BODY, start=1):
+        c.drawString(72, 750 - offset * 20, line)
     c.save()
 
     path = f"{test_base_path}/document.pdf"
