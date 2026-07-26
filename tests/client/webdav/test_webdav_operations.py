@@ -351,3 +351,126 @@ async def test_write_returns_etag_usable_without_reread(
     assert content_after == b"v2-longer-body", "a rejected write must not overwrite"
 
     await nc_client.webdav.delete_resource(path)
+
+
+async def test_move_with_destination_etag_guards_the_destination(
+    nc_client: NextcloudClient, test_base_path: str
+):
+    """The acceptance test for the destination precondition.
+
+    This is the check that matters: `If-Match` on a MOVE would guard the SOURCE
+    and pass happily while clobbering the destination, so a unit test asserting
+    header bytes proves only that we send something. Only a live server shows the
+    condition is actually enforced.
+
+    The mismatching case uses a fabricated etag rather than a superseded one.
+    Nextcloud does not reliably change a file's ETag between writes (observed in
+    CI: two writes with different content and length returned the same value), so
+    "write again to make the etag stale" is not a dependable way to produce a
+    mismatch. A value that was never the destination's etag is unambiguous.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    src = f"{test_base_path}/dest-guard-src-{suffix}.txt"
+    dst = f"{test_base_path}/dest-guard-dst-{suffix}.txt"
+
+    source_body = b"source-payload"
+    dest_body = b"destination-payload"
+
+    await nc_client.webdav.write_file(src, source_body, "text/plain")
+    await nc_client.webdav.write_file(dst, dest_body, "text/plain")
+
+    # A non-matching destination etag must stop the move.
+    blocked = await nc_client.webdav.move_resource(
+        src, dst, overwrite=True, if_destination_match="deadbeef-not-the-real-etag"
+    )
+    assert blocked["status_code"] == 412, (
+        "a non-matching destination etag did not block the move — the If: header "
+        "is a no-op and the precondition is not being enforced"
+    )
+
+    # Nothing moved: the destination keeps its content and the source survives.
+    dst_content, _, dst_etag = await nc_client.webdav.read_file(dst)
+    assert dst_content == dest_body, "destination was clobbered despite a mismatch"
+    src_content, _, _ = await nc_client.webdav.read_file(src)
+    assert src_content == source_body, "source was moved despite a blocked MOVE"
+
+    # With the destination's real etag the move goes through.
+    ok = await nc_client.webdav.move_resource(
+        src, dst, overwrite=True, if_destination_match=dst_etag
+    )
+    assert ok["status_code"] in (201, 204)
+    moved, _, _ = await nc_client.webdav.read_file(dst)
+    assert moved == source_body
+
+    await nc_client.webdav.delete_resource(dst)
+
+
+async def test_copy_with_destination_etag_guards_the_destination(
+    nc_client: NextcloudClient, test_base_path: str
+):
+    """COPY needs the same live-server proof as MOVE.
+
+    move_resource and copy_resource share `_transfer_resource`, so the risk of
+    divergence is low — but the PR's whole claim is that only a live server shows
+    the `If:` condition is enforced, and mocked header assertions can't
+    distinguish "sent" from "honoured". Asserting that for MOVE only would leave
+    COPY resting on exactly the confidence this test exists to replace.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    src = f"{test_base_path}/copy-guard-src-{suffix}.txt"
+    dst = f"{test_base_path}/copy-guard-dst-{suffix}.txt"
+
+    source_body = b"copy-source-payload"
+    dest_body = b"copy-destination-payload"
+
+    await nc_client.webdav.write_file(src, source_body, "text/plain")
+    await nc_client.webdav.write_file(dst, dest_body, "text/plain")
+
+    blocked = await nc_client.webdav.copy_resource(
+        src, dst, overwrite=True, if_destination_match="deadbeef-not-the-real-etag"
+    )
+    assert blocked["status_code"] == 412, (
+        "a non-matching destination etag did not block the copy"
+    )
+
+    dst_content, _, dst_etag = await nc_client.webdav.read_file(dst)
+    assert dst_content == dest_body, "destination was clobbered despite a mismatch"
+
+    ok = await nc_client.webdav.copy_resource(
+        src, dst, overwrite=True, if_destination_match=dst_etag
+    )
+    assert ok["status_code"] in (201, 204)
+    copied, _, _ = await nc_client.webdav.read_file(dst)
+    assert copied == source_body
+    # Unlike MOVE, the source must still be there.
+    src_after, _, _ = await nc_client.webdav.read_file(src)
+    assert src_after == source_body
+
+    await nc_client.webdav.delete_resource(src)
+    await nc_client.webdav.delete_resource(dst)
+
+
+async def test_directory_destination_always_fails_the_etag_check(
+    nc_client: NextcloudClient, test_base_path: str
+):
+    """sabre evaluates the etag condition only for `$node instanceof IFile`, so a
+    directory destination can never satisfy it.
+
+    Pinned so the documented limitation is a known quantity — if a future sabre
+    starts honouring collection etags, this test fails and tells us.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    src = f"{test_base_path}/dir-guard-src-{suffix}.txt"
+    dst_dir = f"{test_base_path}/dir-guard-dst-{suffix}"
+
+    await nc_client.webdav.write_file(src, b"payload", "text/plain")
+    await nc_client.webdav.create_directory(dst_dir)
+
+    result = await nc_client.webdav.move_resource(
+        src, dst_dir, overwrite=True, if_destination_match="anything"
+    )
+
+    assert result["status_code"] == 412
+
+    await nc_client.webdav.delete_resource(src)
+    await nc_client.webdav.delete_resource(dst_dir)

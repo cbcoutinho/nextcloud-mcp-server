@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
 
 import pytest
+from httpx import HTTPStatusError
 
 from nextcloud_mcp_server.client.webdav import (
     WebDAVClient,
@@ -1289,3 +1290,160 @@ async def test_read_and_write_etags_use_the_same_representation(mocker):
     # Same representation in, same representation out.
     assert result["etag"] == read_etag
     assert write_http.request.call_args.kwargs["headers"]["If-Match"] == header_value
+
+
+# ============= Destination preconditions on MOVE/COPY =============
+#
+# `If-Match` conditions the request-URI, which for MOVE/COPY is the SOURCE. To
+# condition the destination you need RFC 4918 §10.4's tagged-list `If:` form.
+# These assert the exact header bytes because a malformed one does not error —
+# sabre's regex simply fails to capture the URI and the condition silently
+# applies to the wrong resource.
+
+
+def _move_client(mocker):
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+    mock_response = AsyncMock()
+    mock_response.status_code = 204
+    mock_response.headers = {}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+    return client, mock_http_client
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_destination_precondition_header_is_exact(mocker, verb):
+    """Space after '>' and quotes inside the brackets are both load-bearing.
+
+    sabre parses with
+    /(?:\\<(?P<uri>.*?)\\>\\s)?\\(...(?:\\[(?P<etag>[^\\]]*)\\])?\\)/im — no space
+    means the URI group never matches and the condition guards the request-URI
+    (the source) instead. The etag keeps its quotes because the comparison is
+    against Nextcloud's Node::getETag(), which returns a quoted value.
+    """
+    client, http = _move_client(mocker)
+
+    await getattr(client, f"{verb}_resource")(
+        "a/old.txt", "b/new.txt", overwrite=True, if_destination_match="abc123"
+    )
+
+    header = http.request.call_args.kwargs["headers"]["If"]
+    assert header == '</remote.php/dav/files/testuser/b/new.txt> (["abc123"])'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_destination_precondition_uri_matches_destination_header(mocker, verb):
+    """The tagged URI goes through sabre's calculateUri(), so it must be the same
+    percent-encoded absolute path sent in Destination."""
+    client, http = _move_client(mocker)
+
+    await getattr(client, f"{verb}_resource")(
+        "a/old.pdf", "b/new #1.pdf", overwrite=True, if_destination_match="e1"
+    )
+
+    headers = http.request.call_args.kwargs["headers"]
+    assert "%23" in headers["Destination"]
+    assert headers["If"] == f'<{headers["Destination"]}> (["e1"])'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_no_if_header_without_destination_etag(mocker, verb):
+    """Existing callers must be byte-for-byte unaffected."""
+    client, http = _move_client(mocker)
+
+    await getattr(client, f"{verb}_resource")("a/old.txt", "b/new.txt", overwrite=True)
+
+    assert "If" not in http.request.call_args.kwargs["headers"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_destination_etag_with_overwrite_false_raises(mocker, verb):
+    """Contradictory: the etag says which version to replace, overwrite=False
+    says don't replace. Rejected rather than silently flipping the caller's flag.
+    """
+    client, http = _move_client(mocker)
+    pending = getattr(client, f"{verb}_resource")(
+        "a/old.txt", "b/new.txt", overwrite=False, if_destination_match="abc"
+    )
+
+    with pytest.raises(ValueError, match="contradictory"):
+        await pending
+
+    http.request.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_destination_etag_star_raises(mocker, verb):
+    """The tagged-list grammar has no wildcard, and 'destination must exist'
+    isn't expressible — a missing tagged URI yields 404, not 412."""
+    client, http = _move_client(mocker)
+    pending = getattr(client, f"{verb}_resource")(
+        "a/old.txt", "b/new.txt", overwrite=True, if_destination_match="*"
+    )
+
+    with pytest.raises(ValueError, match="not expressible"):
+        await pending
+
+    http.request.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_412_with_destination_etag_says_destination_changed(mocker, verb):
+    """Without an etag a 412 means 'exists and overwrite is false'; with one it
+    means 'changed since you read it'. The messages must not be confused."""
+    client, http = _move_client(mocker)
+    response = mocker.Mock(status_code=412)
+    http.request = AsyncMock(
+        side_effect=HTTPStatusError("412", request=mocker.Mock(), response=response)
+    )
+
+    result = await getattr(client, f"{verb}_resource")(
+        "a/old.txt", "b/new.txt", overwrite=True, if_destination_match="stale"
+    )
+
+    assert result["status_code"] == 412
+    assert "changed since that etag" in result["message"]
+    # The files-only limitation is surfaced, not hidden.
+    assert "directory destination" in result["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_404_with_destination_etag_is_reported_as_ambiguous(mocker, verb):
+    """sabre's getNodeForPath on a missing tagged URI raises NotFound -> 404, so
+    a 404 here no longer unambiguously means 'source missing'."""
+    client, http = _move_client(mocker)
+    response = mocker.Mock(status_code=404)
+    http.request = AsyncMock(
+        side_effect=HTTPStatusError("404", request=mocker.Mock(), response=response)
+    )
+
+    result = await getattr(client, f"{verb}_resource")(
+        "a/old.txt", "b/new.txt", overwrite=True, if_destination_match="e1"
+    )
+
+    assert result["status_code"] == 404
+    assert "destination whose etag was asserted" in result["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verb", ["move", "copy"])
+async def test_404_without_destination_etag_keeps_original_message(mocker, verb):
+    """The unambiguous case must not inherit the hedged wording."""
+    client, http = _move_client(mocker)
+    response = mocker.Mock(status_code=404)
+    http.request = AsyncMock(
+        side_effect=HTTPStatusError("404", request=mocker.Mock(), response=response)
+    )
+
+    result = await getattr(client, f"{verb}_resource")("a/old.txt", "b/new.txt")
+
+    assert result["message"] == "Source resource not found"

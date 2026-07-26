@@ -161,6 +161,61 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return raw.strip('"') if raw is not None else None
 
 
+def _destination_precondition_header(
+    destination_webdav_path: str, if_destination_match: str
+) -> dict[str, str]:
+    """Build the tagged-list ``If:`` header that conditions the *destination*.
+
+    ``If-Match`` is the obvious choice here and it is **wrong**: per RFC 9110 it
+    applies to the request-URI, which for MOVE/COPY is the *source*. Conditioning
+    the destination needs RFC 4918 §10.4's tagged-list form, where the resource
+    the condition applies to is named explicitly::
+
+        If: <destination-uri> (["etag"])
+
+    Three details are load-bearing, all dictated by sabre/dav's parser
+    (``Server::getIfConditions``)::
+
+        /(?:\\<(?P<uri>.*?)\\>\\s)?\\((?P<not>Not\\s)?...(?:\\[(?P<etag>[^\\]]*)\\])?\\)/im
+
+    * the **space after ``>``** is required by the regex — without it the URI is
+      not captured and the condition silently applies to the request-URI instead,
+      i.e. it guards the wrong resource;
+    * the etag **keeps its quotes inside the brackets**, because the comparison is
+      ``$node->getETag() == $token['etag']`` and Nextcloud's ``Node::getETag()``
+      returns a quoted value;
+    * the URI is resolved with ``calculateUri()``, so it must be the same
+      percent-encoded absolute DAV path used in ``Destination``.
+    """
+    return {"If": f'<{destination_webdav_path}> (["{if_destination_match}"])'}
+
+
+def _validate_destination_precondition(
+    if_destination_match: Optional[str], overwrite: bool
+) -> None:
+    """Reject combinations the WebDAV ``If:`` grammar cannot express.
+
+    Raised at the client boundary rather than silently reinterpreted, so a
+    caller never believes a guard is in force when it is not.
+    """
+    if if_destination_match is None:
+        return
+    if if_destination_match == "*":
+        raise ValueError(
+            "if_destination_match='*' is not expressible: RFC 4918's tagged-list "
+            "If: grammar has no wildcard, and 'the destination must exist' cannot "
+            "be asserted this way — an If: condition naming a missing URI returns "
+            "404, not 412. Use overwrite=True without a destination etag."
+        )
+    if not overwrite:
+        raise ValueError(
+            "if_destination_match with overwrite=False is contradictory: the etag "
+            "asserts which version of the destination to replace, while "
+            "overwrite=False refuses to replace it at all. Pass overwrite=True to "
+            "replace exactly that version."
+        )
+
+
 def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
     """Pick the single conditional header for a fail-closed PUT.
 
@@ -822,101 +877,69 @@ class WebDAVClient(BaseNextcloudClient):
             logger.error("Unexpected error creating directory '%s': %s", path, e)
             raise e
 
-    async def move_resource(
-        self, source_path: str, destination_path: str, overwrite: bool = False
-    ) -> Dict[str, Any]:
-        """Move or rename a resource (file or directory) via WebDAV MOVE.
+    @staticmethod
+    def _transfer_conflict_result(
+        status_code: int,
+        if_destination_match: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Map a known MOVE/COPY conflict status to a structured result, else None.
 
-        Args:
-            source_path: The path of the file or directory to move
-            destination_path: The new path for the file or directory
-            overwrite: Whether to overwrite the destination if it exists
+        Mirrors ``_write_conflict_result``. ``None`` means "not a conflict we
+        model" — the caller re-raises.
 
-        Returns:
-            Dict with status_code and optional message
+        404 and 412 mean different things depending on whether a destination etag
+        was sent, because sabre resolves the tagged ``If:`` URI with
+        ``getNodeForPath``: a missing destination raises NotFound and surfaces as
+        404, not 412.
         """
-        await self._ensure_principal_id()
-        source_webdav_path = self._webdav_path(source_path)
-        destination_webdav_path = self._webdav_path(destination_path)
-
-        # Ensure paths have consistent trailing slashes for directories
-        if source_path.endswith("/") and not destination_path.endswith("/"):
-            destination_webdav_path += "/"
-        elif not source_path.endswith("/") and destination_path.endswith("/"):
-            source_webdav_path += "/"
-
-        logger.debug("Moving resource from '%s' to '%s'", source_path, destination_path)
-
-        headers = {
-            "OCS-APIRequest": "true",
-            "Destination": destination_webdav_path,
-            "Overwrite": "T" if overwrite else "F",
-        }
-
-        try:
-            response = await self._make_request(
-                "MOVE", source_webdav_path, headers=headers
-            )
-            response.raise_for_status()
-
-            logger.debug(
-                "Successfully moved resource from '%s' to '%s'",
-                source_path,
-                destination_path,
-            )
-            return {"status_code": response.status_code}
-
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.debug("Source resource '%s' not found", source_path)
-                return {"status_code": 404, "message": "Source resource not found"}
-            elif e.response.status_code == 412:
-                logger.debug(
-                    "Destination '%s' already exists and overwrite is false",
-                    destination_path,
-                )
+        if status_code == 404:
+            if if_destination_match is not None:
+                return {
+                    "status_code": 404,
+                    "message": (
+                        "Source not found, or the destination whose etag was "
+                        "asserted does not exist (an If: condition naming a "
+                        "missing URI yields 404, not 412)."
+                    ),
+                }
+            return {"status_code": 404, "message": "Source resource not found"}
+        if status_code == 412:
+            if if_destination_match is not None:
                 return {
                     "status_code": 412,
-                    "message": "Destination already exists and overwrite is false",
+                    "message": (
+                        "Destination changed since that etag was read — re-read "
+                        "it before retrying. Note the etag condition applies to "
+                        "files only: a directory destination always fails this "
+                        "check."
+                    ),
                 }
-            elif e.response.status_code == 409:
-                logger.debug(
-                    "Parent directory of destination '%s' doesn't exist",
-                    destination_path,
-                )
-                return {
-                    "status_code": 409,
-                    "message": "Parent directory of destination doesn't exist",
-                }
-            else:
-                logger.error(
-                    "HTTP error moving resource from '%s' to '%s': %s",
-                    source_path,
-                    destination_path,
-                    e,
-                )
-                raise e
-        except Exception as e:
-            logger.error(
-                "Unexpected error moving resource from '%s' to '%s': %s",
-                source_path,
-                destination_path,
-                e,
-            )
-            raise e
+            return {
+                "status_code": 412,
+                "message": "Destination already exists and overwrite is false",
+            }
+        if status_code == 409:
+            return {
+                "status_code": 409,
+                "message": "Parent directory of destination doesn't exist",
+            }
+        return None
 
-    async def copy_resource(
-        self, source_path: str, destination_path: str, overwrite: bool = False
+    async def _transfer_resource(
+        self,
+        method: str,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+        *,
+        if_destination_match: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Copy a resource (file or directory) via WebDAV COPY.
+        """Shared implementation of WebDAV MOVE and COPY.
 
-        Args:
-            source_path: The path of the file or directory to copy
-            destination_path: The destination path for the copy
-            overwrite: Whether to overwrite the destination if it exists
-
-        Returns:
-            Dict with status_code and optional message
+        The two verbs differ only in the HTTP method and log wording — path
+        normalisation, header construction, the destination precondition and the
+        conflict mapping are identical, so they live here rather than being
+        maintained (and drifting) in two places.
         """
         await self._ensure_principal_id()
         source_webdav_path = self._webdav_path(source_path)
@@ -929,66 +952,141 @@ class WebDAVClient(BaseNextcloudClient):
             source_webdav_path += "/"
 
         logger.debug(
-            "Copying resource from '%s' to '%s'", source_path, destination_path
+            "%s resource from '%s' to '%s'", method, source_path, destination_path
         )
+
+        _validate_destination_precondition(if_destination_match, overwrite)
 
         headers = {
             "OCS-APIRequest": "true",
             "Destination": destination_webdav_path,
             "Overwrite": "T" if overwrite else "F",
         }
+        if if_destination_match is not None:
+            headers.update(
+                _destination_precondition_header(
+                    destination_webdav_path, if_destination_match
+                )
+            )
 
         try:
             response = await self._make_request(
-                "COPY", source_webdav_path, headers=headers
+                method, source_webdav_path, headers=headers
             )
             response.raise_for_status()
-
             logger.debug(
-                "Successfully copied resource from '%s' to '%s'",
-                source_path,
-                destination_path,
+                "%s succeeded from '%s' to '%s'", method, source_path, destination_path
             )
             return {"status_code": response.status_code}
 
         except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.debug("Source resource '%s' not found", source_path)
-                return {"status_code": 404, "message": "Source resource not found"}
-            elif e.response.status_code == 412:
+            conflict = self._transfer_conflict_result(
+                e.response.status_code, if_destination_match
+            )
+            if conflict is not None:
                 logger.debug(
-                    "Destination '%s' already exists and overwrite is false",
-                    destination_path,
-                )
-                return {
-                    "status_code": 412,
-                    "message": "Destination already exists and overwrite is false",
-                }
-            elif e.response.status_code == 409:
-                logger.debug(
-                    "Parent directory of destination '%s' doesn't exist",
-                    destination_path,
-                )
-                return {
-                    "status_code": 409,
-                    "message": "Parent directory of destination doesn't exist",
-                }
-            else:
-                logger.error(
-                    "HTTP error copying resource from '%s' to '%s': %s",
+                    "%s conflict (%s) from '%s' to '%s'",
+                    method,
+                    e.response.status_code,
                     source_path,
                     destination_path,
-                    e,
                 )
-                raise e
-        except Exception as e:
+                return conflict
             logger.error(
-                "Unexpected error copying resource from '%s' to '%s': %s",
+                "HTTP error on %s from '%s' to '%s': %s",
+                method,
                 source_path,
                 destination_path,
                 e,
             )
             raise e
+        except Exception as e:
+            logger.error(
+                "Unexpected error on %s from '%s' to '%s': %s",
+                method,
+                source_path,
+                destination_path,
+                e,
+            )
+            raise e
+
+    async def move_resource(
+        self,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+        *,
+        if_destination_match: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Move or rename a resource (file or directory) via WebDAV MOVE.
+
+        Args:
+            source_path: The path of the file or directory to move
+            destination_path: The new path for the file or directory
+            overwrite: Whether to overwrite the destination if it exists
+            if_destination_match: Optional ETag of the destination. When given,
+                the move replaces the destination only if it is still that exact
+                version, closing the window where ``overwrite=True`` clobbers a
+                file someone else changed in the meantime.
+
+                Requires ``overwrite=True`` (the two are contradictory otherwise)
+                and does not accept ``"*"``; both raise ``ValueError``.
+
+                Two limitations, both from sabre/dav and neither hideable: the
+                etag condition is evaluated only for files
+                (``$node instanceof IFile``), so a **directory** destination
+                always fails it with 412; and an ``If:`` condition naming a URI
+                that does not exist yields **404, not 412**.
+
+        Returns:
+            Dict with status_code and optional message
+        """
+        return await self._transfer_resource(
+            "MOVE",
+            source_path,
+            destination_path,
+            overwrite,
+            if_destination_match=if_destination_match,
+        )
+
+    async def copy_resource(
+        self,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+        *,
+        if_destination_match: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Copy a resource (file or directory) via WebDAV COPY.
+
+        Args:
+            source_path: The path of the file or directory to copy
+            destination_path: The destination path for the copy
+            overwrite: Whether to overwrite the destination if it exists
+            if_destination_match: Optional ETag of the destination. When given,
+                the copy replaces the destination only if it is still that exact
+                version, closing the window where ``overwrite=True`` clobbers a
+                file someone else changed in the meantime.
+
+                Requires ``overwrite=True`` (the two are contradictory otherwise)
+                and does not accept ``"*"``; both raise ``ValueError``.
+
+                Two limitations, both from sabre/dav and neither hideable: the
+                etag condition is evaluated only for files
+                (``$node instanceof IFile``), so a **directory** destination
+                always fails it with 412; and an ``If:`` condition naming a URI
+                that does not exist yields **404, not 412**.
+
+        Returns:
+            Dict with status_code and optional message
+        """
+        return await self._transfer_resource(
+            "COPY",
+            source_path,
+            destination_path,
+            overwrite,
+            if_destination_match=if_destination_match,
+        )
 
     async def search_files(
         self,
