@@ -2,6 +2,7 @@
 
 import logging
 
+import httpx
 from anthropic import AsyncAnthropic
 from anthropic.types import TextBlock
 
@@ -18,8 +19,17 @@ class AnthropicProvider(Provider):
     Note: Anthropic doesn't provide embedding models, only text generation.
     """
 
+    # 120s read / 5s connect is the house convention (ollama.py, openai.py). The
+    # Anthropic SDK otherwise defaults to 600s, long enough that a wedged request
+    # looks like a hang rather than a failure.
+    DEFAULT_TIMEOUT_SECONDS = 120.0
+    DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
+
     def __init__(
-        self, api_key: str, generation_model: str = "claude-3-5-sonnet-20241022"
+        self,
+        api_key: str,
+        generation_model: str = "claude-3-5-sonnet-20241022",
+        timeout: httpx.Timeout | None = None,
     ):
         """
         Initialize Anthropic provider.
@@ -27,8 +37,15 @@ class AnthropicProvider(Provider):
         Args:
             api_key: Anthropic API key
             generation_model: Model name (e.g., "claude-3-5-sonnet-20241022")
+            timeout: Optional httpx timeout. Defaults to 120s read / 5s connect,
+                matching the other providers.
         """
-        self.client = AsyncAnthropic(api_key=api_key)
+        if timeout is None:
+            timeout = httpx.Timeout(
+                timeout=self.DEFAULT_TIMEOUT_SECONDS,
+                connect=self.DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            )
+        self.client = AsyncAnthropic(api_key=api_key, timeout=timeout)
         self.model = generation_model
 
         logger.info("Initialized Anthropic provider (model=%s)", self.model)
