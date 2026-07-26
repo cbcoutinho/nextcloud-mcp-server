@@ -142,6 +142,25 @@ def _encode_dav_path(path: str) -> str:
     return quote(path, safe="/")
 
 
+def _normalize_etag(raw: Optional[str]) -> Optional[str]:
+    """Strip the quotes an ETag is transported in, so callers can pass it back.
+
+    Every etag this client surfaces goes through here — ``read_file``,
+    ``list_directory``, the search parser and now ``write_file`` — so the
+    representation cannot drift between the value we hand out and the value
+    ``_write_precondition_header`` expects to re-quote.
+
+    Known wart, unchanged from the ad-hoc ``.strip('"')`` calls this replaces: a
+    weak validator (``W/"abc"``) comes out as ``W/"abc`` — ``strip`` only removes
+    characters from the *ends*, and the leading ``W`` protects the opening quote.
+    The result is usable as neither an etag nor an ``If-Match`` value (RFC 9110
+    requires strong comparison there anyway). Nextcloud does not emit weak etags
+    for files, so this has never bitten; named and pinned by a test rather than
+    left to be rediscovered.
+    """
+    return raw.strip('"') if raw is not None else None
+
+
 def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
     """Pick the single conditional header for a fail-closed PUT.
 
@@ -543,7 +562,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # if_match, which re-adds the quotes for the If-Match header).
                 etag_elem = prop.find(".//{DAV:}getetag")
                 etag = (
-                    etag_elem.text.strip('"')
+                    _normalize_etag(etag_elem.text)
                     if etag_elem is not None and etag_elem.text
                     else None
                 )
@@ -655,9 +674,7 @@ class WebDAVClient(BaseNextcloudClient):
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
-            etag = response.headers.get("etag")
-            if etag is not None:
-                etag = etag.strip('"')
+            etag = _normalize_etag(response.headers.get("etag"))
 
             logger.debug("Successfully read file '%s' (%s bytes)", path, len(content))
             return content, content_type, etag
@@ -733,7 +750,17 @@ class WebDAVClient(BaseNextcloudClient):
             response.raise_for_status()
 
             logger.debug("Successfully wrote file '%s'", path)
-            return {"status_code": response.status_code}
+            # Surface the new etag so a read-modify-write loop can chain writes
+            # without a re-GET. Nextcloud also sends OC-ETag; prefer the standard
+            # header and fall back. May be None if a proxy stripped both, in
+            # which case the caller must re-read before its next conditional
+            # write.
+            return {
+                "status_code": response.status_code,
+                "etag": _normalize_etag(
+                    response.headers.get("etag") or response.headers.get("oc-etag")
+                ),
+            }
 
         except HTTPStatusError as e:
             # 412/423 are actionable conflicts the caller must handle -> return
@@ -1406,7 +1433,7 @@ class WebDAVClient(BaseNextcloudClient):
                 elif tag == "getlastmodified":
                     item["last_modified"] = value
                 elif tag == "getetag":
-                    item["etag"] = value.strip('"') if value else None
+                    item["etag"] = _normalize_etag(value) if value else None
                 elif tag == "fileid":
                     item["file_id"] = int(value) if value else None
                 elif tag == "favorite":
@@ -1812,7 +1839,7 @@ class WebDAVClient(BaseNextcloudClient):
 
         etag_elem = prop.find(".//{DAV:}getetag")
         etag = (
-            etag_elem.text.strip('"')
+            _normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None
         )
@@ -2154,7 +2181,7 @@ class WebDAVClient(BaseNextcloudClient):
             "last_modified": lastmodified_elem.text
             if lastmodified_elem is not None
             else None,
-            "etag": etag_elem.text.strip('"')
+            "etag": _normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None,
             "is_directory": is_directory,

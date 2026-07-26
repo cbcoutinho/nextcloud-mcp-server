@@ -434,6 +434,10 @@ async def test_mcp_webdav_workflow(
         assert write_data["path"] == test_file_path
         assert write_data["created"] is True  # new file (create-only default)
         assert write_data["success"] is True
+        # The etag reaches MCP clients through a one-line mapping in the tool
+        # wrapper; everything else exercises WebDAVClient.write_file directly, so
+        # without this the mapping itself is only indirectly covered.
+        assert write_data["etag"], "write response did not surface an etag"
 
         # 4. Verify file creation via direct WebDAV
         file_listing = await nc_client.webdav.list_directory(test_dir)

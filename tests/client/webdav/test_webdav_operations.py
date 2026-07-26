@@ -302,3 +302,52 @@ async def test_list_root_directory(nc_client: NextcloudClient):
         assert "last_modified" in item
 
     logger.info("Root directory contains %s items", len(root_listing))
+
+
+async def test_write_returns_etag_usable_without_reread(
+    nc_client: NextcloudClient, test_base_path: str
+):
+    """A write's ETag must be directly reusable as the next write's if_match.
+
+    Chaining edits previously required a re-GET between them, which is also what
+    widened the concurrent-edit window the precondition exists to narrow. The
+    contract this pins is exactly that: the value comes back, it is accepted as a
+    precondition with no intervening read, and read_file reports the same thing.
+
+    Deliberately NOT asserted: that the ETag *changes* between writes. It did not
+    in CI — two writes with different content and different lengths both returned
+    the same value — so that is an assumption about Nextcloud's ETag derivation,
+    not part of this feature's contract. The stale-etag case below therefore uses
+    a fabricated value, matching how test_overwrite_existing_file already does it.
+    """
+    path = f"{test_base_path}/etag-chain-{uuid.uuid4().hex[:8]}.txt"
+
+    created = await nc_client.webdav.write_file(path, b"v1", "text/plain")
+    assert created["status_code"] in (201, 204)
+    assert created["etag"], "server did not return an ETag on create"
+
+    # The point of the feature: the returned etag is accepted as a precondition
+    # with no read between the two writes.
+    second = await nc_client.webdav.write_file(
+        path, b"v2-longer-body", "text/plain", if_match=created["etag"]
+    )
+    assert second["status_code"] in (200, 204)
+    assert second["etag"], "server did not return an ETag on overwrite"
+
+    content, _, read_etag = await nc_client.webdav.read_file(path)
+    assert content == b"v2-longer-body"
+    # read_file and write_file must agree on the representation — the reason both
+    # go through _normalize_etag.
+    assert read_etag == second["etag"]
+
+    # A value that was never this file's etag must be refused, and must not
+    # overwrite what is there.
+    stale = await nc_client.webdav.write_file(
+        path, b"v3", "text/plain", if_match="deadbeef-not-the-real-etag"
+    )
+    assert stale["status_code"] == 412
+
+    content_after, _, _ = await nc_client.webdav.read_file(path)
+    assert content_after == b"v2-longer-body", "a rejected write must not overwrite"
+
+    await nc_client.webdav.delete_resource(path)

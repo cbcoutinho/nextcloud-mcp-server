@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_mcp_server.client.webdav import (
+    WebDAVClient,
+    _normalize_etag,
+)
 
 
 @pytest.mark.unit
@@ -783,6 +786,9 @@ async def test_write_file_sends_if_match_header_when_provided(mocker):
 
     mock_response = AsyncMock()
     mock_response.status_code = 204
+    # A real dict: AsyncMock attribute access would make headers.get() return a
+    # coroutine, which is not how httpx behaves.
+    mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
@@ -803,6 +809,7 @@ async def test_write_file_sends_create_only_header_by_default(mocker):
 
     mock_response = AsyncMock()
     mock_response.status_code = 201
+    mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
@@ -824,6 +831,9 @@ async def test_write_file_sends_force_header_for_star(mocker):
 
     mock_response = AsyncMock()
     mock_response.status_code = 204
+    # A real dict: AsyncMock attribute access would make headers.get() return a
+    # coroutine, which is not how httpx behaves.
+    mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
@@ -981,6 +991,7 @@ async def test_move_resource_encodes_destination_header(mocker):
 
     mock_response = AsyncMock()
     mock_response.status_code = 201
+    mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
@@ -1003,6 +1014,7 @@ async def test_copy_resource_encodes_destination_header(mocker):
 
     mock_response = AsyncMock()
     mock_response.status_code = 201
+    mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
 
@@ -1161,3 +1173,119 @@ async def test_get_fileid_returns_none_when_absent(mocker):
     mocker.patch.object(client, "_make_request", AsyncMock(return_value=resp))
 
     assert await client.get_fileid("/x") is None
+
+
+@pytest.mark.unit
+async def test_write_file_returns_normalized_etag(mocker):
+    """The PUT's ETag is surfaced so a read-modify-write loop can chain writes
+    without a re-GET — which is also what narrows the concurrent-edit window."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 204
+    mock_response.headers = {"etag": '"abc123"'}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    result = await client.write_file("Documents/notes.txt", b"new", if_match="old")
+
+    # Quote-stripped, so it can be handed straight back as if_match.
+    assert result["etag"] == "abc123"
+
+
+@pytest.mark.unit
+async def test_write_file_falls_back_to_oc_etag(mocker):
+    """Nextcloud also sends OC-ETag; the standard header wins but the fallback
+    keeps the round-trip working when only the vendor header is present."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 201
+    mock_response.headers = {"oc-etag": '"vendor123"'}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    result = await client.write_file("Documents/notes.txt", b"new")
+
+    assert result["etag"] == "vendor123"
+
+
+@pytest.mark.unit
+async def test_write_file_etag_is_none_when_absent(mocker):
+    """A proxy that strips both headers must yield None, not an empty string —
+    the caller has to know it needs a re-read before the next conditional write.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+    client._principal_discovered = True
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 204
+    mock_response.headers = {}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    result = await client.write_file("Documents/notes.txt", b"new", if_match="old")
+
+    assert result["etag"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('"abc"', "abc"),
+        ("abc", "abc"),
+        ('""', ""),
+        (None, None),
+        # Documented wart: strip only removes characters from the *ends*, so
+        # the leading "W" protects the opening quote and a weak validator comes
+        # out as W/"abc — usable as neither an etag nor an If-Match value.
+        # Pinned so the behaviour is a known quantity rather than a surprise.
+        ('W/"abc"', 'W/"abc'),
+    ],
+)
+def test_normalize_etag(raw, expected):
+    assert _normalize_etag(raw) == expected
+
+
+@pytest.mark.unit
+async def test_read_and_write_etags_use_the_same_representation(mocker):
+    """read_file's etag must be directly reusable as write_file's if_match.
+
+    Both go through _normalize_etag, so the value a read hands out is exactly
+    what a subsequent conditional write expects — that is the whole point of
+    returning it from the write too.
+    """
+    header_value = '"shared123"'
+
+    read_http = AsyncMock()
+    read_client = WebDAVClient(read_http, "testuser")
+    read_response = AsyncMock()
+    read_response.content = b"body"
+    read_response.headers = {"content-type": "text/plain", "etag": header_value}
+    read_response.raise_for_status = mocker.Mock()
+    read_http.request = AsyncMock(return_value=read_response)
+
+    _, _, read_etag = await read_client.read_file("Documents/notes.txt")
+
+    write_http = AsyncMock()
+    write_client = WebDAVClient(write_http, "testuser")
+    write_client._principal_discovered = True
+    write_response = AsyncMock()
+    write_response.status_code = 204
+    write_response.headers = {"etag": header_value}
+    write_response.raise_for_status = mocker.Mock()
+    write_http.request = AsyncMock(return_value=write_response)
+
+    result = await write_client.write_file(
+        "Documents/notes.txt", b"new", if_match=read_etag
+    )
+
+    # Same representation in, same representation out.
+    assert result["etag"] == read_etag
+    assert write_http.request.call_args.kwargs["headers"]["If-Match"] == header_value

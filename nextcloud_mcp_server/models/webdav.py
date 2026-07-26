@@ -123,6 +123,15 @@ class WriteFileResponse(StatusResponse):
         "caller-supplied string length)",
     )
     created: bool = Field(description="Whether a new file was created (vs overwritten)")
+    etag: Optional[str] = Field(
+        None,
+        description=(
+            "ETag of the file as written. Pass it straight back as `if_match` on "
+            "the next write to chain edits without re-reading. None if the server "
+            "did not return one (some proxies strip it) — re-read the file to "
+            "obtain it in that case."
+        ),
+    )
 
 
 class CreateDirectoryResponse(StatusResponse):
