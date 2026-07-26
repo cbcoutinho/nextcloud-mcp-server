@@ -623,9 +623,7 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
-                etag = response.headers.get("etag")
-                if etag is not None:
-                    etag = etag.strip('"')
+                etag = _normalize_etag(response.headers.get("etag"))
                 # anyio's async file wrapper, not pathlib.Path.open: the writes
                 # run on a worker thread, so streaming a multi-hundred-MB
                 # document does not block the event loop (and with it every other
