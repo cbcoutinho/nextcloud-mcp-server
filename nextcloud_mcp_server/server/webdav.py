@@ -59,11 +59,18 @@ async def _raw_response(
 ) -> ReadFileResponse:
     """Return the file itself: decoded text, or base64 bytes.
 
-    Reads back from the spool rather than a buffer held across the parse, and
-    stops at :data:`RAW_CONTENT_MAX_BYTES` so the "we could not parse it"
-    fallback cannot itself blow up the response. The read runs on a worker
-    thread: it is a synchronous disk read that would otherwise stall every other
-    request on this event loop.
+    Reads back from the spool rather than from a download buffer held across the
+    parse -- that buffer is what used to make peak memory scale with document
+    size -- and stops at :data:`RAW_CONTENT_MAX_BYTES` so the "we could not parse
+    it" fallback cannot itself blow up the response.
+
+    Peak here is bounded accordingly: on the only path that reaches this with a
+    parse behind it (a FAILED parse), the failed result carries no text, so what
+    is resident is one capped read. A successful parse returns its text directly
+    and never calls this.
+
+    The read runs on a worker thread: it is a synchronous disk read that would
+    otherwise stall every other request on this event loop.
     """
     size = source.size
     content_type = source.content_type
