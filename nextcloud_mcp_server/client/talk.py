@@ -112,8 +112,8 @@ class TalkClient(BaseNextcloudClient):
             room_name: Display name (required for group/public rooms).
             invite: Optional user/group ID to invite at creation time.
 
-        Exposed to agents as the ``talk_create_conversation`` MCP tool
-        (aimaco fork). Also used by integration tests for scratch rooms.
+        Exposed to agents as the ``talk_create_conversation`` MCP tool.
+        Also used by integration tests for scratch rooms.
         """
         body: dict[str, Any] = {"roomType": room_type, "roomName": room_name}
         if invite is not None:

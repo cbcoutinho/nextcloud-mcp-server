@@ -4,7 +4,8 @@ import logging
 import uuid
 
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -192,11 +193,22 @@ def configure_talk_tools(mcp: FastMCP) -> None:
                 first member for group/public (added after create).
         """
         if room_type == 1 and not (invite or "").strip():
-            raise ValueError(
-                "invite (other user id) is required for one-to-one conversations"
+            raise McpError(
+                ErrorData(
+                    code=-32602,
+                    message=(
+                        "invite (other user id) is required for "
+                        "one-to-one conversations"
+                    ),
+                )
             )
         if room_type in (2, 3) and not (room_name or "").strip():
-            raise ValueError("room_name is required for group/public conversations")
+            raise McpError(
+                ErrorData(
+                    code=-32602,
+                    message="room_name is required for group/public conversations",
+                )
+            )
         client = await get_client(ctx)
         # Group/public: create without invite (spreed often 404s invite-on-create
         # for type 2), then add the first member explicitly.
@@ -232,11 +244,13 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
         Args:
             token: Conversation token from create/list.
-            user_id: Nextcloud login to invite (e.g. hermes-cmo).
+            user_id: Nextcloud login to invite (e.g. alice).
             source: Usually ``users``.
         """
         if not (user_id or "").strip():
-            raise ValueError("user_id must not be empty")
+            raise McpError(
+                ErrorData(code=-32602, message="user_id must not be empty")
+            )
         client = await get_client(ctx)
         await client.talk.add_participant(
             token, user_id=user_id.strip(), source=source or "users"
