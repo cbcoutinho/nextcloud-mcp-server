@@ -29,6 +29,10 @@ class TalkMessage(BaseModel):
     expirationTimestamp: int | None = None
     referenceId: str | None = None
     markdown: bool | None = None
+    # Optional chat.md fields — useful for agents (threading + emoji votes).
+    parent: dict[str, Any] | None = None
+    reactions: dict[str, int] | None = None
+    reactionsSelf: list[str] | None = None
 
     @field_validator("messageParameters", mode="before")
     @classmethod
@@ -38,6 +42,29 @@ class TalkMessage(BaseModel):
         if isinstance(v, list) and not v:
             return {}
         return v
+
+    @field_validator("parent", mode="before")
+    @classmethod
+    def _coerce_empty_parent(cls, v: Any) -> Any:
+        if isinstance(v, list) and not v:
+            return None
+        return v
+
+    @field_validator("reactions", mode="before")
+    @classmethod
+    def _coerce_empty_reactions(cls, v: Any) -> Any:
+        if isinstance(v, list) and not v:
+            return None
+        return v
+
+
+class TalkReactionActor(BaseModel):
+    """One participant who left a given emoji reaction."""
+
+    actorType: str
+    actorId: str
+    actorDisplayName: str
+    timestamp: int
 
 
 class TalkConversation(BaseModel):
@@ -184,4 +211,26 @@ class MarkAsReadResponse(StatusResponse):
     last_read_message: int | None = Field(
         default=None,
         description="The message ID that was marked as the last-read marker",
+    )
+
+
+class ListReactionsResponse(BaseResponse):
+    """Reactions on a chat message, keyed by emoji."""
+
+    conversation_token: str
+    message_id: int
+    results: dict[str, list[TalkReactionActor]] = Field(
+        description="Map emoji → actors who reacted with it"
+    )
+
+
+class ReactResponse(BaseResponse):
+    """After adding or removing a reaction."""
+
+    conversation_token: str
+    message_id: int
+    reaction: str
+    results: dict[str, list[TalkReactionActor]] = Field(
+        default_factory=dict,
+        description="Updated reactions map after the change",
     )

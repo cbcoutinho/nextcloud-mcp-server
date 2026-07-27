@@ -16,8 +16,11 @@ from nextcloud_mcp_server.models.talk import (
     ListConversationsResponse,
     ListMessagesResponse,
     ListParticipantsResponse,
+    ListReactionsResponse,
     MarkAsReadResponse,
+    ReactResponse,
     SendMessageResponse,
+    TalkReactionActor,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
@@ -326,4 +329,99 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             message="Conversation marked as read",
             conversation_token=token,
             last_read_message=last_read_message,
+        )
+
+    def _reactions_map(
+        raw: dict,
+    ) -> dict[str, list[TalkReactionActor]]:
+        out: dict[str, list[TalkReactionActor]] = {}
+        for emoji, actors in (raw or {}).items():
+            out[str(emoji)] = [
+                TalkReactionActor(**a) for a in actors if isinstance(a, dict)
+            ]
+        return out
+
+    @mcp.tool(
+        title="List Talk Reactions",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.read")
+    @instrument_tool
+    async def talk_list_reactions(
+        ctx: Context,
+        token: str,
+        message_id: int,
+        reaction: str | None = None,
+    ) -> ListReactionsResponse:
+        """Who reacted to a Talk message (emoji → actors).
+
+        Args:
+            token: Conversation token.
+            message_id: Chat message id.
+            reaction: Optional single emoji to filter.
+        """
+        client = await get_client(ctx)
+        raw = await client.talk.list_reactions(
+            token, int(message_id), reaction=reaction
+        )
+        return ListReactionsResponse(
+            conversation_token=token,
+            message_id=int(message_id),
+            results=_reactions_map(raw),
+        )
+
+    @mcp.tool(
+        title="React to Talk Message",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("talk.write")
+    @instrument_tool
+    async def talk_react(
+        ctx: Context,
+        token: str,
+        message_id: int,
+        reaction: str,
+    ) -> ReactResponse:
+        """Add an emoji reaction to a Talk message (👍, ❤️, …).
+
+        Args:
+            token: Conversation token.
+            message_id: Target message id.
+            reaction: Single emoji string.
+        """
+        client = await get_client(ctx)
+        raw = await client.talk.add_reaction(token, int(message_id), reaction)
+        return ReactResponse(
+            conversation_token=token,
+            message_id=int(message_id),
+            reaction=(reaction or "").strip(),
+            results=_reactions_map(raw),
+        )
+
+    @mcp.tool(
+        title="Remove Talk Reaction",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("talk.write")
+    @instrument_tool
+    async def talk_delete_reaction(
+        ctx: Context,
+        token: str,
+        message_id: int,
+        reaction: str,
+    ) -> ReactResponse:
+        """Remove your emoji reaction from a Talk message.
+
+        Args:
+            token: Conversation token.
+            message_id: Target message id.
+            reaction: Emoji to remove.
+        """
+        client = await get_client(ctx)
+        raw = await client.talk.delete_reaction(token, int(message_id), reaction)
+        return ReactResponse(
+            conversation_token=token,
+            message_id=int(message_id),
+            reaction=(reaction or "").strip(),
+            results=_reactions_map(raw),
         )

@@ -304,3 +304,77 @@ class TalkClient(BaseNextcloudClient):
         )
         data = response.json()["ocs"]["data"]
         return [TalkParticipant(**p) for p in data]
+
+    # Reactions (spreed api/v1/reaction)
+
+    _REACTION_BASE = "/ocs/v2.php/apps/spreed/api/v1/reaction"
+
+    @staticmethod
+    def _normalize_reactions_payload(data: Any) -> dict[str, list[dict[str, Any]]]:
+        """Spreed may return ``{emoji: [actors…]}`` or a flat actor list."""
+        if data is None:
+            return {}
+        if isinstance(data, dict):
+            out: dict[str, list[dict[str, Any]]] = {}
+            for key, val in data.items():
+                if isinstance(val, list):
+                    out[str(key)] = [x for x in val if isinstance(x, dict)]
+                elif isinstance(val, dict):
+                    out[str(key)] = [val]
+            return out
+        if isinstance(data, list):
+            # Filtered GET sometimes returns a bare actor list — stash under "".
+            return {"": [x for x in data if isinstance(x, dict)]}
+        return {}
+
+    async def list_reactions(
+        self,
+        token: str,
+        message_id: int,
+        *,
+        reaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """List who reacted to a message (optionally filter by emoji)."""
+        _validate_token(token)
+        params: dict[str, Any] = {}
+        if reaction:
+            params["reaction"] = reaction
+        response = await self._make_request(
+            "GET",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            params=params or None,
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
+
+    async def add_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Add an emoji reaction to a message."""
+        _validate_token(token)
+        emoji = (reaction or "").strip()
+        if not emoji:
+            raise ValueError("reaction emoji must not be empty")
+        response = await self._make_request(
+            "POST",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            json={"reaction": emoji},
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
+
+    async def delete_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Remove own emoji reaction from a message."""
+        _validate_token(token)
+        emoji = (reaction or "").strip()
+        if not emoji:
+            raise ValueError("reaction emoji must not be empty")
+        response = await self._make_request(
+            "DELETE",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            json={"reaction": emoji},
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
