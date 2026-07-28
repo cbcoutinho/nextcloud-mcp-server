@@ -184,7 +184,9 @@ def _picklable_message(exc: BaseException) -> str:
     """
     try:
         return f"{type(exc).__name__}: {exc}"
-    except Exception:  # noqa: BLE001 -- last-resort, must not mask the failure
+    # Last resort: this already runs on the failure path, so a secondary error
+    # while formatting must not mask the failure being reported.
+    except Exception:  # noqa: BLE001
         return type(exc).__name__
 
 
