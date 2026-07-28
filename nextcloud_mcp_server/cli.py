@@ -1,8 +1,12 @@
 import logging
 from importlib.metadata import version
+from typing import TYPE_CHECKING
 
 import click
 import uvicorn
+
+if TYPE_CHECKING:  # heavy optional import; keep it out of CLI startup
+    import procrastinate
 
 from nextcloud_mcp_server.config import (
     Settings,
@@ -334,7 +338,7 @@ def _init_worker_observability(settings: Settings) -> None:
 
 
 async def _run_ingest_worker(
-    app,
+    app: "procrastinate.App",
     settings: Settings,
     *,
     queues: list[str],
@@ -383,6 +387,16 @@ async def _run_ingest_worker(
         # schema apply (the always-on API pod is the authoritative applier) and
         # the worker loop — manage_connection=False avoids a redundant
         # open/close cycle on startup.
+        #
+        # Safe to re-enter on the retry below: procrastinate's AwaitableContext
+        # __aexit__ calls connector.close_async(), which sets _async_pool=None,
+        # so the second open_async() builds a fresh pool rather than handing
+        # back the dead one (open_async() early-returns while _async_pool is
+        # set). That holds because the retry can only follow a *successful*
+        # __aenter__ — a failure inside open_async() itself means the profiler
+        # never started, so shutdown_profiling() returns False and the guard
+        # re-raises instead of retrying. Which is just as well: __aexit__ does
+        # not run when __aenter__ raises, so _async_pool would still be set.
         async with app.open_async():
             _start_profiling()
             await apply_ingest_queue_schema(app, manage_connection=False)

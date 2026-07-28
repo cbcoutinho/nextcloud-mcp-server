@@ -200,6 +200,23 @@ class TestGetSettings:
         assert settings.pyroscope_enabled is True
         assert settings.pyroscope_server_address == "alloy.alloy.svc.cluster.local:4041"
 
+    @patch.dict(
+        os.environ,
+        {"POD_NAMESPACE": "tenant-example", "POD_NAME": "backend-7c95d96fd9-mh2d7"},
+        clear=True,
+    )
+    def test_get_settings_pod_identity_from_env(self):
+        """POD_NAMESPACE / POD_NAME must reach settings (Deck #48).
+
+        Same guard as the pyroscope pair above: these are what tag profiles and
+        make a tenant's profiles separable, and a missing _DEFAULTS / _field_map
+        entry would silently drop them with no other test noticing.
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.pod_namespace == "tenant-example"
+        assert settings.pod_name == "backend-7c95d96fd9-mh2d7"
+
     @patch.dict(os.environ, {}, clear=True)
     def test_pyroscope_disabled_by_default(self):
         """Profiling is opt-in: default off with no server address."""
