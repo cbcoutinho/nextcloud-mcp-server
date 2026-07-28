@@ -1,8 +1,12 @@
 import logging
 from importlib.metadata import version
+from typing import TYPE_CHECKING
 
 import click
 import uvicorn
+
+if TYPE_CHECKING:  # heavy optional import; keep it out of CLI startup
+    import procrastinate
 
 from nextcloud_mcp_server.config import (
     Settings,
@@ -25,6 +29,7 @@ from nextcloud_mcp_server.observability import (
     setup_metrics,
     setup_profiling,
     setup_tracing,
+    shutdown_profiling,
 )
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
@@ -323,13 +328,119 @@ def _init_worker_observability(settings: Settings) -> None:
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
 
-    # Continuous profiling (optional). The worker is the highest-value target
-    # (CPU-bound parse/chunk/embed), so profile it in its own process.
-    setup_profiling(
-        application_name=f"{settings.otel_service_name}-worker",
-        server_address=settings.pyroscope_server_address,
-        enabled=settings.pyroscope_enabled,
+    # Continuous profiling is deliberately NOT started here. The worker is the
+    # highest-value profiling target (CPU-bound parse/chunk/embed), so it stays
+    # enabled — but starting the sampler before the database pool is open makes
+    # the worker CrashLoop indefinitely on psycopg pool-open timeouts, where a
+    # byte-identical worker with profiling off starts in <1s (Deck #908,
+    # observed on a dev tenant 2026-07-27: 127 PoolTimeouts, zero documents
+    # processed). _run_ingest_worker() starts it once the pool is up.
+
+
+async def _run_ingest_worker(
+    app: "procrastinate.App",
+    settings: Settings,
+    *,
+    queues: list[str],
+    workers: int,
+    tier: str | None,
+) -> None:
+    """Open the pool, start profiling, and run the ingest worker loop.
+
+    Extracted from ``worker()`` so the profiling-safety logic is readable and
+    testable on its own (and to keep ``worker()`` under the Sonar cognitive
+    complexity limit).
+
+    Profiling must NEVER be the reason this worker cannot start. Two guards:
+
+    1. The sampler starts only *after* ``app.open_async()`` succeeds. Started
+       before, every libpq connect in the pool's 30s init window times out and
+       the worker CrashLoops forever, while a byte-identical worker with
+       profiling off starts in <1s (Deck #908). The connect-time mechanism is
+       still unestablished; this orders around it rather than claiming a fix.
+    2. If startup fails anyway with the profiler running, shed it and retry
+       once — a pod with degraded telemetry beats one in CrashLoopBackOff
+       indexing nothing.
+    """
+    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+        apply_ingest_queue_schema,
     )
+
+    # startup_complete: once the worker loop is entered, a failure is a real
+    # error and must propagate rather than silently restart the loop.
+    # profiling_shed: shutdown_profiling() clears setup_profiling()'s
+    # idempotence guard, so without this the retry would re-arm the very thing
+    # that just prevented startup.
+    state = {"startup_complete": False, "profiling_shed": False}
+
+    def _start_profiling() -> None:
+        if state["profiling_shed"]:
+            return
+        setup_profiling(
+            application_name=f"{settings.otel_service_name}-worker",
+            server_address=settings.pyroscope_server_address,
+            enabled=settings.pyroscope_enabled,
+        )
+
+    async def _loop() -> None:
+        # Open the connector pool once and reuse it for both the defensive
+        # schema apply (the always-on API pod is the authoritative applier) and
+        # the worker loop — manage_connection=False avoids a redundant
+        # open/close cycle on startup.
+        #
+        # Safe to re-enter on the retry below: procrastinate's AwaitableContext
+        # __aexit__ calls connector.close_async(), which sets _async_pool=None,
+        # so the second open_async() builds a fresh pool rather than handing
+        # back the dead one (open_async() early-returns while _async_pool is
+        # set). That holds because the retry can only follow a *successful*
+        # __aenter__ — a failure inside open_async() itself means the profiler
+        # never started, so shutdown_profiling() returns False and the guard
+        # re-raises instead of retrying. Which is just as well: __aexit__ does
+        # not run when __aenter__ raises, so _async_pool would still be set.
+        async with app.open_async():
+            _start_profiling()
+            await apply_ingest_queue_schema(app, manage_connection=False)
+            # Structured log (not click.echo) so it lands in the JSON / OTel
+            # pipeline like every other startup message.
+            logger.info(
+                "Ingest worker started: tier=%s queues=%s concurrency=%s "
+                "delete_succeeded=%s listen_notify=%s",
+                tier or "all",
+                queues,
+                workers,
+                settings.ingest_delete_succeeded_jobs,
+                settings.ingest_listen_notify,
+            )
+            state["startup_complete"] = True
+            await app.run_worker_async(
+                queues=queues,
+                concurrency=workers,
+                install_signal_handlers=True,
+                # Drop succeeded jobs (default) so the queue table stays lean and
+                # the KEDA queue-depth metric reflects only outstanding work; set
+                # INGEST_DELETE_SUCCEEDED_JOBS=false to retain them for audit.
+                delete_jobs="successful"
+                if settings.ingest_delete_succeeded_jobs
+                else "never",
+                # LISTEN/NOTIFY for near-instant job pickup. Set
+                # INGEST_LISTEN_NOTIFY=false to run poll-only when DATABASE_URL
+                # routes through a transaction-mode pooler (PgBouncer), which
+                # drops the LISTEN registration on backend checkin (Deck #424).
+                listen_notify=settings.ingest_listen_notify,
+            )
+
+    try:
+        await _loop()
+    except Exception:
+        if state["startup_complete"] or not shutdown_profiling():
+            raise
+        state["profiling_shed"] = True
+        logger.exception(
+            "Ingest worker startup failed with Pyroscope profiling running; "
+            "shed the profiler and retrying once (this worker will have no "
+            "profiles — see Deck #908)"
+        )
+        await _loop()
 
 
 def _sweep_spools_at_startup(settings) -> int:
@@ -441,7 +552,6 @@ def worker(concurrency: int | None, tier: str | None):
         LEGACY_INGEST_QUEUE,
         LEGACY_OCR_QUEUES,
         TIER_QUEUES,
-        apply_ingest_queue_schema,
         get_procrastinate_app,
     )
 
@@ -488,42 +598,11 @@ def worker(concurrency: int | None, tier: str | None):
 
     initialize_document_processors()
 
-    async def _run() -> None:
-        # Open the connector pool once and reuse it for both the defensive
-        # schema apply (the always-on API pod is the authoritative applier) and
-        # the worker loop — manage_connection=False avoids a redundant
-        # open/close cycle on startup.
-        async with app.open_async():
-            await apply_ingest_queue_schema(app, manage_connection=False)
-            # Structured log (not click.echo) so it lands in the JSON / OTel
-            # pipeline like every other startup message.
-            logger.info(
-                "Ingest worker started: tier=%s queues=%s concurrency=%s "
-                "delete_succeeded=%s listen_notify=%s",
-                tier or "all",
-                queues,
-                workers,
-                settings.ingest_delete_succeeded_jobs,
-                settings.ingest_listen_notify,
-            )
-            await app.run_worker_async(
-                queues=queues,
-                concurrency=workers,
-                install_signal_handlers=True,
-                # Drop succeeded jobs (default) so the queue table stays lean and
-                # the KEDA queue-depth metric reflects only outstanding work; set
-                # INGEST_DELETE_SUCCEEDED_JOBS=false to retain them for audit.
-                delete_jobs="successful"
-                if settings.ingest_delete_succeeded_jobs
-                else "never",
-                # LISTEN/NOTIFY for near-instant job pickup. Set
-                # INGEST_LISTEN_NOTIFY=false to run poll-only when DATABASE_URL
-                # routes through a transaction-mode pooler (PgBouncer), which
-                # drops the LISTEN registration on backend checkin (Deck #424).
-                listen_notify=settings.ingest_listen_notify,
-            )
-
-    anyio.run(_run)
+    anyio.run(
+        lambda: _run_ingest_worker(
+            app, settings, queues=queues, workers=workers, tier=tier
+        )
+    )
 
 
 @click.group()

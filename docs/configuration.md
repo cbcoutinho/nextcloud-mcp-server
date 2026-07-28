@@ -1307,7 +1307,6 @@ EMBEDDING_GATEWAY_CLIENT_SECRET=...
 INGEST_QUEUE=postgres         # memory | postgres
 # Process role (informational; the worker is launched via the `worker` command):
 MCP_ROLE=all                  # api | worker | all (default)
-TENANT_ID=<uuid>              # per-tenant identity (used in collection naming)
 ```
 
 ### Postgres ingest queue + worker (api/worker split)

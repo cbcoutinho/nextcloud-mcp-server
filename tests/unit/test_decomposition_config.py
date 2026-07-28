@@ -22,7 +22,6 @@ class TestDecompositionDefaults:
         assert s.mcp_role == "all"
         assert s.collection_metadata_source == "qdrant"
         assert s.embedding_gateway_url is None
-        assert s.tenant_id is None
         # LISTEN/NOTIFY stays on by default — poll-only is opt-in for
         # transaction-mode poolers (Deck #424).
         assert s.ingest_listen_notify is True
@@ -177,14 +176,6 @@ class TestConditionalRequired:
             embedding_gateway_url="https://gateway:8083",
         )
         assert s.embedding_provider == "gateway"
-
-
-class TestTenantId:
-    def test_arbitrary_tenant_id_accepted(self):
-        # The old NATS-subject charset restriction was dropped with NATS
-        # (Deck #183); tenant_id is now just an opaque per-tenant identity.
-        s = Settings(tenant_id="0a1b2c3d-0000-0000-0000-000000000000")
-        assert s.tenant_id == "0a1b2c3d-0000-0000-0000-000000000000"
 
 
 class TestProcrastinateConninfo:

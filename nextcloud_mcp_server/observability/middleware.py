@@ -17,7 +17,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
     http_request_duration_seconds,
     http_requests_in_progress,
@@ -98,7 +97,6 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                         "http.path": path,
                         "http.scheme": request.url.scheme,
                         "http.host": request.url.hostname,
-                        **self._tenant_attributes(),
                         **self._correlation_attributes(request),
                     },
                 ) as span:
@@ -202,17 +200,6 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         if not request_id:
             return {}
         return {"client.request.id": request_id[:_MAX_REQUEST_ID_LEN]}
-
-    def _tenant_attributes(self) -> dict[str, str]:
-        """Tenant identity for the span, when this deployment has one.
-
-        One Tempo/Loki stack aggregates every tenant, so without this a trace
-        cannot be attributed to a tenant without correlating on pod name.
-        Resolved per request rather than snapshotted at import so test overrides
-        of the setting take effect (single-tenant deployments leave it unset).
-        """
-        tenant_id = get_settings().tenant_id
-        return {"tenant.id": tenant_id} if tenant_id else {}
 
     def _get_endpoint_label(self, path: str) -> str:
         """
