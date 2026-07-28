@@ -1,8 +1,10 @@
 import json
 import logging
+import re
 import uuid
 
 import pytest
+from httpx import HTTPStatusError
 from mcp import ClientSession
 
 from nextcloud_mcp_server.client import NextcloudClient
@@ -353,6 +355,215 @@ async def test_deck_card_comment_message_too_long_mcp(
         {"card_id": card_id, "message": too_long},
     )
     assert result.isError is True, "Expected validation error for >1000 char message"
+
+    # The error text is the agent-facing contract: it must name the escape
+    # hatch, otherwise the caller falls back to guess-and-shrink retries.
+    text = result.content[0].text
+    assert 'overflow="split"' in text, f"error should name the remedy: {text}"
+    assert "1001 characters" in text, f"error should state the exact length: {text}"
+
+
+def _long_comment_body(repeats: int) -> str:
+    """A markdown message that needs several comments to post."""
+    block = (
+        "## Deploy {n}\n\n"
+        "The migration landed and every tenant now resolves its collection "
+        "through the registry rather than the hardcoded map. Rollout was "
+        "staged over two days and no tenant saw downtime.\n\n"
+        "- purged the legacy map\n"
+        "- backfilled the audit log\n"
+    )
+    return "\n".join(block.format(n=i) for i in range(repeats))
+
+
+async def test_deck_card_comment_split_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """overflow="split" posts an over-length message as one numbered thread."""
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    message = _long_comment_body(6)
+    assert len(message) > 1000, "fixture must actually exceed the limit"
+
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message, "overflow": "split"},
+    )
+    assert result.isError is False, f"Split comment failed: {result.content}"
+
+    payload = json.loads(result.content[0].text)
+    parts = payload["parts"]
+    assert payload["part_count"] == len(parts) > 1
+    assert parts[0]["id"] == payload["comment"]["id"], "comment must be part 1"
+
+    # Every part is postable on its own terms...
+    for index, part in enumerate(parts, 1):
+        assert len(part["message"]) <= 1000
+        assert part["message"].startswith(f"({index}/{len(parts)}) ")
+
+    # ...and parts 2..N hang off part 1 so the card renders one thread.
+    for part in parts[1:]:
+        assert part["replyTo"] is not None, "split parts must reply to part 1"
+        assert part["replyTo"]["id"] == parts[0]["id"]
+
+    # The thread is really on the card, not just in the response.
+    listed = await nc_mcp_client.call_tool(
+        "deck_get_card_comments", {"card_id": card_id, "limit": 50}
+    )
+    listed_ids = {c["id"] for c in json.loads(listed.content[0].text)["results"]}
+    assert {p["id"] for p in parts} <= listed_ids
+
+    # Nothing was dropped on the way through.
+    rejoined = "".join(re.sub(r"^\(\d+/\d+\) ", "", p["message"]) for p in parts)
+    assert re.sub(r"\s+", "", rejoined) == re.sub(r"\s+", "", message)
+
+
+async def test_deck_card_comment_split_under_parent_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """Part 1 may itself be a reply, making parts 2..N replies to a reply.
+
+    Nextcloud core resolves ``topmostParentId``, so Deck should accept the
+    nesting -- but that is worth proving against a real server rather than
+    assuming, since the alternative (parts 2..N reusing the caller's parent_id)
+    would need a different implementation.
+    """
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    root = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": "Root of the thread"},
+    )
+    assert root.isError is False
+    root_id = json.loads(root.content[0].text)["comment"]["id"]
+
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {
+            "card_id": card_id,
+            "message": _long_comment_body(5),
+            "parent_id": root_id,
+            "overflow": "split",
+        },
+    )
+    assert result.isError is False, f"Nested split failed: {result.content}"
+
+    parts = json.loads(result.content[0].text)["parts"]
+    assert len(parts) > 1
+    assert parts[0]["replyTo"]["id"] == root_id, "part 1 replies to the caller's parent"
+    for part in parts[1:]:
+        assert part["replyTo"]["id"] == parts[0]["id"]
+
+
+async def test_deck_card_comment_exactly_1000_chars_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """Core's check is ``> 1000``, so exactly 1000 must be accepted.
+
+    Guards against a future off-by-one turning the boundary into a rejection.
+    """
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    message = "b" * 1000
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message},
+    )
+    assert result.isError is False, f"1000 chars should be legal: {result.content}"
+
+    payload = json.loads(result.content[0].text)
+    assert payload["comment"]["message"] == message
+    assert payload["part_count"] == 1
+    assert payload["parts"] is None
+
+
+async def test_deck_server_counts_unicode_spaces_php_trim_keeps_mcp(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_board_with_card: tuple,
+):
+    """Pin the PHP-vs-Python trim difference against the real server.
+
+    Core trims with PHP ``trim()`` (ASCII whitespace only) before applying
+    ``mb_strlen``, whereas Python's ``str.strip()`` also removes Unicode
+    Zs spaces such as U+3000. Measuring with the Python default would report
+    1000 for the message below, so we would post it and take a 400 back.
+
+    Both halves are asserted here because the claim is about two systems
+    agreeing: the server really does reject it, and our client-side guard
+    really does catch it first.
+    """
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    message = "b" * 1000 + "　"  # 1001 code points once PHP-trimmed
+
+    # 1. The server rejects it -- proving PHP's trim() keeps the U+3000.
+    with pytest.raises(HTTPStatusError) as excinfo:
+        await nc_client.deck.create_comment(card_id, message)
+    assert excinfo.value.response.status_code == 400
+
+    # 2. And our guard rejects it first, so that 400 never reaches an agent.
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message},
+    )
+    assert result.isError is True
+    assert "1001 characters" in result.content[0].text
+
+    # 3. Splitting it works, which it could not if we mismeasured the length.
+    split = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message, "overflow": "split"},
+    )
+    assert split.isError is False, (
+        f"Split of the padded message failed: {split.content}"
+    )
+    assert json.loads(split.content[0].text)["part_count"] == 2
+
+
+async def test_deck_card_comment_update_too_long_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """An over-length update must fail here, never reaching Deck.
+
+    Deck's CommentService::update() lacks create()'s MessageTooLongException
+    catch, so the server would answer with a masked 500 whose body says only
+    "Internal server error". The client-side guard is what keeps that from
+    reaching the agent.
+    """
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    created = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": "Short enough to start with"},
+    )
+    assert created.isError is False
+    comment_id = json.loads(created.content[0].text)["comment"]["id"]
+
+    result = await nc_mcp_client.call_tool(
+        "deck_update_card_comment",
+        {"card_id": card_id, "comment_id": comment_id, "message": "y" * 1001},
+    )
+    assert result.isError is True, "Expected client-side rejection of a long update"
+
+    text = result.content[0].text
+    assert "1001 characters" in text
+    # Update cannot split, so the error must not send the agent down that path.
+    assert "Internal server error" not in text, (
+        "the masked 500 must never reach the caller"
+    )
+
+    # The original comment is untouched.
+    listed = await nc_mcp_client.call_tool(
+        "deck_get_card_comments", {"card_id": card_id, "detail": "full"}
+    )
+    comments = {c["id"]: c for c in json.loads(listed.content[0].text)["results"]}
+    assert comments[comment_id]["message"] == "Short enough to start with"
 
 
 # Compact retrieval (summary projection + board overview)

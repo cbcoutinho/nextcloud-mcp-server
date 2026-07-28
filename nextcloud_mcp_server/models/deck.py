@@ -399,9 +399,34 @@ class ListCardCommentsResponse(BaseResponse):
 
 
 class CardCommentResponse(BaseResponse):
-    """Response model returned when a single card comment is created or updated."""
+    """Response model returned when a card comment is created or updated.
 
-    comment: DeckComment = Field(description="The created or updated card comment")
+    Covers the split case too, rather than a second model: a union return
+    produces a messy tool output schema and forces every caller to branch on
+    shape. The extra fields are additive -- an existing caller reading
+    ``comment`` is unaffected.
+    """
+
+    comment: DeckComment = Field(
+        description=(
+            "The created or updated card comment. When the message was split, "
+            "this is part 1 -- the parent of the remaining parts."
+        )
+    )
+    parts: list[DeckComment] | None = Field(
+        default=None,
+        description=(
+            "Every posted part in order, including part 1, when the message "
+            "was split into more than one comment. Null when a single comment "
+            "was posted."
+        ),
+    )
+    part_count: int = Field(
+        default=1,
+        description=(
+            "Number of comments actually posted (1 unless the message was split)."
+        ),
+    )
 
 
 class CardCommentOperationResponse(StatusResponse):
