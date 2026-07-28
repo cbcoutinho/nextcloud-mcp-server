@@ -92,6 +92,12 @@ def _validate_comment_message_not_blank(message: str) -> None:
 
     Deck would happily store one, but a blank row in an activity log is noise
     nobody asked for and almost always signals a bug in the caller.
+
+    Uses Python's broad ``str.strip()`` on purpose, unlike
+    :func:`measured_length`, which must mirror PHP's narrower ``trim()``
+    charlist exactly. This guard is our own policy rather than a restatement of
+    the server's rule, and a comment of nothing but ideographic spaces is just
+    as useless as one of nothing but spaces -- so do not "align" it.
     """
     if not message.strip():
         raise ValueError("Comment message must not be empty or whitespace-only")

@@ -177,6 +177,43 @@ def test_measured_length_ignores_surrounding_whitespace():
     assert measured_length("  hello  \n\n") == len("hello")
 
 
+@pytest.mark.parametrize(
+    "pad,name",
+    [
+        ("　", "U+3000 ideographic space"),
+        (" ", "U+00A0 no-break space"),
+        (" ", "U+202F narrow no-break space"),
+    ],
+)
+def test_measured_length_keeps_unicode_spaces_php_trim_would_keep(pad, name):
+    """PHP ``trim()`` strips ASCII whitespace only; Python's strips Zs too.
+
+    Measuring with the broader set would report 1000 for a message the server
+    counts as 1003, so we would post it and take a 400 back -- and U+3000 is
+    ordinary in CJK text, not an exotic input.
+    """
+    assert measured_length("x" * 1000 + pad * 3) == 1003, name
+
+
+def test_measured_length_strips_nul_because_php_trim_does():
+    """The mismatch runs the other way too.
+
+    Python's ``str.strip()`` leaves NUL in place, so measuring with it would
+    reject a 1000-character message the server would have accepted.
+    """
+    assert measured_length("x" * 1000 + "\0\0\0") == 1000
+
+
+def test_message_at_the_limit_plus_unicode_space_is_split():
+    """Follows from the above: the server sees 1001 here, so we must split."""
+    message = "x" * 1000 + "　"
+
+    parts = split_message(message, max_length=LIMIT)
+
+    assert len(parts) == 2
+    assert all(measured_length(p) <= LIMIT for p in parts)
+
+
 def test_measured_length_counts_code_points_not_bytes():
     """mb_strlen(..., 'UTF-8') counts code points; so does Python's len()."""
     assert measured_length("🚀") == 1

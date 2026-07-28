@@ -4,6 +4,7 @@ import re
 import uuid
 
 import pytest
+from httpx import HTTPStatusError
 from mcp import ClientSession
 
 from nextcloud_mcp_server.client import NextcloudClient
@@ -477,6 +478,51 @@ async def test_deck_card_comment_exactly_1000_chars_mcp(
     assert payload["comment"]["message"] == message
     assert payload["part_count"] == 1
     assert payload["parts"] is None
+
+
+async def test_deck_server_counts_unicode_spaces_php_trim_keeps_mcp(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_board_with_card: tuple,
+):
+    """Pin the PHP-vs-Python trim difference against the real server.
+
+    Core trims with PHP ``trim()`` (ASCII whitespace only) before applying
+    ``mb_strlen``, whereas Python's ``str.strip()`` also removes Unicode
+    Zs spaces such as U+3000. Measuring with the Python default would report
+    1000 for the message below, so we would post it and take a 400 back.
+
+    Both halves are asserted here because the claim is about two systems
+    agreeing: the server really does reject it, and our client-side guard
+    really does catch it first.
+    """
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    message = "b" * 1000 + "　"  # 1001 code points once PHP-trimmed
+
+    # 1. The server rejects it -- proving PHP's trim() keeps the U+3000.
+    with pytest.raises(HTTPStatusError) as excinfo:
+        await nc_client.deck.create_comment(card_id, message)
+    assert excinfo.value.response.status_code == 400
+
+    # 2. And our guard rejects it first, so that 400 never reaches an agent.
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message},
+    )
+    assert result.isError is True
+    assert "1001 characters" in result.content[0].text
+
+    # 3. Splitting it works, which it could not if we mismeasured the length.
+    split = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": message, "overflow": "split"},
+    )
+    assert split.isError is False, (
+        f"Split of the padded message failed: {split.content}"
+    )
+    assert json.loads(split.content[0].text)["part_count"] == 2
 
 
 async def test_deck_card_comment_update_too_long_mcp(

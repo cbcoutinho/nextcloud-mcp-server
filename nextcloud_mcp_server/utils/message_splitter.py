@@ -54,15 +54,29 @@ PART_PREFIX_TEMPLATE: Final[str] = "({index}/{total}) "
 _MAX_PREFIX_ITERATIONS: Final[int] = 8
 
 
+# PHP trim()'s default charlist. Deliberately NOT Python's bare str.strip(),
+# which also strips every Unicode Zs-category space -- U+00A0 (NBSP), U+202F,
+# U+3000 (ideographic space, ordinary in CJK text) -- while PHP leaves those in
+# place. The two disagree in both directions and each one costs us:
+#   * strip more than PHP  -> we measure 1000, the server measures 1003, we
+#     post it and get a 400 back.
+#   * strip less than PHP  -> we reject a message the server would accept
+#     (PHP trims NUL, Python does not).
+# Matching the charlist exactly is the only way the client-side check agrees
+# with the server it is standing in for.
+_PHP_TRIM_CHARS: Final[str] = " \t\n\r\0\x0b"
+
+
 def measured_length(message: str) -> int:
     """Return the length as the Nextcloud server measures it.
 
     Core's ``OC\\Comments\\Comment::setMessage`` trims first and then applies
     ``mb_strlen($message, 'UTF-8') > $maxLength`` -- Unicode **code points**,
-    not bytes and not grapheme clusters. Python's ``len()`` on a ``str`` is also
-    code points, so trimming is the only correction needed.
+    not bytes and not grapheme clusters. Python's ``len()`` on a ``str`` is
+    also code points, so trimming is the only correction needed -- but it has
+    to be PHP's notion of trimming, not Python's. See ``_PHP_TRIM_CHARS``.
     """
-    return len(message.strip())
+    return len(message.strip(_PHP_TRIM_CHARS))
 
 
 def split_message(
@@ -109,7 +123,9 @@ def split_message(
     if measured_length(message) <= max_length:
         return [message]
 
-    text = message.strip()
+    # Trim exactly what the server trims -- never more, or we would drop
+    # trailing content (an ideographic space, say) that Deck would have kept.
+    text = message.strip(_PHP_TRIM_CHARS)
 
     parts: list[str] = []
     total_guess = 1
@@ -209,7 +225,9 @@ def _pack(text: str, budget: int) -> list[str]:
         parts.append(text[position:cut])
         position = cut
 
-    return [stripped for part in parts if (stripped := part.strip())]
+    # Same charlist at cut boundaries, for the same reason: the whitespace we
+    # discard here is whitespace the server would have discarded anyway.
+    return [stripped for part in parts if (stripped := part.strip(_PHP_TRIM_CHARS))]
 
 
 def _choose_cut(
