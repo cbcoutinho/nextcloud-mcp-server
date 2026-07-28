@@ -548,3 +548,95 @@ class TestVectorDensitySnapshotTask:
         await mp.vector_density_snapshot_task(shutdown)
 
         assert published == 1
+
+
+class TestCountDeadLettered:
+    """Deck #911: dead-letter state must be observable from the scraped backend.
+
+    ``astrolabe_document_dead_lettered_total`` only ever increments in the ingest
+    worker, whose container is not a scrape target and which KEDA scales to zero
+    -- four dead-letter events in a day produced no time series at all. The
+    tombstones themselves are durable state in Qdrant, so a gauge read back from
+    the collection is what alerting can actually rely on.
+    """
+
+    async def test_counts_dead_letter_tombstones(self) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(4)
+
+        assert await mp.count_dead_lettered(qc, _COLLECTION) == 4
+
+    async def test_filters_on_the_indexed_dead_letter_flag(self) -> None:
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(0)
+
+        await mp.count_dead_lettered(qc, _COLLECTION)
+
+        count_filter = qc.count.await_args.kwargs["count_filter"]
+        # dead_letter carries its own payload index; Qdrant strict mode rejects a
+        # filter on an unindexed field, which would fail the count entirely.
+        assert _must_keys(count_filter) == ["dead_letter"]
+        assert count_filter.must[0].match.value is True
+
+    async def test_counts_exactly(self) -> None:
+        # An approximate count that drifts to 0 would silence the alert this
+        # gauge exists to raise, so this one does not trade accuracy for cost.
+        qc = AsyncMock()
+        qc.count.return_value = _count_obj(1)
+
+        await mp.count_dead_lettered(qc, _COLLECTION)
+
+        assert qc.count.await_args.kwargs["exact"] is True
+
+
+class TestPublishDeadLetteredGauge:
+    @pytest.fixture(autouse=True)
+    def _stub_settings(self, monkeypatch) -> None:
+        settings = SimpleNamespace(
+            ingest_queue="memory",
+            get_collection_name=lambda: _COLLECTION,
+            vector_ram_hnsw_overhead_factor=1.5,
+        )
+        monkeypatch.setattr(mp, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            mp, "get_ingest_pending", AsyncMock(return_value=IngestPending(pending=0))
+        )
+        monkeypatch.setattr(
+            mp,
+            "get_embedding_service",
+            lambda: SimpleNamespace(get_dimension=lambda: 1024),
+        )
+
+    async def test_publishes_the_tombstone_count(self, monkeypatch) -> None:
+        gauge = MagicMock()
+        monkeypatch.setattr(mp, "update_vector_sync_dead_lettered_documents", gauge)
+        monkeypatch.setattr(mp, "count_dead_lettered", AsyncMock(return_value=7))
+        monkeypatch.setattr(
+            mp, "get_qdrant_client", AsyncMock(return_value=AsyncMock())
+        )
+
+        await mp.publish_vector_sync_metrics(
+            task_producer=None, document_receive_stream=object()
+        )
+
+        gauge.assert_called_once_with(7)
+
+    async def test_qdrant_failure_does_not_raise(self, monkeypatch) -> None:
+        # A metrics refresh must never disturb ingest, and must not take the
+        # other gauges down with it.
+        gauge = MagicMock()
+        monkeypatch.setattr(mp, "update_vector_sync_dead_lettered_documents", gauge)
+        monkeypatch.setattr(
+            mp,
+            "count_dead_lettered",
+            AsyncMock(side_effect=RuntimeError("qdrant down")),
+        )
+        monkeypatch.setattr(
+            mp, "get_qdrant_client", AsyncMock(return_value=AsyncMock())
+        )
+
+        await mp.publish_vector_sync_metrics(
+            task_producer=None, document_receive_stream=object()
+        )
+
+        gauge.assert_not_called()

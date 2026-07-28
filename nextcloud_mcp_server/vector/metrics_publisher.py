@@ -35,6 +35,7 @@ from nextcloud_mcp_server.observability.metrics import (
     estimate_vector_bytes,
     update_ingest_queue_depth,
     update_qdrant_chunk_density_snapshot,
+    update_vector_sync_dead_lettered_documents,
     update_vector_sync_estimated_vector_bytes,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
@@ -44,6 +45,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_vector_sync_queue_size,
 )
 from nextcloud_mcp_server.vector import payload_keys
+from nextcloud_mcp_server.vector.dead_letter import DEAD_LETTER_KEY
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -102,6 +104,26 @@ async def count_hybrid_chunks(
                     match=MatchValue(value=payload_keys.INDEX_MODE_HYBRID),
                 ),
             ]
+        ),
+        exact=exact,
+    )
+    return result.count
+
+
+async def count_dead_lettered(
+    qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
+) -> int:
+    """Return the number of documents parked as permanently-failed.
+
+    One tombstone point per ``(doc_type, doc_id)`` (``mark_dead_letter`` upserts
+    a deterministic ID), so this counts documents, not chunks. ``dead_letter`` is
+    payload-indexed -- required, since Qdrant strict mode rejects a filter on an
+    unindexed field.
+    """
+    result = await qdrant_client.count(
+        collection_name=collection,
+        count_filter=Filter(
+            must=[FieldCondition(key=DEAD_LETTER_KEY, match=MatchValue(value=True))]
         ),
         exact=exact,
     )
@@ -206,6 +228,23 @@ async def publish_vector_sync_metrics(
         )
     except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
         logger.warning("Failed to publish vector-RAM gauges: %s", exc)
+
+    # Permanently-failed documents. Published from here (the scraped, long-lived
+    # backend) because the worker-side counters never reach Prometheus — see the
+    # gauge's definition in observability/metrics.py. Own try/except so a Qdrant
+    # hiccup counting tombstones cannot suppress the gauges above.
+    try:
+        qdrant_client = await get_qdrant_client()
+        # Exact: this is a small, bounded population (one point per failed
+        # document) and an approximate count that drifts to 0 would silence the
+        # alert this gauge exists to raise.
+        update_vector_sync_dead_lettered_documents(
+            await count_dead_lettered(
+                qdrant_client, settings.get_collection_name(), exact=True
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
+        logger.warning("Failed to publish dead-lettered-documents gauge: %s", exc)
 
 
 async def vector_sync_metrics_task(
