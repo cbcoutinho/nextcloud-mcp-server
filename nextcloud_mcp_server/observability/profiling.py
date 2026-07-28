@@ -116,7 +116,10 @@ def setup_profiling(
         "Pyroscope profiling enabled (application=%s, server=%s, tags=%s)",
         application_name,
         server_address,
-        sorted(resolved_tags),
+        # Keys AND values: the whole point of this line is confirming a pod
+        # actually picked up its namespace/pod identity, which the key alone
+        # cannot tell you. Sorted for stable, diffable log output.
+        dict(sorted(resolved_tags.items())),
     )
 
 

@@ -502,6 +502,13 @@ def test_worker_rejects_non_postgres_queue_before_observability(runner, monkeypa
 # ---------------------------------------------------------------------------
 
 
+def _make_async(fn):
+    async def _inner(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return _inner
+
+
 class _FakePool:
     """Async context manager standing in for procrastinate's App.open_async()."""
 
@@ -519,19 +526,49 @@ class _FakePool:
         return False
 
 
-def _patch_worker_machinery(monkeypatch, *, fail_times):
+def _patch_worker_machinery(
+    monkeypatch,
+    *,
+    pool_fail_times=0,
+    schema_fail_times=0,
+    run_worker_fail_times=0,
+    shutdown_returns=True,
+):
     """Drive cli.worker() with the procrastinate/document machinery stubbed out.
 
-    Returns the bookkeeping dict the assertions read.
+    The failure knobs map onto the three phases of `_run_ingest_worker`, which
+    is what makes the guard's branches distinguishable:
+
+    - `pool_fail_times`  -> `open_async()` raises, i.e. BEFORE the profiler is
+      started. This is the original production failure mode; the real
+      `shutdown_profiling()` returns False here because nothing is running.
+    - `schema_fail_times` -> raises AFTER `_start_profiling()` but before
+      `startup_complete`, the only window where the backstop can fire.
+    - `run_worker_fail_times` -> raises after `startup_complete = True`, which
+      must always propagate rather than restart a running worker.
     """
-    state: dict = {"opens": [], "profiling_started": 0, "shed": 0, "ran": 0}
+    state: dict = {
+        "opens": [],
+        "profiling_started": 0,
+        "shed": 0,
+        "ran": 0,
+        "schema": 0,
+    }
+
+    def _run_worker(**kwargs):
+        state["ran"] += 1
+        if state["ran"] <= run_worker_fail_times:
+            raise RuntimeError("worker loop exploded")
 
     fake_app = SimpleNamespace(
-        open_async=lambda: _FakePool(fail_times, state["opens"]),
-        run_worker_async=_make_async(
-            lambda **kw: state.__setitem__("ran", state["ran"] + 1)
-        ),
+        open_async=lambda: _FakePool(pool_fail_times, state["opens"]),
+        run_worker_async=_make_async(_run_worker),
     )
+
+    def _apply_schema(*args, **kwargs):
+        state["schema"] += 1
+        if state["schema"] <= schema_fail_times:
+            raise RuntimeError("schema apply failed")
 
     monkeypatch.setattr(
         "nextcloud_mcp_server.cli.get_settings",
@@ -560,7 +597,7 @@ def _patch_worker_machinery(monkeypatch, *, fail_times):
     )
     monkeypatch.setattr(
         "nextcloud_mcp_server.vector.queue.procrastinate.apply_ingest_queue_schema",
-        _make_async(lambda *a, **kw: None),
+        _make_async(_apply_schema),
     )
     monkeypatch.setattr(
         "nextcloud_mcp_server.cli.setup_profiling",
@@ -571,17 +608,10 @@ def _patch_worker_machinery(monkeypatch, *, fail_times):
 
     def fake_shutdown():
         state["shed"] += 1
-        return True
+        return shutdown_returns
 
     monkeypatch.setattr("nextcloud_mcp_server.cli.shutdown_profiling", fake_shutdown)
     return state
-
-
-def _make_async(fn):
-    async def _inner(*args, **kwargs):
-        return fn(*args, **kwargs)
-
-    return _inner
 
 
 def test_worker_starts_profiling_only_after_the_pool_is_open(runner, monkeypatch):
@@ -590,7 +620,7 @@ def test_worker_starts_profiling_only_after_the_pool_is_open(runner, monkeypatch
     Starting it first is what made ingest workers CrashLoop forever on psycopg
     pool-open timeouts (Deck #908).
     """
-    state = _patch_worker_machinery(monkeypatch, fail_times=0)
+    state = _patch_worker_machinery(monkeypatch)
 
     result = runner.invoke(worker, [])
 
@@ -603,15 +633,14 @@ def test_worker_starts_profiling_only_after_the_pool_is_open(runner, monkeypatch
 def test_worker_sheds_profiler_and_retries_when_startup_fails(runner, monkeypatch):
     """Profiling must never be the reason the worker cannot start (Deck #908).
 
-    First pool-open raises; the worker sheds the profiler and retries once
-    rather than dying into CrashLoopBackOff.
+    Failure is injected in the schema apply — i.e. after the profiler started —
+    because that is the only window the backstop can actually fire in.
     """
-    state = _patch_worker_machinery(monkeypatch, fail_times=1)
+    state = _patch_worker_machinery(monkeypatch, schema_fail_times=1)
 
     result = runner.invoke(worker, [])
 
     assert result.exit_code == 0, result.output
-    assert len(state["opens"]) == 2, "should retry the pool open exactly once"
     assert state["shed"] == 1
     assert state["ran"] == 1, "worker loop runs on the retry"
 
@@ -619,10 +648,44 @@ def test_worker_sheds_profiler_and_retries_when_startup_fails(runner, monkeypatc
 def test_worker_retry_does_not_restart_the_profiler(runner, monkeypatch):
     """shutdown_profiling() clears setup_profiling()'s idempotence guard, so the
     retry would re-arm the very thing that just blocked startup."""
-    state = _patch_worker_machinery(monkeypatch, fail_times=1)
+    state = _patch_worker_machinery(monkeypatch, schema_fail_times=1)
 
     runner.invoke(worker, [])
 
-    assert state["profiling_started"] == 0, (
-        "profiler must not be started again after being shed"
+    assert state["profiling_started"] == 1, (
+        "profiler started once before the failure, and must not start again"
     )
+
+
+def test_worker_propagates_when_profiler_was_never_running(runner, monkeypatch):
+    """A pool-open failure must NOT be retried — nothing was shed, so a retry
+    would just fail again.
+
+    This is the original production failure mode: with the new ordering the
+    profiler has not started when open_async() times out, so the real
+    shutdown_profiling() returns False and the guard re-raises.
+    """
+    state = _patch_worker_machinery(
+        monkeypatch, pool_fail_times=1, shutdown_returns=False
+    )
+
+    result = runner.invoke(worker, [])
+
+    assert result.exit_code != 0, "startup failure must surface, not be swallowed"
+    assert len(state["opens"]) == 1, "must not retry when nothing was shed"
+    assert state["profiling_started"] == 0
+
+
+def test_worker_propagates_failures_after_startup_completes(runner, monkeypatch):
+    """Once the worker loop is running, a failure is a real error.
+
+    Retrying here would silently restart a live worker, so the guard must let
+    it propagate even though the profiler is running and could be shed.
+    """
+    state = _patch_worker_machinery(monkeypatch, run_worker_fail_times=1)
+
+    result = runner.invoke(worker, [])
+
+    assert result.exit_code != 0
+    assert state["ran"] == 1, "must not restart the worker loop"
+    assert state["shed"] == 0, "guard short-circuits on startup_complete"

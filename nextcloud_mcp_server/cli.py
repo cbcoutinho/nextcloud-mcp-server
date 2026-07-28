@@ -330,8 +330,7 @@ def _init_worker_observability(settings: Settings) -> None:
     # the worker CrashLoop indefinitely on psycopg pool-open timeouts, where a
     # byte-identical worker with profiling off starts in <1s (Deck #908,
     # observed on a dev tenant 2026-07-27: 127 PoolTimeouts, zero documents
-    # processed). See _start_worker_profiling() at the worker entrypoint, which
-    # starts it once the pool is up.
+    # processed). _run_ingest_worker() starts it once the pool is up.
 
 
 async def _run_ingest_worker(
