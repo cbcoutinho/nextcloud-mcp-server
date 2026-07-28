@@ -175,6 +175,8 @@ _DEFAULTS: dict[str, Any] = {
     "aws_secret_access_key": None,
     "bedrock_embedding_model": None,
     "bedrock_generation_model": None,
+    "bedrock_image_embedding_model": None,
+    "bedrock_image_output_dim": 1024,
     # Mistral
     "mistral_api_key": None,
     "mistral_embedding_model": "mistral-embed",
@@ -1117,6 +1119,8 @@ class Settings:
     aws_secret_access_key: str | None = None
     bedrock_embedding_model: str | None = None
     bedrock_generation_model: str | None = None
+    bedrock_image_embedding_model: str | None = None
+    bedrock_image_output_dim: int = 1024
 
     # Mistral settings (embeddings only)
     mistral_api_key: str | None = None
@@ -1641,6 +1645,7 @@ class Settings:
             self.aws_region
             or self.bedrock_embedding_model
             or self.bedrock_generation_model
+            or self.bedrock_image_embedding_model
         ):
             return "bedrock", self.bedrock_embedding_model or "bedrock-default"
 
@@ -2035,6 +2040,8 @@ def _build_settings() -> Settings:
         "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
         "bedrock_embedding_model": "BEDROCK_EMBEDDING_MODEL",
         "bedrock_generation_model": "BEDROCK_GENERATION_MODEL",
+        "bedrock_image_embedding_model": "BEDROCK_IMAGE_EMBEDDING_MODEL",
+        "bedrock_image_output_dim": "BEDROCK_IMAGE_OUTPUT_DIM",
         # Mistral settings
         "mistral_api_key": "MISTRAL_API_KEY",
         "mistral_embedding_model": "MISTRAL_EMBEDDING_MODEL",

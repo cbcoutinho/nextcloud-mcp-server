@@ -1,5 +1,6 @@
 """Unit tests for Bedrock provider."""
 
+import base64
 import json
 from unittest.mock import MagicMock
 
@@ -345,3 +346,195 @@ async def test_bedrock_cohere_embedding(mock_bedrock_client):
     assert embedding == [0.1, 0.2, 0.3]
     body = json.loads(mock_bedrock_client.invoke_model.call_args.kwargs["body"])
     assert body == {"texts": ["test text"], "input_type": "search_document"}
+
+
+def _mock_body(payload: dict) -> dict:
+    return {
+        "body": MagicMock(read=MagicMock(return_value=json.dumps(payload).encode()))
+    }
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embed_titan(mock_bedrock_client):
+    """Titan multimodal: image bytes → vector via inputImage + outputEmbeddingLength."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embedding": [0.1] * 1024}
+    )
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="amazon.titan-embed-image-v1",
+        image_output_dim=1024,
+    )
+    assert provider.supports_image_embeddings is True
+
+    vec = await provider.embed_image(b"\xff\xd8\xff\xe0fake-jpeg")
+
+    assert len(vec) == 1024
+    assert provider.get_image_dimension() == 1024
+    call = mock_bedrock_client.invoke_model.call_args
+    assert call.kwargs["modelId"] == "amazon.titan-embed-image-v1"
+    body = json.loads(call.kwargs["body"])
+    assert body["inputImage"] == base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg").decode()
+    assert body["embeddingConfig"] == {"outputEmbeddingLength": 1024}
+    assert "inputText" not in body
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embed_titan_returns_error_message(mock_bedrock_client):
+    """Titan returns errors via a `message` field — must surface as RuntimeError."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embedding": [], "message": "Image too small"}
+    )
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="amazon.titan-embed-image-v1",
+    )
+
+    with pytest.raises(RuntimeError, match="Image too small"):
+        await provider.embed_image(b"tiny")
+
+
+@pytest.mark.unit
+async def test_bedrock_embed_for_image_space_titan(mock_bedrock_client):
+    """Text→image-space query: Titan uses inputText against the same image model."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embedding": [0.5] * 1024}
+    )
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="amazon.titan-embed-image-v1",
+        image_output_dim=1024,
+    )
+
+    vec = await provider.embed_for_image_space("a coast at sunset")
+
+    assert len(vec) == 1024
+    body = json.loads(mock_bedrock_client.invoke_model.call_args.kwargs["body"])
+    assert body["inputText"] == "a coast at sunset"
+    assert "inputImage" not in body
+    assert body["embeddingConfig"] == {"outputEmbeddingLength": 1024}
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embed_cohere_batch(mock_bedrock_client):
+    """Cohere v4: batch image embedding in a single invoke_model call."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embeddings": {"float": [[0.1] * 1536, [0.2] * 1536, [0.3] * 1536]}}
+    )
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="cohere.embed-v4:0",
+    )
+
+    imgs = [b"img1", b"img2", b"img3"]
+    vecs = await provider.embed_image_batch(imgs, mime_type="image/png")
+
+    assert len(vecs) == 3
+    assert all(len(v) == 1536 for v in vecs)
+    assert mock_bedrock_client.invoke_model.call_count == 1  # batched
+    body = json.loads(mock_bedrock_client.invoke_model.call_args.kwargs["body"])
+    assert body["input_type"] == "search_document"
+    assert body["embedding_types"] == ["float"]
+    assert len(body["images"]) == 3
+    assert body["images"][0].startswith("data:image/png;base64,")
+
+
+@pytest.mark.unit
+async def test_bedrock_embed_for_image_space_cohere(mock_bedrock_client):
+    """Cohere v4 text→image-space: input_type=search_query, single vector returned."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embeddings": {"float": [[0.7] * 1536]}}
+    )
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="cohere.embed-v4:0",
+    )
+
+    vec = await provider.embed_for_image_space("hummingbird")
+
+    assert len(vec) == 1536
+    body = json.loads(mock_bedrock_client.invoke_model.call_args.kwargs["body"])
+    assert body["texts"] == ["hummingbird"]
+    assert body["input_type"] == "search_query"
+    assert "images" not in body
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embeddings_disabled():
+    """No image_embedding_model → capability False, all image methods raise."""
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        embedding_model="amazon.titan-embed-text-v2:0",
+    )
+    assert provider.supports_image_embeddings is False
+
+    with pytest.raises(NotImplementedError, match="no image_embedding_model"):
+        await provider.embed_image(b"x")
+    with pytest.raises(NotImplementedError, match="no image_embedding_model"):
+        await provider.embed_image_batch([b"x"])
+    with pytest.raises(NotImplementedError, match="no image_embedding_model"):
+        await provider.embed_for_image_space("q")
+    with pytest.raises(NotImplementedError, match="no image_embedding_model"):
+        provider.get_image_dimension()
+
+
+@pytest.mark.unit
+async def test_bedrock_image_dimension_not_detected_yet():
+    """get_image_dimension before any embed call raises RuntimeError."""
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="amazon.titan-embed-image-v1",
+    )
+    with pytest.raises(RuntimeError, match="not detected yet"):
+        provider.get_image_dimension()
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embed_cohere_chunks_over_cap(mock_bedrock_client):
+    """Cohere batch >64 images chunks into multiple invoke_model calls to stay
+    under the per-request cap (96)."""
+    chunk1_vecs = [[0.1] * 8 for _ in range(64)]
+    chunk2_vecs = [[0.2] * 8 for _ in range(36)]
+    responses = [
+        _mock_body({"embeddings": {"float": chunk1_vecs}}),
+        _mock_body({"embeddings": {"float": chunk2_vecs}}),
+    ]
+    mock_bedrock_client.invoke_model.side_effect = responses
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="cohere.embed-v4:0",
+    )
+
+    images = [f"img{i}".encode() for i in range(100)]
+    vecs = await provider.embed_image_batch(images)
+
+    assert len(vecs) == 100
+    assert mock_bedrock_client.invoke_model.call_count == 2
+    body1 = json.loads(
+        mock_bedrock_client.invoke_model.call_args_list[0].kwargs["body"]
+    )
+    body2 = json.loads(
+        mock_bedrock_client.invoke_model.call_args_list[1].kwargs["body"]
+    )
+    assert len(body1["images"]) == 64
+    assert len(body2["images"]) == 36
+
+
+@pytest.mark.unit
+async def test_bedrock_image_embed_batch_titan_sequential(mock_bedrock_client):
+    """Titan has no batch endpoint — embed_image_batch falls back to sequential calls."""
+    mock_bedrock_client.invoke_model.return_value = _mock_body(
+        {"embedding": [0.1] * 1024}
+    )
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        image_embedding_model="amazon.titan-embed-image-v1",
+    )
+
+    vecs = await provider.embed_image_batch([b"a", b"b"])
+
+    assert len(vecs) == 2
+    assert mock_bedrock_client.invoke_model.call_count == 2
