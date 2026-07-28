@@ -22,6 +22,10 @@ import anyio.to_process
 from anyio import BrokenWorkerProcess, CapacityLimiter
 from anyio.lowlevel import RunVar
 
+from nextcloud_mcp_server.document_processors._pymupdf4llm_classic import (
+    load_classic_pymupdf4llm,
+)
+
 # ``resource`` is a Unix-only stdlib module -- it does not exist on Windows, and
 # importing it unconditionally crashed Windows startup (#877). The RLIMIT_AS cap
 # it provides is a Linux-pod safety measure, not a correctness requirement, so on
@@ -150,6 +154,40 @@ class PdfParseFailed(Exception):
         super().__init__(message or f"PDF parse failed ({reason})")
 
 
+class PdfWorkerError(Exception):
+    """A parse failure re-raised from the worker as plain, picklable data.
+
+    Deliberately carries a single string arg and no attributes, so
+    ``BaseException.__reduce__`` round-trips it as ``cls(message)``.
+
+    This exists because the worker's exception is pickled back to the parent by
+    ``anyio.to_process``, and pymupdf raises errors that hold SWIG objects. When
+    that pickling fails, anyio does NOT propagate the original -- it catches the
+    pickling error and sends THAT instead (anyio/to_process.py, the
+    ``except BaseException`` around ``pickle.dumps(exception, ...)``). The real
+    cause is destroyed in transit and the parent sees only
+    ``TypeError: cannot pickle 'swig_runtime_data5.SwigPyObject' object``.
+
+    That is not cosmetic: an out-of-memory parse arrived as reason=``error``
+    instead of reason=``oom``, which the caller treats as terminal, so healthy
+    documents were dead-lettered permanently rather than retried (Deck #911).
+    Normalising to a string here keeps the classification honest.
+    """
+
+
+def _picklable_message(exc: BaseException) -> str:
+    """``TypeName: message`` for ``exc``, tolerating a broken ``__str__``.
+
+    pymupdf's SWIG-backed exceptions can raise while formatting themselves, and
+    this runs on the failure path -- losing the reason to a secondary error
+    would put us right back to an opaque boundary failure.
+    """
+    try:
+        return f"{type(exc).__name__}: {exc}"
+    except Exception:  # noqa: BLE001 -- last-resort, must not mask the failure
+        return type(exc).__name__
+
+
 def _apply_mem_limit(mem_limit_mb: int) -> None:
     """Cap the worker's address space (RLIMIT_AS) so a bomb raises MemoryError.
 
@@ -182,6 +220,42 @@ def _parse_pdf_worker(
     mem_limit_mb: int,
     markdown_max_pages: int,
 ) -> list[dict[str, Any]]:
+    """Extract a PDF in the worker subprocess, raising only picklable errors.
+
+    Thin wrapper over :func:`_parse_pdf_extract`. Everything it raises must
+    survive ``pickle.dumps`` in the child, because anyio replaces an unpicklable
+    exception with the pickling error itself -- see :class:`PdfWorkerError`.
+
+    ``MemoryError`` is re-raised as ``MemoryError`` (rather than folded into
+    ``PdfWorkerError``) because the caller maps it to reason=``oom``, which is
+    retryable; a fresh instance is raised so a SWIG object in the original's
+    ``args`` cannot break pickling on the way back.
+    """
+    try:
+        return _parse_pdf_extract(
+            source_path,
+            write_images,
+            image_path,
+            graphics_limit,
+            mem_limit_mb,
+            markdown_max_pages,
+        )
+    except MemoryError as exc:
+        raise MemoryError(_picklable_message(exc)) from exc
+    except PdfWorkerError:
+        raise
+    except Exception as exc:
+        raise PdfWorkerError(_picklable_message(exc)) from exc
+
+
+def _parse_pdf_extract(
+    source_path: str,
+    write_images: bool,
+    image_path: str | None,
+    graphics_limit: int,
+    mem_limit_mb: int,
+    markdown_max_pages: int,
+) -> list[dict[str, Any]]:
     """Extract a PDF in the worker subprocess (positional args only).
 
     Runs ``pymupdf4llm.to_markdown`` when :func:`uses_markdown` allows it for this
@@ -205,16 +279,15 @@ def _parse_pdf_worker(
     # Imported inside the worker so the parent process (and any module that
     # imports this one) doesn't load pymupdf4llm -- which prints a banner to
     # stdout on import, the channel anyio's worker uses for IPC.
-    # Stay on pymupdf4llm's classic (pymupdf_rag) extractor.
     #
-    # 1.27.2.1 made ``import pymupdf4llm`` initialise pymupdf_layout and route
-    # to_markdown through an ONNX layout-detection model. That default is a poor
-    # fit for this worker, in four independent ways:
+    # Stay on pymupdf4llm's classic (pymupdf_rag) extractor, via the shared
+    # loader that owns that mechanism (see _pymupdf4llm_classic for the full
+    # rationale). Layout mode is a poor fit for this worker in four independent
+    # ways:
     #
     # * The import alone costs ~1157 MiB of address space (VmSize 34 -> 1191
-    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~345 MiB for the parse
-    #   itself. That is what surfaces as "Error during worker process
-    #   initialization" classified as oom.
+    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~117 MiB for the parse
+    #   itself -- which is how a healthy document dead-letters (Deck #911).
     # * Inference aborts under the same cap with "[ONNXRuntimeError] Missing
     #   Input: image_features", failing the parse. It is content-dependent, so
     #   PDFs fail unpredictably rather than consistently. Raising the cap is not
@@ -225,36 +298,15 @@ def _parse_pdf_worker(
     # * It reconstructs from the visual layout, dropping text rendered outside
     #   the page box that the classic extractor kept.
     #
-    # Two mechanisms, because they do different things. pymupdf4llm decides at
-    # import time with
-    #     try: import pymupdf.layout
-    #     except ImportError: use_layout(False)
-    #     else: use_layout(True)
-    # so binding that name to None in sys.modules -- the standard way to make an
-    # import raise -- takes the classic branch and avoids the address-space cost
-    # entirely (VmSize 499 MiB). The explicit use_layout(False) then still
-    # disables inference if that block ever stops working (upstream renaming the
-    # module, say); it cannot undo the import, hence both. Both are
-    # worker-process-local and never affect the parent.
-    #
     # Net effect: the extractor we were on before the bump -- plain picklable
     # dicts, ``metadata["page"]``, no ML inference in the ingest path. The exact
     # pin in pyproject.toml keeps that a fixed, known target. Adopting layout
     # mode later needs its own memory budget plus a re-check of the chunk type
     # and the metadata key; test_worker_disables_pymupdf4llm_layout_mode fails
     # loudly if it turns back on by accident.
-    # NB: this is process-wide and sticky for the life of the process, not
-    # scoped to this call. That is intended in the parse subprocess, but note it
-    # also applies to any process that calls this function directly -- the unit
-    # tests do, so pytest workers get the same block. Nothing here needs real
-    # layout mode; anything that later does must not share a process with this
-    # function, because ``setdefault`` cannot be undone by a subsequent import.
-    sys.modules.setdefault("pymupdf.layout", None)  # type: ignore[assignment, ty:no-matching-overload]
-
     import pymupdf  # noqa: PLC0415
-    import pymupdf4llm  # noqa: PLC0415
 
-    pymupdf4llm.use_layout(False)
+    pymupdf4llm = load_classic_pymupdf4llm()
 
     doc = pymupdf.open(source_path)
     try:
@@ -337,6 +389,11 @@ async def run_isolated_pdf_parse(
             # Worker died without a clean exception (e.g. SIGKILL from the OS OOM
             # killer beating the rlimit). Treat as an out-of-memory failure.
             raise PdfParseFailed("oom", str(e)) from e
+        except PdfWorkerError as e:
+            # Already normalised in the worker: its message is
+            # "OriginalType: text", so re-prefixing would read
+            # "PdfWorkerError: FzErrorBase: ...".
+            raise PdfParseFailed("error", str(e)) from e
         except Exception as e:
             raise PdfParseFailed("error", f"{type(e).__name__}: {e}") from e
     # Reached only when move_on_after swallowed the timeout cancellation.
