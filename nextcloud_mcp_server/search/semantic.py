@@ -112,7 +112,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         # Generate embedding for query
         embedding_service = get_embedding_service()
         query_embedding = await embedding_service.embed(query)
-        # Store for reuse by callers (e.g., viz_routes PCA visualization)
+        # Store for reuse by callers (e.g. the PCA projection in
+        # vector/visualization.py)
         self.query_embedding = query_embedding
         logger.debug(
             "Generated embedding for query (dimension=%s)", len(query_embedding)

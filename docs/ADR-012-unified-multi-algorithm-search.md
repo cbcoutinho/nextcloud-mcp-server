@@ -3,6 +3,13 @@
 ## Status
 Accepted — implemented (hybrid search with RRF/DBSF fusion; see `search/hybrid.py`)
 
+The search algorithms and their selection remain in force. The **delivery
+surface described below is historical**: the in-repo visualization UI
+(`/app/vector-viz`, htmx fragments, `auth/viz_routes.py`) was removed once the
+Astrolabe Nextcloud app took over visualization. The same algorithms are now
+served only over the bearer-token API in `api/visualization.py`
+(`/api/v1/search`, `/api/v1/vector-viz/search`).
+
 ## Context
 
 ### Current State

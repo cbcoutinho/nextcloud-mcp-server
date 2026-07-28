@@ -12,10 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Import via the auth surface first to side-step a known circular-init issue
-# in `nextcloud_mcp_server.search.__init__` when `search` is imported as the
-# first entry point (also affects pre-existing tests under tests/unit/search/).
-import nextcloud_mcp_server.auth.viz_routes  # noqa: F401  (init-order fixup)
 from nextcloud_mcp_server.search import context as context_module
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 

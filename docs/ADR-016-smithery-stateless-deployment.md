@@ -298,7 +298,6 @@ def create_app(mode: DeploymentMode) -> Starlette:
 | `/.well-known/mcp-config` | ✓ | ✓ |
 | `/app` | ✓ | ✗ |
 | `/app/vector-sync/status` | ✓ | ✗ |
-| `/app/vector-viz` | ✓ | ✗ |
 | `/app/webhooks` | ✓ | ✗ |
 
 #### 5. Smithery Integration Files

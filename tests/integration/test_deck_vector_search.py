@@ -208,8 +208,8 @@ async def test_deck_card_chunk_context(nc_client):
         # Fetch chunk context (simulates viz UI request)
         # The chunk spans the title, so start=0 and end=len(card_title)
         # doc_id is str — keyword-indexed in Qdrant payload; the real
-        # callers (viz_routes.py from URL path; server/semantic.py from
-        # str(result.id)) all stringify before reaching this entry point.
+        # callers (api/visualization.py from URL path; server/semantic.py
+        # from str(result.id)) all stringify before reaching this entry point.
         context = await get_chunk_with_context(
             nc_client=nc_client,
             user_id=nc_client.username,

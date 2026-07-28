@@ -107,9 +107,9 @@ async def list_accessible_owners(
     shared item is accessible. Verify-on-read correctly drops the inaccessible
     "ghost" candidates, but because there is no second Qdrant pass to replenish,
     a ``limit=N`` search can return fewer than N results when the over-fetch
-    buffer (2× in nc_semantic_search / viz_routes) is dominated by ghosts. A
-    per-file ownership index would remove this tension and is the natural
-    starting point for future work (intentionally out of scope here).
+    buffer (2× in nc_semantic_search / api/visualization.py) is dominated by
+    ghosts. A per-file ownership index would remove this tension and is the
+    natural starting point for future work (intentionally out of scope here).
 
     Sharing API failures are non-fatal — we degrade to ``[user_id]`` and log
     so a hiccup in OCS doesn't black-hole the user's own search.

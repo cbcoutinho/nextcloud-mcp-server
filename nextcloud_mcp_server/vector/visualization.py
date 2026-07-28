@@ -1,14 +1,10 @@
 """PCA coordinate computation for search-result visualization.
 
 Used by the OAuth bearer-token search endpoints in ``api/visualization.py``
-(``/api/v1/search`` and ``/api/v1/vector-viz/search``).
-
-Note that ``auth/viz_routes.py`` (session-based auth) does *not* call this
-module — it carries its own inline copy of the same retrieve/normalize/PCA
-sequence. Both go through :class:`~nextcloud_mcp_server.vector.pca.PCA`, so
-changes to the projection itself apply to both, but anything changed here
-(spans, payload fields, guards) must be mirrored there by hand until the two
-are deduplicated.
+(``/api/v1/search`` and ``/api/v1/vector-viz/search``), which the Astrolabe
+Nextcloud app calls. This is now the only retrieve/normalize/PCA path; the
+session-authenticated ``auth/viz_routes.py`` that used to carry a second,
+inline copy was removed along with the in-repo visualization UI.
 """
 
 import logging
@@ -32,9 +28,8 @@ async def compute_pca_coordinates(
     """Compute PCA 3D coordinates for search results visualization.
 
     Retrieves the result vectors from Qdrant and applies PCA dimensionality
-    reduction. Called only by the OAuth bearer-token search endpoints in
-    ``api/visualization.py`` — ``auth/viz_routes.py`` runs its own inline copy
-    of this sequence rather than calling here (see the module docstring).
+    reduction. Called by the OAuth bearer-token search endpoints in
+    ``api/visualization.py``.
 
     Args:
         search_results: List of SearchResult objects with point_id

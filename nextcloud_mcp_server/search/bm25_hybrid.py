@@ -98,8 +98,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             dense_embedding, query_tokens = await embedding_service.embed_with_usage(
                 query
             )
-            # Store for reuse by callers (e.g., viz_routes PCA visualization) and
-            # for the usage-metering hook in server/semantic.py (token count).
+            # Store for reuse by callers (e.g. the PCA projection in
+            # vector/visualization.py) and for the usage-metering hook in
+            # server/semantic.py (token count).
             self.query_embedding = dense_embedding
             self.query_token_count = query_tokens
             self._embedded_query = query

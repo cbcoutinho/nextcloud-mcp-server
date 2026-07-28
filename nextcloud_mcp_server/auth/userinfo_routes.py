@@ -482,12 +482,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
             str(request.url_for("oauth_logout")) if oauth_ctx else "/oauth/logout"
         )
 
-    # Get Nextcloud host for generating browser-accessible links to apps (viz
-    # tab). Use nextcloud_browser_url so the links point at Nextcloud even in
-    # external-IdP mode, where nextcloud_public_issuer_url is the IdP, not
-    # Nextcloud (falls back to public_issuer_url → nextcloud_host).
     settings = get_settings()
-    nextcloud_host_for_links = settings.nextcloud_browser_url
 
     # Build host info HTML (BasicAuth only)
     host_info_html = ""
@@ -659,7 +654,6 @@ async def user_info_html(request: Request) -> HTMLResponse:
             show_vector_sync_tab=show_vector_sync_tab,
             show_webhooks_tab=show_webhooks_tab,
             logout_url=logout_url if auth_mode == "oauth" else None,
-            nextcloud_host_for_links=nextcloud_host_for_links,
             # Additional context for Welcome tab
             vector_sync_enabled=vector_sync_enabled,
             username=username,

@@ -88,11 +88,6 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     user_info_html,
     vector_sync_status_fragment,
 )
-from nextcloud_mcp_server.auth.viz_routes import (
-    chunk_context_endpoint,
-    vector_visualization_html,
-    vector_visualization_search,
-)
 from nextcloud_mcp_server.auth.webhook_routes import (
     disable_webhook_preset,
     enable_webhook_preset,
@@ -2934,20 +2929,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             vector_sync_status_fragment,
             methods=["GET"],
         ),  # /app/vector-sync/status
-        # Vector visualization routes
-        Route(
-            "/vector-viz", vector_visualization_html, methods=["GET"]
-        ),  # /app/vector-viz
-        Route(
-            "/vector-viz/search",
-            vector_visualization_search,
-            methods=["GET"],
-        ),  # /app/vector-viz/search
-        Route(
-            "/chunk-context",
-            chunk_context_endpoint,
-            methods=["GET"],
-        ),  # /app/chunk-context
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(

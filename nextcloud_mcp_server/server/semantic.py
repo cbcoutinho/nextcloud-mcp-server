@@ -376,9 +376,9 @@ def configure_semantic_tools(mcp: FastMCP):
             # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
             # sparse with RRF/DBSF fusion) as the single tool-layer algorithm.
             # SemanticSearchAlgorithm is not dead code — it backs the dense-only
-            # option that the visualization/API surfaces expose explicitly
-            # (auth/viz_routes.py and api/visualization.py). Both algorithms take
-            # accessible_owners, so ACL-aware search works on every surface.
+            # option that the API surface exposes explicitly
+            # (api/visualization.py). Both algorithms take accessible_owners,
+            # so ACL-aware search works on every surface.
             search_algo = BM25HybridSearchAlgorithm(
                 score_threshold=score_threshold, fusion=fusion
             )

@@ -11,9 +11,6 @@
 
     <!-- Plotly.js for vector visualization -->
     <script src="https://cdn.plot.ly/plotly-3.3.0.min.js"></script>
-
-    <!-- Vector Viz static assets -->
-    <link rel="stylesheet" href="/app/static/vector-viz.css">
 {% endblock %}
 
 {% block extra_styles %}
@@ -246,20 +243,6 @@
                     </div>
                 </li>
 
-                <li class="app-navigation-entry" :class="{ 'active': activeSection === 'vector-viz' }">
-                    <div class="app-navigation-entry__wrapper">
-                        <a href="#"
-                           @click.prevent="activeSection = 'vector-viz'"
-                           class="app-navigation-entry-link">
-                            <span class="app-navigation-entry-icon">
-                                <svg class="nav-icon" viewBox="0 0 24 24">
-                                    <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z" />
-                                </svg>
-                            </span>
-                            <span class="app-navigation-entry__name">Vector Viz</span>
-                        </a>
-                    </div>
-                </li>
                 {% endif %}
 
                 {% if show_webhooks_tab %}
@@ -539,18 +522,6 @@
                         </p>
                     </a>
 
-                    <a href="#" @click.prevent="activeSection = 'vector-viz'" class="feature-card">
-                        <div class="feature-icon">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z" />
-                            </svg>
-                        </div>
-                        <h3>Vector Visualization</h3>
-                        <p>
-                            Interactive search interface with 2D PCA visualization. Compare algorithms,
-                            view relevance scores, and explore matched document chunks.
-                        </p>
-                    </a>
                 </div>
 
                 {% else %}
@@ -621,16 +592,6 @@
                     {{ vector_sync_tab_html|safe }}
                 </div>
             </div>
-
-            <!-- Vector Viz Section -->
-            <div x-show="activeSection === 'vector-viz'">
-                <div class="content-section">
-                    <h1>Vector Visualization</h1>
-                    <div hx-get="/app/vector-viz" hx-trigger="load" hx-swap="outerHTML">
-                        <p style="color: #999;">Loading vector visualization...</p>
-                    </div>
-                </div>
-            </div>
             {% endif %}
 
             {% if show_webhooks_tab %}
@@ -645,10 +606,4 @@
         </div>
     </main>
 </div>
-
-<script>
-    // Set global Nextcloud base URL for use in external JS
-    window.NEXTCLOUD_BASE_URL = '{{ nextcloud_host_for_links }}';
-</script>
-<script src="/app/static/vector-viz.js"></script>
 {% endblock %}
