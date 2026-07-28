@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.152.0 (2026-07-28)
+
+### BREAKING CHANGE
+
+- the tenant.id span attribute and the TENANT_ID setting are
+removed. Attribute traces by resource.k8s.namespace.name instead. TENANT_ID
+may still be set in the environment; the application now ignores it.
+
+### Fix
+
+- **observability**: guard POD_* env wiring, drop stale TENANT_ID doc
+- **observability**: never let profiling crashloop the ingest worker
+
+### Refactor
+
+- **cli**: extract the ingest worker run loop; use monkeypatch in tests
+
 ## v0.151.0 (2026-07-26)
 
 ### BREAKING CHANGE
