@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.154.0 (2026-07-28)
+
+### Feat
+
+- **deck**: split over-long card comments instead of just rejecting them
+
+### Fix
+
+- **splitter**: measure length with PHP's trim charlist, not Python's
+- **splitter**: fail loudly if the prefix fixed point never converges
+- **deck**: give each comment operation its own 403 explanation
+
 ## v0.153.0 (2026-07-28)
 
 ### Feat
