@@ -4,13 +4,19 @@ Every caller of ``pymupdf4llm.to_markdown`` in this codebase must go through
 :func:`load_classic_pymupdf4llm`. Two independent reasons:
 
 * **Memory.** 1.27.2.1 made ``import pymupdf4llm`` initialise ``pymupdf.layout``
-  and route ``to_markdown`` through an ONNX layout-detection model. The import
-  alone costs ~1157 MiB of address space (VmSize 34 -> 1191 MiB). The isolated
-  parse worker runs under a 1536 MiB RLIMIT_AS, so paying that cost leaves
-  ~117 MiB for the parse itself -- which is how a perfectly healthy document
-  ends up dead-lettered (Deck #911). Binding ``pymupdf.layout`` to None in
-  ``sys.modules`` -- the standard way to make an import raise -- takes
-  pymupdf4llm's classic branch and avoids the cost entirely (VmSize 499 MiB).
+  and route ``to_markdown`` through an ONNX layout-detection model, which costs
+  ~1157 MiB of address space. The isolated parse worker runs under a 1536 MiB
+  RLIMIT_AS, so paying that cost leaves ~117 MiB for the parse itself -- which is
+  how a perfectly healthy document ends up dead-lettered (Deck #911). Binding
+  ``pymupdf.layout`` to None in ``sys.modules`` -- the standard way to make an
+  import raise -- takes pymupdf4llm's classic branch and avoids the cost.
+
+  Two baselines get quoted for that saving; they measure different processes, so
+  to be explicit about which is which. Importing *only* pymupdf4llm: VmSize 1191
+  MiB with layout, 499 MiB without. The ingest worker, which also carries the
+  whole app: 1476 MiB with, 891 MiB without (its ``to_process`` parse child
+  tracks ~55 MiB below each, so 1419 MiB was the figure that actually blew the
+  1536 MiB cap).
 * **Consistency.** The classic and layout extractors emit different markdown
   (and name the page key ``page`` vs ``page_number``). ``search/pdf_highlighter``
   recomputes offsets that must match what indexing produced, so the two must

@@ -242,6 +242,11 @@ def _parse_pdf_worker(
         )
     except MemoryError as exc:
         raise MemoryError(_picklable_message(exc)) from exc
+    # Unreachable today -- nothing under _parse_pdf_extract raises this. Kept so
+    # the normalisation stays idempotent if a helper down there ever does: without
+    # it, the clause below would re-wrap an already-normalised error and its
+    # message would grow a "PdfWorkerError: " prefix per layer. Not dead code by
+    # oversight.
     except PdfWorkerError:
         raise
     except Exception as exc:
