@@ -157,6 +157,13 @@ def _too_long_message(message: str, length: int) -> str:
         return _too_long_to_split_message(length, None)
 
     overage = length - _COMMENT_MAX_LENGTH
+    # Splitting here purely to quote a part count duplicates the work
+    # _post_split_comment does if the caller then retries with overflow="split".
+    # That is deliberate: this is a rejection path, the input is bounded to
+    # _MAX_SPLIT_PARTS * _COMMENT_MAX_LENGTH by the check above, and telling the
+    # agent up front what the remedy costs is the whole point. Don't try to
+    # thread a cached result through -- the two calls are far apart and the
+    # coupling would cost more than the split.
     parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
     if len(parts) > _MAX_SPLIT_PARTS:
         return _too_long_to_split_message(length, len(parts))
@@ -183,10 +190,40 @@ def _ocs_error_message(e: HTTPStatusError) -> str | None:
     return message if isinstance(message, str) and message else None
 
 
+# The four comment operations, kept as a closed set rather than free text so
+# each one can carry its own denial reason: a 403 means something different for
+# a read than for an edit, and getting that wrong sends an agent after the
+# wrong fix.
+CommentOperation = Literal["list", "create", "update", "delete"]
+
+_OPERATION_PHRASE: Final[dict[str, str]] = {
+    "list": "listing comments on",
+    "create": "creating a comment on",
+    "update": "updating",
+    "delete": "deleting",
+}
+
+# Deck's authorship restriction (only the author may edit or delete) applies to
+# exactly two of these. For a list it is board read access, and for a create
+# there is no comment to be the author of yet.
+_FORBIDDEN_REASON: Final[dict[str, str]] = {
+    "list": "you lack read access to this board's comments",
+    "create": "you lack write access to this board. Nothing was posted",
+    "update": (
+        "only the comment's author can edit it, and write access to the board "
+        "is required. Nothing was changed"
+    ),
+    "delete": (
+        "only the comment's author can delete it, and write access to the "
+        "board is required. Nothing was deleted"
+    ),
+}
+
+
 def _comment_http_error(
     e: HTTPStatusError,
     *,
-    operation: str,
+    operation: CommentOperation,
     card_id: int,
     comment_id: int | None = None,
     message: str | None = None,
@@ -195,13 +232,15 @@ def _comment_http_error(
 
     Args:
         e: The failure raised by the client layer.
-        operation: Present participle naming the attempt, e.g. ``"creating"``.
+        operation: Which comment operation was attempted. Drives both the
+            wording and, for 403/500, which explanation actually applies.
         card_id: The card the operation targeted.
         comment_id: The comment targeted, for update/delete.
         message: The text that was being posted, when there was one -- lets the
             masked-500 branch report its measured length.
     """
     status = e.response.status_code
+    phrase = _OPERATION_PHRASE[operation]
     target = (
         f"comment {comment_id} on card {card_id}"
         if comment_id is not None
@@ -215,51 +254,46 @@ def _comment_http_error(
                 f'. Nothing was posted -- retry with overflow="split" or '
                 f"shorten the message to {_COMMENT_MAX_LENGTH} characters"
             )
-        reason = f"{detail} (while {operation} {target})"
+        reason = f"{detail} (while {phrase} {target})"
     elif status == 403:
-        reason = (
-            f"Permission denied {operation} {target}: only the comment's author "
-            f"can edit or delete a Deck comment, and write access to the board "
-            f"is required. Nothing was changed."
-        )
+        reason = f"Permission denied {phrase} {target}: {_FORBIDDEN_REASON[operation]}."
     elif status == 404:
         reason = (
-            f"Not found {operation} {target}: the card or comment does not "
+            f"Not found {phrase} {target}: the card or comment does not "
             f"exist, or you lack access to its board."
         )
     elif status == 429:
         reason = (
-            f"Nextcloud rate-limited the request while {operation} {target} "
+            f"Nextcloud rate-limited the request while {phrase} {target} "
             f"(HTTP 429, bruteforce protection). Wait before retrying; when "
             f"splitting, retry only the parts that were not posted."
         )
-    elif status == 500 and message is not None:
-        # Only the update path passes `message`, and only there does the
-        # length explanation apply: Deck's CommentService::update() lacks the
-        # MessageTooLongException catch that create() has, so an over-length
-        # message escapes to its ExceptionMiddleware and comes back as a
-        # masked, non-OCS 500 with the real cause only in the server log. Name
-        # that explicitly -- an agent reading "internal server error" has no
-        # way to guess it sent too much. A 500 from delete carries no message
-        # and must not be attributed to length, so it falls through below.
+    elif status == 500 and operation == "update" and message is not None:
+        # The length explanation applies only to update: Deck's
+        # CommentService::update() lacks the MessageTooLongException catch that
+        # create() has, so an over-length message escapes to its
+        # ExceptionMiddleware and comes back as a masked, non-OCS 500 with the
+        # real cause only in the server log. Name that explicitly -- an agent
+        # reading "internal server error" has no way to guess it sent too much.
+        # A 500 from any other operation must not be attributed to length, so
+        # it falls through to the generic branch below.
         reason = (
             f"Deck returned an unhandled server error (HTTP 500) while "
-            f"{operation} {target}. The most likely cause is a message longer "
+            f"{phrase} {target}. The most likely cause is a message longer "
             f"than {_COMMENT_MAX_LENGTH} characters (the message you sent is "
             f"{measured_length(message)} characters): unlike the create "
-            f"endpoint, Deck's "
-            f"update endpoint does not translate that into a 400 and leaks a "
-            f"masked 500 instead (upstream Deck bug). The comment may or may "
-            f"not have been modified -- call deck_get_card_comments to confirm "
-            f"before retrying."
+            f"endpoint, Deck's update endpoint does not translate that into a "
+            f"400 and leaks a masked 500 instead (upstream Deck bug). The "
+            f"comment may or may not have been modified -- call "
+            f"deck_get_card_comments to confirm before retrying."
         )
     else:
         reason = (
-            f"Deck returned HTTP {status} while {operation} {target}: "
+            f"Deck returned HTTP {status} while {phrase} {target}: "
             f"{_ocs_error_message(e) or e.response.reason_phrase}"
         )
 
-    logger.warning("Deck comment error (%s while %s): %s", status, operation, reason)
+    logger.warning("Deck comment error (%s while %s): %s", status, phrase, reason)
     return McpError(ErrorData(code=-32603, message=reason))
 
 
@@ -1845,9 +1879,7 @@ def configure_deck_tools(mcp: FastMCP):
                 card_id, limit=limit, offset=offset
             )
         except HTTPStatusError as e:
-            raise _comment_http_error(
-                e, operation="listing comments on", card_id=card_id
-            ) from e
+            raise _comment_http_error(e, operation="list", card_id=card_id) from e
         except RequestError as e:
             raise McpError(
                 ErrorData(
@@ -1930,9 +1962,7 @@ def configure_deck_tools(mcp: FastMCP):
                     card_id, message, parent_id=parent_id
                 )
             except HTTPStatusError as e:
-                raise _comment_http_error(
-                    e, operation="creating a comment on", card_id=card_id
-                ) from e
+                raise _comment_http_error(e, operation="create", card_id=card_id) from e
             except RequestError as e:
                 raise McpError(
                     ErrorData(
@@ -1979,7 +2009,7 @@ def configure_deck_tools(mcp: FastMCP):
         except HTTPStatusError as e:
             raise _comment_http_error(
                 e,
-                operation="updating",
+                operation="update",
                 card_id=card_id,
                 comment_id=comment_id,
                 message=message,
@@ -2020,7 +2050,7 @@ def configure_deck_tools(mcp: FastMCP):
             await client.deck.delete_comment(card_id, comment_id)
         except HTTPStatusError as e:
             raise _comment_http_error(
-                e, operation="deleting", card_id=card_id, comment_id=comment_id
+                e, operation="delete", card_id=card_id, comment_id=comment_id
             ) from e
         except RequestError as e:
             raise McpError(
