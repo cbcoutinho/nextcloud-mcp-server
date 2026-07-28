@@ -14,6 +14,9 @@
 | `deck_get_card` | Get a single card in full detail |
 | `deck_get_labels` / `deck_get_label` | List / get board labels |
 | `deck_get_card_comments` | List card comments (compact, newest-first by default) |
+| `deck_create_card_comment` | Comment on a card; `overflow="split"` posts an over-length message as a numbered thread |
+| `deck_update_card_comment` | Edit your own comment (cannot be split — see below) |
+| `deck_delete_card_comment` | Delete your own comment |
 | `deck_create_board` | Create a new Deck board with title and color |
 | `deck_create_stack` | Create a new stack in a board |
 | `deck_update_stack` | Update stack title and order |
@@ -76,6 +79,72 @@ requests. Use `deck_get_card` for the full body of a specific card.
 (`id`, `actorId`, `message`, `creationDateTime`) by default. Use
 `detail="full"` for the complete objects, `message_max_length` to truncate,
 `order` (`newest`/`oldest`) to sort the page, and `limit`/`offset` to page.
+
+#### Long comments
+
+Nextcloud caps a comment at **1000 characters**
+(`IComment::MAX_MESSAGE_LENGTH`). The limit is measured **after trimming
+surrounding whitespace**, in **Unicode code points** — so an emoji counts as
+one, not four — and the check is `> 1000`, meaning exactly 1000 is accepted.
+Markdown and `@`-mentions are *not* expanded before the check: what you send
+is what is counted.
+
+`deck_create_card_comment` takes an `overflow` parameter deciding what happens
+above that limit:
+
+| `overflow` | Behaviour |
+|---|---|
+| `"error"` (default) | Nothing is posted. The error states the exact overage, that nothing was written, and how many comments a split would take. |
+| `"split"` | The message is posted as a numbered thread. |
+
+Splitting cuts at the most structural boundary that fits — markdown heading,
+then code fence, paragraph, line, sentence, and finally word — so a part never
+ends mid-word, and `@`-mentions (including `@"names with spaces"`) are never
+severed. Each part is prefixed `(i/N)`, part 1 becomes the comment, and parts
+2..N are posted as replies to part 1 so the card renders one thread rather than
+N unrelated comments. If you pass `parent_id`, part 1 replies to it and the
+rest still reply to part 1.
+
+The response carries the whole thread:
+
+```jsonc
+{
+  "comment":    { "id": 881, "message": "(1/3) ## Shipped state ..." },  // part 1
+  "parts":      [ /* every part in order; parts[0] is part 1 */ ],
+  "part_count": 3
+}
+```
+
+For a single comment, `parts` is `null` and `part_count` is `1`, so existing
+callers reading `comment` are unaffected.
+
+Two limits worth knowing:
+
+- **At most 10 parts.** Past that the call is rejected before anything is
+  posted. Content that long belongs in a note (`nc_notes_create_note`) or a
+  file (`nc_webdav_write_file`) attached with `deck_attach_note` /
+  `deck_attach_file`, with a short pointer comment linking to it.
+- **Splitting is not atomic.** Deck has no transactional multi-comment
+  endpoint, so if a later part fails the earlier ones stay posted. No rollback
+  is attempted — deleting them is itself a write that can fail, and a
+  half-deleted thread is worse than a labelled partial one. The error names the
+  comment ids that were created so you can post only the remainder rather than
+  re-sending everything.
+
+**`deck_update_card_comment` has no `overflow`**: an update replaces one comment
+in place, so it cannot become several. Post a follow-up comment instead of
+growing an existing one past the limit.
+
+> **Upstream caveat.** Deck's `CommentService::create()` translates an
+> over-length message into a clean HTTP 400, but its `update()` has no such
+> catch — the exception escapes to Deck's exception middleware and comes back as
+> a masked HTTP 500 whose body says only "Internal server error", with the real
+> cause left in the server log. This server therefore validates length
+> client-side before calling update, and maps a 500 from that endpoint to a
+> message naming the length limit as the likely cause.
+
+*Known limitation:* a fenced code block straddling a cut renders as two broken
+fences. The fence boundary is high in the preference order so this is rare.
 
 > **Breaking change:** list tools now default to `detail="summary"`
 > and `status="open"`. The previous `include_archived_cards` parameter has

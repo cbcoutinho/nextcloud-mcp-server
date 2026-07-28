@@ -1,9 +1,11 @@
 import logging
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 import anyio
+from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client import NextcloudClient
@@ -39,6 +41,10 @@ from nextcloud_mcp_server.models.deck import (
     StackOverview,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.utils.message_splitter import (
+    measured_length,
+    split_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,304 @@ def _validate_positive_length(
     """
     if value is not None and value <= 0:
         raise ValueError(f"{name} must be positive, got {value}")
+
+
+# Nextcloud core caps a comment at IComment::MAX_MESSAGE_LENGTH, checked in
+# OC\Comments\Comment::setMessage AFTER trim(), in UTF-8 code points, with a
+# strict ">" so exactly 1000 is legal. Deck adds no check of its own: its
+# CommentService::create translates the overflow into a 400, but its update()
+# has no such catch and leaks a masked 500 (see _comment_http_error).
+_COMMENT_MAX_LENGTH: Final[int] = 1000
+
+# Ceiling on overflow="split". Ten comments is already a wall of text on a card;
+# past that the content wants to be a note or a file attachment, not an
+# activity-log entry.
+_MAX_SPLIT_PARTS: Final[int] = 10
+
+# How a comment overflowing _COMMENT_MAX_LENGTH is handled.
+CommentOverflow = Literal["error", "split"]
+
+
+def _validate_comment_message_not_blank(message: str) -> None:
+    """Reject a comment with no content.
+
+    Deck would happily store one, but a blank row in an activity log is noise
+    nobody asked for and almost always signals a bug in the caller.
+    """
+    if not message.strip():
+        raise ValueError("Comment message must not be empty or whitespace-only")
+
+
+def _validate_comment_message(message: str) -> None:
+    """Reject messages Deck would reject, using the server's own measurement."""
+    _validate_comment_message_not_blank(message)
+
+    length = measured_length(message)
+    if length > _COMMENT_MAX_LENGTH:
+        raise ValueError(_too_long_message(message, length))
+
+
+def _min_parts_for(length: int) -> int:
+    """Lower bound on the parts a message of ``length`` would need.
+
+    Ignores boundaries and the ``(i/N)`` prefix, both of which only ever cost
+    budget -- so a real split needs at least this many. That makes it a cheap
+    way to rule a split out without running the splitter over a huge message,
+    which matters because this runs on the failure path that fires exactly when
+    a caller sends far too much.
+    """
+    return -(-length // _COMMENT_MAX_LENGTH)
+
+
+def _too_long_to_split_message(length: int, parts_needed: int | None) -> str:
+    """Explain a message too long for even the split path to help with.
+
+    Shared by the error mode and the split mode so the two can never disagree:
+    an error telling the caller to retry with overflow="split" when the split
+    would itself be rejected just restarts the retry loop this all exists to
+    end.
+    """
+    needed = (
+        str(parts_needed)
+        if parts_needed is not None
+        else f"at least {_min_parts_for(length)}"
+    )
+    return (
+        f"Comment message is {length} characters; Nextcloud Deck allows "
+        f"{_COMMENT_MAX_LENGTH} per comment. Splitting it would need {needed} "
+        f"comments, more than the {_MAX_SPLIT_PARTS}-part limit, so "
+        f'overflow="split" will not work either. Nothing was posted. Content '
+        f"this long belongs in a note (nc_notes_create_note) or a file "
+        f"(nc_webdav_write_file) attached to the card with deck_attach_note / "
+        f"deck_attach_file, with a short pointer comment linking to it."
+    )
+
+
+def _too_long_message(message: str, length: int) -> str:
+    """Explain an over-length comment in terms an agent can act on directly.
+
+    Deliberately verbose: the failure mode this replaces is an agent retrying
+    with a blindly-shortened message over and over, because "too long" alone
+    says nothing about how much to cut or that a better option exists. So state
+    the exact overage, that nothing was written, and the parameter that fixes
+    it -- along with what that parameter will cost.
+    """
+    # Only promise a split that would actually be accepted. The cheap bound
+    # first, so a multi-megabyte paste never reaches the splitter.
+    if _min_parts_for(length) > _MAX_SPLIT_PARTS:
+        return _too_long_to_split_message(length, None)
+
+    overage = length - _COMMENT_MAX_LENGTH
+    parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
+    if len(parts) > _MAX_SPLIT_PARTS:
+        return _too_long_to_split_message(length, len(parts))
+    return (
+        f"Comment message is {length} characters; Nextcloud Deck's limit is "
+        f"{_COMMENT_MAX_LENGTH} (measured after trimming whitespace, counting "
+        f"Unicode code points). It is {overage} characters over. Nothing was "
+        f"posted. Either call deck_create_card_comment again with the SAME "
+        f'message and overflow="split" -- it will post {len(parts)} threaded '
+        f'comments, each prefixed "(i/{len(parts)})", with parts 2+ replying '
+        f"to part 1 -- or shorten the message to {_COMMENT_MAX_LENGTH} "
+        f"characters or fewer. Do not retry with a blindly-shortened message: "
+        f"the exact overage is {overage} characters."
+    )
+
+
+def _ocs_error_message(e: HTTPStatusError) -> str | None:
+    """Pull the human-readable reason out of an OCS error envelope."""
+    try:
+        meta = e.response.json()["ocs"]["meta"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    message = meta.get("message")
+    return message if isinstance(message, str) and message else None
+
+
+def _comment_http_error(
+    e: HTTPStatusError,
+    *,
+    operation: str,
+    card_id: int,
+    comment_id: int | None = None,
+    message: str | None = None,
+) -> McpError:
+    """Translate a Deck comment API failure into something an agent can act on.
+
+    Args:
+        e: The failure raised by the client layer.
+        operation: Present participle naming the attempt, e.g. ``"creating"``.
+        card_id: The card the operation targeted.
+        comment_id: The comment targeted, for update/delete.
+        message: The text that was being posted, when there was one -- lets the
+            masked-500 branch report its measured length.
+    """
+    status = e.response.status_code
+    target = (
+        f"comment {comment_id} on card {card_id}"
+        if comment_id is not None
+        else f"card {card_id}"
+    )
+
+    if status == 400:
+        detail = _ocs_error_message(e) or "Deck rejected the request"
+        if "character limit" in detail.lower():
+            detail += (
+                f'. Nothing was posted -- retry with overflow="split" or '
+                f"shorten the message to {_COMMENT_MAX_LENGTH} characters"
+            )
+        reason = f"{detail} (while {operation} {target})"
+    elif status == 403:
+        reason = (
+            f"Permission denied {operation} {target}: only the comment's author "
+            f"can edit or delete a Deck comment, and write access to the board "
+            f"is required. Nothing was changed."
+        )
+    elif status == 404:
+        reason = (
+            f"Not found {operation} {target}: the card or comment does not "
+            f"exist, or you lack access to its board."
+        )
+    elif status == 429:
+        reason = (
+            f"Nextcloud rate-limited the request while {operation} {target} "
+            f"(HTTP 429, bruteforce protection). Wait before retrying; when "
+            f"splitting, retry only the parts that were not posted."
+        )
+    elif status == 500 and message is not None:
+        # Only the update path passes `message`, and only there does the
+        # length explanation apply: Deck's CommentService::update() lacks the
+        # MessageTooLongException catch that create() has, so an over-length
+        # message escapes to its ExceptionMiddleware and comes back as a
+        # masked, non-OCS 500 with the real cause only in the server log. Name
+        # that explicitly -- an agent reading "internal server error" has no
+        # way to guess it sent too much. A 500 from delete carries no message
+        # and must not be attributed to length, so it falls through below.
+        reason = (
+            f"Deck returned an unhandled server error (HTTP 500) while "
+            f"{operation} {target}. The most likely cause is a message longer "
+            f"than {_COMMENT_MAX_LENGTH} characters (the message you sent is "
+            f"{measured_length(message)} characters): unlike the create "
+            f"endpoint, Deck's "
+            f"update endpoint does not translate that into a 400 and leaks a "
+            f"masked 500 instead (upstream Deck bug). The comment may or may "
+            f"not have been modified -- call deck_get_card_comments to confirm "
+            f"before retrying."
+        )
+    else:
+        reason = (
+            f"Deck returned HTTP {status} while {operation} {target}: "
+            f"{_ocs_error_message(e) or e.response.reason_phrase}"
+        )
+
+    logger.warning("Deck comment error (%s while %s): %s", status, operation, reason)
+    return McpError(ErrorData(code=-32603, message=reason))
+
+
+def _partial_split_error(
+    e: HTTPStatusError | RequestError,
+    *,
+    card_id: int,
+    posted: list[DeckComment],
+    failed_part: int,
+    total_parts: int,
+) -> McpError:
+    """Report a split that died partway through.
+
+    No rollback is attempted, deliberately. Deleting the parts already posted
+    is itself a write that can 403 or time out, and a half-deleted thread is
+    harder to reason about than a clearly-labelled partial one -- it would also
+    destroy content a human may already have read. Deck has no transactional
+    multi-comment endpoint, so atomicity was never on the table; the honest
+    move is to say exactly what exists.
+
+    The bracketed tail is a machine-readable summary for agents that
+    pattern-match; the prose ahead of it carries the same facts for those that
+    do not.
+    """
+    posted_ids = [comment.id for comment in posted]
+    detail = _ocs_error_message(e) if isinstance(e, HTTPStatusError) else str(e)
+    reason = detail or str(e)
+
+    if posted_ids:
+        resume = (
+            f"To finish, call deck_create_card_comment again with only the "
+            f"remaining text and parent_id={posted_ids[0]}, or call "
+            f"deck_get_card_comments to inspect the current state first."
+        )
+        message = (
+            f"Split comment partially posted on card {card_id}: parts "
+            f"1-{failed_part - 1} of {total_parts} were posted as comment ids "
+            f"{posted_ids}. Part {failed_part} failed: {reason}. Parts "
+            f"{failed_part}-{total_parts} were NOT posted and no rollback was "
+            f"attempted. Do NOT re-send the whole message -- that would "
+            f"duplicate parts 1-{failed_part - 1}. {resume} "
+            f"[posted_comment_ids={posted_ids} failed_part={failed_part} "
+            f"total_parts={total_parts}]"
+        )
+    else:
+        # Part 1 failed, so nothing exists and there is nothing to resume from.
+        message = (
+            f"Split comment failed on its first part on card {card_id}: "
+            f"{reason}. Nothing was posted; retrying the whole message is "
+            f"safe. [posted_comment_ids=[] failed_part=1 "
+            f"total_parts={total_parts}]"
+        )
+
+    logger.warning(
+        "Split comment on card %s failed at part %d/%d (posted: %s)",
+        card_id,
+        failed_part,
+        total_parts,
+        posted_ids,
+    )
+    return McpError(ErrorData(code=-32603, message=message))
+
+
+async def _post_split_comment(
+    client: NextcloudClient, card_id: int, message: str, parent_id: int | None
+) -> CardCommentResponse:
+    """Post an over-length message as a numbered thread.
+
+    Everything checkable without writing is checked first, so a message that
+    cannot be posted never leaves a partial thread behind.
+    """
+    _validate_comment_message_not_blank(message)
+    length = measured_length(message)
+    # Cheap bound first, so an enormous paste is rejected without running the
+    # splitter over it.
+    if _min_parts_for(length) > _MAX_SPLIT_PARTS:
+        raise ValueError(_too_long_to_split_message(length, None))
+
+    parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
+    if len(parts) > _MAX_SPLIT_PARTS:
+        raise ValueError(_too_long_to_split_message(length, len(parts)))
+
+    posted: list[DeckComment] = []
+    for index, part in enumerate(parts, 1):
+        # Parts 2..N hang off part 1 so the card renders one thread rather than
+        # N unrelated comments.
+        reply_to = parent_id if index == 1 else posted[0].id
+        try:
+            posted.append(
+                await client.deck.create_comment(card_id, part, parent_id=reply_to)
+            )
+        except (HTTPStatusError, RequestError) as e:
+            raise _partial_split_error(
+                e,
+                card_id=card_id,
+                posted=posted,
+                failed_part=index,
+                total_parts=len(parts),
+            ) from e
+
+    logger.info(
+        "Split a %d-character comment into %d parts on card %s",
+        measured_length(message),
+        len(posted),
+        card_id,
+    )
+    return CardCommentResponse(comment=posted[0], parts=posted, part_count=len(posted))
 
 
 def _truncate_card_descriptions(
@@ -1503,15 +1807,6 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Card Comment Tools
 
-    _COMMENT_MAX_LENGTH = 1000
-
-    def _validate_comment_message(message: str) -> None:
-        if len(message) > _COMMENT_MAX_LENGTH:
-            raise ValueError(
-                f"Comment message too long: {len(message)} characters "
-                f"(max {_COMMENT_MAX_LENGTH})"
-            )
-
     @mcp.tool(
         title="List Deck Card Comments",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -1545,7 +1840,21 @@ def configure_deck_tools(mcp: FastMCP):
         """
         _validate_positive_length(message_max_length, "message_max_length")
         client = await get_client(ctx)
-        comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
+        try:
+            comments = await client.deck.get_comments(
+                card_id, limit=limit, offset=offset
+            )
+        except HTTPStatusError as e:
+            raise _comment_http_error(
+                e, operation="listing comments on", card_id=card_id
+            ) from e
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-32603,
+                    message=(f"Network error listing comments on card {card_id}: {e}"),
+                )
+            ) from e
         shaped = _shape_comments(
             comments,
             detail=detail,
@@ -1565,23 +1874,78 @@ def configure_deck_tools(mcp: FastMCP):
         card_id: int,
         message: str,
         parent_id: int | None = None,
+        overflow: CommentOverflow = "error",
     ) -> CardCommentResponse:
-        """Create a comment on a Nextcloud Deck card
+        """Create a comment on a Nextcloud Deck card.
 
-        Supports @-mentions (e.g. "@alice"). Pass parent_id to reply to an
-        existing comment on the same card. Message is limited to 1000 characters.
+        Deck caps a comment at 1000 characters, measured after trimming
+        whitespace and counted in Unicode code points. Markdown and @-mentions
+        are NOT expanded before that check, so what you pass is what is counted.
+
+        Check the length before calling and pick `overflow` accordingly:
+
+        - 1000 characters or fewer: call as-is; `overflow` is ignored.
+        - Longer, and the text is meant to be read on the card (activity
+          updates, run summaries, changelogs): pass overflow="split" up front
+          rather than guessing a shorter message. The text is cut at markdown
+          heading, then paragraph, then line, then sentence, then word
+          boundaries -- never mid-word -- each part is prefixed "(i/N)", and
+          parts 2..N are posted as replies to part 1 so the card shows one
+          thread. @-mentions are never split across parts. At most 10 parts;
+          past that, write the content to a note (nc_notes_create_note) or a
+          file (nc_webdav_write_file), attach it with deck_attach_note /
+          deck_attach_file, and post a short pointer comment instead.
+        - Longer, and you would rather shorten it yourself: leave the default
+          overflow="error". Nothing is posted and the error states the exact
+          overage.
+
+        Splitting is not atomic. If a later part fails, the earlier parts stay
+        posted and the error names their comment ids -- resume from there
+        instead of re-sending the whole message, which would duplicate them.
+
+        Supports @-mentions: "@alice", or @"alice smith" for ids with spaces.
 
         Args:
             card_id: The ID of the card to comment on
-            message: The comment text (max 1000 characters)
-            parent_id: Optional ID of a parent comment to reply to
+            message: The comment text (max 1000 characters unless
+                overflow="split")
+            parent_id: Optional ID of a parent comment to reply to. When
+                splitting, part 1 replies to this comment and parts 2..N reply
+                to part 1.
+            overflow: What to do when the message exceeds 1000 characters.
+                "error" (the default) posts nothing and explains the overage;
+                "split" posts the message as multiple threaded comments.
+
+        Returns:
+            CardCommentResponse. For a single comment, `comment` is it, `parts`
+            is null and `part_count` is 1. When split, `comment` is part 1,
+            `parts` lists every posted part in order (parts[0] is part 1), and
+            `part_count` is how many were posted.
         """
-        _validate_comment_message(message)
+        if overflow == "error" or measured_length(message) <= _COMMENT_MAX_LENGTH:
+            _validate_comment_message(message)
+            client = await get_client(ctx)
+            try:
+                comment = await client.deck.create_comment(
+                    card_id, message, parent_id=parent_id
+                )
+            except HTTPStatusError as e:
+                raise _comment_http_error(
+                    e, operation="creating a comment on", card_id=card_id
+                ) from e
+            except RequestError as e:
+                raise McpError(
+                    ErrorData(
+                        code=-32603,
+                        message=(
+                            f"Network error creating a comment on card {card_id}: {e}"
+                        ),
+                    )
+                ) from e
+            return CardCommentResponse(comment=comment)
+
         client = await get_client(ctx)
-        comment = await client.deck.create_comment(
-            card_id, message, parent_id=parent_id
-        )
-        return CardCommentResponse(comment=comment)
+        return await _post_split_comment(client, card_id, message, parent_id)
 
     @mcp.tool(
         title="Update Deck Card Comment",
@@ -1592,9 +1956,16 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_update_card_comment(
         ctx: Context, card_id: int, comment_id: int, message: str
     ) -> CardCommentResponse:
-        """Update a Nextcloud Deck card comment
+        """Update a Nextcloud Deck card comment.
 
-        Only the comment's author can update it; the server returns 403 otherwise.
+        The same 1000-character limit applies as for creation (measured after
+        trimming, in Unicode code points), but the message CANNOT be split: an
+        update replaces one comment in place. To add more than fits, post a
+        follow-up comment with deck_create_card_comment instead of growing an
+        existing one past the limit.
+
+        Only the comment's author can update it; the server returns 403
+        otherwise.
 
         Args:
             card_id: The ID of the card the comment belongs to
@@ -1603,7 +1974,26 @@ def configure_deck_tools(mcp: FastMCP):
         """
         _validate_comment_message(message)
         client = await get_client(ctx)
-        comment = await client.deck.update_comment(card_id, comment_id, message)
+        try:
+            comment = await client.deck.update_comment(card_id, comment_id, message)
+        except HTTPStatusError as e:
+            raise _comment_http_error(
+                e,
+                operation="updating",
+                card_id=card_id,
+                comment_id=comment_id,
+                message=message,
+            ) from e
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-32603,
+                    message=(
+                        f"Network error updating comment {comment_id} on card "
+                        f"{card_id}: {e}"
+                    ),
+                )
+            ) from e
         return CardCommentResponse(comment=comment)
 
     @mcp.tool(
@@ -1626,7 +2016,22 @@ def configure_deck_tools(mcp: FastMCP):
             comment_id: The ID of the comment to delete
         """
         client = await get_client(ctx)
-        await client.deck.delete_comment(card_id, comment_id)
+        try:
+            await client.deck.delete_comment(card_id, comment_id)
+        except HTTPStatusError as e:
+            raise _comment_http_error(
+                e, operation="deleting", card_id=card_id, comment_id=comment_id
+            ) from e
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-32603,
+                    message=(
+                        f"Network error deleting comment {comment_id} on card "
+                        f"{card_id}: {e}"
+                    ),
+                )
+            ) from e
         return CardCommentOperationResponse(
             success=True,
             message="Comment deleted successfully",
