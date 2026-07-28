@@ -150,22 +150,20 @@ def test_shutdown_profiling_noop_when_not_configured():
     assert profiling.shutdown_profiling() is False
 
 
-def test_shutdown_profiling_stops_running_profiler():
+def test_shutdown_profiling_stops_running_profiler(monkeypatch):
     """The worker sheds the profiler rather than CrashLooping (Deck #908)."""
     pytest.importorskip("pyroscope")
-    _reset()
-    profiling._configured = True
+    monkeypatch.setattr(profiling, "_configured", True)
     with patch("pyroscope.shutdown") as mock_shutdown:
         assert profiling.shutdown_profiling() is True
     mock_shutdown.assert_called_once_with()
     assert profiling._configured is False
 
 
-def test_shutdown_profiling_never_raises(caplog):
+def test_shutdown_profiling_never_raises(caplog, monkeypatch):
     """A failure to stop the profiler must not mask the caller's original error."""
     pytest.importorskip("pyroscope")
-    _reset()
-    profiling._configured = True
+    monkeypatch.setattr(profiling, "_configured", True)
     with (
         patch("pyroscope.shutdown", side_effect=RuntimeError("boom")),
         caplog.at_level(logging.WARNING, logger=profiling.logger.name),
