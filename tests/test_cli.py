@@ -434,10 +434,17 @@ def test_init_worker_observability_skips_tracing_without_endpoint(
     assert "tracing" not in patched_observability
 
 
-def test_init_worker_observability_configures_profiling(patched_observability):
-    """Worker wires Pyroscope profiling with the -worker application name and the
-    pyroscope_* settings, mirroring the API entrypoint (setup_profiling gates on
-    `enabled` internally, so it is always called)."""
+def test_init_worker_observability_does_not_start_profiling(patched_observability):
+    """Profiling must NOT start during the worker's observability bootstrap.
+
+    Starting the sampler before the database pool is open makes the worker
+    CrashLoop forever on psycopg pool-open timeouts (Deck #908, observed on a
+    dev tenant 2026-07-27). Profiling stays enabled for the worker — it is
+    the highest-value target — but the `worker` command starts it only once the
+    pool is up. Guarding the ordering here because a well-meaning "make the
+    worker bootstrap mirror the API's" refactor would silently reintroduce the
+    CrashLoop.
+    """
     _init_worker_observability(
         _fake_settings(
             pyroscope_enabled=True,
@@ -445,11 +452,7 @@ def test_init_worker_observability_configures_profiling(patched_observability):
         )
     )
 
-    assert patched_observability["profiling"]["kwargs"] == {
-        "application_name": "nextcloud-mcp-server-worker",
-        "server_address": "alloy.alloy.svc.cluster.local:4041",
-        "enabled": True,
-    }
+    assert "profiling" not in patched_observability
 
 
 def test_worker_initializes_observability_on_postgres_queue(runner, monkeypatch):
@@ -492,3 +495,134 @@ def test_worker_rejects_non_postgres_queue_before_observability(runner, monkeypa
     assert result.exit_code != 0
     assert "INGEST_QUEUE=postgres" in result.output
     assert "init" not in called
+
+
+# ---------------------------------------------------------------------------
+# Worker startup: profiling must never CrashLoop the pod (Deck #908)
+# ---------------------------------------------------------------------------
+
+
+class _FakePool:
+    """Async context manager standing in for procrastinate's App.open_async()."""
+
+    def __init__(self, fail_times: int, opens: list[int]):
+        self._fail_times = fail_times
+        self._opens = opens
+
+    async def __aenter__(self):
+        self._opens.append(1)
+        if len(self._opens) <= self._fail_times:
+            raise RuntimeError("connection timeout expired")
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _patch_worker_machinery(monkeypatch, *, fail_times):
+    """Drive cli.worker() with the procrastinate/document machinery stubbed out.
+
+    Returns the bookkeeping dict the assertions read.
+    """
+    state: dict = {"opens": [], "profiling_started": 0, "shed": 0, "ran": 0}
+
+    fake_app = SimpleNamespace(
+        open_async=lambda: _FakePool(fail_times, state["opens"]),
+        run_worker_async=_make_async(
+            lambda **kw: state.__setitem__("ran", state["ran"] + 1)
+        ),
+    )
+
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.get_settings",
+        lambda: _fake_settings(
+            pyroscope_enabled=True,
+            pyroscope_server_address="a:4041",
+            vector_sync_fast_concurrency=None,
+            vector_sync_structured_concurrency=None,
+            vector_sync_processor_workers=1,
+            ingest_delete_succeeded_jobs=True,
+            ingest_listen_notify=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli._init_worker_observability", lambda settings: None
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli._sweep_spools_at_startup", lambda settings: 0
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.app.initialize_document_processors", lambda: None
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.queue.procrastinate.get_procrastinate_app",
+        lambda: fake_app,
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.queue.procrastinate.apply_ingest_queue_schema",
+        _make_async(lambda *a, **kw: None),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.setup_profiling",
+        lambda **kw: state.__setitem__(
+            "profiling_started", state["profiling_started"] + 1
+        ),
+    )
+
+    def fake_shutdown():
+        state["shed"] += 1
+        return True
+
+    monkeypatch.setattr("nextcloud_mcp_server.cli.shutdown_profiling", fake_shutdown)
+    return state
+
+
+def _make_async(fn):
+    async def _inner(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return _inner
+
+
+def test_worker_starts_profiling_only_after_the_pool_is_open(runner, monkeypatch):
+    """Ordering guard: the sampler must not be running during pool init.
+
+    Starting it first is what made ingest workers CrashLoop forever on psycopg
+    pool-open timeouts (Deck #908).
+    """
+    state = _patch_worker_machinery(monkeypatch, fail_times=0)
+
+    result = runner.invoke(worker, [])
+
+    assert result.exit_code == 0, result.output
+    assert state["opens"] == [1], "pool should open exactly once on the happy path"
+    assert state["profiling_started"] == 1
+    assert state["shed"] == 0, "nothing to shed when startup succeeds"
+
+
+def test_worker_sheds_profiler_and_retries_when_startup_fails(runner, monkeypatch):
+    """Profiling must never be the reason the worker cannot start (Deck #908).
+
+    First pool-open raises; the worker sheds the profiler and retries once
+    rather than dying into CrashLoopBackOff.
+    """
+    state = _patch_worker_machinery(monkeypatch, fail_times=1)
+
+    result = runner.invoke(worker, [])
+
+    assert result.exit_code == 0, result.output
+    assert len(state["opens"]) == 2, "should retry the pool open exactly once"
+    assert state["shed"] == 1
+    assert state["ran"] == 1, "worker loop runs on the retry"
+
+
+def test_worker_retry_does_not_restart_the_profiler(runner, monkeypatch):
+    """shutdown_profiling() clears setup_profiling()'s idempotence guard, so the
+    retry would re-arm the very thing that just blocked startup."""
+    state = _patch_worker_machinery(monkeypatch, fail_times=1)
+
+    runner.invoke(worker, [])
+
+    assert state["profiling_started"] == 0, (
+        "profiler must not be started again after being shed"
+    )

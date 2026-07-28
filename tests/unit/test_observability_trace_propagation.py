@@ -122,17 +122,19 @@ def test_span_is_server_kind_with_route(client, exporter):
     assert span.attributes["http.method"] == "GET"
 
 
-def test_tenant_id_is_attached_when_configured(client, exporter, monkeypatch):
-    """One observability stack aggregates every tenant, so spans carry theirs."""
-    from nextcloud_mcp_server.config import get_settings
+def test_no_bespoke_tenant_attribute_on_spans(client, exporter):
+    """Tenant attribution is by Kubernetes namespace, not a bespoke attribute.
 
-    monkeypatch.setattr(
-        type(get_settings()), "tenant_id", property(lambda self: "tenant-abc")
-    )
-
+    The middleware used to stamp ``tenant.id`` from a ``TENANT_ID`` setting, but
+    that only ever reached HTTP *server* spans — background and ingest spans had
+    no tenant at all. It is replaced by ``k8s.namespace.name`` in the OTel
+    Resource, which the chart supplies via OTEL_RESOURCE_ATTRIBUTES and the SDK
+    applies to EVERY span. That also matches how metrics and logs are already
+    attributed (Deck #48), so one query shape works across all four signals.
+    """
     client.get("/api/v1/status")
 
-    assert _finished_span(exporter).attributes["tenant.id"] == "tenant-abc"
+    assert "tenant.id" not in _finished_span(exporter).attributes
 
 
 def test_handler_exception_marks_the_span_and_is_logged(client, exporter, caplog):

@@ -298,6 +298,10 @@ _DEFAULTS: dict[str, Any] = {
     "otel_traces_sampler_arg": 1.0,
     "pyroscope_enabled": False,
     "pyroscope_server_address": None,
+    # Pod identity from the Kubernetes downward API (chart-injected). Facts
+    # about the pod, not user config — absent off-Kubernetes.
+    "pod_namespace": None,
+    "pod_name": None,
     "log_format": "text",
     "log_level": "INFO",
     "log_include_trace_context": True,
@@ -439,7 +443,6 @@ _DEFAULTS: dict[str, Any] = {
     "embedding_gateway_client_id": None,
     "embedding_gateway_client_secret": None,
     "embedding_gateway_scope": None,  # e.g. astrolabe-embedding-gateway/embed
-    "tenant_id": None,  # per-tenant identity (UUID form); see vector/payload_keys
     # Query-side ACL pre-filter (design §11). OFF by default: a Qdrant
     # `match any` on `acl_hash` excludes points missing the key, so enabling
     # this before a real ACL backfill would silently drop legacy results.
@@ -1313,6 +1316,10 @@ class Settings:
     # Pyroscope. Disabled by default; enabled per-deployment via env.
     pyroscope_enabled: bool = False
     pyroscope_server_address: str | None = None
+    # Kubernetes downward-API pod identity; tags profiles so a tenant's
+    # profiles are separable (Deck #48). None off-Kubernetes.
+    pod_namespace: str | None = None
+    pod_name: str | None = None
     log_format: str = "text"  # "json" or "text"
     log_level: str = "INFO"
     log_include_trace_context: bool = True
@@ -1347,7 +1354,6 @@ class Settings:
     embedding_gateway_client_id: str | None = None
     embedding_gateway_client_secret: str | None = None
     embedding_gateway_scope: str | None = None
-    tenant_id: str | None = None  # per-tenant identity (UUID form)
     acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
     # Usage metering (Deck #67); OFF by default. When true, billable ops
     # record best-effort rows into the app-DB usage_events table for the
@@ -2094,6 +2100,8 @@ def _build_settings() -> Settings:
         "otel_traces_sampler_arg": "OTEL_TRACES_SAMPLER_ARG",
         "pyroscope_enabled": "PYROSCOPE_ENABLED",
         "pyroscope_server_address": "PYROSCOPE_SERVER_ADDRESS",
+        "pod_namespace": "POD_NAMESPACE",
+        "pod_name": "POD_NAME",
         "log_format": "LOG_FORMAT",
         "log_level": "LOG_LEVEL",
         "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",
@@ -2117,7 +2125,6 @@ def _build_settings() -> Settings:
         "embedding_gateway_client_id": "EMBEDDING_GATEWAY_CLIENT_ID",
         "embedding_gateway_client_secret": "EMBEDDING_GATEWAY_CLIENT_SECRET",
         "embedding_gateway_scope": "EMBEDDING_GATEWAY_SCOPE",
-        "tenant_id": "TENANT_ID",
         "acl_prefilter_enabled": "ACL_PREFILTER_ENABLED",
         "usage_metering_enabled": "USAGE_METERING_ENABLED",
     }

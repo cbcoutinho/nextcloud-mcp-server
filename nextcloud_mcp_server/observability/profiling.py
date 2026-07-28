@@ -17,6 +17,32 @@ logger = logging.getLogger(__name__)
 _configured = False
 
 
+def _pod_identity_tags() -> dict[str, str]:
+    """Pyroscope tags identifying which pod a profile came from.
+
+    Every tenant's pod pushes under the same ``application_name``, so without
+    these the whole fleet collapses into one unattributable series -- there is
+    no per-tenant profile at all. Tenants are identified by their
+    ``tenant-<slug>`` namespace, matching how metrics and logs are already
+    attributed (Deck #48).
+
+    ``POD_NAMESPACE``/``POD_NAME`` are injected by the chart from the Kubernetes
+    downward API. Read through ``Settings`` (not ``os.environ``) like every
+    other config in this repo, and resolved per call so test overrides apply.
+    Blank/unset values are skipped so non-Kubernetes deployments do not gain
+    empty labels.
+    """
+    from nextcloud_mcp_server.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    candidates = {"namespace": settings.pod_namespace, "pod": settings.pod_name}
+    return {
+        tag: value.strip()
+        for tag, value in candidates.items()
+        if value and value.strip()
+    }
+
+
 def setup_profiling(
     application_name: str,
     server_address: str | None,
@@ -32,7 +58,9 @@ def setup_profiling(
         server_address: Alloy pyroscope.receive_http URL (e.g.
             ``http://alloy.alloy.svc.cluster.local:4041``). Required when enabled.
         enabled: Master switch (``PYROSCOPE_ENABLED``). No-op when False.
-        tags: Optional extra tags to attach to every profile.
+        tags: Optional extra tags to attach to every profile. Pod identity
+            (``namespace``/``pod``, from the downward API) is added
+            automatically; a tag passed here with the same name overrides it.
 
     Idempotent: only the first successful call per process takes effect.
     """
@@ -62,11 +90,14 @@ def setup_profiling(
         logger.warning("pyroscope-io is not installed; continuous profiling disabled")
         return
 
+    # Pod identity first so an explicit caller tag of the same name wins.
+    resolved_tags = {**_pod_identity_tags(), **(tags or {})}
+
     try:
         pyroscope.configure(
             application_name=application_name,
             server_address=server_address,
-            tags=tags or {},
+            tags=resolved_tags,
         )
     except Exception:  # noqa: BLE001 - profiling is optional; never crash startup
         # Fail open, matching setup_tracing()'s defensive OTLP-exporter handling:
@@ -82,7 +113,34 @@ def setup_profiling(
 
     _configured = True
     logger.info(
-        "Pyroscope profiling enabled (application=%s, server=%s)",
+        "Pyroscope profiling enabled (application=%s, server=%s, tags=%s)",
         application_name,
         server_address,
+        sorted(resolved_tags),
     )
+
+
+def shutdown_profiling() -> bool:
+    """Stop the profiler if it is running. Returns True if it was shut down.
+
+    Profiling is optional telemetry, so it must never be the reason a process
+    cannot start. Callers use this to *shed* the profiler when startup fails
+    with it enabled (see the ingest worker in ``cli.py``): a pod running with
+    degraded telemetry beats a pod in CrashLoopBackOff processing nothing.
+
+    Never raises — a failure to stop the profiler must not mask the original
+    startup error the caller is recovering from.
+    """
+    global _configured
+    if not _configured:
+        return False
+    try:
+        import pyroscope  # noqa: PLC0415
+
+        pyroscope.shutdown()
+    except Exception:  # noqa: BLE001 - best-effort; see docstring
+        logger.warning("Failed to shut down the Pyroscope profiler", exc_info=True)
+        return False
+    _configured = False
+    logger.info("Pyroscope profiling shut down")
+    return True

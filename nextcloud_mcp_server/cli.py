@@ -25,6 +25,7 @@ from nextcloud_mcp_server.observability import (
     setup_metrics,
     setup_profiling,
     setup_tracing,
+    shutdown_profiling,
 )
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
@@ -323,13 +324,14 @@ def _init_worker_observability(settings: Settings) -> None:
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
 
-    # Continuous profiling (optional). The worker is the highest-value target
-    # (CPU-bound parse/chunk/embed), so profile it in its own process.
-    setup_profiling(
-        application_name=f"{settings.otel_service_name}-worker",
-        server_address=settings.pyroscope_server_address,
-        enabled=settings.pyroscope_enabled,
-    )
+    # Continuous profiling is deliberately NOT started here. The worker is the
+    # highest-value profiling target (CPU-bound parse/chunk/embed), so it stays
+    # enabled — but starting the sampler before the database pool is open makes
+    # the worker CrashLoop indefinitely on psycopg pool-open timeouts, where a
+    # byte-identical worker with profiling off starts in <1s (Deck #908,
+    # observed on a dev tenant 2026-07-27: 127 PoolTimeouts, zero documents
+    # processed). See _start_worker_profiling() at the worker entrypoint, which
+    # starts it once the pool is up.
 
 
 def _sweep_spools_at_startup(settings) -> int:
@@ -488,12 +490,43 @@ def worker(concurrency: int | None, tier: str | None):
 
     initialize_document_processors()
 
-    async def _run() -> None:
+    # True once startup is done and the worker loop is entered, so the
+    # profiler-shedding retry below can tell "never got going" from "failed
+    # later, mid-run" — only the former is worth retrying.
+    startup_complete = False
+    # Set when the backstop below sheds the profiler, so the retry does not
+    # start it again: shutdown_profiling() clears setup_profiling()'s
+    # idempotence guard, so without this the retry would re-arm the very thing
+    # that just prevented startup.
+    profiling_shed = False
+
+    def _start_worker_profiling() -> None:
+        """Start the profiler, once the database pool is up.
+
+        Deferred from _init_worker_observability deliberately: with the sampler
+        already running, every libpq connect in the pool's 30s init window times
+        out and the worker CrashLoops forever (Deck #908). Opening the pool
+        first sidesteps that window, so the worker keeps full profiling for the
+        whole of its actual working life -- which is what we want profiled
+        anyway. The connect-time mechanism is still unestablished; this orders
+        around it rather than claiming to fix it.
+        """
+        if profiling_shed:
+            return
+        setup_profiling(
+            application_name=f"{settings.otel_service_name}-worker",
+            server_address=settings.pyroscope_server_address,
+            enabled=settings.pyroscope_enabled,
+        )
+
+    async def _run_worker_loop() -> None:
+        nonlocal startup_complete
         # Open the connector pool once and reuse it for both the defensive
         # schema apply (the always-on API pod is the authoritative applier) and
         # the worker loop — manage_connection=False avoids a redundant
         # open/close cycle on startup.
         async with app.open_async():
+            _start_worker_profiling()
             await apply_ingest_queue_schema(app, manage_connection=False)
             # Structured log (not click.echo) so it lands in the JSON / OTel
             # pipeline like every other startup message.
@@ -506,6 +539,7 @@ def worker(concurrency: int | None, tier: str | None):
                 settings.ingest_delete_succeeded_jobs,
                 settings.ingest_listen_notify,
             )
+            startup_complete = True
             await app.run_worker_async(
                 queues=queues,
                 concurrency=workers,
@@ -522,6 +556,30 @@ def worker(concurrency: int | None, tier: str | None):
                 # drops the LISTEN registration on backend checkin (Deck #424).
                 listen_notify=settings.ingest_listen_notify,
             )
+
+    async def _run() -> None:
+        # Backstop to the deferral above: profiling is optional telemetry and
+        # must NEVER be the reason this worker cannot start. If startup fails
+        # for any reason while the profiler is running, shed it and retry once
+        # — a pod running with degraded telemetry beats a pod in
+        # CrashLoopBackOff indexing nothing (Deck #908).
+        #
+        # Scoped to startup via startup_complete: once the worker loop is
+        # entered, a failure is a real error and must propagate rather than
+        # silently restart the loop.
+        nonlocal profiling_shed
+        try:
+            await _run_worker_loop()
+        except Exception:
+            if startup_complete or not shutdown_profiling():
+                raise
+            profiling_shed = True
+            logger.exception(
+                "Ingest worker startup failed with Pyroscope profiling running; "
+                "shed the profiler and retrying once (this worker will have no "
+                "profiles — see Deck #908)"
+            )
+            await _run_worker_loop()
 
     anyio.run(_run)
 
