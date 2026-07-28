@@ -276,6 +276,23 @@ def test_prefix_template_can_be_disabled():
     assert "".join(parts) == message
 
 
+def test_non_convergence_fails_loudly_rather_than_silently(monkeypatch):
+    """The fixed point cannot fail to settle in practice -- prove it says so.
+
+    Starving the iteration budget is the only way to reach this branch. What
+    matters is that it raises rather than returning parts whose prefixes were
+    sized for a smaller total than they actually carry, which would silently
+    break the length invariant for a caller using a different max_length.
+    """
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.utils.message_splitter._MAX_PREFIX_ITERATIONS", 1
+    )
+    message = " ".join(f"word{i:04d}" for i in range(2000))
+
+    with pytest.raises(RuntimeError, match="did not converge"):
+        split_message(message, max_length=LIMIT)
+
+
 def test_non_positive_max_length_is_rejected():
     with pytest.raises(ValueError, match="max_length must be positive"):
         split_message("anything", max_length=0)

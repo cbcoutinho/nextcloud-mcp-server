@@ -124,6 +124,21 @@ def split_message(
         if len(parts) <= total_guess:
             break
         total_guess = len(parts)
+    else:
+        # Unreachable in practice: total_guess strictly increases on every
+        # non-converging pass, and the prefix only widens at powers of ten, so
+        # the fixed point settles within a couple of rounds for any realistic
+        # part count. Fail loudly rather than fall out of the loop and return
+        # parts whose prefixes were sized for a smaller total than they will
+        # actually carry -- that would quietly break the one invariant this
+        # function promises, which matters because this module is generic and
+        # its callers pick their own max_length.
+        raise RuntimeError(
+            f"part-count fixed point did not converge after "
+            f"{_MAX_PREFIX_ITERATIONS} iterations for a "
+            f"{len(text)}-character message at max_length={max_length} "
+            f"(last estimate {total_guess}, produced {len(parts)})"
+        )
 
     if len(parts) == 1 or part_prefix_template is None:
         return parts
