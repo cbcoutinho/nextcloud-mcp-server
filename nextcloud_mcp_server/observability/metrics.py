@@ -194,6 +194,26 @@ vector_sync_indexed_chunks = Gauge(
     "Total indexed chunks (non-placeholder points) in the vector store",
 )
 
+# Documents parked as permanently-failed, published as a GAUGE from the
+# long-lived backend rather than left to the worker-side counters.
+#
+# ``astrolabe_document_dead_lettered_total`` increments in the ingest worker,
+# which is the wrong place to alert from on two counts: the worker container is
+# not a Prometheus scrape target (only the backend Pod is), and KEDA scales the
+# ingest tiers 0<->1, so a counter that fires and then terminates may never be
+# scraped at all and resets on every scale-up. Four dead-letter events in a day
+# produced no time series whatsoever (Deck #911).
+#
+# Dead-lettering is *durable state* in Qdrant (a tombstone point per document),
+# not just an event, so a gauge read back from the collection is both the honest
+# representation and immune to Pod lifecycle. Alert on ``> 0`` or on an increase
+# over a window; it falls back to 0 when the tombstones are cleared or their
+# etag/tier signature changes and the documents are re-attempted.
+vector_sync_dead_lettered_documents = Gauge(
+    "mcp_vector_sync_dead_lettered_documents",
+    "Documents parked as permanently-failed (dead-letter tombstones in Qdrant)",
+)
+
 # Dense-vector RAM footprint of the collection — the real cost driver for hybrid
 # search (billing is on source bytes, not vector RAM). Two views published by the
 # periodic vector_sync metrics task so operators can watch the "density risk"
@@ -1001,6 +1021,11 @@ def update_vector_sync_indexed_documents(count: int) -> None:
 def update_vector_sync_indexed_chunks(count: int) -> None:
     """Set the total-indexed-chunks gauge."""
     vector_sync_indexed_chunks.set(count)
+
+
+def update_vector_sync_dead_lettered_documents(count: int) -> None:
+    """Set the dead-lettered-documents gauge."""
+    vector_sync_dead_lettered_documents.set(count)
 
 
 def update_vector_sync_estimated_vector_bytes(byte_estimate: float) -> None:

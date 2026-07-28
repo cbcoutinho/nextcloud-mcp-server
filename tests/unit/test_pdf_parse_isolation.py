@@ -13,6 +13,8 @@ check on the sample PDFs, not here (unit tests must not spawn the heavy worker
 or depend on the sample files).
 """
 
+import pickle
+import subprocess
 import sys
 
 import anyio
@@ -700,3 +702,97 @@ async def test_parse_mode_counter_increments(monkeypatch):
     await proc.process(_tiny_pdf(), "application/pdf", filename="t.pdf")
 
     assert _value("markdown") == before + 1
+
+
+# --- Deck #911: the worker boundary must not destroy the real failure --------
+
+
+def test_worker_normalises_unpicklable_exceptions(monkeypatch):
+    """An unpicklable worker exception must be converted, not left to anyio.
+
+    pymupdf raises errors holding SWIG objects. When the child cannot pickle the
+    exception, ``anyio.to_process`` does NOT propagate it -- it catches the
+    pickling failure and sends THAT back instead, so the parent sees only
+    ``TypeError: cannot pickle 'swig_runtime_data5.SwigPyObject' object`` and the
+    real cause is gone. Converting inside the worker keeps the reason legible.
+    """
+
+    class Boom(Exception):
+        pass
+
+    def raiser(*args, **kwargs):
+        # args holds a local function -> the exception itself cannot pickle,
+        # standing in for pymupdf's SWIG-backed errors.
+        raise Boom(lambda: None)
+
+    monkeypatch.setattr(_isolation, "_parse_pdf_extract", raiser)
+
+    with pytest.raises(_isolation.PdfWorkerError) as exc:
+        _isolation._parse_pdf_worker("f.pdf", False, None, 1000, 0, 100)
+
+    # Survives the boundary, and still names the original failure.
+    assert pickle.loads(pickle.dumps(exc.value)).args == exc.value.args
+    assert "Boom" in str(exc.value)
+
+
+def test_worker_preserves_memory_error_for_oom_classification(monkeypatch):
+    """MemoryError must stay a MemoryError so the caller can label it oom.
+
+    This is the difference between a retryable oom and a terminal ``error`` that
+    dead-letters a healthy document permanently (Deck #911).
+    """
+
+    class Unpicklable(MemoryError):
+        pass
+
+    def raiser(*args, **kwargs):
+        raise Unpicklable(lambda: None)
+
+    monkeypatch.setattr(_isolation, "_parse_pdf_extract", raiser)
+
+    with pytest.raises(MemoryError) as exc:
+        _isolation._parse_pdf_worker("f.pdf", False, None, 1000, 0, 100)
+
+    assert pickle.loads(pickle.dumps(exc.value)).args == exc.value.args
+
+
+async def test_worker_error_classified_as_error_without_double_prefix(monkeypatch):
+    """A normalised worker error keeps its original type name, once."""
+
+    async def fake(*args, **kwargs):
+        raise _isolation.PdfWorkerError("FzErrorBase: cannot open document")
+
+    with pytest.raises(PdfParseFailed) as exc:
+        await _run(monkeypatch, fake)
+
+    assert exc.value.reason == "error"
+    assert str(exc.value) == "FzErrorBase: cannot open document"
+
+
+def test_ingest_import_graph_does_not_load_pymupdf4llm():
+    """Nothing on the ingest path may import pymupdf4llm at module scope.
+
+    ``anyio.to_process`` re-imports the parent's ``__main__`` inside every parse
+    worker before the worker function runs, so a module-level import anywhere in
+    that graph loads ``pymupdf.layout`` (~1.1 GiB of address space) into the
+    child. Under the 1536 MiB RLIMIT_AS that left ~117 MiB to parse in, and
+    healthy documents were dead-lettered (Deck #911). The worker's own
+    ``sys.modules`` guard cannot help -- by then the import already happened.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, nextcloud_mcp_server.vector.processor;"
+            "print('pymupdf4llm' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "False", (
+        "pymupdf4llm is imported at module scope somewhere on the ingest path; "
+        "load it lazily via load_classic_pymupdf4llm() instead"
+    )

@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Optional
 
 import pymupdf
-import pymupdf4llm
 from PIL import Image, ImageDraw
+
+from nextcloud_mcp_server.document_processors._pymupdf4llm_classic import (
+    load_classic_pymupdf4llm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,19 @@ class PDFHighlighter:
         page_boundaries = []
         text_parts = []
         current_offset = 0
+
+        # Loaded lazily, and through the shared classic-extractor loader, for two
+        # reasons. (1) Offsets: indexing runs the classic (pymupdf_rag)
+        # extractor, so recomputing them under layout mode would silently
+        # misalign every highlight -- the exact failure the write_images note
+        # above guards against. (2) Memory: a module-level ``import pymupdf4llm``
+        # here put pymupdf.layout (~1.1 GiB of address space) into the app's
+        # import graph, and ``anyio.to_process`` re-imports the parent's
+        # ``__main__`` inside every PDF parse worker before the worker function
+        # runs -- so this import, in a module the ingest path never calls, was
+        # what left the 1536 MiB RLIMIT_AS worker with ~117 MiB to parse in and
+        # dead-lettered healthy documents (Deck #911).
+        pymupdf4llm = load_classic_pymupdf4llm()
 
         # Use temp directory for image output (images are discarded after extraction)
         temp_dir = Path(tempfile.mkdtemp(prefix="pdf_highlight_"))
