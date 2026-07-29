@@ -53,7 +53,10 @@ from nextcloud_mcp_server.search.algorithms import (
 )
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.eviction import delete_document_points
-from nextcloud_mcp_server.vector.mail_content import list_index_window
+from nextcloud_mcp_server.vector.mail_content import (
+    list_index_window,
+    mail_index_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -510,10 +513,15 @@ async def _verify_mail_messages(
     is present in that listing — by construction the *same* window the scanner
     indexes, so anything aged out of the window is being evicted anyway.
 
+    When ``MAIL_INDEX_TAG`` is set the listing carries the same tag filter the
+    scanner indexed with, so untagging a message drops it from search on the
+    next query (and evicts it) — the mail equivalent of untagging a file.
+
     Failure policy mirrors ``_verify_news_items``: a definitive 403/404 for a
     mailbox drops all its results (eviction reclaims); transient errors keep
     them (fail-open). Results with no/!numeric ``mailbox_id`` or a non-numeric
-    ``doc_id`` are kept (fail-open; verification can't batch them).
+    ``doc_id`` are kept (fail-open; verification can't batch them), as are all
+    results when the tag filter itself can't be resolved.
     """
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[str] = set()
@@ -545,10 +553,28 @@ async def _verify_mail_messages(
             continue
         by_mailbox.setdefault(mailbox_int, []).append(r)
 
+    # Resolve the include-tag filter once, before the fan-out, so every mailbox
+    # is checked against the same window the scanner indexed. If it can't be
+    # resolved, keep every result unverified rather than listing unfiltered:
+    # unfiltered is a *narrower* window for old tagged mail, so falling back
+    # would drop and hard-evict messages that are legitimately indexed.
+    try:
+        index_filter = await mail_index_filter(client.mail)
+    except Exception as e:
+        logger.warning(
+            "Could not resolve the mail index filter (%s); keeping all %d mail "
+            "result(s) unverified this query",
+            e,
+            len(results),
+        )
+        return {r.id for r in results}
+
     async def check_mailbox(mailbox_id: int, mb_results: list[SearchResult]) -> None:
         async with semaphore:
             try:
-                messages = await list_index_window(client.mail, mailbox_id)
+                messages = await list_index_window(
+                    client.mail, mailbox_id, index_filter
+                )
             except HTTPStatusError as e:
                 if _is_definitive_404_or_403(e):
                     # Mailbox/account gone — all its results are inaccessible.

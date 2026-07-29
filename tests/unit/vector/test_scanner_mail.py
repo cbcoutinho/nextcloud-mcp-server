@@ -374,3 +374,59 @@ async def test_grace_key_isolated_by_doc_type(mocker):
 
     # The note's grace entry is untouched by the mail scan (no cross-type stomp).
     assert ("alice", "42", "note") in scanner_module._potentially_deleted
+
+
+async def test_filtered_scan_uses_the_resolved_tag_filter(mocker):
+    """With MAIL_INDEX_TAG set, only tagged messages are listed."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(return_value="tags:7"),
+    )
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    nc_client.mail.list_messages.assert_awaited_once_with(
+        10,
+        limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter="tags:7",
+        view="singleton",
+    )
+
+
+async def test_filter_resolution_failure_aborts_before_the_deletion_pass(mocker):
+    """Fail-closed: a tags-endpoint failure must not evict, nor index everything.
+
+    Fail-open here would enrol the user's whole mailbox on a transient 500; the
+    raise happens before the deletion pass, so nothing is evicted either.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(side_effect=RuntimeError("tags endpoint down")),
+    )
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    with pytest.raises(RuntimeError):
+        await scan_mail_messages(
+            user_id="alice",
+            send_stream=stream,
+            nc_client=nc_client,
+            initial_sync=False,
+            scan_id=1,
+        )
+
+    assert stream.tasks == []
+    nc_client.mail.list_messages.assert_not_awaited()

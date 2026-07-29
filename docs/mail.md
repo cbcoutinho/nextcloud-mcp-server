@@ -98,6 +98,15 @@ covers up to 100 messages per mailbox (the Mail API's per-request maximum;
 paging beyond it is not implemented yet), and a message's sent timestamp is used
 for change detection, since mail is immutable.
 
+**To index only some of your mail**, set `MAIL_INDEX_TAG` to a tag name — see
+[configuration.md](configuration.md#indexing-a-subset-of-mail--mail_index_tag).
+Only messages carrying that tag are then indexed, and the 100-per-mailbox cap
+applies to *tagged* messages, so it reaches much further back in the mailbox.
+The tools above are how an agent participates in that: `nc_mail_create_tag` to
+set the tag up, `nc_mail_set_tag` to mark a message for indexing, and
+`nc_mail_remove_tag` to take it back out (which removes it from search on the
+next query).
+
 ### Implementation notes
 
 The Mail app publishes only a small OCS API; most of what these tools need lives

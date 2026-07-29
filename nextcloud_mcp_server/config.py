@@ -143,6 +143,12 @@ _DEFAULTS: dict[str, Any] = {
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
     # wins if a file carries both. Set empty to disable the second tag entirely.
     "vector_sync_keyword_tag": "keyword-index",
+    # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
+    # (the default) indexes every message in every mailbox, which is the
+    # behaviour before this setting existed. Set it to a tag display name and
+    # only messages carrying that tag are indexed — the mail analogue of
+    # ``vector_sync_tag`` for files.
+    "mail_index_tag": "",
     # Fail-safe against a flaky/empty tag-discovery read: number of *consecutive*
     # scan cycles for which a given index mode's tag discovery must return zero
     # files (while Qdrant still holds indexed points for that mode) before the
@@ -591,6 +597,10 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
         # discovery), so no len_min — but when set it must be a usable tag name.
+        # MAIL_INDEX_TAG is likewise optional (empty indexes all mail), but the
+        # Mail app rejects display names over 128 characters — catch that at
+        # startup instead of failing every mail scan with an HTTP 400.
+        Validator("MAIL_INDEX_TAG", len_max=128),
         # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
         # but when set it must be long enough to resist guessing. Surfaces a
         # weak/placeholder secret at startup rather than in a later audit.
@@ -1071,6 +1081,15 @@ class Settings:
     # embedding). ``vector-index`` takes precedence when a file carries both tags.
     # Set empty to disable the second tag entirely.
     vector_sync_keyword_tag: str = "keyword-index"
+
+    # Mail tag (an IMAP keyword) restricting which messages are indexed — the
+    # mail analogue of ``vector_sync_tag``. Empty (default) indexes every
+    # message in every mailbox. Set to a tag display name and the scanner
+    # resolves it to that user's tag id and lists only messages carrying it;
+    # verify-on-read applies the same filter, so untagging a message drops it
+    # out of search on the next query. Max 128 characters (the Mail app rejects
+    # longer display names).
+    mail_index_tag: str = ""
 
     # Fail-safe against a flaky/empty tag-discovery read. Number of *consecutive*
     # scan cycles for which an index mode's tag discovery must return zero files

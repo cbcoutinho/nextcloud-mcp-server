@@ -44,6 +44,7 @@ from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
 from nextcloud_mcp_server.vector.mail_content import (
     MAIL_SCAN_MAX_PER_MAILBOX,
     list_index_window,
+    mail_index_filter,
 )
 from nextcloud_mcp_server.vector.placeholder import (
     query_document_metadata,
@@ -1910,7 +1911,10 @@ async def scan_mail_messages(
 
     Enumerates accounts → mailboxes → ``list_index_window`` per mailbox (at most
     ``MAIL_SCAN_MAX_PER_MAILBOX`` messages, the same call the search-time
-    verifier makes). Email is immutable, so a message's ``dateInt`` (sent
+    verifier makes). With ``MAIL_INDEX_TAG`` set, that window covers only
+    messages carrying the tag — so the cap then bounds *tagged* mail, which
+    reaches much further back than the unfiltered window does. Email is
+    immutable, so a message's ``dateInt`` (sent
     timestamp) is used as the change-detection ``modified_at`` — a message is
     indexed once and not re-sent. Messages that drop out of the window (or are
     deleted) are evicted via the deletion-tracking pass, keeping the index
@@ -1953,7 +1957,14 @@ async def scan_mail_messages(
             "Found %s indexed mail messages in Qdrant", len(indexed_message_ids)
         )
 
-    # Enumerate accounts → mailboxes → newest-N messages.
+    # Resolve the include-tag filter once per scan (None = index everything).
+    # Deliberately *not* wrapped: a failure here must abort the whole mail scan
+    # before the deletion pass below, so a tags endpoint returning 500 can
+    # neither enrol the user's entire mailbox (fail-open) nor evict what is
+    # already indexed. The caller logs and moves on to the next source.
+    index_filter = await mail_index_filter(nc_client.mail)
+
+    # Enumerate accounts → mailboxes → the index window per mailbox.
     accounts = await nc_client.mail.list_accounts()
     nextcloud_message_ids: set[str] = set()
     message_count = 0
@@ -1984,7 +1995,9 @@ async def scan_mail_messages(
             if mailbox_id is None:
                 continue
             try:
-                messages = await list_index_window(nc_client.mail, mailbox_id)
+                messages = await list_index_window(
+                    nc_client.mail, mailbox_id, index_filter
+                )
             except Exception as e:
                 listing_failed = True
                 logger.warning(
@@ -1998,15 +2011,31 @@ async def scan_mail_messages(
             if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX and _mark_mail_cap_logged(
                 (user_id, mailbox_id)
             ):
-                logger.info(
-                    "[SCAN-%s] Mailbox %s contains more than %s messages; only "
-                    "the newest %s are indexed (cursor pagination not yet "
-                    "implemented)",
-                    scan_id,
-                    mailbox_id,
-                    MAIL_SCAN_MAX_PER_MAILBOX,
-                    MAIL_SCAN_MAX_PER_MAILBOX,
-                )
+                # Unfiltered, hitting the cap is expected for any real mailbox.
+                # Filtered, it means the user deliberately marked more messages
+                # than we can index and some are being dropped — actionable, so
+                # it gets a warning.
+                if index_filter:
+                    logger.warning(
+                        "[SCAN-%s] Mailbox %s holds more than %s messages "
+                        "matching %s; only %s are indexed (cursor pagination "
+                        "not yet implemented)",
+                        scan_id,
+                        mailbox_id,
+                        MAIL_SCAN_MAX_PER_MAILBOX,
+                        index_filter,
+                        MAIL_SCAN_MAX_PER_MAILBOX,
+                    )
+                else:
+                    logger.info(
+                        "[SCAN-%s] Mailbox %s contains more than %s messages; "
+                        "only %s are indexed (cursor pagination not yet "
+                        "implemented)",
+                        scan_id,
+                        mailbox_id,
+                        MAIL_SCAN_MAX_PER_MAILBOX,
+                        MAIL_SCAN_MAX_PER_MAILBOX,
+                    )
 
             for message in messages:
                 msg_db_id = message.get("databaseId")

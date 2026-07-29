@@ -13,6 +13,7 @@ Two things live here, both because *two* call sites must agree exactly:
 from typing import Any
 
 from nextcloud_mcp_server.client.mail import MailClient
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 
 # Messages indexed (and verified) per mailbox. This equals the Mail API's
@@ -24,6 +25,38 @@ from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 # Which end of the mailbox this window covers is the *user's* Mail ``sort-order``
 # preference, not ours: newest-first by default, oldest-first if they changed it.
 MAIL_SCAN_MAX_PER_MAILBOX = 100
+
+
+async def mail_index_filter(mail_client: MailClient) -> str | None:
+    """Resolve ``MAIL_INDEX_TAG`` into a Mail listing filter for this user.
+
+    Returns ``None`` when the setting is empty, meaning "index every message" —
+    the behaviour before the setting existed. Otherwise returns ``tags:<id>``,
+    where the id is *this user's* tag row: tag ids are per-user, so the filter
+    has to be resolved per user rather than configured as a literal.
+
+    Resolution goes through the create-or-get ``POST /api/tags``, which is the
+    only way to look a tag up (the Mail app has no tag-listing route) and has
+    the useful side effect of making the tag appear in the user's Mail tag
+    picker — that picker *is* the opt-in UI for indexing.
+
+    Deliberately not cached. One extra request per user per scan is noise next
+    to the per-account/per-mailbox listing calls, and a cache would turn the one
+    failure that matters — a user deleting and re-creating the tag, leaving a
+    stale id that returns an empty listing rather than an error — from
+    self-healing on the next tick into permanent until restart.
+
+    Raises:
+        Whatever the client raises. Callers **must not** fall back to an
+        unfiltered listing: unfiltered is a *narrower* window for old tagged
+        mail (the newest-N cap applies after the filter), so falling back would
+        hard-evict messages that were legitimately indexed.
+    """
+    tag_name = get_settings().mail_index_tag
+    if not tag_name:
+        return None
+    tag = await mail_client.ensure_tag(tag_name)
+    return f"tags:{tag['id']}"
 
 
 async def list_index_window(

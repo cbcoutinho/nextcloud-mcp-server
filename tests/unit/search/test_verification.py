@@ -1392,3 +1392,47 @@ async def test_apply_display_paths_noop_without_file_results(mocker):
     )
     await verification._apply_user_display_paths("bob", [_make_result(1, "note")])
     shared.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_verify_mail_applies_the_same_filter_the_scanner_indexed(mocker):
+    """The verifier must use the scanner's window, filter included.
+
+    Listing unfiltered here would be a *narrower* window for old tagged mail —
+    it would drop and hard-evict messages the scanner legitimately indexed.
+    """
+    mocker.patch.object(
+        verification, "mail_index_filter", new=AsyncMock(return_value="tags:7")
+    )
+    list_messages = mocker.AsyncMock(return_value=[{"databaseId": 10}])
+    client = SimpleNamespace(
+        mail=SimpleNamespace(list_messages=list_messages), username="alice"
+    )
+
+    result = await _verify_mail_messages(client, [_mail_result(10)], _sem())
+
+    assert result == {"10"}
+    list_messages.assert_awaited_once_with(
+        10, limit=MAIL_SCAN_MAX_PER_MAILBOX, search_filter="tags:7", view="singleton"
+    )
+
+
+@pytest.mark.unit
+async def test_verify_mail_keeps_results_when_the_filter_cannot_resolve(mocker):
+    """Fail-open on resolution failure — and crucially, don't list unfiltered."""
+    mocker.patch.object(
+        verification,
+        "mail_index_filter",
+        new=AsyncMock(side_effect=RuntimeError("tags endpoint down")),
+    )
+    list_messages = mocker.AsyncMock(return_value=[])
+    client = SimpleNamespace(
+        mail=SimpleNamespace(list_messages=list_messages), username="alice"
+    )
+
+    result = await _verify_mail_messages(
+        client, [_mail_result(10), _mail_result(20)], _sem()
+    )
+
+    assert result == {"10", "20"}
+    list_messages.assert_not_awaited()
