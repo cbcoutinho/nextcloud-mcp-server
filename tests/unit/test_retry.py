@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nextcloud_mcp_server.providers import _retry
+from nextcloud_mcp_server import retry as _retry
 
 
 class _FakeError(Exception):

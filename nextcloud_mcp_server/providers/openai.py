@@ -10,7 +10,7 @@ import logging
 
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI
 
-from ._retry import retry_on_transient
+from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)

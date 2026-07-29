@@ -317,7 +317,7 @@ async def test_embed_retries_on_connection_error(mock_openai_client, monkeypatch
     """A transient APIConnectionError (pod rollover) is retried, not dropped."""
     from openai import APIConnectionError
 
-    from nextcloud_mcp_server.providers import _retry
+    from nextcloud_mcp_server import retry as _retry
 
     monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
 
@@ -343,7 +343,7 @@ async def test_embed_batch_retries_on_connection_error(mock_openai_client, monke
     """The batch path (`_embed_batch_request`) shares the transient retry too."""
     from openai import APIConnectionError
 
-    from nextcloud_mcp_server.providers import _retry
+    from nextcloud_mcp_server import retry as _retry
 
     monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
 
@@ -372,7 +372,7 @@ async def test_embed_does_not_retry_on_bad_request(mock_openai_client, monkeypat
     import httpx
     from openai import BadRequestError
 
-    from nextcloud_mcp_server.providers import _retry
+    from nextcloud_mcp_server import retry as _retry
 
     monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
 

@@ -13,7 +13,7 @@ import logging
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 
-from ._retry import retry_on_transient
+from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)

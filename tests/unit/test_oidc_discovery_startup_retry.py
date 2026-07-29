@@ -13,7 +13,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from nextcloud_mcp_server.app import _perform_oidc_discovery
+from nextcloud_mcp_server.app import (
+    _oidc_discovery_error_is_transient,
+    _perform_oidc_discovery,
+)
 from nextcloud_mcp_server.config import Settings
 
 pytestmark = pytest.mark.unit
@@ -219,3 +222,39 @@ async def test_max_attempts_one_restores_fail_fast():
 
     assert attempts["n"] == 1
     sleep.assert_not_awaited()
+
+
+@pytest.mark.unit
+class TestOidcDiscoveryTransientPredicate:
+    """Direct coverage of the retry predicate, mirroring the Qdrant-init one.
+
+    The end-to-end tests above exercise it through the retry decorator; these
+    pin the classification itself so a future edit can't silently reclassify
+    5xx as fatal (crashloop on a cold dependency) or 4xx as transient (retry
+    storm that hides a misconfiguration).
+    """
+
+    def test_transport_errors_are_transient(self):
+        assert _oidc_discovery_error_is_transient(httpx.ConnectError("refused"))
+        assert _oidc_discovery_error_is_transient(httpx.ReadTimeout("slow"))
+
+    def test_malformed_json_body_is_transient(self):
+        import json
+
+        assert _oidc_discovery_error_is_transient(
+            json.JSONDecodeError("nope", "<html>", 0)
+        )
+
+    def test_5xx_is_transient(self):
+        request = httpx.Request("GET", DISCOVERY_URL)
+        exc = httpx.HTTPStatusError(
+            "boom", request=request, response=httpx.Response(503, request=request)
+        )
+        assert _oidc_discovery_error_is_transient(exc) is True
+
+    def test_4xx_is_not_transient(self):
+        request = httpx.Request("GET", DISCOVERY_URL)
+        exc = httpx.HTTPStatusError(
+            "nope", request=request, response=httpx.Response(404, request=request)
+        )
+        assert _oidc_discovery_error_is_transient(exc) is False
