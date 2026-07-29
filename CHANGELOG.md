@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.154.1 (2026-07-29)
+
+### Fix
+
+- **scanner**: stream Qdrant deletion-tracking scrolls instead of materialising every point
+
 ## v0.154.0 (2026-07-28)
 
 ### Feat
