@@ -14,7 +14,7 @@ Prior to this refactoring, the codebase had two separate provider systems:
    - Had auto-detection via `EmbeddingService._detect_provider()`
    - Used for semantic search and vector indexing (production)
 
-2. **LLM Providers** (`tests/rag_evaluation/llm_providers.py`)
+2. **LLM Providers** (`tests/rag_evaluation/llm_providers.py`, since removed)
    - Used `LLMProvider` Protocol with method: `generate()`
    - Had separate factory function `create_llm_provider()`
    - Used only for RAG evaluation tests (not production)
@@ -76,12 +76,6 @@ class Provider(ABC):
     @abstractmethod
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
-        pass
-
-    @property
-    @abstractmethod
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
         pass
 
     @abstractmethod
@@ -175,10 +169,6 @@ from nextcloud_mcp_server.providers import get_provider
 
 provider = get_provider()  # Returns singleton Provider
 embeddings = await provider.embed_batch(texts)
-
-# Can also use generation if provider supports it
-if provider.supports_generation:
-    text = await provider.generate("prompt")
 ```
 
 **Migration Path:**

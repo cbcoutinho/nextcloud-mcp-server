@@ -13,31 +13,6 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def test_anthropic_provider_pins_a_timeout(mocker):
-    from nextcloud_mcp_server.providers.anthropic import AnthropicProvider
-
-    ctor = mocker.patch("nextcloud_mcp_server.providers.anthropic.AsyncAnthropic")
-
-    AnthropicProvider(api_key="k")
-
-    timeout = ctor.call_args.kwargs["timeout"]
-    assert timeout.read == AnthropicProvider.DEFAULT_TIMEOUT_SECONDS
-    assert timeout.connect == AnthropicProvider.DEFAULT_CONNECT_TIMEOUT_SECONDS
-
-
-def test_anthropic_provider_accepts_an_explicit_timeout(mocker):
-    import httpx
-
-    from nextcloud_mcp_server.providers.anthropic import AnthropicProvider
-
-    ctor = mocker.patch("nextcloud_mcp_server.providers.anthropic.AsyncAnthropic")
-    supplied = httpx.Timeout(timeout=7, connect=1)
-
-    AnthropicProvider(api_key="k", timeout=supplied)
-
-    assert ctor.call_args.kwargs["timeout"] is supplied
-
-
 def test_bedrock_provider_pins_botocore_timeouts(mocker):
     bedrock = pytest.importorskip("nextcloud_mcp_server.providers.bedrock")
     if not bedrock.BOTO3_AVAILABLE:

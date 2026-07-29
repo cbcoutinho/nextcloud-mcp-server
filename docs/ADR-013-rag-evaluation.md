@@ -1,6 +1,10 @@
 ## ADR-013: RAG Evaluation Testing Framework
 
-**Status:** Partially implemented (RAG evaluation harness lives under `tests/rag_evaluation`)
+**Status:** **Withdrawn** — the `tests/rag_evaluation` harness and `tools/rag_eval_cli.py`
+were removed along with the generation plumbing they exercised. Nothing in production
+consumed them. If retrieval-quality evaluation is wanted again it should be
+reimplemented against the retrieval path alone (no server-side generation); the design
+below is retained as history.
 
 **Date:** 2025-11-15
 

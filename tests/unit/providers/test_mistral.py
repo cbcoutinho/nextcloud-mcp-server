@@ -117,15 +117,6 @@ async def test_mistral_supports_capabilities(mock_mistral_client):
     """Mistral provider advertises embeddings only."""
     provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
     assert provider.supports_embeddings is True
-    assert provider.supports_generation is False
-
-
-@pytest.mark.unit
-async def test_mistral_generate_not_implemented(mock_mistral_client):
-    """generate() always raises NotImplementedError."""
-    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
-    with pytest.raises(NotImplementedError, match="does not support generation"):
-        await provider.generate("test prompt")
 
 
 @pytest.mark.unit

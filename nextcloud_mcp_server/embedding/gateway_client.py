@@ -138,7 +138,6 @@ class GatewayProvider(OpenAIProvider):
             api_key=_UNAUTHENTICATED_PLACEHOLDER,  # NOSONAR
             base_url=normalized_base_url,
             embedding_model=embedding_model,
-            generation_model=None,  # gateway never generates
             timeout=timeout,
         )
         self._token_provider = token_provider

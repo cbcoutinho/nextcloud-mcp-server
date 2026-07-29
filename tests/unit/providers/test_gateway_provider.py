@@ -38,7 +38,6 @@ def test_gateway_selected_unauthenticated(monkeypatch):
     assert isinstance(provider, GatewayProvider)
     assert provider.embedding_model == "mistral/mistral-embed"
     assert provider.supports_embeddings is True
-    assert provider.supports_generation is False
     assert provider._token_provider is None  # unauthenticated
 
 

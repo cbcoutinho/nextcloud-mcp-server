@@ -1,4 +1,4 @@
-"""Unified provider interface for embeddings and text generation."""
+"""Unified provider interface for embeddings."""
 
 import math
 from abc import ABC, abstractmethod
@@ -16,12 +16,6 @@ class Provider(ABC):
     @abstractmethod
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
-        pass
-
-    @property
-    @abstractmethod
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
         pass
 
     @abstractmethod
@@ -111,23 +105,6 @@ class Provider(ABC):
 
         Raises:
             NotImplementedError: If provider doesn't support embeddings
-        """
-        pass
-
-    @abstractmethod
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        """
-        Generate text from a prompt.
-
-        Args:
-            prompt: The prompt to generate from
-            max_tokens: Maximum tokens to generate
-
-        Returns:
-            Generated text
-
-        Raises:
-            NotImplementedError: If provider doesn't support generation
         """
         pass
 

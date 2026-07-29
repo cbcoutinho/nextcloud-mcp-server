@@ -1,6 +1,5 @@
-"""Unified provider infrastructure for embeddings and text generation."""
+"""Unified provider infrastructure for embeddings."""
 
-from .anthropic import AnthropicProvider
 from .base import Provider
 from .bedrock import BedrockProvider
 from .mistral import MistralProvider
@@ -13,7 +12,6 @@ __all__ = [
     "Provider",
     "OllamaProvider",
     "OpenAIProvider",
-    "AnthropicProvider",
     "MistralProvider",
     "SimpleProvider",
     "BedrockProvider",

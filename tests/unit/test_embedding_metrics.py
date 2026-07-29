@@ -36,7 +36,6 @@ class TestProviderFamily:
             openai_api_key="sk-test",
             aws_region=None,
             bedrock_embedding_model=None,
-            bedrock_generation_model=None,
         )
         assert settings.get_embedding_provider_family() == "openai"
 
@@ -45,7 +44,6 @@ class TestProviderFamily:
             mistral_api_key="m-test",
             aws_region=None,
             bedrock_embedding_model=None,
-            bedrock_generation_model=None,
             openai_api_key=None,
         )
         assert settings.get_embedding_provider_family() == "mistral"
@@ -55,7 +53,6 @@ class TestProviderFamily:
             ollama_base_url="http://localhost:11434",
             aws_region=None,
             bedrock_embedding_model=None,
-            bedrock_generation_model=None,
             openai_api_key=None,
             mistral_api_key=None,
         )
@@ -65,7 +62,6 @@ class TestProviderFamily:
         settings = Settings(
             aws_region=None,
             bedrock_embedding_model=None,
-            bedrock_generation_model=None,
             openai_api_key=None,
             mistral_api_key=None,
             ollama_base_url=None,

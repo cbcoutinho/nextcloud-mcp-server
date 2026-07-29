@@ -1,6 +1,6 @@
 # Amazon Bedrock Setup Guide
 
-This guide covers how to configure the Nextcloud MCP Server to use Amazon Bedrock for embeddings and text generation.
+This guide covers how to configure the Nextcloud MCP Server to use Amazon Bedrock for embeddings.
 
 ## Prerequisites
 
@@ -146,9 +146,6 @@ AWS_REGION=us-east-1
 ```bash
 # For embeddings
 BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
-
-# For text generation (RAG evaluation)
-BEDROCK_GENERATION_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
 ```
 
 **AWS Credentials (choose one method):**
@@ -179,7 +176,6 @@ services:
     environment:
       - AWS_REGION=us-east-1
       - BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
-      - BEDROCK_GENERATION_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 ```
@@ -214,13 +210,6 @@ uv run nextcloud-mcp-server
 ```bash
 export AWS_REGION=us-east-1
 export BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
-export BEDROCK_GENERATION_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
-
-# For RAG evaluation with Bedrock
-export RAG_EVAL_PROVIDER=bedrock
-export RAG_EVAL_BEDROCK_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
-
-uv run python -m tests.rag_evaluation.evaluate
 ```
 
 ### Programmatic Usage
@@ -236,18 +225,13 @@ provider = BedrockProvider(
 
 embeddings = await provider.embed_batch(["text1", "text2"])
 
-# Both capabilities
 provider = BedrockProvider(
     region_name="us-east-1",
     embedding_model="amazon.titan-embed-text-v2:0",
-    generation_model="anthropic.claude-3-sonnet-20240229-v1:0",
 )
 
 # Generate embeddings
 embedding = await provider.embed("query text")
-
-# Generate text
-response = await provider.generate("Write a summary", max_tokens=500)
 ```
 
 ## Cost Considerations

@@ -21,7 +21,7 @@ class ProviderRegistry:
     Checks provider settings in priority order and creates the appropriate
     provider:
 
-    1. Bedrock (``AWS_REGION`` or ``BEDROCK_*_MODEL``)
+    1. Bedrock (``AWS_REGION`` or ``BEDROCK_EMBEDDING_MODEL``)
     2. OpenAI (``OPENAI_API_KEY``)
     3. Mistral (``MISTRAL_API_KEY``)
     4. Ollama (``OLLAMA_BASE_URL``)
@@ -89,22 +89,15 @@ class ProviderRegistry:
             )
 
         # 1. Bedrock
-        if (
-            settings.aws_region
-            or settings.bedrock_embedding_model
-            or settings.bedrock_generation_model
-        ):
+        if settings.aws_region or settings.bedrock_embedding_model:
             logger.info(
-                "Using Bedrock provider: region=%s, embedding_model=%s, "
-                "generation_model=%s",
+                "Using Bedrock provider: region=%s, embedding_model=%s",
                 settings.aws_region,
                 settings.bedrock_embedding_model,
-                settings.bedrock_generation_model,
             )
             return BedrockProvider(
                 region_name=settings.aws_region,
                 embedding_model=settings.bedrock_embedding_model,
-                generation_model=settings.bedrock_generation_model,
                 aws_access_key_id=settings.aws_access_key_id,
                 aws_secret_access_key=settings.aws_secret_access_key,
             )
@@ -112,17 +105,14 @@ class ProviderRegistry:
         # 2. OpenAI
         if settings.openai_api_key:
             logger.info(
-                "Using OpenAI provider: base_url=%s, embedding_model=%s, "
-                "generation_model=%s",
+                "Using OpenAI provider: base_url=%s, embedding_model=%s",
                 settings.openai_base_url or "default",
                 settings.openai_embedding_model,
-                settings.openai_generation_model,
             )
             return OpenAIProvider(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url,
                 embedding_model=settings.openai_embedding_model,
-                generation_model=settings.openai_generation_model,
             )
 
         # 3. Mistral
@@ -141,15 +131,13 @@ class ProviderRegistry:
         # 4. Ollama
         if settings.ollama_base_url:
             logger.info(
-                "Using Ollama provider: %s, embedding_model=%s, generation_model=%s",
+                "Using Ollama provider: %s, embedding_model=%s",
                 settings.ollama_base_url,
                 settings.ollama_embedding_model,
-                settings.ollama_generation_model,
             )
             return OllamaProvider(
                 base_url=settings.ollama_base_url,
                 embedding_model=settings.ollama_embedding_model,
-                generation_model=settings.ollama_generation_model,
                 verify_ssl=settings.ollama_verify_ssl,
             )
 

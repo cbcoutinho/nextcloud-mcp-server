@@ -179,19 +179,18 @@ from mcp.types import ToolAnnotations
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 - `nextcloud_mcp_server/models/` - Pydantic response models
-- `nextcloud_mcp_server/providers/` - Unified LLM provider infrastructure (embeddings + generation)
+- `nextcloud_mcp_server/providers/` - Unified embedding provider infrastructure
 - `tests/` - Layered test suite (unit, smoke, integration, load)
 
 ### Provider Architecture (ADR-015)
 
-**Unified Provider System** for embeddings and text generation:
+**Unified Provider System** for embeddings:
 
 **Location:** `nextcloud_mcp_server/providers/`
-- `base.py` - `Provider` ABC with optional capabilities
+- `base.py` - `Provider` ABC
 - `registry.py` - Auto-detection and factory pattern
-- `ollama.py` - Ollama provider (embeddings + generation)
-- `anthropic.py` - Anthropic provider (generation only)
-- `bedrock.py` - Amazon Bedrock provider (embeddings + generation)
+- `ollama.py` - Ollama provider
+- `bedrock.py` - Amazon Bedrock provider
 - `simple.py` - Simple in-memory provider (embeddings only, fallback)
 
 **Usage:**
@@ -203,9 +202,6 @@ provider = get_provider()  # Auto-detects from environment
 # Check capabilities
 if provider.supports_embeddings:
     embeddings = await provider.embed_batch(texts)
-
-if provider.supports_generation:
-    text = await provider.generate("prompt", max_tokens=500)
 ```
 
 **Environment Variables:**
@@ -213,13 +209,11 @@ if provider.supports_generation:
 Bedrock:
 - `AWS_REGION` - AWS region (e.g., "us-east-1")
 - `BEDROCK_EMBEDDING_MODEL` - Embedding model ID (e.g., "amazon.titan-embed-text-v2:0")
-- `BEDROCK_GENERATION_MODEL` - Generation model ID (e.g., "anthropic.claude-3-sonnet-20240229-v1:0")
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` - Optional, uses AWS credential chain
 
 Ollama:
 - `OLLAMA_BASE_URL` - API URL (e.g., "http://localhost:11434")
 - `OLLAMA_EMBEDDING_MODEL` - Embedding model (default: "nomic-embed-text")
-- `OLLAMA_GENERATION_MODEL` - Generation model (e.g., "llama3.2:1b")
 - `OLLAMA_VERIFY_SSL` - SSL verification (default: "true")
 
 Simple (fallback, no config needed):
@@ -490,82 +484,6 @@ required-changes finding (reviewers, including the Claude review bot, must flag 
 > Any remaining tools that still return raw dicts are pre-existing debt being
 > migrated to typed `BaseResponse` models (tracked on Deck board 12). New code must
 > not add to that debt.
-
-## MCP Sampling for RAG (ADR-008)
-
-**What is MCP Sampling?**
-MCP sampling allows servers to request LLM completions from their clients. This enables Retrieval-Augmented Generation (RAG) patterns where the server retrieves context and the client's LLM generates answers.
-
-**When to use sampling:**
-- Generating natural language answers from retrieved documents
-- Synthesizing information from multiple sources
-- Creating summaries with citations
-
-**Implementation Pattern** (see ADR-008 for details):
-
-```python
-from mcp.types import ModelHint, ModelPreferences, SamplingMessage, TextContent
-
-@mcp.tool()
-@require_scopes("notes.read")
-async def nc_notes_semantic_search_answer(
-    query: str, ctx: Context, limit: int = 5, max_answer_tokens: int = 500
-) -> SamplingSearchResponse:
-    # 1. Retrieve documents
-    search_response = await nc_notes_semantic_search(query, ctx, limit)
-
-    # 2. Check for no results (don't waste sampling call)
-    if not search_response.results:
-        return SamplingSearchResponse(
-            query=query,
-            generated_answer="No relevant documents found.",
-            sources=[], total_found=0, success=True
-        )
-
-    # 3. Construct prompt with retrieved context
-    prompt = f"{query}\n\nDocuments:\n{format_sources(search_response.results)}\n\nProvide answer with citations."
-
-    # 4. Request LLM completion via sampling
-    try:
-        result = await ctx.session.create_message(
-            messages=[SamplingMessage(role="user", content=TextContent(type="text", text=prompt))],
-            max_tokens=max_answer_tokens,
-            temperature=0.7,
-            model_preferences=ModelPreferences(
-                hints=[ModelHint(name="claude-3-5-sonnet")],
-                intelligencePriority=0.8,
-                speedPriority=0.5,
-            ),
-            include_context="thisServer",
-        )
-
-        return SamplingSearchResponse(
-            query=query,
-            generated_answer=result.content.text,
-            sources=search_response.results,
-            model_used=result.model,
-            stop_reason=result.stopReason,
-            success=True
-        )
-    except Exception as e:
-        # Fallback: Return documents without generated answer
-        return SamplingSearchResponse(
-            query=query,
-            generated_answer=f"[Sampling unavailable: {e}]\n\nFound {len(search_response.results)} documents.",
-            sources=search_response.results,
-            search_method="semantic_sampling_fallback",
-            success=True
-        )
-```
-
-**Key Points**:
-- **No server-side LLM**: Server has no API keys, client controls which model is used
-- **Graceful degradation**: Tool always returns useful results even if sampling fails
-- **User control**: MCP clients SHOULD prompt users to approve sampling requests
-- **No results optimization**: Skip sampling call when no documents found
-- **Fixed prompts**: Prompts are not user-configurable to avoid injection risks
-
-**Reference**: See `nc_notes_semantic_search_answer` in `nextcloud_mcp_server/server/notes.py:517` and ADR-008 for complete implementation.
 
 ## Testing Best Practices (MANDATORY)
 

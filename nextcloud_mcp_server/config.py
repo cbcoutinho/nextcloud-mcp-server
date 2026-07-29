@@ -162,19 +162,16 @@ _DEFAULTS: dict[str, Any] = {
     # Ollama
     "ollama_base_url": None,
     "ollama_embedding_model": "nomic-embed-text",
-    "ollama_generation_model": None,
     "ollama_verify_ssl": True,
     # OpenAI
     "openai_api_key": None,
     "openai_base_url": None,
     "openai_embedding_model": "text-embedding-3-small",
-    "openai_generation_model": None,
     # Bedrock (AWS)
     "aws_region": None,
     "aws_access_key_id": None,
     "aws_secret_access_key": None,
     "bedrock_embedding_model": None,
-    "bedrock_generation_model": None,
     # Mistral
     "mistral_api_key": None,
     "mistral_embedding_model": "mistral-embed",
@@ -1102,24 +1099,21 @@ class Settings:
     qdrant_api_key: str | None = None
     qdrant_collection: str = "nextcloud_content"
 
-    # Ollama settings (embeddings + optional generation)
+    # Ollama settings
     ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
-    ollama_generation_model: str | None = None
     ollama_verify_ssl: bool = True
 
-    # OpenAI settings (embeddings + optional generation)
+    # OpenAI settings
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_embedding_model: str = "text-embedding-3-small"
-    openai_generation_model: str | None = None
 
     # Bedrock (AWS) settings — boto3 also reads these from its credential chain
     aws_region: str | None = None
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     bedrock_embedding_model: str | None = None
-    bedrock_generation_model: str | None = None
 
     # Mistral settings (embeddings only)
     mistral_api_key: str | None = None
@@ -1643,11 +1637,7 @@ class Settings:
         Does NOT handle the gateway short-circuit — callers layer that on top
         as needed (see the asymmetry note on ``get_embedding_model_name``).
         """
-        if (
-            self.aws_region
-            or self.bedrock_embedding_model
-            or self.bedrock_generation_model
-        ):
+        if self.aws_region or self.bedrock_embedding_model:
             return "bedrock", self.bedrock_embedding_model or "bedrock-default"
 
         if self.openai_api_key:
@@ -2028,19 +2018,16 @@ def _build_settings() -> Settings:
         # Ollama settings
         "ollama_base_url": "OLLAMA_BASE_URL",
         "ollama_embedding_model": "OLLAMA_EMBEDDING_MODEL",
-        "ollama_generation_model": "OLLAMA_GENERATION_MODEL",
         "ollama_verify_ssl": "OLLAMA_VERIFY_SSL",
         # OpenAI settings
         "openai_api_key": "OPENAI_API_KEY",
         "openai_base_url": "OPENAI_BASE_URL",
         "openai_embedding_model": "OPENAI_EMBEDDING_MODEL",
-        "openai_generation_model": "OPENAI_GENERATION_MODEL",
         # Bedrock (AWS) settings
         "aws_region": "AWS_REGION",
         "aws_access_key_id": "AWS_ACCESS_KEY_ID",
         "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
         "bedrock_embedding_model": "BEDROCK_EMBEDDING_MODEL",
-        "bedrock_generation_model": "BEDROCK_GENERATION_MODEL",
         # Mistral settings
         "mistral_api_key": "MISTRAL_API_KEY",
         "mistral_embedding_model": "MISTRAL_EMBEDDING_MODEL",

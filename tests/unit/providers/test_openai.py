@@ -41,7 +41,6 @@ async def test_openai_embedding(mock_openai_client):
     provider = OpenAIProvider(
         api_key="test-key",
         embedding_model="text-embedding-3-small",
-        generation_model=None,
     )
 
     # Test embedding
@@ -75,7 +74,6 @@ async def test_openai_embedding_batch(mock_openai_client):
     provider = OpenAIProvider(
         api_key="test-key",
         embedding_model="text-embedding-3-small",
-        generation_model=None,
     )
 
     # Test batch embedding
@@ -91,74 +89,23 @@ async def test_openai_embedding_batch(mock_openai_client):
 
 
 @pytest.mark.unit
-async def test_openai_generation(mock_openai_client):
-    """Test OpenAI text generation."""
-    # Mock response
-    mock_choice = MagicMock()
-    mock_choice.message.content = "Generated response"
-
-    mock_response = MagicMock()
-    mock_response.choices = [mock_choice]
-
-    mock_openai_client.chat.completions.create = AsyncMock(return_value=mock_response)
-
-    # Create provider
-    provider = OpenAIProvider(
-        api_key="test-key",
-        embedding_model=None,
-        generation_model="gpt-4o-mini",
-    )
-
-    # Test generation
-    text = await provider.generate("test prompt", max_tokens=100)
-
-    assert text == "Generated response"
-    mock_openai_client.chat.completions.create.assert_called_once_with(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": "test prompt"}],
-        max_tokens=100,
-        temperature=0.7,
-    )
-
-
-@pytest.mark.unit
-async def test_openai_both_capabilities(mock_openai_client):
-    """Test OpenAI with both embedding and generation models."""
-    # Mock embedding response
+async def test_openai_embedding_capability(mock_openai_client):
+    """Test OpenAI advertises and serves embeddings."""
     mock_embedding_data = MagicMock()
     mock_embedding_data.embedding = [0.1, 0.2]
-    mock_embedding_data.index = 0
+    mock_response = MagicMock()
+    mock_response.data = [mock_embedding_data]
+    mock_openai_client.embeddings.create = AsyncMock(return_value=mock_response)
 
-    mock_embed_response = MagicMock()
-    mock_embed_response.data = [mock_embedding_data]
-    mock_openai_client.embeddings.create = AsyncMock(return_value=mock_embed_response)
-
-    # Mock generation response
-    mock_choice = MagicMock()
-    mock_choice.message.content = "Response"
-
-    mock_gen_response = MagicMock()
-    mock_gen_response.choices = [mock_choice]
-    mock_openai_client.chat.completions.create = AsyncMock(
-        return_value=mock_gen_response
-    )
-
-    # Create provider with both models
     provider = OpenAIProvider(
         api_key="test-key",
         embedding_model="text-embedding-3-small",
-        generation_model="gpt-4o-mini",
     )
 
     assert provider.supports_embeddings is True
-    assert provider.supports_generation is True
 
-    # Test both capabilities
     embedding = await provider.embed("test")
     assert embedding == [0.1, 0.2]
-
-    text = await provider.generate("test")
-    assert text == "Response"
 
 
 @pytest.mark.unit
@@ -167,7 +114,6 @@ async def test_openai_no_embeddings():
     provider = OpenAIProvider(
         api_key="test-key",
         embedding_model=None,
-        generation_model="gpt-4o-mini",
     )
 
     assert provider.supports_embeddings is False
@@ -180,21 +126,6 @@ async def test_openai_no_embeddings():
 
     with pytest.raises(NotImplementedError, match="no embedding_model configured"):
         provider.get_dimension()
-
-
-@pytest.mark.unit
-async def test_openai_no_generation():
-    """Test OpenAI provider with no generation model raises error."""
-    provider = OpenAIProvider(
-        api_key="test-key",
-        embedding_model="text-embedding-3-small",
-        generation_model=None,
-    )
-
-    assert provider.supports_generation is False
-
-    with pytest.raises(NotImplementedError, match="no generation_model configured"):
-        await provider.generate("test")
 
 
 @pytest.mark.unit
@@ -254,7 +185,6 @@ async def test_openai_github_models_api(mock_openai_client):
         api_key="ghp_test_token",
         base_url="https://models.github.ai/inference",
         embedding_model="openai/text-embedding-3-small",
-        generation_model=None,
     )
 
     # Known dimension for GitHub Models prefixed model
@@ -437,31 +367,8 @@ async def test_embed_batch_retries_on_connection_error(mock_openai_client, monke
 
 
 @pytest.mark.unit
-async def test_generate_retries_on_connection_error(mock_openai_client, monkeypatch):
-    """generate() shares the transient retry (RAG sampling survives a rollover)."""
-    from openai import APIConnectionError
-
-    from nextcloud_mcp_server.providers import _retry
-
-    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
-
-    choice = MagicMock()
-    choice.message.content = "Generated response"
-    mock_response = MagicMock()
-    mock_response.choices = [choice]
-
-    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
-    mock_openai_client.chat.completions.create = create
-    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
-
-    text = await provider.generate("prompt")
-    assert text == "Generated response"
-    assert create.await_count == 2
-
-
-@pytest.mark.unit
-async def test_generate_does_not_retry_on_bad_request(mock_openai_client, monkeypatch):
-    """generate() fast-fails (no retry) on a permanent 4xx."""
+async def test_embed_does_not_retry_on_bad_request(mock_openai_client, monkeypatch):
+    """embed() fast-fails (no retry) on a permanent 4xx."""
     import httpx
     from openai import BadRequestError
 
@@ -473,9 +380,11 @@ async def test_generate_does_not_retry_on_bad_request(mock_openai_client, monkey
         "bad", response=httpx.Response(400, request=_req()), body=None
     )
     create = AsyncMock(side_effect=err)
-    mock_openai_client.chat.completions.create = create
-    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
+    mock_openai_client.embeddings.create = create
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
 
     with pytest.raises(BadRequestError):
-        await provider.generate("prompt")
+        await provider.embed("hello")
     assert create.await_count == 1  # no retry on a permanent 4xx

@@ -1,7 +1,6 @@
 """Pytest configuration for integration tests.
 
-This conftest.py provides hooks and fixtures specific to integration tests,
-including the --provider flag for RAG tests.
+This conftest.py provides hooks and fixtures specific to integration tests.
 """
 
 import logging
@@ -9,9 +8,6 @@ import logging
 import pytest
 
 logger = logging.getLogger(__name__)
-
-# Valid provider names
-VALID_PROVIDERS = ["openai", "ollama", "anthropic", "bedrock"]
 
 # Canonical minimal valid PDF for integration tests. verify-on-read gates file
 # results on the vector-index tag via
@@ -25,24 +21,6 @@ PDF_BYTES = (
     b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
     b"trailer<</Root 1 0 R>>\n%%EOF\n"
 )
-
-
-def pytest_addoption(parser):
-    """Add --provider command line option for RAG tests."""
-    parser.addoption(
-        "--provider",
-        action="store",
-        default=None,
-        choices=VALID_PROVIDERS,
-        help="LLM provider for RAG tests: openai, ollama, anthropic, bedrock",
-    )
-
-
-def pytest_configure(config):
-    """Configure custom markers."""
-    config.addinivalue_line(
-        "markers", "rag: mark test as RAG integration test (requires --provider flag)"
-    )
 
 
 @pytest.fixture(autouse=True, scope="module")
