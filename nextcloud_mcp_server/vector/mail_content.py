@@ -12,6 +12,7 @@ Two things live here, both because *two* call sites must agree exactly:
 
 from typing import Any
 
+from nextcloud_mcp_server.client.mail import MailClient
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 
 # Messages indexed (and verified) per mailbox. This equals the Mail API's
@@ -26,7 +27,7 @@ MAIL_SCAN_MAX_PER_MAILBOX = 100
 
 
 async def list_index_window(
-    mail_client: Any,
+    mail_client: MailClient,
     mailbox_id: int,
     index_filter: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -46,8 +47,9 @@ async def list_index_window(
     arrived, because the thread self-join carries no filter predicate.
 
     Args:
-        mail_client: A ``MailClient`` (or the ``mail`` attribute of a client
-            protocol — typed loosely so both pass).
+        mail_client: The ``mail`` attribute of a Nextcloud client. Typed
+            concretely so a signature change in ``MailClient.list_messages``
+            fails type-checking here rather than silently drifting the window.
         mailbox_id: Mailbox database ID to list.
         index_filter: Optional Mail filter string (see
             :func:`mail_index_filter`); ``None`` lists every message.

@@ -340,7 +340,10 @@ async def test_verify_mail_non_numeric_id_kept_when_mailbox_listed(mocker):
 async def test_verify_mail_partitions_distinct_mailboxes(mocker):
     """Results in different mailboxes each get their own list call."""
 
-    async def list_messages(mailbox_id, *, limit):
+    # Signature must match what list_index_window actually calls with: a stale
+    # stub raises TypeError, which the verifier's fail-open branch swallows, and
+    # the test then passes without exercising partitioning at all.
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         return {10: [{"databaseId": 1}], 20: [{"databaseId": 2}]}[mailbox_id]
 
     mail_client = SimpleNamespace(
@@ -350,7 +353,15 @@ async def test_verify_mail_partitions_distinct_mailboxes(mocker):
 
     result = await _verify_mail_messages(
         client,
-        [_mail_result(1, mailbox_id=10), _mail_result(2, mailbox_id=20)],
+        [
+            _mail_result(1, mailbox_id=10),
+            _mail_result(2, mailbox_id=20),
+            # Absent from mailbox 10's listing. This is what makes the test
+            # load-bearing: the real path drops it, whereas the fail-open branch
+            # (which a stub whose signature has drifted from list_index_window
+            # would silently take, via TypeError) would keep it.
+            _mail_result(3, mailbox_id=10),
+        ],
         _sem(),
     )
     assert result == {"1", "2"}
