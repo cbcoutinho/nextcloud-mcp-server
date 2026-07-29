@@ -1,12 +1,11 @@
 """Unit tests for the mail-message scanner (initial-sync path).
 
-The incremental path depends on live Qdrant lookups (``_scroll_all_points`` /
+The incremental path depends on live Qdrant lookups (``_scroll_doc_ids`` /
 ``query_document_metadata``); these tests cover the initial-sync enumeration —
 accounts → mailboxes → newest-N messages — which is the bulk of the new logic
 and needs no Qdrant.
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,12 +33,8 @@ def _patch_incremental(mocker, *, indexed_ids, existing_metadata, interval=1):
     mocker.patch.object(scanner_module, "get_qdrant_client", new=AsyncMock())
     mocker.patch.object(
         scanner_module,
-        "_scroll_all_points",
-        new=AsyncMock(
-            return_value=[
-                SimpleNamespace(payload={"doc_id": doc_id}) for doc_id in indexed_ids
-            ]
-        ),
+        "_scroll_doc_ids",
+        new=AsyncMock(return_value={str(doc_id) for doc_id in indexed_ids}),
     )
     mocker.patch.object(
         scanner_module,
