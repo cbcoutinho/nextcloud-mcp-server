@@ -25,6 +25,10 @@ from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
+# Stand-in for the filename in log lines when the document came from bytes (a
+# note attachment, a deck card) and so has no path to name.
+_UNNAMED = "<bytes>"
+
 
 def _record_parse_mode(
     metadata: dict[str, Any], page_count: int, settings: Any
@@ -274,7 +278,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                 # fault and must remain retryable.
                 logger.warning(
                     "PDF %s is not a readable document (%s); failing as unreadable",
-                    filename or "<bytes>",
+                    filename or _UNNAMED,
                     exc,
                     extra={
                         "processor": self.name,
@@ -325,7 +329,7 @@ class PyMuPDFProcessor(DocumentProcessor):
             except PdfParseFailed as exc:
                 logger.warning(
                     "Isolated PDF parse failed for %s (reason=%s): %s",
-                    filename or "<bytes>",
+                    filename or _UNNAMED,
                     exc.reason,
                     exc,
                     extra={
@@ -370,7 +374,7 @@ class PyMuPDFProcessor(DocumentProcessor):
 
             logger.info(
                 "Successfully processed PDF %s: %s pages, %s chars, %s images",
-                filename or "<bytes>",
+                filename or _UNNAMED,
                 metadata["page_count"],
                 len(md_text),
                 metadata.get("image_count", 0),
