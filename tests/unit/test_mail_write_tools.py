@@ -95,8 +95,12 @@ async def test_set_flags_maps_junk_to_the_imap_keyword(mail_tools, fake_mail):
 
 async def test_set_flags_without_any_flag_is_an_error(mail_tools, fake_mail):
     """A no-flag call would be a silent no-op reported as success."""
+    # Setup hoisted out of the with-block so only the call under test can raise
+    # (python:S5778).
+    set_flags = mail_tools["nc_mail_set_flags"].fn
+    ctx = _ctx()
     with pytest.raises(McpError):
-        await mail_tools["nc_mail_set_flags"].fn(42, _ctx())
+        await set_flags(42, ctx)
 
     fake_mail.set_flags.assert_not_awaited()
 

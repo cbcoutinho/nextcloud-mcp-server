@@ -104,8 +104,9 @@ The Mail app publishes only a small OCS API; most of what these tools need lives
 on its internal `/index.php/apps/mail/api/...` routes, which are CSRF-gated for
 browser sessions. Nextcloud exempts any request carrying `OCS-APIRequest: true`
 from that check, so an app password plus that header is sufficient — no
-`requesttoken` round-trip. This is verified end-to-end by the GreenMail
-integration lane rather than assumed.
+`requesttoken` round-trip. The GreenMail integration lane exercises this for
+both the read and the write routes, so a regression shows up as a test failure
+rather than as a silent assumption.
 
 Because those routes are internal, the Mail app marks them
 `OpenAPI::SCOPE_IGNORE` and may change them between releases. Breakage there

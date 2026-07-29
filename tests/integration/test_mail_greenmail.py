@@ -506,3 +506,48 @@ async def test_delete_message_removes_it_from_the_inbox(
         )
     )["results"]
     assert message_id not in [m["databaseId"] for m in remaining]
+
+
+async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_account):
+    """Move a message out of INBOX and confirm it lands in the destination."""
+    subject = "Move probe"
+    message_id = await _seeded_message_id(nc_mcp_client, subject)
+
+    account_id = await _first_account_id(nc_mcp_client)
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+    destination = next(
+        (m for m in mailboxes if m["databaseId"] != inbox["databaseId"]), None
+    )
+    if destination is None:
+        pytest.skip("account has only INBOX; no destination mailbox to move into")
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_move_message",
+            {
+                "message_id": message_id,
+                "destination_mailbox_id": destination["databaseId"],
+            },
+        )
+    )
+
+    _sync_mail_account(account_id)
+    remaining = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
+        )
+    )["results"]
+    assert subject not in [m["subject"] for m in remaining]
+
+    moved = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages",
+            {"mailbox_id": destination["databaseId"], "limit": 20},
+        )
+    )["results"]
+    assert subject in [m["subject"] for m in moved]
