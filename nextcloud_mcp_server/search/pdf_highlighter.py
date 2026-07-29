@@ -920,7 +920,9 @@ class PDFHighlighter:
                 return results
             window = page_window if page_window and page_window > 0 else len(pages)
             for start in range(0, len(pages), window):
-                doc = pymupdf.open(source_path)
+                # filetype="pdf": source_path is the ingest spool (``*.bin``), so
+                # letting MuPDF infer the type from the suffix finds no handler.
+                doc = pymupdf.open(source_path, filetype="pdf")
                 try:
                     for page_num in pages[start : start + window]:
                         page = doc[page_num - 1]

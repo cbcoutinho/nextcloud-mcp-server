@@ -155,7 +155,17 @@ class PyMuPDFProcessor(DocumentProcessor):
         )
 
         with pymupdf_serialized():
-            doc = pymupdf.open(source_path)
+            # filetype="pdf" rather than letting MuPDF infer it from the path: the
+            # ingest spool is named ``nc-ingest-XXXX.bin`` (source.spool_target),
+            # and PyMuPDF derives the MuPDF magic from the suffix, so the inferred
+            # type is "bin" -- no handler, FileDataError, before any content is
+            # read. Handler selection then falls back to content sniffing, which
+            # only inspects a prefix: a PDF whose header sits behind a long run of
+            # junk (recovery-tool output) is rejected outright, even though the
+            # PDF handler's xref repair can reconstruct it. We only reach this
+            # processor because the registry matched application/pdf, so naming
+            # the type states what the caller already knows.
+            doc = pymupdf.open(source_path, filetype="pdf")
             try:
                 meta = self._extract_metadata(doc, filename)
                 meta["file_size"] = size
@@ -238,9 +248,51 @@ class PyMuPDFProcessor(DocumentProcessor):
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
-            metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-                self._read_metadata_sync, source_path, filename, source.size
-            )
+            try:
+                metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                    self._read_metadata_sync, source_path, filename, source.size
+                )
+            except pymupdf.FileDataError as exc:
+                # MuPDF could not recognise the bytes as a document it can open
+                # at all -- a file named ``.pdf`` whose content is something else
+                # (or nothing: a zero-filled recovery artifact). Nextcloud derives
+                # the mime type from the extension, so such a file is served as
+                # application/pdf and routed here on a claim its bytes don't back.
+                #
+                # Fail like the fast tier does (pypdfium2_fast: success=False)
+                # rather than raising ProcessorError. A raise skips the
+                # escalate-or-dead-letter path in vector.processor entirely and
+                # lands in the generic retry handler, where _drop_reason() labels
+                # it "other" and deliberately does NOT mark the document failed --
+                # so the scanner re-queued it forever, re-downloading the whole
+                # file on every cycle. Returning the failure makes it terminal
+                # once no higher tier remains.
+                #
+                # Narrow on purpose: EmptyFileError subclasses FileDataError, so
+                # both are covered, while pymupdf's own FileNotFoundError (the
+                # spool vanished) stays an exception -- that is an infrastructure
+                # fault and must remain retryable.
+                logger.warning(
+                    "PDF %s is not a readable document (%s); failing as unreadable",
+                    filename or "<bytes>",
+                    exc,
+                    extra={
+                        "processor": self.name,
+                        "tier": self.tier,
+                        "status": "error",
+                        "reason": "unreadable",
+                    },
+                )
+                return ProcessingResult(
+                    text="",
+                    metadata={
+                        "file_size": source.size,
+                        "parse_failed_reason": "unreadable",
+                    },
+                    processor=self.name,
+                    success=False,
+                    error=f"not a readable PDF: {exc}",
+                )
 
             if progress_callback:
                 await progress_callback(10, 100, f"Extracting {page_count} pages")

@@ -316,6 +316,27 @@ def test_image_coverage_per_page():
     assert len(digital) == 2 and all(c < 0.1 for c in digital)
 
 
+def test_image_coverage_from_a_bin_spool_path(tmp_path):
+    """Scan detection reads the ingest spool, whose name ends in ``.bin``.
+
+    ``registry`` calls this with ``str(source.path())`` -- the spool file, named
+    ``nc-ingest-XXXX.bin``. PyMuPDF derives the MuPDF magic from that suffix, so
+    without an explicit ``filetype`` the open finds no handler and raises. The
+    caller wraps this in a bare ``except Exception`` and downgrades to text-only
+    signals, so a regression here is silent: scanned PDFs quietly stop being
+    detected as scans.
+
+    The junk prefix pushes ``%PDF-`` past MuPDF's content-sniffing window, which
+    is what makes the explicit type load-bearing rather than cosmetic.
+    """
+    spool = tmp_path / "nc-ingest-abcd1234.bin"
+    spool.write_bytes(b"\0" * (8 * 1024 * 1024) + _full_page_image_pdf(pages=2))
+
+    coverage = clf.image_coverage_per_page_from_path(str(spool))
+
+    assert len(coverage) == 2 and all(c >= 0.8 for c in coverage)
+
+
 def test_scan_coverage_shorter_than_pages_aligns_without_crash():
     # image_coverage shorter than the boundaries (the MAX_SAMPLED_PAGES cap):
     # the single entry aligns to page 0; later pages get no coverage entry. With

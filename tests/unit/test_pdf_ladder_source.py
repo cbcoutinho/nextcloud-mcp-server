@@ -17,6 +17,7 @@ import pymupdf
 import pytest
 
 from nextcloud_mcp_server.document_processors import get_registry
+from nextcloud_mcp_server.document_processors.pymupdf import PyMuPDFProcessor
 from nextcloud_mcp_server.document_processors.source import (
     MemoryDocumentSource,
     SpooledDocumentSource,
@@ -200,3 +201,66 @@ async def test_in_memory_source_still_works(settings):
 
     assert result.success is True
     assert result.metadata["pipeline_tier"] == "fast"
+
+
+async def test_unreadable_file_fails_gracefully_instead_of_raising(spooled, settings):
+    """A file named ``.pdf`` whose bytes are not a document must not raise.
+
+    Nextcloud derives the mime type from the extension, so a zero-filled recovery
+    artifact named ``.pdf`` is served as application/pdf and routed to the PDF
+    ladder. The structured tier used to raise ``ProcessorError`` here, which skips
+    ``vector.processor``'s escalate-or-dead-letter path entirely: the failure was
+    labelled ``other``, the document was deliberately NOT marked failed, and the
+    scanner re-queued it forever -- re-downloading the whole file every cycle.
+
+    Returning ``success=False`` puts it on the terminal path instead.
+
+    This case is unreachable-by-content: a pure zero-fill has nothing for MuPDF's
+    xref repair to reconstruct, so it fails even with ``filetype="pdf"`` -- which
+    is why the graceful-failure branch is needed on top of the type hint that
+    ``test_pdf_behind_a_junk_prefix_is_still_read`` covers.
+    """
+    settings()
+
+    result = await PyMuPDFProcessor().process_source(
+        spooled(b"\0" * 4096, name="nc-ingest-zeroes.bin")
+    )
+
+    assert result.success is False
+    assert result.metadata["parse_failed_reason"] == "unreadable"
+    assert "not a readable PDF" in (result.error or "")
+
+
+async def test_valid_pdf_parses_from_a_bin_suffixed_spool(spooled, settings):
+    """The spool's ``.bin`` suffix must stay irrelevant to a real PDF."""
+    settings()
+
+    result = await PyMuPDFProcessor().process_source(
+        spooled(_digital_pdf(), name="nc-ingest-valid.bin")
+    )
+
+    assert result.success is True
+    assert "Ladder source test page" in result.text
+
+
+async def test_pdf_behind_a_junk_prefix_is_still_read(spooled, settings):
+    """A PDF whose header sits past MuPDF's sniffing window must still parse.
+
+    This is the case that makes ``filetype="pdf"`` load-bearing rather than
+    cosmetic. Handler selection from the ``.bin`` spool suffix finds no handler, so
+    MuPDF falls back to sniffing a prefix only; with megabytes of junk in front of
+    ``%PDF-`` -- what recovery tools emit -- the sniff misses it and the document
+    is rejected outright, even though the PDF handler's xref repair reconstructs it
+    fine. Naming the type skips the guess and lets repair run.
+
+    Uses 8 MB of padding to clear the sniffing window by a wide margin, matching
+    the real document that surfaced this (content began ~7 MB in).
+    """
+    settings()
+
+    result = await PyMuPDFProcessor().process_source(
+        spooled(b"\0" * (8 * 1024 * 1024) + _digital_pdf(), name="nc-ingest-junk.bin")
+    )
+
+    assert result.success is True
+    assert "Ladder source test page" in result.text

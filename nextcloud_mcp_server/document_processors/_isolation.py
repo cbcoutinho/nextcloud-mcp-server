@@ -315,7 +315,10 @@ def _parse_pdf_extract(
 
     pymupdf4llm = load_classic_pymupdf4llm()
 
-    doc = pymupdf.open(source_path)
+    # filetype="pdf": source_path is the ingest spool (``*.bin``); inferring the
+    # type from that suffix finds no MuPDF handler. Must match the parent's
+    # metadata open (pymupdf.py) or a document that opened there fails here.
+    doc = pymupdf.open(source_path, filetype="pdf")
     try:
         # Page gate (Deck #399). to_markdown is superlinear in page count, so a
         # large document burns the entire parse timeout and then dead-letters

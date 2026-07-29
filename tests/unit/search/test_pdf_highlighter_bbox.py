@@ -537,3 +537,44 @@ def test_no_resolvable_pages_returns_empty_without_error(window, caplog):
 
     assert results == {}
     assert "Error computing chunk bboxes" not in caplog.text
+
+
+@pytest.mark.unit
+def test_compute_chunk_bboxes_from_a_bin_spool_path(tmp_path, caplog):
+    """Bbox extraction must read the ingest spool, whose name ends in ``.bin``.
+
+    ``vector.processor`` passes ``pdf_path=source.path()`` -- the spool file, named
+    ``nc-ingest-XXXX.bin``. PyMuPDF derives the MuPDF magic from that suffix, so
+    without an explicit ``filetype`` there is no handler and the open raises. This
+    path swallows every exception (returning ``{}`` after logging), so the failure
+    is silent: chunks simply get no bboxes and nothing surfaces as broken.
+
+    The junk prefix is what makes the suffix load-bearing rather than cosmetic --
+    it pushes ``%PDF-`` past MuPDF's content-sniffing window, so the type cannot be
+    recovered by inspecting the bytes. Mirrors the ingest-side coverage in
+    tests/unit/test_pdf_ladder_source.py.
+    """
+    pages = [
+        "Chapter 1: Introduction. Nextcloud is a self-hosted collaboration platform "
+        "covering installation, configuration and maintenance topics.",
+    ]
+    boundaries, full_text = _page_boundaries(pages)
+    spool = tmp_path / "nc-ingest-abcd1234.bin"
+    spool.write_bytes(b"\0" * (8 * 1024 * 1024) + _make_pdf(pages))
+
+    caplog.set_level(
+        logging.ERROR, logger="nextcloud_mcp_server.search.pdf_highlighter"
+    )
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=None,
+        chunks=[(0, 0, len(pages[0]), 1, pages[0])],
+        page_boundaries=boundaries,
+        full_text=full_text,
+        pdf_path=spool,
+    )
+
+    assert "Error computing chunk bboxes" not in caplog.text
+    assert set(results) == {0}
+    rects, page = results[0]
+    assert page == 1
+    assert len(rects) >= 1
