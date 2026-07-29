@@ -105,6 +105,7 @@ from nextcloud_mcp_server.config_validators import (
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.http import nextcloud_httpx_client
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
@@ -858,15 +859,12 @@ async def load_oauth_client_credentials(
         # External clients will request tokens with resource=http://localhost:8001/mcp
         # and the authorization server will limit them to these allowed scopes.
         #
-        # The PRM endpoint advertises the same scopes dynamically via @require_scopes decorators.
-        # These must stay in sync — any scope a tool uses via @require_scopes must be listed here.
-        dcr_scopes = (
-            "openid profile email "
-            "notes.read notes.write calendar.read calendar.write todo.read todo.write "
-            "contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write "
-            "tables.read tables.write files.read files.write sharing.read sharing.write "
-            "news.read news.write collectives.read collectives.write"
-        )
+        # The PRM endpoint advertises the same scopes dynamically via @require_scopes
+        # decorators, so this list must cover every scope any tool requires. It is
+        # derived from ALL_SUPPORTED_SCOPES rather than hand-maintained: the two were
+        # a duplicated pair that silently drifted, leaving mail.send (and every mail
+        # scope) ungrantable in OAuth mode despite being in use.
+        dcr_scopes = "openid profile email " + " ".join(sorted(ALL_SUPPORTED_SCOPES))
 
         # Add conditional scopes based on server configuration
         dcr_settings = get_settings()

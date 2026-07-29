@@ -335,3 +335,174 @@ async def test_send_message_via_outbox(nc_mcp_client, provisioned_mail_account):
         )
     )
     assert data["success"] is True
+
+
+# --- Write operations -------------------------------------------------------
+#
+# These are the decisive CSRF evidence for the *mutating* routes: PUT/POST/DELETE
+# on /index.php/apps/mail/api/... carry no @NoCSRFRequired either, so if the
+# OCS-APIRequest header did not exempt them, every test below would fail.
+
+
+async def _seeded_message_id(nc_mcp_client, subject: str) -> int:
+    """Seed a message, sync, and return its database id."""
+    _seed_inbox_message(subject, "write-tool probe")
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
+    return full["id"]
+
+
+async def test_set_flags_marks_message_read_and_unread(
+    nc_mcp_client, provisioned_mail_account
+):
+    """GH #1148: mark a message read, then unread, and observe the flag flip."""
+    message_id = await _seeded_message_id(nc_mcp_client, "Flag probe: seen")
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_set_flags", {"message_id": message_id, "seen": True}
+        )
+    )
+    seen = _tool_payload(
+        await nc_mcp_client.call_tool("nc_mail_get_message", {"message_id": message_id})
+    )["message"]
+    assert seen["flags"]["seen"] is True
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_set_flags", {"message_id": message_id, "seen": False}
+        )
+    )
+    unseen = _tool_payload(
+        await nc_mcp_client.call_tool("nc_mail_get_message", {"message_id": message_id})
+    )["message"]
+    assert unseen["flags"]["seen"] is False
+
+
+async def test_set_flags_stars_without_touching_seen(
+    nc_mcp_client, provisioned_mail_account
+):
+    """Omitted flags must be left alone, not reset."""
+    message_id = await _seeded_message_id(nc_mcp_client, "Flag probe: starred")
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_set_flags", {"message_id": message_id, "seen": True}
+        )
+    )
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_set_flags", {"message_id": message_id, "flagged": True}
+        )
+    )
+
+    message = _tool_payload(
+        await nc_mcp_client.call_tool("nc_mail_get_message", {"message_id": message_id})
+    )["message"]
+    assert message["flags"]["flagged"] is True
+    assert message["flags"]["seen"] is True
+
+
+async def test_tag_lifecycle_and_tags_filter(nc_mcp_client, provisioned_mail_account):
+    """Create-or-get a tag, assign it, find the message via ``tags:<id>``, remove it."""
+    message_id = await _seeded_message_id(nc_mcp_client, "Tag probe")
+
+    created = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_create_tag", {"display_name": "MCP Integration"}
+        )
+    )
+    tag_id = created["tag"]["id"]
+    # Create-or-get: a second call must return the same tag, not a duplicate.
+    again = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_create_tag", {"display_name": "MCP Integration"}
+        )
+    )
+    assert again["tag"]["id"] == tag_id
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_set_tag", {"message_id": message_id, "tag": "MCP Integration"}
+        )
+    )
+
+    account_id = await _first_account_id(nc_mcp_client)
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+
+    tagged = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages",
+            {
+                "mailbox_id": inbox["databaseId"],
+                "search_filter": f"tags:{tag_id}",
+                "limit": 20,
+            },
+        )
+    )["results"]
+    assert message_id in [m["databaseId"] for m in tagged]
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_remove_tag", {"message_id": message_id, "tag": "MCP Integration"}
+        )
+    )
+    still_tagged = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages",
+            {
+                "mailbox_id": inbox["databaseId"],
+                "search_filter": f"tags:{tag_id}",
+                "limit": 20,
+            },
+        )
+    )["results"]
+    assert message_id not in [m["databaseId"] for m in still_tagged]
+
+
+async def test_get_message_source_returns_headers(
+    nc_mcp_client, provisioned_mail_account
+):
+    subject = "Source probe"
+    message_id = await _seeded_message_id(nc_mcp_client, subject)
+
+    data = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_get_message_source", {"message_id": message_id}
+        )
+    )
+    assert data["source"] is not None
+    assert f"Subject: {subject}" in data["source"]
+
+
+async def test_delete_message_removes_it_from_the_inbox(
+    nc_mcp_client, provisioned_mail_account
+):
+    """Delete moves the message out of INBOX (into the account's trash)."""
+    subject = "Delete probe"
+    message_id = await _seeded_message_id(nc_mcp_client, subject)
+
+    _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_delete_message", {"message_id": message_id}
+        )
+    )
+
+    account_id = await _first_account_id(nc_mcp_client)
+    _sync_mail_account(account_id)
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+    remaining = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
+        )
+    )["results"]
+    assert message_id not in [m["databaseId"] for m in remaining]

@@ -8,8 +8,10 @@ Uses two endpoint types:
    ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages, downloading attachments, and the two-step outbox send.
-   These REST resource routes (from ``'resources'`` in ``routes.php``) are
+   mailboxes, and messages, downloading attachments, the two-step outbox send, and
+   every write operation (flags, tags, move, delete), none of which has an OCS
+   equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
+   are
    CSRF-gated for browser sessions, but Nextcloud exempts any request carrying the
    ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
    Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
@@ -154,27 +156,40 @@ class MailClient(BaseNextcloudClient):
         # ``_make_request`` (base) already raised on any non-2xx status.
         return response.json()
 
-    async def _api_post(
-        self, path: str, json_data: dict[str, Any] | None = None
+    async def _api_write(
+        self, method: str, path: str, json_data: dict[str, Any] | None = None
     ) -> Any:
-        """POST to a direct API endpoint (CSRF-exempt via the OCS-APIRequest header).
+        """Send a mutating request to a direct API endpoint.
+
+        CSRF-exempt via the OCS-APIRequest header, exactly like the GETs — the
+        Mail app's write routes carry no ``@NoCSRFRequired``, so the header is
+        what makes them reachable with an app password.
 
         Args:
+            method: ``POST``, ``PUT`` or ``DELETE``.
             path: Path relative to :attr:`API_BASE` (e.g. ``/outbox``).
-            json_data: JSON body to send.
+            json_data: JSON body to send, or ``None`` for a bodyless call.
 
         Returns:
-            The parsed JSON response body.
+            The parsed JSON response body, or ``{}`` when there is no body.
         """
+        # Only declare a JSON content type when there is actually a body: the
+        # tag assign/remove and delete routes take none, and announcing
+        # application/json for a bodyless request is misleading.
+        headers = dict(self._API_HEADERS)
+        if json_data is not None:
+            headers["Content-Type"] = "application/json"
+
         response = await self._make_request(
-            "POST",
+            method,
             f"{self.API_BASE}{path}",
             json=json_data,
-            headers={**self._API_HEADERS, "Content-Type": "application/json"},
+            headers=headers,
         )
-        # ``_make_request`` (base) already raised on any non-2xx status. The
-        # outbox send step can legitimately return an empty body (e.g. 204);
-        # don't choke trying to JSON-decode it.
+        # ``_make_request`` (base) already raised on any non-2xx status. Several
+        # write routes legitimately return an empty body (setFlags returns a
+        # bare JSONResponse; the outbox send step can 204), so don't choke
+        # trying to JSON-decode nothing.
         return response.json() if response.content else {}
 
     # ------------------------------------------------------------------
@@ -388,7 +403,7 @@ class MailClient(BaseNextcloudClient):
         if references:
             create_data["inReplyToMessageId"] = references
 
-        create_result = await self._api_post("/outbox", json_data=create_data)
+        create_result = await self._api_write("POST", "/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
         if not outbox_id:
             # Raise (don't return an error dict) so the server tool's
@@ -398,7 +413,9 @@ class MailClient(BaseNextcloudClient):
                 f"Outbox create returned no id; response: {create_result!r}"
             )
 
-        send_result = await self._api_post(f"/outbox/{outbox_id}", json_data={})
+        send_result = await self._api_write(
+            "POST", f"/outbox/{outbox_id}", json_data={}
+        )
 
         return {
             "success": True,
@@ -406,6 +423,118 @@ class MailClient(BaseNextcloudClient):
             "outbox_id": outbox_id,
             "response": send_result,
         }
+
+    async def set_flags(self, message_id: int, flags: dict[str, bool]) -> None:
+        """Set IMAP flags on a message.
+
+        Uses ``PUT /index.php/apps/mail/api/messages/{id}/flags``. Note the body
+        shape: a *map* of flag name → bool, not a list of ``\\Seen``-style IMAP
+        flag names. Only the keys passed are touched; omitted flags are left
+        alone.
+
+        System flags (always applied): ``seen``, ``answered``, ``flagged``,
+        ``deleted``, ``draft``, ``recent``. Any other key is treated as a custom
+        IMAP keyword (e.g. ``$junk``) and is silently ignored by the server
+        unless the mailbox advertises it in ``PERMANENTFLAGS``.
+
+        Args:
+            message_id: The message database ID.
+            flags: Flag name → desired state.
+        """
+        await self._api_write(
+            "PUT", f"/messages/{message_id}/flags", json_data={"flags": flags}
+        )
+
+    async def ensure_tag(
+        self, display_name: str, color: str = "#0082c9"
+    ) -> dict[str, Any]:
+        """Create a mail tag, or return the existing one with that name.
+
+        Uses ``POST /index.php/apps/mail/api/tags``, which is idempotent:
+        ``MailManager::createTag`` derives the IMAP label from the display name
+        and returns the existing row when one matches. That matters because the
+        Mail app exposes **no** tag-listing route — this is the only way to
+        resolve a tag's per-user database ID.
+
+        Display names are normalised into the IMAP label as
+        ``'$' + lowercase(name with spaces as underscores)``, so ``"AI Index"``,
+        ``"ai index"`` and ``"ai_index"`` all resolve to the same tag.
+
+        Args:
+            display_name: Tag display name (max 128 characters).
+            color: Hex colour used only when the tag is created.
+
+        Returns:
+            The tag dict — ``{"id", "displayName", "imapLabel", "color", ...}``.
+            Note this route returns the bare tag, *not* wrapped in ``data`` the
+            way the outbox routes are.
+        """
+        tag = await self._api_write(
+            "POST", "/tags", json_data={"displayName": display_name, "color": color}
+        )
+        # Both callers depend on these: the id addresses the tag in a ``tags:``
+        # listing filter, the imapLabel addresses it in the assign/remove routes.
+        # Fail loudly here rather than KeyError-ing at the use site.
+        if not isinstance(tag, dict) or "id" not in tag or "imapLabel" not in tag:
+            raise RequestError(
+                f"Tag create returned an unusable tag for {display_name!r}: {tag!r}"
+            )
+        return tag
+
+    async def set_tag(self, message_id: int, imap_label: str) -> None:
+        """Assign an existing tag to a message.
+
+        Uses ``PUT /index.php/apps/mail/api/messages/{id}/tags/{imapLabel}``.
+        The label must already exist for this user (see :meth:`ensure_tag`); the
+        server answers 403 for an unknown one.
+
+        Args:
+            message_id: The message database ID.
+            imap_label: The tag's ``imapLabel`` (e.g. ``$vector_index``).
+        """
+        await self._api_write(
+            "PUT", f"/messages/{message_id}/tags/{quote(imap_label, safe='')}"
+        )
+
+    async def remove_tag(self, message_id: int, imap_label: str) -> None:
+        """Remove a tag from a message.
+
+        Uses ``DELETE /index.php/apps/mail/api/messages/{id}/tags/{imapLabel}``.
+
+        Args:
+            message_id: The message database ID.
+            imap_label: The tag's ``imapLabel``.
+        """
+        await self._api_write(
+            "DELETE", f"/messages/{message_id}/tags/{quote(imap_label, safe='')}"
+        )
+
+    async def move_message(self, message_id: int, destination_mailbox_id: int) -> None:
+        """Move a message to another mailbox.
+
+        Uses ``POST /index.php/apps/mail/api/messages/{id}/move``.
+
+        Args:
+            message_id: The message database ID.
+            destination_mailbox_id: Target mailbox database ID.
+        """
+        await self._api_write(
+            "POST",
+            f"/messages/{message_id}/move",
+            json_data={"destFolderId": destination_mailbox_id},
+        )
+
+    async def delete_message(self, message_id: int) -> None:
+        """Delete a message.
+
+        Uses ``DELETE /index.php/apps/mail/api/messages/{id}``. The Mail app
+        moves it to the account's trash mailbox, or expunges it outright when
+        the message is already in trash.
+
+        Args:
+            message_id: The message database ID.
+        """
+        await self._api_write("DELETE", f"/messages/{message_id}")
 
     async def get_message_raw(self, message_id: int) -> str | None:
         """Get the raw RFC 2822 source of a message.
