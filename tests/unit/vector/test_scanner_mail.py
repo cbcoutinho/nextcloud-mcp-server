@@ -67,7 +67,7 @@ async def test_initial_sync_enumerates_accounts_mailboxes_messages(mocker):
         return_value=[{"databaseId": 10}, {"databaseId": 11}]
     )
 
-    async def list_messages(mailbox_id, *, limit):
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         if mailbox_id == 10:
             return [
                 {"databaseId": 100, "dateInt": 1700000000},
@@ -102,9 +102,13 @@ async def test_initial_sync_enumerates_accounts_mailboxes_messages(mocker):
     assert t100.metadata == {"account_id": 1, "mailbox_id": 10}
     # A placeholder is written per message before queueing.
     assert placeholder.await_count == 3
-    # The per-mailbox cap is passed through.
+    # The shared index window is used: per-mailbox cap, no filter, and the
+    # singleton view (threaded would hide every reply — see list_index_window).
     nc_client.mail.list_messages.assert_any_await(
-        10, limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX
+        10,
+        limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter=None,
+        view="singleton",
     )
 
 
@@ -116,7 +120,7 @@ async def test_initial_sync_skips_mailbox_on_list_error(mocker):
         return_value=[{"databaseId": 10}, {"databaseId": 11}]
     )
 
-    async def list_messages(mailbox_id, *, limit):
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         if mailbox_id == 10:
             raise RuntimeError("imap hiccup")
         return [{"databaseId": 200, "dateInt": 1700000002}]
@@ -208,11 +212,14 @@ async def test_incremental_reappeared_message_clears_grace(mocker):
 
 async def test_incremental_deletes_after_grace_period(mocker):
     """An indexed message gone from Nextcloud past the grace period is deleted."""
-    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    _patch_incremental(
+        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
+    )
     # Seed the grace period far in the past so the delta exceeds grace_period.
     scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
-    # Mailbox now returns no messages, so 999 is missing.
-    nc_client = _single_message_client([])
+    # The mailbox still lists other (already up-to-date) mail, so 999 is
+    # genuinely missing rather than the whole listing having failed.
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
     stream = _CollectingStream()
     queued = await scan_mail_messages(
@@ -234,9 +241,11 @@ async def test_incremental_deletes_after_grace_period(mocker):
 
 async def test_incremental_first_missing_starts_grace(mocker):
     """A newly-missing indexed message enters the grace period (no delete yet)."""
-    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
-    # Not previously seen as missing, and the mailbox now returns no messages.
-    nc_client = _single_message_client([])
+    _patch_incremental(
+        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
+    )
+    # Not previously seen as missing; the mailbox still lists other mail.
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
     stream = _CollectingStream()
     queued = await scan_mail_messages(
@@ -251,6 +260,52 @@ async def test_incremental_first_missing_starts_grace(mocker):
     assert queued == 0
     assert stream.tasks == []
     assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_empty_listing_skips_deletion_pass(mocker):
+    """An all-empty listing while an index exists must not evict anything.
+
+    Every mailbox listing failing (Mail app down, mailboxes not yet cached) is
+    indistinguishable in the response from a genuinely emptied account, so the
+    scanner declines to delete rather than wiping a user's whole mail index on a
+    transient outage.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Well past the grace period — only the empty-listing guard holds it back.
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []
+    # Still mid-grace: a later scan that lists successfully can still delete it.
+    assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_empty_listing_with_empty_index_is_not_guarded(mocker):
+    """Nothing indexed yet + nothing listed is the normal empty case, not a fault."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []
 
 
 async def test_grace_key_isolated_by_doc_type(mocker):

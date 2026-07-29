@@ -1,21 +1,66 @@
-"""Shared reconstruction of mail-message content for indexing and context.
+"""Shared mail-message plumbing for indexing, verification and context.
 
-The vector processor (index-time) and search context expansion (query-time)
-must build the *identical* text for a mail message so chunk offsets align.
-Keeping that logic here — rather than copy-pasted in both call sites — is the
-single source of truth for the reconstruction.
+Two things live here, both because *two* call sites must agree exactly:
+
+1. Content reconstruction (:func:`build_mail_content`) — the vector processor
+   (index-time) and search context expansion (query-time) must build the
+   identical text for a message so chunk offsets align.
+2. The listing window (:func:`list_index_window`) — the scanner (index window)
+   and the verifier (presence window) must list messages identically, or the
+   verifier evicts messages the scanner legitimately indexed.
 """
 
 from typing import Any
 
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 
-# Newest-N messages indexed (and verified) per mailbox. This equals the Mail
-# OCS API's per-request maximum (it clamps ``limit`` to 1..100), so it cannot be
-# raised without adding cursor pagination — hence a documented constant rather
-# than a config knob that would silently cap at 100. Shared by the scanner
-# (index window) and the verifier (presence window) so they stay consistent.
+# Messages indexed (and verified) per mailbox. This equals the Mail API's
+# per-request maximum (it clamps ``limit`` to 1..100), so it cannot be raised
+# without adding cursor pagination — hence a documented constant rather than a
+# config knob that would silently cap at 100. Shared by the scanner (index
+# window) and the verifier (presence window) so they stay consistent.
+#
+# Which end of the mailbox this window covers is the *user's* Mail ``sort-order``
+# preference, not ours: newest-first by default, oldest-first if they changed it.
 MAIL_SCAN_MAX_PER_MAILBOX = 100
+
+
+async def list_index_window(
+    mail_client: Any,
+    mailbox_id: int,
+    index_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    """List the messages of one mailbox that make up the index window.
+
+    The single listing call shared by the scanner (which decides what to index)
+    and the verifier (which decides what is still present). Pinning the limit,
+    the view and the filter in one place is what keeps those two windows from
+    drifting apart — a message the scanner indexes but the verifier cannot see
+    is dropped from search results and evicted from the index.
+
+    ``view="singleton"`` is load-bearing, not a default. The Mail app coerces
+    anything that is not literally ``"singleton"`` to its threaded view, which
+    self-joins the message table and returns only the newest message of each
+    thread — so thread replies would never be indexed, and (with a filter) a
+    matching message would silently drop out of the listing as soon as a reply
+    arrived, because the thread self-join carries no filter predicate.
+
+    Args:
+        mail_client: A ``MailClient`` (or the ``mail`` attribute of a client
+            protocol — typed loosely so both pass).
+        mailbox_id: Mailbox database ID to list.
+        index_filter: Optional Mail filter string (see
+            :func:`mail_index_filter`); ``None`` lists every message.
+
+    Returns:
+        Message summary dicts, at most ``MAIL_SCAN_MAX_PER_MAILBOX``.
+    """
+    return await mail_client.list_messages(
+        mailbox_id,
+        limit=MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter=index_filter,
+        view="singleton",
+    )
 
 
 def format_mail_addresses(addrs: list[dict[str, Any]] | None) -> str:

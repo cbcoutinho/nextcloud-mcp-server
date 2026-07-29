@@ -41,7 +41,10 @@ from nextcloud_mcp_server.server.tag_exclusion import (
 )
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
-from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
+from nextcloud_mcp_server.vector.mail_content import (
+    MAIL_SCAN_MAX_PER_MAILBOX,
+    list_index_window,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     query_document_metadata,
     write_placeholder_point,
@@ -1863,14 +1866,14 @@ async def scan_news_items(
     return queued
 
 
-# Newest-N messages indexed per mailbox (= the Mail OCS per-request maximum;
-# imported from mail_content so the scanner index window and the search-time
-# verifier presence window stay identical). Older messages age out of the index
-# as newer ones arrive — the deletion-tracking pass below evicts them, the same
-# way it handles actually-deleted messages. Going beyond 100 would require
-# cursor pagination, so the value is fixed rather than configurable.
+# The per-mailbox index window is ``list_index_window`` (imported from
+# mail_content), which the search-time verifier calls too so the two windows stay
+# identical. Messages that fall out of the window as newer ones arrive are evicted
+# by the deletion-tracking pass below, the same way actually-deleted messages are.
+# Going beyond MAIL_SCAN_MAX_PER_MAILBOX would require cursor pagination, so the
+# value is fixed rather than configurable.
 #
-# Per-process record of (user_id, mailbox_id) for which the newest-N cap has
+# Per-process record of (user_id, mailbox_id) for which the window cap has
 # already been logged, so the "older mail not indexed" notice is emitted once at
 # info level (discoverable) rather than on every scan tick (which would flood
 # multi-tenant logs). Insertion-ordered dict + bounded eviction (mirrors
@@ -1905,12 +1908,13 @@ async def scan_mail_messages(
     """
     Scan a user's Mail messages and queue changed messages for indexing.
 
-    Enumerates accounts → mailboxes → newest ``MAIL_SCAN_MAX_PER_MAILBOX``
-    messages per mailbox. Email is immutable, so a message's ``dateInt`` (sent
+    Enumerates accounts → mailboxes → ``list_index_window`` per mailbox (at most
+    ``MAIL_SCAN_MAX_PER_MAILBOX`` messages, the same call the search-time
+    verifier makes). Email is immutable, so a message's ``dateInt`` (sent
     timestamp) is used as the change-detection ``modified_at`` — a message is
-    indexed once and not re-sent. Messages that drop out of the newest-N window
-    (or are deleted) are evicted via the deletion-tracking pass, keeping the
-    index bounded to recent mail.
+    indexed once and not re-sent. Messages that drop out of the window (or are
+    deleted) are evicted via the deletion-tracking pass, keeping the index
+    bounded.
 
     The MCP server never speaks IMAP: listing reads the Mail app's DB-cached
     envelopes, and the body fetch (in the processor) goes through the Mail app's
@@ -1974,9 +1978,7 @@ async def scan_mail_messages(
             if mailbox_id is None:
                 continue
             try:
-                messages = await nc_client.mail.list_messages(
-                    mailbox_id, limit=MAIL_SCAN_MAX_PER_MAILBOX
-                )
+                messages = await list_index_window(nc_client.mail, mailbox_id)
             except Exception as e:
                 logger.warning(
                     "[SCAN-%s] Failed to list messages for mailbox %s: %s",
@@ -2100,8 +2102,25 @@ async def scan_mail_messages(
     )
     record_vector_sync_scan(message_count)
 
-    # Check for deleted / aged-out messages (not initial sync)
-    if not initial_sync:
+    # Check for deleted / aged-out messages (not initial sync).
+    #
+    # A listing that came back completely empty while we hold an index is
+    # treated as suspect, not as "everything was deleted": every mailbox listing
+    # failing (Mail app down, mailboxes not yet cached) looks identical in the
+    # response to a genuinely emptied account, and the conservative reading is
+    # the only safe one — the alternative evicts a user's entire mail index on a
+    # transient outage and re-embeds it on recovery. Stale points that survive
+    # this guard are storage cost, not exposure: verify-on-read still drops and
+    # evicts them on any search that would surface them.
+    if message_count == 0 and indexed_message_ids:
+        logger.warning(
+            "[SCAN-%s] Mail listing returned zero messages for %s while %s are "
+            "indexed; skipping the deletion pass this cycle",
+            scan_id,
+            user_id,
+            len(indexed_message_ids),
+        )
+    elif not initial_sync:
         grace_period = settings.vector_sync_scan_interval * 1.5
         current_time = time.time()
 

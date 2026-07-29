@@ -53,7 +53,7 @@ from nextcloud_mcp_server.search.algorithms import (
 )
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.eviction import delete_document_points
-from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
+from nextcloud_mcp_server.vector.mail_content import list_index_window
 
 logger = logging.getLogger(__name__)
 
@@ -505,9 +505,9 @@ async def _verify_mail_messages(
     ``mail.get_message`` triggers a server-side IMAP body fetch, so a per-result
     verify would issue one IMAP FETCH per hit — multiple seconds for an active
     inbox. Instead we batch by ``mailbox_id`` (propagated into ``result.metadata``
-    from the Qdrant payload) and call ``mail.list_messages`` once per mailbox,
+    from the Qdrant payload) and call ``list_index_window`` once per mailbox,
     which reads the Mail app's DB cache (no IMAP). A message is accessible iff it
-    is present in its mailbox's newest-N listing — the same window the scanner
+    is present in that listing — by construction the *same* window the scanner
     indexes, so anything aged out of the window is being evicted anyway.
 
     Failure policy mirrors ``_verify_news_items``: a definitive 403/404 for a
@@ -548,9 +548,7 @@ async def _verify_mail_messages(
     async def check_mailbox(mailbox_id: int, mb_results: list[SearchResult]) -> None:
         async with semaphore:
             try:
-                messages = await client.mail.list_messages(
-                    mailbox_id, limit=MAIL_SCAN_MAX_PER_MAILBOX
-                )
+                messages = await list_index_window(client.mail, mailbox_id)
             except HTTPStatusError as e:
                 if _is_definitive_404_or_403(e):
                     # Mailbox/account gone — all its results are inaccessible.

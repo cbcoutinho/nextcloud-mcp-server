@@ -1,18 +1,52 @@
-"""Unit tests for the shared mail content reconstruction.
+"""Unit tests for the shared mail content reconstruction and listing window.
 
 ``build_mail_content`` is the single source of truth for index-time and
 query-time chunk offsets; these tests pin the exact layout so a change to the
 separators or header order can't silently misalign every indexed message.
+``list_index_window`` is the equivalent for the scanner/verifier listing.
 """
+
+from unittest.mock import AsyncMock
 
 import pytest
 
 from nextcloud_mcp_server.vector.mail_content import (
+    MAIL_SCAN_MAX_PER_MAILBOX,
     build_mail_content,
     format_mail_addresses,
+    list_index_window,
 )
 
 pytestmark = pytest.mark.unit
+
+
+async def test_list_index_window_pins_limit_and_singleton_view():
+    """The window must request singleton view — threaded hides every reply.
+
+    The Mail app coerces any view that isn't literally "singleton" to its
+    threaded view, which returns only the newest message per thread.
+    """
+    mail_client = AsyncMock()
+    mail_client.list_messages.return_value = [{"databaseId": 1}]
+
+    result = await list_index_window(mail_client, 10)
+
+    assert result == [{"databaseId": 1}]
+    mail_client.list_messages.assert_awaited_once_with(
+        10,
+        limit=MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter=None,
+        view="singleton",
+    )
+
+
+async def test_list_index_window_passes_filter_through():
+    mail_client = AsyncMock()
+    mail_client.list_messages.return_value = []
+
+    await list_index_window(mail_client, 10, "tags:7")
+
+    assert mail_client.list_messages.await_args.kwargs["search_filter"] == "tags:7"
 
 
 def test_format_addresses_variants():

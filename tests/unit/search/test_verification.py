@@ -253,8 +253,12 @@ async def test_verify_mail_batches_one_list_per_mailbox(mocker):
     )
     # 10 and 30 present; 20 absent (deleted/aged out) -> dropped.
     assert result == {"10", "30"}
-    # One DB-cached list call for the single mailbox, not one per result.
-    list_messages.assert_awaited_once_with(10, limit=MAIL_SCAN_MAX_PER_MAILBOX)
+    # One DB-cached list call for the single mailbox, not one per result — and
+    # it must be the *same* window the scanner indexes (same limit, same
+    # singleton view), or the verifier evicts messages the scanner just indexed.
+    list_messages.assert_awaited_once_with(
+        10, limit=MAIL_SCAN_MAX_PER_MAILBOX, search_filter=None, view="singleton"
+    )
 
 
 @pytest.mark.unit
