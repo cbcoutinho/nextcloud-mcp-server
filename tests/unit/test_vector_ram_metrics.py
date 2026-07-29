@@ -126,7 +126,7 @@ class TestRecordIngestVectorCost:
             monkeypatch.setattr(proc, name, mock)
         monkeypatch.setattr(
             proc,
-            "get_embedding_service",
+            "get_provider",
             lambda: SimpleNamespace(get_dimension=lambda: 1024),
         )
         return s
@@ -162,7 +162,7 @@ class TestRecordIngestVectorCost:
         # A failure in the hook must not break indexing — it is swallowed+logged.
         monkeypatch.setattr(
             proc,
-            "get_embedding_service",
+            "get_provider",
             MagicMock(side_effect=RuntimeError("provider down")),
         )
         density = MagicMock()

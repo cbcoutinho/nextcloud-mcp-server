@@ -221,9 +221,10 @@ Simple (fallback, no config needed):
 
 **Auto-Detection Priority:** Bedrock → Ollama → Simple
 
-**Backward Compatibility:**
-- Old code using `nextcloud_mcp_server.embedding.get_embedding_service()` still works
-- `EmbeddingService` now wraps `get_provider()` internally
+**Note:** the legacy `nextcloud_mcp_server.embedding` package and its
+`get_embedding_service()` wrapper were removed — call `get_provider()` directly.
+`BM25SparseEmbeddingProvider` / `get_bm25_service()` and the embedding-gateway
+clients live under `providers/` (`bm25.py`, `gateway.py`, `gateway_batch.py`).
 
 **For Details:** See `docs/ADR-015-unified-provider-architecture.md`
 

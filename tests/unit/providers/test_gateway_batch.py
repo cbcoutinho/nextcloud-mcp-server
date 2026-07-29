@@ -9,7 +9,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from nextcloud_mcp_server.embedding import gateway_batch_client as gbc
+from nextcloud_mcp_server.providers import gateway_batch as gbc
 
 pytestmark = pytest.mark.unit
 

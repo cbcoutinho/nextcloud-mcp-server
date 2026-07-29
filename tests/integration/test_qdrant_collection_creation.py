@@ -7,8 +7,6 @@ These tests validate that:
 4. Proper error handling and logging
 """
 
-from unittest.mock import Mock
-
 import pytest
 from qdrant_client.models import VectorParams
 
@@ -58,16 +56,13 @@ async def test_collection_auto_created_on_first_access(monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
     )
 
-    # Mock embedding service - must have .provider attribute
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    # The dense slot is sized from the provider's dimension.
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service = Mock()
-    mock_embedding_service.provider = mock_provider
-    mock_embedding_service.get_dimension = lambda: mock_provider.get_dimension()
+    mock_provider = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider,
     )
 
     # Get client (should trigger collection creation)
@@ -102,16 +97,13 @@ async def test_existing_collection_reused(monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
     )
 
-    # Mock embedding service - must have .provider attribute
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    # The dense slot is sized from the provider's dimension.
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service = Mock()
-    mock_embedding_service.provider = mock_provider
-    mock_embedding_service.get_dimension = lambda: mock_provider.get_dimension()
+    mock_provider = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider,
     )
 
     # First call - creates collection
@@ -156,15 +148,12 @@ async def test_dimension_mismatch_detected(monkeypatch, tmp_path):
     )
 
     # First embedding service: 384 dimensions
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider_1 = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service_1 = Mock()
-    mock_embedding_service_1.provider = mock_provider_1
-    mock_embedding_service_1.get_dimension = lambda: mock_provider_1.get_dimension()
+    mock_provider_1 = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service_1,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider_1,
     )
 
     # First call - creates collection with 384 dimensions
@@ -184,13 +173,10 @@ async def test_dimension_mismatch_detected(monkeypatch, tmp_path):
     qdrant_module._qdrant_client = None
 
     # Change embedding service to different dimension (768)
-    mock_provider_2 = SimpleEmbeddingProvider(dimension=768)
-    mock_embedding_service_2 = Mock()
-    mock_embedding_service_2.provider = mock_provider_2
-    mock_embedding_service_2.get_dimension = lambda: mock_provider_2.get_dimension()
+    mock_provider_2 = SimpleProvider(dimension=768)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service_2,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider_2,
     )
 
     # Second call - should detect dimension mismatch and raise error
@@ -220,16 +206,13 @@ async def test_idempotent_initialization(monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
     )
 
-    # Mock embedding service - must have .provider attribute
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    # The dense slot is sized from the provider's dimension.
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service = Mock()
-    mock_embedding_service.provider = mock_provider
-    mock_embedding_service.get_dimension = lambda: mock_provider.get_dimension()
+    mock_provider = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider,
     )
 
     # Call multiple times
@@ -265,16 +248,13 @@ async def test_collection_name_generation(monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
     )
 
-    # Mock embedding service - must have .provider attribute
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    # The dense slot is sized from the provider's dimension.
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service = Mock()
-    mock_embedding_service.provider = mock_provider
-    mock_embedding_service.get_dimension = lambda: mock_provider.get_dimension()
+    mock_provider = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider,
     )
 
     # Get client
@@ -305,16 +285,13 @@ async def test_collection_uses_cosine_distance(monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
     )
 
-    # Mock embedding service - must have .provider attribute
-    from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+    # The dense slot is sized from the provider's dimension.
+    from nextcloud_mcp_server.providers import SimpleProvider
 
-    mock_provider = SimpleEmbeddingProvider(dimension=384)
-    mock_embedding_service = Mock()
-    mock_embedding_service.provider = mock_provider
-    mock_embedding_service.get_dimension = lambda: mock_provider.get_dimension()
+    mock_provider = SimpleProvider(dimension=384)
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: mock_embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: mock_provider,
     )
 
     # Get client (creates collection)

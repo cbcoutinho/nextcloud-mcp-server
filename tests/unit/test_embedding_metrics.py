@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 
 
 class TestProviderFamily:
-    """Provider-family detection mirrors ProviderRegistry priority."""
+    """Provider-family detection mirrors create_provider() priority."""
 
     def test_bedrock(self):
         assert (

@@ -19,7 +19,7 @@ from qdrant_client.models import (
 )
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.providers import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -750,13 +750,14 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # configured the embedding service resolves to the local
             # SimpleProvider (deterministic, no network), so this stays correct
             # for airgapped deployments that only ever use the keyword tag.
-            embedding_service = get_embedding_service()
+            provider = get_provider()
 
-            # Detect dimension dynamically (for OllamaEmbeddingProvider)
-            if hasattr(embedding_service.provider, "_detect_dimension"):
-                await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
+            # Detect dimension dynamically (Ollama/Bedrock/gateway providers
+            # only learn it from the service).
+            if hasattr(provider, "_detect_dimension"):
+                await provider._detect_dimension()  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
 
-            expected_dimension = embedding_service.get_dimension()
+            expected_dimension = provider.get_dimension()
 
             # Existence check folded into the get_collection() call.
             #

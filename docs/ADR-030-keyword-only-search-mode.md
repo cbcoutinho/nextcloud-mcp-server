@@ -34,7 +34,7 @@ embedding model.
 
 The enabling fact: **BM25 sparse vectors need no external endpoint.** They are
 computed locally (`vector/processor.py` `generate_sparse_embeddings`,
-`embedding/service.py` `get_bm25_service`). So we can keep the entire Qdrant
+`providers/bm25.py` `get_bm25_service`). So we can keep the entire Qdrant
 ingestion path — including verify-on-read ACLs (ADR-019) — and just skip the
 dense step at ingestion and query.
 

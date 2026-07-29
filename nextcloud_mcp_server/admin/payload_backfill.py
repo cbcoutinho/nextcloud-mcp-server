@@ -28,7 +28,7 @@ from nextcloud_mcp_server.api.management import (
     require_admin_scope,
 )
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.collection_metadata import (
     env_default_metadata,
@@ -92,7 +92,7 @@ async def handle_payload_backfill(request: Request) -> JSONResponse:
     # for this collection even without a control plane.
     sentinel_ok = True
     try:
-        dimension = get_embedding_service().get_dimension()
+        dimension = get_provider().get_dimension()
         await upsert_sentinel(
             client,
             collection,

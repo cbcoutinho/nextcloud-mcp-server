@@ -127,7 +127,7 @@ class TestEstimateHybridVectorBytes:
         qc.count.return_value = _count_obj(600)
         monkeypatch.setattr(
             mp,
-            "get_embedding_service",
+            "get_provider",
             lambda: SimpleNamespace(get_dimension=lambda: 1024),
         )
 
@@ -155,7 +155,7 @@ class TestPublishVectorRamGauges:
         # Dimension is a fixed 1024 for the estimate math.
         monkeypatch.setattr(
             mp,
-            "get_embedding_service",
+            "get_provider",
             lambda: SimpleNamespace(get_dimension=lambda: 1024),
         )
 
@@ -603,7 +603,7 @@ class TestPublishDeadLetteredGauge:
         )
         monkeypatch.setattr(
             mp,
-            "get_embedding_service",
+            "get_provider",
             lambda: SimpleNamespace(get_dimension=lambda: 1024),
         )
 

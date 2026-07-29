@@ -198,9 +198,7 @@ async def test_write_placeholder_payload_includes_instance_id(monkeypatch):
 
     monkeypatch.setattr(placeholder_module, "get_qdrant_client", fake_get_qdrant_client)
     monkeypatch.setattr(placeholder_module, "get_settings", lambda: fake_settings)
-    monkeypatch.setattr(
-        placeholder_module, "get_embedding_service", lambda: fake_embedding
-    )
+    monkeypatch.setattr(placeholder_module, "get_provider", lambda: fake_embedding)
 
     await placeholder_module.write_placeholder_point(
         doc_id="d-42",

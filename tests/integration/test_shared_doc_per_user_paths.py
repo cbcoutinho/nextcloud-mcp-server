@@ -31,7 +31,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.search.access_filter import (
     build_base_filter_conditions,
     clear_accessible_owners_cache,
@@ -134,7 +134,7 @@ async def path_store(monkeypatch):
 async def seeded(monkeypatch, shared_file):
     """In-memory Qdrant carrying alice's owner-pinned point with folder_ancestors."""
     file_id, folder_id, alice_path, _folder = shared_file
-    provider = SimpleEmbeddingProvider(dimension=384)
+    provider = SimpleProvider(dimension=384)
     client = AsyncQdrantClient(":memory:")
     collection = get_settings().get_collection_name()
     await client.create_collection(
@@ -171,7 +171,7 @@ async def seeded(monkeypatch, shared_file):
         AsyncMock(return_value=client),
     )
     monkeypatch.setattr(
-        "nextcloud_mcp_server.search.semantic.get_embedding_service",
+        "nextcloud_mcp_server.search.semantic.get_provider",
         lambda: provider,
     )
     monkeypatch.setattr(

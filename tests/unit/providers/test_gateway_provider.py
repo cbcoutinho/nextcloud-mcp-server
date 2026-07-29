@@ -12,11 +12,11 @@ import httpx
 import pytest
 
 from nextcloud_mcp_server.config import Settings
-from nextcloud_mcp_server.embedding.gateway_client import (
+from nextcloud_mcp_server.providers.gateway import (
     GatewayProvider,
     GatewayTokenProvider,
 )
-from nextcloud_mcp_server.providers.registry import ProviderRegistry, reset_provider
+from nextcloud_mcp_server.providers.registry import create_provider, reset_provider
 from nextcloud_mcp_server.providers.simple import SimpleProvider
 
 
@@ -34,7 +34,7 @@ def test_gateway_selected_unauthenticated(monkeypatch):
         embedding_gateway_model="mistral/mistral-embed",
     )
     _patch_settings(monkeypatch, settings)
-    provider = ProviderRegistry.create_provider()
+    provider = create_provider()
     assert isinstance(provider, GatewayProvider)
     assert provider.embedding_model == "mistral/mistral-embed"
     assert provider.supports_embeddings is True
@@ -51,7 +51,7 @@ def test_gateway_selected_with_m2m_oidc(monkeypatch):
         embedding_gateway_scope="astrolabe-embedding-gateway/embed",
     )
     _patch_settings(monkeypatch, settings)
-    provider = ProviderRegistry.create_provider()
+    provider = create_provider()
     assert isinstance(provider, GatewayProvider)
     assert isinstance(provider._token_provider, GatewayTokenProvider)
 
@@ -68,13 +68,13 @@ def test_partial_m2m_creds_rejected():
 def test_autodetect_default_does_not_pick_gateway(monkeypatch):
     settings = Settings()
     _patch_settings(monkeypatch, settings)
-    assert isinstance(ProviderRegistry.create_provider(), SimpleProvider)
+    assert isinstance(create_provider(), SimpleProvider)
 
 
 def test_openai_creds_do_not_trigger_gateway(monkeypatch):
     settings = Settings(openai_api_key="sk-test")
     _patch_settings(monkeypatch, settings)
-    assert not isinstance(ProviderRegistry.create_provider(), GatewayProvider)
+    assert not isinstance(create_provider(), GatewayProvider)
 
 
 async def test_token_provider_caches_and_refreshes(monkeypatch):

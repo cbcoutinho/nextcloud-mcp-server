@@ -64,7 +64,7 @@ def _make_search_deps(monkeypatch):
     svc = MagicMock()
     svc.embed_with_usage = embed
     monkeypatch.setattr(
-        "nextcloud_mcp_server.search.bm25_hybrid.get_embedding_service", lambda: svc
+        "nextcloud_mcp_server.search.bm25_hybrid.get_provider", lambda: svc
     )
 
     bm25 = MagicMock()

@@ -8,12 +8,12 @@ from qdrant_client import models
 from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
     record_embedding_tokens,
     record_qdrant_operation,
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.providers import get_bm25_service, get_provider
 from nextcloud_mcp_server.search.access_filter import build_base_filter_conditions
 from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
@@ -90,14 +90,12 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         (Deck #67). Reuse the first call's embedding + token count so the query is
         embedded — and metered — exactly once.
         """
-        with trace_operation("search.get_embedding_service"):
-            embedding_service = get_embedding_service()
+        with trace_operation("search.get_provider"):
+            provider = get_provider()
         with trace_operation("search.dense_embedding"):
             if self.query_embedding is not None and self._embedded_query == query:
                 return self.query_embedding
-            dense_embedding, query_tokens = await embedding_service.embed_with_usage(
-                query
-            )
+            dense_embedding, query_tokens = await provider.embed_with_usage(query)
             # Store for reuse by callers (e.g. the PCA projection in
             # vector/visualization.py) and for the usage-metering hook in
             # server/semantic.py (token count).

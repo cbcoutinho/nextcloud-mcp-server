@@ -1655,8 +1655,8 @@ class Settings:
         """
         Get the active embedding model name based on provider priority.
 
-        Priority order (same as ProviderRegistry): bedrock → openai → mistral →
-        ollama → simple (returns "simple-{dimension}").
+        Priority order (same as providers.create_provider): bedrock → openai →
+        mistral → ollama → simple (returns "simple-{dimension}").
 
         Returns:
             Active embedding model name

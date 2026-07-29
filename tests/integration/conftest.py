@@ -34,16 +34,15 @@ async def reset_all_singletons():
     # Import all modules with singletons
     import nextcloud_mcp_server.app as app_module
     import nextcloud_mcp_server.auth.client_registry as client_registry_module
-    import nextcloud_mcp_server.embedding.service as embedding_module
     import nextcloud_mcp_server.observability.tracing as tracing_module
+    import nextcloud_mcp_server.providers.bm25 as bm25_module
     import nextcloud_mcp_server.providers.registry as registry_module
     import nextcloud_mcp_server.vector.qdrant_client as qdrant_module
 
     # Store originals for restoration after test
     originals = {
         "qdrant_client": qdrant_module._qdrant_client,
-        "embedding_service": embedding_module._embedding_service,
-        "bm25_service": embedding_module._bm25_service,
+        "bm25_service": bm25_module._bm25_service,
         "provider": registry_module._provider,
         "vector_sync_state": (
             app_module._vector_sync_state.document_send_stream,
@@ -69,8 +68,7 @@ async def reset_all_singletons():
 
     # Reset all singletons to None/fresh state
     qdrant_module._qdrant_client = None
-    embedding_module._embedding_service = None
-    embedding_module._bm25_service = None
+    bm25_module._bm25_service = None
     registry_module._provider = None
     app_module._vector_sync_state.document_send_stream = None
     app_module._vector_sync_state.document_receive_stream = None
@@ -92,8 +90,7 @@ async def reset_all_singletons():
 
     # Restore originals
     qdrant_module._qdrant_client = originals["qdrant_client"]
-    embedding_module._embedding_service = originals["embedding_service"]
-    embedding_module._bm25_service = originals["bm25_service"]
+    bm25_module._bm25_service = originals["bm25_service"]
     registry_module._provider = originals["provider"]
     (
         app_module._vector_sync_state.document_send_stream,

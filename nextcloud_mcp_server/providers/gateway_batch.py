@@ -15,7 +15,7 @@ The gateway is a **stateless passthrough** to Mistral's Batch API — the
 
 This client submits exactly **one document per job** (the v1 unit; coalescing N
 docs/job is a follow-up). Auth + ``/v1`` base-url handling mirror the synchronous
-:class:`~nextcloud_mcp_server.embedding.gateway_client.GatewayProvider` /
+:class:`~nextcloud_mcp_server.providers.gateway.GatewayProvider` /
 ``_GatewayOcrBackend`` — same M2M :class:`GatewayTokenProvider` bearer, no
 provider keys in the pod.
 """
@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from .gateway_client import GatewayTokenProvider
+from .gateway import GatewayTokenProvider
 
 logger = logging.getLogger(__name__)
 

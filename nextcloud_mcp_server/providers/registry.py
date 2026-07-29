@@ -13,142 +13,126 @@ from .simple import SimpleProvider
 logger = logging.getLogger(__name__)
 
 
-class ProviderRegistry:
+def create_provider() -> Provider:
     """
-    Registry for provider auto-detection and instantiation.
+    Auto-detect and create provider based on configured settings.
 
-    Reads configuration via dynaconf-backed Settings (see ``config.py``).
-    Checks provider settings in priority order and creates the appropriate
-    provider:
+    Settings are sourced via :func:`nextcloud_mcp_server.config.get_settings`,
+    which reads from settings files and environment variables (env vars
+    always win, see ADR-024/025).
 
-    1. Bedrock (``AWS_REGION`` or ``BEDROCK_EMBEDDING_MODEL``)
-    2. OpenAI (``OPENAI_API_KEY``)
-    3. Mistral (``MISTRAL_API_KEY``)
-    4. Ollama (``OLLAMA_BASE_URL``)
-    5. Simple (fallback for testing/development)
+    Priority order:
+
+    1. Bedrock - if ``aws_region`` or ``bedrock_embedding_model`` is set
+    2. OpenAI - if ``openai_api_key`` is set
+    3. Mistral - if ``mistral_api_key`` is set
+    4. Ollama - if ``ollama_base_url`` is set
+    5. Simple - fallback for testing/development
+
+    Returns:
+        Provider instance
     """
+    settings = get_settings()
 
-    @staticmethod
-    def create_provider() -> Provider:
-        """
-        Auto-detect and create provider based on configured settings.
-
-        Settings are sourced via :func:`nextcloud_mcp_server.config.get_settings`,
-        which reads from settings files and environment variables (env vars
-        always win, see ADR-024/025).
-
-        Priority order:
-
-        1. Bedrock - if ``aws_region`` or ``bedrock_embedding_model`` is set
-        2. OpenAI - if ``openai_api_key`` is set
-        3. Mistral - if ``mistral_api_key`` is set
-        4. Ollama - if ``ollama_base_url`` is set
-        5. Simple - fallback for testing/development
-
-        Returns:
-            Provider instance
-        """
-        settings = get_settings()
-
-        # 0. Gateway (manual-only; never autodetected). When
-        #    EMBEDDING_PROVIDER=gateway, bypass the autodetect chain entirely
-        #    and route embeddings through the Astrolabe Cloud embedding gateway
-        #    (design §10.1/§10.2). Lazy import to avoid an import cycle
-        #    (embedding/gateway_client → providers/openai → ... → registry).
-        if settings.embedding_provider == "gateway":
-            from ..embedding.gateway_client import (  # noqa: PLC0415
-                GatewayProvider,
-                GatewayTokenProvider,
-            )
-
-            # Settings.__post_init__ guarantees the URL is set when the
-            # provider is gateway; assert narrows the type for the checker.
-            assert settings.embedding_gateway_url is not None
-            # __post_init__ enforces all-or-nothing on the M2M creds, so
-            # checking one is enough to know the full triple is present.
-            token_provider = None
-            if settings.embedding_gateway_client_id:
-                assert settings.embedding_gateway_token_url is not None
-                assert settings.embedding_gateway_client_secret is not None
-                token_provider = GatewayTokenProvider(
-                    token_url=settings.embedding_gateway_token_url,
-                    client_id=settings.embedding_gateway_client_id,
-                    client_secret=settings.embedding_gateway_client_secret,
-                    scope=settings.embedding_gateway_scope,
-                )
-            logger.info(
-                "Using embedding gateway provider: url=%s, model=%s, auth=%s",
-                settings.embedding_gateway_url,
-                settings.embedding_gateway_model,
-                "oidc-m2m" if token_provider else "none",
-            )
-            return GatewayProvider(
-                base_url=settings.embedding_gateway_url,
-                embedding_model=settings.embedding_gateway_model,
-                token_provider=token_provider,
-            )
-
-        # 1. Bedrock
-        if settings.aws_region or settings.bedrock_embedding_model:
-            logger.info(
-                "Using Bedrock provider: region=%s, embedding_model=%s",
-                settings.aws_region,
-                settings.bedrock_embedding_model,
-            )
-            return BedrockProvider(
-                region_name=settings.aws_region,
-                embedding_model=settings.bedrock_embedding_model,
-                aws_access_key_id=settings.aws_access_key_id,
-                aws_secret_access_key=settings.aws_secret_access_key,
-            )
-
-        # 2. OpenAI
-        if settings.openai_api_key:
-            logger.info(
-                "Using OpenAI provider: base_url=%s, embedding_model=%s",
-                settings.openai_base_url or "default",
-                settings.openai_embedding_model,
-            )
-            return OpenAIProvider(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-                embedding_model=settings.openai_embedding_model,
-            )
-
-        # 3. Mistral
-        if settings.mistral_api_key:
-            logger.info(
-                "Using Mistral provider: base_url=%s, embedding_model=%s",
-                settings.mistral_base_url or "default",
-                settings.mistral_embedding_model,
-            )
-            return MistralProvider(
-                api_key=settings.mistral_api_key,
-                base_url=settings.mistral_base_url,
-                embedding_model=settings.mistral_embedding_model,
-            )
-
-        # 4. Ollama
-        if settings.ollama_base_url:
-            logger.info(
-                "Using Ollama provider: %s, embedding_model=%s",
-                settings.ollama_base_url,
-                settings.ollama_embedding_model,
-            )
-            return OllamaProvider(
-                base_url=settings.ollama_base_url,
-                embedding_model=settings.ollama_embedding_model,
-                verify_ssl=settings.ollama_verify_ssl,
-            )
-
-        # 5. Simple (fallback)
-        logger.warning(
-            "No provider configured (AWS_REGION, OPENAI_API_KEY, "
-            "MISTRAL_API_KEY, OLLAMA_BASE_URL not set). "
-            "Using SimpleProvider for testing/development. "
-            "For production, configure Bedrock, OpenAI, Mistral, or Ollama."
+    # 0. Gateway (manual-only; never autodetected). When
+    #    EMBEDDING_PROVIDER=gateway, bypass the autodetect chain entirely
+    #    and route embeddings through the Astrolabe Cloud embedding gateway
+    #    (design §10.1/§10.2). Lazy import to avoid an import cycle
+    #    (providers/gateway → providers/openai → ... → registry).
+    if settings.embedding_provider == "gateway":
+        from .gateway import (  # noqa: PLC0415
+            GatewayProvider,
+            GatewayTokenProvider,
         )
-        return SimpleProvider(dimension=settings.simple_embedding_dimension)
+
+        # Settings.__post_init__ guarantees the URL is set when the
+        # provider is gateway; assert narrows the type for the checker.
+        assert settings.embedding_gateway_url is not None
+        # __post_init__ enforces all-or-nothing on the M2M creds, so
+        # checking one is enough to know the full triple is present.
+        token_provider = None
+        if settings.embedding_gateway_client_id:
+            assert settings.embedding_gateway_token_url is not None
+            assert settings.embedding_gateway_client_secret is not None
+            token_provider = GatewayTokenProvider(
+                token_url=settings.embedding_gateway_token_url,
+                client_id=settings.embedding_gateway_client_id,
+                client_secret=settings.embedding_gateway_client_secret,
+                scope=settings.embedding_gateway_scope,
+            )
+        logger.info(
+            "Using embedding gateway provider: url=%s, model=%s, auth=%s",
+            settings.embedding_gateway_url,
+            settings.embedding_gateway_model,
+            "oidc-m2m" if token_provider else "none",
+        )
+        return GatewayProvider(
+            base_url=settings.embedding_gateway_url,
+            embedding_model=settings.embedding_gateway_model,
+            token_provider=token_provider,
+        )
+
+    # 1. Bedrock
+    if settings.aws_region or settings.bedrock_embedding_model:
+        logger.info(
+            "Using Bedrock provider: region=%s, embedding_model=%s",
+            settings.aws_region,
+            settings.bedrock_embedding_model,
+        )
+        return BedrockProvider(
+            region_name=settings.aws_region,
+            embedding_model=settings.bedrock_embedding_model,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+        )
+
+    # 2. OpenAI
+    if settings.openai_api_key:
+        logger.info(
+            "Using OpenAI provider: base_url=%s, embedding_model=%s",
+            settings.openai_base_url or "default",
+            settings.openai_embedding_model,
+        )
+        return OpenAIProvider(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            embedding_model=settings.openai_embedding_model,
+        )
+
+    # 3. Mistral
+    if settings.mistral_api_key:
+        logger.info(
+            "Using Mistral provider: base_url=%s, embedding_model=%s",
+            settings.mistral_base_url or "default",
+            settings.mistral_embedding_model,
+        )
+        return MistralProvider(
+            api_key=settings.mistral_api_key,
+            base_url=settings.mistral_base_url,
+            embedding_model=settings.mistral_embedding_model,
+        )
+
+    # 4. Ollama
+    if settings.ollama_base_url:
+        logger.info(
+            "Using Ollama provider: %s, embedding_model=%s",
+            settings.ollama_base_url,
+            settings.ollama_embedding_model,
+        )
+        return OllamaProvider(
+            base_url=settings.ollama_base_url,
+            embedding_model=settings.ollama_embedding_model,
+            verify_ssl=settings.ollama_verify_ssl,
+        )
+
+    # 5. Simple (fallback)
+    logger.warning(
+        "No provider configured (AWS_REGION, OPENAI_API_KEY, "
+        "MISTRAL_API_KEY, OLLAMA_BASE_URL not set). "
+        "Using SimpleProvider for testing/development. "
+        "For production, configure Bedrock, OpenAI, Mistral, or Ollama."
+    )
+    return SimpleProvider(dimension=settings.simple_embedding_dimension)
 
 
 # Singleton instance
@@ -164,7 +148,7 @@ def get_provider() -> Provider:
     """
     global _provider
     if _provider is None:
-        _provider = ProviderRegistry.create_provider()
+        _provider = create_provider()
     return _provider
 
 

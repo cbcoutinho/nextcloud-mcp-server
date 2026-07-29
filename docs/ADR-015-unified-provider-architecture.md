@@ -24,7 +24,7 @@ This fragmentation created several problems:
 ### Problems with Dual Provider Systems
 
 1. **Code Duplication**
-   - Ollama configuration appeared in both `embedding/service.py` and `tests/rag_evaluation/llm_providers.py`
+   - Ollama configuration appeared in both `embedding/service.py` and `tests/rag_evaluation/llm_providers.py` (both since removed)
    - Similar provider detection logic in multiple places
    - Separate singleton patterns for each system
 
@@ -172,7 +172,10 @@ embeddings = await provider.embed_batch(texts)
 ```
 
 **Migration Path:**
-- `embedding/service.py` now wraps `providers.get_provider()` for compatibility
+- `embedding/service.py` wrapped `providers.get_provider()` for compatibility; the
+  wrapper and the rest of the `embedding/` package were removed once every caller
+  had moved to `get_provider()` directly. `bm25_provider.py` and the gateway
+  clients now live under `providers/` as `bm25.py`, `gateway.py`, `gateway_batch.py`.
 - `tests/rag_evaluation/llm_providers.py` now uses unified providers
 - Old imports still work, marked as deprecated in docstrings
 
@@ -281,7 +284,7 @@ embeddings = await provider.embed_batch(texts)
 ### Files Modified
 
 **Backward Compatibility:**
-- `nextcloud_mcp_server/embedding/service.py` - Now wraps `get_provider()`
+- `nextcloud_mcp_server/embedding/` - Removed; callers use `get_provider()` directly
 - `tests/rag_evaluation/llm_providers.py` - Uses unified providers
 
 **Dependencies:**

@@ -32,7 +32,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.search.access_filter import (
     clear_accessible_owners_cache,
     list_accessible_owners,
@@ -129,7 +129,7 @@ async def seeded_semantic(monkeypatch, shared_file):
     exactly as the scanner now writes it.
     """
     file_id, path = shared_file
-    provider = SimpleEmbeddingProvider(dimension=384)
+    provider = SimpleProvider(dimension=384)
     client = AsyncQdrantClient(":memory:")
     collection = get_settings().get_collection_name()
     await client.create_collection(
@@ -164,7 +164,7 @@ async def seeded_semantic(monkeypatch, shared_file):
         AsyncMock(return_value=client),
     )
     monkeypatch.setattr(
-        "nextcloud_mcp_server.search.semantic.get_embedding_service",
+        "nextcloud_mcp_server.search.semantic.get_provider",
         lambda: provider,
     )
     # The cached-chunk lookups (get_chunk_with_context) read the client from the
