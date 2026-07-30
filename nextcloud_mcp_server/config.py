@@ -2181,7 +2181,7 @@ def get_nextcloud_http_keepalive() -> bool:
 
     Returns:
         - False if NEXTCLOUD_HTTP_KEEPALIVE=false (fresh connection per
-          request; mitigates the poisoned-keep-alive truncation in #965).
+          request, mitigates the poisoned-keep-alive truncation in #965).
         - True otherwise (default pooled keep-alive behavior).
     """
     return get_settings().nextcloud_http_keepalive

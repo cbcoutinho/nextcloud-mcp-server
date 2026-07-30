@@ -456,7 +456,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
                 - ``fn`` (str): Formatted full name.
                 - ``email`` (str): Email address. **Update path supports plain
-                  strings only**; dict / list-form inputs are not applied — the
+                  strings only**. Dict / list-form inputs are not applied — the
                   existing EMAIL line is preserved unchanged and a warning is
                   logged. Use create_contact for multi-entry support with TYPE
                   annotations.
@@ -468,15 +468,15 @@ def configure_contacts_tools(mcp: FastMCP):
                 - ``note`` (str): Free-form note.
                 - ``nickname`` (str or list of str).
                 - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
-                  Non-ISO strings are rejected with a warning; the existing
+                  Non-ISO strings are rejected with a warning. The existing
                   BDAY line is preserved.
                 - ``categories`` (list of str, or comma-separated str).
                 - ``url`` (str or list of str). Only the first URL is written
-                  on update; multi-URL contacts should use create_contact.
+                  on update. Multi-URL contacts should use create_contact.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control. Pass the
-                value from a previous read or update; the update is rejected if
+                value from a previous read or update. The update is rejected if
                 the contact changed since.
 
         Returns:

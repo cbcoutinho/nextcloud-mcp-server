@@ -227,7 +227,7 @@ def configure_webdav_tools(mcp: FastMCP):
                   scanned one escalates to OCR when the server has OCR enabled.
                 - ``"markdown"``: additionally reconstruct structure (headings,
                   tables) rather than returning a flat text layer. Costs a
-                  second, slower parse and is bounded by a page ceiling; when it
+                  second, slower parse and is bounded by a page ceiling, when it
                   cannot be honoured the response says so instead of pretending.
                 - ``"raw"``: do not parse. Text files are decoded, anything else
                   comes back base64-encoded.
@@ -422,10 +422,10 @@ def configure_webdav_tools(mcp: FastMCP):
         overwritten. What happens depends on ``if_match`` (see below).
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
-        target path (or an ancestor folder) carries an excluded system tag;
-        when the decoded content exceeds ``WEBDAV_WRITE_MAX_MB``; when the
+        target path (or an ancestor folder) carries an excluded system tag,
+        when the decoded content exceeds ``WEBDAV_WRITE_MAX_MB``, when the
         write conflicts with a concurrent edit or an existing/missing file
-        (412); or when the file is locked by another client (423) -- see
+        (412), or when the file is locked by another client (423) -- see
         ``if_match`` below.
 
         Args:
@@ -438,7 +438,7 @@ def configure_webdav_tools(mcp: FastMCP):
                   existing file you must first read it with
                   ``nc_webdav_read_file`` and pass the etag it returned.
                 - Pass that **etag** to overwrite the file only if it has not
-                  changed since you read it; if someone edited it in the
+                  changed since you read it. If someone edited it in the
                   meantime (e.g. in the Nextcloud web UI) the write fails --
                   re-read and retry deliberately rather than looping.
                 - Pass the literal ``"*"`` to **force-overwrite** an existing
@@ -446,13 +446,13 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             ``WriteFileResponse`` with ``path``, ``status_code``, ``size``,
-            ``created`` (True when a new file was created, i.e. HTTP 201; False
+            ``created`` (True when a new file was created, i.e. HTTP 201, False
             when an existing file was overwritten, i.e. HTTP 204) and ``etag``.
 
             ``etag`` is the file as just written — pass it straight back as
             ``if_match`` on the next write to chain edits without an intervening
             read. It is ``None`` when the server did not return one (some
-            proxies strip it); re-read the file to obtain it in that case.
+            proxies strip it). Re-read the file to obtain it in that case.
         """
         client = await get_client(ctx)
 
@@ -597,7 +597,7 @@ def configure_webdav_tools(mcp: FastMCP):
                 nc_webdav_read_file or nc_webdav_write_file). The move then
                 replaces the destination only if it is still that exact version,
                 so ``overwrite=True`` cannot clobber a file someone else changed
-                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
+                in the meantime. Requires ``overwrite=True``. ``"*"`` is not
                 accepted. Files only — a directory destination always fails the
                 check with 412.
 
@@ -668,7 +668,7 @@ def configure_webdav_tools(mcp: FastMCP):
                 nc_webdav_read_file or nc_webdav_write_file). The copy then
                 replaces the destination only if it is still that exact version,
                 so ``overwrite=True`` cannot clobber a file someone else changed
-                in the meantime. Requires ``overwrite=True``; ``"*"`` is not
+                in the meantime. Requires ``overwrite=True``. ``"*"`` is not
                 accepted. Files only — a directory destination always fails the
                 check with 412.
 

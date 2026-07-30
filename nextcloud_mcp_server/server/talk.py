@@ -56,7 +56,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         """List the user's Talk conversations (rooms).
 
         Args:
-            modified_since: Optional Unix timestamp; only conversations
+            modified_since: Optional Unix timestamp. Only conversations
                 modified after this time are returned.
             include_status: Whether to include user-status info for
                 one-to-one conversations.
@@ -102,13 +102,13 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         """Read chat history for a Talk conversation.
 
         Returns the most recent messages (older first when paginated).
-        Does not move the user's read marker; call
+        Does not move the user's read marker. Call
         ``talk_mark_as_read`` separately if desired.
 
         Args:
             token: Conversation token.
             limit: Max messages per page. Valid range is 1-200 (spreed
-                caps server-side at 200); values outside this range are
+                caps server-side at 200). Values outside this range are
                 clamped. Default 50.
             last_known_message_id: Pagination cursor — pass the
                 ``last_known_message_id`` from the previous response to
