@@ -6,7 +6,14 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchText, Range
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    IsEmptyCondition,
+    MatchAny,
+    MatchText,
+    Range,
+)
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
@@ -15,6 +22,7 @@ from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
     clear_accessible_owners_cache,
     list_accessible_owners,
+    list_accessible_scope,
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
@@ -197,6 +205,151 @@ class TestBuildOwnershipFilter:
         branches = self._by_key(flt)
         assert set(branches) == {"user_id", "acl_principals"}
         assert branches["user_id"].match.value == "alice"
+
+
+class TestShareRootNarrowing:
+    """The owner branch must be constrained to the subtrees actually shared.
+
+    Without this, one incoming share admits the whole owner's corpus as
+    candidates; verify-on-read then rejects them, burning the over-fetch budget
+    and silently shortening result pages.
+    """
+
+    @staticmethod
+    def _owner_branch(flt: Filter) -> Any:
+        assert flt.should is not None
+        # The owner branch is the only one that is not a plain FieldCondition on
+        # user_id / acl_principals.
+        for cond in flt.should:
+            if isinstance(cond, Filter) or getattr(cond, "key", None) == "owner_id":
+                return cond
+        raise AssertionError("no owner branch present")
+
+    def test_without_share_roots_owner_branch_stays_wide(self) -> None:
+        # Regression guard: callers that don't pass share roots (context
+        # expansion, doc-type discovery, eviction sweeps) keep the historical
+        # owner-level filter exactly as before.
+        branch = self._owner_branch(build_ownership_filter("alice", ["alice", "bob"]))
+
+        assert isinstance(branch, FieldCondition)
+        assert branch.key == "owner_id"
+        assert branch.match.any == ["bob"]
+
+    def test_share_roots_constrain_the_owner_branch(self) -> None:
+        branch = self._owner_branch(
+            build_ownership_filter("alice", ["alice", "bob"], ["370448", "417049"])
+        )
+
+        # owner_id AND (inside a shared subtree)
+        assert isinstance(branch, Filter)
+        assert branch.must is not None and len(branch.must) == 2
+        owner_cond, containment = branch.must
+        assert owner_cond.key == "owner_id"
+        assert owner_cond.match.any == ["bob"]
+
+        assert isinstance(containment, Filter)
+        assert containment.should is not None
+        by_key = {c.key: c for c in containment.should if isinstance(c, FieldCondition)}
+        # A folder share: descendants carry the root in folder_ancestors.
+        assert set(by_key[payload_keys.FOLDER_ANCESTORS].match.any) == {
+            "370448",
+            "417049",
+        }
+        # A single-file share (and the shared folder's own point) — neither
+        # lists itself as its own ancestor.
+        assert set(by_key["doc_id"].match.any) == {"370448", "417049"}
+        # Legacy points predating folder_ancestors must not be dropped: fail
+        # open and let verify-on-read decide, as it did before this change.
+        empties = [c for c in containment.should if isinstance(c, IsEmptyCondition)]
+        assert len(empties) == 1
+        assert empties[0].is_empty.key == payload_keys.FOLDER_ANCESTORS
+
+    def test_share_roots_without_other_owners_add_nothing(self) -> None:
+        # Self-only scope has no owner branch to narrow, so share roots are inert.
+        flt = build_ownership_filter("alice", ["alice"], ["370448"])
+
+        assert flt.should is not None
+        assert {c.key for c in flt.should} == {"user_id", "acl_principals"}
+
+    def test_blank_share_roots_are_ignored(self) -> None:
+        branch = self._owner_branch(
+            build_ownership_filter("alice", ["alice", "bob"], ["", "   "])
+        )
+
+        # Nothing usable to narrow with ⇒ keep the wide branch rather than
+        # emitting MatchAny(any=[]), whose semantics Qdrant does not guarantee.
+        assert isinstance(branch, FieldCondition)
+        assert branch.key == "owner_id"
+
+    def test_base_conditions_forward_share_roots(self) -> None:
+        conditions = build_base_filter_conditions(
+            "alice", ["alice", "bob"], shared_root_ids=["370448"]
+        )
+
+        ownership = next(
+            c for c in conditions if isinstance(c, Filter) and c.should is not None
+        )
+        branch = self._owner_branch(ownership)
+        assert isinstance(branch, Filter), "share roots were not forwarded"
+
+
+class TestListAccessibleScope:
+    """Share roots come from the OCS ``file_source`` of each incoming share."""
+
+    @pytest.mark.unit
+    async def test_collects_owners_and_share_roots(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [
+            {"uid_owner": "bob", "file_source": 370448},
+            {"uid_owner": "bob", "file_source": 417049},
+        ]
+
+        scope = await list_accessible_scope(sharing, "alice")
+
+        assert set(scope.owners) == {"alice", "bob"}
+        # Stringified to match the folder_ancestors payload, which stores
+        # fileids as strings.
+        assert set(scope.share_root_ids) == {"370448", "417049"}
+
+    @pytest.mark.unit
+    async def test_falls_back_to_item_source(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [
+            {"uid_owner": "bob", "item_source": "2346863"},
+        ]
+
+        scope = await list_accessible_scope(sharing, "alice")
+        assert scope.share_root_ids == ["2346863"]
+
+    @pytest.mark.unit
+    async def test_share_without_resolvable_root_yields_no_id(self) -> None:
+        # The owner still expands (so their content stays reachable), but with
+        # no root the narrowing simply doesn't apply to them.
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [{"uid_owner": "bob"}]
+
+        scope = await list_accessible_scope(sharing, "alice")
+        assert set(scope.owners) == {"alice", "bob"}
+        assert scope.share_root_ids == []
+
+    @pytest.mark.unit
+    async def test_ocs_failure_degrades_to_self_only(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.side_effect = RuntimeError("OCS down")
+
+        scope = await list_accessible_scope(sharing, "alice")
+        assert scope == (["alice"], [])
+
+    @pytest.mark.unit
+    async def test_owners_wrapper_shares_the_same_fetch(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [{"uid_owner": "bob", "file_source": 370448}]
+
+        assert set(await list_accessible_owners(sharing, "alice")) == {"alice", "bob"}
+        scope = await list_accessible_scope(sharing, "alice")
+        assert scope.share_root_ids == ["370448"]
+        # One OCS round-trip serves both accessors (30s cache).
+        sharing.list_shares.assert_awaited_once()
 
 
 class TestBuildBaseFilterConditions:

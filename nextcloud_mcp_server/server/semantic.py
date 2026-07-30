@@ -27,7 +27,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.search.access_filter import (
     MAX_PATH_PREFIXES,
-    list_accessible_owners,
+    list_accessible_scope,
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
@@ -334,8 +334,13 @@ def configure_semantic_tools(mcp: FastMCP):
         # Expand the caller's identity to every owner whose content they
         # have read access to via Nextcloud shares. Lets a user find files
         # owners have shared with them without having to re-index those
-        # files under their own user_id.
-        accessible_owners = await list_accessible_owners(client.sharing, username)
+        # files under their own user_id. ``share_root_ids`` scopes that
+        # expansion to the shared subtrees, so one incoming share does not
+        # admit the whole owner's corpus as candidates for verify-on-read to
+        # reject (which silently shortened result pages).
+        accessible_scope = await list_accessible_scope(client.sharing, username)
+        accessible_owners = accessible_scope.owners
+        shared_root_ids = accessible_scope.share_root_ids
 
         # Admin consent gate: restrict to source types the Astrolabe admin has
         # approved (and that are installed for this user). This mirrors
@@ -406,6 +411,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                     accessible_owners=accessible_owners,
+                    shared_root_ids=shared_root_ids,
                     modified_after=modified_after_ts,
                     modified_before=modified_before_ts,
                     path_prefixes=folder_prefixes,
@@ -435,6 +441,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         doc_type=dtype,
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
+                        shared_root_ids=shared_root_ids,
                         modified_after=modified_after_ts,
                         modified_before=modified_before_ts,
                         path_prefixes=folder_prefixes,
