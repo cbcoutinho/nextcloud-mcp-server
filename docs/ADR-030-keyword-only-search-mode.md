@@ -77,7 +77,7 @@ Ollama `_detect_dimension()` call is explicitly skipped
 stray `OLLAMA_BASE_URL` is set.
 
 **Invariant:** in keyword mode, nothing on the ingest or query path calls
-`embedding_service.embed*` or the Ollama dimension probe.
+the embedding provider's `embed*` methods or the Ollama dimension probe.
 
 ### Score semantics
 

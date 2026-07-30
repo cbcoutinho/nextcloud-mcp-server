@@ -151,25 +151,18 @@ directly, so settings files and env vars share one resolution path.
 **Simple (no configuration, fallback):**
 - `SIMPLE_EMBEDDING_DIMENSION`: Embedding dimension (default: 384)
 
-### 3. Backward Compatibility
+### 3. Accessing a Provider
 
-**Old Code Continues to Work:**
 ```python
-# Old way (still works)
-from nextcloud_mcp_server.embedding import get_embedding_service
-
-service = get_embedding_service()  # Returns singleton Provider
-embeddings = await service.embed_batch(texts)
-```
-
-**New Way (recommended):**
-```python
-# New way (cleaner)
 from nextcloud_mcp_server.providers import get_provider
 
 provider = get_provider()  # Returns singleton Provider
 embeddings = await provider.embed_batch(texts)
 ```
+
+The `embedding/` package originally offered a `get_embedding_service()`
+wrapper around this call for backward compatibility. It has since been
+removed — `get_provider()` is the only entry point.
 
 **Migration Path:**
 - `embedding/service.py` wrapped `providers.get_provider()` for compatibility; the
