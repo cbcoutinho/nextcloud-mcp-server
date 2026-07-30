@@ -798,6 +798,19 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="DOCUMENT_OCR_TIMEOUT_SECONDS"):
             _reload_config()
 
+    @patch.dict(os.environ, {"VECTOR_SEARCH_RRF_K": "0"}, clear=True)
+    def test_rrf_k_zero_rejected(self):
+        """VECTOR_SEARCH_RRF_K=0 fails the gte=1 validator.
+
+        The fused score is 1/(rank + k) with rank 0-indexed, so k=0 divides by
+        zero on the top-ranked point. Guards the bound itself against being
+        loosened or dropped.
+        """
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="VECTOR_SEARCH_RRF_K"):
+            _reload_config()
+
     @patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "-1"}, clear=True)
     def test_max_pdf_size_negative_rejected(self):
         """DOCUMENT_MAX_PDF_SIZE_MB=-1 fails the gte=0 validator (0 = disabled)."""

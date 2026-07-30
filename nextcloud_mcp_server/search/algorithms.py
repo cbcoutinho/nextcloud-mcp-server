@@ -169,9 +169,13 @@ class SearchResult:
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context
-        score: Relevance score (≥ 0.0, higher is better)
-            - RRF fusion: scores in [0.0, 1.0]
-            - DBSF fusion: scores can exceed 1.0 (sum of normalized scores)
+        score: Ranking score (≥ 0.0, higher is better). Meaningful only for
+            ordering within one result set — NOT a calibrated relevance measure,
+            and not comparable across queries.
+            - RRF fusion: a rank artifact, ~``2/VECTOR_SEARCH_RRF_K`` at best
+              (about 0.033 at the default k=60). Bounded by [0.0, 1.0] in
+              principle, but nowhere near 1.0 in practice.
+            - DBSF fusion: can exceed 1.0 (sum of normalized scores)
         metadata: Additional algorithm-specific metadata
         chunk_start_offset: Character position where chunk starts (None if not available)
         chunk_end_offset: Character position where chunk ends (None if not available)
@@ -203,7 +207,9 @@ class SearchResult:
         """Validate score is non-negative.
 
         Note: Different fusion methods produce different score ranges:
-        - RRF (Reciprocal Rank Fusion): Bounded to [0.0, 1.0]
+        - RRF (Reciprocal Rank Fusion): 1/(rank + k) summed over the prefetches
+          that returned the point, so the practical ceiling is ~2/k — about
+          0.033 at the default VECTOR_SEARCH_RRF_K=60, not anywhere near 1.0.
         - DBSF (Distribution-Based Score Fusion): Unbounded (can exceed 1.0)
           DBSF sums normalized scores from multiple systems, so scores can be
           1.5, 2.0, etc. when multiple systems agree a document is highly relevant.
