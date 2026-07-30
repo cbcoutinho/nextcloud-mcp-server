@@ -123,6 +123,28 @@ def test_fully_completed_series_reports_zero_pending():
     assert "oldest_pending_due" not in todo
 
 
+def test_series_starting_in_the_future_has_no_backlog():
+    """Nothing has started yet, so the backlog is empty rather than unresolved.
+
+    The naive query would span from the series start back to now — a window
+    ending before it begins, which the expander rejects outright.
+    """
+    future = """
+BEGIN:VTODO
+UID:colonoscopy
+SUMMARY:Termin Darmspiegelung ausmachen
+DTSTART;VALUE=DATE:20261001
+DUE;VALUE=DATE:20261127
+RRULE:FREQ=YEARLY;COUNT=-1;INTERVAL=5
+PRIORITY:3
+END:VTODO
+"""
+    todo = _client()._parse_ical_todo(_ical(future), now=NOW)
+
+    assert todo["pending_count"] == 0
+    assert "current_due" not in todo
+
+
 def test_percent_complete_counts_as_done_without_status():
     """Some clients only set PERCENT-COMPLETE on a finished instance."""
     ics = _ical(

@@ -1703,6 +1703,11 @@ class CalendarClient:
         # `between` returns occurrences overlapping the window, so an instance
         # that has started but is not yet due is included.
         window_start = max(_as_utc_datetime(dtstart.dt), now - _PENDING_MAX_LOOKBACK)
+        if window_start >= now:
+            # The series only begins in the future, so nothing has started and
+            # there is no backlog. Querying this span would ask for a window
+            # that ends before it starts, which the expander rejects.
+            return {"pending_count": 0}
 
         try:
             occurrences = recurring_ical_events.of(cal, components=["VTODO"]).between(
