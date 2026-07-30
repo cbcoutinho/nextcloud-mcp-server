@@ -208,7 +208,8 @@ class GatewayProvider(OpenAIProvider):
                 "falling back to lazy detection on first embed",
                 self.embedding_model,
             )
-        except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+        except Exception as exc:  # noqa: BLE001
+            # Best-effort, never fatal.
             logger.warning(
                 "Could not fetch model dimensions from gateway %s: %s; "
                 "falling back to lazy detection on first embed",
