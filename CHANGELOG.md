@@ -5,6 +5,33 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.155.0 (2026-07-30)
+
+### BREAKING CHANGE
+
+- the `nc_semantic_search_answer` MCP tool is removed.
+Clients wanting a generated answer should call `nc_semantic_search` and
+generate from the returned documents themselves. The
+`OLLAMA_GENERATION_MODEL`, `OPENAI_GENERATION_MODEL` and
+`BEDROCK_GENERATION_MODEL` settings are removed and now ignored.
+
+### Feat
+
+- **mcp**: remove MCP sampling, text generation and the RAG eval harness
+
+### Fix
+
+- **retry**: cap the first retry delay at max_delay
+
+### Refactor
+
+- **retry**: reuse the shared backoff helper for the startup probes
+- **config**: derive the field→env map from Settings
+- **providers**: collapse the duplicate embedding package into providers/
+- **viz**: drop dead settings store and stray template blanks
+- **viz**: drop dead Plotly CDN load and stale viz-UI docs
+- **viz**: remove the in-repo vector-visualization UI
+
 ## v0.154.2 (2026-07-30)
 
 ### Fix
