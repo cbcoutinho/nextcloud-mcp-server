@@ -1771,9 +1771,18 @@ _ENV_OVERRIDE = {
     "oidc_scopes": "NEXTCLOUD_OIDC_SCOPES",
 }
 
-# Fields ``_build_settings`` computes and assigns explicitly (from the
-# ENABLE_SEMANTIC_SEARCH / ENABLE_BACKGROUND_OPERATIONS resolution and the
-# deployment mode), so they must NOT be filled in from a same-named env var.
+# Derived fields with no env var of their own, so there is nothing to map:
+# ``vector_sync_enabled``/``enable_offline_access`` come from the
+# ENABLE_SEMANTIC_SEARCH / ENABLE_BACKGROUND_OPERATIONS resolution, and
+# ``enable_login_flow``/``enable_multi_user_basic_auth`` from the deployment
+# mode (the latter two aren't even dynaconf keys — see ``_DEFAULTS``).
+#
+# Excluding them is currently belt-and-braces rather than load-bearing: both
+# assignment sites are unconditional (``_build_settings`` overwrites the two
+# resolution-derived fields right after the comprehension, and
+# ``__post_init__`` recomputes the two mode-derived ones), so an entry here
+# would be inert rather than unsafe. It becomes load-bearing the moment
+# either site is made conditional — keep the derivation the only writer.
 _COMPUTED_FIELDS = frozenset(
     {
         "vector_sync_enabled",
