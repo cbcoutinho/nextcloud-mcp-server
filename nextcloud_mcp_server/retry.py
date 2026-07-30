@@ -76,7 +76,8 @@ def retry_on_transient(
             may have been bypassed) still runs once instead of falling straight
             to the exhausted branch with nothing to raise.
         initial_delay: Delay before the second attempt, doubled thereafter.
-        max_delay: Cap on the doubling.
+        max_delay: Ceiling on every sleep, the first one included — so passing
+            ``initial_delay`` greater than this clamps rather than overshoots.
         jitter: Sleep ``uniform(0, delay)`` rather than exactly ``delay``, so
             concurrent callers spread out instead of retrying in lockstep.
     """
@@ -86,50 +87,79 @@ def retry_on_transient(
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
-            retry_delay = initial_delay
-            last_error: BaseException | None = None
-
-            for attempt in range(1, attempts + 1):
-                try:
-                    return await func(*args, **kwargs)
-                # exception_type is constrained by the signature to a
-                # BaseException subclass or a tuple of them; the dynamic catch is
-                # the whole point of this reusable helper.
-                except exception_type as e:  # NOSONAR(S5708)
-                    if not should_retry(e):
-                        raise
-                    last_error = e
-                    if attempt < attempts:
-                        sleep_for = (
-                            random.uniform(0, retry_delay) if jitter else retry_delay
-                        )
-                        logger.warning(
-                            "%s %s (attempt %d/%d): %r; retrying in %.1fs...",
-                            provider_name,
-                            label,
-                            attempt,
-                            attempts,
-                            e,
-                            sleep_for,
-                        )
-                        await anyio.sleep(sleep_for)
-                        retry_delay = min(retry_delay * 2, max_delay)
-
-            logger.error(
-                "%s %s not resolved after %d attempts: %r",
-                provider_name,
-                label,
-                attempts,
-                last_error,
+            return await _run_with_retries(
+                lambda: func(*args, **kwargs),
+                exception_type,
+                should_retry,
+                provider_name=provider_name,
+                label=label,
+                attempts=attempts,
+                initial_delay=initial_delay,
+                max_delay=max_delay,
+                jitter=jitter,
             )
-            if last_error is None:  # pragma: no cover — loop above always sets this
-                raise RuntimeError("retry loop exited without capturing an error")
-            raise last_error
 
         return wrapper
 
     return decorator
 
 
-# Back-compat alias: the helper was originally rate-limit-specific.
-retry_on_rate_limit = retry_on_transient
+async def _run_with_retries(
+    call: Callable[[], Awaitable[T]],
+    exception_type: type[BaseException] | tuple[type[BaseException], ...],
+    should_retry: Callable[[BaseException], bool],
+    *,
+    provider_name: str,
+    label: str,
+    attempts: int,
+    initial_delay: float,
+    max_delay: float,
+    jitter: bool,
+) -> T:
+    """Run ``call``, retrying transient failures with capped exponential backoff.
+
+    Lives at module level rather than nested inside ``retry_on_transient`` so the
+    loop reads at one indent level instead of four.
+    """
+    # Clamp the first delay too, not just the doubled ones: ``max_delay`` is a
+    # ceiling on every sleep, and no validator enforces base <= max at the call
+    # sites. Matches the per-call-site loops this helper replaced, which
+    # computed min(max, base * 2 ** (attempt - 1)) from the first attempt on.
+    retry_delay = min(initial_delay, max_delay)
+    last_error: BaseException | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await call()
+        # exception_type is constrained by the signature to a BaseException
+        # subclass or a tuple of them; the dynamic catch is the whole point of
+        # this reusable helper.
+        except exception_type as e:  # NOSONAR(S5708)
+            if not should_retry(e):
+                raise
+            last_error = e
+
+        if attempt < attempts:
+            sleep_for = random.uniform(0, retry_delay) if jitter else retry_delay
+            logger.warning(
+                "%s %s (attempt %d/%d): %r; retrying in %.1fs...",
+                provider_name,
+                label,
+                attempt,
+                attempts,
+                last_error,
+                sleep_for,
+            )
+            await anyio.sleep(sleep_for)
+            retry_delay = min(retry_delay * 2, max_delay)
+
+    logger.error(
+        "%s %s not resolved after %d attempts: %r",
+        provider_name,
+        label,
+        attempts,
+        last_error,
+    )
+    if last_error is None:  # pragma: no cover — loop above always sets this
+        raise RuntimeError("retry loop exited without capturing an error")
+    raise last_error
