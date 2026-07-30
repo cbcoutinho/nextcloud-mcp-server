@@ -336,7 +336,10 @@ def image_coverage_per_page_from_path(source_path: str) -> list[float]:
     )
 
     cov: list[float] = []
-    with pymupdf_serialized(), pymupdf.open(source_path) as doc:
+    # filetype="pdf": the spool path is ``*.bin``, and PyMuPDF would infer the
+    # MuPDF magic from that suffix and fail to find a handler. Matches the
+    # bytes-based twin below, which already passes "pdf" explicitly.
+    with pymupdf_serialized(), pymupdf.open(source_path, filetype="pdf") as doc:
         for n in range(min(doc.page_count, MAX_SAMPLED_PAGES)):
             cov.append(_page_image_coverage(doc.load_page(n)))
     return cov

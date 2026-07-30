@@ -391,7 +391,7 @@ document_escalation_suppressed_total = Counter(
 document_parse_failed_total = Counter(
     "astrolabe_document_parse_failed_total",
     "Document parses that failed in the isolated worker (process killed)",
-    ["reason"],  # reason: timeout | oom | error
+    ["reason"],  # reason: timeout | oom | error | unreadable
 )
 
 # Documents dead-lettered after a terminal parse failure: the failing tier had
@@ -405,7 +405,7 @@ document_parse_failed_total = Counter(
 document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
     "Documents dead-lettered after a terminal parse failure (no escalation tier)",
-    ["reason"],  # reason: timeout | oom | error | oversize
+    ["reason"],  # reason: timeout | oom | error | oversize | unreadable
 )
 
 # Documents dropped after exhausting in-process indexing retries (the scanner
@@ -1161,7 +1161,11 @@ def record_document_parse_failed(reason: str) -> None:
     """Record a hard parse failure from the isolated worker.
 
     Args:
-        reason: ``timeout`` | ``oom`` | ``error``
+        reason: ``timeout`` | ``oom`` | ``error`` (from the isolated worker), or
+            ``unreadable`` -- the engine could not open the bytes as a document
+            at all, i.e. the file's content does not match the mime type its
+            extension claimed. Distinguished from ``error`` on purpose: it means
+            corrupt input, not a failure of ours, so it should not page anyone.
     """
     document_parse_failed_total.labels(reason=reason).inc()
 
@@ -1211,8 +1215,10 @@ def record_document_dead_lettered(reason: str) -> None:
 
     Args:
         reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
-            reason carried from the isolated worker) or ``oversize`` (rejected by
-            the pre-parse size guard, which no tier can ever parse).
+            reason carried from the isolated worker), ``oversize`` (rejected by
+            the pre-parse size guard, which no tier can ever parse), or
+            ``unreadable`` (the bytes are not a document the engine can open --
+            no tier will do better, so it is terminal on the first attempt).
     """
     document_dead_lettered_total.labels(reason=reason).inc()
 
