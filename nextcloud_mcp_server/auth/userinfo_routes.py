@@ -482,8 +482,6 @@ async def user_info_html(request: Request) -> HTMLResponse:
             str(request.url_for("oauth_logout")) if oauth_ctx else "/oauth/logout"
         )
 
-    settings = get_settings()
-
     # Build host info HTML (BasicAuth only)
     host_info_html = ""
     if auth_mode == "basic":
