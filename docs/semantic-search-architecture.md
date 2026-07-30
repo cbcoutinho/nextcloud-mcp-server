@@ -1,13 +1,12 @@
 # Semantic Search Architecture
 
-This document explains the architecture of the semantic search feature in the Nextcloud MCP Server, including background synchronization, vector search, and optional AI-generated answers via MCP sampling.
+This document explains the architecture of the semantic search feature in the Nextcloud MCP Server, including background synchronization and vector search.
 
 > [!IMPORTANT]
 > **Status: Experimental**
 > - Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`)
 > - Currently supports **Notes, Files (PDFs), News items, and Deck cards**
 > - Requires additional infrastructure (Qdrant vector database + Ollama embedding service)
-> - RAG answer generation requires MCP client sampling support
 
 ## Overview
 
@@ -35,7 +34,6 @@ Semantic search enables:
 - **Natural language queries** - Ask questions in plain language
 - **Conceptual discovery** - Find related content even with different terminology
 - **Cross-reference insights** - Connect ideas across your knowledge base
-- **AI-powered answers** - Generate summaries with citations (optional, requires MCP sampling)
 
 ### Current Support
 
@@ -76,7 +74,7 @@ graph TB
 
 **Component Roles:**
 
-- **MCP Server**: Exposes semantic search tools (`nc_semantic_search`, `nc_semantic_search_answer`, `nc_get_vector_sync_status`)
+- **MCP Server**: Exposes semantic search tools (`nc_semantic_search`, `nc_get_vector_sync_status`)
 - **Background Scanner**: Discovers changed documents every hour using ETag-based change detection
 - **Document Queue**: Holds pending documents for embedding generation
 - **Embedding Processors**: Generate vector embeddings via Ollama (concurrent workers)
@@ -348,79 +346,12 @@ sequenceDiagram
 - **Accuracy**: Depends on embedding model quality (`nomic-embed-text` recommended)
 - **Scalability**: Qdrant handles millions of vectors efficiently
 
-## How It Works: RAG with MCP Sampling (Optional)
-
-The `nc_semantic_search_answer` tool generates AI-powered answers with citations using **MCP sampling** - requesting the MCP client's LLM to generate text.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant MCP as MCP Server
-    participant Client as MCP Client<br/>(Claude Desktop)
-    participant LLM as Client's LLM<br/>(Claude, GPT, etc.)
-
-    User->>MCP: nc_semantic_search_answer("What are my Q1 goals?")
-    MCP->>MCP: Semantic search<br/>(find relevant notes)
-    MCP->>MCP: Construct prompt<br/>(query + documents + instructions)
-    MCP->>Client: Sampling request<br/>(MCP Protocol)
-    Client->>User: Prompt for approval<br/>(optional, client-controlled)
-    User-->>Client: Approve
-    Client->>LLM: Generate answer<br/>(with context)
-    LLM-->>Client: Answer with citations
-    Client-->>MCP: Sampling response
-    MCP-->>User: Generated answer<br/>(with source documents)
-```
-
-### MCP Sampling Architecture
-
-**Why MCP Sampling?**
-- **No server-side LLM**: MCP server has no API keys, doesn't call LLMs directly
-- **Client controls everything**: Which model, who pays, user approval prompts
-- **Privacy**: Documents stay with the client's LLM provider, not a third-party
-- **Flexibility**: Works with any MCP client that supports sampling (Claude Desktop, future clients)
-
-**Prompt Construction:**
-```
-User Query: {query}
-
-Relevant Documents:
-1. Document: {title} (Note)
-   Content: {excerpt}
-
-2. Document: {title} (Note)
-   Content: {excerpt}
-
-Instructions:
-- Provide a comprehensive answer to the user's query
-- Use the documents above as context
-- Include citations: "According to Document 1 (title)..."
-- If documents don't contain enough information, say so
-```
-
-**Graceful Fallback:**
-```python
-try:
-    result = await ctx.session.create_message(...)
-    return answer_with_citations
-except Exception as e:
-    # Fallback: Return documents without generated answer
-    return SearchResponse(
-        generated_answer=f"[Sampling unavailable: {e}]",
-        sources=search_results
-    )
-```
-
-**Client Support:**
-- **Requires**: MCP client with sampling capability
-- **Known support**: Claude Desktop (as of Claude 3.5+)
-- **Graceful degradation**: Returns raw documents if sampling unavailable
-
 ## Authentication & Security
 
 ### OAuth Scopes
 
 **`semantic.read`** - Search permission
-- Allows using `nc_semantic_search` and `nc_semantic_search_answer` tools
+- Allows using the `nc_semantic_search` tool
 - Does NOT grant access to documents (verified via app APIs)
 - Required for any semantic search operation
 
@@ -834,27 +765,22 @@ For detailed observability setup, see [docs/observability.md](observability.md).
    - Only `NotesScanner` and `NotesProcessor` implemented
    - Future: Calendar, Deck, Files, Contacts
 
-2. **MCP Sampling Support**
-   - `nc_semantic_search_answer` requires client sampling capability
-   - Not all MCP clients support sampling yet
-   - Graceful fallback: Returns documents without generated answer
-
-3. **OAuth Background Sync**
+2. **OAuth Background Sync**
    - User-controlled background jobs not yet implemented
    - Currently works in BasicAuth mode only
    - Future: Users opt-in via `provision_vector_sync` tool
 
-4. **No Incremental Updates**
+3. **No Incremental Updates**
    - Document changes trigger full re-embedding
    - Cannot update just modified paragraphs
    - Future: Paragraph-level chunking and incremental updates
 
-5. **No Query Caching**
+4. **No Query Caching**
    - Each search generates new query embedding
    - Repeated queries re-search Qdrant
    - Future: Cache recent query embeddings and results
 
-6. **Single Embedding Model**
+5. **Single Embedding Model**
    - Uses one model for all documents and queries
    - Cannot customize per app or user
    - Future: App-specific or user-selected models
@@ -895,7 +821,7 @@ For detailed observability setup, see [docs/observability.md](observability.md).
 
 - **[ADR-003: Vector Database Semantic Search](ADR-003-vector-database-semantic-search.md)** - Qdrant selection rationale, embedding strategy, hybrid search (superseded by ADR-007 but technical decisions remain valid)
 - **[ADR-007: Background Vector Sync Job Management](ADR-007-background-vector-sync-job-management.md)** - Current implementation, Scanner-Queue-Processor architecture, plugin system
-- **[ADR-008: MCP Sampling for Semantic Search](ADR-008-mcp-sampling-for-semantic-search.md)** - RAG with MCP sampling, client-server separation, prompt construction
+- **[ADR-008: MCP Sampling for Semantic Search](ADR-008-mcp-sampling-for-semantic-search.md)** - superseded; records the removed `nc_semantic_search_answer` RAG-via-sampling design
 - **[ADR-009: Semantic Search OAuth Scope](ADR-009-semantic-search-oauth-scope.md)** - OAuth scope model, dual-phase authorization, security rationale
 
 ### Configuration & Setup

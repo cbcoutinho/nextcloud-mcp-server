@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class OllamaProvider(Provider):
     """
-    Ollama provider supporting both embeddings and text generation.
+    Ollama provider for embeddings.
 
     Supports TLS, SSL verification, and automatic model loading.
     """

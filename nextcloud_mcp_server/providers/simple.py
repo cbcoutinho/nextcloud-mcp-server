@@ -23,7 +23,6 @@ class SimpleProvider(Provider):
     - Normalizes vectors to unit length
 
     Not suitable for production but good for testing semantic search infrastructure.
-    Only supports embeddings, not text generation.
     """
 
     def __init__(self, dimension: int = 384):

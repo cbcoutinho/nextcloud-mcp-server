@@ -54,7 +54,7 @@ OPENAI_EMBEDDING_DIMENSIONS: dict[str, int] = {
 
 class OpenAIProvider(Provider):
     """
-    OpenAI provider supporting both embeddings and text generation.
+    OpenAI provider for embeddings.
 
     Works with:
     - OpenAI's standard API (api.openai.com)
@@ -77,7 +77,6 @@ class OpenAIProvider(Provider):
             base_url: Base URL override (e.g., "https://models.github.ai/inference")
             embedding_model: Model for embeddings (e.g., "text-embedding-3-small").
                             None disables embeddings.
-                             None disables generation.
             timeout: HTTP timeout in seconds (default: 120)
         """
         self.embedding_model = embedding_model
@@ -274,10 +273,6 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
-    # Transient retry intentionally covers generation too (RAG sampling path):
-    # a pod rollover breaks generation as readily as embedding. Worst case adds
-    # ~30s (5 attempts, 2s→60s backoff) to an interactive call hitting a
-    # sustained connection issue, which is preferable to a hard failure.
     async def close(self) -> None:
         """Close HTTP client."""
         await self.client.close()

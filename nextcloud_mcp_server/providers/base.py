@@ -6,10 +6,10 @@ from abc import ABC, abstractmethod
 
 class Provider(ABC):
     """
-    Unified base class for LLM providers.
+    Unified base class for embedding providers.
 
-    Providers can support embeddings, text generation, or both.
-    Use capability properties to determine what features are available.
+    Use the ``supports_embeddings`` capability property to determine whether a
+    provider is usable before calling ``embed``/``embed_batch``.
     """
 
     @property
