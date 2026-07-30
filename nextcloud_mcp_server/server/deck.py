@@ -812,7 +812,7 @@ def configure_deck_tools(mcp: FastMCP):
             include_users: Include the board's user list (default True). Set
                 False to reduce response size when users are not needed.
             include_labels: Include the board's label definitions (default
-                True). Set False to reduce response size; labels can still be
+                True). Set False to reduce response size. Labels can still be
                 retrieved via deck_get_labels.
         """
         client = await get_client(ctx)
@@ -851,9 +851,9 @@ def configure_deck_tools(mcp: FastMCP):
         Args:
             board_id: The ID of the board
             include_cards: Include cards inside each stack (default True). Set
-                False for a lightweight stack listing; fetch cards separately
+                False for a lightweight stack listing. Fetch cards separately
                 via deck_get_cards.
-            detail: "summary" (default) returns compact card rows; "full"
+            detail: "summary" (default) returns compact card rows. "full"
                 returns the complete card objects (the old behavior).
             status: Which cards to include — "open" (default), "done",
                 "archived", or "all". The first three partition the board
@@ -934,7 +934,7 @@ def configure_deck_tools(mcp: FastMCP):
     ) -> DeckStack:
         """Get details of a specific Nextcloud Deck stack.
 
-        Cards are returned as compact summaries by default; see
+        Cards are returned as compact summaries by default. See
         deck_get_stacks for the shared parameter semantics.
 
         Args:
@@ -943,7 +943,7 @@ def configure_deck_tools(mcp: FastMCP):
             include_cards: Include cards in the stack (default True).
             detail: "summary" (default) or "full".
             status: "open" (default), "done", "archived", or "all"
-                (non-overlapping; a done+archived card counts as "archived").
+                (non-overlapping, a done+archived card counts as "archived").
                 "archived"/"all" include archived cards, which the active
                 listing endpoint omits — this costs one extra API call.
             label: If set, only cards carrying a label with this exact title.
@@ -1022,7 +1022,7 @@ def configure_deck_tools(mcp: FastMCP):
         This is the archived-only shortcut: it returns *only* archived cards
         in a single call. The active list tools (deck_get_cards,
         deck_get_stacks, deck_get_board_overview) also include archived cards
-        when called with status="archived"/"all"; use this tool when you want
+        when called with status="archived"/"all". Use this tool when you want
         archived cards exclusively and don't need the open ones. Typical use:
         auditing completed work archived off the active board (e.g. cards moved
         through a "Done" stack and then archived via deck_archive_card). The
@@ -1094,7 +1094,7 @@ def configure_deck_tools(mcp: FastMCP):
         Args:
             board_id: The ID of the board
             stack_id: The ID of the stack
-            detail: "summary" (default) returns compact card rows; "full"
+            detail: "summary" (default) returns compact card rows. "full"
                 returns the complete card objects.
             status: "open" (default), "done", "archived", or "all". The first
                 three partition the board (a done+archived card counts as
@@ -1165,7 +1165,7 @@ def configure_deck_tools(mcp: FastMCP):
         board" / "what's in progress" style requests on large boards — it is
         the token-efficient way to view board *state*. It intentionally omits
         the board-management fields (ACL, user list, full label objects) that
-        deck_get_board exposes; reach for deck_get_board when you need those.
+        deck_get_board exposes. Reach for deck_get_board when you need those.
 
         Args:
             board_id: The ID of the board
@@ -1625,7 +1625,7 @@ def configure_deck_tools(mcp: FastMCP):
         a card marked done keeps its done state but its done timestamp is reset
         to the time of the move.
 
-        target_stack_id must be a stack on target_board_id; the move is
+        target_stack_id must be a stack on target_board_id. The move is
         rejected otherwise.
 
         Args:
@@ -1871,7 +1871,7 @@ def configure_deck_tools(mcp: FastMCP):
             card_id: The ID of the card
             limit: Maximum number of comments to return (default 20, max 200)
             offset: Pagination offset (default 0)
-            detail: "summary" (default) returns compact comments; "full"
+            detail: "summary" (default) returns compact comments. "full"
                 returns the complete comment objects.
             message_max_length: If set, truncate each comment message to this
                 many characters.
@@ -1922,15 +1922,15 @@ def configure_deck_tools(mcp: FastMCP):
 
         Check the length before calling and pick `overflow` accordingly:
 
-        - 1000 characters or fewer: call as-is; `overflow` is ignored.
+        - 1000 characters or fewer: call as-is. `overflow` is ignored.
         - Longer, and the text is meant to be read on the card (activity
           updates, run summaries, changelogs): pass overflow="split" up front
           rather than guessing a shorter message. The text is cut at markdown
           heading, then paragraph, then line, then sentence, then word
           boundaries -- never mid-word -- each part is prefixed "(i/N)", and
           parts 2..N are posted as replies to part 1 so the card shows one
-          thread. @-mentions are never split across parts. At most 10 parts;
-          past that, write the content to a note (nc_notes_create_note) or a
+          thread. @-mentions are never split across parts. At most 10 parts.
+          Past that, write the content to a note (nc_notes_create_note) or a
           file (nc_webdav_write_file), attach it with deck_attach_note /
           deck_attach_file, and post a short pointer comment instead.
         - Longer, and you would rather shorten it yourself: leave the default
@@ -1951,7 +1951,7 @@ def configure_deck_tools(mcp: FastMCP):
                 splitting, part 1 replies to this comment and parts 2..N reply
                 to part 1.
             overflow: What to do when the message exceeds 1000 characters.
-                "error" (the default) posts nothing and explains the overage;
+                "error" (the default) posts nothing and explains the overage.
                 "split" posts the message as multiple threaded comments.
 
         Returns:
@@ -2000,7 +2000,7 @@ def configure_deck_tools(mcp: FastMCP):
         follow-up comment with deck_create_card_comment instead of growing an
         existing one past the limit.
 
-        Only the comment's author can update it; the server returns 403
+        Only the comment's author can update it. The server returns 403
         otherwise.
 
         Args:
@@ -2045,7 +2045,7 @@ def configure_deck_tools(mcp: FastMCP):
     ) -> CardCommentOperationResponse:
         """Delete a Nextcloud Deck card comment
 
-        Only the comment's author can delete it; the server returns 403 otherwise.
+        Only the comment's author can delete it. The server returns 403 otherwise.
 
         Args:
             card_id: The ID of the card the comment belongs to
@@ -2087,8 +2087,8 @@ def configure_deck_tools(mcp: FastMCP):
         """Attach an existing Nextcloud file to a Deck card without copying.
 
         Creates a share of ``path`` with the card (``shareType=12``,
-        ``shareWith=<card_id>``). The file stays in its original location;
-        clicking the attachment in the Deck UI opens the file in place.
+        ``shareWith=<card_id>``). The file stays in its original location.
+        Clicking the attachment in the Deck UI opens the file in place.
 
         Generic over the user's Files: works for any file the caller can
         read — markdown notes, PDFs, images, spreadsheets, etc. Use
@@ -2134,7 +2134,7 @@ def configure_deck_tools(mcp: FastMCP):
         Convenience wrapper: looks up the note's filesystem path from the
         Notes app settings + note metadata, then shares the file with the
         card (same mechanism as :func:`deck_attach_file`). The note remains
-        editable in the Notes app; the card just shows a clickable link to
+        editable in the Notes app. The card just shows a clickable link to
         it.
 
         Path is reconstructed as ``<notes_folder>/<category>/<title>.md``.
@@ -2202,7 +2202,7 @@ def configure_deck_tools(mcp: FastMCP):
         """Delete an attachment from a Nextcloud Deck card.
 
         For ``type="file"`` attachments this removes the share linking the
-        file to the card; the underlying file in the user's Files is left
+        file to the card. The underlying file in the user's Files is left
         untouched. For ``type="deck_file"`` blobs the binary is deleted from
         Deck's storage.
 

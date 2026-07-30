@@ -213,7 +213,7 @@ def configure_semantic_tools(mcp: FastMCP):
         similarity, natural language) and BM25 sparse vectors (precise
         keyword/acronym matching), fused in the database for optimal relevance.
         Documents indexed keyword-only (``keyword-index`` tag) carry no dense
-        vector and so contribute via the BM25 sparse side only; they appear in the
+        vector and so contribute via the BM25 sparse side only. They appear in the
         same unified result set.
 
         Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
@@ -230,13 +230,13 @@ def configure_semantic_tools(mcp: FastMCP):
             include_context: Whether to expand results with surrounding context (default: False)
             context_chars: Number of characters to include before/after matched chunk (default: 300)
             modified_after: Only return documents whose last-modified time is at or after this
-                instant. Accepts an RFC 3339 / ISO 8601 datetime (e.g. "2026-01-01T00:00:00Z";
+                instant. Accepts an RFC 3339 / ISO 8601 datetime (e.g. "2026-01-01T00:00:00Z",
                 a naive datetime is treated as UTC) or Unix seconds. None = no lower bound
                 (default).
             modified_before: Only return documents whose last-modified time is at or before this
                 instant. Same formats as modified_after. None = no upper bound (default). Must be
                 >= modified_after when both are supplied.
-            path_prefix: Deprecated single-folder filter; prefer path_prefixes. Restrict to files
+            path_prefix: Deprecated single-folder filter. Prefer path_prefixes. Restrict to files
                 under this folder/path (e.g. "/Projects/Reports"). Folded into path_prefixes.
             path_prefixes: Restrict to files under any of these folders/paths (OR-ed), e.g.
                 ["/Projects/Reports", "/Shared/Specs"]. Matches the file_path of indexed files
@@ -248,7 +248,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
             Verification fields (ADR-019 verify-on-read):
             - verified_chunk_count: chunk rows that passed access checks
-              (sized in chunks; counted before trimming to ``limit``, so it
+              (sized in chunks, counted before trimming to ``limit``, so it
               can exceed ``len(results)`` when a doc has multiple matching
               chunks).
             - dropped_document_count: unique ``(doc_id, doc_type)`` pairs
@@ -782,7 +782,7 @@ def configure_semantic_tools(mcp: FastMCP):
         the full note body via ``client.notes.get_note`` after upstream
         verify-on-read has already round-tripped to the same endpoint as a
         race guard (ADR-019). Expect one additional Nextcloud round-trip per
-        note result; raising ``limit`` above the default of 5 amplifies this
+        note result. Raising ``limit`` above the default of 5 amplifies this
         cost roughly linearly. File / news / deck results do not pay this
         cost — they reuse the verified excerpt.
         """

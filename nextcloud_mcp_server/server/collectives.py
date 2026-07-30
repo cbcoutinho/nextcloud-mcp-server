@@ -461,7 +461,7 @@ def configure_collectives_tools(mcp: FastMCP):
         """Move a page to trash in a Nextcloud Collective (soft delete).
 
         Trashed pages can be restored with collectives_restore_page. The
-        Collectives API does not support permanent page deletion; trashed
+        Collectives API does not support permanent page deletion. Trashed
         pages are cleaned up by Nextcloud's retention policy.
 
         Args:

@@ -135,7 +135,7 @@ def configure_mail_tools(mcp: FastMCP):
     ) -> ListMessagesResponse:
         """List message envelopes in a mailbox, newest first (requires mail.read scope).
 
-        Reads cached envelope metadata (fast); does not fetch bodies. Use
+        Reads cached envelope metadata (fast). Does not fetch bodies. Use
         nc_mail_get_message to fetch a full body.
 
         Args:
@@ -148,7 +148,7 @@ def configure_mail_tools(mcp: FastMCP):
             ListMessagesResponse with message summaries. ``has_more`` is a
             heuristic (true when exactly ``limit`` messages were returned), so it
             can be a false positive when a mailbox holds exactly ``limit``
-            messages; page with ``cursor`` and stop on an empty result.
+            messages. Page with ``cursor`` and stop on an empty result.
         """
         client = await get_client(ctx)
         # Clamp to the same window the client/OCS API enforce so the has_more
@@ -325,7 +325,7 @@ def configure_mail_tools(mcp: FastMCP):
 
         Returns:
             GetAttachmentResponse with name, mime, size, and content. ``content``
-            is the attachment body base64-encoded; large attachments produce a
+            is the attachment body base64-encoded. Large attachments produce a
             correspondingly large response, so prefer the ``size`` from the
             message's attachment list before fetching.
         """

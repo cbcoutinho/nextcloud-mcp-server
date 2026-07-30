@@ -168,7 +168,7 @@ def configure_sharing_tools(mcp: FastMCP):
             minute precision: a link expires at 00:00:00 on ``expireDate`` in
             the owner's timezone (i.e. the end of the day before ``expireDate``).
             The requested window is rounded up so the link stays valid at least
-            that long; ``expires_at`` reports the precise requested instant, but
+            that long. ``expires_at`` reports the precise requested instant, but
             the link may remain valid until the end of that day server-side. To
             revoke earlier, call ``nc_share_delete`` with the returned
             ``share_id``.
