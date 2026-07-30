@@ -68,7 +68,7 @@ def _monthly_series(done_through: tuple[int, int] = (2026, 4)) -> str:
         """
 BEGIN:VTODO
 UID:monthly
-SUMMARY:Geldabrechnung
+SUMMARY:Monthly reconciliation
 DTSTART:20240128T130000
 DUE:20240203T130000
 RRULE:FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=28
@@ -90,7 +90,7 @@ END:VTODO
             parts.append(f"""
 BEGIN:VTODO
 UID:monthly
-SUMMARY:Geldabrechnung
+SUMMARY:Monthly reconciliation
 DTSTART:{start:%Y%m%dT%H%M%S}
 RECURRENCE-ID:{start:%Y%m%dT%H%M%S}
 DUE:{due:%Y%m%dT%H%M%S}
@@ -132,7 +132,7 @@ def test_series_starting_in_the_future_has_no_backlog():
     future = """
 BEGIN:VTODO
 UID:colonoscopy
-SUMMARY:Termin Darmspiegelung ausmachen
+SUMMARY:Schedule five-yearly checkup
 DTSTART;VALUE=DATE:20261001
 DUE;VALUE=DATE:20261127
 RRULE:FREQ=YEARLY;COUNT=-1;INTERVAL=5
@@ -151,7 +151,7 @@ def test_percent_complete_counts_as_done_without_status():
         """
 BEGIN:VTODO
 UID:weekly
-SUMMARY:Kaffeemaschine
+SUMMARY:Clean the coffee machine
 DTSTART:20260704T090000
 DUE:20260704T170000
 RRULE:FREQ=WEEKLY;BYDAY=SA;UNTIL=20260726T090000
@@ -161,7 +161,7 @@ END:VTODO
         """
 BEGIN:VTODO
 UID:weekly
-SUMMARY:Kaffeemaschine
+SUMMARY:Clean the coffee machine
 DTSTART:20260725T090000
 RECURRENCE-ID:20260725T090000
 DUE:20260725T170000
@@ -171,7 +171,7 @@ END:VTODO
     )
     todo = _client()._parse_ical_todo(ics, now=NOW)
 
-    # 04.07., 11.07. and 18.07. stay open; 25.07. is done via PERCENT-COMPLETE.
+    # 04, 11 and 18 July stay open; 25 July is done via PERCENT-COMPLETE.
     assert todo["pending_count"] == 3
     assert todo["current_dtstart"] == "2026-07-18T09:00:00"
 
