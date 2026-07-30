@@ -213,7 +213,13 @@ def configure_semantic_tools(mcp: FastMCP):
             query: Natural language or keyword search query
             limit: Maximum number of results to return (default: 10)
             doc_types: Document types to search (e.g., ["note", "file", "deck_card", "news_item", "mail_message"]). None = search all indexed types (default)
-            score_threshold: Minimum normalized fusion score (0-1).
+            score_threshold: Minimum fusion score. NOT a relevance percentage —
+                the fused score is a rank artifact, not a calibrated measure.
+                With RRF the top result scores about 2/VECTOR_SEARCH_RRF_K
+                (~0.033 at the default k=60), so a "10% relevant" reading of
+                0.1 returns nothing at all. Leave at 0.0 (the default) and cut
+                by rank via `limit` instead. DBSF scores are distribution-
+                normalized and can exceed 1.0.
             fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
                    RRF: Good general-purpose fusion using reciprocal ranks
                    DBSF: Uses distribution-based normalization, may better balance different score ranges
