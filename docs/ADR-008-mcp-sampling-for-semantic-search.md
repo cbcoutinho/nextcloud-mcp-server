@@ -1,6 +1,10 @@
 # ADR-008: MCP Sampling for Multi-App Semantic Search with RAG
 
-**Status**: Accepted — implemented (`nc_notes_semantic_search_answer` uses MCP sampling via `ctx.session.create_message`)
+**Status**: **Superseded / withdrawn** — the `nc_semantic_search_answer` tool and all
+MCP-sampling plumbing were removed. MCP sampling is being deprecated out of the MCP
+spec, and the tool had no non-test consumers. Retrieval is served by
+`nc_semantic_search`; answer generation belongs to the MCP client, which already has
+the retrieved documents. The design below is retained as history.
 **Date**: 2025-01-11
 **Depends On**: ADR-007 (Background Vector Sync)
 

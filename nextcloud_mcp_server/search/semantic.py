@@ -8,8 +8,8 @@ from qdrant_client.models import FieldCondition, Filter, MatchAny
 
 from nextcloud_mcp_server.acl_hash import accessible_hash_set
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search.access_filter import build_base_filter_conditions
 from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
@@ -110,9 +110,10 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         )
 
         # Generate embedding for query
-        embedding_service = get_embedding_service()
-        query_embedding = await embedding_service.embed(query)
-        # Store for reuse by callers (e.g., viz_routes PCA visualization)
+        provider = get_provider()
+        query_embedding = await provider.embed(query)
+        # Store for reuse by callers (e.g. the PCA projection in
+        # vector/visualization.py)
         self.query_embedding = query_embedding
         logger.debug(
             "Generated embedding for query (dimension=%s)", len(query_embedding)

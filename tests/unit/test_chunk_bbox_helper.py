@@ -17,10 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Import via the auth surface first to side-step the known
-# `nextcloud_mcp_server.search.__init__` circular-init issue (same workaround
-# used in test_chunk_context_offset_gate.py).
-import nextcloud_mcp_server.auth.viz_routes  # noqa: F401
 from nextcloud_mcp_server.search import context as context_module
 from nextcloud_mcp_server.search.context import get_chunk_bbox_and_page_from_qdrant
 

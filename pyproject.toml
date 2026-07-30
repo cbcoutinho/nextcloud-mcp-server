@@ -25,7 +25,6 @@ dependencies = [
     "authlib>=1.6.5",
     "qdrant-client>=1.17.0",
     "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
-    "anthropic>=0.42.0", # For RAG evaluation with Anthropic LLMs
     "boto3>=1.35.0", # For Amazon Bedrock provider (optional)
     # Observability dependencies
     "prometheus-client>=0.21.0", # Prometheus metrics
@@ -126,7 +125,6 @@ module-root = ""
 [dependency-groups]
 dev = [
     "commitizen>=4.8.2",
-    "datasets>=3.3.0", # For BeIR nfcorpus dataset loading
     "ipython>=9.2.0",
     "playwright>=1.49.1",
     "pytest>=8.3.5",

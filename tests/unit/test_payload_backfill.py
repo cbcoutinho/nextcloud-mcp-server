@@ -39,12 +39,12 @@ async def test_backfill_happy_path_sets_keys_and_sentinel(mocker):
     mocker.patch.object(mod, "get_qdrant_client", return_value=qdrant)
     embed = mocker.MagicMock()
     embed.get_dimension.return_value = 4
-    # Patch the name bound in `mod`, not in nextcloud_mcp_server.embedding: the
-    # module does `from ...embedding import get_embedding_service` at import
+    # Patch the name bound in `mod`, not in nextcloud_mcp_server.providers: the
+    # module does `from ...providers import get_provider` at import
     # time, so patching the source module leaves mod's reference pointing at the
     # real function. That made the real call raise, the endpoint's
     # `except Exception` swallow it, and the sentinel never get upserted.
-    mocker.patch.object(mod, "get_embedding_service", return_value=embed)
+    mocker.patch.object(mod, "get_provider", return_value=embed)
     # upsert_sentinel uses the same qdrant client; it is an AsyncMock so .upsert
     # is awaitable. Patch upsert_sentinel to assert it was invoked.
     sentinel = mocker.patch.object(mod, "upsert_sentinel", new=mocker.AsyncMock())

@@ -10,7 +10,7 @@ Architecture:
 - All user-facing queries filter out placeholders (is_placeholder: False)
 
 Placeholders contain:
-- Zero vectors (dimension from embedding service)
+- Zero vectors (dimension from the embedding provider)
 - is_placeholder: True flag (for filtering)
 - status: "pending", "processing", "completed", "failed"
 - modified_at, etag from source document
@@ -25,7 +25,7 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -82,9 +82,9 @@ async def write_placeholder_point(
         settings = get_settings()
 
         # Size the dense zero-vector to match the collection's dense slot, which
-        # is always sized from the embedding service (the collection carries a
+        # is always sized from the embedding provider (the collection carries a
         # real dense slot even for keyword-only docs, which just omit the vector).
-        dimension = get_embedding_service().get_dimension()
+        dimension = get_provider().get_dimension()
 
         # Create zero vectors
         zero_dense = [0.0] * dimension

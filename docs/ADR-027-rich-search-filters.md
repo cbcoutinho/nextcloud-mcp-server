@@ -112,7 +112,7 @@ excluded.
 **The filter is added to the `SearchAlgorithm` ABC contract, not just one algorithm.** The two
 algorithms that back the search surfaces — `BM25HybridSearchAlgorithm` (the MCP tool path,
 `nc_semantic_search`) and `SemanticSearchAlgorithm` (the dense-only visualization / `/api/v1`
-path, `api/visualization.py` + `auth/viz_routes.py`) — today build a *byte-identical*
+path, `api/visualization.py`) — today build a *byte-identical*
 placeholder + ownership + `doc_type` filter block. Rather than copy the new condition into both,
 the common block moves into one helper, `search/access_filter.py::build_base_filter_conditions`,
 and both algorithms call it. New filters are therefore honoured on **every** path (hybrid and

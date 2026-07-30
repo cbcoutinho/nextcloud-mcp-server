@@ -2,7 +2,7 @@
 
 When ``DOCUMENT_OCR_MODE=batch`` the ingest worker drives the gateway's async
 Batch OCR routes via :class:`GatewayBatchOcrClient`
-(``embedding/gateway_batch_client.py``):
+(``providers/gateway_batch.py``):
 
 - ``POST /v1/ocr/batch`` — submit one document, returns a namespaced ``job_id``.
 - ``GET /v1/ocr/batch/{job_id}`` — poll; pending until terminal, then per-page
@@ -25,7 +25,7 @@ import base64
 import pytest
 from pact import match
 
-from nextcloud_mcp_server.embedding.gateway_batch_client import GatewayBatchOcrClient
+from nextcloud_mcp_server.providers.gateway_batch import GatewayBatchOcrClient
 
 pytestmark = pytest.mark.contract
 

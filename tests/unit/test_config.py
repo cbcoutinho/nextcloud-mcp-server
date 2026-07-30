@@ -2,11 +2,19 @@
 
 import logging
 import os
+from dataclasses import fields
 from unittest.mock import patch
 
 import pytest
 
-from nextcloud_mcp_server.config import Settings, _reload_config, get_settings
+from nextcloud_mcp_server.config import (
+    _COMPUTED_FIELDS,
+    _ENV_OVERRIDE,
+    _FIELD_MAP,
+    Settings,
+    _reload_config,
+    get_settings,
+)
 
 
 class TestQdrantConfigValidation:
@@ -150,7 +158,7 @@ class TestGetSettings:
         """DOCUMENT_OCR_MODE / batch tuning must reach settings (regression).
 
         These were added to _DEFAULTS + the Settings dataclass but initially
-        omitted from _field_map, so dynaconf silently ignored the env vars and
+        omitted from _FIELD_MAP, so dynaconf silently ignored the env vars and
         batch mode could never be enabled in production (Deck #332).
         """
         _reload_config()
@@ -166,7 +174,7 @@ class TestGetSettings:
     def test_get_settings_empty_discovery_threshold_from_env(self):
         """VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD must reach settings.
 
-        Guards against the _DEFAULTS / _field_map omission that has silently
+        Guards against the _DEFAULTS / _FIELD_MAP omission that has silently
         dropped env vars before (cf. OCR batch mode #332): the setting is added
         in all three places (defaults, dataclass, field map).
         """
@@ -192,7 +200,7 @@ class TestGetSettings:
     def test_get_settings_pyroscope_from_env(self):
         """PYROSCOPE_ENABLED / _SERVER_ADDRESS must reach settings (Deck #655).
 
-        Guards against the _DEFAULTS / _field_map omission that has silently
+        Guards against the _DEFAULTS / _FIELD_MAP omission that has silently
         dropped other observability env vars before (cf. OCR batch mode, #332).
         """
         _reload_config()
@@ -209,7 +217,7 @@ class TestGetSettings:
         """POD_NAMESPACE / POD_NAME must reach settings (Deck #48).
 
         Same guard as the pyroscope pair above: these are what tag profiles and
-        make a tenant's profiles separable, and a missing _DEFAULTS / _field_map
+        make a tenant's profiles separable, and a missing _DEFAULTS / _FIELD_MAP
         entry would silently drop them with no other test noticing.
         """
         _reload_config()
@@ -855,3 +863,40 @@ class TestNextcloudBrowserUrl:
         """Returns None when no Nextcloud URL is configured at all."""
         settings = Settings()
         assert settings.nextcloud_browser_url is None
+
+
+class TestFieldMapDerivation:
+    """``_FIELD_MAP`` is derived from ``Settings`` rather than restated.
+
+    These guard the derivation that replaced a 145-entry literal. The failure
+    they exist to catch is silent: add a ``Settings`` field whose env var is not
+    ``FIELD.upper()`` and forget ``_ENV_OVERRIDE``, and the field simply never
+    picks up its env var — no error, just a setting that ignores configuration.
+    """
+
+    def test_covers_every_non_computed_field(self):
+        """Every Settings field is mapped unless it is explicitly computed."""
+        expected = {f.name for f in fields(Settings)} - _COMPUTED_FIELDS
+        assert set(_FIELD_MAP) == expected
+
+    def test_computed_fields_are_never_mapped(self):
+        """Computed fields must not be fillable from a same-named env var.
+
+        ``_build_settings`` assigns these from the semantic-search /
+        background-operations resolution; a mapping entry would let a stray env
+        var win over that logic.
+        """
+        assert _COMPUTED_FIELDS.isdisjoint(_FIELD_MAP)
+
+    def test_overrides_are_the_only_non_identity_mappings(self):
+        """Anything not in _ENV_OVERRIDE maps to the upper-cased field name."""
+        non_identity = {f: k for f, k in _FIELD_MAP.items() if k != f.upper()}
+        assert non_identity == _ENV_OVERRIDE
+
+    def test_every_override_names_a_real_field(self):
+        """A renamed or deleted field must not leave a stale override behind."""
+        assert set(_ENV_OVERRIDE) <= {f.name for f in fields(Settings)}
+
+    def test_every_computed_field_is_a_real_field(self):
+        """Same for the computed-field exclusions."""
+        assert _COMPUTED_FIELDS <= {f.name for f in fields(Settings)}

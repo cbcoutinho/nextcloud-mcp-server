@@ -23,7 +23,6 @@ class SimpleProvider(Provider):
     - Normalizes vectors to unit length
 
     Not suitable for production but good for testing semantic search infrastructure.
-    Only supports embeddings, not text generation.
     """
 
     def __init__(self, dimension: int = 384):
@@ -38,11 +37,6 @@ class SimpleProvider(Provider):
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return True
-
-    @property
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
-        return False
 
     def _tokenize(self, text: str) -> list[str]:
         """Tokenize text into lowercase words.
@@ -132,17 +126,6 @@ class SimpleProvider(Provider):
             Vector dimension
         """
         return self.dimension
-
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        """
-        Generate text from a prompt.
-
-        Raises:
-            NotImplementedError: Simple provider doesn't support text generation
-        """
-        raise NotImplementedError(
-            "Text generation not supported by Simple provider - use Ollama, Anthropic, or Bedrock"
-        )
 
     async def close(self) -> None:
         """Close the provider (no-op for simple provider)."""

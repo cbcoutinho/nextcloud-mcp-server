@@ -1,4 +1,4 @@
-"""Amazon Bedrock provider for embeddings and text generation."""
+"""Amazon Bedrock provider for embeddings."""
 
 import json
 import logging
@@ -20,11 +20,10 @@ logger = logging.getLogger(__name__)
 
 class BedrockProvider(Provider):
     """
-    Amazon Bedrock provider supporting both embeddings and text generation.
+    Amazon Bedrock provider for embeddings.
 
     Uses AWS Bedrock Runtime API with boto3. Supports various model families:
     - Embeddings: amazon.titan-embed-text-v1, amazon.titan-embed-text-v2, cohere.embed-*
-    - Text Generation: anthropic.claude-*, meta.llama3-*, amazon.titan-text-*, mistral.*, etc.
 
     Requires AWS credentials configured via:
     - Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
@@ -32,7 +31,7 @@ class BedrockProvider(Provider):
     - IAM role (when running on AWS)
     """
 
-    # Matches ollama.py / openai.py / anthropic.py.
+    # Matches ollama.py / openai.py.
     DEFAULT_TIMEOUT_SECONDS = 120
     DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 
@@ -40,7 +39,6 @@ class BedrockProvider(Provider):
         self,
         region_name: str | None = None,
         embedding_model: str | None = None,
-        generation_model: str | None = None,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
     ):
@@ -51,8 +49,6 @@ class BedrockProvider(Provider):
             region_name: AWS region (e.g., "us-east-1"). Defaults to AWS_REGION env var.
             embedding_model: Model ID for embeddings (e.g., "amazon.titan-embed-text-v2:0").
                 None disables embeddings.
-            generation_model: Model ID for text generation (e.g., "anthropic.claude-3-sonnet-20240229-v1:0").
-                None disables generation.
             aws_access_key_id: AWS access key (optional, uses default credential chain if not provided)
             aws_secret_access_key: AWS secret key (optional, uses default credential chain if not provided)
 
@@ -65,7 +61,6 @@ class BedrockProvider(Provider):
             )
 
         self.embedding_model = embedding_model
-        self.generation_model = generation_model
         self._dimension: int | None = None  # Detected dynamically
 
         # Initialize bedrock-runtime client.
@@ -90,21 +85,15 @@ class BedrockProvider(Provider):
         self.client = boto3.client("bedrock-runtime", **client_kwargs)
 
         logger.info(
-            "Initialized Bedrock provider in region %s (embedding_model=%s, generation_model=%s)",
+            "Initialized Bedrock provider in region %s (embedding_model=%s)",
             region_name or "default",
             embedding_model,
-            generation_model,
         )
 
     @property
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return self.embedding_model is not None
-
-    @property
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
-        return self.generation_model is not None
 
     def _create_embedding_request(self, text: str) -> dict[str, Any]:
         """
@@ -299,146 +288,6 @@ class BedrockProvider(Provider):
                 "Call _detect_dimension() first or generate an embedding."
             )
         return self._dimension
-
-    def _create_generation_request(
-        self, prompt: str, max_tokens: int
-    ) -> dict[str, Any]:
-        """
-        Create model-specific text generation request payload.
-
-        Args:
-            prompt: The prompt to generate from
-            max_tokens: Maximum tokens to generate
-
-        Returns:
-            Request payload dict for the generation model
-        """
-        if not self.generation_model:
-            raise NotImplementedError(
-                "Text generation not supported - no generation_model configured"
-            )
-
-        # Anthropic Claude models
-        if self.generation_model.startswith("anthropic.claude"):
-            return {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens,
-                "temperature": 0.7,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-
-        # Meta Llama models
-        elif self.generation_model.startswith("meta.llama"):
-            return {"prompt": prompt, "max_gen_len": max_tokens, "temperature": 0.7}
-
-        # Amazon Titan Text models
-        elif self.generation_model.startswith("amazon.titan-text"):
-            return {
-                "inputText": prompt,
-                "textGenerationConfig": {
-                    "maxTokenCount": max_tokens,
-                    "temperature": 0.7,
-                },
-            }
-
-        # Mistral models
-        elif self.generation_model.startswith("mistral"):
-            return {"prompt": prompt, "max_tokens": max_tokens, "temperature": 0.7}
-
-        # Unknown model - try Claude format as default
-        else:
-            logger.warning(
-                "Unknown generation model format for %s, using Claude format as default",
-                self.generation_model,
-            )
-            return {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens,
-                "temperature": 0.7,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-
-    def _parse_generation_response(self, response: dict[str, Any]) -> str:
-        """
-        Parse model-specific text generation response.
-
-        Args:
-            response: Raw response from Bedrock
-
-        Returns:
-            Generated text
-        """
-        # Anthropic Claude models
-        if self.generation_model and self.generation_model.startswith(
-            "anthropic.claude"
-        ):
-            return response["content"][0]["text"]
-
-        # Meta Llama models
-        elif self.generation_model and self.generation_model.startswith("meta.llama"):
-            return response["generation"]
-
-        # Amazon Titan Text models
-        elif self.generation_model and self.generation_model.startswith(
-            "amazon.titan-text"
-        ):
-            return response["results"][0]["outputText"]
-
-        # Mistral models
-        elif self.generation_model and self.generation_model.startswith("mistral"):
-            return response["outputs"][0]["text"]
-
-        # Unknown model - try common response fields
-        else:
-            logger.warning(
-                "Unknown generation response format for %s, trying common fields",
-                self.generation_model,
-            )
-            # Try common response field names
-            for field in ["text", "generation", "outputText", "completion"]:
-                if field in response:
-                    return response[field]
-            # Last resort: return JSON string
-            return json.dumps(response)
-
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        """
-        Generate text from a prompt.
-
-        Args:
-            prompt: The prompt to generate from
-            max_tokens: Maximum tokens to generate
-
-        Returns:
-            Generated text
-
-        Raises:
-            NotImplementedError: If generation not enabled (no generation_model)
-            ClientError: If Bedrock API call fails
-        """
-        if not self.supports_generation:
-            raise NotImplementedError(
-                "Text generation not supported - no generation_model configured"
-            )
-
-        try:
-            request_body = self._create_generation_request(prompt, max_tokens)
-
-            response = self.client.invoke_model(
-                modelId=self.generation_model,
-                body=json.dumps(request_body),
-                accept="application/json",
-                contentType="application/json",
-            )
-
-            response_body = json.loads(response["body"].read())
-            text = self._parse_generation_response(response_body)
-
-            return text
-
-        except (BotoCoreError, ClientError) as e:
-            logger.error("Bedrock generation error: %s", e)
-            raise
 
     async def close(self) -> None:
         """Close the client (no-op for boto3 clients)."""

@@ -101,7 +101,6 @@ jobs:
             extra-compose-profiles: "--profile mail"
             extra-args: >-
               --ignore=tests/integration/test_qdrant_collection_creation.py
-              --ignore=tests/rag_evaluation/
 
           - mode: multi-user-basic
             profile: multi-user-basic

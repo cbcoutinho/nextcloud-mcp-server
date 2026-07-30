@@ -8,12 +8,6 @@
 
     <!-- Alpine.js for state management -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-
-    <!-- Plotly.js for vector visualization -->
-    <script src="https://cdn.plot.ly/plotly-3.3.0.min.js"></script>
-
-    <!-- Vector Viz static assets -->
-    <link rel="stylesheet" href="/app/static/vector-viz.css">
 {% endblock %}
 
 {% block extra_styles %}
@@ -245,21 +239,6 @@
                         </a>
                     </div>
                 </li>
-
-                <li class="app-navigation-entry" :class="{ 'active': activeSection === 'vector-viz' }">
-                    <div class="app-navigation-entry__wrapper">
-                        <a href="#"
-                           @click.prevent="activeSection = 'vector-viz'"
-                           class="app-navigation-entry-link">
-                            <span class="app-navigation-entry-icon">
-                                <svg class="nav-icon" viewBox="0 0 24 24">
-                                    <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z" />
-                                </svg>
-                            </span>
-                            <span class="app-navigation-entry__name">Vector Viz</span>
-                        </a>
-                    </div>
-                </li>
                 {% endif %}
 
                 {% if show_webhooks_tab %}
@@ -357,156 +336,21 @@
                 </div>
 
                 <div class="info-section">
-                    <h2>RAG Workflow Integration</h2>
+                    <h2>How Assistants Use This Data</h2>
                     <p>
-                        This UI allows you to <strong>test the same queries that Large Language Models (LLMs) would use</strong> in a
-                        Retrieval-Augmented Generation (RAG) workflow. When an AI assistant needs to answer questions about your data:
+                        An MCP client's LLM answers questions about your Nextcloud content by calling the
+                        <code>nc_semantic_search</code> tool — a standard Retrieval-Augmented Generation (RAG)
+                        flow driven entirely from the client side:
                     </p>
                     <ul>
                         <li><strong>Step 1:</strong> The assistant converts your question into a search query</li>
                         <li><strong>Step 2:</strong> The MCP server retrieves relevant document chunks using semantic search</li>
                         <li><strong>Step 3:</strong> Retrieved context is passed to the LLM to generate an informed answer</li>
                     </ul>
-
-                    <!-- RAG Workflow Diagram -->
-                    <div style="background: var(--color-main-background); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 24px; margin: 24px 0; overflow-x: auto;">
-                        <div style="text-align: center; font-weight: 600; margin-bottom: 20px; color: var(--color-primary-element); font-size: 16px;">
-                            MCP Sampling RAG Workflow
-                        </div>
-
-                        <!-- Four-component bidirectional flow -->
-                        <div style="max-width: 1000px; margin: 0 auto;">
-                            <div style="display: grid; grid-template-columns: 0.7fr auto 1fr auto 1fr auto 0.9fr; gap: 10px; align-items: center;">
-                                <!-- User -->
-                                <div style="background: var(--color-background-hover); border: 2px solid var(--color-border); border-radius: var(--border-radius-large); padding: 14px; text-align: center;">
-                                    <div style="font-size: 26px; margin-bottom: 5px;">👤</div>
-                                    <div style="font-weight: 600; color: var(--color-main-text); font-size: 12px;">User</div>
-                                    <div style="font-size: 9px; color: var(--color-text-maxcontrast); font-style: italic; margin-top: 5px; line-height: 1.2;">
-                                        "What are health<br>benefits of coffee?"
-                                    </div>
-                                </div>
-
-                                <!-- Arrow User <-> Client -->
-                                <div style="text-align: center;">
-                                    <div style="font-size: 20px; color: var(--color-text-maxcontrast);">↔</div>
-                                </div>
-
-                                <!-- MCP Client + LLM (combined) -->
-                                <div style="background: var(--color-primary-element-light); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 12px; text-align: center;">
-                                    <div style="font-weight: 600; color: var(--color-primary-element); font-size: 13px; margin-bottom: 8px;">MCP Client + LLM</div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 8px; margin-bottom: 6px;">
-                                        <div style="font-size: 9px; color: var(--color-text-maxcontrast);">(Claude Code)</div>
-                                    </div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 8px; border: 2px solid var(--color-primary-element);">
-                                        <div style="font-size: 16px; margin-bottom: 2px;">🧠</div>
-                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 10px;">Client's LLM</div>
-                                        <div style="font-size: 8px; color: var(--color-text-maxcontrast);">(Claude)</div>
-                                    </div>
-
-                                    <div style="margin-top: 8px; font-size: 8px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                        <strong>Enables RAG:</strong><br>
-                                        Receives context,<br>
-                                        generates answer
-                                    </div>
-                                </div>
-
-                                <!-- Arrow Client <-> Server -->
-                                <div style="text-align: center;">
-                                    <div style="font-size: 20px; color: var(--color-primary-element);">↔</div>
-                                    <div style="font-size: 7px; color: var(--color-text-maxcontrast); margin-top: 2px; font-weight: 600; line-height: 1.1;">
-                                        Query +<br>
-                                        Sampling
-                                    </div>
-                                </div>
-
-                                <!-- MCP Server -->
-                                <div style="background: var(--color-primary-element-light); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 12px; text-align: center;">
-                                    <div style="font-weight: 600; color: var(--color-primary-element); font-size: 13px; margin-bottom: 8px;">MCP Server</div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
-                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">1. Semantic Search</div>
-                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                            Vector embeddings<br>
-                                            BM25 Hybrid + RRF
-                                        </div>
-                                    </div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
-                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">2. Retrieve Context</div>
-                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                            Top relevant docs<br>
-                                            with scores
-                                        </div>
-                                    </div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
-                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">3. Format Response</div>
-                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                            Document chunks<br>
-                                            with citations
-                                        </div>
-                                    </div>
-
-                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px;">
-                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">4. Send to LLM</div>
-                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                            Via MCP sampling<br>
-                                            for answer generation
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Arrow Server <-> Nextcloud -->
-                                <div style="text-align: center;">
-                                    <div style="font-size: 20px; color: var(--color-primary-element);">↔</div>
-                                    <div style="font-size: 7px; color: var(--color-text-maxcontrast); margin-top: 2px; font-weight: 600; line-height: 1.1;">
-                                        Retrieve
-                                    </div>
-                                </div>
-
-                                <!-- Nextcloud -->
-                                <div style="background: var(--color-background-hover); border: 2px solid var(--color-border); border-radius: var(--border-radius-large); padding: 12px; text-align: center; position: relative;">
-                                    <img src="/app/static/nextcloud-logo.png" alt="Nextcloud" style="width: 40px; height: 40px; margin-bottom: 6px;" />
-                                    <div style="font-weight: 600; color: var(--color-main-text); font-size: 12px; margin-bottom: 4px;">Nextcloud</div>
-                                    <div style="font-size: 8px; color: var(--color-text-maxcontrast); line-height: 1.2;">
-                                        Notes, Calendar,<br>
-                                        Files, Contacts,<br>
-                                        Deck
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Explanation below diagram -->
-                            <div style="margin-top: 24px; padding: 16px; background: var(--color-background-hover); border-radius: var(--border-radius); border-left: 4px solid var(--color-primary-element);">
-                                <div style="font-size: 12px; color: var(--color-main-text); line-height: 1.6;">
-                                    <strong>How RAG works via MCP Sampling:</strong>
-                                </div>
-                                <ol style="margin: 8px 0 0 0; padding-left: 20px; font-size: 11px; color: var(--color-text-maxcontrast); line-height: 1.6;">
-                                    <li>User asks question through MCP Client</li>
-                                    <li>Client sends query to MCP Server</li>
-                                    <li>Server retrieves relevant document context from Nextcloud</li>
-                                    <li><strong>Server sends context back to Client's LLM</strong> (MCP Sampling)</li>
-                                    <li>Client's LLM generates answer with citations using retrieved context</li>
-                                    <li>Answer returned to user</li>
-                                </ol>
-                                <div style="margin-top: 8px; font-size: 10px; color: var(--color-text-maxcontrast); font-style: italic;">
-                                    The server has no LLM - it only retrieves context. The client's existing LLM is reused for answer generation.
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <p style="margin-top: 16px;">
-                        <strong>Key Point:</strong> The MCP server retrieves context but doesn't generate answers itself.
-                        Through <strong>MCP sampling</strong>, it requests the client's LLM to generate responses, giving users
-                        full control over which model is used and ensuring all processing happens client-side.
-                    </p>
-
                     <p>
-                        By using this interface, you can preview search results, understand relevance scores, and verify
-                        that the system retrieves the right information before it reaches the LLM.
+                        <strong>Key Point:</strong> This server retrieves context but never generates answers and holds
+                        no model credentials. Answer generation happens in the client, so you keep full control over
+                        which model is used.
                     </p>
                 </div>
 
@@ -536,19 +380,6 @@
                         <p>
                             Monitor real-time indexing progress with metrics for indexed documents, pending queue,
                             and synchronization status.
-                        </p>
-                    </a>
-
-                    <a href="#" @click.prevent="activeSection = 'vector-viz'" class="feature-card">
-                        <div class="feature-icon">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z" />
-                            </svg>
-                        </div>
-                        <h3>Vector Visualization</h3>
-                        <p>
-                            Interactive search interface with 2D PCA visualization. Compare algorithms,
-                            view relevance scores, and explore matched document chunks.
                         </p>
                     </a>
                 </div>
@@ -621,16 +452,6 @@
                     {{ vector_sync_tab_html|safe }}
                 </div>
             </div>
-
-            <!-- Vector Viz Section -->
-            <div x-show="activeSection === 'vector-viz'">
-                <div class="content-section">
-                    <h1>Vector Visualization</h1>
-                    <div hx-get="/app/vector-viz" hx-trigger="load" hx-swap="outerHTML">
-                        <p style="color: #999;">Loading vector visualization...</p>
-                    </div>
-                </div>
-            </div>
             {% endif %}
 
             {% if show_webhooks_tab %}
@@ -645,10 +466,4 @@
         </div>
     </main>
 </div>
-
-<script>
-    // Set global Nextcloud base URL for use in external JS
-    window.NEXTCLOUD_BASE_URL = '{{ nextcloud_host_for_links }}';
-</script>
-<script src="/app/static/vector-viz.js"></script>
 {% endblock %}

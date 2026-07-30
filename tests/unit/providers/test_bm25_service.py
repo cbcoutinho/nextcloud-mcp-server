@@ -1,4 +1,4 @@
-"""Unit tests for the embedding singleton accessors.
+"""Unit tests for the BM25 sparse-embedding singleton accessor.
 
 Pins the invariant that ``get_bm25_service()`` instantiates its
 singleton OFF the event loop. The BM25 provider's constructor calls
@@ -18,7 +18,7 @@ import time
 import anyio
 import pytest
 
-from nextcloud_mcp_server.embedding import service as svc
+from nextcloud_mcp_server.providers import bm25 as svc
 
 pytestmark = pytest.mark.unit
 

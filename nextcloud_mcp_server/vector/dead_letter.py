@@ -46,7 +46,7 @@ from qdrant_client import models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,8 @@ async def mark_dead_letter(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
         # Match the collection's dense slot, which is always sized from the
-        # embedding service (mirrors placeholder.py / collection creation).
-        dimension = get_embedding_service().get_dimension()
+        # embedding provider (mirrors placeholder.py / collection creation).
+        dimension = get_provider().get_dimension()
 
         payload: dict[str, Any] = {
             "doc_id": doc_id,

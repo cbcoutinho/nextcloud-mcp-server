@@ -969,14 +969,14 @@ def _stub_settings_and_embedding(mocker, monkeypatch):
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: settings
     )
 
-    embedding_service = mocker.Mock()
-    # No _detect_dimension attribute → the dynamic-detection branch is
-    # skipped. Real Ollama provider has it, but tests don't need to.
-    embedding_service.provider = mocker.Mock(spec_set=[])
-    embedding_service.get_dimension = lambda: 4
+    # spec_set omits _detect_dimension, so the dynamic-detection branch is
+    # skipped. Real Ollama/Bedrock/gateway providers have it; these tests
+    # don't need it.
+    provider = mocker.Mock(spec_set=["get_dimension"])
+    provider.get_dimension = lambda: 4
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: provider,
     )
     return settings
 
@@ -1171,12 +1171,11 @@ async def test_get_qdrant_client_does_not_wrap_network_mode(
     monkeypatch.setattr(
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: settings
     )
-    embedding_service = mocker.Mock()
-    embedding_service.provider = mocker.Mock(spec_set=[])
-    embedding_service.get_dimension = lambda: 4
+    provider = mocker.Mock(spec_set=["get_dimension"])
+    provider.get_dimension = lambda: 4
     monkeypatch.setattr(
-        "nextcloud_mcp_server.embedding.get_embedding_service",
-        lambda: embedding_service,
+        "nextcloud_mcp_server.vector.qdrant_client.get_provider",
+        lambda: provider,
     )
 
     # Drive the create path via the network-mode "not found" signal — an

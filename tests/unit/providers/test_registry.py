@@ -1,4 +1,4 @@
-"""Unit tests for ProviderRegistry — dynaconf-driven auto-detection."""
+"""Unit tests for create_provider() — dynaconf-driven auto-detection."""
 
 import pytest
 

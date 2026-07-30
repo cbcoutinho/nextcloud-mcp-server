@@ -14,7 +14,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from nextcloud_mcp_server.document_processors.pymupdf import PyMuPDFProcessor
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.vector.document_chunker import (
     ChunkWithPosition,
     RecursiveCharacterTextSplitter,
@@ -77,7 +77,7 @@ def create_test_pdf() -> bytes:
 @pytest.fixture
 async def simple_embedding_provider():
     """Simple in-process embedding provider for testing."""
-    return SimpleEmbeddingProvider(dimension=384)
+    return SimpleProvider(dimension=384)
 
 
 @pytest.fixture
@@ -179,7 +179,7 @@ async def test_pdf_indexing_and_search_flow(
     pymupdf_processor: PyMuPDFProcessor,
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
 ):
     """Test complete PDF indexing and semantic search flow."""
 
@@ -290,7 +290,7 @@ async def test_pdf_search_with_filters(
     pymupdf_processor: PyMuPDFProcessor,
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
 ):
     """Test PDF search with metadata filters."""
     from qdrant_client.models import FieldCondition, Filter, MatchValue

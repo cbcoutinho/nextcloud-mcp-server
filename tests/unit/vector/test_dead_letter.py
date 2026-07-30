@@ -7,7 +7,7 @@ by content (``etag``) + escalation config (``tiers_sig``); a scan skips only whi
 both still match, so a content change or a newly-available tier (e.g. OCR enabled)
 makes the document retryable again.
 
-Qdrant is reached via ``get_qdrant_client``/``get_settings``/``get_embedding_service``,
+Qdrant is reached via ``get_qdrant_client``/``get_settings``/``get_provider``,
 all monkeypatched here so the logic runs without a live Qdrant.
 """
 
@@ -49,7 +49,7 @@ def client(monkeypatch) -> AsyncMock:
     monkeypatch.setattr(dl, "get_qdrant_client", AsyncMock(return_value=qc))
     monkeypatch.setattr(dl, "get_settings", lambda: _Settings())
     monkeypatch.setattr(
-        dl, "get_embedding_service", lambda: SimpleNamespace(get_dimension=lambda: 4)
+        dl, "get_provider", lambda: SimpleNamespace(get_dimension=lambda: 4)
     )
     return qc
 

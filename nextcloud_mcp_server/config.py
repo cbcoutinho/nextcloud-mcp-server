@@ -8,7 +8,7 @@ import re
 import socket
 import ssl
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "qdrant_init_backoff_base": 1.0,
     "qdrant_init_backoff_max": 10.0,
     # Keys must uppercase to the env var dynaconf reads (ignore_unknown_envvars):
-    # NEXTCLOUD_OIDC_TOKEN_TYPE / NEXTCLOUD_OIDC_SCOPES, matching _field_map.
+    # NEXTCLOUD_OIDC_TOKEN_TYPE / NEXTCLOUD_OIDC_SCOPES, matching _ENV_OVERRIDE.
     "nextcloud_oidc_token_type": "Bearer",
     "nextcloud_oidc_scopes": "",
     "port": 8000,
@@ -162,19 +162,16 @@ _DEFAULTS: dict[str, Any] = {
     # Ollama
     "ollama_base_url": None,
     "ollama_embedding_model": "nomic-embed-text",
-    "ollama_generation_model": None,
     "ollama_verify_ssl": True,
     # OpenAI
     "openai_api_key": None,
     "openai_base_url": None,
     "openai_embedding_model": "text-embedding-3-small",
-    "openai_generation_model": None,
     # Bedrock (AWS)
     "aws_region": None,
     "aws_access_key_id": None,
     "aws_secret_access_key": None,
     "bedrock_embedding_model": None,
-    "bedrock_generation_model": None,
     # Mistral
     "mistral_api_key": None,
     "mistral_embedding_model": "mistral-embed",
@@ -1102,24 +1099,21 @@ class Settings:
     qdrant_api_key: str | None = None
     qdrant_collection: str = "nextcloud_content"
 
-    # Ollama settings (embeddings + optional generation)
+    # Ollama settings
     ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
-    ollama_generation_model: str | None = None
     ollama_verify_ssl: bool = True
 
-    # OpenAI settings (embeddings + optional generation)
+    # OpenAI settings
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_embedding_model: str = "text-embedding-3-small"
-    openai_generation_model: str | None = None
 
     # Bedrock (AWS) settings — boto3 also reads these from its credential chain
     aws_region: str | None = None
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     bedrock_embedding_model: str | None = None
-    bedrock_generation_model: str | None = None
 
     # Mistral settings (embeddings only)
     mistral_api_key: str | None = None
@@ -1643,11 +1637,7 @@ class Settings:
         Does NOT handle the gateway short-circuit — callers layer that on top
         as needed (see the asymmetry note on ``get_embedding_model_name``).
         """
-        if (
-            self.aws_region
-            or self.bedrock_embedding_model
-            or self.bedrock_generation_model
-        ):
+        if self.aws_region or self.bedrock_embedding_model:
             return "bedrock", self.bedrock_embedding_model or "bedrock-default"
 
         if self.openai_api_key:
@@ -1665,8 +1655,8 @@ class Settings:
         """
         Get the active embedding model name based on provider priority.
 
-        Priority order (same as ProviderRegistry): bedrock → openai → mistral →
-        ollama → simple (returns "simple-{dimension}").
+        Priority order (same as providers.create_provider): bedrock → openai →
+        mistral → ollama → simple (returns "simple-{dimension}").
 
         Returns:
             Active embedding model name
@@ -1760,6 +1750,58 @@ class Settings:
     def enable_background_operations(self) -> bool:
         """Background operations enabled (ADR-021 alias for enable_offline_access)."""
         return self.enable_offline_access
+
+
+# ---------------------------------------------------------------------------
+# Field → env-var mapping, derived from ``Settings`` rather than restated.
+#
+# Every setting used to be written three times: once in ``_DEFAULTS`` (the
+# dynaconf key schema), once as a ``Settings`` field, and once in a literal
+# field→env map. The map was 145 entries of which 140 were exactly
+# ``field.upper()``, so it is now computed and only the genuine exceptions are
+# spelled out below.
+# ---------------------------------------------------------------------------
+
+# Fields whose env var is NOT simply the upper-cased field name.
+_ENV_OVERRIDE = {
+    "deployment_mode": "MCP_DEPLOYMENT_MODE",
+    "oidc_client_id": "NEXTCLOUD_OIDC_CLIENT_ID",
+    "oidc_client_secret": "NEXTCLOUD_OIDC_CLIENT_SECRET",
+    "oidc_token_type": "NEXTCLOUD_OIDC_TOKEN_TYPE",
+    "oidc_scopes": "NEXTCLOUD_OIDC_SCOPES",
+}
+
+# Derived fields with no env var of their own, so there is nothing to map:
+# ``vector_sync_enabled``/``enable_offline_access`` come from the
+# ENABLE_SEMANTIC_SEARCH / ENABLE_BACKGROUND_OPERATIONS resolution, and
+# ``enable_login_flow``/``enable_multi_user_basic_auth`` from the deployment
+# mode (the latter two aren't even dynaconf keys — see ``_DEFAULTS``).
+#
+# Excluding them is currently belt-and-braces rather than load-bearing: both
+# assignment sites are unconditional (``_build_settings`` overwrites the two
+# resolution-derived fields right after the comprehension, and
+# ``__post_init__`` recomputes the two mode-derived ones), so an entry here
+# would be inert rather than unsafe. It becomes load-bearing the moment
+# either site is made conditional — keep the derivation the only writer.
+_COMPUTED_FIELDS = frozenset(
+    {
+        "vector_sync_enabled",
+        "enable_offline_access",
+        "enable_login_flow",
+        "enable_multi_user_basic_auth",
+    }
+)
+
+
+def _env_key(field_name: str) -> str:
+    """Return the dynaconf/env key a ``Settings`` field is read from."""
+    return _ENV_OVERRIDE.get(field_name, field_name.upper())
+
+
+# Settings field name -> dynaconf key. Computed fields are excluded.
+_FIELD_MAP = {
+    f.name: _env_key(f.name) for f in fields(Settings) if f.name not in _COMPUTED_FIELDS
+}
 
 
 def _get_semantic_search_enabled() -> bool:
@@ -1950,190 +1992,11 @@ def _build_settings() -> Settings:
     enable_semantic_search = _get_semantic_search_enabled()
     enable_background_operations = _get_background_operations_enabled()
 
-    # Mapping from Settings field name to dynaconf key
-    _field_map = {
-        # Deployment mode (ADR-021)
-        "deployment_mode": "MCP_DEPLOYMENT_MODE",
-        # OAuth/OIDC settings
-        "oidc_discovery_url": "OIDC_DISCOVERY_URL",
-        "oidc_client_id": "NEXTCLOUD_OIDC_CLIENT_ID",
-        "oidc_client_secret": "NEXTCLOUD_OIDC_CLIENT_SECRET",
-        "oidc_issuer": "OIDC_ISSUER",
-        "oidc_resource_server_id": "OIDC_RESOURCE_SERVER_ID",
-        "oidc_token_type": "NEXTCLOUD_OIDC_TOKEN_TYPE",
-        "oidc_scopes": "NEXTCLOUD_OIDC_SCOPES",
-        "oidc_discovery_max_attempts": "OIDC_DISCOVERY_MAX_ATTEMPTS",
-        "oidc_discovery_backoff_base": "OIDC_DISCOVERY_BACKOFF_BASE",
-        "oidc_discovery_backoff_max": "OIDC_DISCOVERY_BACKOFF_MAX",
-        "qdrant_init_max_attempts": "QDRANT_INIT_MAX_ATTEMPTS",
-        "qdrant_init_backoff_base": "QDRANT_INIT_BACKOFF_BASE",
-        "qdrant_init_backoff_max": "QDRANT_INIT_BACKOFF_MAX",
-        "port": "PORT",
-        # Nextcloud settings
-        "nextcloud_host": "NEXTCLOUD_HOST",
-        "nextcloud_username": "NEXTCLOUD_USERNAME",
-        "nextcloud_password": "NEXTCLOUD_PASSWORD",
-        "nextcloud_app_password": "NEXTCLOUD_APP_PASSWORD",
-        "nextcloud_public_issuer_url": "NEXTCLOUD_PUBLIC_ISSUER_URL",
-        "nextcloud_public_url": "NEXTCLOUD_PUBLIC_URL",
-        "cookie_secure": "COOKIE_SECURE",
-        # Nextcloud SSL/TLS settings
-        "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
-        "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
-        "nextcloud_http_keepalive": "NEXTCLOUD_HTTP_KEEPALIVE",
-        # Postgres backend pool sizing (ADR-026)
-        "database_pool_size": "DATABASE_POOL_SIZE",
-        "database_max_overflow": "DATABASE_MAX_OVERFLOW",
-        # ADR-005: Token Audience Validation
-        "nextcloud_mcp_server_url": "NEXTCLOUD_MCP_SERVER_URL",
-        "nextcloud_resource_uri": "NEXTCLOUD_RESOURCE_URI",
-        # Token verification endpoints
-        "jwks_uri": "JWKS_URI",
-        "introspection_uri": "INTROSPECTION_URI",
-        "userinfo_uri": "USERINFO_URI",
-        # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` no
-        # longer have env-var aliases — both are derived from the resolved
-        # MCP_DEPLOYMENT_MODE in detect_auth_mode() so users only configure
-        # the mode (ADR-022 follow-up).
-        # Token and webhook storage settings
-        "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
-        "token_storage_db": "TOKEN_STORAGE_DB",
-        # Webhook auth (ADR-010)
-        "webhook_secret": "WEBHOOK_SECRET",
-        "webhook_internal_url": "WEBHOOK_INTERNAL_URL",
-        # Vector sync settings (ADR-007)
-        "vector_sync_scan_interval": "VECTOR_SYNC_SCAN_INTERVAL",
-        "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
-        "vector_sync_fast_concurrency": "VECTOR_SYNC_FAST_CONCURRENCY",
-        "vector_sync_structured_concurrency": "VECTOR_SYNC_STRUCTURED_CONCURRENCY",
-        "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
-        "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
-        "vector_density_snapshot_enabled": "VECTOR_DENSITY_SNAPSHOT_ENABLED",
-        "vector_density_snapshot_interval": "VECTOR_DENSITY_SNAPSHOT_INTERVAL",
-        "vector_density_snapshot_max_documents": "VECTOR_DENSITY_SNAPSHOT_MAX_DOCUMENTS",
-        "vector_ram_hnsw_overhead_factor": "VECTOR_RAM_HNSW_OVERHEAD_FACTOR",
-        "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
-        "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
-        "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
-        "vector_sync_tag": "VECTOR_SYNC_TAG",
-        "vector_sync_keyword_tag": "VECTOR_SYNC_KEYWORD_TAG",
-        "vector_sync_empty_discovery_delete_threshold": "VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD",
-        # Verify-on-read (ADR-019)
-        "verification_concurrency": "VERIFICATION_CONCURRENCY",
-        # Qdrant settings
-        "qdrant_url": "QDRANT_URL",
-        "qdrant_location": "QDRANT_LOCATION",
-        "qdrant_api_key": "QDRANT_API_KEY",
-        "qdrant_collection": "QDRANT_COLLECTION",
-        # Ollama settings
-        "ollama_base_url": "OLLAMA_BASE_URL",
-        "ollama_embedding_model": "OLLAMA_EMBEDDING_MODEL",
-        "ollama_generation_model": "OLLAMA_GENERATION_MODEL",
-        "ollama_verify_ssl": "OLLAMA_VERIFY_SSL",
-        # OpenAI settings
-        "openai_api_key": "OPENAI_API_KEY",
-        "openai_base_url": "OPENAI_BASE_URL",
-        "openai_embedding_model": "OPENAI_EMBEDDING_MODEL",
-        "openai_generation_model": "OPENAI_GENERATION_MODEL",
-        # Bedrock (AWS) settings
-        "aws_region": "AWS_REGION",
-        "aws_access_key_id": "AWS_ACCESS_KEY_ID",
-        "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
-        "bedrock_embedding_model": "BEDROCK_EMBEDDING_MODEL",
-        "bedrock_generation_model": "BEDROCK_GENERATION_MODEL",
-        # Mistral settings
-        "mistral_api_key": "MISTRAL_API_KEY",
-        "mistral_embedding_model": "MISTRAL_EMBEDDING_MODEL",
-        "mistral_base_url": "MISTRAL_BASE_URL",
-        # Simple provider
-        "simple_embedding_dimension": "SIMPLE_EMBEDDING_DIMENSION",
-        # Document chunking settings
-        "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
-        "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
-        "document_chunk_page_aware": "DOCUMENT_CHUNK_PAGE_AWARE",
-        "document_chunk_page_pack": "DOCUMENT_CHUNK_PAGE_PACK",
-        "chunking_config_version": "CHUNKING_CONFIG_VERSION",
-        "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
-        "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
-        "document_read_timeout_seconds": "DOCUMENT_READ_TIMEOUT_SECONDS",
-        "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
-        "webdav_write_max_mb": "WEBDAV_WRITE_MAX_MB",
-        "mcp_dns_rebinding_protection": "MCP_DNS_REBINDING_PROTECTION",
-        "mcp_allowed_hosts": "MCP_ALLOWED_HOSTS",
-        "mcp_allowed_origins": "MCP_ALLOWED_ORIGINS",
-        "cors_allow_origins": "CORS_ALLOW_ORIGINS",
-        "document_markdown_max_pages": "DOCUMENT_MARKDOWN_MAX_PAGES",
-        "pymupdf_extract_images": "PYMUPDF_EXTRACT_IMAGES",
-        "pymupdf_image_dir": "PYMUPDF_IMAGE_DIR",
-        "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
-        "document_parse_page_window": "DOCUMENT_PARSE_PAGE_WINDOW",
-        "document_parse_process_slots": "DOCUMENT_PARSE_PROCESS_SLOTS",
-        "document_stream_download_enabled": "DOCUMENT_STREAM_DOWNLOAD_ENABLED",
-        "document_spool_dir": "DOCUMENT_SPOOL_DIR",
-        "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
-        "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
-        "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
-        "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
-        "document_ocr_model": "DOCUMENT_OCR_MODEL",
-        "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
-        "document_ocr_mode": "DOCUMENT_OCR_MODE",
-        "document_ocr_batch_poll_seconds": "DOCUMENT_OCR_BATCH_POLL_SECONDS",
-        "document_ocr_min_text_quality": "DOCUMENT_OCR_MIN_TEXT_QUALITY",
-        "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
-        "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
-        "document_ocr_detect_scanned": "DOCUMENT_OCR_DETECT_SCANNED",
-        "document_glyph_corruption_ratio": "DOCUMENT_GLYPH_CORRUPTION_RATIO",
-        # Docling backend (shared by the OCR backend + images processor). Note:
-        # DOCLING_DO_OCR is intentionally NOT here -- it's read via dynaconf for the
-        # image processor only (the OCR backend always OCRs), like the unstructured_* keys.
-        "docling_api_url": "DOCLING_API_URL",
-        "docling_ocr_lang": "DOCLING_OCR_LANG",
-        "docling_pipeline": "DOCLING_PIPELINE",
-        "docling_vlm_preset": "DOCLING_VLM_PRESET",
-        # Observability settings
-        "metrics_enabled": "METRICS_ENABLED",
-        "metrics_port": "METRICS_PORT",
-        "otel_exporter_otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "otel_exporter_verify_ssl": "OTEL_EXPORTER_VERIFY_SSL",
-        "otel_service_name": "OTEL_SERVICE_NAME",
-        "otel_traces_sampler": "OTEL_TRACES_SAMPLER",
-        "otel_traces_sampler_arg": "OTEL_TRACES_SAMPLER_ARG",
-        "pyroscope_enabled": "PYROSCOPE_ENABLED",
-        "pyroscope_server_address": "PYROSCOPE_SERVER_ADDRESS",
-        "pod_namespace": "POD_NAMESPACE",
-        "pod_name": "POD_NAME",
-        "log_format": "LOG_FORMAT",
-        "log_level": "LOG_LEVEL",
-        "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",
-        "excluded_tags": "EXCLUDED_TAGS",
-        # MCP decomposition hook points (design §10)
-        "embedding_provider": "EMBEDDING_PROVIDER",
-        "ingest_queue": "INGEST_QUEUE",
-        "mcp_role": "MCP_ROLE",
-        "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",
-        "ingest_doing_max_seconds": "INGEST_DOING_MAX_SECONDS",
-        "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
-        "ingest_listen_notify": "INGEST_LISTEN_NOTIFY",
-        "ingest_escalation_enabled": "INGEST_ESCALATION_ENABLED",
-        "ingest_transient_max_attempts": "INGEST_TRANSIENT_MAX_ATTEMPTS",
-        "ingest_reclaim_retry_delay_seconds": "INGEST_RECLAIM_RETRY_DELAY_SECONDS",
-        "collection_metadata_source": "COLLECTION_METADATA_SOURCE",
-        "collection_metadata_api_url": "COLLECTION_METADATA_API_URL",
-        "embedding_gateway_url": "EMBEDDING_GATEWAY_URL",
-        "embedding_gateway_model": "EMBEDDING_GATEWAY_MODEL",
-        "embedding_gateway_token_url": "EMBEDDING_GATEWAY_TOKEN_URL",
-        "embedding_gateway_client_id": "EMBEDDING_GATEWAY_CLIENT_ID",
-        "embedding_gateway_client_secret": "EMBEDDING_GATEWAY_CLIENT_SECRET",
-        "embedding_gateway_scope": "EMBEDDING_GATEWAY_SCOPE",
-        "acl_prefilter_enabled": "ACL_PREFILTER_ENABLED",
-        "usage_metering_enabled": "USAGE_METERING_ENABLED",
-    }
-
     # Only pass values that dynaconf actually has; omit unset keys so
     # the Settings dataclass defaults apply.
     kwargs = {
         field: val
-        for field, key in _field_map.items()
+        for field, key in _FIELD_MAP.items()
         if (val := _dget(key)) is not _UNSET
     }
 

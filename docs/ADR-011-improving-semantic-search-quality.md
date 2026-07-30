@@ -35,7 +35,8 @@ chunks = [words[i:i+chunk_size] for i in range(0, len(words), chunk_size-overlap
 
 ### 2. Suboptimal Embedding Model
 
-**Current Implementation** (`nextcloud_mcp_server/embedding/ollama_provider.py:33`):
+**Current Implementation** (was `nextcloud_mcp_server/embedding/ollama_provider.py:33`;
+now `providers/ollama.py`):
 ```python
 _model = "nomic-embed-text"  # 768 dimensions
 _dimension = 768  # Hardcoded
@@ -482,7 +483,7 @@ dependencies = [
 **Implementation**:
 
 ```python
-# nextcloud_mcp_server/embedding/ollama_provider.py
+# nextcloud_mcp_server/providers/ollama.py (was embedding/ollama_provider.py)
 
 class OllamaEmbeddingProvider(EmbeddingProvider):
     def __init__(self, base_url: str, model: str, verify_ssl: bool = True):

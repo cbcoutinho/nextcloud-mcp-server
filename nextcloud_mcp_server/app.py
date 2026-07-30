@@ -4,7 +4,6 @@ import base64
 import json
 import logging
 import os
-import random
 import time
 import traceback
 from collections.abc import AsyncIterator
@@ -88,11 +87,6 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     user_info_html,
     vector_sync_status_fragment,
 )
-from nextcloud_mcp_server.auth.viz_routes import (
-    chunk_context_endpoint,
-    vector_visualization_html,
-    vector_visualization_search,
-)
 from nextcloud_mcp_server.auth.webhook_routes import (
     disable_webhook_preset,
     enable_webhook_preset,
@@ -122,6 +116,7 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
+from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
     configure_semantic_tools,
@@ -639,32 +634,31 @@ async def _init_qdrant_collection_with_retry() -> None:
     ``QDRANT_INIT_MAX_ATTEMPTS=1`` to restore the original fail-fast behavior.
     """
     settings = get_settings()
-    max_attempts = max(1, settings.qdrant_init_max_attempts)
-    backoff_base = max(0.0, settings.qdrant_init_backoff_base)
-    backoff_max = max(0.0, settings.qdrant_init_backoff_max)
 
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await get_qdrant_client()  # Triggers collection creation if needed
-            logger.info("Qdrant collection ready")
-            return
-        except Exception as exc:
-            if not _qdrant_init_error_is_transient(exc) or attempt >= max_attempts:
-                logger.error("Failed to initialize Qdrant collection: %s", exc)
-                raise RuntimeError(
-                    f"Cannot start vector sync - Qdrant initialization failed: {exc}"
-                ) from exc
-            # Full jitter over a capped exponential backoff.
-            delay = min(backoff_max, backoff_base * 2 ** (attempt - 1))
-            sleep_for = random.uniform(0, delay)
-            logger.warning(
-                "Qdrant collection init attempt %d/%d failed (%s); retrying in %.1fs",
-                attempt,
-                max_attempts,
-                type(exc).__name__,
-                sleep_for,
-            )
-            await anyio.sleep(sleep_for)
+    @retry_on_transient(
+        Exception,
+        should_retry=_qdrant_init_error_is_transient,
+        provider_name="Qdrant collection init",
+        label="transient error",
+        max_retries=settings.qdrant_init_max_attempts,
+        initial_delay=max(0.0, settings.qdrant_init_backoff_base),
+        max_delay=max(0.0, settings.qdrant_init_backoff_max),
+        jitter=True,
+    )
+    async def _attempt() -> None:
+        await get_qdrant_client()  # Triggers collection creation if needed
+
+    try:
+        await _attempt()
+    except Exception as exc:
+        # Both the non-transient fail-fast and the exhausted-budget cases land
+        # here; the operator wants the same "cannot start" framing either way.
+        logger.error("Failed to initialize Qdrant collection: %s", exc)
+        raise RuntimeError(
+            f"Cannot start vector sync - Qdrant initialization failed: {exc}"
+        ) from exc
+
+    logger.info("Qdrant collection ready")
 
 
 async def _refresh_dependency_health() -> None:
@@ -995,6 +989,24 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             logger.warning("Error disposing storage: %s", e)
 
 
+def _oidc_discovery_error_is_transient(exc: BaseException) -> bool:
+    """Whether an OIDC-discovery failure is worth retrying.
+
+    ``httpx.RequestError`` is the broad network-layer base (transport
+    timeouts/connection errors plus TooManyRedirects, DecodingError, …), and a
+    malformed 200 body — e.g. a proxy/gateway "warming up" HTML placeholder
+    served during cold start — raises ``JSONDecodeError``. Both are transient
+    like a 5xx; treating them as fatal reintroduces the very crashloop the
+    retry exists to prevent.
+
+    A 4xx is a misconfiguration (wrong URL, no OIDC app), so it fails fast and
+    the operator sees the real error instead of a retry storm.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return 500 <= exc.response.status_code < 600
+    return True
+
+
 async def _perform_oidc_discovery(
     discovery_url: str, settings: Settings, timeout: float | None = None
 ) -> dict[str, Any]:
@@ -1017,62 +1029,33 @@ async def _perform_oidc_discovery(
     longer budget here so it keeps its original per-attempt timeout while also
     gaining the retries.
     """
-    # Clamp defensively: Settings can be constructed directly (e.g. in tests),
-    # bypassing the gte=1/gte=0 dynaconf validators. A negative backoff would
-    # otherwise flip random.uniform(0, delay) into a reversed range.
-    max_attempts = max(1, settings.oidc_discovery_max_attempts)
-    backoff_base = max(0.0, settings.oidc_discovery_backoff_base)
-    backoff_max = max(0.0, settings.oidc_discovery_backoff_max)
-
     # Pass timeout through only when set — httpx treats an explicit
     # timeout=None as "disable timeout" rather than "use the default".
     client_kwargs: dict[str, Any] = {"follow_redirects": True}
     if timeout is not None:
         client_kwargs["timeout"] = timeout
 
-    for attempt in range(1, max_attempts + 1):
-        try:
-            async with nextcloud_httpx_client(**client_kwargs) as client:
-                response = await client.get(discovery_url)
-                response.raise_for_status()
-                return response.json()
-        except (
-            httpx.RequestError,
-            httpx.HTTPStatusError,
-            json.JSONDecodeError,
-        ) as exc:
-            # httpx.RequestError is the broad network-layer base (transport
-            # timeouts/connection errors plus TooManyRedirects, DecodingError,
-            # …); a malformed 200 body (e.g. a proxy/gateway "warming up" HTML
-            # placeholder served during cold start) raises JSONDecodeError.
-            # Treat all of these as transient like a 5xx, otherwise they
-            # reintroduce the very crashloop this retry loop exists to prevent.
-            # 4xx is a misconfiguration (wrong URL, no OIDC app) — fail fast so
-            # the operator sees the real error instead of a retry storm.
-            if (
-                isinstance(exc, httpx.HTTPStatusError)
-                and not 500 <= exc.response.status_code < 600
-            ):
-                raise
-            if attempt >= max_attempts:
-                logger.error(
-                    "OIDC discovery failed after %d attempt(s): %s", attempt, exc
-                )
-                raise
-            # Full jitter over a capped exponential backoff.
-            delay = min(backoff_max, backoff_base * 2 ** (attempt - 1))
-            sleep_for = random.uniform(0, delay)
-            logger.warning(
-                "OIDC discovery attempt %d/%d failed (%s); retrying in %.1fs",
-                attempt,
-                max_attempts,
-                type(exc).__name__,
-                sleep_for,
-            )
-            await anyio.sleep(sleep_for)
+    # Backoff bounds are clamped by the helper (max_retries) and below (the
+    # delays): Settings can be constructed directly in tests, bypassing the
+    # gte=1/gte=0 dynaconf validators, and a negative backoff would otherwise
+    # flip random.uniform(0, delay) into a reversed range.
+    @retry_on_transient(
+        (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError),
+        should_retry=_oidc_discovery_error_is_transient,
+        provider_name="OIDC discovery",
+        label="transient error",
+        max_retries=settings.oidc_discovery_max_attempts,
+        initial_delay=max(0.0, settings.oidc_discovery_backoff_base),
+        max_delay=max(0.0, settings.oidc_discovery_backoff_max),
+        jitter=True,
+    )
+    async def _attempt() -> dict:
+        async with nextcloud_httpx_client(**client_kwargs) as client:
+            response = await client.get(discovery_url)
+            response.raise_for_status()
+            return response.json()
 
-    # Unreachable: the loop always returns a document or raises above.
-    raise RuntimeError("OIDC discovery retry loop exited without a result")
+    return await _attempt()
 
 
 async def setup_oauth_config():
@@ -2934,20 +2917,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             vector_sync_status_fragment,
             methods=["GET"],
         ),  # /app/vector-sync/status
-        # Vector visualization routes
-        Route(
-            "/vector-viz", vector_visualization_html, methods=["GET"]
-        ),  # /app/vector-viz
-        Route(
-            "/vector-viz/search",
-            vector_visualization_search,
-            methods=["GET"],
-        ),  # /app/vector-viz/search
-        Route(
-            "/chunk-context",
-            chunk_context_endpoint,
-            methods=["GET"],
-        ),  # /app/chunk-context
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(

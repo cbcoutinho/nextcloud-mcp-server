@@ -6,7 +6,7 @@ These tests validate the complete semantic search flow:
 3. Perform semantic search queries
 4. Verify relevant results are returned
 
-Uses SimpleEmbeddingProvider for deterministic, in-process embeddings
+Uses SimpleProvider for deterministic, in-process embeddings
 without requiring external services like Ollama.
 """
 
@@ -18,7 +18,7 @@ import pytest
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 
 pytestmark = pytest.mark.integration
 
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 async def simple_embedding_provider():
     """Simple in-process embedding provider for testing."""
-    return SimpleEmbeddingProvider(dimension=384)
+    return SimpleProvider(dimension=384)
 
 
 @pytest.fixture
@@ -136,7 +136,7 @@ Avoid blocking operations in async code.""",
 
 
 async def test_simple_embedding_provider_deterministic(simple_embedding_provider):
-    """Test that SimpleEmbeddingProvider generates deterministic embeddings."""
+    """Test that SimpleProvider generates deterministic embeddings."""
     text = "Hello world this is a test"
 
     # Generate embedding twice
@@ -178,7 +178,7 @@ async def test_simple_embedding_provider_similarity(simple_embedding_provider):
 async def test_semantic_search_with_qdrant(
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
     sample_notes: list[dict],
 ):
     """Test full semantic search flow with Qdrant."""
@@ -260,7 +260,7 @@ async def test_semantic_search_with_qdrant(
 async def test_semantic_search_with_filters(
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
     sample_notes: list[dict],
 ):
     """Test semantic search with category filtering."""
@@ -310,7 +310,7 @@ async def test_semantic_search_with_filters(
 async def test_semantic_search_empty_results(
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
 ):
     """Test semantic search with no indexed content returns empty results."""
 
@@ -326,7 +326,7 @@ async def test_semantic_search_empty_results(
     assert len(response.points) == 0
 
 
-async def test_batch_embedding(simple_embedding_provider: SimpleEmbeddingProvider):
+async def test_batch_embedding(simple_embedding_provider: SimpleProvider):
     """Test batch embedding generation."""
     texts = [
         "First document about Python",
@@ -347,7 +347,7 @@ async def test_batch_embedding(simple_embedding_provider: SimpleEmbeddingProvide
 
 
 async def test_qdrant_persistent_mode(
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
     sample_notes: list[dict],
 ):
     """Test Qdrant in persistent local mode with file storage."""

@@ -9,7 +9,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from nextcloud_mcp_server.embedding import gateway_batch_client as gbc
+from nextcloud_mcp_server.providers import gateway_batch as gbc
 
 pytestmark = pytest.mark.unit
 
@@ -82,10 +82,9 @@ async def test_submit_sends_bearer_when_token_provider(monkeypatch):
 async def test_submit_raises_on_missing_job_id(monkeypatch):
     # A 2xx with no job_id is a gateway contract violation -> actionable error.
     _patch_transport(monkeypatch, lambda r: httpx.Response(202, json={}))
+    client = gbc.GatewayBatchOcrClient("https://gw", "m")
     with pytest.raises(ValueError, match="no job_id"):
-        await gbc.GatewayBatchOcrClient("https://gw", "m").submit(
-            b"x", "application/pdf", custom_id="d"
-        )
+        await client.submit(b"x", "application/pdf", custom_id="d")
 
 
 async def test_poll_missing_status_is_failed(monkeypatch):
@@ -103,8 +102,9 @@ async def test_poll_404_raises_job_not_found(monkeypatch):
     _patch_transport(
         monkeypatch, lambda r: httpx.Response(404, json={"detail": "gone"})
     )
+    client = gbc.GatewayBatchOcrClient("https://gw", "m")
     with pytest.raises(gbc.OcrBatchJobNotFound) as exc:
-        await gbc.GatewayBatchOcrClient("https://gw", "m").poll("surya/deadbeef")
+        await client.poll("surya/deadbeef")
     assert exc.value.job_id == "surya/deadbeef"
 
 
@@ -229,8 +229,9 @@ async def test_poll_raises_on_http_error(monkeypatch):
     _patch_transport(
         monkeypatch, lambda r: httpx.Response(503, json={"detail": "down"})
     )
+    client = gbc.GatewayBatchOcrClient("https://gw", "m")
     with pytest.raises(httpx.HTTPStatusError):
-        await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+        await client.poll("mistral/j")
 
 
 @pytest.mark.parametrize(

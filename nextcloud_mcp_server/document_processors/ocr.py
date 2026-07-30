@@ -42,9 +42,9 @@ from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 if TYPE_CHECKING:
     # Annotation-only import (the runtime import is lazy, inside
-    # build_gateway_batch_client, to avoid a document_processors -> embedding
+    # build_gateway_batch_client, to avoid a document_processors -> providers
     # cycle at load).
-    from ..embedding.gateway_batch_client import GatewayBatchOcrClient
+    from ..providers.gateway_batch import GatewayBatchOcrClient
 
 logger = logging.getLogger(__name__)
 
@@ -401,8 +401,8 @@ def _build_gateway_token_provider(settings: Settings) -> Any:
     """
     if not settings.embedding_gateway_client_id:
         return None
-    # Lazy import avoids a document_processors -> embedding cycle at load.
-    from ..embedding.gateway_client import GatewayTokenProvider  # noqa: PLC0415
+    # Lazy import avoids a document_processors -> providers cycle at load.
+    from ..providers.gateway import GatewayTokenProvider  # noqa: PLC0415
 
     # Explicit (not assert -- assert is stripped under `python -O`): the M2M
     # triple is all-or-nothing.
@@ -443,7 +443,7 @@ def build_gateway_batch_client(
         return None
     if not settings.embedding_gateway_url:
         return None
-    from ..embedding.gateway_batch_client import GatewayBatchOcrClient  # noqa: PLC0415
+    from ..providers.gateway_batch import GatewayBatchOcrClient  # noqa: PLC0415
 
     return GatewayBatchOcrClient(
         settings.embedding_gateway_url,
@@ -513,7 +513,7 @@ async def poll_pending_batch_ocr(
     client = await _get_poll_batch_client(settings)
     if client is None:
         return None
-    from ..embedding.gateway_batch_client import OcrBatchJobNotFound  # noqa: PLC0415
+    from ..providers.gateway_batch import OcrBatchJobNotFound  # noqa: PLC0415
 
     try:
         result = await client.poll(job.job_id)
@@ -869,8 +869,8 @@ class OcrProcessor(DocumentProcessor):
             return self._pending(poll_seconds)
 
         # Existing job — poll the gateway. Lazy import (mirrors the client import
-        # above) to keep document_processors off the embedding import path.
-        from ..embedding import gateway_batch_client as _gbc  # noqa: PLC0415
+        # above) to keep document_processors off the providers import path.
+        from ..providers import gateway_batch as _gbc  # noqa: PLC0415
 
         try:
             result = await client.poll(job.job_id)

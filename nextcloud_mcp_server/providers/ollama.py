@@ -1,4 +1,4 @@
-"""Unified Ollama provider for embeddings and text generation."""
+"""Unified Ollama provider for embeddings."""
 
 import logging
 
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class OllamaProvider(Provider):
     """
-    Ollama provider supporting both embeddings and text generation.
+    Ollama provider for embeddings.
 
     Supports TLS, SSL verification, and automatic model loading.
     """
@@ -20,7 +20,6 @@ class OllamaProvider(Provider):
         self,
         base_url: str,
         embedding_model: str | None = None,
-        generation_model: str | None = None,
         verify_ssl: bool = True,
         timeout: httpx.Timeout | None = None,
     ):
@@ -30,13 +29,11 @@ class OllamaProvider(Provider):
         Args:
             base_url: Ollama API base URL (e.g., https://ollama.internal.example.com:443)
             embedding_model: Model for embeddings (e.g., "nomic-embed-text"). None disables embeddings.
-            generation_model: Model for text generation (e.g., "llama3.2:1b"). None disables generation.
             verify_ssl: Verify SSL certificates (default: True)
             timeout: HTTP timeout configuration
         """
         self.base_url = base_url.rstrip("/")
         self.embedding_model = embedding_model
-        self.generation_model = generation_model
         self.verify_ssl = verify_ssl
 
         if timeout is None:
@@ -46,28 +43,20 @@ class OllamaProvider(Provider):
         self._dimension: int | None = None  # Detected dynamically for embeddings
 
         logger.info(
-            "Initialized Ollama provider: %s (embedding_model=%s, generation_model=%s, verify_ssl=%s)",
+            "Initialized Ollama provider: %s (embedding_model=%s, verify_ssl=%s)",
             base_url,
             embedding_model,
-            generation_model,
             verify_ssl,
         )
 
         # Pre-check and auto-load models
         if embedding_model:
             self._check_model_is_loaded(embedding_model, autoload=True)
-        if generation_model:
-            self._check_model_is_loaded(generation_model, autoload=True)
 
     @property
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return self.embedding_model is not None
-
-    @property
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
-        return self.generation_model is not None
 
     async def embed(self, text: str) -> list[float]:
         """
@@ -221,41 +210,6 @@ class OllamaProvider(Provider):
                 "Call _detect_dimension() first or generate an embedding."
             )
         return self._dimension
-
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        """
-        Generate text from a prompt.
-
-        Args:
-            prompt: The prompt to generate from
-            max_tokens: Maximum tokens to generate
-
-        Returns:
-            Generated text
-
-        Raises:
-            NotImplementedError: If generation not enabled (no generation_model)
-        """
-        if not self.supports_generation:
-            raise NotImplementedError(
-                "Text generation not supported - no generation_model configured"
-            )
-
-        response = await self.client.post(
-            f"{self.base_url}/api/generate",
-            json={
-                "model": self.generation_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "temperature": 0.7,
-                },
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["response"]
 
     def _check_model_is_loaded(self, model: str, autoload: bool = True):
         """

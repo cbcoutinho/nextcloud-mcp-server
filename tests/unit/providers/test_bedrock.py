@@ -36,7 +36,6 @@ async def test_bedrock_embedding_titan(mock_bedrock_client):
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model=None,
     )
 
     # Test embedding
@@ -68,7 +67,6 @@ async def test_bedrock_embedding_batch(mock_bedrock_client):
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model=None,
     )
 
     # Test batch embedding
@@ -81,111 +79,23 @@ async def test_bedrock_embedding_batch(mock_bedrock_client):
 
 
 @pytest.mark.unit
-async def test_bedrock_generation_claude(mock_bedrock_client):
-    """Test Bedrock text generation with Claude model."""
-    # Mock response
-    mock_response = {
-        "body": MagicMock(
-            read=MagicMock(
-                return_value=json.dumps(
-                    {"content": [{"text": "Generated response"}]}
-                ).encode()
-            )
-        )
-    }
-    mock_bedrock_client.invoke_model.return_value = mock_response
-
-    # Create provider
-    provider = BedrockProvider(
-        region_name="us-east-1",
-        embedding_model=None,
-        generation_model="anthropic.claude-3-sonnet-20240229-v1:0",
-    )
-
-    # Test generation
-    text = await provider.generate("test prompt", max_tokens=100)
-
-    assert text == "Generated response"
-    mock_bedrock_client.invoke_model.assert_called_once()
-    call_args = mock_bedrock_client.invoke_model.call_args
-
-    assert call_args.kwargs["modelId"] == "anthropic.claude-3-sonnet-20240229-v1:0"
-    body = json.loads(call_args.kwargs["body"])
-    assert body["messages"][0]["content"] == "test prompt"
-    assert body["max_tokens"] == 100
-
-
-@pytest.mark.unit
-async def test_bedrock_generation_llama(mock_bedrock_client):
-    """Test Bedrock text generation with Llama model."""
-    # Mock response
-    mock_response = {
-        "body": MagicMock(
-            read=MagicMock(
-                return_value=json.dumps({"generation": "Llama response"}).encode()
-            )
-        )
-    }
-    mock_bedrock_client.invoke_model.return_value = mock_response
-
-    # Create provider
-    provider = BedrockProvider(
-        region_name="us-east-1",
-        embedding_model=None,
-        generation_model="meta.llama3-8b-instruct-v1:0",
-    )
-
-    # Test generation
-    text = await provider.generate("test prompt")
-
-    assert text == "Llama response"
-    body = json.loads(mock_bedrock_client.invoke_model.call_args.kwargs["body"])
-    assert body["prompt"] == "test prompt"
-    assert "max_gen_len" in body
-
-
-@pytest.mark.unit
-async def test_bedrock_both_capabilities(mock_bedrock_client):
-    """Test Bedrock with both embedding and generation models."""
-    # Mock responses
-    embed_response = {
+async def test_bedrock_embedding_capability(mock_bedrock_client):
+    """Test Bedrock advertises and serves embeddings."""
+    mock_bedrock_client.invoke_model.return_value = {
         "body": MagicMock(
             read=MagicMock(return_value=json.dumps({"embedding": [0.1, 0.2]}).encode())
         )
     }
-    gen_response = {
-        "body": MagicMock(
-            read=MagicMock(
-                return_value=json.dumps({"content": [{"text": "Response"}]}).encode()
-            )
-        )
-    }
 
-    # Mock to return different responses based on modelId
-    def mock_invoke(modelId, body, **kwargs):
-        if "embed" in modelId:
-            return embed_response
-        else:
-            return gen_response
-
-    mock_bedrock_client.invoke_model.side_effect = mock_invoke
-
-    # Create provider with both models
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model="anthropic.claude-3-sonnet-20240229-v1:0",
     )
 
     assert provider.supports_embeddings is True
-    assert provider.supports_generation is True
 
-    # Test both capabilities
     embedding = await provider.embed("test")
     assert embedding == [0.1, 0.2]
-
-    text = await provider.generate("test")
-    assert text == "Response"
 
 
 @pytest.mark.unit
@@ -194,7 +104,6 @@ async def test_bedrock_no_embeddings():
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model=None,
-        generation_model="anthropic.claude-3-sonnet-20240229-v1:0",
     )
 
     assert provider.supports_embeddings is False
@@ -207,21 +116,6 @@ async def test_bedrock_no_embeddings():
 
     with pytest.raises(NotImplementedError, match="no embedding_model configured"):
         provider.get_dimension()
-
-
-@pytest.mark.unit
-async def test_bedrock_no_generation():
-    """Test Bedrock provider with no generation model raises error."""
-    provider = BedrockProvider(
-        region_name="us-east-1",
-        embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model=None,
-    )
-
-    assert provider.supports_generation is False
-
-    with pytest.raises(NotImplementedError, match="no generation_model configured"):
-        await provider.generate("test")
 
 
 @pytest.mark.unit
@@ -274,7 +168,6 @@ async def test_bedrock_embed_with_usage_reports_titan_tokens(mock_bedrock_client
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model=None,
     )
     embedding, tokens = await provider.embed_with_usage("test text")
 
@@ -292,7 +185,6 @@ async def test_bedrock_embed_batch_with_usage_sums_token_counts(mock_bedrock_cli
     provider = BedrockProvider(
         region_name="us-east-1",
         embedding_model="amazon.titan-embed-text-v2:0",
-        generation_model=None,
     )
     embeddings, tokens = await provider.embed_batch_with_usage(["t1", "t2", "t3"])
 

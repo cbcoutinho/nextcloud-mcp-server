@@ -30,7 +30,6 @@ from nextcloud_mcp_server.document_processors.source import (
     DocumentSource,
     MemoryDocumentSource,
 )
-from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     estimate_vector_bytes,
@@ -51,6 +50,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_vector_sync_queue_size,
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.providers import get_bm25_service, get_provider
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
@@ -433,7 +433,7 @@ def _record_ingest_vector_cost(
     """
     try:
         if dense_for_doc:
-            dim = get_embedding_service().get_dimension()
+            dim = get_provider().get_dimension()
             record_estimated_vector_bytes(
                 doc_type, estimate_vector_bytes(chunk_count, dim, overhead)
             )
@@ -1703,13 +1703,13 @@ async def _index_document_inner(
                 "embedding.model": settings.get_embedding_model_name(),
             },
         ):
-            embedding_service = get_embedding_service()
+            embedding_provider = get_provider()
             embed_start = time.time()
             try:
                 (
                     dense_embeddings,
                     embed_tokens,
-                ) = await embedding_service.embed_batch_with_usage(chunk_texts)
+                ) = await embedding_provider.embed_batch_with_usage(chunk_texts)
             except Exception:
                 record_embedding(
                     "dense", provider, time.time() - embed_start, status="error"

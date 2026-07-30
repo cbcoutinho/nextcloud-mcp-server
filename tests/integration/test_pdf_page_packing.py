@@ -11,7 +11,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from nextcloud_mcp_server.document_processors.pypdfium2_fast import _extract
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.vector.document_chunker import PageAwareChunker
 
 pytestmark = pytest.mark.integration
@@ -33,9 +33,9 @@ def create_lean_multipage_pdf(n_pages: int = 12) -> bytes:
 
 
 @pytest.fixture
-async def simple_embedding_provider() -> SimpleEmbeddingProvider:
+async def simple_embedding_provider() -> SimpleProvider:
     """Simple in-process embedding provider for testing."""
-    return SimpleEmbeddingProvider(dimension=384)
+    return SimpleProvider(dimension=384)
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ async def test_collection(qdrant_test_client: AsyncQdrantClient):
 async def test_page_packing_reduces_chunk_count_and_preserves_citation_e2e(
     qdrant_test_client: AsyncQdrantClient,
     test_collection: str,
-    simple_embedding_provider: SimpleEmbeddingProvider,
+    simple_embedding_provider: SimpleProvider,
 ):
     """Greedy page-packing cuts density and keeps page-range citation end-to-end."""
     pdf_bytes = create_lean_multipage_pdf(n_pages=12)

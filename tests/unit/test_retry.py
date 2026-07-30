@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nextcloud_mcp_server.providers import _retry
+from nextcloud_mcp_server import retry as _retry
 
 
 class _FakeError(Exception):
@@ -120,6 +120,41 @@ async def test_retry_accepts_tuple_of_exception_types():
 
 
 @pytest.mark.unit
-async def test_retry_on_rate_limit_is_backcompat_alias():
-    """The old name still resolves to the generalized helper."""
-    assert _retry.retry_on_rate_limit is _retry.retry_on_transient
+async def test_max_delay_caps_the_first_retry_too():
+    """``initial_delay`` above ``max_delay`` is clamped from the first sleep on.
+
+    No validator enforces base <= max at the call sites (app.py threads the
+    ``*_BACKOFF_BASE``/``*_BACKOFF_MAX`` settings straight through), so an
+    operator can invert them. Without the clamp the first sleep would be the
+    un-capped ``initial_delay``.
+    """
+
+    @_retry.retry_on_transient(
+        _FakeError, max_retries=3, initial_delay=30.0, max_delay=5.0
+    )
+    async def always_fails():
+        raise _FakeError(503)
+
+    with pytest.raises(_FakeError):
+        await always_fails()
+
+    delays = [call.args[0] for call in _retry.anyio.sleep.await_args_list]
+    assert delays == [5.0, 5.0]  # Capped immediately, not 30.0 then 5.0.
+
+
+@pytest.mark.unit
+async def test_max_delay_caps_jittered_sleeps():
+    """With jitter the draw is bounded by ``max_delay``, not ``initial_delay``."""
+
+    @_retry.retry_on_transient(
+        _FakeError, max_retries=4, initial_delay=30.0, max_delay=5.0, jitter=True
+    )
+    async def always_fails():
+        raise _FakeError(503)
+
+    with pytest.raises(_FakeError):
+        await always_fails()
+
+    delays = [call.args[0] for call in _retry.anyio.sleep.await_args_list]
+    assert len(delays) == 3
+    assert all(0.0 <= d <= 5.0 for d in delays), delays

@@ -13,7 +13,7 @@ import logging
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 
-from ._retry import retry_on_transient
+from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
@@ -97,10 +97,6 @@ class MistralProvider(Provider):
     @property
     def supports_embeddings(self) -> bool:
         return self.embedding_model is not None
-
-    @property
-    def supports_generation(self) -> bool:
-        return False
 
     @_retry_transient
     async def embed(self, text: str) -> list[float]:
@@ -238,12 +234,6 @@ class MistralProvider(Provider):
                 "model."
             )
         return self._dimension
-
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        raise NotImplementedError(
-            "MistralProvider does not support generation. "
-            "Use OpenAI, Anthropic, or Bedrock for text generation."
-        )
 
     async def close(self) -> None:
         # The mistralai 2.x client (Speakeasy-generated) does not expose a

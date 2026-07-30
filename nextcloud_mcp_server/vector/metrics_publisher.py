@@ -28,7 +28,6 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
     CHUNK_DENSITY_BUCKETS,
     density_bucket_index,
@@ -44,6 +43,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_vector_sync_qdrant_vectors,
     update_vector_sync_queue_size,
 )
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import DEAD_LETTER_KEY
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
@@ -146,7 +146,7 @@ async def estimate_hybrid_vector_bytes(
     #624), rounded to an int for the response payloads.
     """
     hybrid_chunks = await count_hybrid_chunks(qdrant_client, collection, exact=exact)
-    dim = get_embedding_service().get_dimension()
+    dim = get_provider().get_dimension()
     estimated = int(estimate_vector_bytes(hybrid_chunks, dim, overhead))
     return hybrid_chunks, estimated
 
@@ -202,7 +202,7 @@ async def publish_vector_sync_metrics(
     try:
         qdrant_client = await get_qdrant_client()
         collection = settings.get_collection_name()
-        dim = get_embedding_service().get_dimension()
+        dim = get_provider().get_dimension()
         overhead = settings.vector_ram_hnsw_overhead_factor
 
         hybrid_chunks = await count_hybrid_chunks(

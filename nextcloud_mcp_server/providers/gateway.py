@@ -138,7 +138,6 @@ class GatewayProvider(OpenAIProvider):
             api_key=_UNAUTHENTICATED_PLACEHOLDER,  # NOSONAR
             base_url=normalized_base_url,
             embedding_model=embedding_model,
-            generation_model=None,  # gateway never generates
             timeout=timeout,
         )
         self._token_provider = token_provider
@@ -209,7 +208,8 @@ class GatewayProvider(OpenAIProvider):
                 "falling back to lazy detection on first embed",
                 self.embedding_model,
             )
-        except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+        except Exception as exc:  # noqa: BLE001
+            # Best-effort, never fatal.
             logger.warning(
                 "Could not fetch model dimensions from gateway %s: %s; "
                 "falling back to lazy detection on first embed",

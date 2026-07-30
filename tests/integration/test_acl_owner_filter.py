@@ -22,7 +22,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.search.algorithms import get_indexed_doc_types
 from nextcloud_mcp_server.search.context import _get_chunk_by_index_from_qdrant
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
@@ -44,10 +44,10 @@ _LEGACY_DAVE_FILE = (103, "103", None, "dave")
 async def seeded_collection(monkeypatch):
     """In-memory Qdrant seeded with three file points, wired into the algorithm.
 
-    Yields the ``SimpleEmbeddingProvider`` so the test can build a query vector
+    Yields the ``SimpleProvider`` so the test can build a query vector
     identical to the one the algorithm will generate.
     """
-    provider = SimpleEmbeddingProvider(dimension=384)
+    provider = SimpleProvider(dimension=384)
     client = AsyncQdrantClient(":memory:")
     collection = get_settings().get_collection_name()
 
@@ -91,7 +91,7 @@ async def seeded_collection(monkeypatch):
         AsyncMock(return_value=client),
     )
     monkeypatch.setattr(
-        "nextcloud_mcp_server.search.semantic.get_embedding_service",
+        "nextcloud_mcp_server.search.semantic.get_provider",
         lambda: provider,
     )
     # get_indexed_doc_types reads the client from the algorithms module.

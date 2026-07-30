@@ -107,7 +107,7 @@ This decision consolidates our retrieval logic, eliminates the data consistency 
    - Added sparse vector configuration with BM25 index
    - Maintains backward compatibility with existing collections (detects legacy schema)
 
-3. **BM25 Embedding Provider** (nextcloud_mcp_server/embedding/bm25_provider.py):
+3. **BM25 Embedding Provider** (nextcloud_mcp_server/providers/bm25.py):
    - Created `BM25SparseEmbeddingProvider` using FastEmbed's `Qdrant/bm25` model
    - Implements `encode()` and `encode_batch()` methods
    - Returns sparse vectors as `{indices: list[int], values: list[float]}` format

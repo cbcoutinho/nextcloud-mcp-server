@@ -9,7 +9,7 @@ import pytest
 
 from nextcloud_mcp_server.document_processors import ocr
 from nextcloud_mcp_server.document_processors.base import ProcessorError
-from nextcloud_mcp_server.embedding.gateway_batch_client import BatchPollResult
+from nextcloud_mcp_server.providers.gateway_batch import BatchPollResult
 from nextcloud_mcp_server.vector import batch_ocr_store as _bos
 
 pytestmark = pytest.mark.unit
@@ -743,7 +743,7 @@ async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
     # by retention or orphaned by a pod move). The processor must DROP its tracking
     # row and return the pending sentinel so the NEXT cycle re-submits a fresh job —
     # NOT re-poll the dead id forever (which flapped the burst GPU).
-    from nextcloud_mcp_server.embedding.gateway_batch_client import OcrBatchJobNotFound
+    from nextcloud_mcp_server.providers.gateway_batch import OcrBatchJobNotFound
 
     preset = SimpleNamespace(job_id="surya/dead", submitted_at=1000)
     client = _FakeBatchClient()
@@ -1081,7 +1081,7 @@ async def test_poll_pending_caps_retry_after(monkeypatch):
 
 async def test_poll_pending_job_gone_falls_through(monkeypatch):
     """Gateway 404 (job purged) -> None so the caller re-submits (#1019)."""
-    from nextcloud_mcp_server.embedding.gateway_batch_client import OcrBatchJobNotFound
+    from nextcloud_mcp_server.providers.gateway_batch import OcrBatchJobNotFound
 
     class _NotFoundClient(_FakeBatchClient):
         async def poll(self, job_id):

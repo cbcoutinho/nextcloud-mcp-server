@@ -1,4 +1,4 @@
-"""Unified OpenAI provider for embeddings and text generation.
+"""Unified OpenAI provider for embeddings.
 
 Supports:
 - OpenAI's standard API
@@ -10,7 +10,7 @@ import logging
 
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI
 
-from ._retry import retry_on_transient
+from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ OPENAI_EMBEDDING_DIMENSIONS: dict[str, int] = {
 
 class OpenAIProvider(Provider):
     """
-    OpenAI provider supporting both embeddings and text generation.
+    OpenAI provider for embeddings.
 
     Works with:
     - OpenAI's standard API (api.openai.com)
@@ -67,7 +67,6 @@ class OpenAIProvider(Provider):
         api_key: str,
         base_url: str | None = None,
         embedding_model: str | None = None,
-        generation_model: str | None = None,
         timeout: float = 120.0,
     ):
         """
@@ -78,12 +77,9 @@ class OpenAIProvider(Provider):
             base_url: Base URL override (e.g., "https://models.github.ai/inference")
             embedding_model: Model for embeddings (e.g., "text-embedding-3-small").
                             None disables embeddings.
-            generation_model: Model for text generation (e.g., "gpt-4o-mini").
-                             None disables generation.
             timeout: HTTP timeout in seconds (default: 120)
         """
         self.embedding_model = embedding_model
-        self.generation_model = generation_model
         self._dimension: int | None = None
 
         # Initialize async client
@@ -99,10 +95,9 @@ class OpenAIProvider(Provider):
 
         logger.info(
             "Initialized OpenAI provider: base_url=%s "
-            "(embedding_model=%s, generation_model=%s, dimension=%s)",
+            "(embedding_model=%s, dimension=%s)",
             base_url or "default",
             embedding_model,
-            generation_model,
             self._dimension,
         )
 
@@ -110,11 +105,6 @@ class OpenAIProvider(Provider):
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return self.embedding_model is not None
-
-    @property
-    def supports_generation(self) -> bool:
-        """Whether this provider supports text generation."""
-        return self.generation_model is not None
 
     @_retry_transient
     async def embed(self, text: str) -> list[float]:
@@ -282,41 +272,6 @@ class OpenAIProvider(Provider):
                 "Call embed() first or use a known model."
             )
         return self._dimension
-
-    # Transient retry intentionally covers generation too (RAG sampling path):
-    # a pod rollover breaks generation as readily as embedding. Worst case adds
-    # ~30s (5 attempts, 2s→60s backoff) to an interactive call hitting a
-    # sustained connection issue, which is preferable to a hard failure.
-    @_retry_transient
-    async def generate(self, prompt: str, max_tokens: int = 500) -> str:
-        """
-        Generate text from a prompt.
-
-        Args:
-            prompt: The prompt to generate from
-            max_tokens: Maximum tokens to generate
-
-        Returns:
-            Generated text
-
-        Raises:
-            NotImplementedError: If generation not enabled (no generation_model)
-        """
-        if not self.supports_generation:
-            raise NotImplementedError(
-                "Text generation not supported - no generation_model configured"
-            )
-        # supports_generation is True iff generation_model is set; narrow for the type checker.
-        assert self.generation_model is not None
-
-        response = await self.client.chat.completions.create(
-            model=self.generation_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-
-        return response.choices[0].message.content or ""
 
     async def close(self) -> None:
         """Close HTTP client."""

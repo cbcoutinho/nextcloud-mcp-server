@@ -29,7 +29,7 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import Settings, get_settings
-from nextcloud_mcp_server.embedding.service import get_embedding_service
+from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SearchAlgorithm,
@@ -337,8 +337,8 @@ async def unified_search(request: Request) -> JSONResponse:
                 # at search_limit would send N*search_limit candidates into
                 # verification — one Nextcloud round-trip each — scaling the cost
                 # with len(doc_types). 2x leaves headroom for verify-on-read
-                # drops before pagination, matching the nc_semantic_search and
-                # viz_routes pattern.
+                # drops before pagination, matching the nc_semantic_search
+                # pattern.
                 results.sort(key=lambda r: r.score, reverse=True)
                 results = results[: search_limit * 2]
             else:
@@ -434,8 +434,8 @@ async def unified_search(request: Request) -> JSONResponse:
                 if search_algo.query_embedding is not None:
                     query_embedding = search_algo.query_embedding
                 else:
-                    embedding_service = get_embedding_service()
-                    query_embedding = await embedding_service.embed(query)
+                    provider = get_provider()
+                    query_embedding = await provider.embed(query)
 
                 pca_data = await compute_pca_coordinates(
                     paginated_results, query_embedding
@@ -639,8 +639,8 @@ async def vector_search(request: Request) -> JSONResponse:
                 if search_algo.query_embedding is not None:
                     query_embedding = search_algo.query_embedding
                 else:
-                    embedding_service = get_embedding_service()
-                    query_embedding = await embedding_service.embed(query)
+                    provider = get_provider()
+                    query_embedding = await provider.embed(query)
 
                 pca_data = await compute_pca_coordinates(all_results, query_embedding)
                 response_data["coordinates_3d"] = pca_data["coordinates_3d"]
@@ -729,7 +729,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
         # rejects "0", leading zeros, and Unicode digits that pass isdigit().
         #
-        # Canonical TODO (referenced by ``auth/viz_routes.py`` and
+        # Canonical TODO (referenced by
         # ``vector/scanner.py:get_last_indexed_timestamp``): when chunk-
         # context support extends to non-numeric doc_types (calendar VEVENT
         # UIDs, CardDAV hrefs, …), relax this gate or make it doc_type-
