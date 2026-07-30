@@ -747,7 +747,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # The collection always carries a real dense slot sized from the
             # embedding model; keyword-only documents share this collection and
             # simply omit the dense vector per-point. When no real provider is
-            # configured the embedding service resolves to the local
+            # configured the embedding provider resolves to the local
             # SimpleProvider (deterministic, no network), so this stays correct
             # for airgapped deployments that only ever use the keyword tag.
             provider = get_provider()

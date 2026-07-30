@@ -103,7 +103,7 @@ _bm25_service: BM25SparseEmbeddingProvider | None = None
 
 async def get_bm25_service() -> BM25SparseEmbeddingProvider:
     """
-    Get singleton BM25 sparse embedding service instance.
+    Get singleton BM25 sparse embedding provider instance.
 
     Lazily instantiates the singleton off the event loop. The
     ``BM25SparseEmbeddingProvider`` constructor calls

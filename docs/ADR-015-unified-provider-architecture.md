@@ -177,7 +177,6 @@ embeddings = await provider.embed_batch(texts)
   had moved to `get_provider()` directly. `bm25_provider.py` and the gateway
   clients now live under `providers/` as `bm25.py`, `gateway.py`, `gateway_batch.py`.
 - `tests/rag_evaluation/llm_providers.py` now uses unified providers
-- Old imports still work, marked as deprecated in docstrings
 
 ### 4. Amazon Bedrock Implementation
 
