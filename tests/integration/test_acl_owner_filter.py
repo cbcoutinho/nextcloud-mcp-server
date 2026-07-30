@@ -210,3 +210,142 @@ async def test_cached_chunk_lookup_is_acl_aware(seeded_collection):
     assert text == _DOC_TEXT
     # Self-only Bob cannot reach Alice's cached chunk.
     assert await _get_chunk_by_index_from_qdrant("bob", "101", "file", 0) is None
+
+
+# --- share-root narrowing (real Qdrant evaluation of the nested filter) ------
+#
+# tests/unit/search/test_access_filter.py asserts the Filter OBJECT's shape.
+# These cases run that filter through a real Qdrant engine, which is the only
+# way to pin how the nested must/should + IsEmptyCondition combination actually
+# evaluates — including the non-file behaviour documented on
+# build_ownership_filter.
+
+_SHARED_FOLDER_ID = "900"
+_OTHER_FOLDER_ID = "999"
+
+
+@pytest.fixture
+async def narrowing_collection(monkeypatch):
+    """In-memory Qdrant seeded with points that differ only in containment.
+
+    Every point is owned by ``alice`` and carries identical text, so the
+    ownership filter — not the score, doc_type, or owner — decides visibility.
+    """
+    provider = SimpleProvider(dimension=384)
+    client = AsyncQdrantClient(":memory:")
+    collection = get_settings().get_collection_name()
+
+    await client.create_collection(
+        collection_name=collection,
+        vectors_config={"dense": VectorParams(size=384, distance=Distance.COSINE)},
+    )
+
+    embedding = await provider.embed(_DOC_TEXT)
+    # (point_id, doc_id, doc_type, folder_ancestors)
+    seed = [
+        (201, "201", "file", [_SHARED_FOLDER_ID]),  # inside the shared folder
+        (202, "202", "file", [_OTHER_FOLDER_ID]),  # outside it
+        (203, _SHARED_FOLDER_ID, "file", []),  # the shared folder's own point
+        (204, "204", "file", []),  # pre-ADR-033 file: no ancestors resolved
+        (205, "205", "note", []),  # non-file: never gets ancestors
+    ]
+    points = [
+        PointStruct(
+            id=pid,
+            vector={"dense": embedding},
+            payload={
+                "doc_id": doc_id,
+                "doc_type": doc_type,
+                "user_id": "alice",
+                "owner_id": "alice",
+                "folder_ancestors": ancestors,
+                "is_placeholder": False,
+                "file_path": f"docs/{doc_id}.txt",
+                "title": f"doc {doc_id}",
+                "excerpt": _DOC_TEXT,
+                "chunk_index": 0,
+                "total_chunks": 1,
+            },
+        )
+        for pid, doc_id, doc_type, ancestors in seed
+    ]
+    await client.upsert(collection_name=collection, points=points, wait=True)
+
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.semantic.get_qdrant_client",
+        AsyncMock(return_value=client),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.semantic.get_provider", lambda: provider
+    )
+
+    yield provider
+
+    await client.close()
+
+
+async def _search_as_bob(shared_root_ids, doc_type=None):
+    """Bob searching alice-owned content (alice shared *something* with him)."""
+    algo = SemanticSearchAlgorithm(score_threshold=0.0)
+    return _ids(
+        await algo.search(
+            query=_DOC_TEXT,
+            user_id="bob",
+            limit=10,
+            doc_type=doc_type,
+            accessible_owners=["bob", "alice"],
+            shared_root_ids=shared_root_ids,
+        )
+    )
+
+
+async def test_without_share_roots_whole_owner_corpus_is_admitted(
+    narrowing_collection,
+):
+    """Baseline (pre-fix behaviour): one share exposes everything alice owns."""
+    found = await _search_as_bob(shared_root_ids=None, doc_type="file")
+
+    assert {"201", "202", "204", _SHARED_FOLDER_ID} <= found
+
+
+async def test_share_roots_admit_only_the_shared_subtree(narrowing_collection):
+    """The point outside the shared folder is filtered out by Qdrant itself."""
+    found = await _search_as_bob(shared_root_ids=[_SHARED_FOLDER_ID], doc_type="file")
+
+    assert "201" in found, "file inside the shared folder must be admitted"
+    assert "202" not in found, (
+        "file outside the shared folder must NOT be admitted — this is the "
+        "candidate-pool pollution the narrowing removes"
+    )
+
+
+async def test_shared_folder_own_point_is_admitted_via_doc_id(narrowing_collection):
+    """A folder does not list itself in folder_ancestors — the doc_id branch
+    is what keeps the shared item itself (and single-file shares) findable."""
+    found = await _search_as_bob(shared_root_ids=[_SHARED_FOLDER_ID], doc_type="file")
+
+    assert _SHARED_FOLDER_ID in found
+
+
+async def test_file_without_resolved_ancestors_fails_open(narrowing_collection):
+    """Pre-ADR-033 files carry no ancestors; dropping them would lose real
+    recall, so the filter fails open and lets verify-on-read decide."""
+    found = await _search_as_bob(shared_root_ids=[_SHARED_FOLDER_ID], doc_type="file")
+
+    assert "204" in found
+
+
+async def test_non_file_doc_types_are_not_narrowed(narrowing_collection):
+    """Known limitation, pinned deliberately.
+
+    ``folder_ancestors`` is only populated for ``doc_type == "file"``
+    (vector/processor.py); every other type is stamped with ``[]``, which
+    Qdrant's IsEmptyCondition cannot distinguish from "absent". So notes,
+    deck cards, calendar entries etc. keep the old owner-level width and are
+    still admitted even when they sit outside every shared root. Narrowing
+    them needs ancestors populated for those types — tracked separately, not
+    silently fixed here.
+    """
+    found = await _search_as_bob(shared_root_ids=[_SHARED_FOLDER_ID], doc_type="note")
+
+    assert "205" in found

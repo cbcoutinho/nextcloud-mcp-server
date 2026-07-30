@@ -276,12 +276,25 @@ def build_ownership_filter(
             #   * doc_id IS a shared id — a single-file share, and the shared
             #     folder's own point, neither of which lists itself as an
             #     ancestor.
-            #   * folder_ancestors is absent — points indexed before ADR-033
-            #     Phase 3 carry no ancestors, so requiring them would silently
-            #     drop legitimately shared legacy content. Fail open here and
-            #     let verify-on-read decide, exactly as before this change. Run
-            #     the admin payload backfill to convert these into the precise
-            #     branches above.
+            #   * folder_ancestors is empty/absent — fail open, because we have
+            #     no containment signal to judge these on.
+            #
+            # SCOPE — that third branch is broader than "legacy points", and
+            # deliberately so. ``folder_ancestors`` is only ever populated for
+            # ``doc_type == "file"`` (vector/processor.py); every other doc type
+            # is stamped with ``[]``, and Qdrant's ``IsEmpty`` matches an empty
+            # array and an absent key alike. So the branch covers BOTH:
+            #   - files predating ADR-033 Phase 3 (or whose ancestors failed to
+            #     resolve) — an admin payload backfill converts these into the
+            #     precise branches above, and
+            #   - every non-file doc type (note, calendar, contact, deck_card,
+            #     …), permanently, since they never get ancestors at all.
+            # Those types therefore keep the old owner-level width: one share
+            # from an owner still admits that owner's whole non-file corpus as
+            # candidates. Narrowing them needs ancestors populated for those
+            # types, which is a processor + re-index change, not a filter one.
+            # Pinned by test_non_file_doc_types_are_not_narrowed so this stays a
+            # known limitation rather than an accident.
             owner_branch = Filter(
                 must=[
                     owner_branch,
