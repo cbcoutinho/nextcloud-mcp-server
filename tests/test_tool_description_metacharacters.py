@@ -77,8 +77,7 @@ def test_allowlist_has_no_stale_entries():
     still_needed = {
         name
         for name, docstring, _ in _iter_tool_docstrings()
-        if name in ALLOWED_TOOLS
-        and any(m in docstring for m in METACHARACTERS)
+        if name in ALLOWED_TOOLS and any(m in docstring for m in METACHARACTERS)
     }
     obsolete = ALLOWED_TOOLS - still_needed
     assert not obsolete, (
