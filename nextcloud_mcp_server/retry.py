@@ -2,10 +2,9 @@
 
 One capped exponential-backoff loop, used by anything that needs to ride out a
 transient failure: the embedding providers (429 rate limits, plus connection
-drops / timeouts / 5xx for the embedding path), the startup dependency probes
-(OIDC discovery, Qdrant collection init), and the ingest indexing retry. The
-``should_retry`` predicate decides which caught exceptions are transient;
-everything else propagates immediately.
+drops / timeouts / 5xx for the embedding path) and the startup dependency probes
+(OIDC discovery, Qdrant collection init). The ``should_retry`` predicate decides
+which caught exceptions are transient; everything else propagates immediately.
 
 ``jitter=True`` adds full jitter (``uniform(0, delay)``) on top of the capped
 exponential curve, which is what the startup probes want — without it, every
