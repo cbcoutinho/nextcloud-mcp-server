@@ -110,6 +110,30 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
         return dense_embedding
 
+    def _build_fusion_query(self, settings: Any) -> Any:
+        """Build the fusion stage that merges the dense and sparse prefetches.
+
+        For RRF this is ``RrfQuery``, which carries an explicit ranking constant
+        ``k``. The plain ``FusionQuery(fusion=RRF)`` Qdrant defaults to hardcodes
+        k=2 (see ``qdrant_client/hybrid/fusion.py``:
+        ``DEFAULT_RANKING_CONSTANT_K = 2``), giving ``score = 1/(rank + 2)``:
+        adjacent ranks differ by 33%, so a point ranked 0 by ONE retriever
+        (0.5) beats a point ranked 3 by BOTH (0.2 + 0.2 = 0.4). That inverts
+        the purpose of fusion. ``VECTOR_SEARCH_RRF_K`` (default 60) restores
+        the standard behaviour where cross-retriever agreement dominates.
+
+        DBSF normalises score distributions rather than ranks and has no such
+        constant, so it keeps the plain ``FusionQuery``.
+
+        Note the resulting scores are much smaller (1/60 ≈ 0.0167 at rank 0
+        instead of 0.5) and span a narrow band. That is inherent to RRF at any
+        sane k: the fused score is a rank artifact, not a calibrated relevance
+        measure, so it must not be used as an absolute relevance threshold.
+        """
+        if self.fusion is not models.Fusion.RRF:
+            return models.FusionQuery(fusion=self.fusion)
+        return models.RrfQuery(rrf=models.Rrf(k=settings.vector_search_rrf_k))
+
     async def _run_qdrant_query(
         self,
         qdrant_client: Any,
@@ -152,7 +176,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     ),
                 ],
                 # Fusion query (RRF or DBSF based on initialization)
-                query=models.FusionQuery(fusion=self.fusion),
+                query=self._build_fusion_query(settings),
                 limit=limit * 2,  # Get extra for deduplication
                 score_threshold=score_threshold,
                 with_payload=True,

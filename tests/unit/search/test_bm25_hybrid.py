@@ -151,7 +151,9 @@ async def test_hybrid_query_uses_dense_prefetch_and_fusion(patched_search, monke
 
     kwargs = qdrant.query_points.await_args.kwargs
     assert "prefetch" in kwargs and len(kwargs["prefetch"]) == 2
-    assert isinstance(kwargs["query"], models.FusionQuery)
+    # RRF now goes out as RrfQuery so the ranking constant is explicit rather
+    # than Qdrant's k=2 default (see TestFusionRankingConstant).
+    assert isinstance(kwargs["query"], models.RrfQuery)
 
 
 @pytest.mark.unit
@@ -182,3 +184,43 @@ async def test_search_method_label_is_always_bm25_hybrid(patched_search, monkeyp
 
     assert results
     assert captured["search_method"] == "bm25_hybrid_rrf"
+
+
+class TestFusionRankingConstant:
+    """RRF must use an explicit ranking constant, not Qdrant's k=2 default.
+
+    Qdrant's plain ``FusionQuery(fusion=RRF)`` scores 1/(rank+2), so adjacent
+    ranks differ by 33% and a point ranked top by ONE retriever (0.5) beats a
+    point ranked 3rd by BOTH (0.2+0.2=0.4) — inverting the purpose of fusion.
+    """
+
+    @pytest.mark.unit
+    def test_rrf_carries_the_configured_k(self):
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 60
+
+        query = BM25HybridSearchAlgorithm(fusion="rrf")._build_fusion_query(settings)
+
+        assert isinstance(query, models.RrfQuery)
+        assert query.rrf.k == 60
+
+    @pytest.mark.unit
+    def test_rrf_k_is_configurable(self):
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 17
+
+        query = BM25HybridSearchAlgorithm(fusion="rrf")._build_fusion_query(settings)
+
+        assert query.rrf.k == 17
+
+    @pytest.mark.unit
+    def test_dbsf_keeps_plain_fusion_query(self):
+        # DBSF normalises score distributions rather than ranks, so it has no
+        # ranking constant to set.
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 60
+
+        query = BM25HybridSearchAlgorithm(fusion="dbsf")._build_fusion_query(settings)
+
+        assert isinstance(query, models.FusionQuery)
+        assert query.fusion == models.Fusion.DBSF
