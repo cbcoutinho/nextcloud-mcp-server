@@ -147,20 +147,33 @@ reporting `due: "2023-06-15"` forever, which reads as "three years overdue" even
 though the current instance ran a few weeks ago.
 
 `nc_calendar_list_todos` and `nc_calendar_search_todos` expand the recurrence
-set client-side and add four fields to recurring todos:
+set client-side and describe the **unfinished backlog** of the series:
 
 | Field | Meaning |
 |-------|---------|
 | `recurring` | `true` when the todo has an `RRULE` |
-| `recurrence_rule` | The RFC 5545 rule, e.g. `FREQ=YEARLY` |
-| `current_dtstart` | Start of the currently relevant occurrence |
-| `current_due` | Due date of the currently relevant occurrence |
+| `recurrence_rule` | The RFC 5545 rule, e.g. `FREQ=MONTHLY;BYMONTHDAY=28` |
+| `pending_count` | How many occurrences have started and are not done (`0` = up to date) |
+| `oldest_pending_dtstart` / `oldest_pending_due` | The oldest unfinished occurrence — how far the backlog reaches back |
+| `current_dtstart` / `current_due` | The most recent unfinished occurrence — the one to work on now |
 
-"Currently relevant" is the most recent occurrence that has already started, or
-the first upcoming one if the series has not started yet.
+An occurrence is **pending** when it has started (`DTSTART <= now`) and is not
+done. Expansion applies `EXDATE` and `RECURRENCE-ID` overrides, which is what
+makes per-instance completion visible: clients that materialise recurrences
+(jtx Board via DAVx5, for one) write one override per instance and mark
+finished ones `STATUS:COMPLETED`. `PERCENT-COMPLETE:100` counts as done too,
+since some clients set only that. The result therefore matches the open items
+such an app shows for the same series.
 
-`dtstart`/`due` are deliberately left as stored, so updates keep addressing the
-series rather than a single instance. **When judging whether a recurring todo is
-overdue, read `current_due`, not `due`.** If the occurrence cannot be resolved
-(no `DTSTART` to anchor the rule, or an unexpandable rule) the `current_*`
-fields are omitted rather than guessed.
+For a series with no overrides at all, every started occurrence counts as
+pending — there is nothing recording that any of them were done.
+
+**When judging whether a recurring todo is overdue, read `current_due` (or
+`oldest_pending_due`), never `due`.** `dtstart`/`due` are deliberately left as
+stored so that updates keep addressing the series rather than a single
+instance.
+
+Two bounds worth knowing: the backlog is searched over the last three years, so
+`pending_count` is a lower bound for a long-abandoned series; and if the
+recurrence cannot be resolved at all (no `DTSTART` to anchor the rule, or an
+unexpandable rule) every field above is omitted rather than guessed.

@@ -37,19 +37,12 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
-# Rough length of one repetition per FREQ, used to size the window that the
-# currently relevant occurrence of a recurring VTODO is searched in.
-_RECURRENCE_BASE_PERIOD = {
-    "SECONDLY": dt.timedelta(seconds=1),
-    "MINUTELY": dt.timedelta(minutes=1),
-    "HOURLY": dt.timedelta(hours=1),
-    "DAILY": dt.timedelta(days=1),
-    "WEEKLY": dt.timedelta(weeks=1),
-    "MONTHLY": dt.timedelta(days=31),
-    "YEARLY": dt.timedelta(days=366),
-}
-_RECURRENCE_MIN_WINDOW = dt.timedelta(days=1)
-_RECURRENCE_MAX_WINDOW = dt.timedelta(days=366 * 6)
+# How far back a recurring todo's unfinished backlog is searched. Bounded so an
+# abandoned daily series cannot turn a single todo into thousands of expansions.
+_PENDING_MAX_LOOKBACK = dt.timedelta(days=366 * 3)
+
+# An occurrence in one of these states is finished and not part of the backlog.
+_TODO_DONE_STATUSES = frozenset({"COMPLETED", "CANCELLED"})
 
 
 def _rrule_to_string(rrule: Any) -> str:
@@ -71,20 +64,21 @@ def _rrule_to_string(rrule: Any) -> str:
         return str(rrule)
 
 
-def _recurrence_window(rrule: Any) -> dt.timedelta:
-    """Pick a search window wide enough to contain neighbouring occurrences."""
-    freq, interval = "DAILY", 1
-    if isinstance(rrule, list):
-        rrule = rrule[0] if rrule else None
-    if rrule is not None:
-        try:
-            freq = str(rrule.get("FREQ", ["DAILY"])[0]).upper()
-            interval = int(rrule.get("INTERVAL", [1])[0])
-        except (AttributeError, IndexError, TypeError, ValueError):
-            pass
+def _occurrence_is_done(component: Any) -> bool:
+    """True when a VTODO occurrence is finished.
 
-    window = _RECURRENCE_BASE_PERIOD.get(freq, dt.timedelta(days=1)) * max(interval, 1)
-    return max(_RECURRENCE_MIN_WINDOW, min(window * 2, _RECURRENCE_MAX_WINDOW))
+    Clients that materialise recurrences (jtx Board via DAVx5, for one) mark a
+    completed instance by writing an override with ``STATUS:COMPLETED``. Some
+    leave ``STATUS`` alone and only set ``PERCENT-COMPLETE:100``, so both are
+    treated as done.
+    """
+    status = str(component.get("status") or "").upper()
+    if status in _TODO_DONE_STATUSES:
+        return True
+    try:
+        return int(component.get("percent-complete", 0)) >= 100
+    except (TypeError, ValueError):
+        return False
 
 
 def _as_utc_datetime(value: dt.date) -> dt.datetime:
@@ -1678,32 +1672,41 @@ class CalendarClient:
                 return component
         return components[0] if components else None
 
-    def _current_todo_occurrence(
+    def _pending_todo_occurrences(
         self, cal: Any, master: Any, now: dt.datetime | None = None
-    ) -> dict[str, str]:
-        """Return the currently relevant occurrence of a recurring VTODO.
+    ) -> dict[str, Any]:
+        """Summarise the unfinished occurrences of a recurring VTODO.
 
         CalDAV never expands VTODO recurrences: a ``calendar-query`` hands back
-        only the master component, whose DTSTART/DUE describe the *first*
-        instance. Reporting those verbatim makes a live yearly series look years
-        overdue, so the recurrence set is expanded client-side — the same
-        approach :meth:`_expand_event_occurrences` already takes for VEVENT.
+        the whole resource, and the master component's DTSTART/DUE describe the
+        *first* instance of the series. Reporting those verbatim makes a live
+        monthly chore from 2023 look years overdue, so the recurrence set is
+        expanded client-side — the same approach
+        :meth:`_expand_event_occurrences` already takes for VEVENT.
 
-        "Currently relevant" is the most recent occurrence that has already
-        started, or the first upcoming one if the series has not started yet.
-        Returns an empty dict when the occurrence cannot be determined, leaving
+        Expansion applies EXDATE and RECURRENCE-ID overrides, which is what
+        makes per-instance completion visible: clients that materialise
+        recurrences write a ``STATUS:COMPLETED`` override per finished instance.
+        An occurrence counts as pending when it has started
+        (``DTSTART <= now``) and is not done — the same rule task apps use to
+        decide what to show, so the result matches what the user sees there.
+
+        Returns ``pending_count`` plus the oldest and newest pending occurrence.
+        An empty dict means the recurrence could not be resolved at all, leaving
         the master's DTSTART/DUE as the only answer.
         """
-        rrule = master.get("rrule")
-        if not rrule or not master.get("dtstart"):
+        dtstart = master.get("dtstart")
+        if not master.get("rrule") or not dtstart:
             return {}
 
         now = now or dt.datetime.now(dt.UTC)
-        window = _recurrence_window(rrule)
+        # `between` returns occurrences overlapping the window, so an instance
+        # that has started but is not yet due is included.
+        window_start = max(_as_utc_datetime(dtstart.dt), now - _PENDING_MAX_LOOKBACK)
 
         try:
             occurrences = recurring_ical_events.of(cal, components=["VTODO"]).between(
-                now - window, now + window
+                window_start, now
             )
         except Exception as e:
             logger.warning(
@@ -1713,22 +1716,28 @@ class CalendarClient:
             )
             return {}
 
-        occurrences = sorted(
-            (occ for occ in occurrences if occ.get("dtstart")),
+        pending = sorted(
+            (
+                occ
+                for occ in occurrences
+                if occ.get("dtstart") and not _occurrence_is_done(occ)
+            ),
             key=lambda occ: _as_utc_datetime(occ.get("dtstart").dt),
         )
-        if not occurrences:
-            return {}
+        if not pending:
+            # Every started occurrence is done — the series is up to date.
+            return {"pending_count": 0}
 
-        started = [
-            occ for occ in occurrences if _as_utc_datetime(occ.get("dtstart").dt) <= now
-        ]
-        current = started[-1] if started else occurrences[0]
-
-        occurrence_data = {"current_dtstart": current.get("dtstart").dt.isoformat()}
-        current_due = current.get("due")
-        if current_due:
-            occurrence_data["current_due"] = current_due.dt.isoformat()
+        oldest, newest = pending[0], pending[-1]
+        occurrence_data: dict[str, Any] = {
+            "pending_count": len(pending),
+            "oldest_pending_dtstart": oldest.get("dtstart").dt.isoformat(),
+            "current_dtstart": newest.get("dtstart").dt.isoformat(),
+        }
+        if oldest.get("due"):
+            occurrence_data["oldest_pending_due"] = oldest.get("due").dt.isoformat()
+        if newest.get("due"):
+            occurrence_data["current_due"] = newest.get("due").dt.isoformat()
         return occurrence_data
 
     def _parse_ical_todo(
@@ -1775,13 +1784,13 @@ class CalendarClient:
                 todo_data["categories"] = self._extract_categories(categories)
 
             # Handle recurrence. DTSTART/DUE stay as stored so that updates keep
-            # addressing the series, while current_* carries the instance a
-            # caller should reason about today.
+            # addressing the series, while the pending_* / current_* fields
+            # describe the instances a caller should reason about today.
             rrule = component.get("rrule")
             if rrule:
                 todo_data["recurring"] = True
                 todo_data["recurrence_rule"] = _rrule_to_string(rrule)
-                todo_data.update(self._current_todo_occurrence(cal, component, now))
+                todo_data.update(self._pending_todo_occurrences(cal, component, now))
 
             return todo_data
 

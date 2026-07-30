@@ -247,18 +247,41 @@ class Todo(BaseModel):
     recurrence_rule: str = Field(
         default="", description="RFC 5545 RRULE value, e.g. 'FREQ=YEARLY;INTERVAL=1'"
     )
+    pending_count: Optional[int] = Field(
+        None,
+        description=(
+            "Recurring todos only: how many occurrences have started and are "
+            "not yet done. 0 means the series is up to date. Bounded by a "
+            "three-year lookback, so treat it as a lower bound."
+        ),
+    )
+    oldest_pending_dtstart: Optional[str] = Field(
+        None,
+        description=(
+            "Recurring todos only: start of the oldest unfinished occurrence "
+            "(ISO format) — how far the backlog reaches back."
+        ),
+    )
+    oldest_pending_due: Optional[str] = Field(
+        None,
+        description=(
+            "Recurring todos only: due date of the oldest unfinished "
+            "occurrence (ISO format). Use this to say since when a recurring "
+            "todo has been overdue."
+        ),
+    )
     current_dtstart: Optional[str] = Field(
         None,
         description=(
-            "Recurring todos only: start of the currently relevant occurrence "
-            "(ISO format). Prefer this over 'dtstart', which describes the "
-            "first instance of the series and may be years in the past."
+            "Recurring todos only: start of the most recent unfinished "
+            "occurrence (ISO format). Prefer this over 'dtstart', which "
+            "describes the first instance of the series and may be years old."
         ),
     )
     current_due: Optional[str] = Field(
         None,
         description=(
-            "Recurring todos only: due date of the currently relevant "
+            "Recurring todos only: due date of the most recent unfinished "
             "occurrence (ISO format). Prefer this over 'due' when judging "
             "whether a recurring todo is overdue."
         ),

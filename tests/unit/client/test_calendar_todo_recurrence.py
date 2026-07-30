@@ -1,10 +1,14 @@
 """Unit tests for client-side VTODO recurrence expansion.
 
-CalDAV hands back only the master VTODO of a recurring task, whose DTSTART/DUE
-describe the *first* instance. Without expansion a yearly chore created in 2023
-is reported as due 2023-06-15 forever, which reads as "years overdue" to any
-consumer. These tests pin that the currently relevant occurrence is surfaced
-instead, and that it survives the Pydantic mapping the server layer performs.
+CalDAV hands back the whole resource but never expands VTODO recurrences, and
+the master component's DTSTART/DUE describe the *first* instance. Without
+expansion a monthly chore created in 2024 is reported as due 2024-02-03
+forever, which reads as "years overdue" to any consumer.
+
+Clients that materialise recurrences (jtx Board via DAVx5) write one
+RECURRENCE-ID override per instance and mark finished ones COMPLETED, so the
+unfinished backlog is recoverable from the resource. These tests pin that it is
+recovered, and that it survives the Pydantic mapping the server layer performs.
 """
 
 import datetime as dt
@@ -16,7 +20,7 @@ from nextcloud_mcp_server.models.calendar import Todo
 
 pytestmark = pytest.mark.unit
 
-# 2026-07-30: past the 2026 instance (Jun 1-15) of the yearly series below.
+# 2026-07-30: inside the 2026-07-28 window of the monthly series below.
 NOW = dt.datetime(2026, 7, 30, 12, 0, tzinfo=dt.UTC)
 
 
@@ -54,11 +58,113 @@ END:VTODO
 """
 
 
-def test_recurring_todo_reports_current_occurrence():
-    """The 2026 instance is surfaced; the master dates stay untouched."""
+def _monthly_series(done_through: tuple[int, int] = (2026, 4)) -> str:
+    """A materialised monthly series, finished up to and including ``done_through``.
+
+    Mirrors what jtx Board writes: a master carrying the RRULE plus one
+    RECURRENCE-ID override per instance, finished ones marked COMPLETED.
+    """
+    parts = [
+        """
+BEGIN:VTODO
+UID:monthly
+SUMMARY:Geldabrechnung
+DTSTART:20240128T130000
+DUE:20240203T130000
+RRULE:FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=28
+PRIORITY:4
+END:VTODO
+"""
+    ]
+    for year in (2024, 2025, 2026):
+        for month in range(1, 13):
+            if (year, month) > (2026, 7):
+                continue
+            start = dt.datetime(year, month, 28, 13, 0)
+            due = start + dt.timedelta(days=6)
+            status = (
+                "STATUS:COMPLETED\nPERCENT-COMPLETE:100\nCOMPLETED:20260517T180549Z"
+                if (year, month) <= done_through
+                else "STATUS:NEEDS-ACTION"
+            )
+            parts.append(f"""
+BEGIN:VTODO
+UID:monthly
+SUMMARY:Geldabrechnung
+DTSTART:{start:%Y%m%dT%H%M%S}
+RECURRENCE-ID:{start:%Y%m%dT%H%M%S}
+DUE:{due:%Y%m%dT%H%M%S}
+PRIORITY:4
+{status}
+END:VTODO
+""")
+    return _ical(*parts)
+
+
+def test_backlog_reports_only_unfinished_started_occurrences():
+    """The three open instances are found; the completed ones are not."""
+    todo = _client()._parse_ical_todo(_monthly_series(), now=NOW)
+
+    assert todo["pending_count"] == 3
+    # Oldest still-open instance — "overdue since".
+    assert todo["oldest_pending_dtstart"] == "2026-05-28T13:00:00"
+    assert todo["oldest_pending_due"] == "2026-06-03T13:00:00"
+    # Newest, i.e. the one currently inside its window.
+    assert todo["current_dtstart"] == "2026-07-28T13:00:00"
+    assert todo["current_due"] == "2026-08-03T13:00:00"
+
+
+def test_fully_completed_series_reports_zero_pending():
+    """A series whose started occurrences are all done is up to date."""
+    todo = _client()._parse_ical_todo(_monthly_series(done_through=(2026, 12)), now=NOW)
+
+    assert todo["pending_count"] == 0
+    assert "current_due" not in todo
+    assert "oldest_pending_due" not in todo
+
+
+def test_percent_complete_counts_as_done_without_status():
+    """Some clients only set PERCENT-COMPLETE on a finished instance."""
+    ics = _ical(
+        """
+BEGIN:VTODO
+UID:weekly
+SUMMARY:Kaffeemaschine
+DTSTART:20260704T090000
+DUE:20260704T170000
+RRULE:FREQ=WEEKLY;BYDAY=SA;UNTIL=20260726T090000
+PRIORITY:3
+END:VTODO
+""",
+        """
+BEGIN:VTODO
+UID:weekly
+SUMMARY:Kaffeemaschine
+DTSTART:20260725T090000
+RECURRENCE-ID:20260725T090000
+DUE:20260725T170000
+PERCENT-COMPLETE:100
+END:VTODO
+""",
+    )
+    todo = _client()._parse_ical_todo(ics, now=NOW)
+
+    # 04.07., 11.07. and 18.07. stay open; 25.07. is done via PERCENT-COMPLETE.
+    assert todo["pending_count"] == 3
+    assert todo["current_dtstart"] == "2026-07-18T09:00:00"
+
+
+def test_unmaterialised_series_still_reports_the_backlog():
+    """Without overrides every started occurrence counts as pending.
+
+    Also pins the three-year lookback: the series starts in 2023 but only the
+    2024, 2025 and 2026 instances fall inside the window, so ``pending_count``
+    is a lower bound rather than the true backlog depth.
+    """
     todo = _client()._parse_ical_todo(_ical(YEARLY_TODO), now=NOW)
 
-    assert todo["current_dtstart"] == "2026-06-01"
+    assert todo["pending_count"] == 3
+    assert todo["oldest_pending_due"] == "2024-06-15"
     assert todo["current_due"] == "2026-06-15"
     # The master keeps addressing the series, so updates still target it.
     assert todo["dtstart"] == "2023-06-01"
@@ -78,17 +184,8 @@ def test_non_recurring_todo_has_no_recurrence_fields():
     todo = _client()._parse_ical_todo(_ical(PLAIN_TODO), now=NOW)
 
     assert "recurring" not in todo
-    assert "current_dtstart" not in todo
+    assert "pending_count" not in todo
     assert todo["due"] == "2023-06-15"
-
-
-def test_series_not_yet_started_reports_first_occurrence():
-    """Before the series begins there is no started occurrence to pick."""
-    todo = _client()._parse_ical_todo(
-        _ical(YEARLY_TODO), now=dt.datetime(2023, 1, 5, tzinfo=dt.UTC)
-    )
-
-    assert todo["current_dtstart"] == "2023-06-01"
 
 
 def test_recurrence_id_override_does_not_shadow_master():
@@ -110,7 +207,7 @@ END:VTODO
 
 
 def test_recurring_todo_without_dtstart_falls_back_to_master_dates():
-    """An RRULE has no anchor without DTSTART, so no occurrence can be resolved.
+    """An RRULE has no anchor without DTSTART, so nothing can be resolved.
     The todo must still be returned with its stored DUE rather than dropped."""
     anchorless = """
 BEGIN:VTODO
@@ -126,18 +223,17 @@ END:VTODO
     assert todo is not None
     assert todo["recurring"] is True
     assert todo["due"] == "2023-06-15"
-    assert "current_dtstart" not in todo
-    assert "current_due" not in todo
+    assert "pending_count" not in todo
 
 
 def test_todo_model_round_trip_preserves_recurrence_fields():
     """Mirrors the server's ``Todo(**todo_data)`` mapping — an unmodelled field
     would be dropped there and never reach the caller."""
-    todo_data = _client()._parse_ical_todo(_ical(YEARLY_TODO), now=NOW)
+    todo_data = _client()._parse_ical_todo(_monthly_series(), now=NOW)
 
     todo = Todo(**todo_data)
 
     assert todo.recurring is True
-    assert todo.recurrence_rule == "FREQ=YEARLY"
-    assert todo.current_dtstart == "2026-06-01"
-    assert todo.current_due == "2026-06-15"
+    assert todo.pending_count == 3
+    assert todo.oldest_pending_due == "2026-06-03T13:00:00"
+    assert todo.current_due == "2026-08-03T13:00:00"
