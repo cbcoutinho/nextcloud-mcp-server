@@ -37,6 +37,63 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
+# Rough length of one repetition per FREQ, used to size the window that the
+# currently relevant occurrence of a recurring VTODO is searched in.
+_RECURRENCE_BASE_PERIOD = {
+    "SECONDLY": dt.timedelta(seconds=1),
+    "MINUTELY": dt.timedelta(minutes=1),
+    "HOURLY": dt.timedelta(hours=1),
+    "DAILY": dt.timedelta(days=1),
+    "WEEKLY": dt.timedelta(weeks=1),
+    "MONTHLY": dt.timedelta(days=31),
+    "YEARLY": dt.timedelta(days=366),
+}
+_RECURRENCE_MIN_WINDOW = dt.timedelta(days=1)
+_RECURRENCE_MAX_WINDOW = dt.timedelta(days=366 * 6)
+
+
+def _rrule_to_string(rrule: Any) -> str:
+    """Render an icalendar ``vRecur`` as an RFC 5545 RRULE value.
+
+    ``str(vRecur)`` yields a Python repr (``vRecur({'FREQ': ['YEARLY']})``),
+    which is not a valid RRULE and cannot be fed back into
+    ``vRecur.from_ical()`` when a caller round-trips the value into an update.
+    """
+    if rrule is None:
+        return ""
+    if isinstance(rrule, list):
+        if not rrule:
+            return ""
+        rrule = rrule[0]
+    try:
+        return rrule.to_ical().decode("utf-8")
+    except AttributeError:
+        return str(rrule)
+
+
+def _recurrence_window(rrule: Any) -> dt.timedelta:
+    """Pick a search window wide enough to contain neighbouring occurrences."""
+    freq, interval = "DAILY", 1
+    if isinstance(rrule, list):
+        rrule = rrule[0] if rrule else None
+    if rrule is not None:
+        try:
+            freq = str(rrule.get("FREQ", ["DAILY"])[0]).upper()
+            interval = int(rrule.get("INTERVAL", [1])[0])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+
+    window = _RECURRENCE_BASE_PERIOD.get(freq, dt.timedelta(days=1)) * max(interval, 1)
+    return max(_RECURRENCE_MIN_WINDOW, min(window * 2, _RECURRENCE_MAX_WINDOW))
+
+
+def _as_utc_datetime(value: dt.date) -> dt.datetime:
+    """Normalize a date or datetime to an aware UTC datetime for ordering."""
+    if isinstance(value, dt.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+    return dt.datetime(value.year, value.month, value.day, tzinfo=dt.UTC)
+
+
 class CalendarClient:
     """Client for Nextcloud CalDAV calendar and task operations."""
 
@@ -1232,7 +1289,7 @@ class CalendarClient:
         rrule = component.get("rrule")
         if rrule:
             event_data["recurring"] = True
-            event_data["recurrence_rule"] = str(rrule)
+            event_data["recurrence_rule"] = _rrule_to_string(rrule)
 
         # Handle attendees
         attendees = []
@@ -1606,44 +1663,127 @@ class CalendarClient:
         cal.add_component(todo)
         return cal.to_ical().decode("utf-8")
 
-    def _parse_ical_todo(self, ical_text: str) -> dict[str, Any] | None:
-        """Parse iCalendar text and extract todo data."""
+    @staticmethod
+    def _select_master_vtodo(cal: Any) -> Any | None:
+        """Pick the master VTODO from a resource.
+
+        A recurring todo may carry its modified instances in the same resource,
+        each tagged with a RECURRENCE-ID. Taking the first component in document
+        order would let such an override shadow the series, so prefer the
+        component without a RECURRENCE-ID.
+        """
+        components = list(cal.walk("VTODO"))
+        for component in components:
+            if "recurrence-id" not in component:
+                return component
+        return components[0] if components else None
+
+    def _current_todo_occurrence(
+        self, cal: Any, master: Any, now: dt.datetime | None = None
+    ) -> dict[str, str]:
+        """Return the currently relevant occurrence of a recurring VTODO.
+
+        CalDAV never expands VTODO recurrences: a ``calendar-query`` hands back
+        only the master component, whose DTSTART/DUE describe the *first*
+        instance. Reporting those verbatim makes a live yearly series look years
+        overdue, so the recurrence set is expanded client-side — the same
+        approach :meth:`_expand_event_occurrences` already takes for VEVENT.
+
+        "Currently relevant" is the most recent occurrence that has already
+        started, or the first upcoming one if the series has not started yet.
+        Returns an empty dict when the occurrence cannot be determined, leaving
+        the master's DTSTART/DUE as the only answer.
+        """
+        rrule = master.get("rrule")
+        if not rrule or not master.get("dtstart"):
+            return {}
+
+        now = now or dt.datetime.now(dt.UTC)
+        window = _recurrence_window(rrule)
+
+        try:
+            occurrences = recurring_ical_events.of(cal, components=["VTODO"]).between(
+                now - window, now + window
+            )
+        except Exception as e:
+            logger.warning(
+                "Client-side VTODO recurrence expansion failed (%s); "
+                "falling back to the master DTSTART/DUE",
+                e,
+            )
+            return {}
+
+        occurrences = sorted(
+            (occ for occ in occurrences if occ.get("dtstart")),
+            key=lambda occ: _as_utc_datetime(occ.get("dtstart").dt),
+        )
+        if not occurrences:
+            return {}
+
+        started = [
+            occ for occ in occurrences if _as_utc_datetime(occ.get("dtstart").dt) <= now
+        ]
+        current = started[-1] if started else occurrences[0]
+
+        occurrence_data = {"current_dtstart": current.get("dtstart").dt.isoformat()}
+        current_due = current.get("due")
+        if current_due:
+            occurrence_data["current_due"] = current_due.dt.isoformat()
+        return occurrence_data
+
+    def _parse_ical_todo(
+        self, ical_text: str, now: dt.datetime | None = None
+    ) -> dict[str, Any] | None:
+        """Parse iCalendar text and extract todo data.
+
+        ``now`` overrides the reference instant used to resolve which occurrence
+        of a recurring todo is the current one (injected by tests).
+        """
         try:
             cal = Calendar.from_ical(ical_text)
-            for component in cal.walk():
-                if component.name == "VTODO":
-                    todo_data = {
-                        "uid": str(component.get("uid", "")),
-                        "summary": str(component.get("summary", "")),
-                        "description": str(component.get("description", "")),
-                        "status": str(component.get("status", "NEEDS-ACTION")),
-                        "priority": int(component.get("priority", 0)),
-                        "percent_complete": int(component.get("percent-complete", 0)),
-                    }
+            component = self._select_master_vtodo(cal)
+            if component is None:
+                return None
 
-                    # Handle due date
-                    due = component.get("due")
-                    if due:
-                        todo_data["due"] = due.dt.isoformat()
+            todo_data = {
+                "uid": str(component.get("uid", "")),
+                "summary": str(component.get("summary", "")),
+                "description": str(component.get("description", "")),
+                "status": str(component.get("status", "NEEDS-ACTION")),
+                "priority": int(component.get("priority", 0)),
+                "percent_complete": int(component.get("percent-complete", 0)),
+            }
 
-                    # Handle start date
-                    dtstart = component.get("dtstart")
-                    if dtstart:
-                        todo_data["dtstart"] = dtstart.dt.isoformat()
+            # Handle due date
+            due = component.get("due")
+            if due:
+                todo_data["due"] = due.dt.isoformat()
 
-                    # Handle completed date
-                    completed = component.get("completed")
-                    if completed:
-                        todo_data["completed"] = completed.dt.isoformat()
+            # Handle start date
+            dtstart = component.get("dtstart")
+            if dtstart:
+                todo_data["dtstart"] = dtstart.dt.isoformat()
 
-                    # Handle categories
-                    categories = component.get("categories")
-                    if categories:
-                        todo_data["categories"] = self._extract_categories(categories)
+            # Handle completed date
+            completed = component.get("completed")
+            if completed:
+                todo_data["completed"] = completed.dt.isoformat()
 
-                    return todo_data
+            # Handle categories
+            categories = component.get("categories")
+            if categories:
+                todo_data["categories"] = self._extract_categories(categories)
 
-            return None
+            # Handle recurrence. DTSTART/DUE stay as stored so that updates keep
+            # addressing the series, while current_* carries the instance a
+            # caller should reason about today.
+            rrule = component.get("rrule")
+            if rrule:
+                todo_data["recurring"] = True
+                todo_data["recurrence_rule"] = _rrule_to_string(rrule)
+                todo_data.update(self._current_todo_occurrence(cal, component, now))
+
+            return todo_data
 
         except Exception as e:
             logger.error("Error parsing iCalendar todo: %s", e)

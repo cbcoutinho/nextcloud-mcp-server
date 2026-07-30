@@ -241,6 +241,28 @@ class Todo(BaseModel):
         None, description="Completion timestamp (ISO format)"
     )
     categories: str = Field(default="", description="Comma-separated categories")
+    recurring: bool = Field(
+        default=False, description="Whether this todo recurs (i.e. has an RRULE)"
+    )
+    recurrence_rule: str = Field(
+        default="", description="RFC 5545 RRULE value, e.g. 'FREQ=YEARLY;INTERVAL=1'"
+    )
+    current_dtstart: Optional[str] = Field(
+        None,
+        description=(
+            "Recurring todos only: start of the currently relevant occurrence "
+            "(ISO format). Prefer this over 'dtstart', which describes the "
+            "first instance of the series and may be years in the past."
+        ),
+    )
+    current_due: Optional[str] = Field(
+        None,
+        description=(
+            "Recurring todos only: due date of the currently relevant "
+            "occurrence (ISO format). Prefer this over 'due' when judging "
+            "whether a recurring todo is overdue."
+        ),
+    )
     href: str = Field(default="", description="CalDAV href")
     etag: str = Field(default="", description="ETag for versioning")
     calendar_name: Optional[str] = Field(

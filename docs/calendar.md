@@ -137,3 +137,30 @@ await nc_calendar_complete_todo(
 
 Not idempotent: a second call without an explicit `completed` restamps the
 timestamp.
+
+## Recurring todos
+
+CalDAV does not expand VTODO recurrences: a `calendar-query` returns only the
+master component, whose `DTSTART`/`DUE` describe the **first** instance of the
+series. A chore created in 2023 that repeats every June therefore keeps
+reporting `due: "2023-06-15"` forever, which reads as "three years overdue" even
+though the current instance ran a few weeks ago.
+
+`nc_calendar_list_todos` and `nc_calendar_search_todos` expand the recurrence
+set client-side and add four fields to recurring todos:
+
+| Field | Meaning |
+|-------|---------|
+| `recurring` | `true` when the todo has an `RRULE` |
+| `recurrence_rule` | The RFC 5545 rule, e.g. `FREQ=YEARLY` |
+| `current_dtstart` | Start of the currently relevant occurrence |
+| `current_due` | Due date of the currently relevant occurrence |
+
+"Currently relevant" is the most recent occurrence that has already started, or
+the first upcoming one if the series has not started yet.
+
+`dtstart`/`due` are deliberately left as stored, so updates keep addressing the
+series rather than a single instance. **When judging whether a recurring todo is
+overdue, read `current_due`, not `due`.** If the occurrence cannot be resolved
+(no `DTSTART` to anchor the rule, or an unexpandable rule) the `current_*`
+fields are omitted rather than guessed.
