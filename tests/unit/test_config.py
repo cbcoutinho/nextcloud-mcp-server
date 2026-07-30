@@ -158,7 +158,7 @@ class TestGetSettings:
         """DOCUMENT_OCR_MODE / batch tuning must reach settings (regression).
 
         These were added to _DEFAULTS + the Settings dataclass but initially
-        omitted from _field_map, so dynaconf silently ignored the env vars and
+        omitted from _FIELD_MAP, so dynaconf silently ignored the env vars and
         batch mode could never be enabled in production (Deck #332).
         """
         _reload_config()
@@ -174,7 +174,7 @@ class TestGetSettings:
     def test_get_settings_empty_discovery_threshold_from_env(self):
         """VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD must reach settings.
 
-        Guards against the _DEFAULTS / _field_map omission that has silently
+        Guards against the _DEFAULTS / _FIELD_MAP omission that has silently
         dropped env vars before (cf. OCR batch mode #332): the setting is added
         in all three places (defaults, dataclass, field map).
         """
@@ -200,7 +200,7 @@ class TestGetSettings:
     def test_get_settings_pyroscope_from_env(self):
         """PYROSCOPE_ENABLED / _SERVER_ADDRESS must reach settings (Deck #655).
 
-        Guards against the _DEFAULTS / _field_map omission that has silently
+        Guards against the _DEFAULTS / _FIELD_MAP omission that has silently
         dropped other observability env vars before (cf. OCR batch mode, #332).
         """
         _reload_config()
@@ -217,7 +217,7 @@ class TestGetSettings:
         """POD_NAMESPACE / POD_NAME must reach settings (Deck #48).
 
         Same guard as the pyroscope pair above: these are what tag profiles and
-        make a tenant's profiles separable, and a missing _DEFAULTS / _field_map
+        make a tenant's profiles separable, and a missing _DEFAULTS / _FIELD_MAP
         entry would silently drop them with no other test noticing.
         """
         _reload_config()
