@@ -29,11 +29,17 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
     768-dimensional embeddings and cosine distance.
     """
 
-    def __init__(self, score_threshold: float = 0.7):
+    def __init__(self, score_threshold: float = 0.0):
         """Initialize semantic search algorithm.
 
         Args:
-            score_threshold: Minimum similarity score (0-1, default: 0.7)
+            score_threshold: Minimum cosine similarity (0-1, default: 0.0 =
+                no cut). Matches ``BM25HybridSearchAlgorithm``'s default and the
+                0.0 the API layer already passes explicitly. The previous 0.7
+                default was inherited from the removed sampling tool, where it
+                silently returned zero results for questions the corpus answered
+                almost verbatim; no caller relied on it, so it survived only as
+                a footgun for the next bare instantiation.
         """
         super().__init__()
         self.score_threshold = score_threshold
