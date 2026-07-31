@@ -14,7 +14,12 @@ from nextcloud_mcp_server.search.algorithms import (
     SearchResult,
     get_indexed_doc_types,
 )
-from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+from nextcloud_mcp_server.search.bm25_hybrid import (
+    GRANULARITY_CHUNK,
+    GRANULARITY_DOCUMENT,
+    VALID_GRANULARITIES,
+    BM25HybridSearchAlgorithm,
+)
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 
 __all__ = [
@@ -24,4 +29,7 @@ __all__ = [
     "get_indexed_doc_types",
     "SemanticSearchAlgorithm",
     "BM25HybridSearchAlgorithm",
+    "GRANULARITY_CHUNK",
+    "GRANULARITY_DOCUMENT",
+    "VALID_GRANULARITIES",
 ]

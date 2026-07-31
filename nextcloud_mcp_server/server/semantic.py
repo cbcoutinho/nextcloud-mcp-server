@@ -1,7 +1,7 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 import anyio
 from httpx import RequestError
@@ -147,6 +147,29 @@ def configure_semantic_tools(mcp: FastMCP):
         doc_types: list[str] | None = None,
         score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
         fusion: str = "rrf",
+        granularity: Annotated[
+            Literal["chunk", "document"],
+            Field(
+                description=(
+                    "Result granularity. 'chunk' (default) returns the "
+                    "best-matching passages, so a long document can occupy "
+                    "several result slots. 'document' returns one row per "
+                    "document (its best-matching chunk), which is the right "
+                    "shape for 'which files mention X' / 'list documents "
+                    "about Y' — `limit` then counts documents rather than "
+                    "passages. Use 'chunk' when you want the passage text to "
+                    "answer from, 'document' when you want to enumerate "
+                    "sources. Note 'document' improves result diversity, not "
+                    "recall: a document whose best chunk ranks too low to be "
+                    "retrieved is absent under both settings. Caveat when "
+                    "combined with the default doc_types=None (search all "
+                    "types): grouping keys on the numeric document id, which "
+                    "is not unique across types, so a note and a file that "
+                    "happen to share an id can be merged into one result. "
+                    "Pass an explicit doc_types (e.g. ['file']) to avoid this."
+                ),
+            ),
+        ] = "chunk",
         include_context: bool = False,
         context_chars: Annotated[int, Field(ge=0)] = 300,
         modified_after: Annotated[
@@ -369,6 +392,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     query=query,
                     total_found=0,
                     search_method=search_method,
+                    granularity=granularity,
                     verified_chunk_count=0,
                     dropped_document_count=0,
                 )
@@ -412,6 +436,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     score_threshold=score_threshold,
                     accessible_owners=accessible_owners,
                     shared_root_ids=shared_root_ids,
+                    granularity=granularity,
                     modified_after=modified_after_ts,
                     modified_before=modified_before_ts,
                     path_prefixes=folder_prefixes,
@@ -442,6 +467,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
                         shared_root_ids=shared_root_ids,
+                        granularity=granularity,
                         modified_after=modified_after_ts,
                         modified_before=modified_before_ts,
                         path_prefixes=folder_prefixes,
@@ -693,6 +719,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 query=query,
                 total_found=len(results),
                 search_method=search_method,
+                granularity=granularity,
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )
