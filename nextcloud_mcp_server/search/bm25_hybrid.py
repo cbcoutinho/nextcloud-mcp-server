@@ -49,8 +49,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         Initialize BM25 hybrid search algorithm.
 
         Args:
-            score_threshold: Minimum fusion score (0-1, default: 0.0 to allow fusion scoring)
-                           Note: Both RRF and DBSF produce normalized scores
+            score_threshold: Minimum fusion score (default: 0.0 = no cut).
+                           NOT a 0-1 relevance scale for either algorithm: RRF
+                           scores are a rank artifact peaking around
+                           2/VECTOR_SEARCH_RRF_K (~0.033 at the default k=60),
+                           and DBSF sums normalized per-retriever scores so it
+                           is unbounded above 1.0. Leave at 0.0 and cut by rank
+                           via ``limit``.
             fusion: Fusion algorithm to use: "rrf" (Reciprocal Rank Fusion, default)
                    or "dbsf" (Distribution-Based Score Fusion).
 
@@ -311,8 +316,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         )
 
         if search_response.points:
-            # Log top 3 scores to help with threshold tuning — normalized fusion
-            # scores (RRF in [0,1]; DBSF can exceed 1).
+            # Log top 3 scores to help with threshold tuning. Neither algorithm
+            # is on a 0-1 relevance scale: RRF peaks near 2/VECTOR_SEARCH_RRF_K
+            # (~0.033 at k=60) and DBSF is unbounded above 1.0.
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug("Top 3 %s scores: %s", method_label, top_scores)
 

@@ -29,8 +29,12 @@ class SemanticSearchResult(BaseModel):
     excerpt: str = Field(description="Excerpt from matching chunk")
     score: float = Field(
         description=(
-            "Relevance score (≥ 0.0, higher is better). A normalized fusion score "
-            "— RRF in [0.0, 1.0], DBSF can exceed 1.0."
+            "Ranking score (≥ 0.0, higher is better). Orders results within "
+            "one response; it is NOT a calibrated relevance measure and is not "
+            "comparable across queries. RRF scores are a rank artifact peaking "
+            "near 2/VECTOR_SEARCH_RRF_K (~0.033 at the default k=60); DBSF sums "
+            "normalized per-retriever scores and is unbounded above 1.0. Filter "
+            "by rank via `limit` rather than by an absolute score."
         )
     )
     chunk_index: int = Field(description="Index of matching chunk in document")
