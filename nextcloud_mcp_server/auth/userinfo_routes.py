@@ -493,8 +493,18 @@ async def user_info_html(request: Request) -> HTMLResponse:
     #
     # html.escape() escapes &, <, >, " and ' -- enough for both element text
     # and the quoted attribute values these fragments interpolate into.
-    auth_mode = escape(str(user_context.get("auth_mode", "unknown")))
-    username = escape(str(user_context.get("username", "unknown")))
+    #
+    # auth_mode and username are kept in BOTH forms on purpose. The raw values
+    # go to template.render(), where user_info.html interpolates them as plain
+    # `{{ username }}` / `{{ auth_mode }}` and Jinja's now-enabled autoescape
+    # handles them exactly once; passing the pre-escaped copy there instead
+    # double-escapes, so a display name like `O'Brien & Co` renders as
+    # `O&#x27;Brien &amp; Co` in the navbar. The escaped copies are only for the
+    # f-string fragments below, which autoescape cannot reach.
+    auth_mode = str(user_context.get("auth_mode", "unknown"))
+    username = str(user_context.get("username", "unknown"))
+    auth_mode_html = escape(auth_mode)
+    username_html = escape(username)
 
     # Get logout URL dynamically for OAuth mode
     logout_url = ""
@@ -633,11 +643,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
         <table>
             <tr>
                 <td><strong>Username</strong></td>
-                <td>{username}</td>
+                <td>{username_html}</td>
             </tr>
             <tr>
                 <td><strong>Authentication Mode</strong></td>
-                <td><span class="badge badge-{auth_mode}">{auth_mode}</span></td>
+                <td><span class="badge badge-{auth_mode_html}">{auth_mode_html}</span></td>
             </tr>
         </table>
 

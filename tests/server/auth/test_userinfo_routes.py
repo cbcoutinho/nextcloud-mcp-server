@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from nextcloud_mcp_server.auth.userinfo_routes import _jinja_env, _query_idp_userinfo
+from nextcloud_mcp_server.auth.userinfo_routes import (
+    _jinja_env,
+    _query_idp_userinfo,
+    user_info_html,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -95,3 +99,42 @@ def test_user_info_safe_fragments_are_still_raw():
     )
 
     assert "<td>marker-cell</td>" in rendered
+
+
+async def test_user_info_html_escapes_username_exactly_once(mocker):
+    """A username with HTML-special characters is escaped once, not twice.
+
+    `username` feeds two different sinks: the hand-built `|safe` fragment (which
+    autoescape cannot reach, so it needs a pre-escaped copy) and the plain
+    `{{ username }}` in the navbar (which autoescape handles itself). Passing
+    the pre-escaped copy to both renders `O'Brien & Co` as
+    `O&amp;#x27;Brien &amp;amp; Co`. This drives the real handler rather than
+    the template, because rendering the template directly is exactly what missed
+    the bug.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.auth.userinfo_routes._get_user_info",
+        return_value={"auth_mode": "basic", "username": "O'Brien & <Co>"},
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.userinfo_routes._get_processing_status",
+        return_value=None,
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.userinfo_routes._get_authenticated_client_for_userinfo",
+        side_effect=RuntimeError("not needed"),
+    )
+
+    request = Mock()
+    request.app.state = Mock(spec=[])  # no oauth_context -> BasicAuth rendering
+
+    # __wrapped__ skips the @requires('authenticated') gate, which asserts a
+    # real starlette Request; the subject here is the escaping, not the gate.
+    response = await user_info_html.__wrapped__(request)
+    body = response.body.decode()
+
+    # Escaped exactly once: the raw text and the double-escaped form are absent.
+    assert "O&#x27;Brien &amp; &lt;Co&gt;" in body
+    assert "&amp;#x27;" not in body
+    assert "&amp;amp;" not in body
+    assert "<Co>" not in body
