@@ -5,6 +5,15 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.155.1 (2026-07-31)
+
+### Fix
+
+- **search**: scope the ACL owner branch to the subtrees actually shared
+- **search**: pin the RRF constant in tests and correct the threshold docs
+- **search**: set an explicit RRF ranking constant instead of Qdrant's k=2
+- **search**: drop the dense-search score_threshold default to 0.0
+
 ## v0.155.0 (2026-07-30)
 
 ### BREAKING CHANGE
