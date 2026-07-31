@@ -189,6 +189,11 @@ _DEFAULTS: dict[str, Any] = {
     # pages into one chunk instead of one-per-page. Off by default until the
     # post-change density re-measure + pricing re-calibration land.
     "document_chunk_page_pack": False,
+    # Hybrid-search RRF ranking constant. Qdrant's native RRF hardcodes k=2,
+    # where adjacent ranks differ by 33% and a single-list outlier outranks a
+    # document both retrievers agree on. 60 is the standard value (~2% per rank),
+    # which restores consensus as the dominant signal.
+    "vector_search_rrf_k": 60,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -578,6 +583,10 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_GLYPH_CORRUPTION_RATIO", gte=0, lte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
+        # RRF ranking constant. Must be >= 1: the fused score is
+        # 1/(rank + k) with rank 0-indexed, so k=0 divides by zero on the
+        # top-ranked point.
+        Validator("VECTOR_SEARCH_RRF_K", gte=1),
         # Non-empty strings
         Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
@@ -1133,6 +1142,15 @@ class Settings:
     # ~1 chunk/page when document_chunk_size >= the largest page. When False,
     # the legacy char-based path runs with post-hoc assign_page_numbers.
     document_chunk_page_aware: bool = True
+    # Ranking constant for Reciprocal Rank Fusion in hybrid search. Qdrant's
+    # native ``FusionQuery(fusion=RRF)`` hardcodes k=2 (score = 1/(rank+2)), so
+    # adjacent ranks differ by 33% and a document ranked well by BOTH retrievers
+    # loses to one ranked top by a single retriever — the opposite of what
+    # fusion is for. k=60 is the value from the original RRF paper and the de
+    # facto standard; adjacent ranks then differ by ~2%, so agreement across the
+    # dense and sparse lists decides the ordering. Applies to ``fusion="rrf"``
+    # only; DBSF has no such constant.
+    vector_search_rrf_k: int = 60
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for

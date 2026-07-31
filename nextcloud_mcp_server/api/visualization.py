@@ -36,7 +36,9 @@ from nextcloud_mcp_server.search import (
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.search.access_filter import (
+    AccessibleScope,
     list_accessible_owners,
+    list_accessible_scope,
     normalize_path_prefixes,
 )
 from nextcloud_mcp_server.search.context import (
@@ -107,10 +109,10 @@ def _build_search_algorithm(
 async def _search_with_acl(
     request: Request,
     user_id: str,
-    execute: Callable[[list[str] | None], Awaitable[list]],
+    execute: Callable[[AccessibleScope | None], Awaitable[list]],
 ) -> list:
-    """Resolve the caller's Nextcloud client, run ``execute(accessible_owners)``,
-    and verify-on-read — shared by the /api/v1 search endpoints.
+    """Resolve the caller's Nextcloud client, run ``execute(scope)``, and
+    verify-on-read — shared by the /api/v1 search endpoints.
 
     The OAuth bearer only authenticates Astrolabe → MCP Server; MCP Server →
     Nextcloud uses the provisioned app password. When the caller never
@@ -122,7 +124,7 @@ async def _search_with_acl(
     Args:
         request: The Starlette request (carries ``app.state.oauth_context``).
         user_id: The authenticated caller.
-        execute: Coroutine that runs the search for a given owner scope
+        execute: Coroutine that runs the search for a given access scope
             (``None`` ⇒ self-only).
 
     Returns:
@@ -145,8 +147,8 @@ async def _search_with_acl(
         async with nc_client:
             # Expand to owners who shared content with the caller (same as the
             # MCP tool path) so shared documents are searchable.
-            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
-            results = await execute(accessible_owners)
+            scope = await list_accessible_scope(nc_client.sharing, user_id)
+            results = await execute(scope)
             # Verify-on-read (ADR-019): drop documents the caller can no longer
             # access (e.g. a revoked share). Eviction runs inline — this
             # Starlette route has no FastMCP lifespan task group.
@@ -313,9 +315,13 @@ async def unified_search(request: Request) -> JSONResponse:
         # Request extra results to handle offset
         search_limit = limit + offset
 
-        async def _execute(owners: list[str] | None) -> list:
-            """Run the search across requested doc_types with the given owner
+        async def _execute(scope: AccessibleScope | None) -> list:
+            """Run the search across requested doc_types with the given access
             scope (None ⇒ self-only)."""
+            owners = scope.owners if scope else None
+            # Narrow the owner branch to the subtrees actually shared with the
+            # caller; see access_filter.build_ownership_filter.
+            roots = scope.share_root_ids if scope else None
             results: list = []
             if doc_types and isinstance(doc_types, list):
                 for doc_type in doc_types:
@@ -327,6 +333,7 @@ async def unified_search(request: Request) -> JSONResponse:
                                 limit=search_limit,
                                 doc_type=doc_type,
                                 accessible_owners=owners,
+                                shared_root_ids=roots,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
                                 path_prefixes=path_prefixes,
@@ -347,6 +354,7 @@ async def unified_search(request: Request) -> JSONResponse:
                     user_id=user_id,
                     limit=search_limit,
                     accessible_owners=owners,
+                    shared_root_ids=roots,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
@@ -560,9 +568,13 @@ async def vector_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
-        async def _execute(owners: list[str] | None) -> list:
-            """Run the search across requested doc_types with the given owner
+        async def _execute(scope: AccessibleScope | None) -> list:
+            """Run the search across requested doc_types with the given access
             scope (None ⇒ self-only)."""
+            owners = scope.owners if scope else None
+            # Narrow the owner branch to the subtrees actually shared with the
+            # caller; see access_filter.build_ownership_filter.
+            roots = scope.share_root_ids if scope else None
             results: list = []
             if doc_types and isinstance(doc_types, list):
                 # Search each doc_type separately and merge results
@@ -575,6 +587,7 @@ async def vector_search(request: Request) -> JSONResponse:
                                 limit=limit,
                                 doc_type=doc_type,
                                 accessible_owners=owners,
+                                shared_root_ids=roots,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
                                 path_prefixes=path_prefixes,
@@ -590,6 +603,7 @@ async def vector_search(request: Request) -> JSONResponse:
                     user_id=user_id,
                     limit=limit,
                     accessible_owners=owners,
+                    shared_root_ids=roots,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,

@@ -28,15 +28,17 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from qdrant_client.models import (
     Condition,
     FieldCondition,
     Filter,
+    IsEmptyCondition,
     MatchAny,
     MatchText,
     MatchValue,
+    PayloadField,
     Range,
 )
 
@@ -66,7 +68,7 @@ _OWNERS_CACHE_TTL_SECONDS = 30.0
 # OrderedDict; the cap is generous relative to any realistic concurrent-user
 # count, so steady state is effectively all-hit.
 _OWNERS_CACHE_MAXSIZE = 1024
-_owners_cache: OrderedDict[str, tuple[float, list[str]]] = OrderedDict()
+_owners_cache: OrderedDict[str, tuple[float, AccessibleScope]] = OrderedDict()
 
 
 def clear_accessible_owners_cache() -> None:
@@ -80,6 +82,24 @@ class _SharingClientProtocol(Protocol):
     async def list_shares(
         self, path: str | None = None, shared_with_me: bool = False
     ) -> list[dict[str, Any]]: ...
+
+
+class AccessibleScope(NamedTuple):
+    """What one user may read, as resolved from their incoming OCS shares.
+
+    Attributes:
+        owners: ``{user_id} ∪ {uid_owner of each incoming share}``. The owner
+            UIDs whose content is a *candidate* for this user.
+        share_root_ids: Nextcloud fileids of the shared items themselves (the
+            OCS ``file_source`` of each incoming share), as strings. For a
+            folder share this is the mount root, whose descendants all carry it
+            in ``folder_ancestors``; for a single-file share it is that file's
+            own id. Used to narrow the owner branch from "everything this owner
+            has indexed" down to "the subtrees they actually shared".
+    """
+
+    owners: list[str]
+    share_root_ids: list[str]
 
 
 async def list_accessible_owners(
@@ -100,27 +120,42 @@ async def list_accessible_owners(
     more incoming shares than the OCS page size could have some owners omitted;
     if that becomes real, add pagination to SharingClient.
 
-    Granularity / over-fetch limitation (TODO, finer-grained filtering): this
-    expansion is *owner-level*, not *file-level*. If a prolific content creator
-    shares a single item with the querying user, that owner's whole indexed
-    corpus becomes a Qdrant candidate set for the querier even though only the
-    shared item is accessible. Verify-on-read correctly drops the inaccessible
-    "ghost" candidates, but because there is no second Qdrant pass to replenish,
-    a ``limit=N`` search can return fewer than N results when the over-fetch
-    buffer (2× in nc_semantic_search / api/visualization.py) is dominated by
-    ghosts. A per-file ownership index would remove this tension and is the
-    natural starting point for future work (intentionally out of scope here).
+    Granularity: the owner list alone is *owner-level*, not *file-level* — one
+    incoming share makes that owner's whole indexed corpus a Qdrant candidate.
+    ``list_accessible_scope`` also returns the shared items' fileids so the
+    search path can narrow the owner branch to the shared subtrees; see
+    ``build_ownership_filter(shared_root_ids=...)``. Callers that only need the
+    owner UIDs (doc-type discovery, context expansion) can keep using this.
 
     Sharing API failures are non-fatal — we degrade to ``[user_id]`` and log
     so a hiccup in OCS doesn't black-hole the user's own search.
+    """
+    return (await list_accessible_scope(sharing_client, user_id)).owners
+
+
+async def list_accessible_scope(
+    sharing_client: _SharingClientProtocol,
+    user_id: str,
+) -> AccessibleScope:
+    """Resolve ``user_id``'s incoming shares into owner UIDs + shared fileids.
+
+    One OCS round-trip serves both halves, cached together for
+    ``_OWNERS_CACHE_TTL_SECONDS``. Failures are not cached and degrade to
+    self-only scope (``owners=[user_id]``, no share roots), which is safe: the
+    user still searches their own content, and verify-on-read remains the
+    authority for anything that does surface.
+
+    See ``list_accessible_owners`` for the OCS pagination caveat.
     """
     now = time.monotonic()
     cached = _owners_cache.get(user_id)
     if cached is not None and now - cached[0] < _OWNERS_CACHE_TTL_SECONDS:
         _owners_cache.move_to_end(user_id)  # mark as recently used (LRU)
-        return list(cached[1])  # copy so callers can't mutate the cached value
+        # Copy the lists so callers can't mutate the cached value.
+        return AccessibleScope(list(cached[1].owners), list(cached[1].share_root_ids))
 
     owners: set[str] = {user_id}
+    share_root_ids: set[str] = set()
     try:
         shares = await sharing_client.list_shares(shared_with_me=True)
     except Exception as exc:  # noqa: BLE001 — degrade gracefully
@@ -130,7 +165,8 @@ async def list_accessible_owners(
             user_id,
             exc,
         )
-        return [user_id]  # don't cache failures — retry on the next search
+        # Don't cache failures — retry on the next search.
+        return AccessibleScope([user_id], [])
 
     for share in shares:
         # OCS returns the share owner under `uid_owner` (the file owner,
@@ -142,8 +178,16 @@ async def list_accessible_owners(
         if not isinstance(owner, str) or not owner:
             continue
         owners.add(owner)
+        # ``file_source`` is the fileid of the shared item itself (OCS also
+        # exposes the same value as ``item_source``). Stringified to match the
+        # ``folder_ancestors`` payload, which stores fileids as strings.
+        root = share.get("file_source")
+        if root is None:
+            root = share.get("item_source")
+        if isinstance(root, (int, str)) and str(root).strip():
+            share_root_ids.add(str(root).strip())
 
-    result = list(owners)
+    result = AccessibleScope(sorted(owners), sorted(share_root_ids))
     _owners_cache[user_id] = (now, result)
     # Promote to the most-recently-used end. This is a no-op for a brand-new
     # key (dict insertion already appends) but is needed when re-inserting an
@@ -152,16 +196,19 @@ async def list_accessible_owners(
     while len(_owners_cache) > _OWNERS_CACHE_MAXSIZE:
         _owners_cache.popitem(last=False)  # evict the least-recently-used entry
     logger.debug(
-        "Accessible owners for user %s: %d entries (%d other owner(s))",
+        "Accessible scope for user %s: %d owner(s) (%d other), %d share root(s)",
         user_id,
-        len(result),
-        len(result) - 1,
+        len(result.owners),
+        len(result.owners) - 1,
+        len(result.share_root_ids),
     )
-    return list(result)
+    return AccessibleScope(list(result.owners), list(result.share_root_ids))
 
 
 def build_ownership_filter(
-    user_id: str, accessible_owners: list[str] | None = None
+    user_id: str,
+    accessible_owners: list[str] | None = None,
+    shared_root_ids: list[str] | None = None,
 ) -> Filter:
     """Build the Qdrant ``Filter`` constraining a search to readable points.
 
@@ -182,6 +229,12 @@ def build_ownership_filter(
             access to. When None, defaults to ``[user_id]`` (no shares
             expansion — used by callers that genuinely want self-only
             scope such as eviction sweeps).
+        shared_root_ids: Fileids of the items those owners actually shared
+            (``AccessibleScope.share_root_ids``). When given, the ``owner_id``
+            branch is additionally constrained to points inside one of those
+            subtrees, which is what stops one incoming share exposing an
+            owner's entire corpus as candidates. When None/empty the branch
+            keeps its historical owner-level width.
 
     Returns:
         A Qdrant ``Filter`` ready to be nested under a parent ``must`` clause.
@@ -205,9 +258,61 @@ def build_ownership_filter(
         FieldCondition(key="acl_principals", match=MatchAny(any=[f"user:{user_id}"])),
     ]
     if other_owners:
-        conditions.insert(
-            0, FieldCondition(key="owner_id", match=MatchAny(any=other_owners))
+        owner_branch: Condition = FieldCondition(
+            key="owner_id", match=MatchAny(any=other_owners)
         )
+        roots = [rid for rid in (shared_root_ids or []) if rid and rid.strip()]
+        if roots:
+            # Narrow "everything this owner indexed" to "the subtrees they
+            # actually shared with me". Without this, a single incoming share
+            # admits the owner's whole corpus as candidates; verify-on-read then
+            # rejects them one by one, burning the over-fetch budget and
+            # silently shortening result pages. (Measured on one tenant: 47% of
+            # the collection was admitted here and rejected downstream.)
+            #
+            # Three OR-ed ways to be inside a shared subtree:
+            #   * folder_ancestors contains a shared folder's id — the normal
+            #     case for a folder share (ancestors run parent → user root).
+            #   * doc_id IS a shared id — a single-file share, and the shared
+            #     folder's own point, neither of which lists itself as an
+            #     ancestor.
+            #   * folder_ancestors is empty/absent — fail open, because we have
+            #     no containment signal to judge these on.
+            #
+            # SCOPE — that third branch is broader than "legacy points", and
+            # deliberately so. ``folder_ancestors`` is only ever populated for
+            # ``doc_type == "file"`` (vector/processor.py); every other doc type
+            # is stamped with ``[]``, and Qdrant's ``IsEmpty`` matches an empty
+            # array and an absent key alike. So the branch covers BOTH:
+            #   - files predating ADR-033 Phase 3 (or whose ancestors failed to
+            #     resolve) — an admin payload backfill converts these into the
+            #     precise branches above, and
+            #   - every non-file doc type (note, calendar, contact, deck_card,
+            #     …), permanently, since they never get ancestors at all.
+            # Those types therefore keep the old owner-level width: one share
+            # from an owner still admits that owner's whole non-file corpus as
+            # candidates. Narrowing them needs ancestors populated for those
+            # types, which is a processor + re-index change, not a filter one.
+            # Pinned by test_non_file_doc_types_are_not_narrowed so this stays a
+            # known limitation rather than an accident.
+            owner_branch = Filter(
+                must=[
+                    owner_branch,
+                    Filter(
+                        should=[
+                            FieldCondition(
+                                key=payload_keys.FOLDER_ANCESTORS,
+                                match=MatchAny(any=roots),
+                            ),
+                            FieldCondition(key="doc_id", match=MatchAny(any=roots)),
+                            IsEmptyCondition(
+                                is_empty=PayloadField(key=payload_keys.FOLDER_ANCESTORS)
+                            ),
+                        ]
+                    ),
+                ]
+            )
+        conditions.insert(0, owner_branch)
     return Filter(should=conditions)
 
 
@@ -268,6 +373,7 @@ def build_base_filter_conditions(
     path_prefix: str | None = None,
     path_prefixes: Iterable[str] | None = None,
     path_prefix_folder_ids: list[str] | None = None,
+    shared_root_ids: list[str] | None = None,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
 
@@ -308,13 +414,16 @@ def build_base_filter_conditions(
             ``Projects`` and ``Reports`` tokens), while the local/embedded
             qdrant-client matches by substring containment. Both serve folder
             scoping; neither is a strict left-anchored prefix.
+        shared_root_ids: Fileids of the caller's incoming shares
+            (``AccessibleScope.share_root_ids``), used to narrow the ACL
+            owner branch to the shared subtrees. See ``build_ownership_filter``.
 
     Returns:
         A list of Qdrant ``Condition`` objects for a parent ``must`` clause.
     """
     conditions: list[Condition] = [
         get_placeholder_filter(),
-        build_ownership_filter(user_id, accessible_owners),
+        build_ownership_filter(user_id, accessible_owners, shared_root_ids),
     ]
 
     if doc_type:

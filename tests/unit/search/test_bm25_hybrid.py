@@ -86,6 +86,12 @@ def _make_search_deps(monkeypatch):
     settings = MagicMock()
     settings.get_collection_name.return_value = "test_collection"
     settings.get_embedding_provider_family.return_value = "mistral"
+    # Must be a real int: search() builds models.Rrf(k=...), a pydantic-validated
+    # int field. An unconfigured MagicMock does NOT raise here — pydantic coerces
+    # it via MagicMock.__int__, which returns 1 — so these tests would silently
+    # exercise k=1 (the most degenerate ranking constant) instead of the
+    # configured default. Pin it explicitly.
+    settings.vector_search_rrf_k = 60
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.bm25_hybrid.get_settings", lambda: settings
     )
@@ -151,7 +157,14 @@ async def test_hybrid_query_uses_dense_prefetch_and_fusion(patched_search, monke
 
     kwargs = qdrant.query_points.await_args.kwargs
     assert "prefetch" in kwargs and len(kwargs["prefetch"]) == 2
-    assert isinstance(kwargs["query"], models.FusionQuery)
+    # RRF now goes out as RrfQuery so the ranking constant is explicit rather
+    # than Qdrant's k=2 default (see TestFusionRankingConstant).
+    assert isinstance(kwargs["query"], models.RrfQuery)
+    # Pin the k that actually reaches Qdrant, not just the query type. Rrf.k is
+    # a pydantic int field, so a stubbed-but-unset settings attribute coerces
+    # silently (MagicMock.__int__ -> 1) rather than raising; without this
+    # assertion the test would still pass while exercising k=1.
+    assert kwargs["query"].rrf.k == 60
 
 
 @pytest.mark.unit
@@ -182,3 +195,43 @@ async def test_search_method_label_is_always_bm25_hybrid(patched_search, monkeyp
 
     assert results
     assert captured["search_method"] == "bm25_hybrid_rrf"
+
+
+class TestFusionRankingConstant:
+    """RRF must use an explicit ranking constant, not Qdrant's k=2 default.
+
+    Qdrant's plain ``FusionQuery(fusion=RRF)`` scores 1/(rank+2), so adjacent
+    ranks differ by 33% and a point ranked top by ONE retriever (0.5) beats a
+    point ranked 3rd by BOTH (0.2+0.2=0.4) — inverting the purpose of fusion.
+    """
+
+    @pytest.mark.unit
+    def test_rrf_carries_the_configured_k(self):
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 60
+
+        query = BM25HybridSearchAlgorithm(fusion="rrf")._build_fusion_query(settings)
+
+        assert isinstance(query, models.RrfQuery)
+        assert query.rrf.k == 60
+
+    @pytest.mark.unit
+    def test_rrf_k_is_configurable(self):
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 17
+
+        query = BM25HybridSearchAlgorithm(fusion="rrf")._build_fusion_query(settings)
+
+        assert query.rrf.k == 17
+
+    @pytest.mark.unit
+    def test_dbsf_keeps_plain_fusion_query(self):
+        # DBSF normalises score distributions rather than ranks, so it has no
+        # ranking constant to set.
+        settings = MagicMock()
+        settings.vector_search_rrf_k = 60
+
+        query = BM25HybridSearchAlgorithm(fusion="dbsf")._build_fusion_query(settings)
+
+        assert isinstance(query, models.FusionQuery)
+        assert query.fusion == models.Fusion.DBSF

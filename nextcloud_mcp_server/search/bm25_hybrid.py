@@ -49,8 +49,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         Initialize BM25 hybrid search algorithm.
 
         Args:
-            score_threshold: Minimum fusion score (0-1, default: 0.0 to allow fusion scoring)
-                           Note: Both RRF and DBSF produce normalized scores
+            score_threshold: Minimum fusion score (default: 0.0 = no cut).
+                           NOT a 0-1 relevance scale for either algorithm: RRF
+                           scores are a rank artifact peaking around
+                           2/VECTOR_SEARCH_RRF_K (~0.033 at the default k=60),
+                           and DBSF sums normalized per-retriever scores so it
+                           is unbounded above 1.0. Leave at 0.0 and cut by rank
+                           via ``limit``.
             fusion: Fusion algorithm to use: "rrf" (Reciprocal Rank Fusion, default)
                    or "dbsf" (Distribution-Based Score Fusion).
 
@@ -110,6 +115,30 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
         return dense_embedding
 
+    def _build_fusion_query(self, settings: Any) -> Any:
+        """Build the fusion stage that merges the dense and sparse prefetches.
+
+        For RRF this is ``RrfQuery``, which carries an explicit ranking constant
+        ``k``. The plain ``FusionQuery(fusion=RRF)`` Qdrant defaults to hardcodes
+        k=2 (see ``qdrant_client/hybrid/fusion.py``:
+        ``DEFAULT_RANKING_CONSTANT_K = 2``), giving ``score = 1/(rank + 2)``:
+        adjacent ranks differ by 33%, so a point ranked 0 by ONE retriever
+        (0.5) beats a point ranked 3 by BOTH (0.2 + 0.2 = 0.4). That inverts
+        the purpose of fusion. ``VECTOR_SEARCH_RRF_K`` (default 60) restores
+        the standard behaviour where cross-retriever agreement dominates.
+
+        DBSF normalises score distributions rather than ranks and has no such
+        constant, so it keeps the plain ``FusionQuery``.
+
+        Note the resulting scores are much smaller (1/60 ≈ 0.0167 at rank 0
+        instead of 0.5) and span a narrow band. That is inherent to RRF at any
+        sane k: the fused score is a rank artifact, not a calibrated relevance
+        measure, so it must not be used as an absolute relevance threshold.
+        """
+        if self.fusion is not models.Fusion.RRF:
+            return models.FusionQuery(fusion=self.fusion)
+        return models.RrfQuery(rrf=models.Rrf(k=settings.vector_search_rrf_k))
+
     async def _run_qdrant_query(
         self,
         qdrant_client: Any,
@@ -152,7 +181,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     ),
                 ],
                 # Fusion query (RRF or DBSF based on initialization)
-                query=models.FusionQuery(fusion=self.fusion),
+                query=self._build_fusion_query(settings),
                 limit=limit * 2,  # Get extra for deduplication
                 score_threshold=score_threshold,
                 with_payload=True,
@@ -172,6 +201,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         path_prefix: str | None = None,
         path_prefixes: Iterable[str] | None = None,
         path_prefix_folder_ids: list[str] | None = None,
+        shared_root_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -253,6 +283,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             path_prefix=path_prefix,
             path_prefixes=path_prefixes,
             path_prefix_folder_ids=path_prefix_folder_ids,
+            shared_root_ids=shared_root_ids,
         )
 
         query_filter = Filter(must=filter_conditions)
@@ -287,8 +318,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         )
 
         if search_response.points:
-            # Log top 3 scores to help with threshold tuning — normalized fusion
-            # scores (RRF in [0,1]; DBSF can exceed 1).
+            # Log top 3 scores to help with threshold tuning. Neither algorithm
+            # is on a 0-1 relevance scale: RRF peaks near 2/VECTOR_SEARCH_RRF_K
+            # (~0.033 at k=60) and DBSF is unbounded above 1.0.
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug("Top 3 %s scores: %s", method_label, top_scores)
 
