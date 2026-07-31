@@ -949,7 +949,7 @@ class TestUnknownEnvVarWarning:
 
     def test_warns_with_did_you_mean(self, monkeypatch, caplog):
         monkeypatch.setenv("VECTOR_SYNC_ENABLE", "true")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
             _warn_unknown_env_vars()
         assert "VECTOR_SYNC_ENABLE is not a recognized setting" in caplog.text
         assert "did you mean VECTOR_SYNC_ENABLED?" in caplog.text
@@ -968,20 +968,20 @@ class TestUnknownEnvVarWarning:
     )
     def test_unrelated_env_vars_stay_quiet(self, monkeypatch, caplog, name):
         monkeypatch.setenv(name, "1")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
             _warn_unknown_env_vars()
         assert name not in caplog.text
 
     def test_declared_keys_never_warn(self, monkeypatch, caplog):
         monkeypatch.setenv("VECTOR_SYNC_ENABLED", "true")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
             _warn_unknown_env_vars()
         assert "not a recognized setting" not in caplog.text
 
     def test_warns_once_per_process(self, monkeypatch, caplog):
         """``@functools.cache`` — the worker must not re-log this per job."""
         monkeypatch.setenv("VECTOR_SYNC_ENABLE", "true")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
             _warn_unknown_env_vars()
             _warn_unknown_env_vars()
         assert caplog.text.count("did you mean") == 1

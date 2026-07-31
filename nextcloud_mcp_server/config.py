@@ -2088,6 +2088,9 @@ def _clear_settings_caches() -> None:
     _build_settings.cache_clear()
     get_nextcloud_ssl_verify.cache_clear()
     get_nextcloud_http_keepalive.cache_clear()
+    # _warn_unknown_env_vars is deliberately NOT cleared: it is a once-per-process
+    # advisory, and re-arming it here would re-log the same warning on every CLI
+    # override and every test reload.
 
 
 def get_procrastinate_conninfo(database_url: str | None = None) -> str:
