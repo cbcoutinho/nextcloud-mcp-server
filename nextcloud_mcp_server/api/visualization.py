@@ -111,8 +111,8 @@ async def _search_with_acl(
     user_id: str,
     execute: Callable[[AccessibleScope | None], Awaitable[list]],
 ) -> list:
-    """Resolve the caller's Nextcloud client, run ``execute(accessible_owners)``,
-    and verify-on-read — shared by the /api/v1 search endpoints.
+    """Resolve the caller's Nextcloud client, run ``execute(scope)``, and
+    verify-on-read — shared by the /api/v1 search endpoints.
 
     The OAuth bearer only authenticates Astrolabe → MCP Server; MCP Server →
     Nextcloud uses the provisioned app password. When the caller never
