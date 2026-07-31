@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from nextcloud_mcp_server.auth.userinfo_routes import _query_idp_userinfo
+from nextcloud_mcp_server.auth.userinfo_routes import _jinja_env, _query_idp_userinfo
 
 pytestmark = pytest.mark.unit
 
@@ -61,3 +61,37 @@ async def test_query_idp_userinfo_failure(mocker):
     result = await _query_idp_userinfo("test_token", "https://example.com/userinfo")
 
     assert result is None
+
+
+def test_templates_autoescape():
+    """The Jinja environment must autoescape.
+
+    Jinja does not do this by default, and without it `{{ error_message }}` --
+    built from exception text -- renders raw into an authenticated page.
+    """
+    rendered = _jinja_env.get_template("error.html").render(
+        error_message="<script>alert(1)</script>",
+        error_title="<img src=x onerror=alert(1)>",
+    )
+
+    assert "<script>alert(1)</script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "onerror=alert(1)>" not in rendered
+
+
+def test_user_info_safe_fragments_are_still_raw():
+    """The three `|safe` fragments must keep passing HTML through.
+
+    Autoescaping them would double-escape markup this module builds itself; the
+    values *inside* those fragments are escaped where they are read instead.
+    """
+    rendered = _jinja_env.get_template("user_info.html").render(
+        user_info_tab_html="<table><tr><td>marker-cell</td></tr></table>",
+        vector_sync_tab_html="",
+        webhooks_tab_html="",
+        show_vector_sync_tab=False,
+        show_webhooks_tab=False,
+        logout_url=None,
+    )
+
+    assert "<td>marker-cell</td>" in rendered
