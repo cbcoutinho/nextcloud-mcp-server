@@ -24,6 +24,39 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
 
+# Result granularity (ADR-027 follow-up, Deck #83). "chunk" is the historical
+# behaviour and stays the default everywhere; "document" collapses each document
+# to its single best-scoring chunk via Qdrant's native grouping.
+GRANULARITY_CHUNK = "chunk"
+GRANULARITY_DOCUMENT = "document"
+VALID_GRANULARITIES = (GRANULARITY_CHUNK, GRANULARITY_DOCUMENT)
+
+# Extra prefetch depth applied on top of the usual budget when grouping. Chunks
+# concentrate hard in the head of the ranking — one document can legitimately own
+# a double-digit run of consecutive chunks — so filling N *distinct* documents
+# needs materially more candidates than filling N chunks. Measured on a
+# 550k-chunk corpus: a 400-chunk prefetch yielded ~300 distinct documents.
+DOCUMENT_PREFETCH_FACTOR = 4
+
+
+class _FlattenedGroups:
+    """Adapt a grouped Qdrant response to the ungrouped ``.points`` shape.
+
+    Grouping is a retrieval concern, not a result-shape concern: every caller
+    downstream (dedup, SearchResult construction, verification, context
+    expansion) already works on a flat list of scored points. Flattening each
+    group to its best hit here keeps that whole path granularity-agnostic
+    instead of forking it.
+    """
+
+    __slots__ = ("points",)
+
+    def __init__(self, groups):
+        # ``hits`` is ordered best-first within a group, so hits[0] is the
+        # document's strongest chunk. Empty groups cannot occur in practice
+        # (a group exists because a point matched) but are skipped defensively.
+        self.points = [g.hits[0] for g in groups if g.hits]
+
 
 class BM25HybridSearchAlgorithm(SearchAlgorithm):
     """
@@ -149,37 +182,75 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         query_filter: Filter,
         limit: int,
         score_threshold: float,
+        granularity: str = GRANULARITY_CHUNK,
     ) -> Any:
         """Execute the Qdrant query: dense + sparse prefetches merged by native
         fusion (RRF or DBSF).
 
         Keyword-only documents (``keyword-index`` tag) carry no dense vector, so
         the dense prefetch never returns them; they surface via the sparse
-        prefetch and are merged in by fusion. No mode branch is needed.
+        prefetch and are merged in by fusion. No mode branch is needed for that.
+
+        ``granularity="document"`` runs the same prefetch + fusion through
+        Qdrant's native grouping so each document contributes exactly one row
+        (its best chunk) instead of competing for slots chunk-by-chunk. The
+        prefetch is deepened by ``DOCUMENT_PREFETCH_FACTOR`` because filling N
+        distinct documents needs more candidates than filling N chunks.
         """
         collection_name = settings.get_collection_name()
+        grouped = granularity == GRANULARITY_DOCUMENT
+        # Both paths over-fetch 2x for the dedup/verification budget.
+        prefetch_limit = limit * 2 * (DOCUMENT_PREFETCH_FACTOR if grouped else 1)
+        prefetches = [
+            # Dense semantic search
+            models.Prefetch(
+                query=dense_embedding,
+                using="dense",
+                limit=prefetch_limit,
+                filter=query_filter,
+            ),
+            # Sparse BM25 search
+            models.Prefetch(
+                query=sparse_query,
+                using="sparse",
+                limit=prefetch_limit,
+                filter=query_filter,
+            ),
+        ]
         with trace_operation(
             "search.qdrant_query",
-            attributes={"query.limit": limit * 2, "query.fusion": self.fusion_name},
+            attributes={
+                "query.limit": limit * 2,
+                "query.fusion": self.fusion_name,
+                "query.granularity": granularity,
+            },
         ):
+            if grouped:
+                response = await qdrant_client.query_points_groups(
+                    collection_name=collection_name,
+                    prefetch=prefetches,
+                    query=self._build_fusion_query(settings),
+                    # doc_id is the per-document key. Caveat: it is NOT unique
+                    # across doc_types (a note 42 and a file 42 are distinct
+                    # documents sharing an id), so a cross-app grouped search
+                    # can collapse two such documents into one group. Qdrant
+                    # groups on a single payload field, so avoiding this needs a
+                    # composite key written at index time. The tool layer's
+                    # per-doc_type loop is unaffected; only doc_types=None is.
+                    group_by="doc_id",
+                    # One row per document: the caller asked for documents, and
+                    # the extra hits would just re-introduce the chunk-level
+                    # concentration this mode exists to remove.
+                    group_size=1,
+                    limit=limit * 2,  # groups, not chunks
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                return _FlattenedGroups(response.groups)
             return await qdrant_client.query_points(
                 collection_name=collection_name,
-                prefetch=[
-                    # Dense semantic search
-                    models.Prefetch(
-                        query=dense_embedding,
-                        using="dense",
-                        limit=limit * 2,  # Get extra for deduplication
-                        filter=query_filter,
-                    ),
-                    # Sparse BM25 search
-                    models.Prefetch(
-                        query=sparse_query,
-                        using="sparse",
-                        limit=limit * 2,  # Get extra for deduplication
-                        filter=query_filter,
-                    ),
-                ],
+                prefetch=prefetches,
                 # Fusion query (RRF or DBSF based on initialization)
                 query=self._build_fusion_query(settings),
                 limit=limit * 2,  # Get extra for deduplication
@@ -202,6 +273,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         path_prefixes: Iterable[str] | None = None,
         path_prefix_folder_ids: list[str] | None = None,
         shared_root_ids: list[str] | None = None,
+        granularity: str = GRANULARITY_CHUNK,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -232,6 +304,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             path_prefixes: Folder/path filters on ``file_path`` (files only),
                 OR-ed together; ``None``/empty ⇒ no path filter (ADR-027
                 Phase 2).
+            granularity: ``"chunk"`` (default) returns the best-matching
+                passages, so one document may occupy several rows. ``"document"``
+                returns one row per document — its best chunk — which is the
+                right shape for "which files mention X". Note this changes what
+                ``limit`` counts (documents, not chunks); it does NOT deepen
+                recall, since a document whose best chunk misses the prefetch is
+                absent either way.
             **kwargs: Additional parameters (score_threshold override)
 
         Returns:
@@ -240,6 +319,16 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         Raises:
             McpError: If vector sync is not enabled or search fails
         """
+        if granularity not in VALID_GRANULARITIES:
+            # Validated here rather than only at the tool boundary so every
+            # surface (MCP tool, /api/v1) gets the same contract, and an
+            # unrecognised value fails loudly instead of silently falling back
+            # to chunk granularity.
+            raise ValueError(
+                f"Invalid granularity {granularity!r}. "
+                f"Must be one of {VALID_GRANULARITIES}"
+            )
+
         settings = get_settings()
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
@@ -305,6 +394,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 query_filter=query_filter,
                 limit=limit,
                 score_threshold=score_threshold,
+                granularity=granularity,
             )
             record_qdrant_operation("search", "success")
         except Exception:

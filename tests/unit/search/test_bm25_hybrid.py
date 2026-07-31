@@ -235,3 +235,132 @@ class TestFusionRankingConstant:
 
         assert isinstance(query, models.FusionQuery)
         assert query.fusion == models.Fusion.DBSF
+
+
+class TestGranularity:
+    """`granularity="document"` routes through Qdrant's native grouping.
+
+    The point of the mode is that one document occupies one result row instead
+    of competing chunk-by-chunk, so these assert the *query shape* sent to
+    Qdrant — group_by/group_size/prefetch depth — not just that a call happened.
+    """
+
+    @pytest.mark.unit
+    async def test_chunk_granularity_is_the_default_and_ungrouped(
+        self, patched_search, monkeypatch
+    ):
+        qdrant = MagicMock()
+        empty = MagicMock()
+        empty.points = []
+        qdrant.query_points = AsyncMock(return_value=empty)
+        qdrant.query_points_groups = AsyncMock()
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        await BM25HybridSearchAlgorithm().search(query="hello", user_id="alice")
+
+        qdrant.query_points.assert_awaited_once()
+        qdrant.query_points_groups.assert_not_awaited()
+
+    @pytest.mark.unit
+    async def test_document_granularity_groups_by_doc_id(
+        self, patched_search, monkeypatch
+    ):
+        qdrant = MagicMock()
+        grouped = MagicMock()
+        grouped.groups = []
+        qdrant.query_points = AsyncMock()
+        qdrant.query_points_groups = AsyncMock(return_value=grouped)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", limit=10, granularity="document"
+        )
+
+        qdrant.query_points.assert_not_awaited()
+        kwargs = qdrant.query_points_groups.await_args.kwargs
+        assert kwargs["group_by"] == "doc_id"
+        # One row per document — extra hits would reintroduce the very
+        # concentration this mode removes.
+        assert kwargs["group_size"] == 1
+        # limit counts groups (documents), carrying the same 2x over-fetch.
+        assert kwargs["limit"] == 20
+        # Fusion is unchanged: still the explicit-k RRF query.
+        assert isinstance(kwargs["query"], models.RrfQuery)
+
+    @pytest.mark.unit
+    async def test_document_granularity_deepens_the_prefetch(
+        self, patched_search, monkeypatch
+    ):
+        """Filling N distinct documents needs more candidates than N chunks."""
+        qdrant = MagicMock()
+        grouped = MagicMock()
+        grouped.groups = []
+        qdrant.query_points_groups = AsyncMock(return_value=grouped)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", limit=10, granularity="document"
+        )
+
+        prefetch = qdrant.query_points_groups.await_args.kwargs["prefetch"]
+        assert len(prefetch) == 2, "still dense + sparse"
+        # 10 * 2 (over-fetch) * DOCUMENT_PREFETCH_FACTOR
+        assert [p.limit for p in prefetch] == [80, 80]
+
+    @pytest.mark.unit
+    async def test_groups_are_flattened_to_best_chunk_per_document(
+        self, patched_search, monkeypatch
+    ):
+        """Each group collapses to its top hit, preserving the flat result shape
+        every downstream stage (dedup, verification, context) already expects."""
+        best = MagicMock(score=0.9)
+        worse = MagicMock(score=0.1)
+        group = MagicMock()
+        group.hits = [best, worse]
+        empty_group = MagicMock()
+        empty_group.hits = []
+
+        grouped = MagicMock()
+        grouped.groups = [group, empty_group]
+        qdrant = MagicMock()
+        qdrant.query_points_groups = AsyncMock(return_value=grouped)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        captured = []
+
+        def fake_build(point, metadata_extras):
+            captured.append(point)
+            return None  # skip SearchResult construction; we only assert routing
+
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.build_search_result_from_point",
+            fake_build,
+        )
+
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", granularity="document"
+        )
+
+        # Only the best hit of the non-empty group; the empty group is skipped
+        # rather than raising an IndexError.
+        assert captured == [best]
+
+    @pytest.mark.unit
+    async def test_invalid_granularity_raises(self, patched_search):
+        """Fails loudly rather than silently degrading to chunk granularity."""
+        with pytest.raises(ValueError, match="Invalid granularity"):
+            await BM25HybridSearchAlgorithm().search(
+                query="hello", user_id="alice", granularity="documnet"
+            )
