@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.156.0 (2026-07-31)
+
+### Feat
+
+- **api**: expose granularity on POST /api/v1/search; cap grouped prefetch
+- **search**: add granularity="document" to nc_semantic_search
+
+### Fix
+
+- **search**: surface the doc_id caveat to callers; reject granularity on dense
+
 ## v0.155.2 (2026-07-31)
 
 ### Fix
