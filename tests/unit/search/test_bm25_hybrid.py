@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from qdrant_client import models
 
-from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+from nextcloud_mcp_server.search.bm25_hybrid import (
+    DOCUMENT_PREFETCH_FACTOR,
+    MAX_DOCUMENT_PREFETCH,
+    BM25HybridSearchAlgorithm,
+)
 
 
 @pytest.mark.unit
@@ -315,6 +319,33 @@ class TestGranularity:
         assert len(prefetch) == 2, "still dense + sparse"
         # 10 * 2 (over-fetch) * DOCUMENT_PREFETCH_FACTOR
         assert [p.limit for p in prefetch] == [80, 80]
+
+    @pytest.mark.unit
+    async def test_document_prefetch_is_capped(self, patched_search, monkeypatch):
+        """The multipliers compound (tool 2x * dedup 2x * factor 4x), so an
+        uncapped limit=100 would ask Qdrant for 1600 candidates per branch and
+        measured ~10x the latency for identical results. Cap it."""
+        qdrant = MagicMock()
+        grouped = MagicMock()
+        grouped.groups = []
+        qdrant.query_points_groups = AsyncMock(return_value=grouped)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        # The tool layer passes limit*2, so limit=200 is the real high-end call.
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", limit=200, granularity="document"
+        )
+
+        prefetch = qdrant.query_points_groups.await_args.kwargs["prefetch"]
+        uncapped = 200 * 2 * DOCUMENT_PREFETCH_FACTOR
+        assert uncapped > MAX_DOCUMENT_PREFETCH, "fixture no longer exercises the cap"
+        assert [p.limit for p in prefetch] == [
+            MAX_DOCUMENT_PREFETCH,
+            MAX_DOCUMENT_PREFETCH,
+        ]
 
     @pytest.mark.unit
     async def test_groups_are_flattened_to_best_chunk_per_document(

@@ -31,6 +31,9 @@ from nextcloud_mcp_server.api.management import (
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search import (
+    GRANULARITY_CHUNK,
+    GRANULARITY_DOCUMENT,
+    VALID_GRANULARITIES,
     BM25HybridSearchAlgorithm,
     SearchAlgorithm,
     SemanticSearchAlgorithm,
@@ -182,7 +185,11 @@ async def unified_search(request: Request) -> JSONResponse:
         "limit": 20,  // max: 100
         "offset": 0,  // pagination offset
         "include_pca": false,  // optional PCA coordinates
-        "include_chunks": true  // include text snippets
+        "include_chunks": true,  // include text snippets
+        "granularity": "chunk"  // "chunk" (default) or "document": one row
+                                // per document (its best chunk), so `limit`
+                                // counts documents. "document" requires the
+                                // bm25/hybrid algorithm.
     }
 
     Response:
@@ -279,6 +286,21 @@ async def unified_search(request: Request) -> JSONResponse:
 
         requested_algorithm = body.get("algorithm")  # None ⇒ graceful default
         fusion = body.get("fusion", "rrf")
+        # Unlike ``fusion`` (normalized to "rrf" when unrecognized), an
+        # unrecognized granularity is rejected rather than silently downgraded:
+        # a caller asking for one row per document and receiving several chunks
+        # of the same document would look like a ranking bug, not a bad request.
+        granularity = body.get("granularity", GRANULARITY_CHUNK)
+        if granularity not in VALID_GRANULARITIES:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Invalid granularity {granularity!r}. "
+                        f"Must be one of {list(VALID_GRANULARITIES)}"
+                    )
+                },
+                status_code=400,
+            )
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -312,6 +334,23 @@ async def unified_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
+        # Only the hybrid algorithm implements grouping. The dense-only path
+        # would accept the kwarg and silently ignore it, returning several
+        # chunks of one document to a caller that asked for one row per
+        # document — indistinguishable from a ranking bug. Reject instead.
+        # Astrolabe requests "hybrid" (its default), so this combination is
+        # reachable only by an explicit opt-in to the dense algorithm.
+        if granularity == GRANULARITY_DOCUMENT and algorithm == "semantic":
+            return JSONResponse(
+                {
+                    "error": "granularity_unsupported_for_algorithm",
+                    "granularity": granularity,
+                    "algorithm": algorithm,
+                    "supported_algorithms": ["bm25", "hybrid"],
+                },
+                status_code=422,
+            )
+
         # Request extra results to handle offset
         search_limit = limit + offset
 
@@ -334,6 +373,7 @@ async def unified_search(request: Request) -> JSONResponse:
                                 doc_type=doc_type,
                                 accessible_owners=owners,
                                 shared_root_ids=roots,
+                                granularity=granularity,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
                                 path_prefixes=path_prefixes,
@@ -355,6 +395,7 @@ async def unified_search(request: Request) -> JSONResponse:
                     limit=search_limit,
                     accessible_owners=owners,
                     shared_root_ids=roots,
+                    granularity=granularity,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,

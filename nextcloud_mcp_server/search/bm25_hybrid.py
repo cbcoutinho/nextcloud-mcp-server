@@ -38,6 +38,21 @@ VALID_GRANULARITIES = (GRANULARITY_CHUNK, GRANULARITY_DOCUMENT)
 # 550k-chunk corpus: a 400-chunk prefetch yielded ~300 distinct documents.
 DOCUMENT_PREFETCH_FACTOR = 4
 
+# Ceiling on the per-branch prefetch when grouping. The multipliers compound —
+# the tool layer over-fetches 2x for verification headroom, _run_qdrant_query
+# doubles again for dedup, and DOCUMENT_PREFETCH_FACTOR stacks on top — so an
+# uncapped limit=100 asks Qdrant for 1600 candidates per branch, per doc_type.
+# Measured on a 550k-chunk collection, same query and result count:
+#
+#   chunk    limit=100 (prefetch  400)   412 ms
+#   document limit=100 (prefetch 1600)  4275 ms
+#   document limit=100 (prefetch  800)   302 ms   <- identical 200 groups
+#
+# The extra depth past ~800 buys no additional documents and costs ~10x
+# latency, so cap it. Only bites above limit=50; below that the computed
+# budget is already under the ceiling.
+MAX_DOCUMENT_PREFETCH = 800
+
 
 class _FlattenedGroups:
     """Adapt a grouped Qdrant response to the ungrouped ``.points`` shape.
@@ -199,8 +214,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         """
         collection_name = settings.get_collection_name()
         grouped = granularity == GRANULARITY_DOCUMENT
-        # Both paths over-fetch 2x for the dedup/verification budget.
-        prefetch_limit = limit * 2 * (DOCUMENT_PREFETCH_FACTOR if grouped else 1)
+        # Both paths over-fetch 2x for the dedup/verification budget; grouping
+        # deepens it further, bounded by MAX_DOCUMENT_PREFETCH so the compounding
+        # multipliers can't produce a pathological query at a high ``limit``.
+        prefetch_limit = limit * 2
+        if grouped:
+            prefetch_limit = min(
+                prefetch_limit * DOCUMENT_PREFETCH_FACTOR, MAX_DOCUMENT_PREFETCH
+            )
         prefetches = [
             # Dense semantic search
             models.Prefetch(

@@ -1,7 +1,7 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 import anyio
 from httpx import RequestError
@@ -148,7 +148,7 @@ def configure_semantic_tools(mcp: FastMCP):
         score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
         fusion: str = "rrf",
         granularity: Annotated[
-            str,
+            Literal["chunk", "document"],
             Field(
                 description=(
                     "Result granularity. 'chunk' (default) returns the "
