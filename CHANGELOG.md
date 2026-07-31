@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.156.1 (2026-07-31)
+
+### Fix
+
+- **security**: don't double-escape username in the navbar
+- **security**: autoescape the admin UI templates and escape IdP-derived values
+- **reliability**: drop the unreachable deck-card guard, cover the new guards
+- **reliability**: close the Sonar bug findings in our own code
+- **security**: close the Sonar BLOCKER/MAJOR findings in our own code
+
 ## v0.156.0 (2026-07-31)
 
 ### Feat
