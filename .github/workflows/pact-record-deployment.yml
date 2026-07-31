@@ -47,6 +47,10 @@ jobs:
       contents: read
     timeout-minutes: 5
     steps:
+      # Needed for .github/scripts/install-pact-cli.sh; this job previously ran
+      # without a working copy.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Join tailnet
         if: ${{ env.PACT_BROKER != '' }}
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
@@ -57,15 +61,7 @@ jobs:
 
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
-        run: |
-          # Unified pact CLI (Rust, pact-foundation/pact-cli) — replaces the
-          # deprecated pact-ruby-standalone `pact-broker` CLI (which only warns
-          # now and is no longer maintained). The cargo-dist installer appends
-          # its bin dir ($HOME/.pact/bin) to $GITHUB_PATH, so `pact` is on PATH
-          # for the record-deployment step below.
-          curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/v0.10.7/pact-installer.sh | sh
-          echo "$HOME/.pact/bin" >> "$GITHUB_PATH"
-          "$HOME/.pact/bin/pact" --help > /dev/null
+        run: .github/scripts/install-pact-cli.sh
 
       - name: Record deployment to production
         if: ${{ env.PACT_BROKER != '' }}

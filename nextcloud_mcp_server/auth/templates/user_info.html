@@ -3,11 +3,19 @@
 {% block title %}Nextcloud MCP Server{% endblock %}
 
 {% block extra_head %}
-    <!-- htmx for dynamic loading -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <!-- htmx for dynamic loading. Pinned to an exact file with a subresource
+         integrity hash: without it a compromised CDN could serve arbitrary
+         script into an authenticated page (Web:S5725). -->
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/htmx.min.js"
+            integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC"
+            crossorigin="anonymous"></script>
 
-    <!-- Alpine.js for state management -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Alpine.js for state management. Was pinned to the floating `3.x.x`
+         tag, which cannot carry an integrity hash because the bytes change
+         under it. -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+            integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+            crossorigin="anonymous"></script>
 {% endblock %}
 
 {% block extra_styles %}

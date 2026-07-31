@@ -593,6 +593,39 @@ def test_webdav_path_encoding(path, expected):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../otheruser/secret.txt",
+        "Documents/../../otheruser/secret.txt",
+        "/../otheruser",
+        "..",
+        "Documents/..",
+        r"Documents\..\..\otheruser",
+    ],
+)
+def test_webdav_path_rejects_traversal(path):
+    """Guarding the shared builder covers read/write/delete/move/copy/list at
+    once: '..' is normalised away by the URL layer before the request is sent,
+    so it would address another user's home under the same DAV root."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    with pytest.raises(ValueError, match=r"\.\."):
+        client._webdav_path(path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    ["..hidden.txt", "Documents/..trailing", "a..b/c", "file...txt"],
+)
+def test_webdav_path_allows_dots_inside_names(path):
+    """Only a whole '..' *segment* escapes; leading/embedded dots are ordinary
+    filename characters and must still be reachable."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    assert client._webdav_path(path).startswith("/remote.php/dav/files/testuser/")
+
+
+@pytest.mark.unit
 def test_encode_dav_path_encodes_exactly_once():
     """Pins the decoded-input precondition: a literal '%' becomes '%25', so an
     already-encoded path passed in error would double-encode (caught here)."""

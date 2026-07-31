@@ -33,10 +33,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      # The pinned action replaces `curl https://astral.sh/uv/install.sh | sh`,
+      # which piped an unverified script straight into a shell
+      # (githubactions:S8482/S6506). Same action, same pin as pact.yml.
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Configure git
         run: |
