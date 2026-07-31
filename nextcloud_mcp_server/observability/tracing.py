@@ -173,7 +173,12 @@ def trace_server_request(
             # block — a handler that catches its own exception and returns a
             # 500 never raises here — and an unconditional OK would overwrite
             # that, leaving the failure invisible to `status=error` queries.
-            if span.status.status_code is StatusCode.UNSET:  # ty: ignore[unresolved-attribute]  # OTel API Span type omits .status; the runtime SDK span provides it
+            # `is_recording()` first: an unsampled request yields a
+            # `NonRecordingSpan`, which has no `.status` at all — reading it
+            # raised AttributeError out of the middleware and turned every
+            # unsampled request into a 500 (seen on /oauth/token, breaking
+            # client connect). Non-recording spans discard status anyway.
+            if span.is_recording() and span.status.status_code is StatusCode.UNSET:  # ty: ignore[unresolved-attribute]  # OTel API Span type omits .status; the runtime SDK span provides it
                 span.set_status(Status(StatusCode.OK))
         except Exception as e:
             span.record_exception(e)

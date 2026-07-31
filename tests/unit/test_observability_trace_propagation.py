@@ -100,6 +100,22 @@ def test_request_without_traceparent_starts_its_own_trace(client, exporter):
     assert span.get_span_context().trace_id != int(UPSTREAM_TRACE_ID, 16)
 
 
+def test_unsampled_traceparent_does_not_fail_the_request(client, exporter):
+    """A caller that opts out of sampling must still get its response.
+
+    ParentBased sampling hands back a `NonRecordingSpan`, which has no
+    `.status`; reading it unconditionally turned every unsampled request into
+    a 500 — including `POST /oauth/token`, which broke client connect.
+    """
+    response = client.get(
+        "/api/v1/status",
+        headers={"traceparent": f"00-{UPSTREAM_TRACE_ID}-{UPSTREAM_SPAN_ID}-00"},
+    )
+
+    assert response.status_code == 200
+    assert exporter.get_finished_spans() == ()
+
+
 def test_malformed_traceparent_is_ignored(client, exporter):
     """A garbage header must not fail the request or the span."""
     response = client.get(
