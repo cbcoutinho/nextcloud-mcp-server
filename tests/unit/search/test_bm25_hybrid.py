@@ -391,7 +391,10 @@ class TestGranularity:
     @pytest.mark.unit
     async def test_invalid_granularity_raises(self, patched_search):
         """Fails loudly rather than silently degrading to chunk granularity."""
+        # Constructed outside the raises block so only one call inside it can
+        # throw (python:S5778) — otherwise a constructor regression would pass
+        # as if it were the validation firing.
+        algo = BM25HybridSearchAlgorithm()
+
         with pytest.raises(ValueError, match="Invalid granularity"):
-            await BM25HybridSearchAlgorithm().search(
-                query="hello", user_id="alice", granularity="documnet"
-            )
+            await algo.search(query="hello", user_id="alice", granularity="documnet")

@@ -161,7 +161,12 @@ def configure_semantic_tools(mcp: FastMCP):
                     "answer from, 'document' when you want to enumerate "
                     "sources. Note 'document' improves result diversity, not "
                     "recall: a document whose best chunk ranks too low to be "
-                    "retrieved is absent under both settings."
+                    "retrieved is absent under both settings. Caveat when "
+                    "combined with the default doc_types=None (search all "
+                    "types): grouping keys on the numeric document id, which "
+                    "is not unique across types, so a note and a file that "
+                    "happen to share an id can be merged into one result. "
+                    "Pass an explicit doc_types (e.g. ['file']) to avoid this."
                 ),
             ),
         ] = "chunk",
@@ -387,6 +392,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     query=query,
                     total_found=0,
                     search_method=search_method,
+                    granularity=granularity,
                     verified_chunk_count=0,
                     dropped_document_count=0,
                 )
@@ -713,6 +719,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 query=query,
                 total_found=len(results),
                 search_method=search_method,
+                granularity=granularity,
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )
