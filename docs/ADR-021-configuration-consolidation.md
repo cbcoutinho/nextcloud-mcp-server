@@ -1,6 +1,6 @@
 # ADR-021: Configuration Consolidation and Simplification
 
-**Status:** Accepted — partly superseded by ADR-022 (`oauth_single_audience` renamed to `login_flow`; `oauth_token_exchange` removed)
+**Status:** Accepted — implemented; partly superseded by ADR-022 (`oauth_single_audience` renamed to `login_flow`; `oauth_token_exchange` removed) and by ADR-025 for the loading mechanism (dynaconf replaced the `os.getenv` calls this ADR describes). The renames shipped: `ENABLE_SEMANTIC_SEARCH` and `ENABLE_BACKGROUND_OPERATIONS` are the current names, with `VECTOR_SYNC_ENABLED` / `ENABLE_OFFLINE_ACCESS` still honoured as deprecated aliases that log a warning (`config.py:_get_semantic_search_enabled`, `_get_background_operations_enabled`) and are slated for removal in v1.0.0.
 **Date:** 2025-12-21
 **Deciders:** Development Team
 **Related:** ADR-020 (Deployment Modes), ADR-002 (Vector Sync), ADR-004 (Progressive Consent), ADR-022 (Deployment Mode Consolidation)

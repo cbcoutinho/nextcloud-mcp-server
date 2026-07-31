@@ -1,5 +1,6 @@
 import atexit
 import copy
+import difflib
 import functools
 import logging
 import logging.config
@@ -473,11 +474,13 @@ def _resolve_settings_files() -> list[str]:
     and env vars still apply.
     """
     files: list[str] = []
-    # The ONLY legitimate os.environ read in the app: this runs BEFORE the
-    # dynaconf instance is built (it computes the settings_files list passed to
-    # Dynaconf), so it cannot go through dynaconf — you can't read the location
-    # of the settings file from the settings file. This + the MCP_DEPLOYMENT_MODE
-    # env_switcher are dynaconf's own bootstrap. All OTHER config is dynaconf-driven.
+    # A legitimate os.environ read: this runs BEFORE the dynaconf instance is
+    # built (it computes the settings_files list passed to Dynaconf), so it
+    # cannot go through dynaconf — you can't read the location of the settings
+    # file from the settings file. This + the MCP_DEPLOYMENT_MODE env_switcher
+    # are dynaconf's own bootstrap. All config *values* are dynaconf-driven; the
+    # only other reads are the legacy-env deprecation check and
+    # _warn_unknown_env_vars, which inspect env var NAMES, not values.
     explicit = os.environ.get("NEXTCLOUD_MCP_SETTINGS_FILE")
     if explicit:
         p = Path(explicit)
@@ -1989,6 +1992,31 @@ def set_override(key: str, value) -> None:
 
 
 @functools.cache
+def _warn_unknown_env_vars() -> None:
+    """Warn about env vars that look like a misspelled setting.
+
+    We run dynaconf with ``ignore_unknown_envvars=True`` (see ``_DEFAULTS``), so
+    an env var we don't declare is dropped without a word — ``VECTOR_SYNC_ENABLE``
+    silently does nothing. Only warn when the name closely resembles a declared
+    key, so the environment's own vars (PATH, the ``*_SERVICE_HOST`` pairs
+    Kubernetes injects into every pod, ...) stay quiet. Warn, never fail:
+    ``os.environ`` isn't ours, and a false positive must not stop a deployment.
+    """
+    known = {k.upper() for k in _DEFAULTS}
+    for name in sorted(os.environ):
+        if name in known:
+            continue
+        # cutoff measured: 0.85 catches every planted typo with no false
+        # positive on a realistic container env; 0.80 trips on k8s injections.
+        if match := difflib.get_close_matches(name, known, n=1, cutoff=0.85):
+            logger.warning(
+                "%s is not a recognized setting and was ignored; did you mean %s?",
+                name,
+                match[0],
+            )
+
+
+@functools.cache
 def _build_settings() -> Settings:
     """Get application settings from dynaconf configuration.
 
@@ -2006,6 +2034,8 @@ def _build_settings() -> Settings:
     Returns:
         Settings object with configuration values
     """
+    _warn_unknown_env_vars()
+
     # Get consolidated values with smart dependency resolution
     enable_semantic_search = _get_semantic_search_enabled()
     enable_background_operations = _get_background_operations_enabled()

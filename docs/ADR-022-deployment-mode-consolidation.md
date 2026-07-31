@@ -1,6 +1,6 @@
 # ADR-022: Deployment Mode Consolidation via Login Flow v2
 
-**Status:** Accepted (step 1 — `OAUTH_SINGLE_AUDIENCE` → `LOGIN_FLOW` rename + validation gate. Dead-code pruning is a follow-up.)
+**Status:** Accepted — implemented. The rename shipped, and the dead-code pruning that was listed as a follow-up is done: `config_validators.AuthMode` now has three modes (`single_user_basic`, `multi_user_basic`, `login_flow`), and the only trace of the retired names is the friendly migration error at `config_validators.py:203-208`. `MCP_DEPLOYMENT_MODE` is the single source of truth — the `ENABLE_MULTI_USER_BASIC_AUTH` / `ENABLE_LOGIN_FLOW` aliases now raise at startup (`config.py:1606-1622`).
 **Date:** 2026-02-01 (accepted 2026-05-12)
 **Deciders:** Development Team
 **Related:** ADR-020 (Deployment Modes), ADR-021 (Configuration Consolidation), ADR-004 (Progressive Consent), Issue #521

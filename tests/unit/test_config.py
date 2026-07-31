@@ -2,17 +2,21 @@
 
 import logging
 import os
-from dataclasses import fields
+from dataclasses import MISSING, fields
 from unittest.mock import patch
 
 import pytest
 
 from nextcloud_mcp_server.config import (
     _COMPUTED_FIELDS,
+    _DEFAULTS,
     _ENV_OVERRIDE,
     _FIELD_MAP,
     Settings,
+    _dynaconf,
+    _env_key,
     _reload_config,
+    _warn_unknown_env_vars,
     get_settings,
 )
 
@@ -913,3 +917,87 @@ class TestFieldMapDerivation:
     def test_every_computed_field_is_a_real_field(self):
         """Same for the computed-field exclusions."""
         assert _COMPUTED_FIELDS <= {f.name for f in fields(Settings)}
+
+    def test_every_mapped_key_is_declared_to_dynaconf(self):
+        """A mapped field must also be a key dynaconf knows about.
+
+        The other half of the same silent failure: we run with
+        ``ignore_unknown_envvars=True``, so a key missing from ``_DEFAULTS`` is
+        dropped from the environment without a word. Deriving ``_FIELD_MAP``
+        from ``Settings`` does not help if the key was never declared.
+        """
+        undeclared = [k for k in _FIELD_MAP.values() if k not in _dynaconf]
+        assert not undeclared, (
+            f"Settings fields with no _DEFAULTS entry — their env vars are "
+            f"silently ignored: {sorted(undeclared)}"
+        )
+
+    def test_defaults_match_dataclass_defaults(self):
+        """The declared default must not drift from the dataclass default."""
+        mismatched = {
+            f.name: (_DEFAULTS[_env_key(f.name).lower()], f.default)
+            for f in fields(Settings)
+            if f.name in _FIELD_MAP and _DEFAULTS[_env_key(f.name).lower()] != f.default
+        }
+        assert not mismatched
+
+    def test_every_mapped_field_has_a_plain_default(self):
+        """``_DEFAULTS`` can only mirror a plain default, not a factory."""
+        assert not [
+            f.name
+            for f in fields(Settings)
+            if f.name in _FIELD_MAP and f.default is MISSING
+        ]
+
+
+class TestUnknownEnvVarWarning:
+    """``_warn_unknown_env_vars`` surfaces typo'd settings (Deck #870).
+
+    ``ignore_unknown_envvars=True`` drops anything undeclared, so a misspelled
+    ``VECTOR_SYNC_ENABLE`` used to do nothing at all, silently.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        _warn_unknown_env_vars.cache_clear()
+        yield
+        _warn_unknown_env_vars.cache_clear()
+
+    def test_warns_with_did_you_mean(self, monkeypatch, caplog):
+        monkeypatch.setenv("VECTOR_SYNC_ENABLE", "true")
+        with caplog.at_level(logging.WARNING):
+            _warn_unknown_env_vars()
+        assert "VECTOR_SYNC_ENABLE is not a recognized setting" in caplog.text
+        assert "did you mean VECTOR_SYNC_ENABLED?" in caplog.text
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "LS_COLORS",
+            # Kubernetes injects a pair like this into every pod; at cutoff 0.80
+            # they matched NEXTCLOUD_MCP_SERVICE_NAME / NEXTCLOUD_MCP_PORT.
+            "NEXTCLOUD_MCP_SERVICE_HOST",
+            "NEXTCLOUD_MCP_PORT_8000_TCP",
+            # Read by the OpenTelemetry SDK itself, not declared by us.
+            "OTEL_TRACES_SAMPLER",
+        ],
+    )
+    def test_unrelated_env_vars_stay_quiet(self, monkeypatch, caplog, name):
+        monkeypatch.setenv(name, "1")
+        with caplog.at_level(logging.WARNING):
+            _warn_unknown_env_vars()
+        assert name not in caplog.text
+
+    def test_declared_keys_never_warn(self, monkeypatch, caplog):
+        monkeypatch.setenv("VECTOR_SYNC_ENABLED", "true")
+        with caplog.at_level(logging.WARNING):
+            _warn_unknown_env_vars()
+        assert "not a recognized setting" not in caplog.text
+
+    def test_warns_once_per_process(self, monkeypatch, caplog):
+        """``@functools.cache`` — the worker must not re-log this per job."""
+        monkeypatch.setenv("VECTOR_SYNC_ENABLE", "true")
+        with caplog.at_level(logging.WARNING):
+            _warn_unknown_env_vars()
+            _warn_unknown_env_vars()
+        assert caplog.text.count("did you mean") == 1
