@@ -242,7 +242,8 @@ class TestShareRootNarrowing:
 
         # owner_id AND (inside a shared subtree)
         assert isinstance(branch, Filter)
-        assert branch.must is not None and len(branch.must) == 2
+        assert branch.must is not None
+        assert len(branch.must) == 2
         owner_cond, containment = branch.must
         assert owner_cond.key == "owner_id"
         assert owner_cond.match.any == ["bob"]
