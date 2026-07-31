@@ -744,14 +744,6 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="LOG_LEVEL"):
             _reload_config()
 
-    @patch.dict(os.environ, {"OTEL_TRACES_SAMPLER": "random"}, clear=True)
-    def test_invalid_otel_sampler(self):
-        """Test invalid OTEL_TRACES_SAMPLER raises ValidationError."""
-        from dynaconf import ValidationError
-
-        with pytest.raises(ValidationError, match="OTEL_TRACES_SAMPLER"):
-            _reload_config()
-
     @patch.dict(os.environ, {"WEBHOOK_SECRET": "short"}, clear=True)
     def test_webhook_secret_too_short(self):
         """A set WEBHOOK_SECRET shorter than 16 chars raises ValidationError
@@ -769,14 +761,6 @@ class TestDynaconfValidators:
         """A WEBHOOK_SECRET of >=16 chars passes validation."""
         _reload_config()
         assert get_settings().webhook_secret == "a-sufficiently-long-secret"
-
-    @patch.dict(os.environ, {"OTEL_TRACES_SAMPLER_ARG": "2.0"}, clear=True)
-    def test_sampler_arg_too_high(self):
-        """Test OTEL_TRACES_SAMPLER_ARG above 1.0 raises ValidationError."""
-        from dynaconf import ValidationError
-
-        with pytest.raises(ValidationError, match="OTEL_TRACES_SAMPLER_ARG"):
-            _reload_config()
 
     @patch.dict(os.environ, {"VECTOR_SYNC_SCAN_INTERVAL": "0"}, clear=True)
     def test_vector_sync_interval_zero(self):

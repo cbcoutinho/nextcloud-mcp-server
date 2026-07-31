@@ -317,7 +317,6 @@ def _init_worker_observability(settings: Settings) -> None:
             service_name=settings.otel_service_name,
             otlp_endpoint=settings.otel_exporter_otlp_endpoint,
             otlp_verify_ssl=settings.otel_exporter_verify_ssl,
-            sampling_rate=settings.otel_traces_sampler_arg,
         )
         logger.info(
             "OpenTelemetry tracing enabled (endpoint: %s)",

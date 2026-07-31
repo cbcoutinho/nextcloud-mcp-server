@@ -32,7 +32,6 @@ _DEFAULTS: dict[str, Any] = {
     "nextcloud_host": None,
     "nextcloud_username": None,
     "nextcloud_password": None,
-    "nextcloud_app_password": None,
     "nextcloud_verify_ssl": True,
     "nextcloud_ca_bundle": None,
     "nextcloud_http_keepalive": True,
@@ -297,8 +296,6 @@ _DEFAULTS: dict[str, Any] = {
     "otel_exporter_otlp_endpoint": None,
     "otel_exporter_verify_ssl": None,
     "otel_service_name": "nextcloud-mcp-server",
-    "otel_traces_sampler": "always_on",
-    "otel_traces_sampler_arg": 1.0,
     "pyroscope_enabled": False,
     "pyroscope_server_address": None,
     # Pod identity from the Kubernetes downward API (chart-injected). Facts
@@ -611,19 +608,6 @@ _dynaconf = Dynaconf(
             "LOG_LEVEL",
             is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         ),
-        Validator(
-            "OTEL_TRACES_SAMPLER",
-            is_in=[
-                "always_on",
-                "always_off",
-                "traceidratio",
-                "parentbased_always_on",
-                "parentbased_always_off",
-                "parentbased_traceidratio",
-            ],
-        ),
-        # Float ranges
-        Validator("OTEL_TRACES_SAMPLER_ARG", gte=0.0, lte=1.0),
     ],
 )
 
@@ -938,7 +922,6 @@ class Settings:
     nextcloud_host: str | None = None
     nextcloud_username: str | None = None
     nextcloud_password: str | None = None
-    nextcloud_app_password: str | None = None  # Preferred over nextcloud_password
 
     # Browser-reachable public URL for OAuth/Login-Flow-v2 redirects when
     # NEXTCLOUD_HOST is an internal Docker hostname. Falls back to
@@ -1323,8 +1306,6 @@ class Settings:
     # endpoint, or plaintext behind a TLS-terminating sidecar).
     otel_exporter_verify_ssl: bool | None = None
     otel_service_name: str = "nextcloud-mcp-server"
-    otel_traces_sampler: str = "always_on"
-    otel_traces_sampler_arg: float = 1.0
     # Continuous profiling (Pyroscope). Push-mode via the Pyroscope SDK to an
     # Alloy pyroscope.receive_http endpoint (e.g. the cloudfleet Alloy at
     # http://alloy.alloy.svc.cluster.local:4041), which forwards to the homelab
