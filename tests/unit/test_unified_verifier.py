@@ -373,6 +373,34 @@ class TestIntrospection:
         result = await verifier._introspect_token("test-token")
         assert result is None
 
+    async def test_introspect_without_client_credentials(self, base_settings):
+        """Missing client credentials return None without an HTTP call.
+
+        Guards against a revert to the `assert client_id is not None` that used
+        to sit inside the try block, where the AssertionError was swallowed by
+        `except Exception` and logged as a failed introspection (python:S5779).
+        """
+        base_settings.oidc_client_secret = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.http_client.post = AsyncMock()
+
+        result = await verifier._introspect_token("test-token")
+
+        assert result is None
+        verifier.http_client.post.assert_not_called()
+
+    async def test_verify_jwt_signature_without_jwks_client(self, base_settings):
+        """No JWKS client returns None rather than raising into the catch-all.
+
+        Same guard-before-try shape as the introspection case above.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = None
+
+        result = await verifier._verify_jwt_signature("test-token")
+
+        assert result is None
+
 
 class TestAccessTokenCreation:
     """Test AccessToken object creation."""

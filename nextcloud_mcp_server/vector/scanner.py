@@ -648,14 +648,15 @@ async def scanner_task(
             except Exception as e:
                 logger.error("Scanner error: %s", e)
 
-            # Sleep until next interval or wake event
-            try:
-                with anyio.move_on_after(settings.vector_sync_scan_interval):
-                    # Wait for wake event or shutdown (whichever comes first)
-                    await wake_event.wait()
-            except anyio.get_cancelled_exc_class():
-                # Shutdown, exit loop
-                break
+            # Sleep until next interval or wake event. Nothing sets wake_event
+            # on shutdown, so task-group cancellation is the expected way out
+            # of this sleep — which is exactly why it must not be caught and
+            # turned into a `break` (python:S7497): that leaves the enclosing
+            # cancel scope believing the task ignored its cancellation. It
+            # propagates instead and the task group absorbs it.
+            with anyio.move_on_after(settings.vector_sync_scan_interval):
+                # Wait for wake event or shutdown (whichever comes first)
+                await wake_event.wait()
 
     logger.info("Scanner task stopped - stream closed")
 

@@ -142,6 +142,31 @@ def _encode_dav_path(path: str) -> str:
     return quote(path, safe="/")
 
 
+def _reject_path_traversal(path: str) -> str:
+    """Reject a DAV path that walks out of the user's home, returning it as-is.
+
+    Every WebDAV request path is built by ``WebDAVClient._webdav_path``, which
+    concatenates caller input onto ``/remote.php/dav/files/<principal>``. MCP
+    tool arguments reach that unmodified, so a path containing ``..`` segments
+    is normalised away by the URL layer *before* the request leaves us and can
+    address another user's home or the DAV root
+    (pythonsecurity:S2083). There is no legitimate use of ``..`` in a path
+    relative to one's own home, so this fails closed rather than normalising:
+    silently rewriting the path would turn a caller's mistake into a
+    successful operation on a file they did not name.
+
+    Backslashes are folded to ``/`` first — Nextcloud treats ``\\`` as a literal
+    filename character, but the URL layer does not, so ``..\\..`` must not slip
+    past a ``/``-only split.
+    """
+    if any(segment == ".." for segment in path.replace("\\", "/").split("/")):
+        raise ValueError(
+            f"Path may not contain '..' segments; it must stay within the "
+            f"user's files: {path!r}"
+        )
+    return path
+
+
 def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     """Strip the quotes an ETag is transported in, so callers can pass it back.
 
@@ -305,8 +330,15 @@ class WebDAVClient(BaseNextcloudClient):
         in this client — PROPFIND/REPORT hrefs are ``unquote``d before storage,
         and MCP-tool inputs are raw). It is encoded exactly once, so passing an
         already-encoded path would double-encode it (``%20`` → ``%2520``).
+
+        Raises ``ValueError`` for a path containing ``..``. This is the single
+        chokepoint every WebDAV request path goes through, so guarding here
+        covers read/write/delete/move/copy/list at once rather than per caller.
         """
-        return f"{self._get_webdav_base_path()}/{_encode_dav_path(path.lstrip('/'))}"
+        safe_path = _reject_path_traversal(path)
+        return (
+            f"{self._get_webdav_base_path()}/{_encode_dav_path(safe_path.lstrip('/'))}"
+        )
 
     async def delete_resource(self, path: str) -> Dict[str, Any]:
         """Delete a resource (file or directory) via WebDAV DELETE."""

@@ -9,11 +9,12 @@ For OAuth mode: Requires browser-based OAuth login to establish session.
 
 import logging
 import traceback
+from html import escape
 from pathlib import Path
 from typing import Any
 
 from httpx import BasicAuth
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
@@ -26,9 +27,19 @@ from ..http import nextcloud_httpx_client
 
 logger = logging.getLogger(__name__)
 
-# Setup Jinja2 environment for templates
+# Setup Jinja2 environment for templates.
+#
+# autoescape is NOT Jinja's default and its absence was a live XSS hole
+# (python:S5247): every `{{ }}` in these templates rendered raw, including
+# `{{ error_message }}` (built from exception text) and the user-derived values
+# in user_info.html. The three `|safe` fragments in user_info.html stay
+# deliberate — they are HTML this module builds — and the values interpolated
+# into them are escaped at the point they are read, below.
 _template_dir = Path(__file__).parent / "templates"
-_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
+_jinja_env = Environment(
+    loader=FileSystemLoader(_template_dir),
+    autoescape=select_autoescape(["html", "xml"]),
+)
 
 
 async def _get_authenticated_client_for_userinfo(request: Request) -> NextcloudClient:
@@ -470,9 +481,30 @@ async def user_info_html(request: Request) -> HTMLResponse:
             )
         )
 
-    # Build HTML response
-    auth_mode = user_context.get("auth_mode", "unknown")
-    username = user_context.get("username", "unknown")
+    # Build HTML response.
+    #
+    # The fragments below are assembled with f-strings and handed to the
+    # template through `|safe`, so autoescaping does not reach them: every
+    # value interpolated into one is escaped here, where it is read. The
+    # sources are not trustworthy — `username` and the IdP profile are
+    # attacker-influencable claims from the identity provider, and a display
+    # name containing a <script> tag would otherwise execute in an
+    # authenticated page.
+    #
+    # html.escape() escapes &, <, >, " and ' -- enough for both element text
+    # and the quoted attribute values these fragments interpolate into.
+    #
+    # auth_mode and username are kept in BOTH forms on purpose. The raw values
+    # go to template.render(), where user_info.html interpolates them as plain
+    # `{{ username }}` / `{{ auth_mode }}` and Jinja's now-enabled autoescape
+    # handles them exactly once; passing the pre-escaped copy there instead
+    # double-escapes, so a display name like `O'Brien & Co` renders as
+    # `O&#x27;Brien &amp; Co` in the navbar. The escaped copies are only for the
+    # f-string fragments below, which autoescape cannot reach.
+    auth_mode = str(user_context.get("auth_mode", "unknown"))
+    username = str(user_context.get("username", "unknown"))
+    auth_mode_html = escape(auth_mode)
+    username_html = escape(username)
 
     # Get logout URL dynamically for OAuth mode
     logout_url = ""
@@ -485,7 +517,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
     # Build host info HTML (BasicAuth only)
     host_info_html = ""
     if auth_mode == "basic":
-        nextcloud_host = user_context.get("nextcloud_host", "unknown")
+        nextcloud_host = escape(str(user_context.get("nextcloud_host", "unknown")))
         host_info_html = f"""
         <h2>Connection</h2>
         <table>
@@ -499,17 +531,21 @@ async def user_info_html(request: Request) -> HTMLResponse:
     # Build session info HTML (OAuth only)
     session_info_html = ""
     if auth_mode == "oauth" and "session_id" in user_context:
-        session_id = user_context.get("session_id", "unknown")
+        session_id = escape(str(user_context.get("session_id", "unknown")))
         background_access_granted = user_context.get("background_access_granted", False)
         background_details = user_context.get("background_access_details")
 
         # Build background access section
         background_html = ""
         if background_access_granted and background_details:
-            flow_type = background_details.get("flow_type", "unknown")
-            provisioned_at = background_details.get("provisioned_at", "unknown")
-            scopes = background_details.get("scopes", "N/A")
-            token_audience = background_details.get("token_audience", "unknown")
+            flow_type = escape(str(background_details.get("flow_type", "unknown")))
+            provisioned_at = escape(
+                str(background_details.get("provisioned_at", "unknown"))
+            )
+            scopes = escape(str(background_details.get("scopes", "N/A")))
+            token_audience = escape(
+                str(background_details.get("token_audience", "unknown"))
+            )
 
             background_html = f"""
             <tr>
@@ -554,7 +590,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
 
         # Add revoke button if background access is granted
         if background_access_granted:
-            revoke_url = str(request.url_for("revoke_session_endpoint"))
+            revoke_url = escape(str(request.url_for("revoke_session_endpoint")))
             session_info_html += f"""
             <div style="margin-top: 15px;">
                 <form method="post" action="{revoke_url}" onsubmit="return confirm('Are you sure you want to revoke background access? This will delete the refresh token.');">
@@ -587,17 +623,18 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 value_str = ", ".join(str(v) for v in value)
             else:
                 value_str = str(value)
+            # Both the claim names and their values come straight from the IdP.
             idp_profile_html += f"""
             <tr>
-                <td><strong>{key}</strong></td>
-                <td>{value_str}</td>
+                <td><strong>{escape(str(key))}</strong></td>
+                <td>{escape(value_str)}</td>
             </tr>
             """
         idp_profile_html += "</table>"
     elif "idp_profile_error" in user_context:
         idp_profile_html = f"""
         <h2>Identity Provider Profile</h2>
-        <div class="warning">{user_context["idp_profile_error"]}</div>
+        <div class="warning">{escape(str(user_context["idp_profile_error"]))}</div>
         """
 
     # Build user info tab content
@@ -606,11 +643,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
         <table>
             <tr>
                 <td><strong>Username</strong></td>
-                <td>{username}</td>
+                <td>{username_html}</td>
             </tr>
             <tr>
                 <td><strong>Authentication Mode</strong></td>
-                <td><span class="badge badge-{auth_mode}">{auth_mode}</span></td>
+                <td><span class="badge badge-{auth_mode_html}">{auth_mode_html}</span></td>
             </tr>
         </table>
 

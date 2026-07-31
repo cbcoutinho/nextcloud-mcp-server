@@ -319,13 +319,14 @@ async def user_scanner_task(
                     user_id,
                     retry_after,
                 )
-                try:
-                    with anyio.move_on_after(retry_after):
-                        await shutdown_event.wait()
-                # anyio.get_cancelled_exc_class() catches task cancellation
-                # (e.g. from task group teardown) so we exit cleanly.
-                except anyio.get_cancelled_exc_class():
-                    break
+                # Cancellation (e.g. from task group teardown) is deliberately
+                # not caught: swallowing it to `break` leaves the enclosing
+                # cancel scope believing the task ignored its cancellation
+                # (python:S7497). Letting it propagate *is* the clean exit —
+                # the normal shutdown path sets shutdown_event, which ends the
+                # wait and the loop without an exception.
+                with anyio.move_on_after(retry_after):
+                    await shutdown_event.wait()
                 continue
             else:
                 consecutive_errors += 1
@@ -359,12 +360,12 @@ async def user_scanner_task(
             )
             break
 
-        # Sleep until next interval or wake event
-        try:
-            with anyio.move_on_after(settings.vector_sync_scan_interval):
-                await wake_event.wait()
-        except anyio.get_cancelled_exc_class():
-            break
+        # Sleep until next interval or wake event. Nothing sets wake_event on
+        # shutdown, so task-group cancellation is the expected way out of this
+        # sleep — which is exactly why it must not be caught and turned into a
+        # `break` (python:S7497). It propagates and the task group absorbs it.
+        with anyio.move_on_after(settings.vector_sync_scan_interval):
+            await wake_event.wait()
 
     logger.info("[BasicAuth] Scanner stopped for user: %s", user_id)
 
@@ -539,6 +540,22 @@ async def _run_user_scanner_with_scope(
         await cloned_stream.aclose()
 
 
+def _cancel_remaining_scanners(user_states: dict[str, UserSyncState]) -> None:
+    """Cancel every live per-user scanner scope.
+
+    Scanners are spawned into the task group ``user_manager_task`` is *given*,
+    not one it owns, so they are its siblings: a cancellation delivered to the
+    manager does not reach them. They therefore have to be cancelled explicitly
+    on both the normal-shutdown path and the cancelled path.
+    """
+    logger.info(
+        "[BasicAuth] User manager shutting down, cancelling %s scanner(s)",
+        len(user_states),
+    )
+    for state in list(user_states.values()):
+        state.cancel_scope.cancel()
+
+
 async def user_manager_task(
     send_stream: TaskProducer,
     shutdown_event: anyio.Event,
@@ -659,14 +676,12 @@ async def user_manager_task(
                     )
                     await _wake_on(provision_signal.wait, wake_tg.cancel_scope)
         except anyio.get_cancelled_exc_class():
-            break
+            # Re-raised rather than swallowed with `break` (python:S7497), but
+            # the scanners still have to be torn down first: they run in the
+            # caller's task group, so a cancellation aimed at this supervisor
+            # never reaches them on its own.
+            _cancel_remaining_scanners(user_states)
+            raise
 
-    # Cancel all remaining scanners on shutdown
-    logger.info(
-        "[BasicAuth] User manager shutting down, cancelling %s scanner(s)",
-        len(user_states),
-    )
-    for state in list(user_states.values()):
-        state.cancel_scope.cancel()
-
+    _cancel_remaining_scanners(user_states)
     logger.info("[BasicAuth] User manager stopped")

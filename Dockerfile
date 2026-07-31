@@ -16,7 +16,11 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md .
 
-RUN uv sync --locked --no-dev --no-install-project --no-cache --extra postgres --extra observability
+# --no-build: every third-party dependency must arrive as a wheel, so no
+# dependency's setup.py executes at image-build time (docker:S8541). This is
+# the sync that installs them all; the second one only adds the project itself,
+# which by definition has to be built and cannot carry the flag.
+RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache --extra postgres --extra observability
 
 COPY . .
 

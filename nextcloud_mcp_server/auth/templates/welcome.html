@@ -3,8 +3,12 @@
 {% block title %}Welcome - Nextcloud MCP Server{% endblock %}
 
 {% block extra_head %}
-    <!-- Alpine.js for interactive elements -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Alpine.js for interactive elements. Pinned with an integrity hash for
+         the same reason as user_info.html: the floating `3.x.x` tag cannot
+         carry one (Web:S5725). -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+            integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+            crossorigin="anonymous"></script>
 {% endblock %}
 
 {% block extra_styles %}

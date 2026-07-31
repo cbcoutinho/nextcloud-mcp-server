@@ -526,9 +526,15 @@ class UnifiedTokenVerifier(TokenVerifier):
         Returns:
             Decoded payload if valid, None if invalid
         """
-        try:
-            assert self.jwks_client is not None  # Caller should check before calling
+        if self.jwks_client is None:
+            # Callers are expected to check first; returning None keeps that
+            # contract without an assert inside the try/except below, which
+            # would have swallowed the AssertionError and reported a
+            # configuration bug as an invalid token (python:S5779).
+            logger.debug("No JWKS client configured; cannot verify JWT signature")
+            return None
 
+        try:
             # Get signing key from JWKS
             signing_key = self.jwks_client.get_signing_key_from_jwt(token)
 
@@ -588,11 +594,20 @@ class UnifiedTokenVerifier(TokenVerifier):
             logger.debug("No introspection endpoint configured")
             return None
 
+        # Introspection requires client authentication. Checked before the try
+        # rather than asserted inside it: the except below would have caught
+        # the AssertionError and logged missing configuration as a failed
+        # introspection (python:S5779).
+        client_id = self.settings.oidc_client_id
+        client_secret = self.settings.oidc_client_secret
+        if client_id is None or client_secret is None:
+            logger.debug(
+                "Introspection endpoint configured but OIDC client credentials are not; "
+                "cannot introspect"
+            )
+            return None
+
         try:
-            # Introspection requires client authentication
-            client_id = self.settings.oidc_client_id
-            client_secret = self.settings.oidc_client_secret
-            assert client_id is not None and client_secret is not None
             response = await self.http_client.post(
                 self.introspection_uri,
                 data={"token": token},

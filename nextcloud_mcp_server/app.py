@@ -1616,6 +1616,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
             async def setup_multi_user_basic_dcr():
                 """Setup DCR for multi-user BasicAuth background operations."""
+                # Required for multi-user mode. Checked before the try below
+                # rather than asserted inside it, where the AssertionError
+                # would be caught and logged as a DCR failure — and where the
+                # f-string below had already built a "None/apps/oidc/register"
+                # endpoint out of it (python:S5779).
+                if settings.nextcloud_host is None:
+                    logger.error(
+                        "NEXTCLOUD_HOST is required for multi-user BasicAuth mode; "
+                        "skipping Dynamic Client Registration."
+                    )
+                    logger.warning("Background vector sync will be disabled.")
+                    return None
+
                 # Construct registration endpoint directly from nextcloud_host
                 # Standard RFC 7591 endpoint pattern for Nextcloud OIDC
                 # This avoids relying on discovery doc which may use public URLs unreachable from containers
@@ -1627,11 +1640,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 # Perform DCR
                 try:
-                    # Assert nextcloud_host is not None (required for multi-user mode)
-                    assert settings.nextcloud_host is not None, (
-                        "NEXTCLOUD_HOST is required"
-                    )
-
                     client_id, client_secret = await load_oauth_client_credentials(
                         nextcloud_host=settings.nextcloud_host,
                         registration_endpoint=registration_endpoint,
@@ -1917,18 +1925,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             if settings.enable_login_flow:
                 tg.start_soon(_login_flow_cleanup_loop)
             # Share task group with provision routes for background polling
-            found_app_mount = False
-            for route in app.routes:
-                if isinstance(route, Mount) and route.path == "/app":
-                    browser_app = cast(Starlette, route.app)
-                    browser_app.state.poll_task_group = tg
-                    found_app_mount = True
-                    break
-            if not found_app_mount:
+            browser_app = next(
+                (
+                    cast(Starlette, route.app)
+                    for route in app.routes
+                    if isinstance(route, Mount) and route.path == "/app"
+                ),
+                None,
+            )
+            if browser_app is None:
                 logger.warning(
                     "Could not find /app mount to share poll task group; "
                     "web provisioning will return 500"
                 )
+            else:
+                browser_app.state.poll_task_group = tg
             yield
             tg.cancel_scope.cancel()
 

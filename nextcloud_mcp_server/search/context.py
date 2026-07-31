@@ -814,8 +814,15 @@ async def _fetch_document_text(
                     logger.warning("Deck card %s not found in any board/stack", doc_id)
                     return None
 
-            # Type narrowing: card is set if we reach here
-            assert card is not None
+            # Both paths above guarantee a card here: the fast path either set
+            # it or fell through to the fallback, and the fallback returns None
+            # when it finds nothing. So this narrows for the type checker only
+            # — it replaces an `assert` that sat inside this try/except
+            # Exception, where a narrowing slip would have been swallowed and
+            # reported as a generic fetch failure (python:S5779). A runtime
+            # guard here would be unreachable code duplicating the log line a
+            # few lines above.
+            card = cast(DeckCard, card)
 
             # Reconstruct full content as indexed: title + "\n\n" + description
             # This ensures chunk offsets align with indexed content structure
