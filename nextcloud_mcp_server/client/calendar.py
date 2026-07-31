@@ -551,8 +551,19 @@ class CalendarClient:
                 return [self._extract_vevent_data(component)]
             return []
 
+        if start_datetime is None or end_datetime is None:
+            # Expansion needs a window. Checked before the try rather than
+            # asserted inside it, where the except would have reported a
+            # caller error as a failed expansion (python:S5779).
+            logger.warning(
+                "Recurrence expansion requested without a date window; "
+                "returning master event"
+            )
+            return [
+                self._extract_vevent_data(component) for component in cal.walk("VEVENT")
+            ]
+
         try:
-            assert start_datetime is not None and end_datetime is not None
             occurrences = recurring_ical_events.of(cal).between(
                 start_datetime, end_datetime
             )

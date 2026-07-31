@@ -761,8 +761,12 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         chunk_index_str = request.query_params.get("chunk_index")
         total_chunks_str = request.query_params.get("total_chunks")
 
-        # Validate required parameters
-        if not all([doc_type, doc_id, start_str, end_str]):
+        # Validate required parameters. Written as a chained `and` rather than
+        # `all([...])` + four `assert`s: `all()` does not narrow the types for
+        # the checker, and the asserts that stood in for it sat inside this
+        # try/except Exception, which would have turned a narrowing slip into a
+        # 500 with an AssertionError body (python:S5779).
+        if not (doc_type and doc_id and start_str and end_str):
             return JSONResponse(
                 {
                     "success": False,
@@ -770,12 +774,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 },
                 status_code=400,
             )
-
-        # Type narrowing: we already checked these are not None above
-        assert start_str is not None
-        assert end_str is not None
-        assert doc_id is not None
-        assert doc_type is not None
 
         # Validate doc_id at the handler boundary: a malformed doc_id would
         # otherwise pass through to get_chunk_with_context and bottom out as a

@@ -814,8 +814,13 @@ async def _fetch_document_text(
                     logger.warning("Deck card %s not found in any board/stack", doc_id)
                     return None
 
-            # Type narrowing: card is set if we reach here
-            assert card is not None
+            # Narrowing guard rather than an assert: this sits inside a
+            # try/except Exception, so an assert would surface a search bug as
+            # a generic fetch failure instead of the "not found" it really is
+            # (python:S5779).
+            if card is None:
+                logger.warning("Deck card %s not found in any board/stack", doc_id)
+                return None
 
             # Reconstruct full content as indexed: title + "\n\n" + description
             # This ensures chunk offsets align with indexed content structure
