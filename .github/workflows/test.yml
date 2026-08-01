@@ -9,7 +9,7 @@ on:
 # letting 20+ docker jobs run to completion against a stale commit (and hog
 # runner slots the new run then queues behind).
 concurrency:
-  group: tests-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
