@@ -432,6 +432,13 @@ class WebDAVClient(BaseNextcloudClient):
                 # did not hold. Keeps the {"status_code": int} shape callers see.
                 return {"status_code": 412, "deleted": False}
 
+            # ponytail: probe-then-delete, not an atomic conditional delete —
+            # a write into this old path between the two calls would still be
+            # removed. WebDAV has no "delete only if empty" (DELETE on a
+            # collection is always infinite-depth), so closing it means an
+            # If-Match on the collection etag. Not worth it for a window that
+            # needs someone writing into the *previous* category of a note that
+            # just moved; upgrade if that ever shows up in practice.
             delete_result = await self.delete_resource(path=old_attachment_dir_path)
             logger.debug("Cleanup result: %s", delete_result)
             return delete_result
