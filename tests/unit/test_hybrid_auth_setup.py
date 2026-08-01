@@ -23,6 +23,12 @@ def hybrid_auth_settings():
     return Settings(
         nextcloud_host="https://nextcloud.example.com",
         enable_offline_access=False,  # Start with offline access disabled
+        # Zero the discovery backoff: the failure cases below exhaust all 10
+        # attempts, and with the production 1s/15s backoff that alone slept ~42s
+        # per run. The retry/backoff behaviour itself is covered by
+        # tests/unit/test_oidc_discovery_startup_retry.py.
+        oidc_discovery_backoff_base=0.0,
+        oidc_discovery_backoff_max=0.0,
     )
 
 

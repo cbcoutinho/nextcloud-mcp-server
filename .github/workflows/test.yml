@@ -5,6 +5,13 @@ on:
     branches:
       - master
 
+# A new push to a PR makes the in-flight run obsolete; cancel it instead of
+# letting 20+ docker jobs run to completion against a stale commit (and hog
+# runner slots the new run then queues behind).
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linting:
     runs-on: ubuntu-latest
@@ -26,8 +33,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      # -n auto fans the (fully mocked) unit tests across the runner's cores.
+      # -q instead of -v: with xdist, per-test progress lines are interleaved
+      # noise, and failures still print in full.
       - name: Run unit tests
-        run: uv run pytest -v -m unit -o "addopts=-p no:asyncio"
+        run: uv run --frozen pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
 
   # Cross-platform install smoke test. Installs the package (and its full
   # dependency closure) into an isolated environment and runs the CLI
@@ -99,8 +111,17 @@ jobs:
             # Also start GreenMail (SMTP/IMAP) so the Mail integration tests have
             # a real backend; the Mail account is provisioned in a step below.
             extra-compose-profiles: "--profile mail"
+            # This is the long pole of the whole workflow (~15min of pytest),
+            # and the only lane that can be fanned out: the other modes go
+            # through the OAuth fixtures, whose callback server binds a fixed
+            # localhost:8081 (tests/conftest.py), so parallel workers collide.
+            # --dist loadfile keeps each file on one worker, so intra-file
+            # ordering and module-scoped fixtures still hold; the shared
+            # Nextcloud is safe because the resource fixtures name everything
+            # with a uuid suffix.
             extra-args: >-
               --ignore=tests/integration/test_qdrant_collection_creation.py
+              -n 4 --dist loadfile
 
           - mode: multi-user-basic
             profile: multi-user-basic
