@@ -78,7 +78,18 @@ def _run(
     scope.share_root_ids = []
 
     mod = "nextcloud_mcp_server.server.semantic"
+    # `@require_scopes` consults its OWN module's settings, not the tool's. With
+    # that left ambient the scope check followed whatever deployment mode the
+    # environment implied — passing locally under BasicAuth-like config and
+    # denying under login-flow config in CI. Pinning it here keeps these tests
+    # about metrics rather than about which .env the runner happened to have.
+    scope_settings = MagicMock()
+    scope_settings.enable_login_flow = False
     with (
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+            return_value=scope_settings,
+        ),
         patch(f"{mod}.get_settings", return_value=_settings(vector_sync)),
         patch(f"{mod}.get_client", new=AsyncMock(return_value=client)),
         patch(f"{mod}.list_accessible_scope", new=AsyncMock(return_value=scope)),
