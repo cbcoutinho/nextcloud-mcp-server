@@ -70,6 +70,23 @@ logger = logging.getLogger(__name__)
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
 
 
+def _search_algorithm_label(algorithm: str, fusion: str) -> str:
+    """The ``algorithm`` label for search metrics.
+
+    Shared by every ``record_search_request`` call site so success and error
+    samples land on the SAME series. Normalising in one place and using the raw
+    value in another fragments ``astrolabe_search_requests_total`` into
+    non-comparable series and quietly breaks "error rate by algorithm" — exactly
+    the surface drift these metrics exist to prevent.
+
+    Matches the MCP tool's ``search_method`` convention
+    (``bm25_hybrid_<fusion>``) so the two entrypoints stay comparable.
+    """
+    if algorithm == "semantic":
+        return algorithm
+    return f"bm25_hybrid_{fusion}"
+
+
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
     """Uniform 422 for an explicit unsupported search algorithm.
 
@@ -524,7 +541,7 @@ async def unified_search(request: Request) -> JSONResponse:
 
         record_search_request(
             surface="http",
-            algorithm=f"bm25_hybrid_{fusion}" if algorithm != "semantic" else algorithm,
+            algorithm=_search_algorithm_label(algorithm, fusion),
             granularity=granularity,
             reranked="false",
             status="success",
@@ -554,7 +571,7 @@ async def unified_search(request: Request) -> JSONResponse:
         logger.exception("Error in unified search")
         record_search_request(
             surface="http",
-            algorithm=algorithm,
+            algorithm=_search_algorithm_label(algorithm, fusion),
             granularity=granularity,
             reranked="false",
             status="error",
@@ -711,7 +728,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        all_results, _dropped = await _search_with_acl(request, user_id, _execute)
+        all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
         # Format results for PHP client
         formatted_results = []
@@ -770,6 +787,29 @@ async def vector_search(request: Request) -> JSONResponse:
             # Not enough results for PCA
             response_data["coordinates_3d"] = []
             response_data["query_coords"] = []
+
+        # The third search entrypoint, and it embeds a query exactly like the
+        # other two — so omitting metering here would recreate the very ledger
+        # blind spot this change closes on /api/v1/search. Its own surface label
+        # keeps the visualization route from being conflated with the search
+        # route in dashboards.
+        record_search_request(
+            surface="http_viz",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=GRANULARITY_CHUNK,
+            reranked="false",
+            status="success",
+            results_returned=len(formatted_results),
+            verification_dropped=dropped_count,
+        )
+        await record_search_usage(
+            enabled=settings.usage_metering_enabled,
+            user_id=user_id,
+            fusion=fusion,
+            doc_types=doc_types if isinstance(doc_types, list) else None,
+            token_count=search_algo.query_token_count,
+            surface="http_viz",
+        )
 
         return JSONResponse(response_data)
 

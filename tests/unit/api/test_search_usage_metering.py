@@ -109,3 +109,90 @@ def test_non_list_doc_types_normalize_to_none():
 
     assert resp.status_code == 200
     assert usage.await_args.kwargs["doc_types"] is None
+
+
+def _post_metrics(body, *, algo_raises=None):
+    """Same harness, but spying on `record_search_request` instead."""
+    settings = MagicMock()
+    settings.vector_sync_enabled = True
+    settings.usage_metering_enabled = False
+    settings.search_rerank_enabled = False
+    settings.embedding_gateway_url = ""
+
+    algo = MagicMock()
+    algo.search = (
+        AsyncMock(side_effect=algo_raises)
+        if algo_raises
+        else AsyncMock(return_value=[])
+    )
+    algo.query_token_count = 0
+    algo.query_embedding = None
+
+    spy = MagicMock()
+    with (
+        patch(
+            "nextcloud_mcp_server.api.visualization.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
+            new=AsyncMock(return_value=("alice", {})),
+        ),
+        patch(
+            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            return_value=algo,
+        ),
+        # `algorithm="semantic"` resolves to the dense-only class, so both must
+        # be stubbed or that parametrisation reaches a real search.
+        patch(
+            "nextcloud_mcp_server.api.visualization.SemanticSearchAlgorithm",
+            return_value=algo,
+        ),
+        patch("nextcloud_mcp_server.api.visualization.record_search_request", new=spy),
+        patch(
+            "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+            new=AsyncMock(side_effect=NotProvisionedError("not provisioned")),
+        ),
+    ):
+        return TestClient(_app()).post("/api/v1/search", json=body), spy
+
+
+def test_algorithm_label_is_identical_on_success_and_error():
+    """Success and error samples must land on the SAME series.
+
+    Normalising the label on one path and passing the raw value on the other
+    fragments `astrolabe_search_requests_total` into non-comparable series and
+    breaks "error rate by algorithm" — which is precisely the cross-surface
+    drift these metrics exist to detect.
+    """
+    ok, ok_spy = _post_metrics({"query": "q", "algorithm": "hybrid", "fusion": "rrf"})
+    assert ok.status_code == 200
+    ok_label = ok_spy.call_args.kwargs["algorithm"]
+
+    bad, bad_spy = _post_metrics(
+        {"query": "q", "algorithm": "hybrid", "fusion": "rrf"},
+        algo_raises=RuntimeError("qdrant exploded"),
+    )
+    assert bad.status_code == 500
+    err_label = bad_spy.call_args.kwargs["algorithm"]
+
+    assert ok_label == err_label == "bm25_hybrid_rrf"
+
+
+def test_semantic_algorithm_label_is_not_rewritten():
+    """The dense-only algorithm has no fusion, so its label must pass through
+    rather than being decorated with a fusion it never used."""
+    resp, spy = _post_metrics({"query": "q", "algorithm": "semantic"})
+
+    assert resp.status_code == 200
+    assert spy.call_args.kwargs["algorithm"] == "semantic"
+
+
+def test_error_path_still_records_a_sample():
+    """An error must not simply vanish from the request counter."""
+    resp, spy = _post_metrics(
+        {"query": "q"}, algo_raises=RuntimeError("qdrant exploded")
+    )
+
+    assert resp.status_code == 500
+    assert spy.call_args.kwargs["status"] == "error"
