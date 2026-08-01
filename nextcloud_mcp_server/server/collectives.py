@@ -32,11 +32,19 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def _handle_collectives_error(e: OCSError | HTTPStatusError) -> McpError:
-    """Convert OCS or HTTP errors to McpError."""
+def _handle_collectives_error(
+    e: OCSError | HTTPStatusError,
+) -> McpError | HTTPStatusError:
+    """Convert an OCS error to McpError; pass an HTTP error through unchanged.
+
+    ``NextcloudFastMCP`` renders a raw ``HTTPStatusError`` into an LLM-friendly
+    message at the tool boundary (GH #1208). Wrapping it here in ``str(e)``
+    would shadow that with httpx's internal-URL text, so it is returned as-is
+    for the caller to re-raise.
+    """
     if isinstance(e, OCSError):
         return McpError(ErrorData(code=-32603, message=e.message))
-    return McpError(ErrorData(code=-32603, message=str(e)))
+    return e
 
 
 def configure_collectives_tools(mcp: FastMCP):
