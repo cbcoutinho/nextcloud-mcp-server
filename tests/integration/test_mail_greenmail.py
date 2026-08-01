@@ -482,7 +482,12 @@ async def test_get_message_source_returns_headers(
 async def test_delete_message_removes_it_from_the_inbox(
     nc_mcp_client, provisioned_mail_account
 ):
-    """Delete moves the message out of INBOX (into the account's trash)."""
+    """Delete moves the message out of INBOX (into the account's trash).
+
+    Requires the account to have a trash mailbox — without one the Mail app
+    rejects the call outright, which is why provision-greenmail-account.sh
+    creates Trash rather than relying on GreenMail's INBOX-only default.
+    """
     subject = "Delete probe"
     message_id = await _seeded_message_id(nc_mcp_client, subject)
 
@@ -507,9 +512,24 @@ async def test_delete_message_removes_it_from_the_inbox(
     )["results"]
     assert message_id not in [m["databaseId"] for m in remaining]
 
+    # Trashing is a move, so it invalidates the id the same way: a retry is
+    # rejected rather than being a no-op. This is what idempotentHint=False on
+    # nc_mail_delete_message records.
+    retry = await nc_mcp_client.call_tool(
+        "nc_mail_delete_message", {"message_id": message_id}
+    )
+    assert retry.isError, "expected the stale message id to be rejected on retry"
+
 
 async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_account):
-    """Move a message out of INBOX and confirm it lands in the destination."""
+    """Move a message out of INBOX and confirm it lands in the destination.
+
+    Also pins the move's *non*-idempotency, which is what ``idempotentHint=False``
+    on the tool records: the move invalidates the source id (the message is
+    re-cached in the destination under a new one), so repeating the call with
+    the same id fails instead of being a harmless no-op. An agent that reads the
+    annotation as "safe to blindly retry" would corrupt its own error handling.
+    """
     subject = "Move probe"
     message_id = await _seeded_message_id(nc_mcp_client, subject)
 
@@ -520,11 +540,17 @@ async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_ac
         )
     )["results"]
     inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+    # Prefer Archive: moving into Trash would overlap with delete's semantics.
+    # provision-greenmail-account.sh creates it, so a missing destination is a
+    # provisioning failure worth failing on, not a reason to skip silently.
     destination = next(
-        (m for m in mailboxes if m["databaseId"] != inbox["databaseId"]), None
+        (m for m in mailboxes if "archive" in m.get("specialUse", [])),
+        None,
+    ) or next((m for m in mailboxes if m["databaseId"] != inbox["databaseId"]), None)
+    assert destination is not None, (
+        "account has only INBOX — provision-greenmail-account.sh should have "
+        "created Trash/Archive"
     )
-    if destination is None:
-        pytest.skip("account has only INBOX; no destination mailbox to move into")
 
     _tool_payload(
         await nc_mcp_client.call_tool(
@@ -537,17 +563,28 @@ async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_ac
     )
 
     _sync_mail_account(account_id)
+    # Assert on the id, not the subject: subjects repeat across runs against a
+    # persistent dev stack, and the id is precisely what the move invalidates.
     remaining = _tool_payload(
         await nc_mcp_client.call_tool(
-            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 20}
+            "nc_mail_list_messages", {"mailbox_id": inbox["databaseId"], "limit": 50}
         )
     )["results"]
-    assert subject not in [m["subject"] for m in remaining]
+    assert message_id not in [m["databaseId"] for m in remaining]
 
     moved = _tool_payload(
         await nc_mcp_client.call_tool(
             "nc_mail_list_messages",
-            {"mailbox_id": destination["databaseId"], "limit": 20},
+            {"mailbox_id": destination["databaseId"], "limit": 50},
         )
     )["results"]
     assert subject in [m["subject"] for m in moved]
+    # The destination copy is a different row, which is why the id is stale.
+    assert message_id not in [m["databaseId"] for m in moved]
+
+    # Retrying with the now-stale id is rejected rather than repeating the move.
+    retry = await nc_mcp_client.call_tool(
+        "nc_mail_move_message",
+        {"message_id": message_id, "destination_mailbox_id": destination["databaseId"]},
+    )
+    assert retry.isError, "expected the stale message id to be rejected on retry"
