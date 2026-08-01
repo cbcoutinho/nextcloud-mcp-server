@@ -214,9 +214,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         """
         collection_name = settings.get_collection_name()
         grouped = granularity == GRANULARITY_DOCUMENT
-        # Both paths over-fetch 2x for the dedup/verification budget; grouping
-        # deepens it further, bounded by MAX_DOCUMENT_PREFETCH so the compounding
-        # multipliers can't produce a pathological query at a high ``limit``.
+        # Both paths deepen the PREFETCH 2x (grouping deepens it further, bounded
+        # by MAX_DOCUMENT_PREFETCH so the compounding multipliers can't produce a
+        # pathological query at a high ``limit``). Note this is the prefetch
+        # depth only -- the grouped branch's own ``limit`` must stay exact; see
+        # the comment on that call.
         prefetch_limit = limit * 2
         if grouped:
             prefetch_limit = min(
@@ -263,7 +265,18 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     # the extra hits would just re-introduce the chunk-level
                     # concentration this mode exists to remove.
                     group_size=1,
-                    limit=limit * 2,  # groups, not chunks
+                    # Groups, not chunks -- and deliberately NOT ``limit * 2``.
+                    # The chunk path over-fetches 2x because chunks from one
+                    # document collapse during dedup, so it needs spares;
+                    # ``group_size=1`` already yields one row per document, so
+                    # there is nothing here for spares to replace. Worse, asking
+                    # for more groups than the prefetch can fill makes Qdrant
+                    # widen its grouping search and REORDER the head rather than
+                    # simply appending weaker tail results, so an over-request
+                    # measurably degrades the top of the result set. The damage
+                    # grows as the requested group count approaches the prefetch
+                    # depth, which is why this must track ``limit`` exactly.
+                    limit=limit,
                     score_threshold=score_threshold,
                     with_payload=True,
                     with_vectors=False,

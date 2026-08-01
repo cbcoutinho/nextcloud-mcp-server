@@ -292,10 +292,47 @@ class TestGranularity:
         # One row per document — extra hits would reintroduce the very
         # concentration this mode removes.
         assert kwargs["group_size"] == 1
-        # limit counts groups (documents), carrying the same 2x over-fetch.
-        assert kwargs["limit"] == 20
+        # limit counts groups (documents), and is EXACT — see
+        # test_grouped_limit_is_not_over_requested.
+        assert kwargs["limit"] == 10
         # Fusion is unchanged: still the explicit-k RRF query.
         assert isinstance(kwargs["query"], models.RrfQuery)
+
+    @pytest.mark.unit
+    async def test_grouped_limit_is_not_over_requested(
+        self, patched_search, monkeypatch
+    ):
+        """Regression: the grouped branch must ask for exactly ``limit`` groups.
+
+        The chunk path over-fetches 2x because chunks from one document collapse
+        during dedup and it needs spares. ``group_size=1`` already returns one
+        row per document, so spares buy nothing here — and asking for more
+        groups than the prefetch can fill makes Qdrant widen its grouping search
+        and reorder the head, measurably degrading the top of the result set
+        rather than merely appending weaker tail entries.
+
+        The chunk path keeps its 2x, so this pins the asymmetry rather than the
+        constant.
+        """
+        qdrant = MagicMock()
+        grouped = MagicMock()
+        grouped.groups = []
+        qdrant.query_points_groups = AsyncMock(return_value=grouped)
+        qdrant.query_points = AsyncMock()
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+            AsyncMock(return_value=qdrant),
+        )
+
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", limit=37, granularity="document"
+        )
+        assert qdrant.query_points_groups.await_args.kwargs["limit"] == 37
+
+        await BM25HybridSearchAlgorithm().search(
+            query="hello", user_id="alice", limit=37, granularity="chunk"
+        )
+        assert qdrant.query_points.await_args.kwargs["limit"] == 74
 
     @pytest.mark.unit
     async def test_document_granularity_deepens_the_prefetch(
