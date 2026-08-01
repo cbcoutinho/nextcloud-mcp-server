@@ -1600,7 +1600,9 @@ In all modes:
 
 - Use environment variables from your deployment platform (Docker secrets, Kubernetes ConfigMaps, etc.)
 - Never commit credentials to version control
-- SQLite database permissions are handled automatically by the server
+- SQLite *file* permissions are handled automatically by the server (it chmods
+  `tokens.db` to `0600` on startup). *Directory* ownership is yours to get right
+  on any host directory you bind-mount — see [For Docker](#for-docker) below.
 
 ### For Docker
 
