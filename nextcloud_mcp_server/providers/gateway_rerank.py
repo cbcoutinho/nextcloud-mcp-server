@@ -56,6 +56,32 @@ class RerankedIndex:
     score: float
 
 
+def _parse_entry(item: object, sent: int, seen: set[int]) -> RerankedIndex | None:
+    """One ``results`` entry, or ``None`` if it cannot be trusted.
+
+    Split out of :meth:`GatewayRerankClient._parse` to keep each piece simple
+    enough to read as a single rule (and under the project's cognitive-complexity
+    gate). Every rejection here is a case a provider has been observed to
+    produce or could plausibly produce:
+
+    * ``bool`` is an ``int`` subclass in Python, so ``True`` would otherwise be
+      accepted as index 1 — and silently reorder a result;
+    * an out-of-range index would address past the caller's list;
+    * a duplicate would let one candidate occupy two result slots.
+    """
+    if not isinstance(item, dict):
+        return None
+    idx = item.get("index")
+    if not isinstance(idx, int) or isinstance(idx, bool):
+        return None
+    if not 0 <= idx < sent or idx in seen:
+        return None
+    score = item.get("relevance_score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return None
+    return RerankedIndex(index=idx, score=float(score))
+
+
 class GatewayRerankClient:
     """Scores query/document pairs with a cross-encoder via the gateway."""
 
@@ -99,6 +125,22 @@ class GatewayRerankClient:
         """
         if not documents:
             return []
+
+        # Truncation is silent to the caller, so say something here: a long
+        # query or long chunks produce a ranking computed on less text than the
+        # caller thinks it submitted, and without this there is no signal to
+        # explain a surprising order.
+        over_len = sum(1 for d in documents if len(d) > _MAX_DOCUMENT_CHARS)
+        if over_len or len(query) > _MAX_QUERY_CHARS:
+            logger.debug(
+                "rerank input truncated: query %d->%d chars, %d/%d documents "
+                "over %d chars",
+                len(query),
+                min(len(query), _MAX_QUERY_CHARS),
+                over_len,
+                len(documents),
+                _MAX_DOCUMENT_CHARS,
+            )
 
         payload = {
             "model": self._model,
@@ -154,18 +196,11 @@ class GatewayRerankClient:
         ranked: list[RerankedIndex] = []
         seen: set[int] = set()
         for item in raw:
-            if not isinstance(item, dict):
+            entry = _parse_entry(item, sent, seen)
+            if entry is None:
                 continue
-            idx = item.get("index")
-            score = item.get("relevance_score")
-            if not isinstance(idx, int) or isinstance(idx, bool):
-                continue
-            if not 0 <= idx < sent or idx in seen:
-                continue
-            if not isinstance(score, (int, float)) or isinstance(score, bool):
-                continue
-            seen.add(idx)
-            ranked.append(RerankedIndex(index=idx, score=float(score)))
+            seen.add(entry.index)
+            ranked.append(entry)
 
         if not ranked:
             raise RerankError("gateway rerank returned no usable results")

@@ -213,6 +213,12 @@ async def rerank_results(
         # subsequent search a full timeout.
         _cooldown_until = anyio.current_time() + _FAILURE_COOLDOWN_SECONDS
         logger.warning("rerank unavailable, using retrieval order: %s", e)
+        # Record the stage duration on the failure path too. A reranker that
+        # fails SLOWLY — timing out near the configured limit — is the case
+        # that hurts search latency most, and recording only successes would
+        # leave it invisible in the latency histogram while the request counter
+        # merely showed "degraded".
+        record_search_stage(surface, "rerank", anyio.current_time() - started)
         record_rerank_documents(client.model, len(scorable), "degraded")
         return results, False
 
