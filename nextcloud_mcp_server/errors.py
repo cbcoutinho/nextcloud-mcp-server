@@ -19,8 +19,10 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ContentBlock
 
-#: ``summary``/``hint`` per status. 429 is absent on purpose: ``retry_on_429``
-#: in ``client/base.py`` absorbs it before it can reach a tool.
+#: ``summary``/``hint`` per status. 429 is rare -- ``retry_on_429`` in
+#: ``client/base.py`` absorbs it -- but ``_stream_request`` re-raises it once
+#: its own retries are exhausted, so it still needs a hint that says "back off"
+#: rather than the generic "re-check the arguments".
 _STATUS: dict[int, tuple[str, str]] = {
     400: (
         "Invalid request",
@@ -64,6 +66,11 @@ _STATUS: dict[int, tuple[str, str]] = {
         "Resource locked",
         "Another process holds a lock on it. Retry shortly, or report the lock "
         "to the user.",
+    ),
+    429: (
+        "Rate limited",
+        "Nextcloud is throttling requests and the client already retried and "
+        "gave up. Wait before retrying -- do not rewrite the arguments.",
     ),
     507: (
         "Insufficient storage",

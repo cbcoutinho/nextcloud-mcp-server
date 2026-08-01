@@ -70,6 +70,15 @@ def test_412_tells_the_model_to_re_read_the_etag():
     assert "etag" in message
 
 
+def test_429_says_back_off_not_re_check_the_arguments():
+    """_stream_request re-raises a 429 once its own retries are exhausted."""
+    message = friendly_tool_error(_http_error(429), "nc_webdav_read_file")
+
+    assert message is not None
+    assert "Rate limited" in message
+    assert "Wait before retrying" in message
+
+
 def test_5xx_is_described_as_transient():
     message = friendly_tool_error(_http_error(503), "nc_tables_insert_row")
 
