@@ -48,8 +48,13 @@ resource "aws_efs_mount_target" "this" {
   security_groups = [aws_security_group.efs.id]
 }
 
-# Container runs as root (upstream Dockerfile has no USER directive), so the
-# access points stamp uid/gid 0 on created files.
+# These access points deliberately stay on uid/gid 0 even though the image now
+# runs as uid 1000 (Dockerfile `USER 1000:0`). An access point with posix_user
+# set enforces that uid/gid for ALL I/O through it regardless of the container's
+# own uid, so the task keeps working unchanged and files stay consistently
+# owned. Changing posix_user forces access-point replacement, and creation_info
+# only applies when the root directory is first created -- existing files would
+# keep uid 0 -- so moving off root here needs a one-shot chown, not just an edit.
 resource "aws_efs_access_point" "data" {
   file_system_id = aws_efs_file_system.this.id
 
@@ -72,31 +77,9 @@ resource "aws_efs_access_point" "data" {
   }
 }
 
-resource "aws_efs_access_point" "oauth" {
-  file_system_id = aws_efs_file_system.this.id
-
-  posix_user {
-    uid = 0
-    gid = 0
-  }
-
-  root_directory {
-    path = "/oauth"
-    creation_info {
-      owner_uid   = 0
-      owner_gid   = 0
-      permissions = "0755"
-    }
-  }
-
-  tags = {
-    Name = "${var.name}-oauth"
-  }
-}
-
-# Qdrant container runs as root (debian-slim base, no USER directive), matching
-# the other access points. Mounted at /qdrant/storage which is qdrant's default
-# storage_path.
+# Qdrant's image runs as root (debian-slim base, no USER directive), matching
+# the other access points above. Mounted at /qdrant/storage which is qdrant's
+# default storage_path.
 resource "aws_efs_access_point" "qdrant" {
   count          = var.use_external_qdrant ? 0 : 1
   file_system_id = aws_efs_file_system.this.id

@@ -110,7 +110,9 @@ NEXTCLOUD_HOST=http://nextcloud.example.com
 **Auto-Configured:**
 - OIDC discovery URL: `{NEXTCLOUD_HOST}/.well-known/openid-configuration`
 - Client credentials: Dynamic Client Registration (DCR) if available
-- Token storage: SQLite at `~/.oauth/clients.db`
+- Token storage: SQLite at `TOKEN_STORAGE_DB` (e.g. `/app/data/tokens.db`); DCR
+  client registrations live in its `oauth_clients` table. An earlier design put
+  these in `~/.oauth/clients.db`, which no longer exists.
 
 **Optional Configuration:**
 ```bash

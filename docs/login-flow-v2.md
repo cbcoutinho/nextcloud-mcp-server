@@ -204,7 +204,6 @@ mcp-login-flow:
     - TOKEN_STORAGE_DB=/app/data/tokens.db
   volumes:
     - login-flow-data:/app/data
-    - login-flow-oauth-storage:/app/.oauth
 ```
 
 > **Production note:** `TOKEN_ENCRYPTION_KEY` is a credential — losing it makes every stored app password unrecoverable. Inline-environment values are fine for local development but should be passed via Docker secrets (or your platform's equivalent) in production. See [Configuration → Best Practices for Docker](configuration.md#for-docker).

@@ -1600,22 +1600,31 @@ In all modes:
 
 - Use environment variables from your deployment platform (Docker secrets, Kubernetes ConfigMaps, etc.)
 - Never commit credentials to version control
-- SQLite database permissions are handled automatically by the server
+- SQLite *file* permissions are handled automatically by the server (it chmods
+  `tokens.db` to `0600` on startup). *Directory* ownership is yours to get right
+  on any host directory you bind-mount — see [For Docker](#for-docker) below.
 
 ### For Docker
 
-Mount **two** volumes for OAuth-mode deployments:
+Mount **one** volume for OAuth-mode deployments:
 
-- `/app/.oauth` — DCR-registered MCP-client state (only used when DCR is the chosen registration path; harmless to mount otherwise).
-- `/app/data` — encrypted app-password store under Login Flow v2 (`TOKEN_STORAGE_DB=/app/data/tokens.db`).
+- `/app/data` — the SQLite store (`TOKEN_STORAGE_DB=/app/data/tokens.db`), holding
+  the encrypted app-password store under Login Flow v2 *and* DCR-registered
+  MCP-client state.
 
 ```bash
 docker run \
-  -v $(pwd)/.oauth:/app/.oauth \
   -v $(pwd)/data:/app/data \
   --env-file .env \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 ```
+
+> **Host directory ownership.** The container runs as uid 1000, so any host
+> directory you bind-mount must be writable by that uid:
+> `mkdir -p data && sudo chown -R 1000:0 data`. Docker-managed named volumes
+> get this automatically. If you are upgrading from a release that ran as
+> root, existing volumes hold root-owned files and the server will fail to
+> start until they are re-owned (or recreated with `docker compose down -v`).
 
 Use Docker secrets for sensitive values in production (`TOKEN_ENCRYPTION_KEY`, `NEXTCLOUD_OIDC_CLIENT_SECRET`, `NEXTCLOUD_PASSWORD`, etc.)
 

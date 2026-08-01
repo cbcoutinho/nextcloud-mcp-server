@@ -344,7 +344,6 @@ services:
       # NO admin credentials - using external IdP OAuth only!
     volumes:
       - keycloak-tokens:/app/data
-      - keycloak-oauth-storage:/app/.oauth
       - ./settings.toml.example:/app/settings.toml:ro
     profiles:
       - keycloak
@@ -407,7 +406,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - login-flow-data:/app/data
-      - login-flow-oauth-storage:/app/.oauth
       - ./settings.toml.example:/app/settings.toml:ro
     profiles:
       - login-flow
@@ -559,9 +557,7 @@ volumes:
   nextcloud:
   db:
   keycloak-tokens:
-  keycloak-oauth-storage:
   login-flow-data:
-  login-flow-oauth-storage:
   qdrant-data:
   mcp-data:
   multi-user-basic-data:

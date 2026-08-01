@@ -38,7 +38,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
 
 ###
 # Task role — used by the running container. Needs Bedrock for embeddings
-# and EFS client access to the two access points.
+# and EFS client access to the data access point.
 
 resource "aws_iam_role" "task" {
   name               = "${var.name}-task"
@@ -80,7 +80,6 @@ data "aws_iam_policy_document" "task_efs" {
       variable = "elasticfilesystem:AccessPointArn"
       values = [
         aws_efs_access_point.data.arn,
-        aws_efs_access_point.oauth.arn,
       ]
     }
   }
