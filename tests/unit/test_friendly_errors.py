@@ -2,11 +2,14 @@
 
 import httpx
 import pytest
+from httpx import HTTPStatusError
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
+from nextcloud_mcp_server.client.collectives import OCSError
 from nextcloud_mcp_server.errors import NextcloudFastMCP, friendly_tool_error
+from nextcloud_mcp_server.server.collectives import _raise_collectives_error
 
 pytestmark = pytest.mark.unit
 
@@ -185,6 +188,23 @@ def test_request_error_reports_unreachable_server():
 def test_other_exceptions_are_left_alone(exc):
     """None means 'no improvement' -- tailored messages keep their wording."""
     assert friendly_tool_error(exc, "nc_notes_get_note") is None
+
+
+def test_collectives_lets_http_errors_reach_the_boundary():
+    """Regression guard: re-wrapping in str(e) would shadow the new message.
+
+    ``OCSError`` carries a real server message and still becomes an
+    ``McpError``; a transport-level error must arrive at the tool boundary
+    intact so ``friendly_tool_error`` can render it.
+    """
+    http_error = _http_error(404)
+    with pytest.raises(HTTPStatusError) as raised:
+        _raise_collectives_error(http_error)
+    assert raised.value is http_error
+
+    with pytest.raises(McpError) as wrapped:
+        _raise_collectives_error(OCSError(403, "Not permitted"))
+    assert "Not permitted" in str(wrapped.value)
 
 
 async def test_boundary_rewrites_http_errors_but_not_tailored_ones():

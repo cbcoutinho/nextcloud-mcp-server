@@ -1,6 +1,7 @@
 """MCP tool definitions for Nextcloud Collectives app."""
 
 import logging
+from typing import NoReturn
 
 from httpx import HTTPStatusError
 from mcp.server.fastmcp import Context, FastMCP
@@ -32,19 +33,18 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def _handle_collectives_error(
-    e: OCSError | HTTPStatusError,
-) -> McpError | HTTPStatusError:
-    """Convert an OCS error to McpError; pass an HTTP error through unchanged.
+def _raise_collectives_error(e: OCSError | HTTPStatusError) -> NoReturn:
+    """Raise the client-facing form of a collectives failure.
 
-    ``NextcloudFastMCP`` renders a raw ``HTTPStatusError`` into an LLM-friendly
-    message at the tool boundary (GH #1208). Wrapping it here in ``str(e)``
-    would shadow that with httpx's internal-URL text, so it is returned as-is
-    for the caller to re-raise.
+    An OCS envelope carries a real server message, so it becomes an
+    ``McpError``. A transport-level ``HTTPStatusError`` is re-raised untouched:
+    ``NextcloudFastMCP`` renders it into an LLM-friendly message at the tool
+    boundary (GH #1208), and wrapping it in ``str(e)`` here would shadow that
+    with httpx's internal-URL text.
     """
     if isinstance(e, OCSError):
-        return McpError(ErrorData(code=-32603, message=e.message))
-    return e
+        raise McpError(ErrorData(code=-32603, message=e.message)) from e
+    raise e
 
 
 def configure_collectives_tools(mcp: FastMCP):
@@ -66,7 +66,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_collectives = await client.collectives.get_collectives()
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         collectives = [Collective(**c) for c in raw_collectives]
         return ListCollectivesResponse(collectives=collectives, total=len(collectives))
 
@@ -88,7 +88,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_pages = await client.collectives.get_pages(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         pages = [PageInfo(**p) for p in raw_pages]
         return ListPagesResponse(
             pages=pages, total=len(pages), collective_id=collective_id
@@ -117,7 +117,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_page = await client.collectives.get_page(collective_id, page_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         page = PageInfo(**raw_page)
 
         # Fetch content via WebDAV
@@ -161,7 +161,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_pages = await client.collectives.search_pages(collective_id, query)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         pages = [PageInfo(**p) for p in raw_pages]
         return SearchPagesResponse(
             results=pages,
@@ -188,7 +188,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_tags = await client.collectives.get_tags(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         tags = [CollectiveTag(**t) for t in raw_tags]
         return ListTagsResponse(tags=tags, total=len(tags), collective_id=collective_id)
 
@@ -210,7 +210,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw_pages = await client.collectives.get_trashed_pages(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         pages = [PageInfo(**p) for p in raw_pages]
         return ListTrashedPagesResponse(
             pages=pages, total=len(pages), collective_id=collective_id
@@ -234,7 +234,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.get_trashed_collectives()
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         collectives = [Collective(**c) for c in raw]
         return ListTrashedCollectivesResponse(
             collectives=collectives, total=len(collectives)
@@ -261,7 +261,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.create_collective(name, emoji)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         collective = Collective(**raw)
         return CreateCollectiveResponse(
             id=collective.id, name=collective.name, emoji=collective.emoji
@@ -291,7 +291,7 @@ def configure_collectives_tools(mcp: FastMCP):
         except ValueError as e:
             raise McpError(ErrorData(code=-32603, message=str(e))) from e
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         collective = Collective(**raw)
         return CollectiveOperationResponse(
             collective_id=collective.id,
@@ -319,7 +319,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             await client.collectives.trash_collective(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         return CollectiveOperationResponse(
             collective_id=collective_id,
             status_code=200,
@@ -350,7 +350,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             await client.collectives.delete_collective(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         return CollectiveOperationResponse(
             collective_id=collective_id,
             status_code=200,
@@ -375,7 +375,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.restore_collective(collective_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         collective = Collective(**raw)
         return CollectiveOperationResponse(
             collective_id=collective.id,
@@ -407,7 +407,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.create_page(collective_id, parent_id, title)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         page = PageInfo(**raw)
         return CreatePageResponse(
             id=page.id,
@@ -447,7 +447,7 @@ def configure_collectives_tools(mcp: FastMCP):
                 collective_id, page_id, parent_id, title, index, copy
             )
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         page = PageInfo(**raw)
         action = "copied" if copy else "moved"
         return PageOperationResponse(
@@ -480,7 +480,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             await client.collectives.trash_page(collective_id, page_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         return PageOperationResponse(
             page_id=page_id,
             collective_id=collective_id,
@@ -507,7 +507,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.restore_page(collective_id, page_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         page = PageInfo(**raw)
         return PageOperationResponse(
             page_id=page.id,
@@ -539,7 +539,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.set_page_emoji(collective_id, page_id, emoji)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         page = PageInfo(**raw)
         return PageOperationResponse(
             page_id=page.id,
@@ -568,7 +568,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.create_tag(collective_id, name, color)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         tag = CollectiveTag(**raw)
         return CreateTagResponse(id=tag.id, name=tag.name, color=tag.color)
 
@@ -592,7 +592,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             await client.collectives.assign_tag(collective_id, page_id, tag_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         return PageOperationResponse(
             page_id=page_id,
             collective_id=collective_id,
@@ -623,7 +623,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             await client.collectives.remove_tag(collective_id, page_id, tag_id)
         except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
+            _raise_collectives_error(e)
         return PageOperationResponse(
             page_id=page_id,
             collective_id=collective_id,
