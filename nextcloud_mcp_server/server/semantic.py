@@ -704,6 +704,14 @@ def configure_semantic_tools(mcp: FastMCP):
                                     category=result.category,
                                     excerpt=result.excerpt,
                                     score=result.score,
+                                    # This site REBUILDS the row rather than
+                                    # copying it, so any field omitted here
+                                    # silently reverts to its default. Dropping
+                                    # this one produced a response reporting
+                                    # reranked=true whose every row carried
+                                    # rerank_score=null. See
+                                    # test_semantic_result_field_parity.py.
+                                    rerank_score=result.rerank_score,
                                     chunk_index=result.chunk_index,
                                     total_chunks=result.total_chunks,
                                     chunk_start_offset=result.chunk_start_offset,
