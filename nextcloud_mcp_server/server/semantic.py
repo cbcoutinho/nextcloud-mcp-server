@@ -24,6 +24,8 @@ from nextcloud_mcp_server.models.semantic import (
 )
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
+    record_search_request,
+    record_search_stage,
 )
 from nextcloud_mcp_server.search.access_filter import (
     MAX_PATH_PREFIXES,
@@ -34,7 +36,7 @@ from nextcloud_mcp_server.search.access_filter import (
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
-from nextcloud_mcp_server.usage import UsageEventStore
+from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
     count_indexed,
@@ -43,15 +45,6 @@ from nextcloud_mcp_server.vector.metrics_publisher import (
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
-
-# Cap how many doc_types we copy into a usage-metering metadata row. doc_types
-# is caller-supplied and (unlike path_prefixes) has no max_length on the tool
-# signature, so an adversarial caller could pass a huge list. The CP rollup
-# ignores metadata for billing (GROUP BY day, metric) and the value is bound
-# parameterized, so this is not a billing/injection risk — the cap just keeps
-# a single JSONB row from ballooning. 16 is generous headroom over the handful
-# of real indexed doc types.
-_USAGE_METADATA_MAX_DOC_TYPES = 16
 
 
 def _consent_narrowed_doc_types(
@@ -71,61 +64,6 @@ def _consent_narrowed_doc_types(
     if doc_types is None:
         return sorted(allowed)
     return [dt for dt in doc_types if dt in allowed]
-
-
-async def record_search_usage(
-    *,
-    enabled: bool,
-    user_id: str,
-    fusion: str,
-    doc_types: list[str] | None,
-    token_count: int | None,
-) -> None:
-    """Record the billable ``tokens_embedded`` event for one semantic search.
-
-    The value is the query embedding's token count (provider-reported or
-    estimated) — the unit upstream providers bill on, and the same metric the
-    indexing path records for chunk embeddings (Deck #67). ``nc_semantic_search``
-    flows through here — do not add a second hook.
-
-    Best-effort and flag-gated: a metering failure is logged and never breaks
-    the search. Unlike the indexing path's chunk-count guard, a 0-token query is
-    still recorded (the query embedding ran); a zero-value row is a no-op at the
-    Stripe ``sum`` aggregation.
-
-    Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
-    GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
-    here propagates to Stripe; it is retained only to keep Deck #67's future
-    per-user attribution derivable from app-DB metadata without a re-migration.
-    """
-    if not enabled:
-        return
-    try:
-        store = await UsageEventStore.shared()
-        await store.record_usage_event(
-            metric="tokens_embedded",
-            value=token_count or 0,
-            metadata={
-                "user_id": user_id,
-                "fusion": fusion,
-                # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES. Both None and
-                # [] normalize to null so a future metadata->'doc_types' IS NULL
-                # query counts the all-types case consistently.
-                "doc_types": (
-                    doc_types[:_USAGE_METADATA_MAX_DOC_TYPES] if doc_types else None
-                ),
-            },
-            # The caller already confirmed the flag, so pass enabled=True
-            # directly — the store then skips a second uncached Settings build on
-            # this hot query path (ADR-024).
-            enabled=True,
-        )
-    except Exception:
-        # Reached only when shared()/store construction itself raises
-        # (record_usage_event swallows its own write failures). Metering is on,
-        # so warn — a silent DEBUG line would hide "operator enabled metering
-        # but gets no data".
-        logger.warning("usage metering hook (tokens_embedded) skipped")
 
 
 def configure_semantic_tools(mcp: FastMCP):
@@ -387,6 +325,17 @@ def configure_semantic_tools(mcp: FastMCP):
                     "doc_type is admin-approved for semantic search",
                     username,
                 )
+                # A short-circuit is a successful search that found nothing, not
+                # an error — recording it keeps the zero-result distribution
+                # honest about how often consent narrowing is the cause.
+                record_search_request(
+                    surface="mcp",
+                    algorithm=search_method,
+                    granularity=granularity,
+                    reranked="false",
+                    status="success",
+                    results_returned=0,
+                )
                 return SemanticSearchResponse(
                     results=[],
                     query=query,
@@ -396,6 +345,15 @@ def configure_semantic_tools(mcp: FastMCP):
                     verified_chunk_count=0,
                     dropped_document_count=0,
                 )
+
+        # Search-metric state, recorded in the ``finally`` below so every exit —
+        # success, McpError, or an unexpected raise — lands exactly one
+        # ``astrolabe_search_requests_total`` sample. Defaults describe the
+        # failure case; the success path overwrites them.
+        metric_status = "error"
+        metric_results: int | None = None
+        metric_dropped = 0
+        metric_reranked = "false"
 
         try:
             # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
@@ -407,6 +365,8 @@ def configure_semantic_tools(mcp: FastMCP):
             search_algo = BM25HybridSearchAlgorithm(
                 score_threshold=score_threshold, fusion=fusion
             )
+
+            retrieve_start = anyio.current_time()
 
             # Execute search across requested document types
             # If doc_types is None, search all indexed types (cross-app search)
@@ -483,6 +443,13 @@ def configure_semantic_tools(mcp: FastMCP):
                 all_results.sort(key=lambda r: r.score, reverse=True)
                 all_results = all_results[: limit * 2]
 
+            # Covers query embedding + Qdrant across every branch above, so the
+            # per-doc_type loop's higher cost is visible rather than averaged
+            # away against the single-query branch.
+            record_search_stage(
+                "mcp", "retrieve", anyio.current_time() - retrieve_start
+            )
+
             # ADR-019: Verify-on-read. The vector index is a recall layer;
             # Nextcloud is the source of truth for access. Filter out ghost
             # records (deleted/unshared docs not yet reconciled by webhooks)
@@ -508,6 +475,9 @@ def configure_semantic_tools(mcp: FastMCP):
                 client,
                 all_results,
                 eviction_task_group=eviction_task_group,
+            )
+            record_search_stage(
+                "mcp", "verify", anyio.current_time() - verification_start
             )
             verified_chunk_count = len(verified_results)
             logger.debug(
@@ -712,7 +682,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 fusion=fusion,
                 doc_types=doc_types,
                 token_count=search_algo.query_token_count,
+                surface="mcp",
             )
+
+            metric_status = "success"
+            metric_results = len(results)
+            metric_dropped = dropped_count
 
             return SemanticSearchResponse(
                 results=results,
@@ -748,6 +723,19 @@ def configure_semantic_tools(mcp: FastMCP):
             # the stack here (logger.exception) for triage.
             logger.exception("Search error: %s", e)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
+        finally:
+            # One sample per search, on every exit path. Paired with the
+            # identical call in api/visualization.py so the MCP and HTTP
+            # entrypoints are directly comparable on one dashboard.
+            record_search_request(
+                surface="mcp",
+                algorithm=search_method,
+                granularity=granularity,
+                reranked=metric_reranked,
+                status=metric_status,
+                results_returned=metric_results,
+                verification_dropped=metric_dropped,
+            )
 
     @mcp.tool(
         title="Check Indexing Status",

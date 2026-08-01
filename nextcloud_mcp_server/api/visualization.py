@@ -16,6 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -29,6 +30,10 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.observability.metrics import (
+    record_search_request,
+    record_search_stage,
+)
 from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search import (
     GRANULARITY_CHUNK,
@@ -49,6 +54,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_with_context,
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import (
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
@@ -113,7 +119,7 @@ async def _search_with_acl(
     request: Request,
     user_id: str,
     execute: Callable[[AccessibleScope | None], Awaitable[list]],
-) -> list:
+) -> tuple[list, int]:
     """Resolve the caller's Nextcloud client, run ``execute(scope)``, and
     verify-on-read — shared by the /api/v1 search endpoints.
 
@@ -131,7 +137,11 @@ async def _search_with_acl(
             (``None`` ⇒ self-only).
 
     Returns:
-        The result list (verified for provisioned callers).
+        ``(results, dropped)`` — the result list (verified for provisioned
+        callers) and the number of documents verify-on-read removed. ``dropped``
+        is always 0 on the unprovisioned path, where no verification runs; the
+        caller records it as a metric, so the two search surfaces report the
+        same ghost-record signal.
 
     Raises:
         ValueError: If the Nextcloud host is not configured.
@@ -141,21 +151,33 @@ async def _search_with_acl(
     if not nextcloud_host:
         raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
+    # Stage timings are recorded here rather than around this whole call so
+    # "retrieve" means embed+Qdrant and "verify" means the Nextcloud round-trips
+    # — timing the wrapper would conflate them into one unattributable number.
+    dropped = 0
     try:
         nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
     except NotProvisionedError:
         logger.debug("User %s not provisioned; self-only unverified search", user_id)
+        retrieve_start = anyio.current_time()
         results = await execute(None)
+        record_search_stage("http", "retrieve", anyio.current_time() - retrieve_start)
     else:
         async with nc_client:
             # Expand to owners who shared content with the caller (same as the
             # MCP tool path) so shared documents are searchable.
             scope = await list_accessible_scope(nc_client.sharing, user_id)
+            retrieve_start = anyio.current_time()
             results = await execute(scope)
+            record_search_stage(
+                "http", "retrieve", anyio.current_time() - retrieve_start
+            )
             # Verify-on-read (ADR-019): drop documents the caller can no longer
             # access (e.g. a revoked share). Eviction runs inline — this
             # Starlette route has no FastMCP lifespan task group.
-            results, _dropped = await verify_search_results(nc_client, results)
+            verify_start = anyio.current_time()
+            results, dropped = await verify_search_results(nc_client, results)
+            record_search_stage("http", "verify", anyio.current_time() - verify_start)
 
     # Safe to log titles now: provisioned callers passed verify-on-read;
     # non-provisioned ran self-only (unverified titles are never logged — see
@@ -168,7 +190,7 @@ async def _search_with_acl(
                 for r in results[:5]
             ),
         )
-    return results
+    return results, dropped
 
 
 async def unified_search(request: Request) -> JSONResponse:
@@ -229,6 +251,13 @@ async def unified_search(request: Request) -> JSONResponse:
             },
             status_code=401,
         )
+
+    # Bound before the try so the error-path metric can label the request even
+    # when parsing is what failed. Reading them out of locals() in the handler
+    # would silently mislabel as "unknown" the moment either name moves.
+    algorithm = "unknown"
+    granularity = GRANULARITY_CHUNK
+    fusion = "rrf"
 
     try:
         # Parse request body
@@ -402,7 +431,7 @@ async def unified_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        all_results = await _search_with_acl(request, user_id, _execute)
+        all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
         # Sort results by score (no deduplication - show all chunks)
         sorted_results = sorted(all_results, key=lambda r: r.score, reverse=True)
@@ -493,12 +522,42 @@ async def unified_search(request: Request) -> JSONResponse:
             except Exception as e:
                 logger.warning("Failed to compute PCA for unified search: %s", e)
 
+        record_search_request(
+            surface="http",
+            algorithm=f"bm25_hybrid_{fusion}" if algorithm != "semantic" else algorithm,
+            granularity=granularity,
+            reranked="false",
+            status="success",
+            results_returned=len(formatted_results),
+            verification_dropped=dropped_count,
+        )
+        # Usage metering parity with nc_semantic_search. This endpoint embeds a
+        # query — a real, billable provider cost — and until now recorded no
+        # usage event at all, so Astrolabe-driven search (most traffic) was
+        # invisible to the ledger while MCP-driven search was billed. Recording
+        # it here makes the two entrypoints consistent; expect a step change in
+        # tokens_embedded rather than a new charge.
+        await record_search_usage(
+            enabled=settings.usage_metering_enabled,
+            user_id=user_id,
+            fusion=fusion,
+            doc_types=doc_types if isinstance(doc_types, list) else None,
+            token_count=search_algo.query_token_count,
+        )
+
         return JSONResponse(response_data)
 
     except Exception as e:
         # exception() over error(): keeps the traceback and satisfies Sonar
         # python:S8572 (logging.error with the exception object in an except).
         logger.exception("Error in unified search")
+        record_search_request(
+            surface="http",
+            algorithm=algorithm,
+            granularity=granularity,
+            reranked="false",
+            status="error",
+        )
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -651,7 +710,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        all_results = await _search_with_acl(request, user_id, _execute)
+        all_results, _dropped = await _search_with_acl(request, user_id, _execute)
 
         # Format results for PHP client
         formatted_results = []

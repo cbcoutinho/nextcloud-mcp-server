@@ -3,8 +3,14 @@
 ``record_search_usage`` records the billable ``tokens_embedded`` event for a
 semantic search. These pin the value mapping (query token count), the flag-off
 no-op, the doc_types metadata bounding, and the best-effort failure path —
-covering the server-tool metering wiring without standing up the full
-``nc_semantic_search`` tool.
+covering the metering wiring without standing up the full ``nc_semantic_search``
+tool.
+
+The helper lives in ``nextcloud_mcp_server.usage.search`` because BOTH search
+entrypoints record through it (``nc_semantic_search`` and ``POST
+/api/v1/search``), and ``api/`` must not import from ``server/``. It is still
+re-exported as ``server.semantic.record_search_usage``, which is what these
+tests call — the monkeypatch target, however, must be the defining module.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nextcloud_mcp_server.server import semantic
+from nextcloud_mcp_server.usage import search as usage_search
 
 
 @pytest.fixture
@@ -20,7 +27,7 @@ def store_spy(monkeypatch):
     store = MagicMock()
     store.record_usage_event = AsyncMock()
     monkeypatch.setattr(
-        semantic.UsageEventStore, "shared", AsyncMock(return_value=store)
+        usage_search.UsageEventStore, "shared", AsyncMock(return_value=store)
     )
     return store
 
@@ -102,14 +109,14 @@ async def test_doc_types_metadata_is_bounded(store_spy):
         token_count=5,
     )
     recorded = store_spy.record_usage_event.await_args.kwargs["metadata"]["doc_types"]
-    assert recorded == many[: semantic._USAGE_METADATA_MAX_DOC_TYPES]
+    assert recorded == many[: usage_search._USAGE_METADATA_MAX_DOC_TYPES]
 
 
 @pytest.mark.unit
 async def test_store_failure_is_swallowed(monkeypatch):
     """A store-construction failure is logged, never raised into the search."""
     monkeypatch.setattr(
-        semantic.UsageEventStore,
+        usage_search.UsageEventStore,
         "shared",
         AsyncMock(side_effect=RuntimeError("boom")),
     )

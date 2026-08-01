@@ -678,6 +678,71 @@ document_download_truncated_total = Counter(
 )
 
 # =============================================================================
+# Astrolabe Search Metrics
+# =============================================================================
+#
+# Semantic search has TWO entrypoints — the ``nc_semantic_search`` MCP tool and
+# ``POST /api/v1/search`` (what Astrolabe calls) — and before these existed each
+# was visible only through its transport's generic counters
+# (``mcp_tool_calls_total`` / ``mcp_http_requests_total``). Neither reported what
+# search actually did: how many results came back, how many the ACL check
+# dropped, which granularity ran, or where the time went.
+#
+# Every metric here carries ``surface`` so the two entrypoints are directly
+# comparable on one dashboard, and all of them are recorded from
+# ``record_search_request`` / ``record_search_stage`` below so the surfaces
+# cannot drift apart as one of them gains a feature.
+
+search_requests_total = Counter(
+    "astrolabe_search_requests_total",
+    "Total semantic searches, by entrypoint and configuration",
+    # surface: mcp | http — algorithm: bm25_hybrid_rrf | bm25_hybrid_dbsf | semantic
+    # granularity: chunk | document — reranked: true | false | unavailable
+    # status: success | error
+    ["surface", "algorithm", "granularity", "reranked", "status"],
+)
+
+# Per-stage latency, so a slow search can be attributed without a trace.
+# stage: retrieve (embed + Qdrant) | rerank (cross-encoder) | verify (verify-on-read).
+# Buckets run to 30s because rerank over a deep pool is seconds, not milliseconds,
+# and verify-on-read is bounded by Nextcloud round-trips rather than by us.
+search_stage_duration_seconds = Histogram(
+    "astrolabe_search_stage_duration_seconds",
+    "Semantic search stage duration in seconds",
+    ["surface", "stage"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+# Results actually returned to the caller (post-verification, post-trim). A
+# distribution that collapses toward zero is the signal that the corpus, the
+# filters, or verify-on-read is starving callers — invisible in a request count.
+search_results_returned = Histogram(
+    "astrolabe_search_results_returned",
+    "Results returned to the caller per search",
+    ["surface"],
+    buckets=(0, 1, 2, 5, 10, 20, 50, 100),
+)
+
+# Documents dropped by verify-on-read (ADR-019 ghost records). Sustained
+# non-zero means the index is drifting from Nextcloud faster than webhooks
+# reconcile it, which degrades recall silently because the over-fetch absorbs it.
+search_verification_dropped_total = Counter(
+    "astrolabe_search_verification_dropped_total",
+    "Documents dropped by verify-on-read during search",
+    ["surface"],
+)
+
+# Documents scored by the cross-encoder. This is the honest cost unit for
+# reranking — there is no natural token unit — and the one to watch against GPU
+# saturation, since reranking and query-embedding contend for the same device.
+search_rerank_documents_total = Counter(
+    "astrolabe_search_rerank_documents_total",
+    "Documents scored by the reranker",
+    ["model", "outcome"],  # outcome: success | degraded
+)
+
+
+# =============================================================================
 # Database Metrics
 # =============================================================================
 
@@ -1301,6 +1366,71 @@ def record_embedding_tokens(provider: str, operation: str, tokens: int) -> None:
         embedding_tokens_total.labels(provider=provider, operation=operation).inc(
             tokens
         )
+
+
+def record_search_request(
+    *,
+    surface: str,
+    algorithm: str,
+    granularity: str,
+    reranked: str,
+    status: str,
+    results_returned: int | None = None,
+    verification_dropped: int = 0,
+) -> None:
+    """Record one semantic search from either entrypoint.
+
+    Both ``nc_semantic_search`` (surface ``"mcp"``) and ``POST /api/v1/search``
+    (surface ``"http"``) call this, so the two are comparable on one dashboard
+    and cannot drift as either gains a feature.
+
+    Args:
+        surface: ``"mcp"`` or ``"http"``.
+        algorithm: Search method label, e.g. ``bm25_hybrid_rrf`` or ``semantic``.
+        granularity: ``chunk`` or ``document``.
+        reranked: ``"true"`` when the reranker ordered the results,
+            ``"false"`` when it was not requested, ``"unavailable"`` when it was
+            requested but degraded to retrieval order. Kept as a string label
+            because those are three distinct states, not a boolean.
+        status: ``success`` or ``error``.
+        results_returned: Results handed to the caller. ``None`` on the error
+            path, where the count is not meaningful.
+        verification_dropped: Documents removed by verify-on-read.
+    """
+    search_requests_total.labels(
+        surface=surface,
+        algorithm=algorithm,
+        granularity=granularity,
+        reranked=reranked,
+        status=status,
+    ).inc()
+    if results_returned is not None:
+        search_results_returned.labels(surface=surface).observe(results_returned)
+    if verification_dropped > 0:
+        search_verification_dropped_total.labels(surface=surface).inc(
+            verification_dropped
+        )
+
+
+def record_search_stage(surface: str, stage: str, seconds: float) -> None:
+    """Record the duration of one search stage (retrieve | rerank | verify)."""
+    if seconds >= 0:
+        search_stage_duration_seconds.labels(surface=surface, stage=stage).observe(
+            seconds
+        )
+
+
+def record_rerank_documents(model: str, count: int, outcome: str) -> None:
+    """Record documents scored by the reranker.
+
+    Documents-scored is the honest cost unit: reranking has no natural token
+    unit, and this is what contends with query embedding for the GPU.
+    ``outcome`` is ``"success"`` or ``"degraded"`` — the degraded count records
+    what the reranker *would* have scored, so a reranker outage is visible as a
+    shift between outcomes rather than as a silent gap in the series.
+    """
+    if count > 0:
+        search_rerank_documents_total.labels(model=model, outcome=outcome).inc(count)
 
 
 def record_document_chunks(doc_type: str, count: int) -> None:
