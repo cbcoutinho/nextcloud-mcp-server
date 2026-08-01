@@ -2,6 +2,7 @@ import logging
 import time
 import uuid
 
+import anyio
 import pytest
 from httpx import HTTPStatusError
 
@@ -11,6 +12,35 @@ logger = logging.getLogger(__name__)
 
 # Mark all tests in this module as integration tests
 pytestmark = pytest.mark.integration
+
+
+async def _get_attachment_eventually(
+    nc_client: NextcloudClient,
+    *,
+    note_id: int,
+    filename: str,
+    category: str,
+    timeout: float = 30.0,
+):
+    """Fetch a note attachment, tolerating the server not having it there yet.
+
+    The Notes app relocates ``.attachments.<note_id>`` server-side after a
+    category change, so the directory is not guaranteed to exist the instant
+    the note PUT returns. A fixed sleep is a bet on how loaded the server is —
+    it lost once on a parallel (``-n 4``) run, 404ing on the new category path.
+    Poll instead, so the assertion tests the cleanup behaviour rather than the
+    box's timing.
+    """
+    deadline = anyio.current_time() + timeout
+    while True:
+        try:
+            return await nc_client.webdav.get_note_attachment(
+                note_id=note_id, filename=filename, category=category
+            )
+        except HTTPStatusError as e:
+            if e.response.status_code != 404 or anyio.current_time() >= deadline:
+                raise
+            await anyio.sleep(0.5)
 
 
 async def test_category_change_cleans_up_old_attachments_directory(
@@ -61,8 +91,11 @@ async def test_category_change_cleans_up_old_attachments_directory(
             "Verifying attachment retrieval from initial category '%s'",
             initial_category,
         )
-        retrieved_content1, _ = await nc_client.webdav.get_note_attachment(
-            note_id=note_id, filename=attachment_filename, category=initial_category
+        retrieved_content1, _ = await _get_attachment_eventually(
+            nc_client,
+            note_id=note_id,
+            filename=attachment_filename,
+            category=initial_category,
         )
         assert retrieved_content1 == attachment_content
         logger.info("Attachment retrieved successfully from initial category.")
@@ -98,8 +131,11 @@ async def test_category_change_cleans_up_old_attachments_directory(
         logger.info(
             "Verifying attachment retrieval from new category '%s'", new_category
         )
-        retrieved_content2, _ = await nc_client.webdav.get_note_attachment(
-            note_id=note_id, filename=attachment_filename, category=new_category
+        retrieved_content2, _ = await _get_attachment_eventually(
+            nc_client,
+            note_id=note_id,
+            filename=attachment_filename,
+            category=new_category,
         )
         assert retrieved_content2 == attachment_content
         logger.info("Attachment retrieved successfully from new category.")

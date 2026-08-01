@@ -390,7 +390,16 @@ class WebDAVClient(BaseNextcloudClient):
     async def cleanup_old_attachment_directory(
         self, note_id: int, old_category: str
     ) -> Dict[str, Any]:
-        """Clean up the attachment directory for a note in its old category location."""
+        """Remove the husk left at a note's old category after a category change.
+
+        Only removes the directory if it is EMPTY. The Notes app relocates
+        ``.attachments.<note_id>`` to the new category itself as part of the
+        category change, so by the time this runs the old path is normally
+        already gone. Anything still *in* it is live attachment data the server
+        has not moved yet — deleting that would destroy the user's attachments
+        rather than tidy up after them, and the directory the caller wants gone
+        would take the files with it.
+        """
         old_category_path_part = f"{old_category}/" if old_category else ""
         old_attachment_dir_path = (
             f"Notes/{old_category_path_part}.attachments.{note_id}/"
@@ -400,6 +409,36 @@ class WebDAVClient(BaseNextcloudClient):
             "Cleaning up old attachment directory: %s", old_attachment_dir_path
         )
         try:
+            try:
+                remaining = await self.list_directory(old_attachment_dir_path)
+            except HTTPStatusError as e:
+                if e.response.status_code != 404:
+                    raise
+                # Already gone (the normal case — the server moved it). Fall
+                # through to the DELETE, which no-ops on 404.
+                remaining = []
+
+            if remaining:
+                logger.warning(
+                    "Refusing to delete old attachment directory %s for note %s: "
+                    "it still holds %d item(s), so the server has not relocated "
+                    "them to the new category yet. Leaving it in place — deleting "
+                    "it here would destroy those attachments.",
+                    old_attachment_dir_path,
+                    note_id,
+                    len(remaining),
+                )
+                # 412: we refused because the "directory is empty" precondition
+                # did not hold. Keeps the {"status_code": int} shape callers see.
+                return {"status_code": 412, "deleted": False}
+
+            # ponytail: probe-then-delete, not an atomic conditional delete —
+            # a write into this old path between the two calls would still be
+            # removed. WebDAV has no "delete only if empty" (DELETE on a
+            # collection is always infinite-depth), so closing it means an
+            # If-Match on the collection etag. Not worth it for a window that
+            # needs someone writing into the *previous* category of a note that
+            # just moved; upgrade if that ever shows up in practice.
             delete_result = await self.delete_resource(path=old_attachment_dir_path)
             logger.debug("Cleanup result: %s", delete_result)
             return delete_result
@@ -670,7 +709,12 @@ class WebDAVClient(BaseNextcloudClient):
             return items
 
         except HTTPStatusError as e:
-            logger.error("HTTP error listing directory '%s': %s", webdav_path, e)
+            # A missing directory is an expected outcome for callers that probe
+            # before acting (see cleanup_old_attachment_directory), not a fault.
+            if e.response.status_code == 404:
+                logger.debug("Directory '%s' not found", webdav_path)
+            else:
+                logger.error("HTTP error listing directory '%s': %s", webdav_path, e)
             raise e
         except Exception as e:
             logger.error("Unexpected error listing directory '%s': %s", webdav_path, e)

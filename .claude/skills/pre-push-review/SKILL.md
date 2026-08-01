@@ -86,7 +86,7 @@ run concurrently:
 uv run ruff check                                                    # lint
 uv run ruff format --check                                           # formatting
 uv run ty check -- nextcloud_mcp_server                              # types
-uv run pytest tests/unit/ -x --no-header -q                          # unit tests
+uv run pytest -m unit -n auto -x --no-header -q                      # unit tests (marker, not dir)
 ```
 
 If the diff touches `nextcloud_mcp_server/server/` or `tests/server/`, also run:

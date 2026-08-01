@@ -37,7 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   uv run ruff check
   uv run ruff format
   uv run ty check -- nextcloud_mcp_server
-  uv run pytest tests/unit/ -x -q
+  uv run pytest -m unit -n auto -q
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 
@@ -233,7 +233,11 @@ clients live under `providers/` (`bm25.py`, `gateway.py`, `gateway_batch.py`).
 ### Testing
 ```bash
 # Fast feedback (recommended)
-uv run pytest tests/unit/ -v                    # Unit tests (~5s)
+# Select unit tests by MARKER, not by directory: ~250 unit-marked tests live
+# outside tests/unit/ (tests/client/, tests/test_models.py, ...), so
+# `pytest tests/unit/` silently skips them.
+uv run pytest -m unit -q                        # Unit tests (~5min)
+uv run pytest -m unit -n auto -q                # Same, across all cores (~2min)
 uv run pytest -m smoke -v                       # Smoke tests (~30-60s)
 
 # Integration tests
