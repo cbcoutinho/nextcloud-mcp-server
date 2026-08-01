@@ -80,7 +80,6 @@ data "aws_iam_policy_document" "task_efs" {
       variable = "elasticfilesystem:AccessPointArn"
       values = [
         aws_efs_access_point.data.arn,
-        aws_efs_access_point.oauth.arn,
       ]
     }
   }

@@ -108,18 +108,6 @@ resource "aws_ecs_task_definition" "this" {
     }
   }
 
-  volume {
-    name = "oauth"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.this.id
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.oauth.id
-        iam             = "ENABLED"
-      }
-    }
-  }
-
   container_definitions = jsonencode([
     {
       name      = local.container_name
@@ -144,7 +132,6 @@ resource "aws_ecs_task_definition" "this" {
 
       mountPoints = [
         { sourceVolume = "data", containerPath = "/app/data", readOnly = false },
-        { sourceVolume = "oauth", containerPath = "/app/.oauth", readOnly = false },
       ]
 
       healthCheck = {

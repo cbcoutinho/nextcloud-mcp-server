@@ -77,28 +77,6 @@ resource "aws_efs_access_point" "data" {
   }
 }
 
-resource "aws_efs_access_point" "oauth" {
-  file_system_id = aws_efs_file_system.this.id
-
-  posix_user {
-    uid = 0
-    gid = 0
-  }
-
-  root_directory {
-    path = "/oauth"
-    creation_info {
-      owner_uid   = 0
-      owner_gid   = 0
-      permissions = "0755"
-    }
-  }
-
-  tags = {
-    Name = "${var.name}-oauth"
-  }
-}
-
 # Qdrant's image runs as root (debian-slim base, no USER directive), matching
 # the other access points above. Mounted at /qdrant/storage which is qdrant's
 # default storage_path.
