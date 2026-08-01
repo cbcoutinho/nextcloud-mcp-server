@@ -51,8 +51,8 @@ async def list_index_window(
             concretely so a signature change in ``MailClient.list_messages``
             fails type-checking here rather than silently drifting the window.
         mailbox_id: Mailbox database ID to list.
-        index_filter: Optional Mail filter string (see
-            :func:`mail_index_filter`); ``None`` lists every message.
+        index_filter: Optional Mail search-filter string (e.g. ``tags:7``);
+            ``None`` lists every message.
 
     Returns:
         Message summary dicts, at most ``MAIL_SCAN_MAX_PER_MAILBOX``.
