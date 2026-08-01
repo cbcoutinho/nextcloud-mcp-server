@@ -430,3 +430,48 @@ async def test_filter_resolution_failure_aborts_before_the_deletion_pass(mocker)
 
     assert stream.tasks == []
     nc_client.mail.list_messages.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected_level", "expected_fragment"),
+    [
+        # Unfiltered: a big mailbox is routine, and the cap is a documented
+        # limitation rather than something the user can act on.
+        (None, "INFO", "contains more than"),
+        # Filtered: the user deliberately tagged more than fits, and messages
+        # they asked for are being dropped -- actionable, so it escalates.
+        ("index-me", "WARNING", "matching tags:7"),
+    ],
+)
+async def test_cap_log_level_depends_on_whether_a_filter_is_set(
+    mocker, caplog, tag, expected_level, expected_fragment
+):
+    """The cap message escalates to a warning only when it hides tagged mail."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(return_value="tags:7" if tag else None),
+    )
+    # A full window is what trips the cap branch.
+    nc_client = _single_message_client(
+        [
+            {"databaseId": i, "dateInt": 1700000000}
+            for i in range(scanner_module.MAIL_SCAN_MAX_PER_MAILBOX)
+        ]
+    )
+
+    stream = _CollectingStream()
+    with caplog.at_level("INFO", logger=scanner_module.logger.name):
+        await scan_mail_messages(
+            user_id="alice",
+            send_stream=stream,
+            nc_client=nc_client,
+            initial_sync=False,
+            scan_id=1,
+        )
+
+    cap_records = [r for r in caplog.records if "are indexed" in r.getMessage()]
+    assert len(cap_records) == 1, "expected exactly one cap message"
+    assert cap_records[0].levelname == expected_level
+    assert expected_fragment in cap_records[0].getMessage()
