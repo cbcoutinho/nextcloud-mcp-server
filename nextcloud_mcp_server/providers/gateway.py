@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import anyio
 import httpx
@@ -235,3 +236,35 @@ class GatewayProvider(OpenAIProvider):
     ) -> tuple[list[list[float]], int]:
         await self._ensure_bearer()
         return await super().embed_batch_with_usage(texts)
+
+
+def build_gateway_token_provider(settings: Any) -> GatewayTokenProvider | None:
+    """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
+    client-id is configured (unauthenticated gateway).
+
+    Lives beside ``GatewayTokenProvider`` because every gateway sub-client needs
+    it — sync OCR, batch OCR, and rerank — so the all-or-nothing M2M-triple
+    validation has exactly one home. ``document_processors.ocr`` re-exports it
+    under its historical private name.
+    """
+    if not settings.embedding_gateway_client_id:
+        return None
+
+    # Explicit (not assert -- assert is stripped under `python -O`): the M2M
+    # triple is all-or-nothing.
+    if not settings.embedding_gateway_token_url:
+        raise ValueError(
+            "EMBEDDING_GATEWAY_TOKEN_URL is required when "
+            "EMBEDDING_GATEWAY_CLIENT_ID is set"
+        )
+    if not settings.embedding_gateway_client_secret:
+        raise ValueError(
+            "EMBEDDING_GATEWAY_CLIENT_SECRET is required when "
+            "EMBEDDING_GATEWAY_CLIENT_ID is set"
+        )
+    return GatewayTokenProvider(
+        token_url=settings.embedding_gateway_token_url,
+        client_id=settings.embedding_gateway_client_id,
+        client_secret=settings.embedding_gateway_client_secret,
+        scope=settings.embedding_gateway_scope,
+    )

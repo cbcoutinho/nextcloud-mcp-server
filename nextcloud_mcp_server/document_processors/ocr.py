@@ -395,33 +395,18 @@ class _DoclingServeBackend(_OcrBackend):
 
 
 def _build_gateway_token_provider(settings: Settings) -> Any:
-    """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
-    client-id is configured (unauthenticated gateway). Shared by the sync OCR
-    backend and the batch client so the M2M-triple validation lives in one place.
-    """
-    if not settings.embedding_gateway_client_id:
-        return None
-    # Lazy import avoids a document_processors -> providers cycle at load.
-    from ..providers.gateway import GatewayTokenProvider  # noqa: PLC0415
+    """Thin alias kept for this module's existing callers.
 
-    # Explicit (not assert -- assert is stripped under `python -O`): the M2M
-    # triple is all-or-nothing.
-    if not settings.embedding_gateway_token_url:
-        raise ValueError(
-            "EMBEDDING_GATEWAY_TOKEN_URL is required when "
-            "EMBEDDING_GATEWAY_CLIENT_ID is set"
-        )
-    if not settings.embedding_gateway_client_secret:
-        raise ValueError(
-            "EMBEDDING_GATEWAY_CLIENT_SECRET is required when "
-            "EMBEDDING_GATEWAY_CLIENT_ID is set"
-        )
-    return GatewayTokenProvider(
-        token_url=settings.embedding_gateway_token_url,
-        client_id=settings.embedding_gateway_client_id,
-        client_secret=settings.embedding_gateway_client_secret,
-        scope=settings.embedding_gateway_scope,
-    )
+    The implementation moved to ``providers.gateway`` when rerank became a third
+    gateway sub-client needing it, so the all-or-nothing M2M-triple validation
+    still lives in exactly one place. Still a function with a lazy import rather
+    than a module-level alias, because a top-level ``providers`` import here
+    would reintroduce the document_processors -> providers cycle this module
+    deliberately avoids (see the import note at the top of the file).
+    """
+    from ..providers.gateway import build_gateway_token_provider  # noqa: PLC0415
+
+    return build_gateway_token_provider(settings)
 
 
 def build_gateway_batch_client(

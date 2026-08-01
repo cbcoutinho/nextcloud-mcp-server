@@ -193,6 +193,21 @@ class SearchResult:
     title: str
     excerpt: str
     score: float
+    # Cross-encoder relevance, when the optional rerank stage ran; None
+    # otherwise. Deliberately a SEPARATE field rather than an overwrite of
+    # ``score``:
+    #   * ``score_threshold`` is applied inside Qdrant against the retrieval
+    #     score, so overwriting would leave the filter and the returned value
+    #     referring to different quantities;
+    #   * ``score`` is documented above as an ordering artifact that is not
+    #     calibrated, while a cross-encoder score is — conditionally changing
+    #     which of those a field holds, based on a server flag, would leave no
+    #     consumer able to interpret it;
+    #   * ``__post_init__`` rejects negatives, and clamping a negative
+    #     cross-encoder score to 0.0 would collapse the tail into a tie and
+    #     silently leave it in retrieval order behind a reranked head.
+    # Consumers that want reranked order sort on this when present.
+    rerank_score: float | None = None
     metadata: dict[str, Any] | None = None
     chunk_start_offset: int | None = None
     chunk_end_offset: int | None = None
