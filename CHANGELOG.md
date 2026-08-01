@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.159.1 (2026-08-01)
+
+### Fix
+
+- **notes**: never delete a non-empty old attachment directory
+
+### Perf
+
+- **tests**: parallelise the unit suite and the single-user integration lane
+
 ## v0.159.0 (2026-08-01)
 
 ### BREAKING CHANGE
