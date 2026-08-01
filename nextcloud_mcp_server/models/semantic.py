@@ -37,6 +37,18 @@ class SemanticSearchResult(BaseModel):
             "by rank via `limit` rather than by an absolute score."
         )
     )
+    rerank_score: float | None = Field(
+        default=None,
+        description=(
+            "Cross-encoder relevance, present only when the optional rerank "
+            "stage ran (see the response's `reranked` flag). Unlike `score` "
+            "this IS calibrated — it is a direct query/document relevance "
+            "estimate rather than a rank artifact — so it is comparable across "
+            "queries and is what the results are ordered by when present. "
+            "`score` is left untouched so `score_threshold`, which filters on "
+            "the retrieval score, keeps referring to the same quantity."
+        ),
+    )
     chunk_index: int = Field(description="Index of matching chunk in document")
     total_chunks: int = Field(description="Total number of chunks in document")
     chunk_start_offset: int | None = Field(
@@ -102,6 +114,25 @@ class SemanticSearchResponse(BaseResponse):
             "(each row is a distinct document, represented by its "
             "best-matching chunk). Echoed so a stored or forwarded response "
             "is self-describing without its originating request."
+        ),
+    )
+    reranked: bool = Field(
+        default=False,
+        description=(
+            "Whether a cross-encoder actually reordered these results. False "
+            "when reranking was not requested AND when it was requested but "
+            "degraded to retrieval order (reranker unavailable, timed out, or "
+            "in a failure cooldown) — reranking never fails a search, so this "
+            "flag is the only way to tell the two orderings apart. When true, "
+            "results carry `rerank_score` and are ordered by it."
+        ),
+    )
+    rerank_model: str | None = Field(
+        default=None,
+        description=(
+            "The model that produced the ordering, when `reranked` is true. "
+            "Present so a stored response records which reranker ranked it — "
+            "scores from different cross-encoders are not comparable."
         ),
     )
     verified_chunk_count: int = Field(

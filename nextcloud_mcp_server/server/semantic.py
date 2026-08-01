@@ -38,6 +38,11 @@ from nextcloud_mcp_server.search.bm25_hybrid import (
     search_method_label,
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.rerank import (
+    effective_pool_size,
+    rerank_available,
+    rerank_results,
+)
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
@@ -111,6 +116,28 @@ def configure_semantic_tools(mcp: FastMCP):
                 ),
             ),
         ] = "chunk",
+        rerank: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Re-score the retrieved candidates with a cross-encoder "
+                    "before returning them. This is the single largest "
+                    "available improvement to result ordering — it reads each "
+                    "candidate against the query directly, rather than relying "
+                    "on the rank fusion that retrieval produced — and it is "
+                    "most worth using for questions where the right answer may "
+                    "not be the closest lexical or semantic match. It costs "
+                    "roughly a second of extra latency, so prefer it for "
+                    "precision-sensitive questions over quick lookups. "
+                    "Requires the server to have reranking configured; asking "
+                    "for it on a server without it is an error rather than a "
+                    "silent downgrade. The response's `reranked` field reports "
+                    "whether it actually applied — reranking never fails a "
+                    "search, so a reranker outage degrades to retrieval order "
+                    "with `reranked=false`."
+                ),
+            ),
+        ] = False,
         include_context: bool = False,
         context_chars: Annotated[int, Field(ge=0)] = 300,
         modified_after: Annotated[
@@ -284,6 +311,25 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
             )
 
+        # Capability gate. Rejecting is deliberate: silently returning
+        # unreranked results to a caller that explicitly asked for reranking
+        # would be indistinguishable from a ranking bug. Servers advertise the
+        # capability on GET /api/v1/status so callers can check rather than
+        # probe. (A reranker that is configured but momentarily unavailable is
+        # a different case — that degrades, and the response says so.)
+        if rerank and not rerank_available(settings):
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=(
+                        "Reranking is not configured on this server. Set "
+                        "SEARCH_RERANK_ENABLED=true (requires "
+                        "EMBEDDING_GATEWAY_URL), or omit rerank to use "
+                        "retrieval ordering."
+                    ),
+                )
+            )
+
         # Merge the legacy single path_prefix and the path_prefixes list into one
         # cleaned list, dropping blank/whitespace entries so an empty UI field
         # doesn't filter out every result (ADR-027 Phase 2).
@@ -376,6 +422,21 @@ def configure_semantic_tools(mcp: FastMCP):
                 score_threshold=score_threshold, fusion=fusion
             )
 
+            # Reranking can only reorder what retrieval supplied, so it needs a
+            # deeper pool than the verification over-fetch. Never smaller than
+            # that over-fetch, and clamped for grouped search — see
+            # effective_pool_size.
+            overfetch = limit * 2
+            fetch_limit = (
+                effective_pool_size(
+                    settings,
+                    floor=overfetch,
+                    grouped=granularity == "document",
+                )
+                if rerank
+                else overfetch
+            )
+
             retrieve_start = anyio.current_time()
 
             # Execute search across requested document types
@@ -401,7 +462,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit * 2,
+                    limit=fetch_limit,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                     accessible_owners=accessible_owners,
@@ -432,7 +493,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,
+                        limit=fetch_limit,
                         doc_type=dtype,
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
@@ -451,7 +512,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 # flow into verification, multiplying the Nextcloud round-trip
                 # cost by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
-                all_results = all_results[: limit * 2]
+                all_results = all_results[:fetch_limit]
 
             # Covers query embedding + Qdrant across every branch above, so the
             # per-doc_type loop's higher cost is visible rather than averaged
@@ -459,6 +520,24 @@ def configure_semantic_tools(mcp: FastMCP):
             record_search_stage(
                 "mcp", "retrieve", anyio.current_time() - retrieve_start
             )
+
+            # Rerank the merged pool BEFORE verification, and before trimming to
+            # the verification budget. After the merge so one cross-encoder pass
+            # covers every doc_type — which also makes the merge meaningful,
+            # since fused scores from separate per-type queries were computed
+            # against different candidate populations and are not really
+            # comparable, whereas one reranker's scores are.
+            reranked = False
+            if rerank:
+                all_results, reranked = await rerank_results(
+                    all_results, query, settings=settings, surface="mcp"
+                )
+                metric_reranked = "true" if reranked else "unavailable"
+                # Back down to the verification budget so verify-on-read still
+                # sees the same number of Nextcloud round-trips as an unreranked
+                # search — the deep pool exists for the reranker, not for
+                # verification.
+                all_results = all_results[: limit * 2]
 
             # ADR-019: Verify-on-read. The vector index is a recall layer;
             # Nextcloud is the source of truth for access. Filter out ghost
@@ -537,6 +616,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
+                        rerank_score=r.rerank_score,
                         category=r.metadata.get("category", "") if r.metadata else "",
                         excerpt=r.excerpt,
                         score=r.score,
@@ -705,6 +785,8 @@ def configure_semantic_tools(mcp: FastMCP):
                 total_found=len(results),
                 search_method=search_method,
                 granularity=granularity,
+                reranked=reranked,
+                rerank_model=(settings.search_rerank_model if reranked else None),
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )

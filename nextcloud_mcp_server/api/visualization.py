@@ -54,6 +54,11 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.rerank import (
+    effective_pool_size,
+    rerank_available,
+    rerank_results,
+)
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import (
@@ -350,6 +355,16 @@ async def unified_search(request: Request) -> JSONResponse:
                 },
                 status_code=400,
             )
+        # Optional cross-encoder rerank. Rejected rather than coerced for the
+        # same reason as granularity: a caller that asked for reranked ordering
+        # and silently got retrieval ordering cannot tell the difference from a
+        # ranking regression.
+        rerank = body.get("rerank", False)
+        if not isinstance(rerank, bool):
+            return JSONResponse(
+                {"error": f"Invalid rerank {rerank!r}. Must be a boolean"},
+                status_code=400,
+            )
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -400,8 +415,37 @@ async def unified_search(request: Request) -> JSONResponse:
                 status_code=422,
             )
 
+        # Capability gate, mirroring the shape above. 422 rather than 400: the
+        # request is well-formed, this deployment just cannot serve it. Callers
+        # discover the capability from GET /api/v1/status rather than probing.
+        if rerank and not rerank_available(settings):
+            return JSONResponse(
+                {
+                    "error": "rerank_not_configured",
+                    "message": (
+                        "Reranking is not configured on this server. Check "
+                        "`rerank_available` on /api/v1/status before requesting it."
+                    ),
+                },
+                status_code=422,
+            )
+
         # Request extra results to handle offset
         search_limit = limit + offset
+        reranked = False
+        # Reranking needs a deeper candidate pool than pagination alone; it is
+        # offset-INDEPENDENT so page 2 reranks the same pool as page 1, which is
+        # what keeps items from migrating across page boundaries. Pagination
+        # beyond the pool therefore returns nothing, consistent with total_found.
+        rerank_pool = (
+            effective_pool_size(
+                settings,
+                floor=search_limit,
+                grouped=granularity == GRANULARITY_DOCUMENT,
+            )
+            if rerank
+            else search_limit
+        )
 
         async def _execute(scope: AccessibleScope | None) -> list:
             """Run the search across requested doc_types with the given access
@@ -418,7 +462,7 @@ async def unified_search(request: Request) -> JSONResponse:
                             await search_algo.search(
                                 query=query,
                                 user_id=user_id,
-                                limit=search_limit,
+                                limit=rerank_pool,
                                 doc_type=doc_type,
                                 accessible_owners=owners,
                                 shared_root_ids=roots,
@@ -436,12 +480,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 # drops before pagination, matching the nc_semantic_search
                 # pattern.
                 results.sort(key=lambda r: r.score, reverse=True)
-                results = results[: search_limit * 2]
+                results = results[: max(search_limit * 2, rerank_pool)]
             else:
                 results = await search_algo.search(
                     query=query,
                     user_id=user_id,
-                    limit=search_limit,
+                    limit=rerank_pool,
                     accessible_owners=owners,
                     shared_root_ids=roots,
                     granularity=granularity,
@@ -449,15 +493,40 @@ async def unified_search(request: Request) -> JSONResponse:
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
                 )
+            # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
+            # _search_with_acl, and after the per-doc_type merge so one pass
+            # covers every type.
+            nonlocal reranked
+            if rerank:
+                results, reranked = await rerank_results(
+                    results, query, settings=settings, surface="http"
+                )
             return results
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
-        # Sort results by score (no deduplication - show all chunks)
-        sorted_results = sorted(all_results, key=lambda r: r.score, reverse=True)
+        # Sort by rerank score when present, retrieval score otherwise. Without
+        # the first key this re-sort would silently undo the rerank ordering,
+        # since .score deliberately still holds the retrieval score.
+        sorted_results = sorted(
+            all_results,
+            key=lambda r: r.rerank_score if r.rerank_score is not None else r.score,
+            reverse=True,
+        )
 
-        # Calculate total and apply pagination
+        # Calculate total and apply pagination.
+        #
+        # The rerank pool must NOT leak into total_found. Without reranking this
+        # counts a pool sized by `limit + offset`; a rerank pool is far deeper,
+        # so reporting its length would multiply the page count a client derives
+        # from this field — reshaping Astrolabe's pager with no client change
+        # and no version signal, which is exactly the kind of silent
+        # cross-service break the repo's version-gating rule exists to prevent.
+        # Cap it back to the budget an unreranked request would have used, so
+        # turning reranking on changes result ORDER and nothing else.
         total_found = len(sorted_results)
+        if rerank:
+            total_found = min(total_found, search_limit)
         paginated_results = sorted_results[offset : offset + limit]
 
         # Format results for Unified Search
@@ -474,6 +543,11 @@ async def unified_search(request: Request) -> JSONResponse:
                 "title": result.title,
                 "score": result.score,
             }
+            # Additive, and only when reranking ran. `score` keeps the retrieval
+            # value so `score_threshold` (applied against it inside Qdrant)
+            # still refers to the same quantity a caller filters on.
+            if result.rerank_score is not None:
+                result_data["rerank_score"] = result.rerank_score
 
             # Include excerpt/chunk if requested (full content, no truncation)
             if include_chunks and result.excerpt:
@@ -521,6 +595,10 @@ async def unified_search(request: Request) -> JSONResponse:
             "results": formatted_results,
             "total_found": total_found,
             "algorithm_used": algorithm,
+            "granularity": granularity,
+            # False both when not requested and when requested-but-degraded, so
+            # a caller can always tell which ordering it received.
+            "reranked": reranked,
         }
 
         # Optional PCA coordinates. PCA plots the result chunks around the query's
@@ -546,7 +624,7 @@ async def unified_search(request: Request) -> JSONResponse:
             surface="http",
             algorithm=_search_algorithm_label(algorithm, fusion),
             granularity=granularity,
-            reranked="false",
+            reranked=("true" if reranked else "unavailable" if rerank else "false"),
             status="success",
             results_returned=len(formatted_results),
             verification_dropped=dropped_count,
