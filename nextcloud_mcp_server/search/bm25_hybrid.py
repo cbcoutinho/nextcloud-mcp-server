@@ -243,7 +243,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation(
             "search.qdrant_query",
             attributes={
-                "query.limit": limit * 2,
+                # Must track what is actually requested below: the grouped
+                # branch asks for exactly ``limit`` groups while the chunk
+                # branch over-fetches 2x. A single hardcoded value here would
+                # misreport one of them to anyone debugging limit/prefetch
+                # behaviour from traces — which is precisely the kind of
+                # investigation this span exists for.
+                "query.limit": limit if grouped else limit * 2,
                 "query.fusion": self.fusion_name,
                 "query.granularity": granularity,
             },
