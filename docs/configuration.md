@@ -1462,6 +1462,20 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
 
+### Misspelled variables
+
+Only the variables documented here are read; anything else in the environment is
+ignored. To keep a typo from failing silently, startup warns when an unknown
+variable closely resembles a real one:
+
+```
+WARNING  VECTOR_SYNC_ENABLE is not a recognized setting and was ignored;
+         did you mean VECTOR_SYNC_ENABLED?
+```
+
+It is only a warning — an unrecognized variable never stops the server — so check
+the logs after changing configuration if a setting does not seem to apply.
+
 ---
 
 ## CLI Configuration

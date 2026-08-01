@@ -36,7 +36,6 @@ def setup_tracing(
     service_name: str = "nextcloud-mcp-server",
     otlp_endpoint: str | None = None,
     otlp_verify_ssl: bool | None = None,
-    sampling_rate: float = 1.0,
 ) -> Tracer:
     """
     Initialize OpenTelemetry tracing with OTLP exporter.
@@ -51,7 +50,6 @@ def setup_tracing(
                       is insecure. True forces TLS, False forces plaintext —
                       needed only for a scheme-less endpoint, or plaintext
                       behind a TLS-terminating sidecar.
-        sampling_rate: Sampling rate (0.0-1.0). Default 1.0 (100% sampling)
 
     Returns:
         Tracer instance for creating custom spans
@@ -67,7 +65,9 @@ def setup_tracing(
         }
     )
 
-    # Create tracer provider
+    # Create tracer provider. Sampling is left to the SDK, which reads
+    # OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG from the environment
+    # itself when no sampler is passed.
     provider = TracerProvider(resource=resource)
 
     # Configure OTLP exporter if endpoint is provided

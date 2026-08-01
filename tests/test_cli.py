@@ -348,7 +348,6 @@ def _fake_settings(**overrides):
         otel_exporter_otlp_endpoint=None,
         otel_service_name="nextcloud-mcp-server",
         otel_exporter_verify_ssl=False,
-        otel_traces_sampler_arg=1.0,
         pyroscope_enabled=False,
         pyroscope_server_address=None,
     )
@@ -413,7 +412,6 @@ def test_init_worker_observability_sets_up_tracing_when_endpoint(
     _init_worker_observability(
         _fake_settings(
             otel_exporter_otlp_endpoint="https://otel:4317",
-            otel_traces_sampler_arg=0.5,
         )
     )
 
@@ -421,7 +419,6 @@ def test_init_worker_observability_sets_up_tracing_when_endpoint(
         "service_name": "nextcloud-mcp-server",
         "otlp_endpoint": "https://otel:4317",
         "otlp_verify_ssl": False,
-        "sampling_rate": 0.5,
     }
 
 

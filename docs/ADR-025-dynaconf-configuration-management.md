@@ -177,8 +177,6 @@ custom_processor_timeout = 60
 metrics_enabled = true
 metrics_port = 9090
 otel_service_name = "nextcloud-mcp-server"
-otel_traces_sampler = "always_on"
-otel_traces_sampler_arg = 1.0
 otel_exporter_verify_ssl = false
 log_format = "text"
 log_level = "INFO"
@@ -220,7 +218,6 @@ token_exchange_cache_ttl = 300
 [single_user_basic]
 # nextcloud_username = ""
 # nextcloud_password = ""
-# nextcloud_app_password = ""
 
 [keycloak]
 # nextcloud_oidc_client_id = ""

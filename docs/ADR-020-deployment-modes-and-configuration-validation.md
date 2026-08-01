@@ -1,6 +1,6 @@
 # ADR-020: Deployment Modes and Configuration Validation
 
-**Status:** Accepted — partly superseded by ADR-022 (`oauth_single_audience` renamed to `login_flow`; the `ENABLE_MULTI_USER_BASIC_AUTH` and `ENABLE_LOGIN_FLOW` env-var aliases were removed in favour of `MCP_DEPLOYMENT_MODE` as the single source of truth)
+**Status:** Accepted — the deployment-mode model is current and lives in `config_validators.MODE_REQUIREMENTS`. Partly superseded: by ADR-022 for the mode list (`oauth_single_audience` renamed to `login_flow`; the `ENABLE_MULTI_USER_BASIC_AUTH` and `ENABLE_LOGIN_FLOW` env-var aliases were removed in favour of `MCP_DEPLOYMENT_MODE` as the single source of truth), and by ADR-025 for configuration *loading* (dynaconf, not `os.getenv`). Unknown or misspelled env vars are no longer dropped in silence — `config._warn_unknown_env_vars` warns with a did-you-mean at startup.
 **Date:** 2025-12-20
 **Deciders:** Development Team
 **Related:** ADR-002 (Vector Sync), ADR-004 (Progressive Consent), ADR-019 (Multi-user BasicAuth), ADR-022 (Deployment Mode Consolidation)

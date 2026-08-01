@@ -39,8 +39,8 @@ For Kubernetes deployments with Helm, see the [Helm chart repository](https://gi
 | `METRICS_PORT` | `9090` | Port for metrics endpoint |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | - | OTLP gRPC endpoint (e.g., `http://otel-collector:4317`). Tracing is enabled when this is set. |
 | `OTEL_SERVICE_NAME` | `nextcloud-mcp-server` | Service name in traces |
-| `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampling strategy |
-| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling rate (0.0-1.0) |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Trace sampling strategy. Read directly from the environment by the OpenTelemetry SDK, not through our config — so it is env-var only (no `settings.toml` equivalent). |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling rate (0.0-1.0), applied only by the `traceidratio` samplers. Also read directly by the SDK. |
 | `LOG_FORMAT` | `json` | Log format (`json` or `text`) |
 | `LOG_LEVEL` | `INFO` | Minimum log level |
 | `LOG_INCLUDE_TRACE_CONTEXT` | `true` | Include trace IDs in logs |
