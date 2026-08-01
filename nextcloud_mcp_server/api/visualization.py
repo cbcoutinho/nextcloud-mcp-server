@@ -543,6 +543,7 @@ async def unified_search(request: Request) -> JSONResponse:
             fusion=fusion,
             doc_types=doc_types if isinstance(doc_types, list) else None,
             token_count=search_algo.query_token_count,
+            surface="http",
         )
 
         return JSONResponse(response_data)
