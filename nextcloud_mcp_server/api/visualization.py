@@ -620,11 +620,21 @@ async def unified_search(request: Request) -> JSONResponse:
             except Exception as e:
                 logger.warning("Failed to compute PCA for unified search: %s", e)
 
+        # Three distinct states, not a boolean: never asked for, asked for and
+        # applied, asked for and degraded. Collapsing the last two would hide a
+        # reranker outage behind the same label as "not requested".
+        if not rerank:
+            reranked_label = "false"
+        elif reranked:
+            reranked_label = "true"
+        else:
+            reranked_label = "unavailable"
+
         record_search_request(
             surface="http",
             algorithm=_search_algorithm_label(algorithm, fusion),
             granularity=granularity,
-            reranked=("true" if reranked else "unavailable" if rerank else "false"),
+            reranked=reranked_label,
             status="success",
             results_returned=len(formatted_results),
             verification_dropped=dropped_count,

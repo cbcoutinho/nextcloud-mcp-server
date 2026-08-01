@@ -34,6 +34,7 @@ from nextcloud_mcp_server.search.access_filter import (
     resolve_prefix_folder_ids,
 )
 from nextcloud_mcp_server.search.bm25_hybrid import (
+    GRANULARITY_DOCUMENT,
     BM25HybridSearchAlgorithm,
     search_method_label,
 )
@@ -86,7 +87,12 @@ def configure_semantic_tools(mcp: FastMCP):
     )
     @require_scopes("semantic.read")
     @instrument_tool
-    async def nc_semantic_search(
+    async def nc_semantic_search(  # NOSONAR(S107)
+        # S107 (too many parameters) is suppressed deliberately: for an MCP tool
+        # the parameter list IS the wire schema that FastMCP publishes to
+        # clients. Grouping these into a settings object to satisfy the rule
+        # would change the tool's advertised interface and break every caller,
+        # so the smell is inherent to the surface rather than to this function.
         query: str,
         ctx: Context,
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
@@ -431,7 +437,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 effective_pool_size(
                     settings,
                     floor=overfetch,
-                    grouped=granularity == "document",
+                    grouped=granularity == GRANULARITY_DOCUMENT,
                 )
                 if rerank
                 else overfetch

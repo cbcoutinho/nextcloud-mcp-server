@@ -195,3 +195,24 @@ def test_rerank_score_absent_when_not_reranked():
 
     assert resp.status_code == 200
     assert all("rerank_score" not in r for r in resp.json()["results"])
+
+
+def test_response_echoes_granularity():
+    """The response is self-describing without its originating request.
+
+    Mirrors `SemanticSearchResponse.granularity` on the MCP surface — a stored
+    or forwarded result set should say which granularity produced it, since
+    chunk and document rows mean different things (`limit` counts passages vs
+    documents) and are otherwise indistinguishable.
+    """
+    resp, _, _ = _post({"query": "q", "granularity": "document", "rerank": False})
+
+    assert resp.status_code == 200
+    assert resp.json()["granularity"] == "document"
+
+
+def test_response_granularity_defaults_to_chunk():
+    resp, _, _ = _post({"query": "q"})
+
+    assert resp.status_code == 200
+    assert resp.json()["granularity"] == "chunk"
