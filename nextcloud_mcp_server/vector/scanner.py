@@ -1957,6 +1957,11 @@ async def scan_mail_messages(
     accounts = await nc_client.mail.list_accounts()
     nextcloud_message_ids: set[str] = set()
     message_count = 0
+    # Set when any account/mailbox listing fails. Such a listing contributes no
+    # ids to ``nextcloud_message_ids``, so its already-indexed messages look
+    # deleted to the pass below — the same false-eviction the zero-message guard
+    # prevents, just scoped to a subset of mailboxes rather than all of them.
+    listing_failed = False
 
     for account in accounts:
         account_id = account.get("id")
@@ -1965,6 +1970,7 @@ async def scan_mail_messages(
         try:
             mailboxes = await nc_client.mail.get_mailboxes(account_id)
         except Exception as e:
+            listing_failed = True
             logger.warning(
                 "[SCAN-%s] Failed to list mailboxes for account %s: %s",
                 scan_id,
@@ -1980,6 +1986,7 @@ async def scan_mail_messages(
             try:
                 messages = await list_index_window(nc_client.mail, mailbox_id)
             except Exception as e:
+                listing_failed = True
                 logger.warning(
                     "[SCAN-%s] Failed to list messages for mailbox %s: %s",
                     scan_id,
@@ -2104,20 +2111,30 @@ async def scan_mail_messages(
 
     # Check for deleted / aged-out messages (not initial sync).
     #
-    # A listing that came back completely empty while we hold an index is
-    # treated as suspect, not as "everything was deleted": every mailbox listing
-    # failing (Mail app down, mailboxes not yet cached) looks identical in the
-    # response to a genuinely emptied account, and the conservative reading is
-    # the only safe one — the alternative evicts a user's entire mail index on a
-    # transient outage and re-embeds it on recovery. Stale points that survive
-    # this guard are storage cost, not exposure: verify-on-read still drops and
-    # evicts them on any search that would surface them.
-    if message_count == 0 and indexed_message_ids:
+    # The deletion pass is only safe when this scan actually observed every
+    # mailbox. Two ways it might not have:
+    #
+    # 1. A listing came back completely empty while we hold an index. Every
+    #    mailbox listing failing (Mail app down, mailboxes not yet cached) looks
+    #    identical in the response to a genuinely emptied account.
+    # 2. Some listings raised while others succeeded. Those mailboxes contribute
+    #    no ids, so their indexed messages are indistinguishable here from
+    #    deleted ones — and ``message_count`` is nonzero, so case 1 misses it.
+    #
+    # The conservative reading is the only safe one either way: the alternative
+    # evicts mail on a transient outage and re-embeds it on recovery. Deletion
+    # is deferred, not skipped — the next clean scan runs the pass. Stale points
+    # that survive are storage cost, not exposure: verify-on-read still drops
+    # and evicts them on any search that would surface them.
+    if indexed_message_ids and (message_count == 0 or listing_failed):
         logger.warning(
-            "[SCAN-%s] Mail listing returned zero messages for %s while %s are "
-            "indexed; skipping the deletion pass this cycle",
+            "[SCAN-%s] Mail listing was incomplete for %s (%s messages seen, "
+            "listing_failed=%s) while %s are indexed; skipping the deletion "
+            "pass this cycle",
             scan_id,
             user_id,
+            message_count,
+            listing_failed,
             len(indexed_message_ids),
         )
     elif not initial_sync:

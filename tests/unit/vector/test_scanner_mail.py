@@ -290,6 +290,46 @@ async def test_empty_listing_skips_deletion_pass(mocker):
     assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
 
 
+async def test_partial_listing_failure_skips_deletion_pass(mocker):
+    """One mailbox failing must not evict the messages indexed from it.
+
+    The all-empty guard does not cover this: the surviving mailbox makes
+    ``message_count`` nonzero, so without tracking the failure the scanner would
+    read "mailbox 11's messages are gone" from what is really a transient error
+    on that one mailbox.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Well past the grace period — only the incomplete-listing guard holds it back.
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+
+    nc_client = MagicMock()
+    nc_client.mail.list_accounts = AsyncMock(return_value=[{"id": 1}])
+    nc_client.mail.get_mailboxes = AsyncMock(
+        return_value=[{"databaseId": 10}, {"databaseId": 11}]
+    )
+
+    async def _list_messages(mailbox_id, **kwargs):
+        if mailbox_id == 11:
+            raise RuntimeError("mailbox 11 is not cached")
+        return [{"databaseId": 100, "dateInt": 1700000000}]
+
+    nc_client.mail.list_messages = AsyncMock(side_effect=_list_messages)
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    # 100 is queued (no stored metadata), but 999 is NOT evicted.
+    assert queued == 1
+    assert [(t.doc_id, t.operation) for t in stream.tasks] == [("100", "index")]
+    assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
 async def test_empty_listing_with_empty_index_is_not_guarded(mocker):
     """Nothing indexed yet + nothing listed is the normal empty case, not a fault."""
     _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
