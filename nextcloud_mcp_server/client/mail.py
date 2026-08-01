@@ -11,9 +11,8 @@ Uses two endpoint types:
    mailboxes, and messages, downloading attachments, the two-step outbox send, and
    every write operation (flags, tags, move, delete), none of which has an OCS
    equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
-   are
-   CSRF-gated for browser sessions, but Nextcloud exempts any request carrying the
-   ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
+   are CSRF-gated for browser sessions, but Nextcloud exempts any request carrying
+   the ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
    Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
    (verified end-to-end against a live Mail 5.x backend; see the GreenMail
    integration tests).
@@ -32,6 +31,11 @@ from urllib.parse import quote
 from httpx import HTTPStatusError, RequestError, Response
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+
+# Nextcloud's primary blue. Shared with the nc_mail_create_tag tool so the two
+# defaults cannot drift into creating differently-coloured tags for the same
+# nominal "default".
+DEFAULT_TAG_COLOR = "#0082c9"
 
 
 def _ocs_response(response: Response) -> Any:
@@ -446,7 +450,7 @@ class MailClient(BaseNextcloudClient):
         )
 
     async def ensure_tag(
-        self, display_name: str, color: str = "#0082c9"
+        self, display_name: str, color: str = DEFAULT_TAG_COLOR
     ) -> dict[str, Any]:
         """Create a mail tag, or return the existing one with that name.
 

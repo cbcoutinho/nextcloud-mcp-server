@@ -27,14 +27,18 @@ GREENMAIL_READINESS_URL="${GREENMAIL_READINESS_URL:-http://localhost:8085/api/se
 
 # Run a Mail API call from inside the `app` container, so this works regardless
 # of which host port (if any) the container is published on.
+#
+# Credentials go in via `--config -` (stdin) rather than `-u`, so they never
+# appear in the container's process list. The default here is the throwaway
+# admin/admin test account, but NEXTCLOUD_PASSWORD may point this at a real one.
 mail_api() {
     local method="$1" path="$2" body="${3:-}"
-    docker compose exec -T app curl -sS -X "${method}" \
-        -u "${USER_ID}:${PASSWORD}" \
-        -H 'OCS-APIRequest: true' \
-        -H 'Content-Type: application/json' \
-        ${body:+-d "${body}"} \
-        "http://localhost/index.php/apps/mail/api/${path}"
+    printf 'user = "%s:%s"\n' "${USER_ID}" "${PASSWORD}" \
+        | docker compose exec -T app curl -sS --config - -X "${method}" \
+            -H 'OCS-APIRequest: true' \
+            -H 'Content-Type: application/json' \
+            ${body:+-d "${body}"} \
+            "http://localhost/index.php/apps/mail/api/${path}"
 }
 
 # Create Trash/Archive, then opt them into background sync. Both steps matter:

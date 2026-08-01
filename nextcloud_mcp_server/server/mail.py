@@ -13,6 +13,7 @@ from mcp.types import ErrorData, ToolAnnotations
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.mail import DEFAULT_TAG_COLOR
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.mail import (
     GetAttachmentResponse,
@@ -508,7 +509,7 @@ def configure_mail_tools(mcp: FastMCP):
     async def nc_mail_create_tag(
         display_name: Annotated[str, Field(max_length=128)],
         ctx: Context,
-        color: str = "#0082c9",
+        color: str = DEFAULT_TAG_COLOR,
     ) -> MailTagResponse:
         """Create a mail tag, or return the existing one (requires mail.write scope).
 
