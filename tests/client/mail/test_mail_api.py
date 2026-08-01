@@ -367,3 +367,154 @@ async def test_send_message_missing_outbox_id_raises(mocker):
     client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
     with pytest.raises(httpx.RequestError):
         await client.send_message(1, [{"email": "a@b.com", "label": "A"}], "Hi", "body")
+
+
+# --- Write operations -------------------------------------------------------
+
+
+async def test_set_flags_sends_flag_map_not_imap_names(mocker):
+    """setFlags takes a {name: bool} map, not a list of ``\\Seen``-style names.
+
+    The Mail app's ``MessagesController::setFlags`` iterates the map and runs
+    each entry through ``FILTER_VALIDATE_BOOLEAN``; a list of IMAP flag names
+    would be silently ignored, so the body shape is worth pinning.
+    """
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.set_flags(42, {"seen": True, "flagged": False})
+
+    call = mock_make_request.call_args
+    assert call.args == ("PUT", "/apps/mail/api/messages/42/flags")
+    assert call.kwargs["json"] == {"flags": {"seen": True, "flagged": False}}
+
+
+async def test_ensure_tag_reads_bare_tag_response(mocker):
+    """POST /tags returns the bare Tag JSON, not a ``data``-wrapped envelope.
+
+    The outbox routes wrap their payload in ``data``; the tag route does not
+    (``TagsController::create`` returns ``new JSONResponse($tag)``), so reading
+    ``data.id`` here would always come back empty.
+    """
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(
+            json_data={
+                "id": 7,
+                "displayName": "Vector Index",
+                "imapLabel": "$vector_index",
+                "color": "#0082c9",
+            }
+        ),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    tag = await client.ensure_tag("Vector Index")
+
+    assert tag["id"] == 7
+    assert tag["imapLabel"] == "$vector_index"
+    call = mock_make_request.call_args
+    assert call.args == ("POST", "/apps/mail/api/tags")
+    assert call.kwargs["json"]["displayName"] == "Vector Index"
+
+
+async def test_ensure_tag_without_id_raises(mocker):
+    """An unexpected tag payload raises rather than yielding an id-less tag."""
+    mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(json_data={"unexpected": "shape"}),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.RequestError):
+        await client.ensure_tag("Vector Index")
+
+
+async def test_set_and_remove_tag_url_encode_the_label(mocker):
+    """IMAP labels start with ``$`` and may contain characters needing quoting."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.set_tag(42, "$to do")
+    await client.remove_tag(42, "$to do")
+
+    calls = mock_make_request.call_args_list
+    assert calls[0].args == ("PUT", "/apps/mail/api/messages/42/tags/%24to%20do")
+    assert calls[1].args == ("DELETE", "/apps/mail/api/messages/42/tags/%24to%20do")
+
+
+async def test_move_message_sends_dest_folder_id(mocker):
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.move_message(42, 9)
+
+    call = mock_make_request.call_args
+    assert call.args == ("POST", "/apps/mail/api/messages/42/move")
+    assert call.kwargs["json"] == {"destFolderId": 9}
+
+
+async def test_delete_message_issues_delete(mocker):
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_message(42)
+
+    assert mock_make_request.call_args.args == (
+        "DELETE",
+        "/apps/mail/api/messages/42",
+    )
+
+
+async def test_write_helpers_send_the_csrf_exempting_header(mocker):
+    """Writes need ``OCS-APIRequest`` too — the Mail write routes are CSRF-gated.
+
+    None of ``setFlags``/``setTag``/``move`` carries ``@NoCSRFRequired``, so the
+    header is what makes them reachable with an app password.
+    """
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.set_flags(42, {"seen": True})
+
+    headers = mock_make_request.call_args.kwargs["headers"]
+    assert headers["OCS-APIRequest"] == "true"
+    assert headers["Content-Type"] == "application/json"
+
+
+async def test_bodyless_writes_declare_no_json_content_type(mocker):
+    """Tag remove / delete send no body, so they must not claim to send JSON."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, content=b""),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_message(42)
+
+    call = mock_make_request.call_args
+    assert call.kwargs["json"] is None
+    assert "Content-Type" not in call.kwargs["headers"]

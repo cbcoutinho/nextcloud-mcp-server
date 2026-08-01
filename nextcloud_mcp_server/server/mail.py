@@ -1,30 +1,62 @@
-"""MCP tools for Nextcloud Mail app (read, send)."""
+"""MCP tools for Nextcloud Mail app (read, send, flags, tags, move, delete)."""
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Annotated
 
 from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.mail import DEFAULT_TAG_COLOR
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.mail import (
     GetAttachmentResponse,
     GetMessageResponse,
+    GetMessageSourceResponse,
     ListAccountsResponse,
     ListMailboxesResponse,
     ListMessagesResponse,
     MailAccount,
+    MailActionResponse,
     MailMailbox,
     MailMessage,
     MailMessageSummary,
+    MailTag,
+    MailTagResponse,
     SendMessageResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _mail_errors(action: str) -> Iterator[None]:
+    """Map client transport errors onto ``McpError`` with a consistent message.
+
+    Args:
+        action: Present-participle description used in the message, e.g.
+            ``"setting flags on message 42"``.
+    """
+    try:
+        yield
+    except RequestError as e:
+        raise McpError(
+            ErrorData(code=-1, message=f"Network error {action}: {str(e)}")
+        ) from e
+    except HTTPStatusError as e:
+        raise McpError(
+            ErrorData(
+                code=-1, message=f"Failed {action}: HTTP {e.response.status_code}"
+            )
+        ) from e
+
 
 # Hard cap on inlined attachment content. The Mail attachment endpoint returns
 # the full attachment body (base64-encoded) in the response, which then has to
@@ -58,7 +90,7 @@ def _cap_attachment_content(content: str | None) -> str | None:
 
 
 def configure_mail_tools(mcp: FastMCP):
-    """Configure Mail app MCP tools (read, send)."""
+    """Configure Mail app MCP tools (read, send, flags, tags, move, delete)."""
 
     @mcp.tool(
         title="List Mail Accounts",
@@ -141,7 +173,24 @@ def configure_mail_tools(mcp: FastMCP):
         Args:
             mailbox_id: Numeric mailbox id (``database_id`` from nc_mail_list_mailboxes)
             cursor: Pagination cursor from a prior page
-            search_filter: Optional search/filter query
+            search_filter: Optional filter query — space-separated ``token:value``
+                terms, ANDed together. Supported tokens:
+
+                * ``is:``/``not:`` — ``read``, ``unread``, ``starred``,
+                  ``answered``, ``important``
+                * ``from:``, ``to:``, ``cc:``, ``bcc:`` — substring match on the
+                  address or display name
+                * ``subject:``, ``body:`` — substring match (``body:`` searches
+                  IMAP server-side and is slower)
+                * ``tags:`` — comma-separated tag *database ids* (not names;
+                  get one from nc_mail_create_tag)
+                * ``start:``, ``end:`` — date bounds
+                * ``flags:`` — comma-separated ``read``/``unread``/``starred``/
+                  ``answered``/``important``/``attachments``
+                * ``match:anyof`` — OR the from/to/cc/bcc/subject/body terms
+                  instead of ANDing them
+
+                Example: ``is:unread from:alice subject:invoice``
             limit: Max messages to return (1-100, default 20)
 
         Returns:
@@ -353,3 +402,271 @@ def configure_mail_tools(mcp: FastMCP):
                     message=f"Failed to get attachment: {e.response.status_code}",
                 )
             )
+
+    @mcp.tool(
+        title="Get Mail Message Source",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("mail.read")
+    @instrument_tool
+    async def nc_mail_get_message_source(
+        message_id: int, ctx: Context
+    ) -> GetMessageSourceResponse:
+        """Get a message's raw RFC 2822 source (requires mail.read scope).
+
+        The complete original message including all headers — use this when the
+        parsed view from nc_mail_get_message is not enough (checking
+        Received/DKIM headers, List-Unsubscribe, custom X- headers).
+
+        Args:
+            message_id: Numeric message id
+
+        Returns:
+            GetMessageSourceResponse with the raw source. ``source`` is None if
+            the Mail app returns no content for the message.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"getting source of message {message_id}"):
+            source = await client.mail.get_message_raw(message_id)
+        return GetMessageSourceResponse(message_id=message_id, source=source)
+
+    @mcp.tool(
+        title="Set Mail Message Flags",
+        annotations=ToolAnnotations(
+            # Same inputs -> same end state (a flag set twice stays set).
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_set_flags(
+        message_id: int,
+        ctx: Context,
+        seen: bool | None = None,
+        flagged: bool | None = None,
+        answered: bool | None = None,
+        junk: bool | None = None,
+    ) -> MailActionResponse:
+        """Set IMAP flags on a message, e.g. mark it read (requires mail.write scope).
+
+        Only the flags you pass are changed; omitted ones are left alone. Use
+        ``seen=True`` after processing a message so it does not look unhandled,
+        and ``seen=False`` to mark it unread again.
+
+        Args:
+            message_id: Numeric message id (``database_id`` from nc_mail_list_messages)
+            seen: Mark read (True) or unread (False)
+            flagged: Star (True) or unstar (False)
+            answered: Mark as replied-to
+            junk: Mark as junk/spam. Unlike the others this is a custom IMAP
+                keyword, so the mail server silently ignores it unless the
+                mailbox permits custom keywords.
+
+        Returns:
+            MailActionResponse naming the flags that were applied. Passing no
+            flags at all is an error rather than a silent no-op.
+        """
+        flags = {
+            name: value
+            for name, value in (
+                ("seen", seen),
+                ("flagged", flagged),
+                ("answered", answered),
+                ("$junk", junk),
+            )
+            if value is not None
+        }
+        if not flags:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message="No flags given; pass at least one of seen, flagged, "
+                    "answered, junk",
+                )
+            )
+
+        client = await get_client(ctx)
+        with _mail_errors(f"setting flags on message {message_id}"):
+            await client.mail.set_flags(message_id, flags)
+
+        applied = ", ".join(f"{name}={value}" for name, value in flags.items())
+        return MailActionResponse(
+            message_id=message_id, message=f"Flags updated: {applied}"
+        )
+
+    @mcp.tool(
+        title="Create Mail Tag",
+        annotations=ToolAnnotations(
+            # Create-or-get: the Mail app returns the existing tag for a name
+            # that already resolves to the same IMAP label.
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_create_tag(
+        display_name: Annotated[str, Field(max_length=128)],
+        ctx: Context,
+        color: str = DEFAULT_TAG_COLOR,
+    ) -> MailTagResponse:
+        """Create a mail tag, or return the existing one (requires mail.write scope).
+
+        Tags are IMAP keywords private to the user. The Mail app has no
+        tag-listing endpoint, so this is also how you look a tag up — calling it
+        for an existing name returns that tag rather than creating a duplicate.
+
+        Names normalise to a lowercase IMAP label with spaces as underscores, so
+        "AI Index", "ai index" and "ai_index" are all the same tag.
+
+        Args:
+            display_name: Tag name (max 128 characters)
+            color: Hex colour, applied only when the tag is created
+
+        Returns:
+            MailTagResponse with the tag, including the ``id`` needed for the
+            ``tags:<id>`` filter of nc_mail_list_messages.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"creating tag {display_name!r}"):
+            tag = await client.mail.ensure_tag(display_name, color)
+        return MailTagResponse(tag=MailTag(**tag))
+
+    @mcp.tool(
+        title="Tag Mail Message",
+        annotations=ToolAnnotations(
+            idempotentHint=True,  # Re-tagging a tagged message is a no-op
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_set_tag(
+        message_id: int, tag: Annotated[str, Field(max_length=128)], ctx: Context
+    ) -> MailTagResponse:
+        """Assign a tag to a message (requires mail.write scope).
+
+        The tag is created if it does not exist yet, so this works without a
+        separate nc_mail_create_tag call.
+
+        Args:
+            message_id: Numeric message id
+            tag: Tag display name
+
+        Returns:
+            MailTagResponse with the assigned tag.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"tagging message {message_id} with {tag!r}"):
+            # Resolve through create-or-get: it yields the server's own
+            # imapLabel, so we never have to re-derive the label encoding.
+            tag_data = await client.mail.ensure_tag(tag)
+            await client.mail.set_tag(message_id, tag_data["imapLabel"])
+        return MailTagResponse(tag=MailTag(**tag_data), message_id=message_id)
+
+    @mcp.tool(
+        title="Untag Mail Message",
+        annotations=ToolAnnotations(
+            idempotentHint=True,  # Removing an absent tag leaves the same state
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_remove_tag(
+        message_id: int, tag: Annotated[str, Field(max_length=128)], ctx: Context
+    ) -> MailTagResponse:
+        """Remove a tag from a message (requires mail.write scope).
+
+        Args:
+            message_id: Numeric message id
+            tag: Tag display name
+
+        Returns:
+            MailTagResponse with the removed tag.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"removing tag {tag!r} from message {message_id}"):
+            # Resolve the same way as tagging. For a name that has never been
+            # used this creates an empty tag row before removing nothing from
+            # the message — harmless, and it keeps one resolution path.
+            tag_data = await client.mail.ensure_tag(tag)
+            await client.mail.remove_tag(message_id, tag_data["imapLabel"])
+        return MailTagResponse(tag=MailTag(**tag_data), message_id=message_id)
+
+    @mcp.tool(
+        title="Move Mail Message",
+        annotations=ToolAnnotations(
+            # NOT idempotent. The move drops the cached row and the message is
+            # re-cached in the destination under a *new* database id, so a retry
+            # with the same message_id is rejected (the Mail app answers 403)
+            # rather than being a harmless no-op. Verified against a live Mail
+            # app -- see test_move_message_between_mailboxes.
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_move_message(
+        message_id: int, destination_mailbox_id: int, ctx: Context
+    ) -> MailActionResponse:
+        """Move a message to another mailbox (requires mail.write scope).
+
+        Args:
+            message_id: Numeric message id
+            destination_mailbox_id: Target mailbox id (``database_id`` from
+                nc_mail_list_mailboxes)
+
+        Returns:
+            MailActionResponse. ``message_id`` echoes what you passed in and is
+            **stale on return**: the move invalidates it, and the message is
+            re-cached in the destination under a new id. Re-list the destination
+            mailbox to address it again — do not retry this call with the same
+            id, which fails rather than repeating the move.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"moving message {message_id}"):
+            await client.mail.move_message(message_id, destination_mailbox_id)
+        return MailActionResponse(
+            message_id=message_id,
+            message=f"Message moved to mailbox {destination_mailbox_id}",
+        )
+
+    @mcp.tool(
+        title="Delete Mail Message",
+        annotations=ToolAnnotations(
+            destructiveHint=True,  # Removes the message from its mailbox
+            # NOT idempotent, unlike most deletes. Trashing is a move, so it
+            # invalidates the id: a retry is rejected (403) instead of being a
+            # no-op, and if the message was already in trash the first call
+            # expunges it permanently. Verified against a live Mail app.
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("mail.write")
+    @instrument_tool
+    async def nc_mail_delete_message(
+        message_id: int, ctx: Context
+    ) -> MailActionResponse:
+        """Delete a message (requires mail.write scope).
+
+        The Mail app moves the message to the account's trash mailbox, or
+        expunges it permanently if it is already in trash. Requires the account
+        to have a trash mailbox — without one the Mail app rejects the call
+        ("No trash mailbox configured").
+
+        Args:
+            message_id: Numeric message id
+
+        Returns:
+            MailActionResponse confirming the deletion. ``message_id`` echoes
+            the input and is **stale on return** — trashing re-caches the
+            message under a new id, so retrying with the same id fails.
+        """
+        client = await get_client(ctx)
+        with _mail_errors(f"deleting message {message_id}"):
+            await client.mail.delete_message(message_id)
+        return MailActionResponse(message_id=message_id, message="Message deleted")

@@ -75,6 +75,10 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "news.read",
         "news.write",
         "mail.read",
+        "mail.write",
+        "mail.send",
+        "talk.read",
+        "talk.write",
         "collectives.read",
         "collectives.write",
     }

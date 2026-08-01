@@ -67,7 +67,7 @@ async def test_initial_sync_enumerates_accounts_mailboxes_messages(mocker):
         return_value=[{"databaseId": 10}, {"databaseId": 11}]
     )
 
-    async def list_messages(mailbox_id, *, limit):
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         if mailbox_id == 10:
             return [
                 {"databaseId": 100, "dateInt": 1700000000},
@@ -102,9 +102,13 @@ async def test_initial_sync_enumerates_accounts_mailboxes_messages(mocker):
     assert t100.metadata == {"account_id": 1, "mailbox_id": 10}
     # A placeholder is written per message before queueing.
     assert placeholder.await_count == 3
-    # The per-mailbox cap is passed through.
+    # The shared index window is used: per-mailbox cap, no filter, and the
+    # singleton view (threaded would hide every reply — see list_index_window).
     nc_client.mail.list_messages.assert_any_await(
-        10, limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX
+        10,
+        limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter=None,
+        view="singleton",
     )
 
 
@@ -116,7 +120,7 @@ async def test_initial_sync_skips_mailbox_on_list_error(mocker):
         return_value=[{"databaseId": 10}, {"databaseId": 11}]
     )
 
-    async def list_messages(mailbox_id, *, limit):
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         if mailbox_id == 10:
             raise RuntimeError("imap hiccup")
         return [{"databaseId": 200, "dateInt": 1700000002}]
@@ -208,11 +212,14 @@ async def test_incremental_reappeared_message_clears_grace(mocker):
 
 async def test_incremental_deletes_after_grace_period(mocker):
     """An indexed message gone from Nextcloud past the grace period is deleted."""
-    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    _patch_incremental(
+        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
+    )
     # Seed the grace period far in the past so the delta exceeds grace_period.
     scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
-    # Mailbox now returns no messages, so 999 is missing.
-    nc_client = _single_message_client([])
+    # The mailbox still lists other (already up-to-date) mail, so 999 is
+    # genuinely missing rather than the whole listing having failed.
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
     stream = _CollectingStream()
     queued = await scan_mail_messages(
@@ -234,9 +241,11 @@ async def test_incremental_deletes_after_grace_period(mocker):
 
 async def test_incremental_first_missing_starts_grace(mocker):
     """A newly-missing indexed message enters the grace period (no delete yet)."""
-    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
-    # Not previously seen as missing, and the mailbox now returns no messages.
-    nc_client = _single_message_client([])
+    _patch_incremental(
+        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
+    )
+    # Not previously seen as missing; the mailbox still lists other mail.
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
     stream = _CollectingStream()
     queued = await scan_mail_messages(
@@ -251,6 +260,92 @@ async def test_incremental_first_missing_starts_grace(mocker):
     assert queued == 0
     assert stream.tasks == []
     assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_empty_listing_skips_deletion_pass(mocker):
+    """An all-empty listing while an index exists must not evict anything.
+
+    Every mailbox listing failing (Mail app down, mailboxes not yet cached) is
+    indistinguishable in the response from a genuinely emptied account, so the
+    scanner declines to delete rather than wiping a user's whole mail index on a
+    transient outage.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Well past the grace period — only the empty-listing guard holds it back.
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []
+    # Still mid-grace: a later scan that lists successfully can still delete it.
+    assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_partial_listing_failure_skips_deletion_pass(mocker):
+    """One mailbox failing must not evict the messages indexed from it.
+
+    The all-empty guard does not cover this: the surviving mailbox makes
+    ``message_count`` nonzero, so without tracking the failure the scanner would
+    read "mailbox 11's messages are gone" from what is really a transient error
+    on that one mailbox.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Well past the grace period — only the incomplete-listing guard holds it back.
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+
+    nc_client = MagicMock()
+    nc_client.mail.list_accounts = AsyncMock(return_value=[{"id": 1}])
+    nc_client.mail.get_mailboxes = AsyncMock(
+        return_value=[{"databaseId": 10}, {"databaseId": 11}]
+    )
+
+    async def _list_messages(mailbox_id, **kwargs):
+        if mailbox_id == 11:
+            raise RuntimeError("mailbox 11 is not cached")
+        return [{"databaseId": 100, "dateInt": 1700000000}]
+
+    nc_client.mail.list_messages = AsyncMock(side_effect=_list_messages)
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    # 100 is queued (no stored metadata), but 999 is NOT evicted.
+    assert queued == 1
+    assert [(t.doc_id, t.operation) for t in stream.tasks] == [("100", "index")]
+    assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_empty_listing_with_empty_index_is_not_guarded(mocker):
+    """Nothing indexed yet + nothing listed is the normal empty case, not a fault."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []
 
 
 async def test_grace_key_isolated_by_doc_type(mocker):
@@ -279,3 +374,104 @@ async def test_grace_key_isolated_by_doc_type(mocker):
 
     # The note's grace entry is untouched by the mail scan (no cross-type stomp).
     assert ("alice", "42", "note") in scanner_module._potentially_deleted
+
+
+async def test_filtered_scan_uses_the_resolved_tag_filter(mocker):
+    """With MAIL_INDEX_TAG set, only tagged messages are listed."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(return_value="tags:7"),
+    )
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    nc_client.mail.list_messages.assert_awaited_once_with(
+        10,
+        limit=scanner_module.MAIL_SCAN_MAX_PER_MAILBOX,
+        search_filter="tags:7",
+        view="singleton",
+    )
+
+
+async def test_filter_resolution_failure_aborts_before_the_deletion_pass(mocker):
+    """Fail-closed: a tags-endpoint failure must not evict, nor index everything.
+
+    Fail-open here would enrol the user's whole mailbox on a transient 500; the
+    raise happens before the deletion pass, so nothing is evicted either.
+    """
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(side_effect=RuntimeError("tags endpoint down")),
+    )
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    with pytest.raises(RuntimeError):
+        await scan_mail_messages(
+            user_id="alice",
+            send_stream=stream,
+            nc_client=nc_client,
+            initial_sync=False,
+            scan_id=1,
+        )
+
+    assert stream.tasks == []
+    nc_client.mail.list_messages.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected_level", "expected_fragment"),
+    [
+        # Unfiltered: a big mailbox is routine, and the cap is a documented
+        # limitation rather than something the user can act on.
+        (None, "INFO", "contains more than"),
+        # Filtered: the user deliberately tagged more than fits, and messages
+        # they asked for are being dropped -- actionable, so it escalates.
+        ("index-me", "WARNING", "matching tags:7"),
+    ],
+)
+async def test_cap_log_level_depends_on_whether_a_filter_is_set(
+    mocker, caplog, tag, expected_level, expected_fragment
+):
+    """The cap message escalates to a warning only when it hides tagged mail."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    mocker.patch.object(
+        scanner_module,
+        "mail_index_filter",
+        new=AsyncMock(return_value="tags:7" if tag else None),
+    )
+    # A full window is what trips the cap branch.
+    nc_client = _single_message_client(
+        [
+            {"databaseId": i, "dateInt": 1700000000}
+            for i in range(scanner_module.MAIL_SCAN_MAX_PER_MAILBOX)
+        ]
+    )
+
+    stream = _CollectingStream()
+    with caplog.at_level("INFO", logger=scanner_module.logger.name):
+        await scan_mail_messages(
+            user_id="alice",
+            send_stream=stream,
+            nc_client=nc_client,
+            initial_sync=False,
+            scan_id=1,
+        )
+
+    cap_records = [r for r in caplog.records if "are indexed" in r.getMessage()]
+    assert len(cap_records) == 1, "expected exactly one cap message"
+    assert cap_records[0].levelname == expected_level
+    assert expected_fragment in cap_records[0].getMessage()

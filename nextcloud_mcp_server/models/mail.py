@@ -1,8 +1,8 @@
-"""Pydantic models for Nextcloud Mail app responses (read-only)."""
+"""Pydantic models for Nextcloud Mail app responses."""
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .base import BaseResponse
+from .base import BaseResponse, StatusResponse
 
 
 class MailAddress(BaseModel):
@@ -62,6 +62,24 @@ class MailMessageFlags(BaseModel):
     forwarded: bool = False
     has_attachments: bool = Field(False, alias="hasAttachments")
     important: bool = False
+
+
+class MailTag(BaseModel):
+    """A mail tag (an IMAP keyword, scoped to one user).
+
+    ``imap_label`` is derived by the server from the display name and is what
+    the tag assign/remove routes address, so it is carried through rather than
+    re-derived client-side.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int = Field(description="Tag database ID (per-user)")
+    display_name: str | None = Field(None, alias="displayName")
+    imap_label: str | None = Field(
+        None, alias="imapLabel", description="IMAP keyword, e.g. $vector_index"
+    )
+    color: str | None = Field(None, description="Hex colour")
 
 
 class MailAttachment(BaseModel):
@@ -141,6 +159,10 @@ class MailMessage(BaseModel):
     attachments: list[MailAttachment] = Field(
         default_factory=list, description="Message attachments"
     )
+    # The message endpoint returns flags just like the listing does. Carrying
+    # them here is what makes nc_mail_set_flags verifiable: without it the only
+    # way to read back a flag you just wrote is to re-list the whole mailbox.
+    flags: MailMessageFlags | None = Field(None, description="IMAP flags")
 
 
 # --- Response Models ---
@@ -185,6 +207,32 @@ class SendMessageResponse(BaseResponse):
         default=True, description="Whether the message was sent successfully"
     )
     message: str = Field(default="", description="Status or error message")
+
+
+class MailActionResponse(StatusResponse):
+    """Response model for a write that returns no data (flags, move, delete).
+
+    The Mail app answers these with an empty body, so the useful payload is the
+    affected message ID plus the human-readable summary from ``StatusResponse``.
+    """
+
+    message_id: int = Field(description="Database ID of the affected message")
+
+
+class MailTagResponse(BaseResponse):
+    """Response model for tag create/assign/remove."""
+
+    tag: MailTag = Field(description="The affected tag")
+    message_id: int | None = Field(
+        None, description="Message the tag was assigned to or removed from"
+    )
+
+
+class GetMessageSourceResponse(BaseResponse):
+    """Response model for the raw RFC 2822 source of a message."""
+
+    message_id: int = Field(description="Database ID of the message")
+    source: str | None = Field(None, description="Raw RFC 2822 message source")
 
 
 class GetAttachmentResponse(BaseResponse):

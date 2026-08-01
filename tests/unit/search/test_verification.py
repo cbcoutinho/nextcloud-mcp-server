@@ -253,8 +253,12 @@ async def test_verify_mail_batches_one_list_per_mailbox(mocker):
     )
     # 10 and 30 present; 20 absent (deleted/aged out) -> dropped.
     assert result == {"10", "30"}
-    # One DB-cached list call for the single mailbox, not one per result.
-    list_messages.assert_awaited_once_with(10, limit=MAIL_SCAN_MAX_PER_MAILBOX)
+    # One DB-cached list call for the single mailbox, not one per result — and
+    # it must be the *same* window the scanner indexes (same limit, same
+    # singleton view), or the verifier evicts messages the scanner just indexed.
+    list_messages.assert_awaited_once_with(
+        10, limit=MAIL_SCAN_MAX_PER_MAILBOX, search_filter=None, view="singleton"
+    )
 
 
 @pytest.mark.unit
@@ -336,7 +340,10 @@ async def test_verify_mail_non_numeric_id_kept_when_mailbox_listed(mocker):
 async def test_verify_mail_partitions_distinct_mailboxes(mocker):
     """Results in different mailboxes each get their own list call."""
 
-    async def list_messages(mailbox_id, *, limit):
+    # Signature must match what list_index_window actually calls with: a stale
+    # stub raises TypeError, which the verifier's fail-open branch swallows, and
+    # the test then passes without exercising partitioning at all.
+    async def list_messages(mailbox_id, *, limit, search_filter, view):
         return {10: [{"databaseId": 1}], 20: [{"databaseId": 2}]}[mailbox_id]
 
     mail_client = SimpleNamespace(
@@ -346,7 +353,15 @@ async def test_verify_mail_partitions_distinct_mailboxes(mocker):
 
     result = await _verify_mail_messages(
         client,
-        [_mail_result(1, mailbox_id=10), _mail_result(2, mailbox_id=20)],
+        [
+            _mail_result(1, mailbox_id=10),
+            _mail_result(2, mailbox_id=20),
+            # Absent from mailbox 10's listing. This is what makes the test
+            # load-bearing: the real path drops it, whereas the fail-open branch
+            # (which a stub whose signature has drifted from list_index_window
+            # would silently take, via TypeError) would keep it.
+            _mail_result(3, mailbox_id=10),
+        ],
         _sem(),
     )
     assert result == {"1", "2"}
@@ -1377,3 +1392,47 @@ async def test_apply_display_paths_noop_without_file_results(mocker):
     )
     await verification._apply_user_display_paths("bob", [_make_result(1, "note")])
     shared.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_verify_mail_applies_the_same_filter_the_scanner_indexed(mocker):
+    """The verifier must use the scanner's window, filter included.
+
+    Listing unfiltered here would be a *narrower* window for old tagged mail —
+    it would drop and hard-evict messages the scanner legitimately indexed.
+    """
+    mocker.patch.object(
+        verification, "mail_index_filter", new=AsyncMock(return_value="tags:7")
+    )
+    list_messages = mocker.AsyncMock(return_value=[{"databaseId": 10}])
+    client = SimpleNamespace(
+        mail=SimpleNamespace(list_messages=list_messages), username="alice"
+    )
+
+    result = await _verify_mail_messages(client, [_mail_result(10)], _sem())
+
+    assert result == {"10"}
+    list_messages.assert_awaited_once_with(
+        10, limit=MAIL_SCAN_MAX_PER_MAILBOX, search_filter="tags:7", view="singleton"
+    )
+
+
+@pytest.mark.unit
+async def test_verify_mail_keeps_results_when_the_filter_cannot_resolve(mocker):
+    """Fail-open on resolution failure — and crucially, don't list unfiltered."""
+    mocker.patch.object(
+        verification,
+        "mail_index_filter",
+        new=AsyncMock(side_effect=RuntimeError("tags endpoint down")),
+    )
+    list_messages = mocker.AsyncMock(return_value=[])
+    client = SimpleNamespace(
+        mail=SimpleNamespace(list_messages=list_messages), username="alice"
+    )
+
+    result = await _verify_mail_messages(
+        client, [_mail_result(10), _mail_result(20)], _sem()
+    )
+
+    assert result == {"10", "20"}
+    list_messages.assert_not_awaited()

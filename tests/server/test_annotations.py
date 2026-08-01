@@ -80,7 +80,13 @@ async def test_delete_operations_are_idempotent(nc_mcp_client: ClientSession):
 
     # Exceptions: delete operations that require a precondition (e.g. must be
     # trashed first), so calling twice produces an error on the second call.
-    non_idempotent_deletes = {"collectives_delete_collective"}
+    #
+    # nc_mail_delete_message: trashing is implemented as an IMAP move, so the
+    # first call invalidates the message id (the message is re-cached in trash
+    # under a new one) and a retry is rejected with 403 rather than being a
+    # no-op. Verified end-to-end in tests/integration/test_mail_greenmail.py::
+    # test_delete_message_removes_it_from_the_inbox.
+    non_idempotent_deletes = {"collectives_delete_collective", "nc_mail_delete_message"}
 
     for tool in tools.tools:
         if "delete" in tool.name.lower() and tool.name not in non_idempotent_deletes:
@@ -97,7 +103,14 @@ async def test_create_operations_not_idempotent(nc_mcp_client: ClientSession):
     # Exceptions: operations that are actually idempotent
     # - calendar_create_meeting: creates or returns existing meeting
     # - nc_webdav_create_directory: MKCOL returns 405 if exists (same end state)
-    idempotent_exceptions = {"calendar_create_meeting", "nc_webdav_create_directory"}
+    # - nc_mail_create_tag: create-or-get. The Mail app has no tag-listing
+    #   route, so POST /tags is the only way to look a tag up; it returns the
+    #   existing row for a name already in use rather than creating a second.
+    idempotent_exceptions = {
+        "calendar_create_meeting",
+        "nc_webdav_create_directory",
+        "nc_mail_create_tag",
+    }
 
     for tool in tools.tools:
         if "create" in tool.name.lower() and tool.name not in idempotent_exceptions:
