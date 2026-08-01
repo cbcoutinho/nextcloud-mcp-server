@@ -5,6 +5,31 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.159.0 (2026-08-01)
+
+### BREAKING CHANGE
+
+- the container now runs as uid 1000 instead of root, and
+the /app/.oauth mount point is gone. Volumes created by an earlier
+release contain root-owned files; auth/storage.py chmods tokens.db on
+startup, which raises PermissionError for a non-owner, so a stale volume
+fails to start rather than degrading. Recreate dev volumes with
+`docker compose down -v`, or `chown -R 1000:0` a persisted host
+directory. Any /app/.oauth mount should simply be dropped.
+
+### Feat
+
+- drop the dead /app/.oauth EFS mount from the ECS task
+- run the container as uid 1000 with the venv outside /app
+
+### Fix
+
+- set HOME=/tmp so the parsing path works as uid 1000
+
+### Refactor
+
+- run as a real appuser account instead of a bare numeric uid
+
 ## v0.158.0 (2026-08-01)
 
 ### Feat
