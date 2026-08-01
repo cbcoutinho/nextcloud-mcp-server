@@ -42,6 +42,12 @@ ENV PYTHONFAULTHANDLER=1
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+# uid 1000 has no /etc/passwd entry, so HOME would otherwise stay at the
+# base image's /root -- unwritable for this user, and under the chart's
+# readOnlyRootFilesystem unwritable for anyone. Native parsers and fastembed
+# resolve cache/config paths relative to HOME; point it at /tmp, which is the
+# one writable path in every deployment (compose, and the chart's emptyDir).
+ENV HOME=/tmp
 
 # Runtime directory: the settings.toml mount and data/ only. Pre-creating
 # data/ with the right owner matters -- docker seeds a named volume's
