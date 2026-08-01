@@ -622,6 +622,11 @@ async def vector_search(request: Request) -> JSONResponse:
             status_code=401,
         )
 
+    # Bound before the try so the error-path metric can label the request even
+    # when parsing is what failed — same reason as unified_search.
+    algorithm = "unknown"
+    fusion = "rrf"
+
     try:
         # Parse request body
         body = await request.json()
@@ -817,6 +822,17 @@ async def vector_search(request: Request) -> JSONResponse:
         # The client only ever sees a sanitized message, so without this the
         # traceback is lost entirely and a 500 leaves no trace anywhere.
         logger.exception("Error in vector search")
+        # Without this sample the visualization surface drops out of "error rate
+        # by surface" entirely — it would report successes and nothing else,
+        # which reads as a perfectly healthy endpoint no matter how often it
+        # fails.
+        record_search_request(
+            surface="http_viz",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=GRANULARITY_CHUNK,
+            reranked="false",
+            status="error",
+        )
         error_msg = _sanitize_error_for_client(e, "vector_search")
         return JSONResponse(
             {"error": error_msg},
