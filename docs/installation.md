@@ -115,8 +115,10 @@ services:
     env_file:
       - .env
     volumes:
-      # For persistent OAuth client storage
-      - ./oauth-storage:/app/.oauth
+      # Persistent token/DCR-client storage. The container runs as uid 1000,
+      # so this host directory must be writable by it:
+      #   mkdir -p mcp-data && sudo chown 1000:0 mcp-data
+      - ./mcp-data:/app/data
     restart: unless-stopped
 ```
 

@@ -12,7 +12,12 @@ RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
     tesseract-ocr \
     sqlite3 && apt clean
 
-WORKDIR /app
+# Build in /src, run in /app, keep the venv in /opt/venv. The three have
+# different lifetimes: /opt/venv is immutable code, /app is mutable runtime
+# state (settings.toml, data/), /src is build-only. UV_PROJECT_ENVIRONMENT is
+# what stops uv defaulting the environment to <project>/.venv.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+WORKDIR /src
 
 COPY pyproject.toml uv.lock README.md .
 
@@ -34,8 +39,22 @@ ENV PYTHONUNBUFFERED=1
 # with no logs (see issue #926). The handler is cheap and writes nothing in
 # normal operation.
 ENV PYTHONFAULTHANDLER=1
-ENV VIRTUAL_ENV=/app/.venv
-ENV PATH=/app/.venv/bin:$PATH
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
-ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "run", "--host", "0.0.0.0"]
+# Runtime directory: the settings.toml mount and data/ only. Pre-creating
+# data/ with the right owner matters -- docker seeds a named volume's
+# ownership from the image path, so a fresh volume comes up writable instead
+# of root-owned 0755.
+#
+# uid 1000 / gid 0 reproduces what the helm chart already runs
+# (runAsUser: 1000, no runAsGroup -> gid 0), so nothing about the pod
+# changes. The venv stays root-owned: a compromised process parsing a
+# hostile document cannot rewrite its own code.
+RUN mkdir -p /app/data && chown 1000:0 /app /app/data
+
+WORKDIR /app
+USER 1000:0
+
+ENTRYPOINT ["/opt/venv/bin/nextcloud-mcp-server", "run", "--host", "0.0.0.0"]
