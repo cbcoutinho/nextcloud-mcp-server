@@ -1,5 +1,8 @@
 """Unit tests for the rerank pipeline stage.
 
+Pool sizing lives in ``test_rerank_pool_size.py`` alongside the machinery it
+belongs to; this file covers the stage's runtime behaviour.
+
 The degradation paths carry the weight. Reranking must never fail a search, so
 every failure mode has to return the input order AND report that it did — a
 stage that silently returned retrieval order while claiming to have reranked
@@ -81,42 +84,6 @@ class TestAvailability:
 
     def test_available_when_both_present(self):
         assert rerank_mod.rerank_available(_settings())
-
-
-class TestPoolSizing:
-    def test_never_below_the_callers_overfetch(self):
-        """A large `limit` must not retrieve FEWER candidates with reranking on
-        than off — that would be an obvious regression."""
-        pool = rerank_mod.effective_pool_size(
-            _settings(search_rerank_pool_size=50), floor=400, grouped=False
-        )
-        assert pool == 400
-
-    def test_uses_configured_pool_when_deeper_than_overfetch(self):
-        pool = rerank_mod.effective_pool_size(_settings(), floor=20, grouped=False)
-        assert pool == 200
-
-    def test_grouped_search_is_clamped(self):
-        """Requesting more groups than the grouped prefetch can fill makes Qdrant
-        widen its grouping search and reorder the head — degrading candidates
-        before the reranker sees them."""
-        from nextcloud_mcp_server.search.bm25_hybrid import (
-            DOCUMENT_PREFETCH_FACTOR,
-            MAX_DOCUMENT_PREFETCH,
-        )
-
-        pool = rerank_mod.effective_pool_size(
-            _settings(search_rerank_pool_size=5000), floor=20, grouped=True
-        )
-        assert pool == MAX_DOCUMENT_PREFETCH // DOCUMENT_PREFETCH_FACTOR
-
-    def test_grouped_clamp_never_drops_below_floor(self):
-        """The floor wins even over the grouped ceiling: returning fewer rows
-        than the caller paginated for would be worse than a suboptimal pool."""
-        pool = rerank_mod.effective_pool_size(
-            _settings(search_rerank_pool_size=5000), floor=9000, grouped=True
-        )
-        assert pool == 9000
 
 
 class TestReordering:
