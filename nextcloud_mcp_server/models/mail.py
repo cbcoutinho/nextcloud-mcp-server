@@ -159,6 +159,10 @@ class MailMessage(BaseModel):
     attachments: list[MailAttachment] = Field(
         default_factory=list, description="Message attachments"
     )
+    # The message endpoint returns flags just like the listing does. Carrying
+    # them here is what makes nc_mail_set_flags verifiable: without it the only
+    # way to read back a flag you just wrote is to re-list the whole mailbox.
+    flags: MailMessageFlags | None = Field(None, description="IMAP flags")
 
 
 # --- Response Models ---

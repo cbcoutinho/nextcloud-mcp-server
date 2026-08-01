@@ -597,8 +597,12 @@ def configure_mail_tools(mcp: FastMCP):
     @mcp.tool(
         title="Move Mail Message",
         annotations=ToolAnnotations(
-            # Moving to the mailbox a message already sits in is a no-op.
-            idempotentHint=True,
+            # NOT idempotent. The move drops the cached row and the message is
+            # re-cached in the destination under a *new* database id, so a retry
+            # with the same message_id is rejected (the Mail app answers 403)
+            # rather than being a harmless no-op. Verified against a live Mail
+            # app -- see test_move_message_between_mailboxes.
+            idempotentHint=False,
             openWorldHint=True,
         ),
     )
@@ -615,8 +619,11 @@ def configure_mail_tools(mcp: FastMCP):
                 nc_mail_list_mailboxes)
 
         Returns:
-            MailActionResponse. Note the message keeps its id only within the
-            same account; re-list the destination mailbox to find it again.
+            MailActionResponse. ``message_id`` echoes what you passed in and is
+            **stale on return**: the move invalidates it, and the message is
+            re-cached in the destination under a new id. Re-list the destination
+            mailbox to address it again — do not retry this call with the same
+            id, which fails rather than repeating the move.
         """
         client = await get_client(ctx)
         with _mail_errors(f"moving message {message_id}"):
@@ -630,7 +637,11 @@ def configure_mail_tools(mcp: FastMCP):
         title="Delete Mail Message",
         annotations=ToolAnnotations(
             destructiveHint=True,  # Removes the message from its mailbox
-            idempotentHint=True,  # Same end state when repeated
+            # NOT idempotent, unlike most deletes. Trashing is a move, so it
+            # invalidates the id: a retry is rejected (403) instead of being a
+            # no-op, and if the message was already in trash the first call
+            # expunges it permanently. Verified against a live Mail app.
+            idempotentHint=False,
             openWorldHint=True,
         ),
     )
@@ -642,13 +653,17 @@ def configure_mail_tools(mcp: FastMCP):
         """Delete a message (requires mail.write scope).
 
         The Mail app moves the message to the account's trash mailbox, or
-        expunges it permanently if it is already in trash.
+        expunges it permanently if it is already in trash. Requires the account
+        to have a trash mailbox — without one the Mail app rejects the call
+        ("No trash mailbox configured").
 
         Args:
             message_id: Numeric message id
 
         Returns:
-            MailActionResponse confirming the deletion.
+            MailActionResponse confirming the deletion. ``message_id`` echoes
+            the input and is **stale on return** — trashing re-caches the
+            message under a new id, so retrying with the same id fails.
         """
         client = await get_client(ctx)
         with _mail_errors(f"deleting message {message_id}"):
