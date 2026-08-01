@@ -114,21 +114,50 @@ def effective_pool_size(settings: Any, *, floor: int, grouped: bool) -> int:
 
     Args:
         settings: Live settings.
-        floor: The over-fetch the surface would use anyway. The pool never goes
-            BELOW it, or a large ``limit`` would retrieve fewer candidates with
-            reranking on than off.
+        floor: The depth the surface would retrieve anyway without reranking.
         grouped: Whether the request uses document granularity.
 
-    Grouped search is capped: the grouped prefetch is bounded by
-    ``MAX_DOCUMENT_PREFETCH``, and requesting more groups than that prefetch can
-    fill makes Qdrant widen its grouping search and reorder the head — degrading
-    the candidates before the reranker ever sees them. Clamped here rather than
-    at config-validation time because granularity is per-request.
+    Two constraints, and they can conflict — the precedence is deliberate:
+
+    1. **Never below ``floor``.** Reranking must not cause a request to retrieve
+       fewer candidates than it would without reranking, which would drop
+       results a caller was already receiving.
+    2. **Capped for grouped search.** The grouped prefetch is bounded by
+       ``MAX_DOCUMENT_PREFETCH``; asking Qdrant for more groups than that
+       prefetch can fill makes it widen its grouping search and reorder the head,
+       degrading candidates before the reranker sees them. Applied here rather
+       than at config-validation time because granularity is per-request.
+
+    **(1) wins when they conflict**, i.e. when ``floor`` alone already exceeds
+    the grouped cap. That is not the cap leaking — it is the recognition that
+    the *unreranked* path already requests ``floor`` groups and already pays
+    that degradation, so honouring the cap here would not avoid it; it would
+    only truncate the result set relative to the same request with reranking
+    off. Degraded ordering is recoverable by the reranker that follows;
+    missing rows are not. Pinned by
+    ``test_grouped_clamp_never_drops_below_floor``.
+
+    The real fix for that regime is a deeper ``MAX_DOCUMENT_PREFETCH``, which is
+    a separately measured trade-off and deliberately not made here.
     """
-    pool = max(int(getattr(settings, "search_rerank_pool_size", 200)), floor)
+    configured = int(getattr(settings, "search_rerank_pool_size", 200))
+    pool = max(configured, floor)
     if grouped:
-        pool = min(pool, MAX_DOCUMENT_PREFETCH // DOCUMENT_PREFETCH_FACTOR)
-    return max(pool, floor)
+        cap = MAX_DOCUMENT_PREFETCH // DOCUMENT_PREFETCH_FACTOR
+        if floor > cap:
+            # Constraint (1) wins. Log it: the caller is in the regime where
+            # grouped retrieval is already degrading, which is worth seeing when
+            # results look mis-ranked.
+            logger.debug(
+                "grouped rerank pool floor %d exceeds the prefetch-derived cap "
+                "%d; retrieving %d groups to avoid truncating results",
+                floor,
+                cap,
+                floor,
+            )
+            return floor
+        pool = min(pool, cap)
+    return pool
 
 
 async def rerank_results(
@@ -148,18 +177,23 @@ async def rerank_results(
     if client is None or len(results) < 2:
         return results, False
 
+    # Rows with no text cannot be scored; they keep retrieval order at the tail
+    # rather than being handed to the model, which would rank an empty string
+    # last anyway and waste a slot.
+    #
+    # Computed BEFORE the cooldown check so every ``degraded`` sample counts the
+    # same population — documents that would have been scored. Counting the full
+    # result list on one degraded path and the scorable subset on another would
+    # make the metric's own denominator depend on which failure occurred.
+    scorable = [(i, r) for i, r in enumerate(results) if (r.excerpt or "").strip()]
+    if len(scorable) < 2:
+        return results, False
+
     global _cooldown_until
     now = anyio.current_time()
     if now < _cooldown_until:
         logger.debug("rerank skipped: in failure cooldown")
-        record_rerank_documents(client.model, len(results), "degraded")
-        return results, False
-
-    # Rows with no text cannot be scored; they keep retrieval order at the tail
-    # rather than being handed to the model, which would rank an empty string
-    # last anyway and waste a slot.
-    scorable = [(i, r) for i, r in enumerate(results) if (r.excerpt or "").strip()]
-    if len(scorable) < 2:
+        record_rerank_documents(client.model, len(scorable), "degraded")
         return results, False
 
     started = anyio.current_time()

@@ -24,11 +24,11 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 import anyio
 import httpx
 
+from ..config import Settings
 from ..providers.openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
@@ -238,7 +238,7 @@ class GatewayProvider(OpenAIProvider):
         return await super().embed_batch_with_usage(texts)
 
 
-def build_gateway_token_provider(settings: Any) -> GatewayTokenProvider | None:
+def build_gateway_token_provider(settings: Settings) -> GatewayTokenProvider | None:
     """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
     client-id is configured (unauthenticated gateway).
 
