@@ -960,15 +960,50 @@ def record_tool_error(tool_name: str, error_type: str) -> None:
 _FLEET_CAPABILITIES = ("elicitation", "sampling", "roots")
 _SESSION_RECORDED_ATTR = "_astrolabe_fleet_recorded"
 
+# Ceiling on distinct client identities tracked. Truncating a label bounds how
+# big one value can get; it does nothing about how *many* distinct values a peer
+# can mint. `clientInfo.name` is chosen by the caller, so a client embedding a
+# session id or random suffix would grow the series count without limit, and
+# prometheus_client entries never expire. Beyond this many, everything new
+# collapses into `_OVERFLOW_LABEL`.
+#
+# 50 is far above the real fleet (single digits) and far below anything that
+# strains the registry, so crossing it is itself a signal — see the
+# client_name="_other" alert in docs/observability.md.
+_MAX_TRACKED_CLIENTS = 50
+_OVERFLOW_LABEL = "_other"
+_seen_client_names: set[str] = set()
+
 
 def _client_label(value: object, limit: int = 64) -> str:
-    """Clamp a client-supplied value before it becomes a metric label.
+    """Clamp a client-supplied value's *length* before it becomes a label.
 
     ``clientInfo`` arrives from the peer, so its length is not ours to trust:
-    unbounded label values are a memory exhaustion vector against the
+    an unbounded label value is a memory exhaustion vector against the
     process-global registry.
+
+    Note this bounds the size of one value, not the number of distinct values —
+    see :func:`_bounded_client_name` for that half.
     """
     return str(value)[:limit] if value is not None else "unknown"
+
+
+def _bounded_client_name(name: str) -> str:
+    """Bound the *number* of distinct client identities, not just their length.
+
+    Returns ``name`` while under the cap, ``_OVERFLOW_LABEL`` after. Together
+    with :func:`_client_label` this closes the cardinality vector: a peer can
+    neither send one enormous name nor mint unboundedly many small ones.
+    """
+    if name in _seen_client_names:
+        return name
+    if len(_seen_client_names) >= _MAX_TRACKED_CLIENTS:
+        return _OVERFLOW_LABEL
+    # ponytail: unsynchronised. Concurrent first-sightings can race past the
+    # cap by the number of in-flight requests — irrelevant against a limit of
+    # 50, and a lock on every session would cost more than the slack.
+    _seen_client_names.add(name)
+    return name
 
 
 def _minor_version(version: object) -> str:
@@ -1034,7 +1069,7 @@ def record_client_session() -> None:
             params, "protocolVersion", None
         )
         # ---------------------------------------------------------------------
-        name = _client_label(getattr(info, "name", None))
+        name = _bounded_client_name(_client_label(getattr(info, "name", None)))
         mcp_client_sessions_total.labels(
             client_name=name,
             client_version=_minor_version(getattr(info, "version", None)),
@@ -1091,9 +1126,29 @@ def instrument_call_tool_outcomes(mcp: Any) -> None:
     server = mcp._mcp_server
     original = server.request_handlers[types.CallToolRequest]
 
+    def _tool_label(name: str) -> str:
+        """Reduce a requested tool name to a registered one, or "unknown".
+
+        ``req.params.name`` is whatever the caller put in the JSON-RPC body; it
+        is not validated against the registry before this handler runs. Used
+        raw it would be an unbounded-cardinality vector — a client sending
+        garbage names mints a permanent series each — and it would pollute the
+        ``protocol_error`` tripwire with caller-chosen values that have nothing
+        to do with the SDK upgrade this metric exists to watch.
+
+        Resolved per request rather than snapshotted, so tools registered after
+        this wrapper is installed still label correctly.
+        """
+        try:
+            if mcp._tool_manager.get_tool(name) is not None:
+                return name
+        except Exception:  # pragma: no cover - registry shape is SDK-internal
+            logger.debug("Could not consult the tool registry", exc_info=True)
+        return "unknown"
+
     async def handler(req: types.CallToolRequest) -> types.ServerResult:
         record_client_session()
-        tool_name = req.params.name
+        tool_name = _tool_label(req.params.name)
         try:
             result = await original(req)
         except Exception:

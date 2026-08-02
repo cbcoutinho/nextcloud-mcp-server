@@ -78,7 +78,9 @@ most consequential changes are silent — see the alerts below.
 
 - `mcp_client_sessions_total{client_name, client_version, protocol_version}` -
   sessions observed, counted once per session. `client_version` is truncated to
-  `major.minor`.
+  `major.minor`; `client_name` is length-clamped and collapses to `_other` past
+  50 distinct identities (both halves of the cardinality bound, since
+  `clientInfo` is caller-chosen).
 - `mcp_client_capability{client_name, capability}` - 1/0 per `elicitation` /
   `sampling` / `roots`, from the client's most recent session.
 - `mcp_elicitation_total{prompt, outcome, reason}` - elicitation results.
@@ -262,6 +264,14 @@ negotiating something new:
 count by (client_name) (
   count by (client_name, protocol_version) (increase(mcp_client_sessions_total[1d]) > 0)
 ) > 1
+```
+
+**Client-identity cardinality cap hit** — `client_name` collapses to `_other`
+past 50 distinct identities. The real fleet is single digits, so this firing
+means either a genuinely new class of client or a peer rotating its declared
+`clientInfo.name` per session:
+```promql
+sum(increase(mcp_client_sessions_total{client_name="_other"}[1h])) > 0
 ```
 
 **Client identity stopped resolving** — the accessors that read `clientInfo` /

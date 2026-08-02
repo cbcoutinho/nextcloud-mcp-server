@@ -25,6 +25,7 @@ from mcp.server.lowlevel.server import request_ctx
 from mcp.shared.exceptions import McpError
 
 from nextcloud_mcp_server.observability.metrics import (
+    _MAX_TRACKED_CLIENTS,
     instrument_call_tool_outcomes,
     record_client_session,
 )
@@ -212,9 +213,15 @@ class TestCallToolOutcomes:
     """The tool_error vs protocol_error split — the core upgrade tripwire."""
 
     @staticmethod
-    def _wrap(inner):
+    def _wrap(inner, registered=("nc_notes_create_note",)):
+        """Wrap ``inner``, with ``registered`` standing in for the tool registry."""
         mcp = SimpleNamespace(
-            _mcp_server=SimpleNamespace(request_handlers={types.CallToolRequest: inner})
+            _mcp_server=SimpleNamespace(
+                request_handlers={types.CallToolRequest: inner}
+            ),
+            _tool_manager=SimpleNamespace(
+                get_tool=lambda name: object() if name in registered else None
+            ),
         )
         instrument_call_tool_outcomes(mcp)
         return mcp._mcp_server.request_handlers[types.CallToolRequest]
@@ -295,3 +302,63 @@ def metric_session():
         yield
     finally:
         request_ctx.reset(token)
+
+
+class TestLabelCardinality:
+    """Both halves of the cardinality bound: value size AND value count.
+
+    Prometheus entries never expire, so a peer that can influence a label value
+    can grow the process-global registry without limit. `clientInfo.name` and
+    the `tools/call` `name` are both caller-chosen, so both are bounded — the
+    former by a cap on distinct values, the latter by the tool registry.
+    """
+
+    async def test_unregistered_tool_name_collapses_to_unknown(self, metric_sample):
+        """A bogus tools/call name must not mint a series of its own.
+
+        Left raw this would also pollute the protocol_error tripwire with
+        caller-chosen labels that say nothing about the SDK upgrade.
+        """
+        bogus = "../../etc/passwd" + "A" * 500
+        bogus_labels = {"tool_name": bogus, "outcome": "tool_error"}
+        unknown_labels = {"tool_name": "unknown", "outcome": "tool_error"}
+        before_unknown = metric_sample(OUTCOMES, unknown_labels)
+
+        async def inner(_req):
+            return types.ServerResult(types.CallToolResult(content=[], isError=True))
+
+        handler = TestCallToolOutcomes._wrap(inner)
+        await handler(
+            types.CallToolRequest(
+                method="tools/call",
+                params=types.CallToolRequestParams(name=bogus, arguments={}),
+            )
+        )
+
+        assert metric_sample(OUTCOMES, bogus_labels) == 0
+        assert metric_sample(OUTCOMES, unknown_labels) - before_unknown == 1
+
+    def test_distinct_client_names_are_capped(self, metric_sample):
+        """A client varying clientInfo.name per session cannot grow series forever.
+
+        Length-clamping alone does not close this: it bounds how big one value
+        gets, not how many distinct ones a peer can mint.
+        """
+        overflow_labels = {
+            "client_name": "_other",
+            "client_version": "1.0",
+            "protocol_version": "2025-06-18",
+        }
+        before = metric_sample(SESSIONS, overflow_labels)
+
+        # Well past the cap, each session declaring a fresh identity.
+        for i in range(_MAX_TRACKED_CLIENTS + 20):
+            token = _activate(
+                _FakeSession(_client_params(name=f"rotating-{i}", version="1.0.0"))
+            )
+            try:
+                record_client_session()
+            finally:
+                request_ctx.reset(token)
+
+        assert metric_sample(SESSIONS, overflow_labels) - before >= 20
