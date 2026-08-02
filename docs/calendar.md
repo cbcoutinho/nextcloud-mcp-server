@@ -137,3 +137,43 @@ await nc_calendar_complete_todo(
 
 Not idempotent: a second call without an explicit `completed` restamps the
 timestamp.
+
+## Recurring todos
+
+CalDAV does not expand VTODO recurrences: a `calendar-query` returns only the
+master component, whose `DTSTART`/`DUE` describe the **first** instance of the
+series. A chore created in 2023 that repeats every June therefore keeps
+reporting `due: "2023-06-15"` forever, which reads as "three years overdue" even
+though the current instance ran a few weeks ago.
+
+`nc_calendar_list_todos` and `nc_calendar_search_todos` expand the recurrence
+set client-side and describe the **unfinished backlog** of the series:
+
+| Field | Meaning |
+|-------|---------|
+| `recurring` | `true` when the todo has an `RRULE` |
+| `recurrence_rule` | The RFC 5545 rule, e.g. `FREQ=MONTHLY;BYMONTHDAY=28` |
+| `pending_count` | How many occurrences have started and are not done (`0` = up to date) |
+| `oldest_pending_dtstart` / `oldest_pending_due` | The oldest unfinished occurrence — how far the backlog reaches back |
+| `current_dtstart` / `current_due` | The most recent unfinished occurrence — the one to work on now |
+
+An occurrence is **pending** when it has started (`DTSTART <= now`) and is not
+done. Expansion applies `EXDATE` and `RECURRENCE-ID` overrides, which is what
+makes per-instance completion visible: clients that materialise recurrences
+(jtx Board via DAVx5, for one) write one override per instance and mark
+finished ones `STATUS:COMPLETED`. `PERCENT-COMPLETE:100` counts as done too,
+since some clients set only that. The result therefore matches the open items
+such an app shows for the same series.
+
+For a series with no overrides at all, every started occurrence counts as
+pending — there is nothing recording that any of them were done.
+
+**When judging whether a recurring todo is overdue, read `current_due` (or
+`oldest_pending_due`), never `due`.** `dtstart`/`due` are deliberately left as
+stored so that updates keep addressing the series rather than a single
+instance.
+
+Two bounds worth knowing: the backlog is searched over the last three years, so
+`pending_count` is a lower bound for a long-abandoned series; and if the
+recurrence cannot be resolved at all (no `DTSTART` to anchor the rule, or an
+unexpandable rule) every field above is omitted rather than guessed.
