@@ -1000,6 +1000,9 @@ _seen_client_ids: set[str] = set()
 
 def _warn_once(cause: str, message: str, *args: object) -> None:
     """Log a cause the first time it occurs in this process, then stay quiet."""
+    # ponytail: unsynchronised check-then-set, matching _bounded_label and the
+    # session claim. Worst case is one duplicate line per cause per process, on
+    # a first-request race; a lock on a logging gate would cost more.
     if cause in _warned_causes:
         return
     _warned_causes.add(cause)
