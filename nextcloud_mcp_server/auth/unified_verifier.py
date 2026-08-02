@@ -346,20 +346,27 @@ class UnifiedTokenVerifier(TokenVerifier):
                     f"or {self.settings.nextcloud_mcp_server_url}",
                 )
 
-            # Recorded here, not at each validation stage. A signature can
-            # verify and the token still be refused for the wrong audience —
-            # counting the stage as "valid" and then the refusal as
-            # "bad_audience" made one token produce two events, and inflated
-            # `result="valid"` relative to tokens actually accepted. One token,
-            # one event, recorded at the point of acceptance.
-            record_oauth_token_validation(validation_method, "valid")
-
             logger.info(
                 "MCP audience validated - token can be used directly "
                 "(Nextcloud will validate its own audience)"
             )
 
-            return self._create_access_token(token, payload)
+            # Recorded only once the AccessToken actually exists — not at each
+            # validation stage, and not merely once the audience check passes.
+            # `_create_access_token` still returns None (without raising) for a
+            # payload carrying no `sub`/`preferred_username`, so recording any
+            # earlier means a token that is about to be refused is counted as
+            # accepted. "valid" has to mean the caller got a token.
+            access_token = self._create_access_token(token, payload)
+            if access_token is None:
+                return self._reject(
+                    validation_method,
+                    "unknown",
+                    token,
+                    "no 'sub' or 'preferred_username' claim in token payload",
+                )
+            record_oauth_token_validation(validation_method, "valid")
+            return access_token
 
         except Exception as e:
             return self._reject(validation_method, "unknown", token, str(e))
@@ -404,11 +411,11 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload = await self._verify_jwt_signature(
                     token, skip_issuer_check=True
                 )
-                if payload:
-                    record_oauth_token_validation("jwt", "valid")
-                else:
+                if not payload:
                     # _verify_jwt_signature() already recorded the rejection
                     # with its reason; recording again would double-count.
+                    # Success is recorded once, below, when the AccessToken
+                    # actually exists.
                     return None
             else:
                 # Opaque token: try introspection first (only when configured),
@@ -419,9 +426,8 @@ class UnifiedTokenVerifier(TokenVerifier):
                 if self.introspection_uri:
                     validation_method = "introspect"
                     payload = await self._introspect_token(token)
-                    if payload:
-                        record_oauth_token_validation("introspect", "valid")
-                    # else: _introspect_token() already recorded it.
+                    # A rejection here is already recorded by
+                    # _introspect_token(); success is recorded once, below.
 
                 # Fall through to userinfo when introspection is unconfigured or
                 # returned None. NOTE: _introspect_token returns None for BOTH an
@@ -435,9 +441,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                     # by the outer handler is attributed correctly.
                     validation_method = "userinfo"
                     payload = await self._validate_via_userinfo(token)
-                    if payload:
-                        record_oauth_token_validation("userinfo", "valid")
-                    else:
+                    if not payload:
                         # _validate_via_userinfo() already recorded it.
                         return None
 
@@ -466,12 +470,25 @@ class UnifiedTokenVerifier(TokenVerifier):
             # Cache and return the token. via_userinfo is derived from how we
             # actually validated — never from a payload claim (see
             # _create_access_token_with_cache_key).
-            return self._create_access_token_with_cache_key(
+            access_token = self._create_access_token_with_cache_key(
                 token,
                 payload,
                 cache_key,
                 via_userinfo=(validation_method == "userinfo"),
             )
+            # Recorded here rather than per validation stage: creation still
+            # returns None (without raising) for a payload with no
+            # `sub`/`preferred_username`, and a stage passing is not the same
+            # thing as the caller getting a token.
+            if access_token is None:
+                return self._reject(
+                    validation_method,
+                    "unknown",
+                    token,
+                    "no 'sub' or 'preferred_username' claim in token payload",
+                )
+            record_oauth_token_validation(validation_method, "valid")
+            return access_token
 
         except Exception as e:
             return self._reject(validation_method, "unknown", token, str(e))

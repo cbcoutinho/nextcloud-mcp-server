@@ -1245,6 +1245,62 @@ class TestRejectionObservability:
 
         assert metric_sample(self.VALIDATIONS, accepted) - before == 1
 
+    @pytest.mark.parametrize(
+        ("surface", "method_name", "kwargs"),
+        [
+            ("mcp", "_verify_mcp_audience", {}),
+            (
+                "management",
+                "_verify_without_audience_check",
+                {"cache_key": "mgmt:nosub"},
+            ),
+        ],
+    )
+    async def test_no_phantom_valid_when_token_creation_fails(
+        self, base_settings, metric_sample, surface, method_name, kwargs
+    ):
+        """A token that yields no AccessToken is a rejection, not an acceptance.
+
+        `_create_access_token*` returns None — without raising — for a payload
+        carrying no `sub`/`preferred_username`. Recording "valid" before that
+        point meant a signature- and audience-valid token could be counted as
+        accepted while the caller got None, the session ended and the user was
+        sent back through login: the exact silent-rejection shape this work
+        exists to remove, surviving in the one place round 6's fix didn't reach.
+
+        Checked on both surfaces because they had drifted apart — the
+        management path was still recording per-stage.
+        """
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        rejected = {
+            "method": "jwt",
+            "result": "error",
+            "reason": "unknown",
+            "client_id": "mistral-client",
+        }
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        # Signature and audience are fine; the payload simply names no user.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(return_value={"aud": ["test-client-id"]}),
+        ):
+            assert (
+                await getattr(verifier, method_name)(self._jwt_for(), **kwargs) is None
+            )
+
+        assert metric_sample(self.VALIDATIONS, accepted) == before_accepted
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)
