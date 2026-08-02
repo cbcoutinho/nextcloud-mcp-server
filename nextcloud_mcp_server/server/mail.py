@@ -182,7 +182,7 @@ def configure_mail_tools(mcp: FastMCP):
                   address or display name
                 * ``subject:``, ``body:`` — substring match (``body:`` searches
                   IMAP server-side and is slower)
-                * ``tags:`` — comma-separated tag *database ids* (not names;
+                * ``tags:`` — comma-separated tag *database ids* (not names,
                   get one from nc_mail_create_tag)
                 * ``start:``, ``end:`` — date bounds
                 * ``flags:`` — comma-separated ``read``/``unread``/``starred``/
@@ -450,7 +450,7 @@ def configure_mail_tools(mcp: FastMCP):
     ) -> MailActionResponse:
         """Set IMAP flags on a message, e.g. mark it read (requires mail.write scope).
 
-        Only the flags you pass are changed; omitted ones are left alone. Use
+        Only the flags you pass are changed. Omitted ones are left alone. Use
         ``seen=True`` after processing a message so it does not look unhandled,
         and ``seen=False`` to mark it unread again.
 
