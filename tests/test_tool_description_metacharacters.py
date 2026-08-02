@@ -19,6 +19,10 @@ import pathlib
 
 import pytest
 
+# The CI job runs ``pytest -m unit``, so an unmarked test is collected and then
+# deselected: it never fails, it just silently stops running.
+pytestmark = pytest.mark.unit
+
 METACHARACTERS = ("&&", ";", "||", "$(", "> ", "< ")
 
 # Tools whose description legitimately contains a metacharacter inside a quoted
