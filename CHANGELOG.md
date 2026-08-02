@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.162.0 (2026-08-02)
+
+### Feat
+
+- **observability**: record why each OAuth token is rejected, and for whom
+- **observability**: record MCP client fleet and tool-delivery semantics
+
+### Fix
+
+- **observability**: record a management grant only once the allowlist clears
+- **observability**: remove unreachable return left by the chain refactor
+- **observability**: record a fallback chain as one rejection, not one per stage
+- **observability**: drop the duplicate log I added in round 7
+- **observability**: record valid only once an AccessToken exists
+- **observability**: record a token validation once, at acceptance
+- **observability**: classify JWKS fetch failures as network_error
+- **observability**: keep the verified client_id on allowlist rejections
+- **observability**: record the last silent rejection path (opaque, no validator)
+- **observability**: derive rejection result from reason; close remaining gaps
+- **observability**: remove test-order coupling and falsy-value accessor bug
+- **observability**: bound the cardinality of caller-chosen metric labels
+
 ## v0.161.0 (2026-08-02)
 
 ### Feat
