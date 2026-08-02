@@ -1127,6 +1127,56 @@ class TestRejectionObservability:
             for r in caplog.records
         )
 
+    async def test_jwks_outage_is_a_network_error_not_unknown(
+        self, base_settings, metric_sample
+    ):
+        """A JWKS fetch failure is our IdP being unreachable, not a bad token.
+
+        `PyJWKClientError` is not an `InvalidTokenError` subclass, so without an
+        explicit clause it lands in the generic handler as "unknown" — leaving a
+        JWKS outage looking different from the introspection and userinfo
+        outages it is the exact peer of, on a dashboard built to tell causes
+        apart.
+        """
+        labels = {
+            "method": "jwt",
+            "result": "error",
+            "reason": "network_error",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        verifier.jwks_client.get_signing_key_from_jwt.side_effect = (
+            jwt.PyJWKClientError("could not fetch JWKS")
+        )
+
+        assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    def test_empty_verified_client_id_falls_back(self, base_settings, metric_sample):
+        """An empty verified id recovers azp/aud rather than recording nothing.
+
+        A verified payload can carry `azp`/`aud` with no top-level `client_id`,
+        and for a JWT the fallback re-reads the same already-verified bytes.
+        Honouring "" strictly would lose a recoverable identity for no gain.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "via-azp",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        token = jwt.encode({"sub": "a", "azp": "via-azp"}, "s", algorithm="HS256")
+        verifier._reject("allowlist", "not_allowlisted", token, client_id="")
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)

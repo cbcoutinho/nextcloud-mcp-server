@@ -598,11 +598,17 @@ class UnifiedTokenVerifier(TokenVerifier):
         Args:
             client_id: Pass this when the caller already holds a *verified*
                 client id, i.e. the token validated and was then rejected on
-                authorization grounds. Only the validation paths need the
-                fallback below, and that fallback can only read a JWT — an
-                opaque token would otherwise be recorded as "unknown" despite
-                its identity being known, which is precisely the population
-                (Astrolabe's opaque management tokens) this metric exists for.
+                authorization grounds. The fallback below can only read a JWT,
+                so an opaque token would otherwise be recorded as "unknown"
+                despite its identity being known — and clients may present
+                either token type, so that is not a rare shape.
+
+                An *empty* value falls back too, deliberately. A verified
+                payload can carry `azp`/`aud` without a top-level `client_id`
+                (`_create_access_token_with_cache_key` reads only the latter,
+                defaulting to ""), and for a JWT the fallback re-reads those
+                same already-verified bytes. Preferring "" over a recoverable
+                identity would lose information for no gain.
         """
         client_id = client_id or self._claimed_client_id(token)
         result = "error" if reason in self._OUR_FAULT_REASONS else "invalid"
@@ -680,6 +686,14 @@ class UnifiedTokenVerifier(TokenVerifier):
         except jwt.InvalidTokenError as e:
             # Covers signature failures, malformed tokens and bad `iat`.
             return self._reject("jwt", "bad_signature", token, str(e))
+        except jwt.PyJWKClientError as e:
+            # Fetching the signing key failed — the JWKS endpoint is down, slow
+            # or unreachable. Nothing is wrong with the caller's token. This is
+            # NOT an InvalidTokenError subclass, so without an explicit clause
+            # it lands in the generic handler as "unknown", and a JWKS outage
+            # reads differently from the introspection and userinfo outages it
+            # is the exact peer of.
+            return self._reject("jwt", "network_error", token, str(e))
         except Exception as e:
             return self._reject("jwt", "unknown", token, str(e))
 
