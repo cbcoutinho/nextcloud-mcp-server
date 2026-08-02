@@ -30,6 +30,7 @@ from nextcloud_mcp_server.providers.gateway_rerank import (
 )
 from nextcloud_mcp_server.search import rerank as rerank_mod
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+from nextcloud_mcp_server.search.rerank import RERANK_APPLIED, RERANK_DEGRADED
 
 pytestmark = pytest.mark.integration
 
@@ -168,11 +169,11 @@ async def test_rerank_reorders_real_retrieval_output(rerank_collection, monkeypa
         ],
     )
 
-    out, reranked = await rerank_mod.rerank_results(
+    out, outcome = await rerank_mod.rerank_results(
         results, "anything", settings=settings, surface="http"
     )
 
-    assert reranked is True
+    assert outcome == RERANK_APPLIED
     assert [r.id for r in out] == list(reversed(retrieval_order))
     assert all(r.rerank_score is not None for r in out)
     # The retrieval score survives, so score_threshold keeps its meaning.
@@ -191,11 +192,11 @@ async def test_degraded_rerank_preserves_exact_retrieval_order(
 
     _stub_reranker(monkeypatch, raises=RerankError("gateway unavailable"))
 
-    out, reranked = await rerank_mod.rerank_results(
+    out, outcome = await rerank_mod.rerank_results(
         results, "anything", settings=settings, surface="http"
     )
 
-    assert reranked is False
+    assert outcome == RERANK_DEGRADED
     assert [r.id for r in out] == retrieval_order
     assert all(r.rerank_score is None for r in out)
 
@@ -210,10 +211,10 @@ async def test_partial_ranking_keeps_every_candidate(rerank_collection, monkeypa
 
     _stub_reranker(monkeypatch, ranking=[RerankedIndex(index=n - 1, score=9.0)])
 
-    out, reranked = await rerank_mod.rerank_results(
+    out, outcome = await rerank_mod.rerank_results(
         results, "anything", settings=settings, surface="http"
     )
 
-    assert reranked is True
+    assert outcome == RERANK_APPLIED
     assert len(out) == n, "unscored candidates are appended, never dropped"
     assert out[0].id == results[n - 1].id
