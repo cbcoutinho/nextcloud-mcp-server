@@ -55,6 +55,9 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_with_context,
 )
 from nextcloud_mcp_server.search.rerank import (
+    RERANK_APPLIED,
+    RERANK_DEGRADED,
+    RERANK_SKIPPED,
     effective_pool_size,
     rerank_available,
     rerank_results,
@@ -432,7 +435,17 @@ async def unified_search(request: Request) -> JSONResponse:
 
         # Request extra results to handle offset
         search_limit = limit + offset
-        reranked = False
+        # The budget an UNRERANKED request would have used, which differs by
+        # retrieval branch: the doc_types loop over-fetches 2x before
+        # verify-on-read, the single-query branch does not. total_found is
+        # capped back to this so enabling reranking cannot change it — a flat
+        # cap would under-report the doc_types path by half.
+        unreranked_budget = (
+            search_limit * 2
+            if (doc_types and isinstance(doc_types, list))
+            else search_limit
+        )
+        rerank_outcome = RERANK_SKIPPED
         # Reranking needs a deeper candidate pool than pagination alone; it is
         # offset-INDEPENDENT so page 2 reranks the same pool as page 1, which is
         # what keeps items from migrating across page boundaries. Pagination
@@ -496,9 +509,9 @@ async def unified_search(request: Request) -> JSONResponse:
             # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
             # _search_with_acl, and after the per-doc_type merge so one pass
             # covers every type.
-            nonlocal reranked
+            nonlocal rerank_outcome
             if rerank:
-                results, reranked = await rerank_results(
+                results, rerank_outcome = await rerank_results(
                     results, query, settings=settings, surface="http"
                 )
             return results
@@ -526,7 +539,7 @@ async def unified_search(request: Request) -> JSONResponse:
         # turning reranking on changes result ORDER and nothing else.
         total_found = len(sorted_results)
         if rerank:
-            total_found = min(total_found, search_limit)
+            total_found = min(total_found, unreranked_budget)
         paginated_results = sorted_results[offset : offset + limit]
 
         # Format results for Unified Search
@@ -598,7 +611,7 @@ async def unified_search(request: Request) -> JSONResponse:
             "granularity": granularity,
             # False both when not requested and when requested-but-degraded, so
             # a caller can always tell which ordering it received.
-            "reranked": reranked,
+            "reranked": rerank_outcome == RERANK_APPLIED,
         }
 
         # Optional PCA coordinates. PCA plots the result chunks around the query's
@@ -623,12 +636,17 @@ async def unified_search(request: Request) -> JSONResponse:
         # Three distinct states, not a boolean: never asked for, asked for and
         # applied, asked for and degraded. Collapsing the last two would hide a
         # reranker outage behind the same label as "not requested".
+        # SKIPPED (nothing to reorder) reports as "false", not "unavailable":
+        # a query returning 0-1 rows is routine, and folding it into the outage
+        # bucket would bury real reranker failures in noise.
         if not rerank:
             reranked_label = "false"
-        elif reranked:
+        elif rerank_outcome == RERANK_APPLIED:
             reranked_label = "true"
-        else:
+        elif rerank_outcome == RERANK_DEGRADED:
             reranked_label = "unavailable"
+        else:
+            reranked_label = "false"
 
         record_search_request(
             surface="http",

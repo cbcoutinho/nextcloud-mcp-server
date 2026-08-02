@@ -18,6 +18,9 @@ from nextcloud_mcp_server.providers.gateway_rerank import (
 )
 from nextcloud_mcp_server.search import rerank as rerank_mod
 from nextcloud_mcp_server.search.algorithms import SearchResult
+from nextcloud_mcp_server.search.rerank import (
+    RERANK_APPLIED,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -102,7 +105,7 @@ class TestReordering:
             results, "q", settings=_settings(), surface="mcp"
         )
 
-        assert reranked is True
+        assert reranked == RERANK_APPLIED
         assert [r.id for r in out] == ["2", "0", "1"]
         assert [r.rerank_score for r in out] == [0.9, 0.5, 0.1]
 
@@ -129,7 +132,7 @@ class TestReordering:
             results, "q", settings=_settings(), surface="mcp"
         )
 
-        assert reranked is True
+        assert reranked == RERANK_APPLIED
         assert len(out) == 4, "no candidate may be lost"
         assert out[0].id == "3"
         # The remainder keeps retrieval order behind the reranked head.
@@ -147,7 +150,7 @@ class TestReordering:
             results, "q", settings=_settings(), surface="mcp"
         )
 
-        assert reranked is True
+        assert reranked == RERANK_APPLIED
         _, sent = capture[0]
         assert len(sent) == 2, "the blank excerpt is not worth a model slot"
         assert len(out) == 3, "but the row is still returned"
@@ -162,7 +165,7 @@ class TestDegradation:
             settings=_settings(search_rerank_enabled=False),
             surface="mcp",
         )
-        assert reranked is False
+        assert reranked != RERANK_APPLIED
         assert [r.id for r in out] == ["0", "1", "2"]
         assert all(r.rerank_score is None for r in out)
 
@@ -174,7 +177,7 @@ class TestDegradation:
             results, "q", settings=_settings(), surface="mcp"
         )
 
-        assert reranked is False
+        assert reranked != RERANK_APPLIED
         assert [r.id for r in out] == ["0", "1", "2", "3"]
         assert all(r.rerank_score is None for r in out)
 
@@ -200,7 +203,7 @@ class TestDegradation:
             _, reranked = await rerank_mod.rerank_results(
                 _results(3), "q", settings=_settings(), surface="mcp"
             )
-            assert reranked is False
+            assert reranked != RERANK_APPLIED
 
         assert calls["n"] == 1, "only the first search should reach the reranker"
 
@@ -217,7 +220,7 @@ class TestDegradation:
         _, reranked = await rerank_mod.rerank_results(
             _results(3), "q", settings=_settings(), surface="mcp"
         )
-        assert reranked is True
+        assert reranked == RERANK_APPLIED
 
     @pytest.mark.parametrize("n", [0, 1])
     async def test_too_few_results_to_reorder(self, monkeypatch, n):
@@ -225,5 +228,5 @@ class TestDegradation:
         out, reranked = await rerank_mod.rerank_results(
             _results(n), "q", settings=_settings(), surface="mcp"
         )
-        assert reranked is False
+        assert reranked != RERANK_APPLIED
         assert len(out) == n

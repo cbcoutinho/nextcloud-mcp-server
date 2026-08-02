@@ -40,6 +40,9 @@ from nextcloud_mcp_server.search.bm25_hybrid import (
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.rerank import (
+    RERANK_APPLIED,
+    RERANK_DEGRADED,
+    RERANK_SKIPPED,
     effective_pool_size,
     rerank_available,
     rerank_results,
@@ -533,12 +536,18 @@ def configure_semantic_tools(mcp: FastMCP):
             # since fused scores from separate per-type queries were computed
             # against different candidate populations and are not really
             # comparable, whereas one reranker's scores are.
-            reranked = False
+            rerank_outcome = RERANK_SKIPPED
             if rerank:
-                all_results, reranked = await rerank_results(
+                all_results, rerank_outcome = await rerank_results(
                     all_results, query, settings=settings, surface="mcp"
                 )
-                metric_reranked = "true" if reranked else "unavailable"
+                # SKIPPED (nothing to reorder) reports as "false", not
+                # "unavailable" — otherwise every query returning 0-1 rows would
+                # register as a reranker outage.
+                metric_reranked = {
+                    RERANK_APPLIED: "true",
+                    RERANK_DEGRADED: "unavailable",
+                }.get(rerank_outcome, "false")
                 # Back down to the verification budget so verify-on-read still
                 # sees the same number of Nextcloud round-trips as an unreranked
                 # search — the deep pool exists for the reranker, not for
@@ -799,8 +808,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 total_found=len(results),
                 search_method=search_method,
                 granularity=granularity,
-                reranked=reranked,
-                rerank_model=(settings.search_rerank_model if reranked else None),
+                reranked=rerank_outcome == RERANK_APPLIED,
+                rerank_model=(
+                    settings.search_rerank_model
+                    if rerank_outcome == RERANK_APPLIED
+                    else None
+                ),
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )

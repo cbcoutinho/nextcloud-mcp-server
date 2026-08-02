@@ -216,3 +216,20 @@ def test_response_granularity_defaults_to_chunk():
 
     assert resp.status_code == 200
     assert resp.json()["granularity"] == "chunk"
+
+
+def test_total_found_is_not_halved_for_doc_types_plus_rerank():
+    """The doc_types branch over-fetches 2x before verify-on-read, so its
+    unreranked budget is `search_limit * 2` — not `search_limit`.
+
+    Capping total_found flat would under-report that path by half the moment
+    reranking is enabled, breaking the "reranking changes order and nothing
+    else" invariant for exactly the callers who filter by type.
+    """
+    plain, _, _ = _post({"query": "q", "limit": 5, "doc_types": ["file"]}, rows=40)
+    reranked, _, _ = _post(
+        {"query": "q", "limit": 5, "doc_types": ["file"], "rerank": True}, rows=40
+    )
+
+    assert plain.status_code == 200 and reranked.status_code == 200
+    assert reranked.json()["total_found"] == plain.json()["total_found"]
