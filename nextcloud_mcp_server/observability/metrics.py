@@ -18,9 +18,9 @@ import functools
 import logging
 import threading
 import time
-from typing import Any
 
 from mcp import types
+from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from prometheus_client import (
     REGISTRY,
@@ -988,6 +988,23 @@ def _client_label(value: object, limit: int = 64) -> str:
     return str(value)[:limit] if value is not None else "unknown"
 
 
+def _first_present(*candidates: tuple[object, str]) -> object | None:
+    """Return the first attribute that is actually *present*, else None.
+
+    Deliberately tests ``is not None`` rather than truthiness. The obvious
+    ``getattr(a, "x", None) or getattr(b, "y", None)`` would treat a present
+    but falsy value — an empty string, a 0 — as missing and silently fall
+    through to the other spelling. That is not hypothetical for the SDK
+    upgrade this instrumentation exists to watch: mcp 2.x has unversioned
+    servers report an empty string rather than omitting the field.
+    """
+    for obj, attr in candidates:
+        value = getattr(obj, attr, None)
+        if value is not None:
+            return value
+    return None
+
+
 def _bounded_client_name(name: str) -> str:
     """Bound the *number* of distinct client identities, not just their length.
 
@@ -1059,14 +1076,12 @@ def record_client_session() -> None:
         # client_name="unknown". That is deliberate (instrumentation must not
         # fail a tool call) and is the post-upgrade signal to alert on; see
         # docs/observability.md.
-        info = getattr(params, "client_info", None) or getattr(
-            params, "clientInfo", None
+        info = _first_present((params, "client_info"), (params, "clientInfo"))
+        caps = _first_present(
+            (session, "client_capabilities"), (params, "capabilities")
         )
-        caps = getattr(session, "client_capabilities", None) or getattr(
-            params, "capabilities", None
-        )
-        protocol = getattr(ctx, "protocol_version", None) or getattr(
-            params, "protocolVersion", None
+        protocol = _first_present(
+            (ctx, "protocol_version"), (params, "protocolVersion")
         )
         # ---------------------------------------------------------------------
         name = _bounded_client_name(_client_label(getattr(info, "name", None)))
@@ -1109,7 +1124,7 @@ def record_elicitation(prompt: str, outcome: str, reason: str = "none") -> None:
     mcp_elicitation_total.labels(prompt=prompt, outcome=outcome, reason=reason).inc()
 
 
-def instrument_call_tool_outcomes(mcp: Any) -> None:
+def instrument_call_tool_outcomes(mcp: FastMCP) -> None:
     """Wrap the low-level CallToolRequest handler to record how the SDK replied.
 
     The tool_error/protocol_error distinction is made *inside* the SDK, one

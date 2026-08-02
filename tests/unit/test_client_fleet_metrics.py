@@ -24,6 +24,7 @@ from mcp import types
 from mcp.server.lowlevel.server import request_ctx
 from mcp.shared.exceptions import McpError
 
+from nextcloud_mcp_server.observability import metrics as metrics_module
 from nextcloud_mcp_server.observability.metrics import (
     _MAX_TRACKED_CLIENTS,
     instrument_call_tool_outcomes,
@@ -37,6 +38,25 @@ pytestmark = pytest.mark.unit
 SESSIONS = "mcp_client_sessions_total"
 CAPABILITY = "mcp_client_capability"
 OUTCOMES = "mcp_tool_outcomes_total"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_seen_client_names():
+    """Snapshot/restore the module-global client-name set around every test.
+
+    ``_seen_client_names`` is process-global and never expires, so the
+    capacity test below (which mints ~70 identities) would otherwise leave the
+    cap exhausted for whatever runs next — silently turning an assertion on a
+    real ``client_name`` into one on ``"_other"``. Nothing enforces test order
+    here, so relying on file-definition order would be a latent flake rather
+    than a guarantee.
+    """
+    saved = set(metrics_module._seen_client_names)
+    try:
+        yield
+    finally:
+        metrics_module._seen_client_names.clear()
+        metrics_module._seen_client_names.update(saved)
 
 
 def _client_params(
