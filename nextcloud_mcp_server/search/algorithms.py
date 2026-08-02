@@ -199,10 +199,14 @@ class SearchResult:
     #   * ``score_threshold`` is applied inside Qdrant against the retrieval
     #     score, so overwriting would leave the filter and the returned value
     #     referring to different quantities;
-    #   * ``score`` is documented above as an ordering artifact that is not
-    #     calibrated, while a cross-encoder score is — conditionally changing
-    #     which of those a field holds, based on a server flag, would leave no
-    #     consumer able to interpret it;
+    #   * the two are on incomparable scales — ``score`` is a rank artifact
+    #     bounded by ``2/VECTOR_SEARCH_RRF_K`` (~0.033 at k=60) while a
+    #     cross-encoder score spans [0, 1] — so conditionally changing which of
+    #     them a field holds, based on a server flag, would leave no consumer
+    #     able to interpret it. NB a cross-encoder score is better SEPARATED
+    #     (23x on medians, AUC 0.839 vs 0.765 on a 60-query labelled set) but is
+    #     NOT calibrated: [0.6, 0.8) was relevant only ~50-72% of the time.
+    #     Neither field is a probability, and neither may be shown as one;
     #   * ``__post_init__`` rejects negatives, and clamping a negative
     #     cross-encoder score to 0.0 would collapse the tail into a tie and
     #     silently leave it in retrieval order behind a reranked head.

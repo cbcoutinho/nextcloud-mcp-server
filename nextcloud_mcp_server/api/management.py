@@ -43,8 +43,22 @@ _server_start_time = time.time()
 
 # The search algorithms astrolabe's McpServerClient understands (the ``algorithm``
 # request param to /api/v1/search and /api/v1/vector-viz/search): ``semantic``
-# (dense only), ``bm25`` (sparse/keyword only), ``hybrid`` (dense+sparse fusion).
+# (dense only), ``bm25``, ``hybrid``.
 # Single source of truth, also consumed by api/visualization.py for validation.
+#
+# CAVEAT — ``bm25`` and ``hybrid`` are currently BEHAVIOURALLY IDENTICAL. Both are
+# routed to ``BM25HybridSearchAlgorithm`` by ``_build_search_algorithm``
+# (api/visualization.py), which always issues dense AND sparse prefetches and
+# returns the fused score. There is no sparse-only path, so ``bm25`` does not mean
+# "keyword only" — it differs from ``hybrid`` only in the string echoed back as
+# ``search_method``. A previous version of this comment claimed "sparse/keyword
+# only", which a caller could reasonably act on.
+#
+# Consequence for callers: raw BM25 scores (unbounded, values above 8 observed)
+# never reach a caller's ``score`` field on either name. What they see is the RRF
+# fused score, bounded by ``2/VECTOR_SEARCH_RRF_K``, or an unbounded DBSF score.
+# Either giving ``bm25`` a genuinely sparse-only path or dropping it from the
+# advertised set is a behaviour change and is tracked on Deck #958, not here.
 SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
 
 
