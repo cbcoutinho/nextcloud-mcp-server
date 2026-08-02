@@ -62,6 +62,29 @@ The Helm chart has moved to a [separate repository](https://github.com/cbcoutinh
 - `mcp_tool_calls_total` - Tool invocation count by status
 - `mcp_tool_duration_seconds` - Tool execution latency
 - `mcp_tool_errors_total` - Tool errors by type
+- `mcp_tool_outcomes_total` - How the SDK *delivered* each call: `success` |
+  `tool_error` | `protocol_error`
+
+> `mcp_tool_outcomes_total` labels `tool_name` with the tool's **registered MCP
+> name**, whereas `mcp_tool_calls_total` uses the Python `func.__name__`. These
+> differ for the OAuth tools (e.g. `tool_provision_access` vs
+> `provision_nextcloud_access`). Don't join the two on `tool_name`.
+
+### MCP Client Fleet Metrics
+
+Records who is connecting and how tool results reach them. These exist as a
+baseline for the mcp python-sdk 1.x → 2.x (protocol 2026-07-28) upgrade, whose
+most consequential changes are silent — see the alerts below.
+
+- `mcp_client_sessions_total{client_name, client_version, protocol_version}` -
+  sessions observed, counted once per session. `client_version` is truncated to
+  `major.minor`.
+- `mcp_client_capability{client_name, capability}` - 1/0 per `elicitation` /
+  `sampling` / `roots`, from the client's most recent session.
+- `mcp_elicitation_total{prompt, outcome, reason}` - elicitation results.
+  `outcome` is `accepted` | `declined` | `cancelled` | `message_only`; `reason`
+  splits the silent `message_only` fallback into `no_elicit_attr` |
+  `not_implemented` | `error` (`none` otherwise).
 
 ### Nextcloud API Metrics
 
@@ -192,8 +215,15 @@ When tracing is enabled, all logs include `trace_id` and `span_id`:
 
 **Request Rate (req/s)**:
 ```promql
-sum(rate(mcp_http_requests_total[5m])) by (method, endpoint)
+sum(rate(mcp_http_requests_total[5m])) by (method, exported_endpoint)
 ```
+
+> Group by `exported_endpoint`, **not** `endpoint`. The application sets
+> `endpoint`, but the Prometheus Operator's ServiceMonitor injects a target
+> label of the same name whose value is the Service port name (`metrics`).
+> With the default `honorLabels: false`, Prometheus keeps the target label and
+> renames the scraped one to `exported_endpoint`. Grouping by `endpoint`
+> silently collapses every route into a single series.
 
 **Error Rate (%)**:
 ```promql
@@ -204,7 +234,7 @@ sum(rate(mcp_http_requests_total{status_code=~"5.."}[5m]))
 **P95 Latency**:
 ```promql
 histogram_quantile(0.95,
-  sum(rate(mcp_http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+  sum(rate(mcp_http_request_duration_seconds_bucket[5m])) by (le, exported_endpoint)
 )
 ```
 
@@ -216,6 +246,47 @@ topk(10, sum(rate(mcp_tool_calls_total[5m])) by (tool_name))
 **Nextcloud API Health**:
 ```promql
 sum(rate(mcp_nextcloud_api_requests_total{status_code!~"2.."}[5m])) by (app)
+```
+
+**MCP client fleet — who is connected, at which protocol version**:
+```promql
+sum by (client_name, client_version, protocol_version) (
+  increase(mcp_client_sessions_total[1d])
+)
+```
+
+**Protocol-version change (the SDK-upgrade tripwire)** — fires when any client
+reports more than one protocol version in a day, i.e. a client started
+negotiating something new:
+```promql
+count by (client_name) (
+  count by (client_name, protocol_version) (increase(mcp_client_sessions_total[1d]) > 0)
+) > 1
+```
+
+**Client identity stopped resolving** — the accessors that read `clientInfo` /
+`capabilities` / `protocolVersion` off the SDK session degrade to `"unknown"`
+rather than raising, so an SDK field rename shows up here rather than in the
+logs. Non-zero means the instrumentation needs updating for the new SDK shape:
+```promql
+sum(increase(mcp_client_sessions_total{client_name="unknown"}[1h])) > 0
+```
+
+**Tool errors arriving as protocol errors** — exactly 0 on mcp 1.x by
+construction, since the SDK converts every exception except
+`UrlElicitationRequiredError` into `CallToolResult(isError=True)`. Any non-zero
+reading means tool failures stopped being visible to the model:
+```promql
+sum(increase(mcp_tool_outcomes_total{outcome="protocol_error"}[1h])) > 0
+```
+
+**Elicitation lost its back-channel** — `not_implemented` is the normal case for
+clients that never supported elicitation, so it is excluded; the other reasons
+appearing is the regression:
+```promql
+sum by (prompt, reason) (
+  increase(mcp_elicitation_total{outcome="message_only", reason!="not_implemented"}[1h])
+) > 0
 ```
 
 **Ingest throughput — documents/s and pages/s**:

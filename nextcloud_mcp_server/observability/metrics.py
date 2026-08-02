@@ -18,7 +18,10 @@ import functools
 import logging
 import threading
 import time
+from typing import Any
 
+from mcp import types
+from mcp.server.lowlevel.server import request_ctx
 from prometheus_client import (
     REGISTRY,
     Counter,
@@ -77,6 +80,46 @@ mcp_tool_errors_total = Counter(
     "mcp_tool_errors_total",
     "Total MCP tool errors by type",
     ["tool_name", "error_type"],
+)
+
+# =============================================================================
+# MCP Client Fleet Metrics
+# =============================================================================
+#
+# Baseline for the mcp python-sdk 1.x -> 2.x (protocol 2026-07-28) upgrade,
+# whose two most consequential changes are silent: elicitation loses its
+# back-channel, and an MCPError raised in a tool stops becoming
+# CallToolResult(isError=True) and becomes a JSON-RPC error instead. Neither
+# raises, neither shows up in existing metrics. These four record the fleet
+# composition and delivery semantics so the change is visible as a step in a
+# graph rather than a bug report.
+
+mcp_client_sessions_total = Counter(
+    "mcp_client_sessions_total",
+    "MCP sessions observed, by client identity and negotiated protocol version",
+    ["client_name", "client_version", "protocol_version"],
+)
+
+mcp_client_capability = Gauge(
+    "mcp_client_capability",
+    "1 if this client's most recent session declared the capability, else 0",
+    ["client_name", "capability"],
+)
+
+mcp_elicitation_total = Counter(
+    "mcp_elicitation_total",
+    "Elicitation prompt outcomes; reason splits the message_only fallback causes",
+    ["prompt", "outcome", "reason"],
+)
+
+mcp_tool_outcomes_total = Counter(
+    "mcp_tool_outcomes_total",
+    "How the MCP SDK delivered each tool call: success | tool_error "
+    "(CallToolResult.isError, the model sees the message) | protocol_error "
+    "(JSON-RPC error, the model does not). Note tool_name here is the tool's "
+    "*registered* MCP name, which differs from mcp_tool_calls_total's "
+    "func.__name__ for the OAuth tools.",
+    ["tool_name", "outcome"],
 )
 
 # =============================================================================
@@ -908,6 +951,167 @@ def record_tool_error(tool_name: str, error_type: str) -> None:
         error_type: Type of error (e.g., "HTTPStatusError", "ValueError")
     """
     mcp_tool_errors_total.labels(tool_name=tool_name, error_type=error_type).inc()
+
+
+# =============================================================================
+# MCP Client Fleet Instrumentation
+# =============================================================================
+
+_FLEET_CAPABILITIES = ("elicitation", "sampling", "roots")
+_SESSION_RECORDED_ATTR = "_astrolabe_fleet_recorded"
+
+
+def _client_label(value: object, limit: int = 64) -> str:
+    """Clamp a client-supplied value before it becomes a metric label.
+
+    ``clientInfo`` arrives from the peer, so its length is not ours to trust:
+    unbounded label values are a memory exhaustion vector against the
+    process-global registry.
+    """
+    return str(value)[:limit] if value is not None else "unknown"
+
+
+def _minor_version(version: object) -> str:
+    """Reduce a version to ``major.minor``.
+
+    Full patch versions would add a new series on every client release, which
+    buys nothing — we want to spot "Claude Code 2.1 changed protocol version",
+    not track point releases.
+    """
+    return ".".join(_client_label(version, 32).split(".")[:2])
+
+
+def record_client_session() -> None:
+    """Record the calling MCP client's identity and capabilities, once per session.
+
+    Reads the SDK's per-request contextvar rather than taking a ``Context``, so
+    it works in every deployment mode (single-user, multi-user BasicAuth, Login
+    Flow v2, OAuth) and for every tool, including the auth/oauth tools that
+    carry no ``@instrument_tool``.
+
+    Never raises: instrumentation must not be able to fail a tool call.
+    """
+    try:
+        ctx = request_ctx.get()
+    except LookupError:
+        # Called outside a request scope (startup, tests). Expected, not an error.
+        return
+    session = ctx.session
+    # ponytail: unsynchronised check-then-set, so two requests racing on a
+    # brand-new session can each record it once. Bounded at one extra count per
+    # session; a lock here would cost more than the error is worth.
+    if getattr(session, _SESSION_RECORDED_ATTR, False):
+        return
+    params = getattr(session, "client_params", None)
+    if params is None:
+        # Session has not completed initialize yet; try again on the next call.
+        return
+    # Claim the session before doing the work, so a failure below costs one
+    # warning for this session rather than one per tool call.
+    setattr(session, _SESSION_RECORDED_ATTR, True)
+
+    try:
+        # --- the only SDK-version-sensitive lines in the codebase ------------
+        # mcp 1.x: client_params.clientInfo / .capabilities / .protocolVersion
+        # mcp 2.x: client_params.client_info, session.client_capabilities,
+        #          request_context.protocol_version (negotiated, not requested).
+        # Both spellings are tried so this keeps recording *through* the
+        # upgrade. A metric that silently zeroed itself at the moment of
+        # comparison would destroy the baseline it exists to provide.
+        #
+        # Note these getattr defaults swallow AttributeError, so a rename that
+        # neither spelling covers does NOT raise — it records
+        # client_name="unknown". That is deliberate (instrumentation must not
+        # fail a tool call) and is the post-upgrade signal to alert on; see
+        # docs/observability.md.
+        info = getattr(params, "client_info", None) or getattr(
+            params, "clientInfo", None
+        )
+        caps = getattr(session, "client_capabilities", None) or getattr(
+            params, "capabilities", None
+        )
+        protocol = getattr(ctx, "protocol_version", None) or getattr(
+            params, "protocolVersion", None
+        )
+        # ---------------------------------------------------------------------
+        name = _client_label(getattr(info, "name", None))
+        mcp_client_sessions_total.labels(
+            client_name=name,
+            client_version=_minor_version(getattr(info, "version", None)),
+            protocol_version=_client_label(protocol, 32),
+        ).inc()
+        for capability in _FLEET_CAPABILITIES:
+            # Set explicitly to 0 when absent, so a client that *stops*
+            # declaring a capability shows a drop rather than a stale 1.
+            mcp_client_capability.labels(client_name=name, capability=capability).set(
+                1 if getattr(caps, capability, None) is not None else 0
+            )
+    except Exception:
+        # Backstop for anything the accessors above don't absorb (a label-value
+        # rejection, say). WARNING rather than DEBUG because this metric is the
+        # baseline for an SDK upgrade — losing it silently defeats the purpose.
+        # Bounded to one line per session by the claim above.
+        logger.warning(
+            "Could not record MCP client session metrics — the SDK's client_params "
+            "shape may have changed",
+            exc_info=True,
+        )
+
+
+def record_elicitation(prompt: str, outcome: str, reason: str = "none") -> None:
+    """Record the outcome of an elicitation prompt.
+
+    Args:
+        prompt: Which prompt ran — "login_flow" or "provisioning_required".
+        outcome: "accepted", "declined", "cancelled", or "message_only". These
+            are exactly the strings ``_run_elicit`` returns, so the metric and
+            that function's contract cannot drift apart.
+        reason: Why a message_only fallback happened — "no_elicit_attr" (the
+            context exposes no elicit()), "not_implemented" (the client declined
+            the capability), or "error" (elicit raised). "none" for the three
+            real outcomes. mcp 2.x adds "no_back_channel".
+    """
+    mcp_elicitation_total.labels(prompt=prompt, outcome=outcome, reason=reason).inc()
+
+
+def instrument_call_tool_outcomes(mcp: Any) -> None:
+    """Wrap the low-level CallToolRequest handler to record how the SDK replied.
+
+    The tool_error/protocol_error distinction is made *inside* the SDK, one
+    frame above ``FastMCP.call_tool``: the handler either returns
+    ``CallToolResult(isError=True)`` or lets an exception escape into
+    ``_handle_request``, which turns it into a JSON-RPC error. This is the only
+    place that can observe which happened.
+
+    Doing the same classification inside ``instrument_tool`` by inspecting the
+    exception type would merely re-encode our current belief about the SDK, so
+    the metric would read identically before and after the 2.x upgrade and
+    detect nothing — which is the one thing this metric exists to do.
+    """
+    server = mcp._mcp_server
+    original = server.request_handlers[types.CallToolRequest]
+
+    async def handler(req: types.CallToolRequest) -> types.ServerResult:
+        record_client_session()
+        tool_name = req.params.name
+        try:
+            result = await original(req)
+        except Exception:
+            # Deliberately Exception, not BaseException: anyio cancellation is
+            # not a protocol error and must not poison this signal.
+            mcp_tool_outcomes_total.labels(
+                tool_name=tool_name, outcome="protocol_error"
+            ).inc()
+            raise
+        # v1 wraps the result in the ServerResult RootModel; v2 returns the
+        # CallToolResult directly.
+        is_error = bool(getattr(getattr(result, "root", result), "isError", False))
+        mcp_tool_outcomes_total.labels(
+            tool_name=tool_name, outcome="tool_error" if is_error else "success"
+        ).inc()
+        return result
+
+    server.request_handlers[types.CallToolRequest] = handler
 
 
 def record_nextcloud_api_call(

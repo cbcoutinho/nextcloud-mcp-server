@@ -191,3 +191,86 @@ async def test_present_provisioning_required_cancel_returns_cancelled():
         result = await present_provisioning_required(ctx)
 
     assert result == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Elicitation outcome metrics
+#
+# The three message_only fallbacks are silent by design — the caller gets a
+# degraded-but-working flow and nothing raises. That is exactly why they are
+# counted separately: when the MCP SDK moves to protocol 2026-07-28 the
+# server-initiated back-channel disappears and elicitation starts failing into
+# the generic `error` branch. Without a per-reason baseline, that transition
+# looks like nothing at all.
+# ---------------------------------------------------------------------------
+
+_ELICITATION = "mcp_elicitation_total"
+_PROVISIONING = "provisioning_required"
+
+
+async def _run_provisioning(ctx) -> str:
+    fake = _fake_settings()
+    with patch("nextcloud_mcp_server.auth.elicitation.get_settings", return_value=fake):
+        return await present_provisioning_required(ctx)
+
+
+@pytest.mark.parametrize(
+    ("elicit", "expected_reason"),
+    [
+        (None, "no_elicit_attr"),
+        (AsyncMock(side_effect=NotImplementedError()), "not_implemented"),
+        (AsyncMock(side_effect=RuntimeError("no back-channel")), "error"),
+    ],
+    ids=["no_elicit_attr", "not_implemented", "error"],
+)
+async def test_message_only_reasons_are_distinguishable(
+    metric_sample, elicit, expected_reason
+):
+    """Each message_only cause lands on its own `reason`, and only its own."""
+    all_reasons = ("no_elicit_attr", "not_implemented", "error")
+    labels = {
+        "prompt": _PROVISIONING,
+        "outcome": "message_only",
+        "reason": expected_reason,
+    }
+    before = {
+        r: metric_sample(_ELICITATION, {**labels, "reason": r}) for r in all_reasons
+    }
+
+    if elicit is None:
+        # A context that exposes no elicit() at all.
+        ctx = SimpleNamespace()
+    else:
+        ctx = MagicMock()
+        ctx.elicit = elicit
+
+    assert await _run_provisioning(ctx) == "message_only"
+
+    for reason in all_reasons:
+        delta = (
+            metric_sample(_ELICITATION, {**labels, "reason": reason}) - before[reason]
+        )
+        assert delta == (1 if reason == expected_reason else 0), (
+            f"reason={reason} moved by {delta}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("action", "outcome"),
+    [("accept", "accepted"), ("decline", "declined"), ("cancel", "cancelled")],
+)
+async def test_real_outcomes_record_reason_none(metric_sample, action, outcome):
+    """Outcomes where elicitation actually ran carry reason="none"."""
+    labels = {"prompt": _PROVISIONING, "outcome": outcome, "reason": "none"}
+    before = metric_sample(_ELICITATION, labels)
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(
+        return_value=SimpleNamespace(
+            action=action, data=SimpleNamespace(acknowledged=True)
+        )
+    )
+
+    assert await _run_provisioning(ctx) == outcome
+
+    assert metric_sample(_ELICITATION, labels) - before == 1
