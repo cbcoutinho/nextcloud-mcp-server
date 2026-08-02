@@ -733,8 +733,9 @@ search_verification_dropped_total = Counter(
 )
 
 # Documents scored by the cross-encoder. This is the honest cost unit for
-# reranking — there is no natural token unit — and the one to watch against GPU
-# saturation, since reranking and query-embedding contend for the same device.
+# reranking — there is no natural token unit — and the series to correlate
+# against the gateway's own saturation signals when reranking gets slow. How
+# that service is deployed is not something this server knows or should encode.
 search_rerank_documents_total = Counter(
     "astrolabe_search_rerank_documents_total",
     "Documents scored by the reranker",
@@ -1424,7 +1425,8 @@ def record_rerank_documents(model: str, count: int, outcome: str) -> None:
     """Record documents scored by the reranker.
 
     Documents-scored is the honest cost unit: reranking has no natural token
-    unit, and this is what contends with query embedding for the GPU.
+    unit, and document count is what drives the work a rerank request asks of
+    the gateway.
     ``outcome`` is ``"success"`` or ``"degraded"`` — the degraded count records
     what the reranker *would* have scored, so a reranker outage is visible as a
     shift between outcomes rather than as a silent gap in the series.
