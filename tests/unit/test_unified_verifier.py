@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import jwt
 import pytest
+from mcp.server.auth.provider import AccessToken
 
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.config import Settings
@@ -1087,7 +1088,10 @@ class TestRejectionObservability:
         """
         labels = {
             "method": "jwt",
-            "result": "invalid",
+            # "error", not "invalid": nothing is wrong with the caller's token,
+            # we simply cannot validate it. That distinction is what makes the
+            # result="error" alert pageable.
+            "result": "error",
             "reason": "not_configured",
             "client_id": "mistral-client",
         }
@@ -1135,3 +1139,93 @@ class TestRejectionObservability:
         aud = jwt.encode({"sub": "a", "aud": ["via-aud"]}, "s", algorithm="HS256")
         assert verifier._claimed_client_id(azp) == "via-azp"
         assert verifier._claimed_client_id(aud) == "via-aud"
+
+    @pytest.mark.parametrize(
+        ("reason", "expected_result"),
+        [
+            ("expired", "invalid"),
+            ("inactive", "invalid"),
+            ("bad_signature", "invalid"),
+            ("bad_issuer", "invalid"),
+            ("bad_audience", "invalid"),
+            ("not_allowlisted", "invalid"),
+            ("not_configured", "error"),
+            ("network_error", "error"),
+            ("unknown", "error"),
+        ],
+    )
+    def test_result_is_derived_from_reason(
+        self, base_settings, metric_sample, reason, expected_result
+    ):
+        """`result` splits blame, and must not be settable independently.
+
+        It used to be a `_reject()` parameter defaulting to "invalid", and 4 of
+        the 6 `not_configured` call sites silently took the default — putting
+        "no validator configured at all", the one failure that rejects every
+        client's every token, on the *caller's* side of the split. Deriving it
+        from `reason` makes that class of drift impossible rather than merely
+        fixed once.
+        """
+        labels = {
+            "method": "jwt",
+            "result": expected_result,
+            "reason": reason,
+            "client_id": "mistral-client",
+        }
+        other = "invalid" if expected_result == "error" else "error"
+        before = metric_sample(self.VALIDATIONS, labels)
+        before_other = metric_sample(self.VALIDATIONS, {**labels, "result": other})
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._reject("jwt", reason, self._jwt_for())
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+        assert metric_sample(self.VALIDATIONS, {**labels, "result": other}) == (
+            before_other
+        )
+
+    async def test_management_allowlist_rejection_is_recorded(
+        self, base_settings, metric_sample
+    ):
+        """An allowlist rejection disconnects a client like any other.
+
+        It is authorization rather than validation, but from the operator's
+        side it is indistinguishable — a client that suddenly stops working —
+        and the client_id is right there, so it goes through the same funnel.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "not-on-the-list",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        token = self._jwt_for("not-on-the-list")
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            AsyncMock(
+                return_value=AccessToken(
+                    token=token,
+                    client_id="not-on-the-list",
+                    scopes=[],
+                    expires_at=int(time.time()) + 600,
+                )
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    def test_bad_audience_logs_once(self, base_settings, caplog):
+        """One line per rejection — this path used to log ERROR *and* WARNING."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        with caplog.at_level(
+            logging.DEBUG, logger="nextcloud_mcp_server.auth.unified_verifier"
+        ):
+            verifier._reject("jwt", "bad_audience", self._jwt_for(), "got []")
+
+        assert len([r for r in caplog.records if "bad_audience" in r.message]) == 1

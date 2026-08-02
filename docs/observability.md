@@ -101,12 +101,21 @@ most consequential changes are silent — see the alerts below.
   rejection ends the MCP session and forces the user to re-authenticate, so
   `reason` and `client_id` are what turn a bare failure count into an
   actionable one.
-  - `method`: `jwt` | `introspect` | `userinfo` | `unknown`
-  - `result`: `valid` | `invalid` (the caller's token) | `error` (ours)
+  - `method`: `jwt` | `introspect` | `userinfo` | `allowlist` | `unknown`
+  - `result`: `valid` | `invalid` (the caller's token) | `error` (ours).
+    Derived from `reason`, not set independently, so the two cannot drift.
   - `reason`: `expired`, `inactive`, `bad_signature`, `bad_issuer`,
-    `bad_audience`, `not_configured`, `network_error`, `unknown` — `none` when valid
+    `bad_audience`, `not_allowlisted`, `not_configured`, `network_error`,
+    `unknown` — `none` when valid
   - `client_id`: read from the *unverified* token, so length-clamped and capped
-    at 50 distinct values (`_other` beyond)
+    at 50 distinct values (`_other` beyond), on a budget of its own
+
+  > On a deployment with **no** validator configured, expect
+  > `method="introspect"`, not `"jwt"`. Both entry points gate on
+  > `self.jwks_client` before attempting JWT verification, so an unconfigured
+  > JWKS means tokens fall through to introspection rather than being rejected
+  > as `method="jwt"`. Alert on `reason="not_configured"` rather than on a
+  > particular `method`.
 - `mcp_oauth_token_cache_hits_total` - Cache hit/miss rate
 - `mcp_oauth_refresh_token_operations_total` - Refresh token storage ops
 

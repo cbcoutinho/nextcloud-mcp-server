@@ -29,6 +29,7 @@ from nextcloud_mcp_server.observability.metrics import (
     _MAX_TRACKED_CLIENTS,
     instrument_call_tool_outcomes,
     record_client_session,
+    record_oauth_token_validation,
 )
 
 pytestmark = pytest.mark.unit
@@ -51,12 +52,15 @@ def _isolate_seen_client_names():
     here, so relying on file-definition order would be a latent flake rather
     than a guarantee.
     """
-    saved = set(metrics_module._seen_client_names)
+    saved_names = set(metrics_module._seen_client_names)
+    saved_ids = set(metrics_module._seen_client_ids)
     try:
         yield
     finally:
         metrics_module._seen_client_names.clear()
-        metrics_module._seen_client_names.update(saved)
+        metrics_module._seen_client_names.update(saved_names)
+        metrics_module._seen_client_ids.clear()
+        metrics_module._seen_client_ids.update(saved_ids)
 
 
 def _client_params(
@@ -382,3 +386,31 @@ class TestLabelCardinality:
                 request_ctx.reset(token)
 
         assert metric_sample(SESSIONS, overflow_labels) - before >= 20
+
+    def test_client_id_budget_is_separate_from_client_name(self, metric_sample):
+        """The two untrusted labels must not share a cap.
+
+        `clientInfo.name` (MCP handshake) and `client_id` (unverified rejected
+        token) are both peer-supplied. A shared budget would let a peer exhaust
+        one dimension by flooding the other — and the flood would come from the
+        *rejection* path, which is exactly where identifying the client matters
+        most.
+        """
+        overflow = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "_other",
+        }
+        before = metric_sample("mcp_oauth_token_validations_total", overflow)
+
+        for i in range(_MAX_TRACKED_CLIENTS + 10):
+            record_oauth_token_validation(
+                "jwt", "invalid", "expired", f"rotating-client-{i}"
+            )
+
+        assert (
+            metric_sample("mcp_oauth_token_validations_total", overflow) - before >= 10
+        )
+        # The client_name budget is untouched by that flood.
+        assert len(metrics_module._seen_client_names) < _MAX_TRACKED_CLIENTS

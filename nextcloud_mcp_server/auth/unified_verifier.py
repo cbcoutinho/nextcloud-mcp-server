@@ -12,7 +12,9 @@ Key Design Principles:
 - Token reuse IS allowed for multi-audience tokens (RFC 8707)
 """
 
+import base64
 import hashlib
+import json
 import logging
 import time
 from typing import Any
@@ -273,11 +275,17 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
         token_client_id = access_token.client_id
         if not token_client_id or token_client_id not in self._allowed_mgmt_clients:
-            logger.warning(
-                "Management API token rejected: client_id %r not in ALLOWED_MGMT_CLIENT",
-                token_client_id,
+            # Authorization, not validation — the token is genuine, its client
+            # is simply not on the management allowlist. Recorded through the
+            # same funnel anyway: from the operator's side this is
+            # indistinguishable from any other reason a client stopped working,
+            # and answering "why was it disconnected?" is the point.
+            return self._reject(
+                "allowlist",
+                "not_allowlisted",
+                token,
+                f"client_id {token_client_id!r} not in ALLOWED_MGMT_CLIENT",
             )
-            return None
 
         return access_token
 
@@ -330,12 +338,6 @@ class UnifiedTokenVerifier(TokenVerifier):
             # Validate MCP audience is present
             if not self._has_mcp_audience(payload):
                 audiences = payload.get("aud", [])
-                logger.error(
-                    "Token rejected: Missing MCP audience. Got %s, need MCP (%s or %s)",
-                    audiences,
-                    self.settings.oidc_client_id,
-                    self.settings.nextcloud_mcp_server_url,
-                )
                 return self._reject(
                     validation_method,
                     "bad_audience",
@@ -352,9 +354,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             return self._create_access_token(token, payload)
 
         except Exception as e:
-            return self._reject(
-                validation_method, "unknown", token, str(e), result="error"
-            )
+            return self._reject(validation_method, "unknown", token, str(e))
 
     async def _verify_without_audience_check(
         self, token: str, cache_key: str
@@ -458,9 +458,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
 
         except Exception as e:
-            return self._reject(
-                validation_method, "unknown", token, str(e), result="error"
-            )
+            return self._reject(validation_method, "unknown", token, str(e))
 
     def _has_mcp_audience(self, payload: dict[str, Any]) -> bool:
         """
@@ -518,7 +516,7 @@ class UnifiedTokenVerifier(TokenVerifier):
 
     @staticmethod
     def _claimed_client_id(token: str) -> str | None:
-        """Read the client_id a token *claims*, without verifying it.
+        """Read the client_id a token *claims*, without verifying anything.
 
         A rejected token has by definition not been validated, so its contents
         are untrusted — but they are also the only thing that says which client
@@ -526,11 +524,27 @@ class UnifiedTokenVerifier(TokenVerifier):
         value is treated as untrusted downstream (clamped and count-bounded
         before it becomes a metric label) rather than being thrown away.
 
+        The payload segment is base64-decoded directly rather than going through
+        ``jwt.decode(..., verify_signature=False)``. Same result, but it does not
+        route untrusted input through the JWT library at all, so there is no
+        chance of the value being mistaken for an authenticated claim by a later
+        reader (or by a security scanner — python:S5659 flags the library call
+        regardless of intent, and suppressing it would hide the real thing).
+
         Returns None for opaque tokens and anything unparseable.
         """
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None  # opaque token, not a JWS
         try:
-            claims = jwt.decode(token, options={"verify_signature": False})
+            # Restore the padding base64url encoding strips.
+            payload = parts[1]
+            claims = json.loads(
+                base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+            )
         except Exception:
+            return None
+        if not isinstance(claims, dict):
             return None
         for key in ("client_id", "azp", "aud"):
             value = claims.get(key)
@@ -540,13 +554,22 @@ class UnifiedTokenVerifier(TokenVerifier):
                 return value[0]
         return None
 
+    # Whose problem is it? A rejection is either the caller presenting a token
+    # we cannot accept, or this server being unable to validate one. Those want
+    # different responses — the second should page — so `result` is derived from
+    # `reason` here rather than passed in at each call site. It was a parameter
+    # defaulting to "invalid", and 4 of the 6 `not_configured` sites silently
+    # took the default, which put the single most total failure mode in the
+    # system (no validator configured at all) on the *client's* side of the
+    # split, contradicting the documented contract.
+    _OUR_FAULT_REASONS = frozenset({"not_configured", "network_error", "unknown"})
+
     def _reject(
         self,
         method: str,
         reason: str,
         token: str,
         detail: str | None = None,
-        result: str = "invalid",
     ) -> None:
         """Record and log a token rejection, then return None for the caller.
 
@@ -560,11 +583,13 @@ class UnifiedTokenVerifier(TokenVerifier):
         human log in again. That is not routine.
         """
         client_id = self._claimed_client_id(token)
+        result = "error" if reason in self._OUR_FAULT_REASONS else "invalid"
         record_oauth_token_validation(method, result, reason, client_id)
         logger.warning(
-            "Token rejected (%s/%s) for client %s%s",
+            "Token rejected (%s/%s, %s) for client %s%s",
             method,
             reason,
+            "our fault" if result == "error" else "caller's token",
             client_id or "unknown",
             f": {detail}" if detail else "",
         )
@@ -634,7 +659,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             # Covers signature failures, malformed tokens and bad `iat`.
             return self._reject("jwt", "bad_signature", token, str(e))
         except Exception as e:
-            return self._reject("jwt", "unknown", token, str(e), result="error")
+            return self._reject("jwt", "unknown", token, str(e))
 
     async def _introspect_token(self, token: str) -> dict[str, Any] | None:
         """
@@ -695,19 +720,14 @@ class UnifiedTokenVerifier(TokenVerifier):
                     token,
                     f"HTTP {response.status_code}: "
                     f"{response.text[:200] if response.text else 'empty'}",
-                    result="error",
                 )
 
         except httpx.TimeoutException:
-            return self._reject(
-                "introspect", "network_error", token, "timeout", result="error"
-            )
+            return self._reject("introspect", "network_error", token, "timeout")
         except httpx.RequestError as e:
-            return self._reject(
-                "introspect", "network_error", token, str(e), result="error"
-            )
+            return self._reject("introspect", "network_error", token, str(e))
         except Exception as e:
-            return self._reject("introspect", "unknown", token, str(e), result="error")
+            return self._reject("introspect", "unknown", token, str(e))
 
     async def _validate_via_userinfo(self, token: str) -> dict[str, Any] | None:
         """Validate an opaque token by calling the OIDC userinfo endpoint.
@@ -756,7 +776,6 @@ class UnifiedTokenVerifier(TokenVerifier):
                 "not_configured",
                 token,
                 f"refusing non-HTTP userinfo_uri: {self.userinfo_uri}",
-                result="error",
             )
 
         try:
@@ -765,13 +784,9 @@ class UnifiedTokenVerifier(TokenVerifier):
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.TimeoutException:
-            return self._reject(
-                "userinfo", "network_error", token, "timeout", result="error"
-            )
+            return self._reject("userinfo", "network_error", token, "timeout")
         except httpx.RequestError as e:
-            return self._reject(
-                "userinfo", "network_error", token, str(e), result="error"
-            )
+            return self._reject("userinfo", "network_error", token, str(e))
 
         if response.status_code != 200:
             # userinfo answers 401 for an expired or revoked opaque token; that
@@ -787,11 +802,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             data = response.json()
         except Exception as e:
             return self._reject(
-                "userinfo",
-                "unknown",
-                token,
-                f"unparseable response: {e}",
-                result="error",
+                "userinfo", "unknown", token, f"unparseable response: {e}"
             )
 
         if not data.get("sub"):
