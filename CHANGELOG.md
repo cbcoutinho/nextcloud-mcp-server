@@ -5,6 +5,31 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.161.0 (2026-08-02)
+
+### Feat
+
+- **search**: expose optional reranking on both search entrypoints
+- **search**: distinguish a routine rerank skip from a real failure
+- **search**: add cross-encoder rerank machinery (unused until wired)
+- **observability**: measure both semantic-search entrypoints equally
+
+### Fix
+
+- **search**: keep unscored rows behind reranked ones in the HTTP re-sort
+- **search**: cut the rerank pool back before verify-on-read on the HTTP path
+- **search**: correct total_found for doc_types, and stop skips reading as outages
+- **search**: carry rerank_score through context expansion
+- **search**: test the granularity echo, use the constant, satisfy Sonar
+- **search**: record failed rerank latency, log truncation, split entry parsing
+- **search**: make the grouped rerank-pool precedence explicit and tested
+- **observability**: bound the algorithm metric label against caller input
+- **observability**: record vector_search errors, and cover the MCP metric paths
+- **observability**: keep the algorithm label stable, and meter the third entrypoint
+- **observability**: label HTTP search usage with the http surface
+- **search**: report the real group limit on the qdrant query span
+- **search**: request exact group count in grouped hybrid search
+
 ## v0.160.1 (2026-08-02)
 
 ## v0.160.0 (2026-08-02)
