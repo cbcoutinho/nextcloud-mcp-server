@@ -280,11 +280,20 @@ class UnifiedTokenVerifier(TokenVerifier):
             # same funnel anyway: from the operator's side this is
             # indistinguishable from any other reason a client stopped working,
             # and answering "why was it disconnected?" is the point.
+            #
+            # An *empty* allowlist is a different failure from a client missing
+            # off a populated one: it rejects every client, and it is our
+            # misconfiguration rather than the caller's token. Same shape as the
+            # JWKS/introspection `not_configured` cases, so it belongs on the
+            # same pageable side of the result split.
+            unconfigured = not self._allowed_mgmt_clients
             return self._reject(
                 "allowlist",
-                "not_allowlisted",
+                "not_configured" if unconfigured else "not_allowlisted",
                 token,
-                f"client_id {token_client_id!r} not in ALLOWED_MGMT_CLIENT",
+                "ALLOWED_MGMT_CLIENT is unset — every management client is rejected"
+                if unconfigured
+                else f"client_id {token_client_id!r} not in ALLOWED_MGMT_CLIENT",
                 # Already verified — the token validated, it is only the
                 # authorization that failed. Re-deriving from the raw bytes
                 # would lose it entirely for opaque tokens.
@@ -913,9 +922,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Extract username (sub claim, with fallback to preferred_username)
         username = payload.get("sub") or payload.get("preferred_username")
         if not username:
-            logger.error(
-                "No 'sub' or 'preferred_username' claim found in token payload"
-            )
+            # Deliberately silent: every caller routes a None result through
+            # _reject(), whose WARNING carries the client_id and reason this
+            # line lacked. Logging here too would give one rejection two lines
+            # — the shape already removed from the bad_audience path.
             return None
 
         # Extract scopes from scope claim (space-separated string)

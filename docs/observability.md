@@ -286,7 +286,10 @@ sum by (reason) (increase(mcp_oauth_token_validations_total{result="error"}[15m]
 ```
 
 `reason="not_configured"` deserves its own alert — a missing JWKS or
-introspection endpoint rejects *every* token, so it breaks all clients at once:
+introspection endpoint, or an unset `ALLOWED_MGMT_CLIENT`, rejects *every*
+token, so it breaks all clients at once. Note the deliberate split on the
+allowlist path: an empty allowlist is `not_configured` (ours, pageable) while a
+client merely absent from a populated one is `not_allowlisted` (theirs):
 ```promql
 sum(increase(mcp_oauth_token_validations_total{reason="not_configured"}[5m])) > 0
 ```

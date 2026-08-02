@@ -1301,6 +1301,78 @@ class TestRejectionObservability:
         assert metric_sample(self.VALIDATIONS, accepted) == before_accepted
         assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
 
+    async def test_missing_sub_rejection_logs_once(self, base_settings, caplog):
+        """One line per rejection — this path briefly logged ERROR *and* WARNING.
+
+        Introduced by the round-7 fix: routing the None result through _reject()
+        added a WARNING on top of the pre-existing ERROR inside
+        _create_access_token_with_cache_key. The round-7 test asserted only on
+        the metric, so it passed while the duplicate went in — the same blind
+        spot test_bad_audience_logs_once exists to prevent on the other path.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with (
+            patch.object(
+                verifier,
+                "_verify_jwt_signature",
+                AsyncMock(return_value={"aud": ["test-client-id"]}),
+            ),
+            caplog.at_level(
+                logging.DEBUG, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        lines = [r for r in caplog.records if "sub" in r.message]
+        assert len(lines) == 1, [r.message for r in lines]
+
+    @pytest.mark.parametrize(
+        ("allowlist", "reason", "result"),
+        [
+            # Empty allowlist rejects every client — our misconfiguration.
+            (frozenset(), "not_configured", "error"),
+            # Populated allowlist, this client absent — the caller's problem.
+            (frozenset({"astrolabe"}), "not_allowlisted", "invalid"),
+        ],
+    )
+    async def test_empty_allowlist_is_our_fault_not_the_callers(
+        self, base_settings, metric_sample, allowlist, reason, result
+    ):
+        """ "Nobody is allowed" and "you are not allowed" need different responses.
+
+        An unset ALLOWED_MGMT_CLIENT breaks every management client at once —
+        the same shape as the JWKS/introspection `not_configured` cases carved
+        out as pageable. Reporting it as the caller's invalid token would keep
+        it out of the result="error" alert that exists to catch exactly this.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": result,
+            "reason": reason,
+            "client_id": "not-on-the-list",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = allowlist
+        token = self._jwt_for("not-on-the-list")
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            AsyncMock(
+                return_value=AccessToken(
+                    token=token,
+                    client_id="not-on-the-list",
+                    scopes=[],
+                    expires_at=int(time.time()) + 600,
+                )
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)
