@@ -685,7 +685,6 @@ class UnifiedTokenVerifier(TokenVerifier):
             preceding = " → ".join(f"{m}/{r}" for m, r, _ in chain[:-1])
             detail = f"after {preceding}" + (f": {detail}" if detail else "")
         return self._reject(method, reason, token, detail)
-        return None
 
     async def _verify_jwt_signature(
         self,
