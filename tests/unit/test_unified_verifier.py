@@ -1177,6 +1177,74 @@ class TestRejectionObservability:
 
         assert metric_sample(self.VALIDATIONS, labels) - before == 1
 
+    async def test_bad_audience_records_one_event_not_two(
+        self, base_settings, metric_sample
+    ):
+        """A token refused on audience is not also counted as valid.
+
+        The signature verifying and the token being *accepted* are different
+        events. Recording "valid" per validation stage and then "bad_audience"
+        at the refusal made one token produce two increments, inflating
+        `result="valid"` relative to tokens actually accepted — and every ratio
+        query in docs/observability.md is built on that denominator.
+        """
+        rejected = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "bad_audience",
+            "client_id": "mistral-client",
+        }
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        # Signature verifies, but the audience is somebody else's.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(return_value={"sub": "alice", "aud": ["someone-else"]}),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+        assert metric_sample(self.VALIDATIONS, accepted) == before_accepted
+
+    async def test_accepted_token_records_valid_once(
+        self, base_settings, metric_sample
+    ):
+        """The accepted path still records exactly one `valid` event."""
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "aud": ["test-client-id"],
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is not None
+
+        assert metric_sample(self.VALIDATIONS, accepted) - before == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)

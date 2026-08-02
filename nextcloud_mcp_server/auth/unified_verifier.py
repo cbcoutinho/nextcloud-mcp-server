@@ -313,24 +313,20 @@ class UnifiedTokenVerifier(TokenVerifier):
             if self._is_jwt_format(token) and self.jwks_client:
                 validation_method = "jwt"
                 payload = await self._verify_jwt_signature(token)
-                if payload:
-                    record_oauth_token_validation("jwt", "valid")
-                else:
+                if not payload:
                     # _verify_jwt_signature() already recorded the rejection
                     # with its reason; recording again here would double-count.
                     # Fall back to introspection if JWT verification failed
                     if self.introspection_uri:
                         validation_method = "introspect"
                         payload = await self._introspect_token(token)
-                        if payload:
-                            record_oauth_token_validation("introspect", "valid")
-                        # else: _introspect_token() already recorded it.
+                        # A rejection here is already recorded by
+                        # _introspect_token(); success is recorded once, below,
+                        # after the audience check actually accepts the token.
             else:
                 # Fall back to introspection for opaque tokens
                 validation_method = "introspect"
                 payload = await self._introspect_token(token)
-                if payload:
-                    record_oauth_token_validation("introspect", "valid")
                 # else: _introspect_token() already recorded it.
                 if not payload:
                     return None
@@ -349,6 +345,14 @@ class UnifiedTokenVerifier(TokenVerifier):
                     f"got {audiences}, need {self.settings.oidc_client_id} "
                     f"or {self.settings.nextcloud_mcp_server_url}",
                 )
+
+            # Recorded here, not at each validation stage. A signature can
+            # verify and the token still be refused for the wrong audience —
+            # counting the stage as "valid" and then the refusal as
+            # "bad_audience" made one token produce two events, and inflated
+            # `result="valid"` relative to tokens actually accepted. One token,
+            # one event, recorded at the point of acceptance.
+            record_oauth_token_validation(validation_method, "valid")
 
             logger.info(
                 "MCP audience validated - token can be used directly "
