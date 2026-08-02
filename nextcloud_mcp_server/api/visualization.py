@@ -514,6 +514,15 @@ async def unified_search(request: Request) -> JSONResponse:
                 results, rerank_outcome = await rerank_results(
                     results, query, settings=settings, surface="http"
                 )
+                # Cut back to the budget an unreranked request would have used
+                # BEFORE this returns into verify-on-read. The deep pool exists
+                # for the reranker, not for verification — without this, a
+                # provisioned caller sends the whole pool through
+                # verify_search_results, which is one Nextcloud round-trip per
+                # candidate. That turns enabling reranking into an order-of-
+                # magnitude increase in load on Nextcloud, which is exactly the
+                # trade the rerank-before-verify ordering was chosen to avoid.
+                results = results[:unreranked_budget]
             return results
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
