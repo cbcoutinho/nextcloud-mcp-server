@@ -497,3 +497,40 @@ class TestStatusEndpointSearchTypes:
     def test_vector_sync_off(self):
         data = self._get_status(create_mock_settings(vector_sync_enabled=False))
         assert data["supported_search_types"] == []
+
+
+@pytest.mark.parametrize(
+    "rerank_enabled,gateway_url,expected",
+    [
+        (True, "https://gw.example", True),
+        (False, "https://gw.example", False),
+        # Enabled without a gateway cannot actually serve a rerank, so the
+        # capability must not be advertised — Settings.__post_init__ rejects this
+        # combination at startup, but the endpoint must not depend on that.
+        (True, "", False),
+    ],
+)
+def test_status_advertises_rerank_capability(rerank_enabled, gateway_url, expected):
+    """Clients gate their UI on this rather than sending `rerank: true` and
+    handling the 422 — the same reason supported_search_types is advertised.
+
+    Always present (never absent) so a client can distinguish "server says no"
+    from "server too old to know about reranking".
+    """
+    settings = create_mock_settings(vector_sync_enabled=True)
+    settings.search_rerank_enabled = rerank_enabled
+    settings.embedding_gateway_url = gateway_url
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings", return_value=settings
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=AuthMode.SINGLE_USER_BASIC,
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["rerank_available"] is expected

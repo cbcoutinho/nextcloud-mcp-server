@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # Result granularity (ADR-027 follow-up, Deck #83). "chunk" is the historical
 # behaviour and stays the default everywhere; "document" collapses each document
 # to its single best-scoring chunk via Qdrant's native grouping.
+# The only fusion modes Qdrant is asked for. Exported so every surface derives
+# its metric label from the SAME bounded set — a caller-supplied fusion string
+# that reached a Prometheus label would mint a permanent time series per distinct
+# value, which is a cardinality-explosion vector rather than a cosmetic issue.
+VALID_FUSIONS = ("rrf", "dbsf")
+
 GRANULARITY_CHUNK = "chunk"
 GRANULARITY_DOCUMENT = "document"
 VALID_GRANULARITIES = (GRANULARITY_CHUNK, GRANULARITY_DOCUMENT)
@@ -52,6 +58,19 @@ DOCUMENT_PREFETCH_FACTOR = 4
 # latency, so cap it. Only bites above limit=50; below that the computed
 # budget is already under the ceiling.
 MAX_DOCUMENT_PREFETCH = 800
+
+
+def search_method_label(fusion: str) -> str:
+    """The bounded ``search_method`` / metric label for a hybrid search.
+
+    Clamps an unrecognised ``fusion`` to the default rather than interpolating
+    it, so a caller-controlled string can never become a metric label. Callers
+    that also CONSTRUCT the algorithm still pass the raw value, which continues
+    to raise on an invalid mode — this only bounds what gets reported, it does
+    not make a bad request succeed.
+    """
+    safe = fusion if fusion in VALID_FUSIONS else VALID_FUSIONS[0]
+    return f"bm25_hybrid_{safe}"
 
 
 class _FlattenedGroups:
@@ -110,7 +129,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         Raises:
             ValueError: If fusion is not "rrf" or "dbsf"
         """
-        if fusion not in ("rrf", "dbsf"):
+        if fusion not in VALID_FUSIONS:
             raise ValueError(
                 f"Invalid fusion algorithm '{fusion}'. Must be 'rrf' or 'dbsf'"
             )
@@ -214,9 +233,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         """
         collection_name = settings.get_collection_name()
         grouped = granularity == GRANULARITY_DOCUMENT
-        # Both paths over-fetch 2x for the dedup/verification budget; grouping
-        # deepens it further, bounded by MAX_DOCUMENT_PREFETCH so the compounding
-        # multipliers can't produce a pathological query at a high ``limit``.
+        # Both paths deepen the PREFETCH 2x (grouping deepens it further, bounded
+        # by MAX_DOCUMENT_PREFETCH so the compounding multipliers can't produce a
+        # pathological query at a high ``limit``). Note this is the prefetch
+        # depth only -- the grouped branch's own ``limit`` must stay exact; see
+        # the comment on that call.
         prefetch_limit = limit * 2
         if grouped:
             prefetch_limit = min(
@@ -241,7 +262,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation(
             "search.qdrant_query",
             attributes={
-                "query.limit": limit * 2,
+                # Must track what is actually requested below: the grouped
+                # branch asks for exactly ``limit`` groups while the chunk
+                # branch over-fetches 2x. A single hardcoded value here would
+                # misreport one of them to anyone debugging limit/prefetch
+                # behaviour from traces — which is precisely the kind of
+                # investigation this span exists for.
+                "query.limit": limit if grouped else limit * 2,
                 "query.fusion": self.fusion_name,
                 "query.granularity": granularity,
             },
@@ -263,7 +290,18 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     # the extra hits would just re-introduce the chunk-level
                     # concentration this mode exists to remove.
                     group_size=1,
-                    limit=limit * 2,  # groups, not chunks
+                    # Groups, not chunks -- and deliberately NOT ``limit * 2``.
+                    # The chunk path over-fetches 2x because chunks from one
+                    # document collapse during dedup, so it needs spares;
+                    # ``group_size=1`` already yields one row per document, so
+                    # there is nothing here for spares to replace. Worse, asking
+                    # for more groups than the prefetch can fill makes Qdrant
+                    # widen its grouping search and REORDER the head rather than
+                    # simply appending weaker tail results, so an over-request
+                    # measurably degrades the top of the result set. The damage
+                    # grows as the requested group count approaches the prefetch
+                    # depth, which is why this must track ``limit`` exactly.
+                    limit=limit,
                     score_threshold=score_threshold,
                     with_payload=True,
                     with_vectors=False,

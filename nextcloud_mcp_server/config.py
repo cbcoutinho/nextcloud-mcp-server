@@ -200,6 +200,42 @@ _DEFAULTS: dict[str, Any] = {
     # document both retrievers agree on. 60 is the standard value (~2% per rank),
     # which restores consensus as the dominant signal.
     "vector_search_rrf_k": 60,
+    # --- Cross-encoder reranking (opt-in, per request) ----------------------
+    # A cross-encoder reorders the retrieved candidates by scoring each against
+    # the query directly, which is more accurate than the fusion rank it
+    # replaces. Ships OFF because it adds an upstream round-trip to every
+    # search, and how expensive that is depends on the gateway's own deployment
+    # — which this server deliberately knows nothing about beyond the URL.
+    "search_rerank_enabled": False,
+    # Rerank model, addressed the way the configured embedding gateway expects
+    # (typically ``<provider>/<model>``). Any cross-encoder the gateway can
+    # serve works; set this to match your deployment.
+    "search_rerank_model": "BAAI/bge-reranker-v2-m3",
+    # Candidates handed to the reranker. Reranking can only reorder what
+    # retrieval supplied, so this depth — not the caller's ``limit`` — bounds
+    # how much a reranker can improve. Reranking just the rows a normal search
+    # returns captures little of the available gain.
+    #
+    # Treat this as a ceiling rather than a starting point. Under
+    # ``granularity="document"`` the grouped prefetch is bounded by
+    # MAX_DOCUMENT_PREFETCH, and requesting more groups than the prefetch can
+    # fill makes Qdrant widen its grouping search and reorder the head of the
+    # result set before the reranker sees it. Going deeper requires raising
+    # MAX_DOCUMENT_PREFETCH first, which carries its own latency cost.
+    "search_rerank_pool_size": 200,
+    # Generous headroom over a normal rerank, not a target. Exceeding it
+    # degrades to retrieval order rather than failing the search.
+    "search_rerank_timeout_seconds": 30.0,
+    # Concurrent rerank calls this process keeps in flight against the gateway.
+    #
+    # Conservative at 1 because reranking is the heaviest request this server
+    # makes of a service it shares with its own embedding traffic and with other
+    # callers. Bounding our own concurrency keeps a burst of searches from
+    # queueing unbounded work upstream, and keeps rerank latency predictable
+    # here. It is a client-side courtesy, not a throughput control: what the
+    # gateway does with the request, and how it schedules against everything
+    # else it serves, is its business. Raise it if your gateway has headroom.
+    "search_rerank_max_concurrency": 1,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -593,6 +629,9 @@ _dynaconf = Dynaconf(
         # 1/(rank + k) with rank 0-indexed, so k=0 divides by zero on the
         # top-ranked point.
         Validator("VECTOR_SEARCH_RRF_K", gte=1),
+        Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
+        Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
+        Validator("SEARCH_RERANK_TIMEOUT_SECONDS", gt=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
@@ -1156,6 +1195,15 @@ class Settings:
     # dense and sparse lists decides the ordering. Applies to ``fusion="rrf"``
     # only; DBSF has no such constant.
     vector_search_rrf_k: int = 60
+    # Optional cross-encoder rerank stage (opt-in per request; see _DEFAULTS for
+    # the rationale behind each value). ``search_rerank_enabled`` is the
+    # capability gate — a request asking to rerank on a deployment without it
+    # configured is rejected rather than silently served unreranked.
+    search_rerank_enabled: bool = False
+    search_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    search_rerank_pool_size: int = 200
+    search_rerank_timeout_seconds: float = 30.0
+    search_rerank_max_concurrency: int = 1
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1539,6 +1587,15 @@ class Settings:
                 "DOCUMENT_OCR_MODE=batch requires EMBEDDING_GATEWAY_URL (batch OCR "
                 "routes through the embedding gateway); use DOCUMENT_OCR_MODE=sync "
                 "for the direct backend without a gateway"
+            )
+        # Reranking is served through the embedding gateway, so enabling it
+        # without one configured would fail at the first search rather than at
+        # startup. Fail loudly here instead: the alternative is a deployment
+        # that advertises the capability and then degrades on every request.
+        if self.search_rerank_enabled and not self.embedding_gateway_url:
+            raise ValueError(
+                "SEARCH_RERANK_ENABLED requires EMBEDDING_GATEWAY_URL (reranking "
+                "is served through the embedding gateway)"
             )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string

@@ -16,6 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -29,6 +30,10 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.observability.metrics import (
+    record_search_request,
+    record_search_stage,
+)
 from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search import (
     GRANULARITY_CHUNK,
@@ -44,11 +49,21 @@ from nextcloud_mcp_server.search.access_filter import (
     list_accessible_scope,
     normalize_path_prefixes,
 )
+from nextcloud_mcp_server.search.bm25_hybrid import search_method_label
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.rerank import (
+    RERANK_APPLIED,
+    RERANK_DEGRADED,
+    RERANK_SKIPPED,
+    effective_pool_size,
+    rerank_available,
+    rerank_results,
+)
 from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import (
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
@@ -62,6 +77,25 @@ from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 logger = logging.getLogger(__name__)
 
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
+
+
+def _search_algorithm_label(algorithm: str, fusion: str) -> str:
+    """The ``algorithm`` label for search metrics.
+
+    Shared by every ``record_search_request`` call site so success and error
+    samples land on the SAME series. Normalising in one place and using the raw
+    value in another fragments ``astrolabe_search_requests_total`` into
+    non-comparable series and quietly breaks "error rate by algorithm" — exactly
+    the surface drift these metrics exist to prevent.
+
+    Matches the MCP tool's ``search_method`` convention
+    (``bm25_hybrid_<fusion>``) so the two entrypoints stay comparable.
+    """
+    if algorithm == "semantic":
+        return algorithm
+    # Shared helper: clamps an unrecognised fusion so a caller-supplied string
+    # can never reach a Prometheus label from either surface.
+    return search_method_label(fusion)
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
@@ -113,7 +147,7 @@ async def _search_with_acl(
     request: Request,
     user_id: str,
     execute: Callable[[AccessibleScope | None], Awaitable[list]],
-) -> list:
+) -> tuple[list, int]:
     """Resolve the caller's Nextcloud client, run ``execute(scope)``, and
     verify-on-read — shared by the /api/v1 search endpoints.
 
@@ -131,7 +165,11 @@ async def _search_with_acl(
             (``None`` ⇒ self-only).
 
     Returns:
-        The result list (verified for provisioned callers).
+        ``(results, dropped)`` — the result list (verified for provisioned
+        callers) and the number of documents verify-on-read removed. ``dropped``
+        is always 0 on the unprovisioned path, where no verification runs; the
+        caller records it as a metric, so the two search surfaces report the
+        same ghost-record signal.
 
     Raises:
         ValueError: If the Nextcloud host is not configured.
@@ -141,21 +179,33 @@ async def _search_with_acl(
     if not nextcloud_host:
         raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
+    # Stage timings are recorded here rather than around this whole call so
+    # "retrieve" means embed+Qdrant and "verify" means the Nextcloud round-trips
+    # — timing the wrapper would conflate them into one unattributable number.
+    dropped = 0
     try:
         nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
     except NotProvisionedError:
         logger.debug("User %s not provisioned; self-only unverified search", user_id)
+        retrieve_start = anyio.current_time()
         results = await execute(None)
+        record_search_stage("http", "retrieve", anyio.current_time() - retrieve_start)
     else:
         async with nc_client:
             # Expand to owners who shared content with the caller (same as the
             # MCP tool path) so shared documents are searchable.
             scope = await list_accessible_scope(nc_client.sharing, user_id)
+            retrieve_start = anyio.current_time()
             results = await execute(scope)
+            record_search_stage(
+                "http", "retrieve", anyio.current_time() - retrieve_start
+            )
             # Verify-on-read (ADR-019): drop documents the caller can no longer
             # access (e.g. a revoked share). Eviction runs inline — this
             # Starlette route has no FastMCP lifespan task group.
-            results, _dropped = await verify_search_results(nc_client, results)
+            verify_start = anyio.current_time()
+            results, dropped = await verify_search_results(nc_client, results)
+            record_search_stage("http", "verify", anyio.current_time() - verify_start)
 
     # Safe to log titles now: provisioned callers passed verify-on-read;
     # non-provisioned ran self-only (unverified titles are never logged — see
@@ -168,7 +218,7 @@ async def _search_with_acl(
                 for r in results[:5]
             ),
         )
-    return results
+    return results, dropped
 
 
 async def unified_search(request: Request) -> JSONResponse:
@@ -229,6 +279,13 @@ async def unified_search(request: Request) -> JSONResponse:
             },
             status_code=401,
         )
+
+    # Bound before the try so the error-path metric can label the request even
+    # when parsing is what failed. Reading them out of locals() in the handler
+    # would silently mislabel as "unknown" the moment either name moves.
+    algorithm = "unknown"
+    granularity = GRANULARITY_CHUNK
+    fusion = "rrf"
 
     try:
         # Parse request body
@@ -301,6 +358,16 @@ async def unified_search(request: Request) -> JSONResponse:
                 },
                 status_code=400,
             )
+        # Optional cross-encoder rerank. Rejected rather than coerced for the
+        # same reason as granularity: a caller that asked for reranked ordering
+        # and silently got retrieval ordering cannot tell the difference from a
+        # ranking regression.
+        rerank = body.get("rerank", False)
+        if not isinstance(rerank, bool):
+            return JSONResponse(
+                {"error": f"Invalid rerank {rerank!r}. Must be a boolean"},
+                status_code=400,
+            )
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -351,8 +418,47 @@ async def unified_search(request: Request) -> JSONResponse:
                 status_code=422,
             )
 
+        # Capability gate, mirroring the shape above. 422 rather than 400: the
+        # request is well-formed, this deployment just cannot serve it. Callers
+        # discover the capability from GET /api/v1/status rather than probing.
+        if rerank and not rerank_available(settings):
+            return JSONResponse(
+                {
+                    "error": "rerank_not_configured",
+                    "message": (
+                        "Reranking is not configured on this server. Check "
+                        "`rerank_available` on /api/v1/status before requesting it."
+                    ),
+                },
+                status_code=422,
+            )
+
         # Request extra results to handle offset
         search_limit = limit + offset
+        # The budget an UNRERANKED request would have used, which differs by
+        # retrieval branch: the doc_types loop over-fetches 2x before
+        # verify-on-read, the single-query branch does not. total_found is
+        # capped back to this so enabling reranking cannot change it — a flat
+        # cap would under-report the doc_types path by half.
+        unreranked_budget = (
+            search_limit * 2
+            if (doc_types and isinstance(doc_types, list))
+            else search_limit
+        )
+        rerank_outcome = RERANK_SKIPPED
+        # Reranking needs a deeper candidate pool than pagination alone; it is
+        # offset-INDEPENDENT so page 2 reranks the same pool as page 1, which is
+        # what keeps items from migrating across page boundaries. Pagination
+        # beyond the pool therefore returns nothing, consistent with total_found.
+        rerank_pool = (
+            effective_pool_size(
+                settings,
+                floor=search_limit,
+                grouped=granularity == GRANULARITY_DOCUMENT,
+            )
+            if rerank
+            else search_limit
+        )
 
         async def _execute(scope: AccessibleScope | None) -> list:
             """Run the search across requested doc_types with the given access
@@ -369,7 +475,7 @@ async def unified_search(request: Request) -> JSONResponse:
                             await search_algo.search(
                                 query=query,
                                 user_id=user_id,
-                                limit=search_limit,
+                                limit=rerank_pool,
                                 doc_type=doc_type,
                                 accessible_owners=owners,
                                 shared_root_ids=roots,
@@ -387,12 +493,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 # drops before pagination, matching the nc_semantic_search
                 # pattern.
                 results.sort(key=lambda r: r.score, reverse=True)
-                results = results[: search_limit * 2]
+                results = results[: max(search_limit * 2, rerank_pool)]
             else:
                 results = await search_algo.search(
                     query=query,
                     user_id=user_id,
-                    limit=search_limit,
+                    limit=rerank_pool,
                     accessible_owners=owners,
                     shared_root_ids=roots,
                     granularity=granularity,
@@ -400,15 +506,62 @@ async def unified_search(request: Request) -> JSONResponse:
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
                 )
+            # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
+            # _search_with_acl, and after the per-doc_type merge so one pass
+            # covers every type.
+            nonlocal rerank_outcome
+            if rerank:
+                results, rerank_outcome = await rerank_results(
+                    results, query, settings=settings, surface="http"
+                )
+                # Cut back to the budget an unreranked request would have used
+                # BEFORE this returns into verify-on-read. The deep pool exists
+                # for the reranker, not for verification — without this, a
+                # provisioned caller sends the whole pool through
+                # verify_search_results, which is one Nextcloud round-trip per
+                # candidate. That turns enabling reranking into an order-of-
+                # magnitude increase in load on Nextcloud, which is exactly the
+                # trade the rerank-before-verify ordering was chosen to avoid.
+                results = results[:unreranked_budget]
             return results
 
-        all_results = await _search_with_acl(request, user_id, _execute)
+        all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
-        # Sort results by score (no deduplication - show all chunks)
-        sorted_results = sorted(all_results, key=lambda r: r.score, reverse=True)
+        # Sort by rerank score when present, retrieval score otherwise —
+        # without this the re-sort would silently undo the rerank ordering,
+        # since .score deliberately still holds the retrieval score.
+        #
+        # The leading `is not None` term keeps the two apart rather than
+        # comparing them. They are different scales: a rerank score is
+        # calibrated in [0, 1], while .score is a rank artifact (~2/k for RRF)
+        # or an unbounded raw BM25 value. Ranking them against each other lets
+        # an UNSCORED row outrank a genuinely reranked one purely by scale — a
+        # raw BM25 8.5 beats every possible rerank score. Unscored rows are
+        # exactly the ones rerank_results appends in retrieval order to sit at
+        # the tail, so this preserves that placement instead of shuffling them
+        # back into the middle.
+        sorted_results = sorted(
+            all_results,
+            key=lambda r: (
+                r.rerank_score is not None,
+                r.rerank_score if r.rerank_score is not None else r.score,
+            ),
+            reverse=True,
+        )
 
-        # Calculate total and apply pagination
+        # Calculate total and apply pagination.
+        #
+        # The rerank pool must NOT leak into total_found. Without reranking this
+        # counts a pool sized by `limit + offset`; a rerank pool is far deeper,
+        # so reporting its length would multiply the page count a client derives
+        # from this field — reshaping Astrolabe's pager with no client change
+        # and no version signal, which is exactly the kind of silent
+        # cross-service break the repo's version-gating rule exists to prevent.
+        # Cap it back to the budget an unreranked request would have used, so
+        # turning reranking on changes result ORDER and nothing else.
         total_found = len(sorted_results)
+        if rerank:
+            total_found = min(total_found, unreranked_budget)
         paginated_results = sorted_results[offset : offset + limit]
 
         # Format results for Unified Search
@@ -425,6 +578,11 @@ async def unified_search(request: Request) -> JSONResponse:
                 "title": result.title,
                 "score": result.score,
             }
+            # Additive, and only when reranking ran. `score` keeps the retrieval
+            # value so `score_threshold` (applied against it inside Qdrant)
+            # still refers to the same quantity a caller filters on.
+            if result.rerank_score is not None:
+                result_data["rerank_score"] = result.rerank_score
 
             # Include excerpt/chunk if requested (full content, no truncation)
             if include_chunks and result.excerpt:
@@ -472,6 +630,10 @@ async def unified_search(request: Request) -> JSONResponse:
             "results": formatted_results,
             "total_found": total_found,
             "algorithm_used": algorithm,
+            "granularity": granularity,
+            # False both when not requested and when requested-but-degraded, so
+            # a caller can always tell which ordering it received.
+            "reranked": rerank_outcome == RERANK_APPLIED,
         }
 
         # Optional PCA coordinates. PCA plots the result chunks around the query's
@@ -493,12 +655,58 @@ async def unified_search(request: Request) -> JSONResponse:
             except Exception as e:
                 logger.warning("Failed to compute PCA for unified search: %s", e)
 
+        # Three distinct states, not a boolean: never asked for, asked for and
+        # applied, asked for and degraded. Collapsing the last two would hide a
+        # reranker outage behind the same label as "not requested".
+        # SKIPPED (nothing to reorder) reports as "false", not "unavailable":
+        # a query returning 0-1 rows is routine, and folding it into the outage
+        # bucket would bury real reranker failures in noise.
+        if not rerank:
+            reranked_label = "false"
+        elif rerank_outcome == RERANK_APPLIED:
+            reranked_label = "true"
+        elif rerank_outcome == RERANK_DEGRADED:
+            reranked_label = "unavailable"
+        else:
+            reranked_label = "false"
+
+        record_search_request(
+            surface="http",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=granularity,
+            reranked=reranked_label,
+            status="success",
+            results_returned=len(formatted_results),
+            verification_dropped=dropped_count,
+        )
+        # Usage metering parity with nc_semantic_search. This endpoint embeds a
+        # query — a real, billable provider cost — and until now recorded no
+        # usage event at all, so Astrolabe-driven search (most traffic) was
+        # invisible to the ledger while MCP-driven search was billed. Recording
+        # it here makes the two entrypoints consistent; expect a step change in
+        # tokens_embedded rather than a new charge.
+        await record_search_usage(
+            enabled=settings.usage_metering_enabled,
+            user_id=user_id,
+            fusion=fusion,
+            doc_types=doc_types if isinstance(doc_types, list) else None,
+            token_count=search_algo.query_token_count,
+            surface="http",
+        )
+
         return JSONResponse(response_data)
 
     except Exception as e:
         # exception() over error(): keeps the traceback and satisfies Sonar
         # python:S8572 (logging.error with the exception object in an except).
         logger.exception("Error in unified search")
+        record_search_request(
+            surface="http",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=granularity,
+            reranked="false",
+            status="error",
+        )
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -544,6 +752,11 @@ async def vector_search(request: Request) -> JSONResponse:
             },
             status_code=401,
         )
+
+    # Bound before the try so the error-path metric can label the request even
+    # when parsing is what failed — same reason as unified_search.
+    algorithm = "unknown"
+    fusion = "rrf"
 
     try:
         # Parse request body
@@ -651,7 +864,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        all_results = await _search_with_acl(request, user_id, _execute)
+        all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
         # Format results for PHP client
         formatted_results = []
@@ -711,12 +924,46 @@ async def vector_search(request: Request) -> JSONResponse:
             response_data["coordinates_3d"] = []
             response_data["query_coords"] = []
 
+        # The third search entrypoint, and it embeds a query exactly like the
+        # other two — so omitting metering here would recreate the very ledger
+        # blind spot this change closes on /api/v1/search. Its own surface label
+        # keeps the visualization route from being conflated with the search
+        # route in dashboards.
+        record_search_request(
+            surface="http_viz",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=GRANULARITY_CHUNK,
+            reranked="false",
+            status="success",
+            results_returned=len(formatted_results),
+            verification_dropped=dropped_count,
+        )
+        await record_search_usage(
+            enabled=settings.usage_metering_enabled,
+            user_id=user_id,
+            fusion=fusion,
+            doc_types=doc_types if isinstance(doc_types, list) else None,
+            token_count=search_algo.query_token_count,
+            surface="http_viz",
+        )
+
         return JSONResponse(response_data)
 
     except Exception as e:
         # The client only ever sees a sanitized message, so without this the
         # traceback is lost entirely and a 500 leaves no trace anywhere.
         logger.exception("Error in vector search")
+        # Without this sample the visualization surface drops out of "error rate
+        # by surface" entirely — it would report successes and nothing else,
+        # which reads as a perfectly healthy endpoint no matter how often it
+        # fails.
+        record_search_request(
+            surface="http_viz",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=GRANULARITY_CHUNK,
+            reranked="false",
+            status="error",
+        )
         error_msg = _sanitize_error_for_client(e, "vector_search")
         return JSONResponse(
             {"error": error_msg},

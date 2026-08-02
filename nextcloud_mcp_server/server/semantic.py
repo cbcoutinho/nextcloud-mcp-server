@@ -24,6 +24,8 @@ from nextcloud_mcp_server.models.semantic import (
 )
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
+    record_search_request,
+    record_search_stage,
 )
 from nextcloud_mcp_server.search.access_filter import (
     MAX_PATH_PREFIXES,
@@ -31,10 +33,22 @@ from nextcloud_mcp_server.search.access_filter import (
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
-from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+from nextcloud_mcp_server.search.bm25_hybrid import (
+    GRANULARITY_DOCUMENT,
+    BM25HybridSearchAlgorithm,
+    search_method_label,
+)
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.rerank import (
+    RERANK_APPLIED,
+    RERANK_DEGRADED,
+    RERANK_SKIPPED,
+    effective_pool_size,
+    rerank_available,
+    rerank_results,
+)
 from nextcloud_mcp_server.search.verification import verify_search_results
-from nextcloud_mcp_server.usage import UsageEventStore
+from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
     count_indexed,
@@ -43,15 +57,6 @@ from nextcloud_mcp_server.vector.metrics_publisher import (
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
-
-# Cap how many doc_types we copy into a usage-metering metadata row. doc_types
-# is caller-supplied and (unlike path_prefixes) has no max_length on the tool
-# signature, so an adversarial caller could pass a huge list. The CP rollup
-# ignores metadata for billing (GROUP BY day, metric) and the value is bound
-# parameterized, so this is not a billing/injection risk — the cap just keeps
-# a single JSONB row from ballooning. 16 is generous headroom over the handful
-# of real indexed doc types.
-_USAGE_METADATA_MAX_DOC_TYPES = 16
 
 
 def _consent_narrowed_doc_types(
@@ -73,61 +78,6 @@ def _consent_narrowed_doc_types(
     return [dt for dt in doc_types if dt in allowed]
 
 
-async def record_search_usage(
-    *,
-    enabled: bool,
-    user_id: str,
-    fusion: str,
-    doc_types: list[str] | None,
-    token_count: int | None,
-) -> None:
-    """Record the billable ``tokens_embedded`` event for one semantic search.
-
-    The value is the query embedding's token count (provider-reported or
-    estimated) — the unit upstream providers bill on, and the same metric the
-    indexing path records for chunk embeddings (Deck #67). ``nc_semantic_search``
-    flows through here — do not add a second hook.
-
-    Best-effort and flag-gated: a metering failure is logged and never breaks
-    the search. Unlike the indexing path's chunk-count guard, a 0-token query is
-    still recorded (the query embedding ran); a zero-value row is a no-op at the
-    Stripe ``sum`` aggregation.
-
-    Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
-    GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
-    here propagates to Stripe; it is retained only to keep Deck #67's future
-    per-user attribution derivable from app-DB metadata without a re-migration.
-    """
-    if not enabled:
-        return
-    try:
-        store = await UsageEventStore.shared()
-        await store.record_usage_event(
-            metric="tokens_embedded",
-            value=token_count or 0,
-            metadata={
-                "user_id": user_id,
-                "fusion": fusion,
-                # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES. Both None and
-                # [] normalize to null so a future metadata->'doc_types' IS NULL
-                # query counts the all-types case consistently.
-                "doc_types": (
-                    doc_types[:_USAGE_METADATA_MAX_DOC_TYPES] if doc_types else None
-                ),
-            },
-            # The caller already confirmed the flag, so pass enabled=True
-            # directly — the store then skips a second uncached Settings build on
-            # this hot query path (ADR-024).
-            enabled=True,
-        )
-    except Exception:
-        # Reached only when shared()/store construction itself raises
-        # (record_usage_event swallows its own write failures). Metering is on,
-        # so warn — a silent DEBUG line would hide "operator enabled metering
-        # but gets no data".
-        logger.warning("usage metering hook (tokens_embedded) skipped")
-
-
 def configure_semantic_tools(mcp: FastMCP):
     """Configure semantic search tools for MCP server."""
 
@@ -140,7 +90,12 @@ def configure_semantic_tools(mcp: FastMCP):
     )
     @require_scopes("semantic.read")
     @instrument_tool
-    async def nc_semantic_search(
+    async def nc_semantic_search(  # NOSONAR(S107)
+        # S107 (too many parameters) is suppressed deliberately: for an MCP tool
+        # the parameter list IS the wire schema that FastMCP publishes to
+        # clients. Grouping these into a settings object to satisfy the rule
+        # would change the tool's advertised interface and break every caller,
+        # so the smell is inherent to the surface rather than to this function.
         query: str,
         ctx: Context,
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
@@ -170,6 +125,28 @@ def configure_semantic_tools(mcp: FastMCP):
                 ),
             ),
         ] = "chunk",
+        rerank: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Re-score the retrieved candidates with a cross-encoder "
+                    "before returning them. This is the single largest "
+                    "available improvement to result ordering — it reads each "
+                    "candidate against the query directly, rather than relying "
+                    "on the rank fusion that retrieval produced — and it is "
+                    "most worth using for questions where the right answer may "
+                    "not be the closest lexical or semantic match. It costs "
+                    "roughly a second of extra latency, so prefer it for "
+                    "precision-sensitive questions over quick lookups. "
+                    "Requires the server to have reranking configured; asking "
+                    "for it on a server without it is an error rather than a "
+                    "silent downgrade. The response's `reranked` field reports "
+                    "whether it actually applied — reranking never fails a "
+                    "search, so a reranker outage degrades to retrieval order "
+                    "with `reranked=false`."
+                ),
+            ),
+        ] = False,
         include_context: bool = False,
         context_chars: Annotated[int, Field(ge=0)] = 300,
         modified_after: Annotated[
@@ -281,7 +258,14 @@ def configure_semantic_tools(mcp: FastMCP):
         # Self-describing method label, mirroring BM25HybridSearchAlgorithm: the
         # query always fuses dense + sparse prefetches (keyword-only documents
         # contribute via the sparse side), so the label is always the fusion one.
-        search_method = f"bm25_hybrid_{fusion}"
+        # Derived from the BOUNDED label helper, not by interpolating the raw
+        # parameter. `fusion` is caller-controlled and is not validated until
+        # the algorithm is constructed inside the try below — but this value
+        # becomes a Prometheus label on every exit path including the error one,
+        # so an arbitrary string here would mint a permanent time series per
+        # distinct value. An invalid mode still raises when the algorithm is
+        # built; this only bounds what gets reported.
+        search_method = search_method_label(fusion)
 
         logger.info(
             "%s: query=%r, user=%s, limit=%d, score_threshold=%s, fusion=%s",
@@ -332,6 +316,25 @@ def configure_semantic_tools(mcp: FastMCP):
                         "modified_after must be <= modified_before "
                         f"(got modified_after={modified_after!r}, "
                         f"modified_before={modified_before!r})"
+                    ),
+                )
+            )
+
+        # Capability gate. Rejecting is deliberate: silently returning
+        # unreranked results to a caller that explicitly asked for reranking
+        # would be indistinguishable from a ranking bug. Servers advertise the
+        # capability on GET /api/v1/status so callers can check rather than
+        # probe. (A reranker that is configured but momentarily unavailable is
+        # a different case — that degrades, and the response says so.)
+        if rerank and not rerank_available(settings):
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=(
+                        "Reranking is not configured on this server. Set "
+                        "SEARCH_RERANK_ENABLED=true (requires "
+                        "EMBEDDING_GATEWAY_URL), or omit rerank to use "
+                        "retrieval ordering."
                     ),
                 )
             )
@@ -387,6 +390,17 @@ def configure_semantic_tools(mcp: FastMCP):
                     "doc_type is admin-approved for semantic search",
                     username,
                 )
+                # A short-circuit is a successful search that found nothing, not
+                # an error — recording it keeps the zero-result distribution
+                # honest about how often consent narrowing is the cause.
+                record_search_request(
+                    surface="mcp",
+                    algorithm=search_method,
+                    granularity=granularity,
+                    reranked="false",
+                    status="success",
+                    results_returned=0,
+                )
                 return SemanticSearchResponse(
                     results=[],
                     query=query,
@@ -396,6 +410,15 @@ def configure_semantic_tools(mcp: FastMCP):
                     verified_chunk_count=0,
                     dropped_document_count=0,
                 )
+
+        # Search-metric state, recorded in the ``finally`` below so every exit —
+        # success, McpError, or an unexpected raise — lands exactly one
+        # ``astrolabe_search_requests_total`` sample. Defaults describe the
+        # failure case; the success path overwrites them.
+        metric_status = "error"
+        metric_results: int | None = None
+        metric_dropped = 0
+        metric_reranked = "false"
 
         try:
             # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
@@ -407,6 +430,23 @@ def configure_semantic_tools(mcp: FastMCP):
             search_algo = BM25HybridSearchAlgorithm(
                 score_threshold=score_threshold, fusion=fusion
             )
+
+            # Reranking can only reorder what retrieval supplied, so it needs a
+            # deeper pool than the verification over-fetch. Never smaller than
+            # that over-fetch, and clamped for grouped search — see
+            # effective_pool_size.
+            overfetch = limit * 2
+            fetch_limit = (
+                effective_pool_size(
+                    settings,
+                    floor=overfetch,
+                    grouped=granularity == GRANULARITY_DOCUMENT,
+                )
+                if rerank
+                else overfetch
+            )
+
+            retrieve_start = anyio.current_time()
 
             # Execute search across requested document types
             # If doc_types is None, search all indexed types (cross-app search)
@@ -431,7 +471,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit * 2,
+                    limit=fetch_limit,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                     accessible_owners=accessible_owners,
@@ -462,7 +502,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,
+                        limit=fetch_limit,
                         doc_type=dtype,
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
@@ -481,6 +521,37 @@ def configure_semantic_tools(mcp: FastMCP):
                 # flow into verification, multiplying the Nextcloud round-trip
                 # cost by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[:fetch_limit]
+
+            # Covers query embedding + Qdrant across every branch above, so the
+            # per-doc_type loop's higher cost is visible rather than averaged
+            # away against the single-query branch.
+            record_search_stage(
+                "mcp", "retrieve", anyio.current_time() - retrieve_start
+            )
+
+            # Rerank the merged pool BEFORE verification, and before trimming to
+            # the verification budget. After the merge so one cross-encoder pass
+            # covers every doc_type — which also makes the merge meaningful,
+            # since fused scores from separate per-type queries were computed
+            # against different candidate populations and are not really
+            # comparable, whereas one reranker's scores are.
+            rerank_outcome = RERANK_SKIPPED
+            if rerank:
+                all_results, rerank_outcome = await rerank_results(
+                    all_results, query, settings=settings, surface="mcp"
+                )
+                # SKIPPED (nothing to reorder) reports as "false", not
+                # "unavailable" — otherwise every query returning 0-1 rows would
+                # register as a reranker outage.
+                metric_reranked = {
+                    RERANK_APPLIED: "true",
+                    RERANK_DEGRADED: "unavailable",
+                }.get(rerank_outcome, "false")
+                # Back down to the verification budget so verify-on-read still
+                # sees the same number of Nextcloud round-trips as an unreranked
+                # search — the deep pool exists for the reranker, not for
+                # verification.
                 all_results = all_results[: limit * 2]
 
             # ADR-019: Verify-on-read. The vector index is a recall layer;
@@ -508,6 +579,9 @@ def configure_semantic_tools(mcp: FastMCP):
                 client,
                 all_results,
                 eviction_task_group=eviction_task_group,
+            )
+            record_search_stage(
+                "mcp", "verify", anyio.current_time() - verification_start
             )
             verified_chunk_count = len(verified_results)
             logger.debug(
@@ -557,6 +631,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
+                        rerank_score=r.rerank_score,
                         category=r.metadata.get("category", "") if r.metadata else "",
                         excerpt=r.excerpt,
                         score=r.score,
@@ -638,6 +713,14 @@ def configure_semantic_tools(mcp: FastMCP):
                                     category=result.category,
                                     excerpt=result.excerpt,
                                     score=result.score,
+                                    # This site REBUILDS the row rather than
+                                    # copying it, so any field omitted here
+                                    # silently reverts to its default. Dropping
+                                    # this one produced a response reporting
+                                    # reranked=true whose every row carried
+                                    # rerank_score=null. See
+                                    # test_semantic_result_field_parity.py.
+                                    rerank_score=result.rerank_score,
                                     chunk_index=result.chunk_index,
                                     total_chunks=result.total_chunks,
                                     chunk_start_offset=result.chunk_start_offset,
@@ -712,7 +795,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 fusion=fusion,
                 doc_types=doc_types,
                 token_count=search_algo.query_token_count,
+                surface="mcp",
             )
+
+            metric_status = "success"
+            metric_results = len(results)
+            metric_dropped = dropped_count
 
             return SemanticSearchResponse(
                 results=results,
@@ -720,6 +808,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 total_found=len(results),
                 search_method=search_method,
                 granularity=granularity,
+                reranked=rerank_outcome == RERANK_APPLIED,
+                rerank_model=(
+                    settings.search_rerank_model
+                    if rerank_outcome == RERANK_APPLIED
+                    else None
+                ),
                 verified_chunk_count=verified_chunk_count,
                 dropped_document_count=dropped_count,
             )
@@ -748,6 +842,19 @@ def configure_semantic_tools(mcp: FastMCP):
             # the stack here (logger.exception) for triage.
             logger.exception("Search error: %s", e)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
+        finally:
+            # One sample per search, on every exit path. Paired with the
+            # identical call in api/visualization.py so the MCP and HTTP
+            # entrypoints are directly comparable on one dashboard.
+            record_search_request(
+                surface="mcp",
+                algorithm=search_method,
+                granularity=granularity,
+                reranked=metric_reranked,
+                status=metric_status,
+                results_returned=metric_results,
+                verification_dropped=metric_dropped,
+            )
 
     @mcp.tool(
         title="Check Indexing Status",

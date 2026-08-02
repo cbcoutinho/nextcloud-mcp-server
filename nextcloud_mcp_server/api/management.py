@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
+from nextcloud_mcp_server.search.rerank import rerank_available
 from nextcloud_mcp_server.vector.metrics_publisher import (
     count_indexed,
     estimate_hybrid_vector_bytes,
@@ -339,6 +340,13 @@ async def get_server_status(request: Request) -> JSONResponse:
         # vector sync is off; all three (semantic, bm25, hybrid) when it is on.
         # Lets the UI gate its algorithm picker.
         "supported_search_types": supported_search_types(settings),
+        # Whether this server can serve `rerank: true` on /api/v1/search.
+        # Advertised so a client gates its UI on a capability rather than
+        # discovering it by sending the request and handling the 422 — the same
+        # reason supported_search_types exists. Present and false (not absent)
+        # when unconfigured, so a client can distinguish "server says no" from
+        # "server too old to know about reranking".
+        "rerank_available": rerank_available(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }
