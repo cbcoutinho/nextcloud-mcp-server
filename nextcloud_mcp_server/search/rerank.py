@@ -44,6 +44,21 @@ logger = logging.getLogger(__name__)
 # latency floor across the whole surface.
 _FAILURE_COOLDOWN_SECONDS = 30.0
 
+# Rerank outcomes. Three states, not a boolean, because "we did not rerank" has
+# two very different causes and an operator alerts on only one of them:
+#
+#   APPLIED   a cross-encoder ordered the results
+#   SKIPPED   nothing to do — reranking off, or fewer than two scorable
+#             candidates. Routine, and not a signal about reranker health.
+#   DEGRADED  reranking was attempted and failed (upstream error, timeout, or
+#             the cooldown following one). THIS is the outage signal.
+#
+# Collapsing SKIPPED into DEGRADED would make every narrow query that happens to
+# return 0-1 rows look like a reranker failure, burying real outages in noise.
+RERANK_APPLIED = "applied"
+RERANK_SKIPPED = "skipped"
+RERANK_DEGRADED = "degraded"
+
 _client: GatewayRerankClient | None = None
 _client_lock: anyio.Lock | None = None
 _limiter: anyio.CapacityLimiter | None = None
@@ -170,16 +185,18 @@ async def rerank_results(
     *,
     settings: Any,
     surface: str,
-) -> tuple[list[SearchResult], bool]:
+) -> tuple[list[SearchResult], str]:
     """Reorder ``results`` by cross-encoder relevance.
 
-    Returns ``(results, reranked)``. ``reranked`` is False whenever the input
-    order was preserved — disabled, unavailable, in cooldown, or degraded — so
-    the caller can report honestly which ordering it is returning.
+    Returns ``(results, outcome)`` where outcome is one of ``RERANK_APPLIED``,
+    ``RERANK_SKIPPED`` or ``RERANK_DEGRADED``. The caller reports the ordering
+    it actually returns, and can distinguish a routine skip from a real
+    reranker failure — the two are indistinguishable through a bare boolean,
+    which would make every 0-1 result query look like an outage.
     """
     client = await _get_client(settings)
     if client is None or len(results) < 2:
-        return results, False
+        return results, RERANK_SKIPPED
 
     # Rows with no text cannot be scored; they keep retrieval order at the tail
     # rather than being handed to the model, which would rank an empty string
@@ -191,14 +208,16 @@ async def rerank_results(
     # make the metric's own denominator depend on which failure occurred.
     scorable = [(i, r) for i, r in enumerate(results) if (r.excerpt or "").strip()]
     if len(scorable) < 2:
-        return results, False
+        return results, RERANK_SKIPPED
 
     global _cooldown_until
     now = anyio.current_time()
     if now < _cooldown_until:
         logger.debug("rerank skipped: in failure cooldown")
         record_rerank_documents(client.model, len(scorable), "degraded")
-        return results, False
+        # DEGRADED, not SKIPPED: a cooldown exists only because a rerank
+        # already failed, so this is still the outage signal.
+        return results, RERANK_DEGRADED
 
     started = anyio.current_time()
     try:
@@ -224,7 +243,7 @@ async def rerank_results(
         # merely showed "degraded".
         record_search_stage(surface, "rerank", anyio.current_time() - started)
         record_rerank_documents(client.model, len(scorable), "degraded")
-        return results, False
+        return results, RERANK_DEGRADED
 
     record_search_stage(surface, "rerank", anyio.current_time() - started)
     record_rerank_documents(client.model, len(scorable), "success")
@@ -241,4 +260,4 @@ async def rerank_results(
     # provider omitted — is APPENDED in retrieval order, never dropped. Dropping
     # would read as a ranking change while actually being lost recall.
     ordered.extend(r for i, r in enumerate(results) if i not in taken)
-    return ordered, True
+    return ordered, RERANK_APPLIED
