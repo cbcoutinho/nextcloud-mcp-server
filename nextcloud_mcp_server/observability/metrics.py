@@ -172,10 +172,14 @@ oauth_token_validations_total = Counter(
     "happened — without it a rejection is uninterpretable, and a rejection is "
     "what forces an MCP client's user to log in again. `client_id` attributes "
     "it, so 'which client is being disconnected, and why' is one query.",
-    # method: jwt | introspect | userinfo | unknown
-    # result: valid | invalid | error
+    # Keep these in sync with docs/observability.md and with
+    # UnifiedTokenVerifier._OUR_FAULT_REASONS when adding a rejection path.
+    # method: jwt | introspect | userinfo | allowlist | unknown
+    # result: valid | invalid (caller's token) | error (ours) — derived from
+    #         reason in _reject(), never set independently
     # reason: none (valid) | expired | inactive | bad_signature | bad_issuer
-    #         | bad_audience | not_configured | network_error | unknown
+    #         | bad_audience | not_allowlisted | not_configured
+    #         | network_error | unknown
     ["method", "result", "reason", "client_id"],
 )
 

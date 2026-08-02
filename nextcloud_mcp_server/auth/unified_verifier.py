@@ -285,6 +285,10 @@ class UnifiedTokenVerifier(TokenVerifier):
                 "not_allowlisted",
                 token,
                 f"client_id {token_client_id!r} not in ALLOWED_MGMT_CLIENT",
+                # Already verified — the token validated, it is only the
+                # authorization that failed. Re-deriving from the raw bytes
+                # would lose it entirely for opaque tokens.
+                client_id=token_client_id,
             )
 
         return access_token
@@ -578,6 +582,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         reason: str,
         token: str,
         detail: str | None = None,
+        client_id: str | None = None,
     ) -> None:
         """Record and log a token rejection, then return None for the caller.
 
@@ -589,8 +594,17 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         WARNING, not INFO: a rejection ends an MCP client's session and makes a
         human log in again. That is not routine.
+
+        Args:
+            client_id: Pass this when the caller already holds a *verified*
+                client id, i.e. the token validated and was then rejected on
+                authorization grounds. Only the validation paths need the
+                fallback below, and that fallback can only read a JWT — an
+                opaque token would otherwise be recorded as "unknown" despite
+                its identity being known, which is precisely the population
+                (Astrolabe's opaque management tokens) this metric exists for.
         """
-        client_id = self._claimed_client_id(token)
+        client_id = client_id or self._claimed_client_id(token)
         result = "error" if reason in self._OUR_FAULT_REASONS else "invalid"
         record_oauth_token_validation(method, result, reason, client_id)
         logger.warning(

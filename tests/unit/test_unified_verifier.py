@@ -1184,14 +1184,31 @@ class TestRejectionObservability:
             before_other
         )
 
+    @pytest.mark.parametrize(
+        ("token_kind", "make_token"),
+        [
+            ("jwt", lambda self: self._jwt_for("not-on-the-list")),
+            # The realistic case for this path: Astrolabe's management tokens
+            # are opaque, so nothing can be recovered from the raw bytes. The
+            # JWT-shaped case masked the bug — _claimed_client_id happened to
+            # succeed and the metric looked correct.
+            ("opaque", lambda self: "opaque-token-no-dots"),
+        ],
+    )
     async def test_management_allowlist_rejection_is_recorded(
-        self, base_settings, metric_sample
+        self, base_settings, metric_sample, token_kind, make_token
     ):
         """An allowlist rejection disconnects a client like any other.
 
         It is authorization rather than validation, but from the operator's
         side it is indistinguishable — a client that suddenly stops working —
         and the client_id is right there, so it goes through the same funnel.
+
+        Parametrized over token *shape* because the two differ in where the
+        identity can be read from. By this point the caller holds a verified
+        `access_token.client_id`; re-deriving it from the raw bytes only works
+        for a JWT, so an opaque token would record `client_id="unknown"` —
+        and opaque is exactly what Astrolabe's management tokens are.
         """
         labels = {
             "method": "allowlist",
@@ -1203,7 +1220,7 @@ class TestRejectionObservability:
 
         verifier = UnifiedTokenVerifier(base_settings)
         verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
-        token = self._jwt_for("not-on-the-list")
+        token = make_token(self)
         with patch.object(
             verifier,
             "_verify_without_audience_check",
