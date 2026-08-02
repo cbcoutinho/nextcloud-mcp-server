@@ -49,6 +49,7 @@ from nextcloud_mcp_server.search.access_filter import (
     list_accessible_scope,
     normalize_path_prefixes,
 )
+from nextcloud_mcp_server.search.bm25_hybrid import search_method_label
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
@@ -84,7 +85,9 @@ def _search_algorithm_label(algorithm: str, fusion: str) -> str:
     """
     if algorithm == "semantic":
         return algorithm
-    return f"bm25_hybrid_{fusion}"
+    # Shared helper: clamps an unrecognised fusion so a caller-supplied string
+    # can never reach a Prometheus label from either surface.
+    return search_method_label(fusion)
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:

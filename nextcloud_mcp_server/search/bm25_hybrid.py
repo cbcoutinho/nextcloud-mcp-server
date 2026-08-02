@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # Result granularity (ADR-027 follow-up, Deck #83). "chunk" is the historical
 # behaviour and stays the default everywhere; "document" collapses each document
 # to its single best-scoring chunk via Qdrant's native grouping.
+# The only fusion modes Qdrant is asked for. Exported so every surface derives
+# its metric label from the SAME bounded set — a caller-supplied fusion string
+# that reached a Prometheus label would mint a permanent time series per distinct
+# value, which is a cardinality-explosion vector rather than a cosmetic issue.
+VALID_FUSIONS = ("rrf", "dbsf")
+
 GRANULARITY_CHUNK = "chunk"
 GRANULARITY_DOCUMENT = "document"
 VALID_GRANULARITIES = (GRANULARITY_CHUNK, GRANULARITY_DOCUMENT)
@@ -52,6 +58,19 @@ DOCUMENT_PREFETCH_FACTOR = 4
 # latency, so cap it. Only bites above limit=50; below that the computed
 # budget is already under the ceiling.
 MAX_DOCUMENT_PREFETCH = 800
+
+
+def search_method_label(fusion: str) -> str:
+    """The bounded ``search_method`` / metric label for a hybrid search.
+
+    Clamps an unrecognised ``fusion`` to the default rather than interpolating
+    it, so a caller-controlled string can never become a metric label. Callers
+    that also CONSTRUCT the algorithm still pass the raw value, which continues
+    to raise on an invalid mode — this only bounds what gets reported, it does
+    not make a bad request succeed.
+    """
+    safe = fusion if fusion in VALID_FUSIONS else VALID_FUSIONS[0]
+    return f"bm25_hybrid_{safe}"
 
 
 class _FlattenedGroups:
@@ -110,7 +129,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         Raises:
             ValueError: If fusion is not "rrf" or "dbsf"
         """
-        if fusion not in ("rrf", "dbsf"):
+        if fusion not in VALID_FUSIONS:
             raise ValueError(
                 f"Invalid fusion algorithm '{fusion}'. Must be 'rrf' or 'dbsf'"
             )

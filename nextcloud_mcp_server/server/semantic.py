@@ -33,7 +33,10 @@ from nextcloud_mcp_server.search.access_filter import (
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
-from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+from nextcloud_mcp_server.search.bm25_hybrid import (
+    BM25HybridSearchAlgorithm,
+    search_method_label,
+)
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
@@ -219,7 +222,14 @@ def configure_semantic_tools(mcp: FastMCP):
         # Self-describing method label, mirroring BM25HybridSearchAlgorithm: the
         # query always fuses dense + sparse prefetches (keyword-only documents
         # contribute via the sparse side), so the label is always the fusion one.
-        search_method = f"bm25_hybrid_{fusion}"
+        # Derived from the BOUNDED label helper, not by interpolating the raw
+        # parameter. `fusion` is caller-controlled and is not validated until
+        # the algorithm is constructed inside the try below — but this value
+        # becomes a Prometheus label on every exit path including the error one,
+        # so an arbitrary string here would mint a permanent time series per
+        # distinct value. An invalid mode still raises when the algorithm is
+        # built; this only bounds what gets reported.
+        search_method = search_method_label(fusion)
 
         logger.info(
             "%s: query=%r, user=%s, limit=%d, score_threshold=%s, fusion=%s",

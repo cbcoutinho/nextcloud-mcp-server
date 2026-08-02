@@ -163,3 +163,38 @@ def test_reranked_label_is_false_when_not_requested():
     spy, _ = _run()
 
     assert spy.call_args.kwargs["reranked"] == "false"
+
+
+def test_arbitrary_fusion_cannot_reach_the_metric_label():
+    """`fusion` is caller-controlled and is not validated until the algorithm is
+    constructed — which happens AFTER the label is computed, and inside the try
+    whose `finally` records the sample regardless.
+
+    So an unrecognised value must clamp rather than interpolate. Otherwise every
+    distinct string a caller sends mints a permanent Prometheus series, which
+    any holder of `semantic.read` could exploit without even completing a
+    search.
+    """
+    spy, _ = _run(fusion="../../etc/passwd\n\nrandom-unique-value")
+
+    assert spy.call_count == 1
+    assert spy.call_args.kwargs["algorithm"] == "bm25_hybrid_rrf"
+
+    # This harness stubs BM25HybridSearchAlgorithm, so it cannot show that the
+    # bad mode still fails the request — asserting that here would only be
+    # testing the mock. The real rejection is pinned one layer down, below.
+
+
+def test_the_real_algorithm_still_rejects_an_invalid_fusion():
+    """Bounding the LABEL must not make an invalid request succeed."""
+    from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
+
+    with pytest.raises(ValueError, match="Invalid fusion"):
+        BM25HybridSearchAlgorithm(fusion="not-a-mode")
+
+
+def test_valid_fusion_is_reported_verbatim():
+    """Clamping must not flatten the modes that genuinely differ."""
+    spy, _ = _run(fusion="dbsf")
+
+    assert spy.call_args.kwargs["algorithm"] == "bm25_hybrid_dbsf"
