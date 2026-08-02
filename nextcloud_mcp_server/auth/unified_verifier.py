@@ -434,8 +434,16 @@ class UnifiedTokenVerifier(TokenVerifier):
                         return None
 
                 if payload is None:
-                    # No validator was configured, or none succeeded. Don't record
-                    # a userinfo failure metric when userinfo was never attempted.
+                    if not self.introspection_uri and not self.userinfo_uri:
+                        # Nothing was even attempted: an opaque token arrived and
+                        # this server has no way to validate one. That is the
+                        # management-API twin of the quiet `jwks_client is None`
+                        # branch this PR started from, and it was quieter still —
+                        # not DEBUG, nothing at all.
+                        return self._reject("unknown", "not_configured", token)
+                    # A validator ran and failed; it already recorded the
+                    # rejection with its own reason. Recording again here would
+                    # double-count and attribute it to the wrong method.
                     return None
 
             # Both branches above either set a populated payload or have already

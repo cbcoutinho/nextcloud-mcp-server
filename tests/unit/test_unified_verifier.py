@@ -1229,3 +1229,71 @@ class TestRejectionObservability:
             verifier._reject("jwt", "bad_audience", self._jwt_for(), "got []")
 
         assert len([r for r in caplog.records if "bad_audience" in r.message]) == 1
+
+    async def test_opaque_no_validator_configured_is_recorded(
+        self, base_settings, metric_sample
+    ):
+        """The last silent rejection path: an opaque token with no validator.
+
+        The management-API twin of the `jwks_client is None` branch this work
+        started from — and quieter still, since that one at least logged at
+        DEBUG while this returned None with no metric and no log at all.
+        """
+        labels = {
+            "method": "unknown",
+            "result": "error",
+            "reason": "not_configured",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        base_settings.introspection_uri = None
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert (
+            await verifier._verify_without_audience_check("opaque-token", "mgmt:none")
+            is None
+        )
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_failed_validator_is_not_double_counted(
+        self, base_settings, metric_sample
+    ):
+        """A validator that ran and failed already recorded it — don't record twice.
+
+        The catch-all `payload is None` is reached both when nothing was tried
+        and when something was tried and failed. Only the first is silent; the
+        naive fix records both and inflates every introspection failure into two
+        events attributed to different methods.
+        """
+        no_validator = {
+            "method": "unknown",
+            "result": "error",
+            "reason": "not_configured",
+            "client_id": "unknown",
+        }
+        inactive = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "unknown",
+        }
+        before_nv = metric_sample(self.VALIDATIONS, no_validator)
+        before_inactive = metric_sample(self.VALIDATIONS, inactive)
+
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        assert (
+            await verifier._verify_without_audience_check("opaque-token", "mgmt:x")
+            is None
+        )
+
+        # Exactly one event, from _introspect_token, attributed to introspect.
+        assert metric_sample(self.VALIDATIONS, inactive) - before_inactive == 1
+        assert metric_sample(self.VALIDATIONS, no_validator) == before_nv
