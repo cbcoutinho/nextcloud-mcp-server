@@ -139,6 +139,51 @@ async def test_transport_failure_raises_rerank_error(monkeypatch):
         await GatewayRerankClient("https://gw.example", "m").rerank("q", ["a", "b"])
 
 
+class TestTimeoutBudget:
+    """The configured timeout is the caller's whole budget, connect included."""
+
+    @staticmethod
+    def _captured_timeout(monkeypatch) -> list[httpx.Timeout]:
+        seen: list[httpx.Timeout] = []
+        original = httpx.AsyncClient
+
+        def _factory(*args, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            kwargs["transport"] = httpx.MockTransport(
+                lambda r: httpx.Response(
+                    200, json={"results": [{"index": 0, "relevance_score": 1.0}]}
+                )
+            )
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _factory)
+        return seen
+
+    async def test_connect_is_clamped_to_a_shorter_overall_budget(self, monkeypatch):
+        """`SEARCH_RERANK_TIMEOUT_SECONDS` is validated only as > 0, so a 1s
+        setting would otherwise still allow a 5s connect — 5x the configured
+        budget, before the read budget even starts."""
+        seen = self._captured_timeout(monkeypatch)
+
+        await GatewayRerankClient(
+            "https://gw.example", "m", timeout_seconds=1.0
+        ).rerank("q", ["a", "b"])
+
+        assert seen[0].connect == 1.0
+
+    async def test_connect_keeps_its_own_floor_at_the_default(self, monkeypatch):
+        """Clamping must not shrink connect on a normal configuration — the
+        default budget is far larger than the connect allowance."""
+        seen = self._captured_timeout(monkeypatch)
+
+        await GatewayRerankClient(
+            "https://gw.example", "m", timeout_seconds=30.0
+        ).rerank("q", ["a", "b"])
+
+        assert seen[0].connect == 5.0
+        assert seen[0].read == 30.0
+
+
 class TestResponseParsing:
     """`_parse` is the contract boundary — everything downstream trusts it."""
 

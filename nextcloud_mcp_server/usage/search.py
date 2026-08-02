@@ -92,4 +92,8 @@ async def record_search_usage(
         # (record_usage_event swallows its own write failures). Metering is on,
         # so warn — a silent DEBUG line would hide "operator enabled metering
         # but gets no data".
-        logger.warning("usage metering hook (tokens_embedded) skipped")
+        # exc_info: the message alone is a fixed string with no traceback, which
+        # is thin for triage — and this helper now serves three call sites
+        # (the MCP tool and both HTTP search endpoints), so "which one" and
+        # "why" both matter when it fires.
+        logger.warning("usage metering hook (tokens_embedded) skipped", exc_info=True)

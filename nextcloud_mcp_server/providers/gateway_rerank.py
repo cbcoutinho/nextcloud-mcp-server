@@ -152,10 +152,16 @@ class GatewayRerankClient:
             "top_n": len(documents),
         }
         try:
+            # Clamp the connect timeout to the overall budget. SEARCH_RERANK_
+            # TIMEOUT_SECONDS is validated only as > 0, so an operator setting
+            # it to 1s would otherwise still spend up to 5s connecting — five
+            # times the budget they configured — before the read budget even
+            # starts. Immaterial at the 30s default; this only bites at
+            # deliberately aggressive settings, which is exactly when a caller
+            # is relying on the number they set.
+            connect_timeout = min(_RERANK_CONNECT_TIMEOUT_SECONDS, self._timeout)
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    self._timeout, connect=_RERANK_CONNECT_TIMEOUT_SECONDS
-                )
+                timeout=httpx.Timeout(self._timeout, connect=connect_timeout)
             ) as client:
                 resp = await client.post(
                     f"{self._base}/rerank",
