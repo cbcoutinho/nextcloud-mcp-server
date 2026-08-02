@@ -17,6 +17,7 @@ so every assertion here is on a *delta*.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -231,6 +232,55 @@ class TestRecordClientSession:
             request_ctx.reset(token)
 
         assert metric_sample(SESSIONS, labels) - before == 1
+
+
+class TestSilentFailureDiagnostics:
+    """The instrumentation must be able to report on its own failure.
+
+    0.162.0 shipped with `mcp_client_sessions_total` recording nothing in
+    production while `mcp_tool_outcomes_total` — incremented two lines later in
+    the same handler — worked. Both early-returns in `record_client_session`
+    were silent at every log level, so the metric could not say why it was
+    empty. That is the exact failure this whole metric family exists to remove,
+    rebuilt inside the thing removing it.
+    """
+
+    def setup_method(self):
+        metrics_module._warned_causes.clear()
+
+    def test_missing_request_context_says_so(self, caplog):
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+        ):
+            record_client_session()
+
+        assert any("no request context" in r.message for r in caplog.records)
+
+    def test_missing_client_params_says_so(self, caplog):
+        token = _activate(_FakeSession(None))
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+            ):
+                record_client_session()
+        finally:
+            request_ctx.reset(token)
+
+        assert any("no client_params" in r.message for r in caplog.records)
+
+    def test_warns_once_per_process_not_per_request(self, caplog):
+        """These fire on the tool-call hot path — one line, not one per call."""
+        token = _activate(_FakeSession(None))
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+            ):
+                for _ in range(25):
+                    record_client_session()
+        finally:
+            request_ctx.reset(token)
+
+        assert len([r for r in caplog.records if "no client_params" in r.message]) == 1
 
 
 class TestCallToolOutcomes:
