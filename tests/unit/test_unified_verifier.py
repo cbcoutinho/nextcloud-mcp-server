@@ -5,12 +5,14 @@ Tests multi-audience token validation without requiring real network calls or
 IdP connections.
 """
 
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import jwt
 import pytest
+from mcp.server.auth.provider import AccessToken
 
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.config import Settings
@@ -962,3 +964,783 @@ class TestUserinfoFallback:
         ):
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is None
+
+
+class TestRejectionObservability:
+    """Every token rejection must say *why*, and for *which client*.
+
+    A rejection is not a routine event: it ends the MCP session and forces the
+    user to authenticate again. Before this, the reason was known deep inside
+    the verifier and then discarded — the metric recorded a bare "invalid" and
+    several reasons were logged at DEBUG, i.e. invisible in production. The
+    question "why was this client disconnected?" was unanswerable from
+    telemetry alone.
+    """
+
+    VALIDATIONS = "mcp_oauth_token_validations_total"
+
+    @staticmethod
+    def _jwt_for(client_id: str | None = "mistral-client", **claims) -> str:
+        payload = {"sub": "alice", **claims}
+        if client_id is not None:
+            payload["client_id"] = client_id
+        return jwt.encode(payload, "secret", algorithm="HS256")
+
+    @staticmethod
+    def _failing_verify(exc):
+        """Fail only the *verifying* decode, leaving the unverified one working.
+
+        `_verify_jwt_signature` and `_claimed_client_id` both call `jwt.decode`;
+        a blanket patch would break the client_id read too and hide the label
+        under "unknown". In production they genuinely differ — PyJWT skips every
+        check when `verify_signature=False`, so an expired token still yields
+        its claims. The mock has to preserve that difference or the test proves
+        nothing about the real path.
+        """
+        real_decode = jwt.decode
+
+        def _decode(token, *args, **kwargs):
+            if (kwargs.get("options") or {}).get("verify_signature") is False:
+                return real_decode(token, *args, **kwargs)
+            raise exc
+
+        return _decode
+
+    async def test_expired_jwt_records_reason_and_client(
+        self, base_settings, metric_sample
+    ):
+        """The signature the Mistral disconnects actually produce."""
+        labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    @pytest.mark.parametrize(
+        ("exc", "reason"),
+        [
+            (jwt.InvalidIssuerError("bad iss"), "bad_issuer"),
+            (jwt.InvalidSignatureError("bad sig"), "bad_signature"),
+        ],
+    )
+    async def test_jwt_failure_modes_are_distinguishable(
+        self, base_settings, metric_sample, exc, reason
+    ):
+        """Expiry, a wrong issuer and a bad signature need different responses."""
+        labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": reason,
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(exc),
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_inactive_introspection_records_reason(
+        self, base_settings, metric_sample
+    ):
+        """`active=false` is the opaque-token equivalent of an expired JWT."""
+        labels = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        assert await verifier._introspect_token("opaque-token") is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_missing_jwks_is_visible_not_debug(
+        self, base_settings, metric_sample, caplog
+    ):
+        """A missing JWKS client rejects *every* JWT — it must not be quiet.
+
+        This was logged at DEBUG, so the single misconfiguration that breaks
+        all clients at once produced nothing at the production log level.
+        """
+        labels = {
+            "method": "jwt",
+            # "error", not "invalid": nothing is wrong with the caller's token,
+            # we simply cannot validate it. That distinction is what makes the
+            # result="error" alert pageable.
+            "result": "error",
+            "reason": "not_configured",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = None
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+        assert any("not_configured" in r.message for r in caplog.records)
+
+    async def test_rejection_logs_client_at_warning(self, base_settings, caplog):
+        """One WARNING carrying client + reason, not breadcrumbs to trace-join."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+                side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            await verifier._verify_jwt_signature(self._jwt_for("acme-connector"))
+
+        assert any(
+            "acme-connector" in r.message and "expired" in r.message
+            for r in caplog.records
+        )
+
+    async def test_jwks_outage_is_a_network_error_not_unknown(
+        self, base_settings, metric_sample
+    ):
+        """A JWKS fetch failure is our IdP being unreachable, not a bad token.
+
+        `PyJWKClientError` is not an `InvalidTokenError` subclass, so without an
+        explicit clause it lands in the generic handler as "unknown" — leaving a
+        JWKS outage looking different from the introspection and userinfo
+        outages it is the exact peer of, on a dashboard built to tell causes
+        apart.
+        """
+        labels = {
+            "method": "jwt",
+            "result": "error",
+            "reason": "network_error",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        verifier.jwks_client.get_signing_key_from_jwt.side_effect = (
+            jwt.PyJWKClientError("could not fetch JWKS")
+        )
+
+        assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    def test_empty_verified_client_id_falls_back(self, base_settings, metric_sample):
+        """An empty verified id recovers azp/aud rather than recording nothing.
+
+        A verified payload can carry `azp`/`aud` with no top-level `client_id`,
+        and for a JWT the fallback re-reads the same already-verified bytes.
+        Honouring "" strictly would lose a recoverable identity for no gain.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "via-azp",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        token = jwt.encode({"sub": "a", "azp": "via-azp"}, "s", algorithm="HS256")
+        verifier._reject("allowlist", "not_allowlisted", token, client_id="")
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_bad_audience_records_one_event_not_two(
+        self, base_settings, metric_sample
+    ):
+        """A token refused on audience is not also counted as valid.
+
+        The signature verifying and the token being *accepted* are different
+        events. Recording "valid" per validation stage and then "bad_audience"
+        at the refusal made one token produce two increments, inflating
+        `result="valid"` relative to tokens actually accepted — and every ratio
+        query in docs/observability.md is built on that denominator.
+        """
+        rejected = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "bad_audience",
+            "client_id": "mistral-client",
+        }
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        # Signature verifies, but the audience is somebody else's.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(return_value={"sub": "alice", "aud": ["someone-else"]}),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+        assert metric_sample(self.VALIDATIONS, accepted) == before_accepted
+
+    async def test_accepted_token_records_valid_once(
+        self, base_settings, metric_sample
+    ):
+        """The accepted path still records exactly one `valid` event."""
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "aud": ["test-client-id"],
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is not None
+
+        assert metric_sample(self.VALIDATIONS, accepted) - before == 1
+
+    @pytest.mark.parametrize(
+        ("surface", "method_name", "kwargs"),
+        [
+            ("mcp", "_verify_mcp_audience", {}),
+            (
+                "management",
+                "_verify_without_audience_check",
+                {"cache_key": "mgmt:nosub"},
+            ),
+        ],
+    )
+    async def test_no_phantom_valid_when_token_creation_fails(
+        self, base_settings, metric_sample, surface, method_name, kwargs
+    ):
+        """A token that yields no AccessToken is a rejection, not an acceptance.
+
+        `_create_access_token*` returns None — without raising — for a payload
+        carrying no `sub`/`preferred_username`. Recording "valid" before that
+        point meant a signature- and audience-valid token could be counted as
+        accepted while the caller got None, the session ended and the user was
+        sent back through login: the exact silent-rejection shape this work
+        exists to remove, surviving in the one place round 6's fix didn't reach.
+
+        Checked on both surfaces because they had drifted apart — the
+        management path was still recording per-stage.
+        """
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        rejected = {
+            "method": "jwt",
+            "result": "error",
+            "reason": "unknown",
+            "client_id": "mistral-client",
+        }
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        # Signature and audience are fine; the payload simply names no user.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(return_value={"aud": ["test-client-id"]}),
+        ):
+            assert (
+                await getattr(verifier, method_name)(self._jwt_for(), **kwargs) is None
+            )
+
+        assert metric_sample(self.VALIDATIONS, accepted) == before_accepted
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+
+    async def test_missing_sub_rejection_logs_once(self, base_settings, caplog):
+        """One line per rejection — this path briefly logged ERROR *and* WARNING.
+
+        Introduced by the round-7 fix: routing the None result through _reject()
+        added a WARNING on top of the pre-existing ERROR inside
+        _create_access_token_with_cache_key. The round-7 test asserted only on
+        the metric, so it passed while the duplicate went in — the same blind
+        spot test_bad_audience_logs_once exists to prevent on the other path.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with (
+            patch.object(
+                verifier,
+                "_verify_jwt_signature",
+                AsyncMock(return_value={"aud": ["test-client-id"]}),
+            ),
+            caplog.at_level(
+                logging.DEBUG, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        lines = [r for r in caplog.records if "sub" in r.message]
+        assert len(lines) == 1, [r.message for r in lines]
+
+    @pytest.mark.parametrize(
+        ("allowlist", "reason", "result"),
+        [
+            # Empty allowlist rejects every client — our misconfiguration.
+            (frozenset(), "not_configured", "error"),
+            # Populated allowlist, this client absent — the caller's problem.
+            (frozenset({"astrolabe"}), "not_allowlisted", "invalid"),
+        ],
+    )
+    async def test_empty_allowlist_is_our_fault_not_the_callers(
+        self, base_settings, metric_sample, allowlist, reason, result
+    ):
+        """ "Nobody is allowed" and "you are not allowed" need different responses.
+
+        An unset ALLOWED_MGMT_CLIENT breaks every management client at once —
+        the same shape as the JWKS/introspection `not_configured` cases carved
+        out as pageable. Reporting it as the caller's invalid token would keep
+        it out of the result="error" alert that exists to catch exactly this.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": result,
+            "reason": reason,
+            "client_id": "not-on-the-list",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = allowlist
+        token = self._jwt_for("not-on-the-list")
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            AsyncMock(
+                return_value=AccessToken(
+                    token=token,
+                    client_id="not-on-the-list",
+                    scopes=[],
+                    expires_at=int(time.time()) + 600,
+                )
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_fallback_chain_records_one_rejection(
+        self, base_settings, metric_sample, caplog
+    ):
+        """Two validators, one token, one rejection.
+
+        With both JWKS and introspection configured — the ordinary
+        defence-in-depth deployment — an expired JWT is refused twice: the
+        signature check sees `expired`, then introspection sees `inactive` for
+        the same token. Recording each stage independently rebuilt the exact
+        "two breadcrumbs to correlate" problem this work exists to remove, and
+        made it louder by promoting both lines to WARNING.
+        """
+        jwt_labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        introspect_labels = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "mistral-client",
+        }
+        before_jwt = metric_sample(self.VALIDATIONS, jwt_labels)
+        before_introspect = metric_sample(self.VALIDATIONS, introspect_labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+                side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        # Attributed to the validator that actually produced the 401...
+        assert (
+            metric_sample(self.VALIDATIONS, introspect_labels) - before_introspect == 1
+        )
+        # ...and the earlier stage is not a second event.
+        assert metric_sample(self.VALIDATIONS, jwt_labels) == before_jwt
+
+        rejections = [r for r in caplog.records if "Token rejected" in r.message]
+        assert len(rejections) == 1, [r.message for r in rejections]
+        # The whole story survives on that one line.
+        assert "jwt/expired" in rejections[0].message
+
+    async def test_accepted_after_fallback_records_no_rejection(
+        self, base_settings, metric_sample
+    ):
+        """A token the fallback rescues was never rejected.
+
+        JWT verification failing and introspection then succeeding is one
+        accepted token. Recording the failed stage made an accepted token
+        produce a rejection *and* a valid — inflating both sides of every
+        ratio in docs/observability.md at once.
+        """
+        rejected = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        accepted = {
+            "method": "introspect",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "active": True,
+            "sub": "alice",
+            "aud": ["test-client-id"],
+        }
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is not None
+
+        assert metric_sample(self.VALIDATIONS, rejected) == before_rejected
+        assert metric_sample(self.VALIDATIONS, accepted) - before_accepted == 1
+
+    async def test_allowlist_rejection_records_no_valid_end_to_end(
+        self, base_settings, metric_sample
+    ):
+        """A request refused by the allowlist is not also counted as served.
+
+        Deliberately drives the REAL `_verify_without_audience_check` rather
+        than mocking it. Every other allowlist test patches that method out,
+        so its `valid` record never ran and the double-count was invisible —
+        the tests asserted on the rejection they set up and never saw the
+        acceptance they also caused.
+
+        Authentication succeeding is not the request being granted: the
+        allowlist still has a say, and until it has spoken nothing has been
+        served.
+        """
+        accepted_jwt = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        rejected = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "not-on-the-list",
+        }
+        before_accepted = metric_sample(self.VALIDATIONS, accepted_jwt)
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        verifier.jwks_client = MagicMock()
+        token = self._jwt_for("not-on-the-list")
+        # Signature verifies and a token is created — only the allowlist refuses.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "client_id": "not-on-the-list",
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+        assert metric_sample(self.VALIDATIONS, accepted_jwt) == before_accepted
+
+    async def test_allowlisted_request_records_valid_once(
+        self, base_settings, metric_sample
+    ):
+        """The granted path still records exactly one `valid`, once cleared."""
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        verifier.jwks_client = MagicMock()
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "client_id": "astrolabe",
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            granted = await verifier.verify_token_for_management_api(
+                self._jwt_for("astrolabe")
+            )
+
+        assert granted is not None
+        assert metric_sample(self.VALIDATIONS, accepted) - before == 1
+
+    def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
+        """An opaque token carries no readable client_id — don't invent one."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._claimed_client_id("not-a-jwt") is None
+
+    def test_client_id_falls_back_through_claims(self, base_settings):
+        """Not every issuer uses `client_id`; azp and aud are the usual others."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        azp = jwt.encode({"sub": "a", "azp": "via-azp"}, "s", algorithm="HS256")
+        aud = jwt.encode({"sub": "a", "aud": ["via-aud"]}, "s", algorithm="HS256")
+        assert verifier._claimed_client_id(azp) == "via-azp"
+        assert verifier._claimed_client_id(aud) == "via-aud"
+
+    @pytest.mark.parametrize(
+        ("reason", "expected_result"),
+        [
+            ("expired", "invalid"),
+            ("inactive", "invalid"),
+            ("bad_signature", "invalid"),
+            ("bad_issuer", "invalid"),
+            ("bad_audience", "invalid"),
+            ("not_allowlisted", "invalid"),
+            ("not_configured", "error"),
+            ("network_error", "error"),
+            ("unknown", "error"),
+        ],
+    )
+    def test_result_is_derived_from_reason(
+        self, base_settings, metric_sample, reason, expected_result
+    ):
+        """`result` splits blame, and must not be settable independently.
+
+        It used to be a `_reject()` parameter defaulting to "invalid", and 4 of
+        the 6 `not_configured` call sites silently took the default — putting
+        "no validator configured at all", the one failure that rejects every
+        client's every token, on the *caller's* side of the split. Deriving it
+        from `reason` makes that class of drift impossible rather than merely
+        fixed once.
+        """
+        labels = {
+            "method": "jwt",
+            "result": expected_result,
+            "reason": reason,
+            "client_id": "mistral-client",
+        }
+        other = "invalid" if expected_result == "error" else "error"
+        before = metric_sample(self.VALIDATIONS, labels)
+        before_other = metric_sample(self.VALIDATIONS, {**labels, "result": other})
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._reject("jwt", reason, self._jwt_for())
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+        assert metric_sample(self.VALIDATIONS, {**labels, "result": other}) == (
+            before_other
+        )
+
+    @pytest.mark.parametrize(
+        ("token_kind", "make_token"),
+        [
+            ("jwt", lambda self: self._jwt_for("not-on-the-list")),
+            # The realistic case for this path: Astrolabe's management tokens
+            # are opaque, so nothing can be recovered from the raw bytes. The
+            # JWT-shaped case masked the bug — _claimed_client_id happened to
+            # succeed and the metric looked correct.
+            ("opaque", lambda self: "opaque-token-no-dots"),
+        ],
+    )
+    async def test_management_allowlist_rejection_is_recorded(
+        self, base_settings, metric_sample, token_kind, make_token
+    ):
+        """An allowlist rejection disconnects a client like any other.
+
+        It is authorization rather than validation, but from the operator's
+        side it is indistinguishable — a client that suddenly stops working —
+        and the client_id is right there, so it goes through the same funnel.
+
+        Parametrized over token *shape* because the two differ in where the
+        identity can be read from. By this point the caller holds a verified
+        `access_token.client_id`; re-deriving it from the raw bytes only works
+        for a JWT, so an opaque token would record `client_id="unknown"` —
+        and opaque is exactly what Astrolabe's management tokens are.
+        """
+        labels = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "not-on-the-list",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        token = make_token(self)
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            AsyncMock(
+                return_value=AccessToken(
+                    token=token,
+                    client_id="not-on-the-list",
+                    scopes=[],
+                    expires_at=int(time.time()) + 600,
+                )
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    def test_bad_audience_logs_once(self, base_settings, caplog):
+        """One line per rejection — this path used to log ERROR *and* WARNING."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        with caplog.at_level(
+            logging.DEBUG, logger="nextcloud_mcp_server.auth.unified_verifier"
+        ):
+            verifier._reject("jwt", "bad_audience", self._jwt_for(), "got []")
+
+        assert len([r for r in caplog.records if "bad_audience" in r.message]) == 1
+
+    async def test_opaque_no_validator_configured_is_recorded(
+        self, base_settings, metric_sample
+    ):
+        """The last silent rejection path: an opaque token with no validator.
+
+        The management-API twin of the `jwks_client is None` branch this work
+        started from — and quieter still, since that one at least logged at
+        DEBUG while this returned None with no metric and no log at all.
+        """
+        labels = {
+            "method": "unknown",
+            "result": "error",
+            "reason": "not_configured",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        base_settings.introspection_uri = None
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert (
+            await verifier._verify_without_audience_check("opaque-token", "mgmt:none")
+            is None
+        )
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_failed_validator_is_not_double_counted(
+        self, base_settings, metric_sample
+    ):
+        """A validator that ran and failed already recorded it — don't record twice.
+
+        The catch-all `payload is None` is reached both when nothing was tried
+        and when something was tried and failed. Only the first is silent; the
+        naive fix records both and inflates every introspection failure into two
+        events attributed to different methods.
+        """
+        no_validator = {
+            "method": "unknown",
+            "result": "error",
+            "reason": "not_configured",
+            "client_id": "unknown",
+        }
+        inactive = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "unknown",
+        }
+        before_nv = metric_sample(self.VALIDATIONS, no_validator)
+        before_inactive = metric_sample(self.VALIDATIONS, inactive)
+
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        assert (
+            await verifier._verify_without_audience_check("opaque-token", "mgmt:x")
+            is None
+        )
+
+        # Exactly one event, from _introspect_token, attributed to introspect.
+        assert metric_sample(self.VALIDATIONS, inactive) - before_inactive == 1
+        assert metric_sample(self.VALIDATIONS, no_validator) == before_nv

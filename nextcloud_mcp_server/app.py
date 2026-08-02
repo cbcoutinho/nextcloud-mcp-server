@@ -114,6 +114,7 @@ from nextcloud_mcp_server.observability import (
     setup_tracing,
 )
 from nextcloud_mcp_server.observability.metrics import (
+    instrument_call_tool_outcomes,
     record_dependency_check,
     set_dependency_health,
 )
@@ -1882,6 +1883,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info(
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
+
+    # Client-fleet observability: records the calling client's identity,
+    # capabilities and negotiated protocol version, plus whether the SDK
+    # delivered each tool call as CallToolResult(isError=True) or as a JSON-RPC
+    # error. Deliberately outside the `if oauth_enabled` block above — unlike
+    # the tool filter, this must work in every deployment mode.
+    instrument_call_tool_outcomes(mcp)
 
     mcp_app = mcp.streamable_http_app()
 

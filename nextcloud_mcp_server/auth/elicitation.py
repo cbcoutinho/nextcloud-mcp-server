@@ -11,6 +11,7 @@ from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.metrics import record_elicitation
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ async def _run_elicit(
     message: str,
     schema: type[BaseModel],
     *,
-    log_label: str,
+    prompt: str,
 ) -> tuple[str, Any]:
     """Shared elicit-or-fallback flow used by all elicitation prompts.
 
@@ -84,12 +85,24 @@ async def _run_elicit(
     elicitation actually ran (any of the first three outcomes), else None.
     Callers needing post-accept inspection (e.g. the data-acknowledged
     warning in :func:`present_login_url`) read it from ``result``.
+
+    ``prompt`` identifies which prompt is running ("login_flow" /
+    "provisioning_required"); it labels both the log lines and the
+    ``mcp_elicitation_total`` metric.
+
+    Every fallback here is deliberately silent to the caller — the point is to
+    degrade rather than fail — which is exactly why each one is counted. When
+    the MCP SDK moves to protocol 2026-07-28 the back-channel disappears and
+    elicitation starts landing in the generic ``reason="error"`` branch (or a
+    dedicated ``"no_back_channel"`` one, once that exception exists to catch);
+    without these counters that transition is invisible.
     """
     if not hasattr(ctx, "elicit"):
         logger.debug(
             "Elicitation not available on context — message_only fallback (%s)",
-            log_label,
+            prompt,
         )
+        record_elicitation(prompt, "message_only", "no_elicit_attr")
         return "message_only", None
 
     try:
@@ -97,26 +110,31 @@ async def _run_elicit(
     except NotImplementedError:
         logger.debug(
             "Elicitation not supported by client — message_only fallback (%s)",
-            log_label,
+            prompt,
         )
+        record_elicitation(prompt, "message_only", "not_implemented")
         return "message_only", None
     except Exception as e:
         logger.warning(
             "Elicitation failed unexpectedly for %s (%s: %s), "
             "falling back to message_only",
-            log_label,
+            prompt,
             type(e).__name__,
             e,
         )
+        record_elicitation(prompt, "message_only", "error")
         return "message_only", None
 
     if result.action == "accept":
-        logger.info("User acknowledged %s", log_label)
+        logger.info("User acknowledged %s", prompt)
+        record_elicitation(prompt, "accepted")
         return "accepted", result
     if result.action == "decline":
-        logger.info("User declined %s", log_label)
+        logger.info("User declined %s", prompt)
+        record_elicitation(prompt, "declined")
         return "declined", result
-    logger.info("User cancelled %s", log_label)
+    logger.info("User cancelled %s", prompt)
+    record_elicitation(prompt, "cancelled")
     return "cancelled", result
 
 
@@ -152,7 +170,7 @@ async def present_login_url(
         ctx,
         message,
         LoginFlowConfirmation,
-        log_label="login flow completion",
+        prompt="login_flow",
     )
 
     if (
@@ -213,6 +231,6 @@ async def present_provisioning_required(ctx: Context) -> str:
         ctx,
         message,
         ProvisioningRequiredConfirmation,
-        log_label="provisioning-required prompt",
+        prompt="provisioning_required",
     )
     return outcome

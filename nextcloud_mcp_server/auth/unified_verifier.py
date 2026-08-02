@@ -12,7 +12,9 @@ Key Design Principles:
 - Token reuse IS allowed for multi-audience tokens (RFC 8707)
 """
 
+import base64
 import hashlib
+import json
 import logging
 import time
 from typing import Any
@@ -234,9 +236,12 @@ class UnifiedTokenVerifier(TokenVerifier):
                 del self._token_cache[cache_key]
 
         from_cache = access_token is not None
+        outcome: dict[str, str] = {}
         if access_token is None:
             oauth_token_cache_hits_total.labels(hit="false").inc()
-            access_token = await self._verify_without_audience_check(token, cache_key)
+            access_token = await self._verify_without_audience_check(
+                token, cache_key, outcome
+            )
 
         if access_token is None:
             return None
@@ -268,17 +273,38 @@ class UnifiedTokenVerifier(TokenVerifier):
                     "(per-user authorization applies)",
                     access_token.resource,
                 )
+            self._record_mgmt_grant(outcome, from_cache)
             return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
         token_client_id = access_token.client_id
         if not token_client_id or token_client_id not in self._allowed_mgmt_clients:
-            logger.warning(
-                "Management API token rejected: client_id %r not in ALLOWED_MGMT_CLIENT",
-                token_client_id,
+            # Authorization, not validation — the token is genuine, its client
+            # is simply not on the management allowlist. Recorded through the
+            # same funnel anyway: from the operator's side this is
+            # indistinguishable from any other reason a client stopped working,
+            # and answering "why was it disconnected?" is the point.
+            #
+            # An *empty* allowlist is a different failure from a client missing
+            # off a populated one: it rejects every client, and it is our
+            # misconfiguration rather than the caller's token. Same shape as the
+            # JWKS/introspection `not_configured` cases, so it belongs on the
+            # same pageable side of the result split.
+            unconfigured = not self._allowed_mgmt_clients
+            return self._reject(
+                "allowlist",
+                "not_configured" if unconfigured else "not_allowlisted",
+                token,
+                "ALLOWED_MGMT_CLIENT is unset — every management client is rejected"
+                if unconfigured
+                else f"client_id {token_client_id!r} not in ALLOWED_MGMT_CLIENT",
+                # Already verified — the token validated, it is only the
+                # authorization that failed. Re-deriving from the raw bytes
+                # would lose it entirely for opaque tokens.
+                client_id=token_client_id,
             )
-            return None
 
+        self._record_mgmt_grant(outcome, from_cache)
         return access_token
 
     async def _verify_mcp_audience(self, token: str) -> AccessToken | None:
@@ -296,65 +322,69 @@ class UnifiedTokenVerifier(TokenVerifier):
             AccessToken if valid with MCP audience, None otherwise
         """
         validation_method = "unknown"
+        # Stage failures accumulate here; the chain is recorded once, at the
+        # end, so asking two validators about one token still produces one
+        # rejection. See _note() / _reject_chain().
+        chain: list[tuple[str, str, str | None]] = []
         try:
             # Attempt JWT verification first
             if self._is_jwt_format(token) and self.jwks_client:
                 validation_method = "jwt"
-                payload = await self._verify_jwt_signature(token)
-                if payload:
-                    record_oauth_token_validation("jwt", "valid")
-                else:
-                    record_oauth_token_validation("jwt", "invalid")
+                payload = await self._verify_jwt_signature(token, chain=chain)
+                if not payload and self.introspection_uri:
                     # Fall back to introspection if JWT verification failed
-                    if self.introspection_uri:
-                        validation_method = "introspect"
-                        payload = await self._introspect_token(token)
-                        if payload:
-                            record_oauth_token_validation("introspect", "valid")
-                        else:
-                            record_oauth_token_validation("introspect", "invalid")
+                    validation_method = "introspect"
+                    payload = await self._introspect_token(token, chain=chain)
             else:
                 # Fall back to introspection for opaque tokens
                 validation_method = "introspect"
-                payload = await self._introspect_token(token)
-                if payload:
-                    record_oauth_token_validation("introspect", "valid")
-                else:
-                    record_oauth_token_validation("introspect", "invalid")
-                if not payload:
-                    return None
+                payload = await self._introspect_token(token, chain=chain)
 
             # Check payload is valid
             if not payload:
-                return None
+                return self._reject_chain(chain, token)
 
             # Validate MCP audience is present
             if not self._has_mcp_audience(payload):
                 audiences = payload.get("aud", [])
-                logger.error(
-                    "Token rejected: Missing MCP audience. Got %s, need MCP (%s or %s)",
-                    audiences,
-                    self.settings.oidc_client_id,
-                    self.settings.nextcloud_mcp_server_url,
+                return self._reject(
+                    validation_method,
+                    "bad_audience",
+                    token,
+                    f"got {audiences}, need {self.settings.oidc_client_id} "
+                    f"or {self.settings.nextcloud_mcp_server_url}",
                 )
-                # Record as invalid due to audience mismatch
-                record_oauth_token_validation(validation_method, "invalid")
-                return None
 
             logger.info(
                 "MCP audience validated - token can be used directly "
                 "(Nextcloud will validate its own audience)"
             )
 
-            return self._create_access_token(token, payload)
+            # Recorded only once the AccessToken actually exists — not at each
+            # validation stage, and not merely once the audience check passes.
+            # `_create_access_token` still returns None (without raising) for a
+            # payload carrying no `sub`/`preferred_username`, so recording any
+            # earlier means a token that is about to be refused is counted as
+            # accepted. "valid" has to mean the caller got a token.
+            access_token = self._create_access_token(token, payload)
+            if access_token is None:
+                return self._reject(
+                    validation_method,
+                    "unknown",
+                    token,
+                    "no 'sub' or 'preferred_username' claim in token payload",
+                )
+            record_oauth_token_validation(validation_method, "valid")
+            return access_token
 
         except Exception as e:
-            logger.error("Token verification failed: %s", e)
-            record_oauth_token_validation(validation_method, "error")
-            return None
+            return self._reject(validation_method, "unknown", token, str(e))
 
     async def _verify_without_audience_check(
-        self, token: str, cache_key: str
+        self,
+        token: str,
+        cache_key: str,
+        outcome: dict[str, str] | None = None,
     ) -> AccessToken | None:
         """
         Verify token validity without checking MCP audience or issuer.
@@ -385,19 +415,18 @@ class UnifiedTokenVerifier(TokenVerifier):
             AccessToken if valid, None otherwise
         """
         validation_method = "unknown"
+        # See _verify_mcp_audience: one rejection per token, recorded terminally.
+        chain: list[tuple[str, str, str | None]] = []
         try:
             # Attempt JWT verification first
             # Skip issuer check for management API tokens (may have internal URL)
             if self._is_jwt_format(token) and self.jwks_client:
                 validation_method = "jwt"
                 payload = await self._verify_jwt_signature(
-                    token, skip_issuer_check=True
+                    token, skip_issuer_check=True, chain=chain
                 )
-                if payload:
-                    record_oauth_token_validation("jwt", "valid")
-                else:
-                    record_oauth_token_validation("jwt", "invalid")
-                    return None
+                if not payload:
+                    return self._reject_chain(chain, token)
             else:
                 # Opaque token: try introspection first (only when configured),
                 # then fall back to userinfo. userinfo validates opaque tokens
@@ -406,11 +435,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload = None
                 if self.introspection_uri:
                     validation_method = "introspect"
-                    payload = await self._introspect_token(token)
-                    if payload:
-                        record_oauth_token_validation("introspect", "valid")
-                    else:
-                        record_oauth_token_validation("introspect", "invalid")
+                    payload = await self._introspect_token(token, chain=chain)
 
                 # Fall through to userinfo when introspection is unconfigured or
                 # returned None. NOTE: _introspect_token returns None for BOTH an
@@ -423,17 +448,19 @@ class UnifiedTokenVerifier(TokenVerifier):
                     # Set validation_method first so a userinfo exception caught
                     # by the outer handler is attributed correctly.
                     validation_method = "userinfo"
-                    payload = await self._validate_via_userinfo(token)
-                    if payload:
-                        record_oauth_token_validation("userinfo", "valid")
-                    else:
-                        record_oauth_token_validation("userinfo", "invalid")
-                        return None
+                    payload = await self._validate_via_userinfo(token, chain=chain)
+                    if not payload:
+                        return self._reject_chain(chain, token)
 
                 if payload is None:
-                    # No validator was configured, or none succeeded. Don't record
-                    # a userinfo failure metric when userinfo was never attempted.
-                    return None
+                    if not self.introspection_uri and not self.userinfo_uri:
+                        # Nothing was even attempted: an opaque token arrived and
+                        # this server has no way to validate one. That is the
+                        # management-API twin of the quiet `jwks_client is None`
+                        # branch this PR started from, and it was quieter still —
+                        # not DEBUG, nothing at all.
+                        return self._reject("unknown", "not_configured", token)
+                    return self._reject_chain(chain, token)
 
             # Both branches above either set a populated payload or have already
             # returned None, so payload is guaranteed truthy here.
@@ -447,17 +474,34 @@ class UnifiedTokenVerifier(TokenVerifier):
             # Cache and return the token. via_userinfo is derived from how we
             # actually validated — never from a payload claim (see
             # _create_access_token_with_cache_key).
-            return self._create_access_token_with_cache_key(
+            access_token = self._create_access_token_with_cache_key(
                 token,
                 payload,
                 cache_key,
                 via_userinfo=(validation_method == "userinfo"),
             )
+            # Creation still returns None (without raising) for a payload with
+            # no `sub`/`preferred_username`, and a stage passing is not the same
+            # thing as the caller getting a token.
+            if access_token is None:
+                return self._reject(
+                    validation_method,
+                    "unknown",
+                    token,
+                    "no 'sub' or 'preferred_username' claim in token payload",
+                )
+            # NOT recorded as `valid` here. This method's caller still has the
+            # ALLOWED_MGMT_CLIENT decision to make, and a token refused there is
+            # not a token that was served. Recording at this point counted a
+            # rejected request as both accepted and rejected. The caller reports
+            # which validator succeeded via `outcome` and records once, at the
+            # point the request is actually granted.
+            if outcome is not None:
+                outcome["method"] = validation_method
+            return access_token
 
         except Exception as e:
-            logger.error("Management API token verification failed: %s", e)
-            record_oauth_token_validation(validation_method, "error")
-            return None
+            return self._reject(validation_method, "unknown", token, str(e))
 
     def _has_mcp_audience(self, payload: dict[str, Any]) -> bool:
         """
@@ -513,8 +557,171 @@ class UnifiedTokenVerifier(TokenVerifier):
         """
         return "." in token and token.count(".") == 2
 
+    @staticmethod
+    def _claimed_client_id(token: str) -> str | None:
+        """Read the client_id a token *claims*, without verifying anything.
+
+        A rejected token has by definition not been validated, so its contents
+        are untrusted — but they are also the only thing that says which client
+        was turned away, which is exactly what an operator needs to know. The
+        value is treated as untrusted downstream (clamped and count-bounded
+        before it becomes a metric label) rather than being thrown away.
+
+        The payload segment is base64-decoded directly rather than going through
+        ``jwt.decode(..., verify_signature=False)``. Same result, but it does not
+        route untrusted input through the JWT library at all, so there is no
+        chance of the value being mistaken for an authenticated claim by a later
+        reader (or by a security scanner — python:S5659 flags the library call
+        regardless of intent, and suppressing it would hide the real thing).
+
+        Returns None for opaque tokens and anything unparseable.
+        """
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None  # opaque token, not a JWS
+        try:
+            # Restore the padding base64url encoding strips.
+            payload = parts[1]
+            claims = json.loads(
+                base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+            )
+        except Exception:
+            return None
+        if not isinstance(claims, dict):
+            return None
+        for key in ("client_id", "azp", "aud"):
+            value = claims.get(key)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, list) and value and isinstance(value[0], str):
+                return value[0]
+        return None
+
+    # Whose problem is it? A rejection is either the caller presenting a token
+    # we cannot accept, or this server being unable to validate one. Those want
+    # different responses — the second should page — so `result` is derived from
+    # `reason` here rather than passed in at each call site. It was a parameter
+    # defaulting to "invalid", and 4 of the 6 `not_configured` sites silently
+    # took the default, which put the single most total failure mode in the
+    # system (no validator configured at all) on the *client's* side of the
+    # split, contradicting the documented contract.
+    _OUR_FAULT_REASONS = frozenset({"not_configured", "network_error", "unknown"})
+
+    def _reject(
+        self,
+        method: str,
+        reason: str,
+        token: str,
+        detail: str | None = None,
+        client_id: str | None = None,
+    ) -> None:
+        """Record and log a token rejection, then return None for the caller.
+
+        Every rejection path funnels through here so the *reason* survives.
+        Previously each path logged its own line at its own level (several at
+        DEBUG, invisible in production) and reported a bare "invalid" to the
+        metric — so a client whose users were being forced to re-authenticate
+        produced a counter that said only "something was rejected".
+
+        WARNING, not INFO: a rejection ends an MCP client's session and makes a
+        human log in again. That is not routine.
+
+        Args:
+            client_id: Pass this when the caller already holds a *verified*
+                client id, i.e. the token validated and was then rejected on
+                authorization grounds. The fallback below can only read a JWT,
+                so an opaque token would otherwise be recorded as "unknown"
+                despite its identity being known — and clients may present
+                either token type, so that is not a rare shape.
+
+                An *empty* value falls back too, deliberately. A verified
+                payload can carry `azp`/`aud` without a top-level `client_id`
+                (`_create_access_token_with_cache_key` reads only the latter,
+                defaulting to ""), and for a JWT the fallback re-reads those
+                same already-verified bytes. Preferring "" over a recoverable
+                identity would lose information for no gain.
+        """
+        client_id = client_id or self._claimed_client_id(token)
+        result = "error" if reason in self._OUR_FAULT_REASONS else "invalid"
+        record_oauth_token_validation(method, result, reason, client_id)
+        logger.warning(
+            "Token rejected (%s/%s, %s) for client %s%s",
+            method,
+            reason,
+            "our fault" if result == "error" else "caller's token",
+            client_id or "unknown",
+            f": {detail}" if detail else "",
+        )
+        return None
+
+    def _record_mgmt_grant(self, outcome: dict[str, str], from_cache: bool) -> None:
+        """Record a management-API request as accepted, once it actually is.
+
+        Authentication succeeding is not the same as the request being granted:
+        ALLOWED_MGMT_CLIENT can still refuse a perfectly valid token. Recording
+        `valid` when the token verified counted a refused request as both
+        served and rejected, which is the same "record at the point the
+        decision was actually made" invariant applied one method further out.
+
+        Cache hits are skipped so this keeps counting *validations*, matching
+        the existing behaviour where a cached token records no validation at
+        all (``mcp_oauth_token_cache_hits_total`` covers that side).
+        """
+        if from_cache:
+            return
+        record_oauth_token_validation(outcome.get("method", "unknown"), "valid")
+
+    def _note(
+        self,
+        chain: list[tuple[str, str, str | None]] | None,
+        method: str,
+        reason: str,
+        token: str,
+        detail: str | None = None,
+    ) -> None:
+        """Record a rejection, or defer it when a fallback may still succeed.
+
+        A verifier that falls back — JWT then introspection, introspection then
+        userinfo — asks two validators about one token. Each failing stage used
+        to record and log independently, so a single expired token produced two
+        metric increments and two WARNINGs. That is the *same* "two breadcrumbs
+        to correlate" problem this work set out to remove, rebuilt one layer up
+        and made louder by promoting the lines to WARNING.
+
+        When ``chain`` is provided the stage failure is appended to it and the
+        caller records once, terminally, via :meth:`_reject_chain`. When it is
+        None — a direct call, including from tests — the rejection is recorded
+        immediately, since there is no chain to be the tail of.
+        """
+        if chain is None:
+            return self._reject(method, reason, token, detail)
+        chain.append((method, reason, detail))
+        return None
+
+    def _reject_chain(
+        self, chain: list[tuple[str, str, str | None]], token: str
+    ) -> None:
+        """Record a fallback chain's outcome as the single rejection it is.
+
+        Attributed to the **last** validator tried, because that is the one
+        whose refusal actually produced the 401. Earlier stages are folded into
+        the detail so the whole story stays on one line — losing "the JWT was
+        expired *and then* introspection said inactive" would trade one problem
+        for another.
+        """
+        if not chain:
+            return None
+        method, reason, detail = chain[-1]
+        if len(chain) > 1:
+            preceding = " → ".join(f"{m}/{r}" for m, r, _ in chain[:-1])
+            detail = f"after {preceding}" + (f": {detail}" if detail else "")
+        return self._reject(method, reason, token, detail)
+
     async def _verify_jwt_signature(
-        self, token: str, skip_issuer_check: bool = False
+        self,
+        token: str,
+        skip_issuer_check: bool = False,
+        chain: list[tuple[str, str, str | None]] | None = None,
     ) -> dict[str, Any] | None:
         """
         Verify JWT token with signature validation using JWKS.
@@ -531,8 +738,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             # contract without an assert inside the try/except below, which
             # would have swallowed the AssertionError and reported a
             # configuration bug as an invalid token (python:S5779).
-            logger.debug("No JWKS client configured; cannot verify JWT signature")
-            return None
+            # Was DEBUG, i.e. invisible at the production log level: a missing
+            # JWKS client rejects every JWT, so the one condition that breaks
+            # all clients at once was the quietest thing in here.
+            return self._note(chain, "jwt", "not_configured", token)
 
         try:
             # Get signing key from JWKS
@@ -568,19 +777,26 @@ class UnifiedTokenVerifier(TokenVerifier):
             return payload
 
         except jwt.ExpiredSignatureError:
-            logger.info("JWT token has expired")
-            return None
+            return self._note(chain, "jwt", "expired", token)
         except jwt.InvalidIssuerError as e:
-            logger.warning("JWT issuer validation failed: %s", e)
-            return None
+            return self._note(chain, "jwt", "bad_issuer", token, str(e))
         except jwt.InvalidTokenError as e:
-            logger.warning("JWT validation failed: %s", e)
-            return None
+            # Covers signature failures, malformed tokens and bad `iat`.
+            return self._note(chain, "jwt", "bad_signature", token, str(e))
+        except jwt.PyJWKClientError as e:
+            # Fetching the signing key failed — the JWKS endpoint is down, slow
+            # or unreachable. Nothing is wrong with the caller's token. This is
+            # NOT an InvalidTokenError subclass, so without an explicit clause
+            # it lands in the generic handler as "unknown", and a JWKS outage
+            # reads differently from the introspection and userinfo outages it
+            # is the exact peer of.
+            return self._note(chain, "jwt", "network_error", token, str(e))
         except Exception as e:
-            logger.error("Unexpected error during JWT verification: %s", e)
-            return None
+            return self._note(chain, "jwt", "unknown", token, str(e))
 
-    async def _introspect_token(self, token: str) -> dict[str, Any] | None:
+    async def _introspect_token(
+        self, token: str, chain: list[tuple[str, str, str | None]] | None = None
+    ) -> dict[str, Any] | None:
         """
         Validate token by calling the introspection endpoint (RFC 7662).
 
@@ -591,8 +807,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             Token payload if active, None if inactive or invalid
         """
         if not self.introspection_uri:
-            logger.debug("No introspection endpoint configured")
-            return None
+            return self._note(chain, "introspect", "not_configured", token)
 
         # Introspection requires client authentication. Checked before the try
         # rather than asserted inside it: the except below would have caught
@@ -601,11 +816,13 @@ class UnifiedTokenVerifier(TokenVerifier):
         client_id = self.settings.oidc_client_id
         client_secret = self.settings.oidc_client_secret
         if client_id is None or client_secret is None:
-            logger.debug(
-                "Introspection endpoint configured but OIDC client credentials are not; "
-                "cannot introspect"
+            return self._note(
+                chain,
+                "introspect",
+                "not_configured",
+                token,
+                "introspection endpoint set but OIDC client credentials are not",
             )
-            return None
 
         try:
             response = await self.http_client.post(
@@ -619,8 +836,7 @@ class UnifiedTokenVerifier(TokenVerifier):
 
                 # Check if token is active
                 if not introspection_data.get("active", False):
-                    logger.info("Token introspection returned inactive=false")
-                    return None
+                    return self._note(chain, "introspect", "inactive", token)
 
                 logger.debug(
                     "Token introspected successfully for user: %s",
@@ -628,32 +844,31 @@ class UnifiedTokenVerifier(TokenVerifier):
                 )
                 return introspection_data
 
-            elif response.status_code in (400, 401, 403):
-                logger.warning(
-                    "Token introspection failed: HTTP %s. Response: %s",
-                    response.status_code,
-                    response.text[:200] if response.text else "empty",
-                )
-                return None
             else:
-                logger.warning(
-                    "Unexpected response from introspection: %s. Response: %s",
-                    response.status_code,
-                    response.text[:200] if response.text else "empty",
+                # 400/401/403 mean the *server's* introspection credentials are
+                # wrong, not the caller's token; anything else is unexpected.
+                # Both are our problem, not the client's.
+                return self._note(
+                    chain,
+                    "introspect",
+                    "not_configured"
+                    if response.status_code in (400, 401, 403)
+                    else "unknown",
+                    token,
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:200] if response.text else 'empty'}",
                 )
-                return None
 
         except httpx.TimeoutException:
-            logger.error("Timeout while introspecting token")
-            return None
+            return self._note(chain, "introspect", "network_error", token, "timeout")
         except httpx.RequestError as e:
-            logger.error("Network error while introspecting token: %s", e)
-            return None
+            return self._note(chain, "introspect", "network_error", token, str(e))
         except Exception as e:
-            logger.error("Unexpected error during token introspection: %s", e)
-            return None
+            return self._note(chain, "introspect", "unknown", token, str(e))
 
-    async def _validate_via_userinfo(self, token: str) -> dict[str, Any] | None:
+    async def _validate_via_userinfo(
+        self, token: str, chain: list[tuple[str, str, str | None]] | None = None
+    ) -> dict[str, Any] | None:
         """Validate an opaque token by calling the OIDC userinfo endpoint.
 
         Fallback for opaque access tokens that the Nextcloud ``oidc`` app's
@@ -689,15 +904,19 @@ class UnifiedTokenVerifier(TokenVerifier):
         # self.userinfo_uri before invoking this, but the guard keeps the method
         # safe to call directly (e.g. in unit tests).
         if not self.userinfo_uri:
-            logger.debug("No userinfo endpoint configured")
-            return None
+            return self._note(chain, "userinfo", "not_configured", token)
 
         # userinfo_uri comes from the OIDC discovery document (admin-configured),
         # not from user input — but guard the scheme anyway to satisfy SSRF
         # scanners and to fail fast on a misconfigured endpoint.
         if not self.userinfo_uri.startswith(("https://", "http://")):
-            logger.error("Refusing non-HTTP userinfo_uri: %s", self.userinfo_uri)
-            return None
+            return self._note(
+                chain,
+                "userinfo",
+                "not_configured",
+                token,
+                f"refusing non-HTTP userinfo_uri: {self.userinfo_uri}",
+            )
 
         try:
             response = await self.http_client.get(
@@ -705,27 +924,32 @@ class UnifiedTokenVerifier(TokenVerifier):
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.TimeoutException:
-            logger.error("Timeout while validating token via userinfo")
-            return None
+            return self._note(chain, "userinfo", "network_error", token, "timeout")
         except httpx.RequestError as e:
-            logger.error("Network error while validating token via userinfo: %s", e)
-            return None
+            return self._note(chain, "userinfo", "network_error", token, str(e))
 
         if response.status_code != 200:
-            logger.warning(
-                "Userinfo token validation failed: HTTP %s", response.status_code
+            # userinfo answers 401 for an expired or revoked opaque token; that
+            # is the caller's token being bad, not our configuration.
+            return self._note(
+                chain,
+                "userinfo",
+                "inactive" if response.status_code == 401 else "unknown",
+                token,
+                f"HTTP {response.status_code}",
             )
-            return None
 
         try:
             data = response.json()
         except Exception as e:
-            logger.error("Failed to parse userinfo response: %s", e)
-            return None
+            return self._note(
+                chain, "userinfo", "unknown", token, f"unparseable response: {e}"
+            )
 
         if not data.get("sub"):
-            logger.warning("Userinfo response missing 'sub' claim")
-            return None
+            return self._note(
+                chain, "userinfo", "unknown", token, "response missing 'sub' claim"
+            )
 
         logger.debug("Token validated via userinfo for user: %s", data.get("sub"))
         return data
@@ -773,9 +997,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Extract username (sub claim, with fallback to preferred_username)
         username = payload.get("sub") or payload.get("preferred_username")
         if not username:
-            logger.error(
-                "No 'sub' or 'preferred_username' claim found in token payload"
-            )
+            # Deliberately silent: every caller routes a None result through
+            # _reject(), whose WARNING carries the client_id and reason this
+            # line lacked. Logging here too would give one rejection two lines
+            # — the shape already removed from the bad_audience path.
             return None
 
         # Extract scopes from scope claim (space-separated string)
