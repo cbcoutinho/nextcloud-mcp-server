@@ -1373,6 +1373,106 @@ class TestRejectionObservability:
 
         assert metric_sample(self.VALIDATIONS, labels) - before == 1
 
+    async def test_fallback_chain_records_one_rejection(
+        self, base_settings, metric_sample, caplog
+    ):
+        """Two validators, one token, one rejection.
+
+        With both JWKS and introspection configured — the ordinary
+        defence-in-depth deployment — an expired JWT is refused twice: the
+        signature check sees `expired`, then introspection sees `inactive` for
+        the same token. Recording each stage independently rebuilt the exact
+        "two breadcrumbs to correlate" problem this work exists to remove, and
+        made it louder by promoting both lines to WARNING.
+        """
+        jwt_labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        introspect_labels = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "mistral-client",
+        }
+        before_jwt = metric_sample(self.VALIDATIONS, jwt_labels)
+        before_introspect = metric_sample(self.VALIDATIONS, introspect_labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+                side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is None
+
+        # Attributed to the validator that actually produced the 401...
+        assert (
+            metric_sample(self.VALIDATIONS, introspect_labels) - before_introspect == 1
+        )
+        # ...and the earlier stage is not a second event.
+        assert metric_sample(self.VALIDATIONS, jwt_labels) == before_jwt
+
+        rejections = [r for r in caplog.records if "Token rejected" in r.message]
+        assert len(rejections) == 1, [r.message for r in rejections]
+        # The whole story survives on that one line.
+        assert "jwt/expired" in rejections[0].message
+
+    async def test_accepted_after_fallback_records_no_rejection(
+        self, base_settings, metric_sample
+    ):
+        """A token the fallback rescues was never rejected.
+
+        JWT verification failing and introspection then succeeding is one
+        accepted token. Recording the failed stage made an accepted token
+        produce a rejection *and* a valid — inflating both sides of every
+        ratio in docs/observability.md at once.
+        """
+        rejected = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        accepted = {
+            "method": "introspect",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+        before_accepted = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "active": True,
+            "sub": "alice",
+            "aud": ["test-client-id"],
+        }
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+        ):
+            assert await verifier._verify_mcp_audience(self._jwt_for()) is not None
+
+        assert metric_sample(self.VALIDATIONS, rejected) == before_rejected
+        assert metric_sample(self.VALIDATIONS, accepted) - before_accepted == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)
