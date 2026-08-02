@@ -172,8 +172,11 @@ oauth_token_validations_total = Counter(
     "happened — without it a rejection is uninterpretable, and a rejection is "
     "what forces an MCP client's user to log in again. `client_id` attributes "
     "it, so 'which client is being disconnected, and why' is one query.",
-    # Keep these in sync with docs/observability.md and with
-    # UnifiedTokenVerifier._OUR_FAULT_REASONS when adding a rejection path.
+    # CANONICAL vocabulary — this is the one place the values are enumerated in
+    # code. When adding a rejection path, update this list, then
+    # UnifiedTokenVerifier._OUR_FAULT_REASONS (which decides `result`) and
+    # docs/observability.md (which carries the alert queries). Do not re-list
+    # them in docstrings: a third copy drifted out of sync inside a single PR.
     # method: jwt | introspect | userinfo | allowlist | unknown
     # result: valid | invalid (caller's token) | error (ours) — derived from
     #         reason in _reject(), never set independently
@@ -1249,15 +1252,23 @@ def record_oauth_token_validation(
     """
     Record an OAuth token validation.
 
+    The permitted values for ``method``, ``result`` and ``reason`` are
+    enumerated once, on the ``oauth_token_validations_total`` definition above.
+    This docstring deliberately does not repeat them: it used to, drifted out of
+    sync within a single PR, and made a third copy of a list that already exists
+    in two places. Describing what each argument *means* is this docstring's
+    job; the vocabulary has one home.
+
     Args:
-        method: Validation method — "jwt", "introspect", "userinfo" or "unknown".
-        result: "valid", "invalid", or "error".
-        reason: Why a non-valid result happened — "expired", "inactive",
-            "bad_signature", "bad_issuer", "bad_audience", "not_configured",
-            "network_error", "unknown". "none" for a valid result.
-        client_id: OAuth client the token claims to belong to, if recoverable.
-            Read from an *unverified* token on the rejection path, so it is
-            untrusted input and is both length-clamped and count-bounded.
+        method: Which validator produced this outcome.
+        result: Whose problem it is — valid, the caller's token, or ours.
+            Derived from ``reason`` by ``UnifiedTokenVerifier._reject``; never
+            pass it independently of the reason.
+        reason: Why a non-valid result happened. "none" for a valid result.
+        client_id: OAuth client the token belongs to. Verified on the
+            authorization paths, but read from an *unverified* token on the
+            validation ones — so treated as untrusted regardless, and both
+            length-clamped and count-bounded.
     """
     oauth_token_validations_total.labels(
         method=method,
