@@ -43,25 +43,32 @@ OUTCOMES = "mcp_tool_outcomes_total"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_seen_client_names():
-    """Snapshot/restore the module-global client-name set around every test.
+def _isolate_module_globals():
+    """Snapshot/restore *every* process-global this module mutates.
 
-    ``_seen_client_names`` is process-global and never expires, so the
-    capacity test below (which mints ~70 identities) would otherwise leave the
-    cap exhausted for whatever runs next — silently turning an assertion on a
-    real ``client_name`` into one on ``"_other"``. Nothing enforces test order
-    here, so relying on file-definition order would be a latent flake rather
-    than a guarantee.
+    Three of them now: the two cardinality budgets and the warned-cause set.
+    All are process-global and never expire, so a test that fills one leaves it
+    filled for whatever runs next — the capacity test mints ~70 identities, and
+    the diagnostics tests mark both causes as already-warned. Either would
+    silently turn a later assertion into its opposite (a real ``client_name``
+    reading as ``"_other"``; an expected warning not firing).
+
+    Deliberately covers all three rather than naming them, because the previous
+    version covered two and a third was added without noticing the asymmetry.
+    Anything added to the tuple below gets the same treatment for free.
     """
-    saved_names = set(metrics_module._seen_client_names)
-    saved_ids = set(metrics_module._seen_client_ids)
+    names = ("_seen_client_names", "_seen_client_ids", "_warned_causes")
+    saved = {n: set(getattr(metrics_module, n)) for n in names}
+    # Cleared, not just restored: the diagnostics tests need an unwarned slate
+    # to observe the once-per-process behaviour at all.
+    getattr(metrics_module, "_warned_causes").clear()
     try:
         yield
     finally:
-        metrics_module._seen_client_names.clear()
-        metrics_module._seen_client_names.update(saved_names)
-        metrics_module._seen_client_ids.clear()
-        metrics_module._seen_client_ids.update(saved_ids)
+        for n in names:
+            current = getattr(metrics_module, n)
+            current.clear()
+            current.update(saved[n])
 
 
 def _client_params(
@@ -274,9 +281,6 @@ class TestSilentFailureDiagnostics:
     empty. That is the exact failure this whole metric family exists to remove,
     rebuilt inside the thing removing it.
     """
-
-    def setup_method(self):
-        metrics_module._warned_causes.clear()
 
     def test_missing_request_context_says_so(self, caplog):
         with caplog.at_level(
