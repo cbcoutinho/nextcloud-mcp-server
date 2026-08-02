@@ -1015,8 +1015,13 @@ def _client_label(value: object, limit: int = 64) -> str:
 
     Note this bounds the size of one value, not the number of distinct values —
     see :func:`_bounded_client_name` for that half.
+
+    Empty maps to "unknown" alongside None. `AccessToken.client_id` defaults to
+    `""` when the payload carries no client_id claim, so without this an absent
+    identity would record as an empty label — a second spelling of "we don't
+    know" that splits the series and reads as a rendering bug on a dashboard.
     """
-    return str(value)[:limit] if value is not None else "unknown"
+    return str(value)[:limit] if value else "unknown"
 
 
 def _first_present(*candidates: tuple[object, str]) -> object | None:

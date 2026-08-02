@@ -1532,7 +1532,7 @@ class TestRejectionObservability:
             "method": "jwt",
             "result": "valid",
             "reason": "none",
-            "client_id": "unknown",
+            "client_id": "astrolabe",
         }
         before = metric_sample(self.VALIDATIONS, accepted)
 
@@ -1576,7 +1576,7 @@ class TestRejectionObservability:
             "method": "jwt",
             "result": "valid",
             "reason": "none",
-            "client_id": "unknown",
+            "client_id": "astrolabe",
         }
         before = metric_sample(self.VALIDATIONS, accepted)
 

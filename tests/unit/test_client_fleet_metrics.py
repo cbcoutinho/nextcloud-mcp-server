@@ -234,6 +234,36 @@ class TestRecordClientSession:
         assert metric_sample(SESSIONS, labels) - before == 1
 
 
+class TestAbsentIdentityLabelling:
+    """ "Absent" must have exactly one spelling."""
+
+    def test_empty_client_id_records_as_unknown(self, metric_sample):
+        """`AccessToken.client_id` defaults to "" when the payload has no claim.
+
+        Recording that verbatim gives an empty label — a second spelling of
+        "we don't know" that splits the series in two and reads as a rendering
+        bug on a dashboard. CI caught this the moment client_id started being
+        passed on the acceptance path: two tests expecting "unknown" began
+        seeing "" instead.
+        """
+        unknown = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        empty = {**unknown, "client_id": ""}
+        before_unknown = metric_sample("mcp_oauth_token_validations_total", unknown)
+
+        record_oauth_token_validation("jwt", "valid", "none", "")
+
+        assert (
+            metric_sample("mcp_oauth_token_validations_total", unknown) - before_unknown
+            == 1
+        )
+        assert metric_sample("mcp_oauth_token_validations_total", empty) == 0
+
+
 class TestSilentFailureDiagnostics:
     """The instrumentation must be able to report on its own failure.
 
