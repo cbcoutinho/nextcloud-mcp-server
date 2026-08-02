@@ -527,12 +527,25 @@ async def unified_search(request: Request) -> JSONResponse:
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
-        # Sort by rerank score when present, retrieval score otherwise. Without
-        # the first key this re-sort would silently undo the rerank ordering,
+        # Sort by rerank score when present, retrieval score otherwise —
+        # without this the re-sort would silently undo the rerank ordering,
         # since .score deliberately still holds the retrieval score.
+        #
+        # The leading `is not None` term keeps the two apart rather than
+        # comparing them. They are different scales: a rerank score is
+        # calibrated in [0, 1], while .score is a rank artifact (~2/k for RRF)
+        # or an unbounded raw BM25 value. Ranking them against each other lets
+        # an UNSCORED row outrank a genuinely reranked one purely by scale — a
+        # raw BM25 8.5 beats every possible rerank score. Unscored rows are
+        # exactly the ones rerank_results appends in retrieval order to sit at
+        # the tail, so this preserves that placement instead of shuffling them
+        # back into the middle.
         sorted_results = sorted(
             all_results,
-            key=lambda r: r.rerank_score if r.rerank_score is not None else r.score,
+            key=lambda r: (
+                r.rerank_score is not None,
+                r.rerank_score if r.rerank_score is not None else r.score,
+            ),
             reverse=True,
         )
 

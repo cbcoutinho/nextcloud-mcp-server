@@ -39,24 +39,34 @@ def _app() -> Starlette:
     return app
 
 
-def _rows(n):
+def _rows(n, score=None):
     # Descending but strictly non-negative: SearchResult rejects a negative
-    # score, and these fixtures go up to a full rerank pool.
+    # score, and these fixtures go up to a full rerank pool. `score` overrides
+    # with a flat value, for exercising retrieval scores on a scale that dwarfs
+    # the [0, 1] rerank range (e.g. raw BM25).
     return [
         SearchResult(
             id=str(i),
             doc_type="file",
             title=f"d{i}",
             excerpt=f"t{i}",
-            score=1.0 - (i / (n or 1)),
+            score=score if score is not None else 1.0 - (i / (n or 1)),
         )
         for i in range(n)
     ]
 
 
-def _post(body, *, search_spy=None, rerank_enabled=True, rerank_impl=None, rows=0):
+def _post(
+    body,
+    *,
+    search_spy=None,
+    rerank_enabled=True,
+    rerank_impl=None,
+    rows=0,
+    row_score=None,
+):
     algo = MagicMock()
-    algo.search = search_spy or AsyncMock(return_value=_rows(rows))
+    algo.search = search_spy or AsyncMock(return_value=_rows(rows, row_score))
     algo.query_token_count = 0
     algo.query_embedding = None
 
@@ -209,6 +219,44 @@ def test_response_echoes_granularity():
 
     assert resp.status_code == 200
     assert resp.json()["granularity"] == "document"
+
+
+def test_unscored_rows_stay_behind_reranked_ones_regardless_of_scale():
+    """A partially-scored pool must not let raw retrieval scores outrank
+    cross-encoder ones.
+
+    `rerank_score` is calibrated in [0, 1]; `.score` is a rank artifact (~2/k
+    for RRF) or an unbounded raw BM25 value. Ranking the two against each other
+    lets an unscored row beat a genuinely reranked one purely by scale — a BM25
+    score of 8.5 outranks every possible rerank score. `rerank_results` appends
+    unscored rows in retrieval order precisely so they sit at the TAIL, and this
+    handler's post-verification re-sort has to preserve that.
+
+    Driven through the real handler on purpose: the other rerank tests use a
+    uniformly scored pool, and the integration test asserts against
+    `rerank_results` directly — so neither exercises this re-sort.
+    """
+
+    def _partial(results, query, **kwargs):
+        # Genuinely reranked but weakly relevant; the rest stay unscored with
+        # deliberately large retrieval scores.
+        results[0].rerank_score = 0.01
+        return results, True
+
+    resp, _, _ = _post(
+        {"query": "q", "rerank": True},
+        rerank_impl=AsyncMock(side_effect=_partial),
+        rows=3,
+        row_score=8.5,
+    )
+
+    assert resp.status_code == 200
+    rows = resp.json()["results"]
+    assert "rerank_score" in rows[0], (
+        "the reranked row must lead, despite a far smaller numeric score than "
+        "the unscored rows' raw retrieval scores"
+    )
+    assert all("rerank_score" not in r for r in rows[1:])
 
 
 def test_response_granularity_defaults_to_chunk():
