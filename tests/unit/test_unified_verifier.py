@@ -1473,6 +1473,90 @@ class TestRejectionObservability:
         assert metric_sample(self.VALIDATIONS, rejected) == before_rejected
         assert metric_sample(self.VALIDATIONS, accepted) - before_accepted == 1
 
+    async def test_allowlist_rejection_records_no_valid_end_to_end(
+        self, base_settings, metric_sample
+    ):
+        """A request refused by the allowlist is not also counted as served.
+
+        Deliberately drives the REAL `_verify_without_audience_check` rather
+        than mocking it. Every other allowlist test patches that method out,
+        so its `valid` record never ran and the double-count was invisible —
+        the tests asserted on the rejection they set up and never saw the
+        acceptance they also caused.
+
+        Authentication succeeding is not the request being granted: the
+        allowlist still has a say, and until it has spoken nothing has been
+        served.
+        """
+        accepted_jwt = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        rejected = {
+            "method": "allowlist",
+            "result": "invalid",
+            "reason": "not_allowlisted",
+            "client_id": "not-on-the-list",
+        }
+        before_accepted = metric_sample(self.VALIDATIONS, accepted_jwt)
+        before_rejected = metric_sample(self.VALIDATIONS, rejected)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        verifier.jwks_client = MagicMock()
+        token = self._jwt_for("not-on-the-list")
+        # Signature verifies and a token is created — only the allowlist refuses.
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "client_id": "not-on-the-list",
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            assert await verifier.verify_token_for_management_api(token) is None
+
+        assert metric_sample(self.VALIDATIONS, rejected) - before_rejected == 1
+        assert metric_sample(self.VALIDATIONS, accepted_jwt) == before_accepted
+
+    async def test_allowlisted_request_records_valid_once(
+        self, base_settings, metric_sample
+    ):
+        """The granted path still records exactly one `valid`, once cleared."""
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        verifier.jwks_client = MagicMock()
+        with patch.object(
+            verifier,
+            "_verify_jwt_signature",
+            AsyncMock(
+                return_value={
+                    "sub": "alice",
+                    "client_id": "astrolabe",
+                    "exp": int(time.time()) + 600,
+                }
+            ),
+        ):
+            granted = await verifier.verify_token_for_management_api(
+                self._jwt_for("astrolabe")
+            )
+
+        assert granted is not None
+        assert metric_sample(self.VALIDATIONS, accepted) - before == 1
+
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
         """An opaque token carries no readable client_id — don't invent one."""
         verifier = UnifiedTokenVerifier(base_settings)

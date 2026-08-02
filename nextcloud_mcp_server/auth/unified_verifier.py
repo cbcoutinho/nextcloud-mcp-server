@@ -236,9 +236,12 @@ class UnifiedTokenVerifier(TokenVerifier):
                 del self._token_cache[cache_key]
 
         from_cache = access_token is not None
+        outcome: dict[str, str] = {}
         if access_token is None:
             oauth_token_cache_hits_total.labels(hit="false").inc()
-            access_token = await self._verify_without_audience_check(token, cache_key)
+            access_token = await self._verify_without_audience_check(
+                token, cache_key, outcome
+            )
 
         if access_token is None:
             return None
@@ -270,6 +273,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                     "(per-user authorization applies)",
                     access_token.resource,
                 )
+            self._record_mgmt_grant(outcome, from_cache)
             return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
@@ -300,6 +304,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 client_id=token_client_id,
             )
 
+        self._record_mgmt_grant(outcome, from_cache)
         return access_token
 
     async def _verify_mcp_audience(self, token: str) -> AccessToken | None:
@@ -376,7 +381,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             return self._reject(validation_method, "unknown", token, str(e))
 
     async def _verify_without_audience_check(
-        self, token: str, cache_key: str
+        self,
+        token: str,
+        cache_key: str,
+        outcome: dict[str, str] | None = None,
     ) -> AccessToken | None:
         """
         Verify token validity without checking MCP audience or issuer.
@@ -472,9 +480,8 @@ class UnifiedTokenVerifier(TokenVerifier):
                 cache_key,
                 via_userinfo=(validation_method == "userinfo"),
             )
-            # Recorded here rather than per validation stage: creation still
-            # returns None (without raising) for a payload with no
-            # `sub`/`preferred_username`, and a stage passing is not the same
+            # Creation still returns None (without raising) for a payload with
+            # no `sub`/`preferred_username`, and a stage passing is not the same
             # thing as the caller getting a token.
             if access_token is None:
                 return self._reject(
@@ -483,7 +490,14 @@ class UnifiedTokenVerifier(TokenVerifier):
                     token,
                     "no 'sub' or 'preferred_username' claim in token payload",
                 )
-            record_oauth_token_validation(validation_method, "valid")
+            # NOT recorded as `valid` here. This method's caller still has the
+            # ALLOWED_MGMT_CLIENT decision to make, and a token refused there is
+            # not a token that was served. Recording at this point counted a
+            # rejected request as both accepted and rejected. The caller reports
+            # which validator succeeded via `outcome` and records once, at the
+            # point the request is actually granted.
+            if outcome is not None:
+                outcome["method"] = validation_method
             return access_token
 
         except Exception as e:
@@ -639,6 +653,23 @@ class UnifiedTokenVerifier(TokenVerifier):
             f": {detail}" if detail else "",
         )
         return None
+
+    def _record_mgmt_grant(self, outcome: dict[str, str], from_cache: bool) -> None:
+        """Record a management-API request as accepted, once it actually is.
+
+        Authentication succeeding is not the same as the request being granted:
+        ALLOWED_MGMT_CLIENT can still refuse a perfectly valid token. Recording
+        `valid` when the token verified counted a refused request as both
+        served and rejected, which is the same "record at the point the
+        decision was actually made" invariant applied one method further out.
+
+        Cache hits are skipped so this keeps counting *validations*, matching
+        the existing behaviour where a cached token records no validation at
+        all (``mcp_oauth_token_cache_hits_total`` covers that side).
+        """
+        if from_cache:
+            return
+        record_oauth_token_validation(outcome.get("method", "unknown"), "valid")
 
     def _note(
         self,
