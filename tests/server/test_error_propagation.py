@@ -35,6 +35,29 @@ async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
     assert "Note 999999 not found" in response.content[0].text
 
 
+async def test_missing_file_error_is_llm_friendly(nc_mcp_client: ClientSession):
+    """A tool with no bespoke handler still returns actionable text (GH #1208).
+
+    Guards the ``NextcloudFastMCP`` boundary: httpx's raw
+    ``Client error '404 Not Found' for url 'http://app/remote.php/dav/...'``
+    plus an MDN link must not reach the model.
+    """
+    response = await nc_mcp_client.call_tool(
+        "nc_webdav_read_file", {"path": "FileUpload/does-not-exist.txtg"}
+    )
+
+    assert response is not None
+    assert response.isError is True
+    text = response.content[0].text
+    logger.info("Missing file response: %s", text)
+
+    assert "FileUpload/does-not-exist.txtg" in text
+    assert "Not found" in text
+    # No internal routing, no host, no MDN link.
+    assert "remote.php" not in text
+    assert "developer.mozilla.org" not in text
+
+
 async def test_search_with_empty_query(nc_mcp_client: ClientSession):
     """Test search behavior with empty query."""
     # Search with empty query

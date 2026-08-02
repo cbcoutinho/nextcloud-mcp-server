@@ -104,6 +104,7 @@ from nextcloud_mcp_server.config_validators import (
     validate_configuration,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
+from nextcloud_mcp_server.errors import NextcloudFastMCP
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
@@ -1768,7 +1769,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         logger.warning("Error closing OAuth client: %s", e)
                 logger.info("MCP server shutdown complete")
 
-        mcp = FastMCP(
+        mcp = NextcloudFastMCP(
             "Nextcloud MCP",
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
@@ -1778,7 +1779,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     else:
         # BasicAuth modes (single-user or multi-user)
         logger.info("Configuring MCP server for %s mode", mode.value)
-        mcp = FastMCP(
+        mcp = NextcloudFastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_basic,
             transport_security=_build_transport_security(),

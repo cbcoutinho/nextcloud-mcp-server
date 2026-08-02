@@ -19,6 +19,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
+from nextcloud_mcp_server.errors import NextcloudFastMCP
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
             f"and NEXTCLOUD_PASSWORD."
         )
 
-    mcp = FastMCP("Nextcloud MCP", lifespan=stdio_lifespan)
+    mcp = NextcloudFastMCP("Nextcloud MCP", lifespan=stdio_lifespan)
 
     # --- capabilities resource (mirrors app.py) ---
     # NOTE: mcp.get_context() is required here because FastMCP's
