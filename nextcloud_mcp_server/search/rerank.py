@@ -96,10 +96,14 @@ async def _get_client(settings: Any) -> GatewayRerankClient | None:
 def _get_limiter(settings: Any) -> anyio.CapacityLimiter:
     """Bound concurrent rerank calls.
 
-    This does NOT protect a co-located embedding model's throughput — where the
-    two share a device, one in-flight rerank is already enough to slow embedding
-    substantially. What it bounds is queue depth and therefore rerank latency,
-    so a burst of searches cannot stack unbounded work on the model.
+    Bounds how many rerank requests THIS process has in flight against the
+    gateway. That keeps a burst of searches from queueing unbounded work on a
+    service we share with our own embedding traffic and with other callers, and
+    keeps rerank latency here predictable.
+
+    It is not a throughput control for the gateway: how that service schedules
+    reranking against everything else it serves is its own concern, and this
+    server knows nothing about its topology beyond a URL.
     """
     global _limiter
     if _limiter is None:

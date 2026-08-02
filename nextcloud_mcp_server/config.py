@@ -203,8 +203,9 @@ _DEFAULTS: dict[str, Any] = {
     # --- Cross-encoder reranking (opt-in, per request) ----------------------
     # A cross-encoder reorders the retrieved candidates by scoring each against
     # the query directly, which is more accurate than the fusion rank it
-    # replaces. Ships OFF: it adds a model round-trip per search, and where the
-    # reranker shares hardware with the embedding model the two contend.
+    # replaces. Ships OFF because it adds an upstream round-trip to every
+    # search, and how expensive that is depends on the gateway's own deployment
+    # — which this server deliberately knows nothing about beyond the URL.
     "search_rerank_enabled": False,
     # Rerank model, addressed the way the configured embedding gateway expects
     # (typically ``<provider>/<model>``). Any cross-encoder the gateway can
@@ -225,14 +226,15 @@ _DEFAULTS: dict[str, Any] = {
     # Generous headroom over a normal rerank, not a target. Exceeding it
     # degrades to retrieval order rather than failing the search.
     "search_rerank_timeout_seconds": 30.0,
-    # Concurrent rerank calls in flight, process-wide.
+    # Concurrent rerank calls this process keeps in flight against the gateway.
     #
-    # Deliberately 1, and note what it does NOT do: where the reranker shares a
-    # device with the embedding model, a single in-flight rerank is already
-    # enough to slow embedding substantially, so raising or lowering this will
-    # not protect indexing throughput. What it buys is predictable rerank
-    # latency and a bounded queue, so a burst of searches cannot stack unbounded
-    # work on the model. Separate hardware is the fix for contention.
+    # Conservative at 1 because reranking is the heaviest request this server
+    # makes of a service it shares with its own embedding traffic and with other
+    # callers. Bounding our own concurrency keeps a burst of searches from
+    # queueing unbounded work upstream, and keeps rerank latency predictable
+    # here. It is a client-side courtesy, not a throughput control: what the
+    # gateway does with the request, and how it schedules against everything
+    # else it serves, is its business. Raise it if your gateway has headroom.
     "search_rerank_max_concurrency": 1,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
