@@ -220,6 +220,14 @@ def configure_semantic_tools(mcp: FastMCP):
                 0.1 returns nothing at all. Leave at 0.0 (the default) and cut
                 by rank via `limit` instead. DBSF scores are distribution-
                 normalized and can exceed 1.0.
+                Two further reasons not to drive a UI control from this. It is
+                only meaningful for dense-only search, where the score is a
+                cosine similarity genuinely in [0, 1]. And it is applied by
+                Qdrant on the fused score BEFORE deduplication, reranking and
+                verify-on-read, so it is a recall cut taken before reranking can
+                reorder anything — a threshold that merely looks conservative
+                can silently remove the result the reranker would have promoted
+                to the top.
             fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
                    RRF: Good general-purpose fusion using reciprocal ranks
                    DBSF: Uses distribution-based normalization, may better balance different score ranges

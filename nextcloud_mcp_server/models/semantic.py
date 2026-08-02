@@ -41,10 +41,14 @@ class SemanticSearchResult(BaseModel):
         default=None,
         description=(
             "Cross-encoder relevance, present only when the optional rerank "
-            "stage ran (see the response's `reranked` flag). Unlike `score` "
-            "this IS calibrated — it is a direct query/document relevance "
-            "estimate rather than a rank artifact — so it is comparable across "
-            "queries and is what the results are ordered by when present. "
+            "stage ran (see the response's `reranked` flag). It is what the "
+            "results are ordered by when present, and it separates relevant "
+            "from irrelevant far better than `score` does. "
+            "It is NOT a calibrated probability and NOT comparable across "
+            "queries. Measured on a 60-query labelled set, documents scoring "
+            "in [0.6, 0.8) were actually relevant only about 50-72% of the "
+            "time, so rendering this value to a user as a percentage overstates "
+            "it. Use it to rank and to compare candidates WITHIN one response. "
             "`score` is left untouched so `score_threshold`, which filters on "
             "the retrieval score, keeps referring to the same quantity."
         ),
