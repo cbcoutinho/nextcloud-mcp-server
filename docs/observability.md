@@ -96,7 +96,17 @@ most consequential changes are silent — see the alerts below.
 
 ### OAuth Flow Metrics
 
-- `mcp_oauth_token_validations_total` - Token validation count
+- `mcp_oauth_token_validations_total{method, result, reason, client_id}` -
+  Token validations. **This is the "why was a client disconnected" metric.** A
+  rejection ends the MCP session and forces the user to re-authenticate, so
+  `reason` and `client_id` are what turn a bare failure count into an
+  actionable one.
+  - `method`: `jwt` | `introspect` | `userinfo` | `unknown`
+  - `result`: `valid` | `invalid` (the caller's token) | `error` (ours)
+  - `reason`: `expired`, `inactive`, `bad_signature`, `bad_issuer`,
+    `bad_audience`, `not_configured`, `network_error`, `unknown` — `none` when valid
+  - `client_id`: read from the *unverified* token, so length-clamped and capped
+    at 50 distinct values (`_other` beyond)
 - `mcp_oauth_token_cache_hits_total` - Cache hit/miss rate
 - `mcp_oauth_refresh_token_operations_total` - Refresh token storage ops
 
@@ -248,6 +258,28 @@ topk(10, sum(rate(mcp_tool_calls_total[5m])) by (tool_name))
 **Nextcloud API Health**:
 ```promql
 sum(rate(mcp_nextcloud_api_requests_total{status_code!~"2.."}[5m])) by (app)
+```
+
+**Why is a client being disconnected?** — the first query to run when a
+connector reports dropping out. A rejection forces the user to log in again, so
+even a handful a day is user-visible:
+```promql
+sum by (client_id, method, reason) (
+  increase(mcp_oauth_token_validations_total{result!="valid"}[1h])
+) > 0
+```
+
+Split by who is at fault: `result="invalid"` is the caller's token (expired,
+revoked, wrong audience); `result="error"` is ours (`not_configured`,
+`network_error`) and should page:
+```promql
+sum by (reason) (increase(mcp_oauth_token_validations_total{result="error"}[15m])) > 0
+```
+
+`reason="not_configured"` deserves its own alert — a missing JWKS or
+introspection endpoint rejects *every* token, so it breaks all clients at once:
+```promql
+sum(increase(mcp_oauth_token_validations_total{reason="not_configured"}[5m])) > 0
 ```
 
 **MCP client fleet — who is connected, at which protocol version**:

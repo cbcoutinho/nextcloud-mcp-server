@@ -5,6 +5,7 @@ Tests multi-audience token validation without requiring real network calls or
 IdP connections.
 """
 
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -962,3 +963,175 @@ class TestUserinfoFallback:
         ):
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is None
+
+
+class TestRejectionObservability:
+    """Every token rejection must say *why*, and for *which client*.
+
+    A rejection is not a routine event: it ends the MCP session and forces the
+    user to authenticate again. Before this, the reason was known deep inside
+    the verifier and then discarded — the metric recorded a bare "invalid" and
+    several reasons were logged at DEBUG, i.e. invisible in production. The
+    question "why was this client disconnected?" was unanswerable from
+    telemetry alone.
+    """
+
+    VALIDATIONS = "mcp_oauth_token_validations_total"
+
+    @staticmethod
+    def _jwt_for(client_id: str | None = "mistral-client", **claims) -> str:
+        payload = {"sub": "alice", **claims}
+        if client_id is not None:
+            payload["client_id"] = client_id
+        return jwt.encode(payload, "secret", algorithm="HS256")
+
+    @staticmethod
+    def _failing_verify(exc):
+        """Fail only the *verifying* decode, leaving the unverified one working.
+
+        `_verify_jwt_signature` and `_claimed_client_id` both call `jwt.decode`;
+        a blanket patch would break the client_id read too and hide the label
+        under "unknown". In production they genuinely differ — PyJWT skips every
+        check when `verify_signature=False`, so an expired token still yields
+        its claims. The mock has to preserve that difference or the test proves
+        nothing about the real path.
+        """
+        real_decode = jwt.decode
+
+        def _decode(token, *args, **kwargs):
+            if (kwargs.get("options") or {}).get("verify_signature") is False:
+                return real_decode(token, *args, **kwargs)
+            raise exc
+
+        return _decode
+
+    async def test_expired_jwt_records_reason_and_client(
+        self, base_settings, metric_sample
+    ):
+        """The signature the Mistral disconnects actually produce."""
+        labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "expired",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    @pytest.mark.parametrize(
+        ("exc", "reason"),
+        [
+            (jwt.InvalidIssuerError("bad iss"), "bad_issuer"),
+            (jwt.InvalidSignatureError("bad sig"), "bad_signature"),
+        ],
+    )
+    async def test_jwt_failure_modes_are_distinguishable(
+        self, base_settings, metric_sample, exc, reason
+    ):
+        """Expiry, a wrong issuer and a bad signature need different responses."""
+        labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": reason,
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+            side_effect=self._failing_verify(exc),
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_inactive_introspection_records_reason(
+        self, base_settings, metric_sample
+    ):
+        """`active=false` is the opaque-token equivalent of an expired JWT."""
+        labels = {
+            "method": "introspect",
+            "result": "invalid",
+            "reason": "inactive",
+            "client_id": "unknown",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"active": False}
+        verifier.http_client.post = AsyncMock(return_value=response)
+
+        assert await verifier._introspect_token("opaque-token") is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_missing_jwks_is_visible_not_debug(
+        self, base_settings, metric_sample, caplog
+    ):
+        """A missing JWKS client rejects *every* JWT — it must not be quiet.
+
+        This was logged at DEBUG, so the single misconfiguration that breaks
+        all clients at once produced nothing at the production log level.
+        """
+        labels = {
+            "method": "jwt",
+            "result": "invalid",
+            "reason": "not_configured",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = None
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+        ):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+        assert any("not_configured" in r.message for r in caplog.records)
+
+    async def test_rejection_logs_client_at_warning(self, base_settings, caplog):
+        """One WARNING carrying client + reason, not breadcrumbs to trace-join."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.jwt.decode",
+                side_effect=self._failing_verify(jwt.ExpiredSignatureError("expired")),
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+            ),
+        ):
+            await verifier._verify_jwt_signature(self._jwt_for("acme-connector"))
+
+        assert any(
+            "acme-connector" in r.message and "expired" in r.message
+            for r in caplog.records
+        )
+
+    def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
+        """An opaque token carries no readable client_id — don't invent one."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._claimed_client_id("not-a-jwt") is None
+
+    def test_client_id_falls_back_through_claims(self, base_settings):
+        """Not every issuer uses `client_id`; azp and aud are the usual others."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        azp = jwt.encode({"sub": "a", "azp": "via-azp"}, "s", algorithm="HS256")
+        aud = jwt.encode({"sub": "a", "aud": ["via-aud"]}, "s", algorithm="HS256")
+        assert verifier._claimed_client_id(azp) == "via-azp"
+        assert verifier._claimed_client_id(aud) == "via-aud"

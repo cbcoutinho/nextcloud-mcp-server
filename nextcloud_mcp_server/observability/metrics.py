@@ -168,8 +168,15 @@ nextcloud_api_retries_total = Counter(
 
 oauth_token_validations_total = Counter(
     "mcp_oauth_token_validations_total",
-    "Total OAuth token validation attempts",
-    ["method", "result"],  # method: introspect | jwt; result: valid | invalid | error
+    "OAuth token validation attempts. `reason` is why a non-valid result "
+    "happened — without it a rejection is uninterpretable, and a rejection is "
+    "what forces an MCP client's user to log in again. `client_id` attributes "
+    "it, so 'which client is being disconnected, and why' is one query.",
+    # method: jwt | introspect | userinfo | unknown
+    # result: valid | invalid | error
+    # reason: none (valid) | expired | inactive | bad_signature | bad_issuer
+    #         | bad_audience | not_configured | network_error | unknown
+    ["method", "result", "reason", "client_id"],
 )
 
 oauth_token_cache_hits_total = Counter(
@@ -973,6 +980,10 @@ _SESSION_RECORDED_ATTR = "_astrolabe_fleet_recorded"
 _MAX_TRACKED_CLIENTS = 50
 _OVERFLOW_LABEL = "_other"
 _seen_client_names: set[str] = set()
+# Separate registry for OAuth client_ids: they come off *unverified* tokens on
+# the rejection path, so they are at least as untrusted as clientInfo.name and
+# must not share its budget.
+_seen_client_ids: set[str] = set()
 
 
 def _client_label(value: object, limit: int = 64) -> str:
@@ -1005,22 +1016,31 @@ def _first_present(*candidates: tuple[object, str]) -> object | None:
     return None
 
 
-def _bounded_client_name(name: str) -> str:
-    """Bound the *number* of distinct client identities, not just their length.
+def _bounded_label(value: str, seen: set[str]) -> str:
+    """Bound the *number* of distinct values a peer can put in one label.
 
-    Returns ``name`` while under the cap, ``_OVERFLOW_LABEL`` after. Together
-    with :func:`_client_label` this closes the cardinality vector: a peer can
-    neither send one enormous name nor mint unboundedly many small ones.
+    Returns ``value`` while under the cap, ``_OVERFLOW_LABEL`` after. Paired
+    with :func:`_client_label` this closes the cardinality vector from both
+    ends: a peer can neither send one enormous value nor mint unboundedly many
+    small ones.
+
+    ``seen`` is per-dimension so one untrusted label cannot exhaust another's
+    budget.
     """
-    if name in _seen_client_names:
-        return name
-    if len(_seen_client_names) >= _MAX_TRACKED_CLIENTS:
+    if value in seen:
+        return value
+    if len(seen) >= _MAX_TRACKED_CLIENTS:
         return _OVERFLOW_LABEL
     # ponytail: unsynchronised. Concurrent first-sightings can race past the
     # cap by the number of in-flight requests — irrelevant against a limit of
-    # 50, and a lock on every session would cost more than the slack.
-    _seen_client_names.add(name)
-    return name
+    # 50, and a lock on every request would cost more than the slack.
+    seen.add(value)
+    return value
+
+
+def _bounded_client_name(name: str) -> str:
+    """Bound the number of distinct MCP client identities (``clientInfo.name``)."""
+    return _bounded_label(name, _seen_client_names)
 
 
 def _minor_version(version: object) -> str:
@@ -1216,15 +1236,31 @@ def record_nextcloud_api_retry(app: str, reason: str) -> None:
     nextcloud_api_retries_total.labels(app=app, reason=reason).inc()
 
 
-def record_oauth_token_validation(method: str, result: str) -> None:
+def record_oauth_token_validation(
+    method: str,
+    result: str,
+    reason: str = "none",
+    client_id: str | None = None,
+) -> None:
     """
     Record an OAuth token validation.
 
     Args:
-        method: Validation method ("introspect" or "jwt")
-        result: Validation result ("valid", "invalid", or "error")
+        method: Validation method — "jwt", "introspect", "userinfo" or "unknown".
+        result: "valid", "invalid", or "error".
+        reason: Why a non-valid result happened — "expired", "inactive",
+            "bad_signature", "bad_issuer", "bad_audience", "not_configured",
+            "network_error", "unknown". "none" for a valid result.
+        client_id: OAuth client the token claims to belong to, if recoverable.
+            Read from an *unverified* token on the rejection path, so it is
+            untrusted input and is both length-clamped and count-bounded.
     """
-    oauth_token_validations_total.labels(method=method, result=result).inc()
+    oauth_token_validations_total.labels(
+        method=method,
+        result=result,
+        reason=reason,
+        client_id=_bounded_label(_client_label(client_id), _seen_client_ids),
+    ).inc()
 
 
 def record_db_operation(
