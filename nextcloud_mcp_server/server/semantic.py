@@ -39,6 +39,7 @@ from nextcloud_mcp_server.search.bm25_hybrid import (
     search_method_label,
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.relevance import relevance_for
 from nextcloud_mcp_server.search.rerank import (
     RERANK_APPLIED,
     RERANK_DEGRADED,
@@ -634,12 +635,24 @@ def configure_semantic_tools(mcp: FastMCP):
                         f"the doc_type to the SemanticSearchResult.id type "
                         f"or convert at the verifier layer."
                     ) from e
+                relevance, relevance_source = relevance_for(
+                    rerank_score=r.rerank_score,
+                    score=r.score,
+                    fusion=fusion,
+                    # This tool always runs BM25HybridSearchAlgorithm, so the
+                    # fused-score branch is the right one; it never takes the
+                    # dense-only cosine path.
+                    algorithm="hybrid",
+                    rerank_model=settings.search_rerank_model,
+                )
                 results.append(
                     SemanticSearchResult(
                         id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
                         rerank_score=r.rerank_score,
+                        relevance=relevance,
+                        relevance_source=relevance_source,
                         category=r.metadata.get("category", "") if r.metadata else "",
                         excerpt=r.excerpt,
                         score=r.score,
@@ -729,6 +742,8 @@ def configure_semantic_tools(mcp: FastMCP):
                                     # rerank_score=null. See
                                     # test_semantic_result_field_parity.py.
                                     rerank_score=result.rerank_score,
+                                    relevance=result.relevance,
+                                    relevance_source=result.relevance_source,
                                     chunk_index=result.chunk_index,
                                     total_chunks=result.total_chunks,
                                     chunk_start_offset=result.chunk_start_offset,

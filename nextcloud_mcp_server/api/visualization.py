@@ -54,6 +54,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.relevance import relevance_for
 from nextcloud_mcp_server.search.rerank import (
     RERANK_APPLIED,
     RERANK_DEGRADED,
@@ -639,11 +640,24 @@ async def unified_search(request: Request) -> JSONResponse:
             if result.metadata and "note_id" in result.metadata:
                 doc_id = result.metadata["note_id"]
 
+            relevance, relevance_source = relevance_for(
+                rerank_score=result.rerank_score,
+                score=result.score,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
             result_data: dict[str, Any] = {
                 "id": doc_id,
                 "doc_type": result.doc_type,
                 "title": result.title,
                 "score": result.score,
+                # Always present, unlike `score` which is only interpretable if
+                # you know which algorithm and fusion produced it. Read
+                # `relevance_source` before rendering — only the calibrated
+                # source may be shown as a percentage. See ADR-034.
+                "relevance": relevance,
+                "relevance_source": relevance_source,
             }
             # Additive, and only when reranking ran. `score` keeps the retrieval
             # value so `score_threshold` (applied against it inside Qdrant)
@@ -977,12 +991,24 @@ async def vector_search(request: Request) -> JSONResponse:
         # Format results for PHP client
         formatted_results = []
         for result in all_results:
+            relevance, relevance_source = relevance_for(
+                rerank_score=result.rerank_score,
+                score=result.score,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
             formatted_result = {
                 "id": result.id,
                 "doc_type": result.doc_type,
                 "title": result.title,
                 "excerpt": result.excerpt[:200] if result.excerpt else "",
                 "score": result.score,
+                # The number a UI can filter and render honestly; `score` is a
+                # rank artifact whose scale depends on the algorithm. Gate any
+                # percentage rendering on `relevance_source`. See ADR-034.
+                "relevance": relevance,
+                "relevance_source": relevance_source,
                 "metadata": result.metadata,
                 # Chunk information for context display
                 "chunk_index": result.chunk_index,
