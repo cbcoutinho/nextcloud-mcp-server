@@ -388,3 +388,77 @@ class TestFormRedaction:
 
     def test_empty_form_does_not_raise(self):
         assert _redact_form(self._form([])) == {}
+
+
+class TestRaisedGrantFailures:
+    """An IdP timeout is a failed grant, not an absent one.
+
+    ``get_oidc_discovery`` and the IdP POST do real network I/O and
+    ``response.json()`` parses a body we do not control, so a failing IdP
+    propagates an exception rather than returning a non-200. Counting only
+    returned responses would let precisely that outage vanish from the metric.
+    """
+
+    async def test_raised_exception_is_counted_as_error(self, metric_sample, mocker):
+        from nextcloud_mcp_server.auth import oauth_routes
+
+        mocker.patch.object(
+            oauth_routes,
+            "_token_refresh",
+            side_effect=TimeoutError("IdP unreachable"),
+        )
+        labels = {
+            "grant_type": "refresh_token",
+            "result": "error",
+            "refresh_token": "unknown",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        request = TestGrantMetricWiring._request({"grant_type": "refresh_token"})
+
+        with pytest.raises(TimeoutError):
+            await oauth_routes.oauth_token_endpoint(request)
+
+        assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+    async def test_exception_still_propagates(self, mocker):
+        """Counting must not swallow the failure — the ASGI layer still owes
+        the caller a 500."""
+        from nextcloud_mcp_server.auth import oauth_routes
+
+        mocker.patch.object(
+            oauth_routes,
+            "_token_authorization_code",
+            side_effect=RuntimeError("boom"),
+        )
+        request = TestGrantMetricWiring._request({"grant_type": "authorization_code"})
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await oauth_routes.oauth_token_endpoint(request)
+
+    async def test_cancellation_is_not_counted_as_a_failed_grant(
+        self, metric_sample, mocker
+    ):
+        """Shutdown cancels in-flight requests; that is not an IdP failure and
+        must not inflate the error count. Guards the deliberate choice of
+        ``except Exception`` over ``except BaseException``."""
+        import anyio
+
+        from nextcloud_mcp_server.auth import oauth_routes
+
+        mocker.patch.object(
+            oauth_routes,
+            "_token_refresh",
+            side_effect=anyio.get_cancelled_exc_class()(),
+        )
+        labels = {
+            "grant_type": "refresh_token",
+            "result": "error",
+            "refresh_token": "unknown",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        request = TestGrantMetricWiring._request({"grant_type": "refresh_token"})
+
+        with pytest.raises(anyio.get_cancelled_exc_class()):
+            await oauth_routes.oauth_token_endpoint(request)
+
+        assert metric_sample("mcp_oauth_grants_total", labels) == before

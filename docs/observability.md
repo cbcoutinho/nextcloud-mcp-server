@@ -122,12 +122,14 @@ most consequential changes are silent — see the alerts below.
   rejection disconnects a client, but so does never having been given a
   refresh token in the first place.
   - `grant_type`: `authorization_code` | `refresh_token` | `unsupported`
-  - `result`: `success` | `error` — an exhaustive partition **by
-    construction**: success is recorded by the grant handlers (only they can
-    see whether a refresh token came back), and every failure exit is counted
-    centrally in `oauth_token_endpoint` from the response status. The handlers
-    have fifteen error returns between them; counting them individually would
-    let the next early-return added escape the metric silently.
+  - `result`: `success` | `error` — an exhaustive partition of *attempted
+    grants*: success is recorded by the grant handlers (only they can see
+    whether a refresh token came back), while both failure modes are counted
+    centrally in `oauth_token_endpoint` — a returned non-200 (fifteen such
+    exits across the two handlers) and a raised exception, which is what an
+    IdP timeout or a malformed token body actually produces. Counting only
+    returned responses would let an IdP outage vanish from the metric
+    entirely, which is the failure mode most worth seeing.
   - `refresh_token`: `issued` | `absent` | `unknown` (the grant failed, so
     there was no response to inspect)
 
@@ -165,13 +167,21 @@ Did the IdP issue a refresh token?
   |= "AS proxy: IdP token response" |= "refresh_token=ABSENT"
 ```
 
-Which grant types is a client actually using?
+How often is a client re-running the full flow? (`client_id` is inside
+`params=`, so filter on it to scope to one client.)
 
 ```logql
-sum by (grant_type) (count_over_time(
+sum(count_over_time(
   {namespace="<tenant>", container="nextcloud-mcp-server"}
-    |= "AS proxy token request" | logfmt [1h]))
+    |= "AS proxy token request" |= "grant_type=authorization_code" [1h]))
 ```
+
+Deliberately parser-free. These logs are emitted as JSON, so `| logfmt` does
+not apply, and the `params=` tail is a Python `dict` repr rather than
+`key="value"` pairs — a parser stage here buys nothing and fails quietly. For
+the aggregate breakdown by grant type, use `mcp_oauth_grants_total` above
+rather than parsing logs at all; the log line is for per-client attribution,
+which the metric deliberately does not carry.
 
 Follow one refresh token across every hop it appears on — same `sha256=`
 on each:

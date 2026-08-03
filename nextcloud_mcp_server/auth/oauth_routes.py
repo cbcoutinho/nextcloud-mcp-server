@@ -1181,9 +1181,9 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     )
 
     if grant_type == "authorization_code":
-        response = await _token_authorization_code(request, form)
+        handler = _token_authorization_code
     elif grant_type == "refresh_token":
-        response = await _token_refresh(request, form)
+        handler = _token_refresh
     else:
         logger.warning("AS proxy token: unsupported grant_type=%s", grant_type)
         record_oauth_grant("unsupported", "error")
@@ -1201,12 +1201,31 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     # mismatch, PKCE failure, unconfigured credentials, IdP HTTP failure — and
     # instrumenting them individually means a future early-return silently
     # escapes the counter. This is the single choke point every one of them
-    # passes through, so `success + error` stays an exhaustive partition of
-    # grants by construction.
+    # passes through.
+    #
+    # A raised exception is a failed grant too, and it is the failure most
+    # worth seeing: `get_oidc_discovery` and the IdP POST do real network I/O,
+    # and `response.json()` parses a body we do not control, so an IdP that is
+    # timing out or returning garbage propagates out of here rather than
+    # returning a non-200. Counting only returned responses would let exactly
+    # that outage vanish from the metric — the same silent gap this
+    # instrumentation exists to close. Count, then re-raise so the ASGI layer
+    # still produces its 500.
+    #
+    # `Exception`, not `BaseException`: anyio cancellation during shutdown is
+    # not a failed grant and must stay uncounted. `grant_type` is one of the
+    # two known literals by this point, so no client-controlled string can
+    # reach the label.
     #
     # Success is recorded inside the handlers instead, because only they can
     # see whether the token response carried a refresh_token; they return 200
     # exclusively on that path, so nothing is double-counted here.
+    try:
+        response = await handler(request, form)
+    except Exception:
+        record_oauth_grant(grant_type, "error")
+        raise
+
     if response.status_code != 200:
         record_oauth_grant(grant_type, "error")
 
@@ -1589,7 +1608,9 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
         logger.error(
             "DCR proxy: Upstream registration failed: %s %s",
             response.status_code,
-            response.text,
+            # A DCR response is the one other place an IdP body can carry a
+            # `client_secret`, so it gets the same treatment as the token paths.
+            _redact_error_body(response.text),
         )
         return JSONResponse(
             response.json()
