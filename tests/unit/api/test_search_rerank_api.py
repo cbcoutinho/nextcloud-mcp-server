@@ -267,9 +267,10 @@ def test_unscored_rows_stay_behind_reranked_ones_regardless_of_scale():
     """A partially-scored pool must not let raw retrieval scores outrank
     cross-encoder ones.
 
-    `rerank_score` is calibrated in [0, 1]; `.score` is a rank artifact (~2/k
-    for RRF) or an unbounded raw BM25 value. Ranking the two against each other
-    lets an unscored row beat a genuinely reranked one purely by scale — a BM25
+    `rerank_score` is a cross-encoder score spanning [0, 1] — better SEPARATED
+    than the retrieval score, but NOT calibrated; `.score` is a rank artifact
+    (~2/k for RRF) or an unbounded raw BM25 value. Ranking the two against each
+    other lets an unscored row beat a genuinely reranked one purely by scale — a BM25
     score of 8.5 outranks every possible rerank score. `rerank_results` appends
     unscored rows in retrieval order precisely so they sit at the TAIL, and this
     handler's post-verification re-sort has to preserve that.
