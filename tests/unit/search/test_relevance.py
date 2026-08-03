@@ -177,6 +177,22 @@ def test_only_the_cross_encoder_source_claims_to_be_a_probability():
     assert relevance_fit_base_rate(RELEVANCE_UNCALIBRATED) is None
 
 
+def test_all_curves_share_one_fit_base_rate():
+    """A single response can carry BOTH sources — `rerank_results` appends rows
+    it could not score with `rerank_score=None`, so those report the fusion
+    source while scored rows report the calibrated one — but the response
+    publishes ONE fit prevalence.
+
+    They agree today because both were fitted from the same experiment. Nothing
+    structural enforces that, and `scripts/fit_relevance_curves.py` can re-fit
+    one signal alone, so this pins the invariant: a divergent re-fit fails here
+    instead of silently publishing a figure that is wrong for half the rows.
+    """
+    assert relevance_fit_base_rate(RELEVANCE_CALIBRATED) == pytest.approx(
+        relevance_fit_base_rate(RELEVANCE_ORDINAL)
+    )
+
+
 def test_the_fit_base_rate_is_published_with_the_number():
     """A curve fitted at prevalence 0.178 overstates on a rarer corpus and
     understates on a denser one. Callers can only reason about the direction if

@@ -197,7 +197,22 @@ def relevance_fit_base_rate(source: str) -> float | None:
     burying it in documentation nobody reads at the point of use.
     """
     if source == RELEVANCE_CALIBRATED:
-        return next(iter(_CROSS_ENCODER_CURVES.values())).fit_base_rate
+        # Every fitted cross-encoder curve must agree on the prevalence, because
+        # callers see ONE response-level figure while a single response can mix
+        # sources: rerank_results appends rows it could not score (empty
+        # excerpt, or an index the provider omitted) with rerank_score=None, so
+        # those report the fusion source while the scored rows report this one.
+        # Pinned by test_relevance.py rather than left as an assumption — a
+        # future re-fit of one signal alone would otherwise silently make the
+        # published figure wrong for half the rows.
+        rates = {c.fit_base_rate for c in _CROSS_ENCODER_CURVES.values()}
+        if len(rates) != 1:
+            raise ValueError(
+                "cross-encoder curves disagree on fit_base_rate "
+                f"({sorted(rates)}); the response publishes a single figure, so "
+                "re-fit them together or make the field per-result"
+            )
+        return rates.pop()
     if source == RELEVANCE_ORDINAL:
         return _FUSION_RRF_CURVE.fit_base_rate
     return None

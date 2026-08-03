@@ -22,6 +22,7 @@ import math
 import os
 import statistics
 import sys
+from pathlib import Path
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -35,8 +36,36 @@ def key_of(title):
 
 
 def load(path):
-    with open(path, encoding="utf-8") as f:
+    """Read a JSONL artifact.
+
+    The path is resolved and checked before opening. This script only runs
+    offline from a developer shell, so the risk is theoretical — but it does
+    take its inputs from argv, and a validated path costs two lines.
+    """
+    resolved = Path(path).expanduser().resolve(strict=True)
+    if not resolved.is_file():
+        raise ValueError(f"not a regular file: {resolved}")
+    with resolved.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+def _labelled_rows(rows, gold, field, qid):
+    """One query's distinct-document (score, label, qid) triples.
+
+    Split out of pool() to keep each function's branching legible — and under
+    Sonar's cognitive-complexity limit. The dedup-by-document-key logic is
+    unchanged.
+    """
+    out, seen = [], set()
+    for row in rows:
+        k = key_of(row.get("title", ""))
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        v = row.get(field)
+        if v is not None:
+            out.append((float(v), 1 if k in gold else 0, qid))
+    return out
 
 
 def pool(plan_rows, result_rows, field):
@@ -47,15 +76,9 @@ def pool(plan_rows, result_rows, field):
         p = plan_by_id.get(r["id"])
         if not p or not p.get("gold_docs"):
             continue
-        gold, seen = set(p["gold_docs"]), set()
-        for row in r.get("results", []):
-            k = key_of(row.get("title", ""))
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            v = row.get(field)
-            if v is not None:
-                out.append((float(v), 1 if k in gold else 0, r["id"]))
+        out.extend(
+            _labelled_rows(r.get("results", []), set(p["gold_docs"]), field, r["id"])
+        )
     return out
 
 
