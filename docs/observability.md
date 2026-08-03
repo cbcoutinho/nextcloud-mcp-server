@@ -310,6 +310,26 @@ count by (client_name) (
 ) > 1
 ```
 
+### When a fleet metric is empty
+
+`mcp_client_sessions_total` and `mcp_client_capability` populate from the
+`tools/call` handler. If they have **no series at all** while
+`mcp_tool_outcomes_total` does, the recording is bailing out early and the
+server says which branch, once per process, at WARNING:
+
+| Log line contains | Meaning |
+|---|---|
+| `no request context on a tool call` | the instrumentation is not wired into the handler it expects |
+| `has no client_params on a tool call` | the session handling the call is not the one that ran `initialize` |
+
+```logql
+{namespace=~"tenant-.*", container="nextcloud-mcp-server"}
+  |= "MCP client fleet metrics"
+```
+
+Logged once per cause per process deliberately — this runs on the tool-call hot
+path, so a per-request line would be its own incident. A restart re-arms it.
+
 **Client-identity cardinality cap hit** — `client_name` collapses to `_other`
 past 50 distinct identities. The real fleet is single digits, so this firing
 means either a genuinely new class of client or a peer rotating its declared

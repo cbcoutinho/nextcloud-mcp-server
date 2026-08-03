@@ -273,7 +273,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                     "(per-user authorization applies)",
                     access_token.resource,
                 )
-            self._record_mgmt_grant(outcome, from_cache)
+            self._record_mgmt_grant(outcome, from_cache, access_token.client_id)
             return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
@@ -304,7 +304,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 client_id=token_client_id,
             )
 
-        self._record_mgmt_grant(outcome, from_cache)
+        self._record_mgmt_grant(outcome, from_cache, access_token.client_id)
         return access_token
 
     async def _verify_mcp_audience(self, token: str) -> AccessToken | None:
@@ -374,7 +374,13 @@ class UnifiedTokenVerifier(TokenVerifier):
                     token,
                     "no 'sub' or 'preferred_username' claim in token payload",
                 )
-            record_oauth_token_validation(validation_method, "valid")
+            # client_id from the AccessToken, not omitted: without it every
+            # `valid` record labels `client_id="unknown"`, so the metric can say
+            # why a client was rejected but not which client succeeded — and a
+            # rejection rate needs both halves to mean anything.
+            record_oauth_token_validation(
+                validation_method, "valid", client_id=access_token.client_id
+            )
             return access_token
 
         except Exception as e:
@@ -654,7 +660,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         )
         return None
 
-    def _record_mgmt_grant(self, outcome: dict[str, str], from_cache: bool) -> None:
+    def _record_mgmt_grant(
+        self, outcome: dict[str, str], from_cache: bool, client_id: str | None = None
+    ) -> None:
         """Record a management-API request as accepted, once it actually is.
 
         Authentication succeeding is not the same as the request being granted:
@@ -669,7 +677,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         """
         if from_cache:
             return
-        record_oauth_token_validation(outcome.get("method", "unknown"), "valid")
+        record_oauth_token_validation(
+            outcome.get("method", "unknown"), "valid", client_id=client_id
+        )
 
     def _note(
         self,

@@ -17,6 +17,7 @@ so every assertion here is on a *delta*.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -42,25 +43,32 @@ OUTCOMES = "mcp_tool_outcomes_total"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_seen_client_names():
-    """Snapshot/restore the module-global client-name set around every test.
+def _isolate_module_globals():
+    """Snapshot/restore *every* process-global this module mutates.
 
-    ``_seen_client_names`` is process-global and never expires, so the
-    capacity test below (which mints ~70 identities) would otherwise leave the
-    cap exhausted for whatever runs next — silently turning an assertion on a
-    real ``client_name`` into one on ``"_other"``. Nothing enforces test order
-    here, so relying on file-definition order would be a latent flake rather
-    than a guarantee.
+    Three of them now: the two cardinality budgets and the warned-cause set.
+    All are process-global and never expire, so a test that fills one leaves it
+    filled for whatever runs next — the capacity test mints ~70 identities, and
+    the diagnostics tests mark both causes as already-warned. Either would
+    silently turn a later assertion into its opposite (a real ``client_name``
+    reading as ``"_other"``; an expected warning not firing).
+
+    Deliberately covers all three rather than naming them, because the previous
+    version covered two and a third was added without noticing the asymmetry.
+    Anything added to the tuple below gets the same treatment for free.
     """
-    saved_names = set(metrics_module._seen_client_names)
-    saved_ids = set(metrics_module._seen_client_ids)
+    names = ("_seen_client_names", "_seen_client_ids", "_warned_causes")
+    saved = {n: set(getattr(metrics_module, n)) for n in names}
+    # Cleared, not just restored: the diagnostics tests need an unwarned slate
+    # to observe the once-per-process behaviour at all.
+    getattr(metrics_module, "_warned_causes").clear()
     try:
         yield
     finally:
-        metrics_module._seen_client_names.clear()
-        metrics_module._seen_client_names.update(saved_names)
-        metrics_module._seen_client_ids.clear()
-        metrics_module._seen_client_ids.update(saved_ids)
+        for n in names:
+            current = getattr(metrics_module, n)
+            current.clear()
+            current.update(saved[n])
 
 
 def _client_params(
@@ -231,6 +239,82 @@ class TestRecordClientSession:
             request_ctx.reset(token)
 
         assert metric_sample(SESSIONS, labels) - before == 1
+
+
+class TestAbsentIdentityLabelling:
+    """ "Absent" must have exactly one spelling."""
+
+    def test_empty_client_id_records_as_unknown(self, metric_sample):
+        """`AccessToken.client_id` defaults to "" when the payload has no claim.
+
+        Recording that verbatim gives an empty label — a second spelling of
+        "we don't know" that splits the series in two and reads as a rendering
+        bug on a dashboard. CI caught this the moment client_id started being
+        passed on the acceptance path: two tests expecting "unknown" began
+        seeing "" instead.
+        """
+        unknown = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "unknown",
+        }
+        empty = {**unknown, "client_id": ""}
+        before_unknown = metric_sample("mcp_oauth_token_validations_total", unknown)
+
+        record_oauth_token_validation("jwt", "valid", "none", "")
+
+        assert (
+            metric_sample("mcp_oauth_token_validations_total", unknown) - before_unknown
+            == 1
+        )
+        assert metric_sample("mcp_oauth_token_validations_total", empty) == 0
+
+
+class TestSilentFailureDiagnostics:
+    """The instrumentation must be able to report on its own failure.
+
+    0.162.0 shipped with `mcp_client_sessions_total` recording nothing in
+    production while `mcp_tool_outcomes_total` — incremented two lines later in
+    the same handler — worked. Both early-returns in `record_client_session`
+    were silent at every log level, so the metric could not say why it was
+    empty. That is the exact failure this whole metric family exists to remove,
+    rebuilt inside the thing removing it.
+    """
+
+    def test_missing_request_context_says_so(self, caplog):
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+        ):
+            record_client_session()
+
+        assert any("no request context" in r.message for r in caplog.records)
+
+    def test_missing_client_params_says_so(self, caplog):
+        token = _activate(_FakeSession(None))
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+            ):
+                record_client_session()
+        finally:
+            request_ctx.reset(token)
+
+        assert any("no client_params" in r.message for r in caplog.records)
+
+    def test_warns_once_per_process_not_per_request(self, caplog):
+        """These fire on the tool-call hot path — one line, not one per call."""
+        token = _activate(_FakeSession(None))
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+            ):
+                for _ in range(25):
+                    record_client_session()
+        finally:
+            request_ctx.reset(token)
+
+        assert len([r for r in caplog.records if "no client_params" in r.message]) == 1
 
 
 class TestCallToolOutcomes:

@@ -984,6 +984,11 @@ _SESSION_RECORDED_ATTR = "_astrolabe_fleet_recorded"
 # 50 is far above the real fleet (single digits) and far below anything that
 # strains the registry, so crossing it is itself a signal — see the
 # client_name="_other" alert in docs/observability.md.
+# Causes already reported by _warn_once. Instrumentation that fails silently is
+# the failure this whole metric family exists to remove, so its own failures say
+# so — but once per process, not once per request, since these fire on a hot path.
+_warned_causes: set[str] = set()
+
 _MAX_TRACKED_CLIENTS = 50
 _OVERFLOW_LABEL = "_other"
 _seen_client_names: set[str] = set()
@@ -991,6 +996,17 @@ _seen_client_names: set[str] = set()
 # the rejection path, so they are at least as untrusted as clientInfo.name and
 # must not share its budget.
 _seen_client_ids: set[str] = set()
+
+
+def _warn_once(cause: str, message: str, *args: object) -> None:
+    """Log a cause the first time it occurs in this process, then stay quiet."""
+    # ponytail: unsynchronised check-then-set, matching _bounded_label and the
+    # session claim. Worst case is one duplicate line per cause per process, on
+    # a first-request race; a lock on a logging gate would cost more.
+    if cause in _warned_causes:
+        return
+    _warned_causes.add(cause)
+    logger.warning(message, *args)
 
 
 def _client_label(value: object, limit: int = 64) -> str:
@@ -1002,8 +1018,13 @@ def _client_label(value: object, limit: int = 64) -> str:
 
     Note this bounds the size of one value, not the number of distinct values —
     see :func:`_bounded_client_name` for that half.
+
+    Empty maps to "unknown" alongside None. `AccessToken.client_id` defaults to
+    `""` when the payload carries no client_id claim, so without this an absent
+    identity would record as an empty label — a second spelling of "we don't
+    know" that splits the series and reads as a rendering bug on a dashboard.
     """
-    return str(value)[:limit] if value is not None else "unknown"
+    return str(value)[:limit] if value else "unknown"
 
 
 def _first_present(*candidates: tuple[object, str]) -> object | None:
@@ -1073,7 +1094,14 @@ def record_client_session() -> None:
     try:
         ctx = request_ctx.get()
     except LookupError:
-        # Called outside a request scope (startup, tests). Expected, not an error.
+        # Legitimate outside a request (startup, direct calls in tests), but this
+        # function is only wired into the CallToolRequest handler, where a missing
+        # request context means the wiring is wrong.
+        _warn_once(
+            "no_request_ctx",
+            "MCP client fleet metrics: no request context on a tool call — "
+            "mcp_client_sessions_total will stay empty",
+        )
         return
     session = ctx.session
     # ponytail: unsynchronised check-then-set, so two requests racing on a
@@ -1083,7 +1111,16 @@ def record_client_session() -> None:
         return
     params = getattr(session, "client_params", None)
     if params is None:
-        # Session has not completed initialize yet; try again on the next call.
+        # Expected once, between transport creation and the initialize handshake
+        # completing. Persisting past that means the session this handler sees is
+        # not the one that processed initialize, and the fleet metric will never
+        # populate — which is exactly what happened in 0.162.0.
+        _warn_once(
+            "no_client_params",
+            "MCP client fleet metrics: session %s has no client_params on a tool "
+            "call — mcp_client_sessions_total will stay empty",
+            type(session).__name__,
+        )
         return
     # Claim the session before doing the work, so a failure below costs one
     # warning for this session rather than one per tool call.

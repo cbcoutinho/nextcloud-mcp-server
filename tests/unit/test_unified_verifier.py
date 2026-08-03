@@ -1532,7 +1532,7 @@ class TestRejectionObservability:
             "method": "jwt",
             "result": "valid",
             "reason": "none",
-            "client_id": "unknown",
+            "client_id": "astrolabe",
         }
         before = metric_sample(self.VALIDATIONS, accepted)
 
@@ -1555,6 +1555,50 @@ class TestRejectionObservability:
             )
 
         assert granted is not None
+        assert metric_sample(self.VALIDATIONS, accepted) - before == 1
+
+    async def test_cache_hit_does_not_rerecord_valid(
+        self, base_settings, metric_sample
+    ):
+        """A polled token is validated once, not once per request.
+
+        Astrolabe polls the management API continuously with the same token.
+        Recording `valid` on every cache hit would make the metric count
+        *requests* rather than *validations*, so the denominator would drift
+        with polling frequency rather than with anything meaningful.
+
+        The previous commit asserted this invariant in its message and left it
+        resting on a manual trace. Given this PR has five separate instances of
+        a test watching the wrong signal, an untested claim is the one shape it
+        should not ship.
+        """
+        accepted = {
+            "method": "jwt",
+            "result": "valid",
+            "reason": "none",
+            "client_id": "astrolabe",
+        }
+        before = metric_sample(self.VALIDATIONS, accepted)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier._allowed_mgmt_clients = frozenset({"astrolabe"})
+        verifier.jwks_client = MagicMock()
+        token = self._jwt_for("astrolabe")
+        verify = AsyncMock(
+            return_value={
+                "sub": "alice",
+                "client_id": "astrolabe",
+                "exp": int(time.time()) + 600,
+            }
+        )
+        with patch.object(verifier, "_verify_jwt_signature", verify):
+            first = await verifier.verify_token_for_management_api(token)
+            second = await verifier.verify_token_for_management_api(token)
+
+        assert first is not None and second is not None
+        # Second call was served from cache — the validator never ran again...
+        assert verify.await_count == 1
+        # ...and the grant was not counted twice.
         assert metric_sample(self.VALIDATIONS, accepted) - before == 1
 
     def test_opaque_token_client_id_degrades_to_unknown(self, base_settings):
