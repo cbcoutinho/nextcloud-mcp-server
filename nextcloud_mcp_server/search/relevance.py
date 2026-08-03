@@ -190,6 +190,46 @@ def relevance_for(
     return min(1.0, max(0.0, score)), RELEVANCE_UNCALIBRATED
 
 
+def filter_by_relevance(
+    results: list,
+    *,
+    min_relevance: float,
+    fusion: str,
+    algorithm: str,
+    rerank_model: str | None,
+) -> list:
+    """Drop results whose mapped relevance falls below ``min_relevance``.
+
+    The counterpart to ``score_threshold``, and deliberately a different
+    control. ``score_threshold`` is pushed into Qdrant and applied to the raw
+    retrieval score BEFORE deduplication, reranking and verify-on-read — it is a
+    recall cut that can remove the very row the reranker would have promoted to
+    the top. This filter runs at the end, on the number the caller was shown, so
+    "show me results at least this relevant" means what it says.
+
+    ``min_relevance <= 0`` returns the input list unchanged rather than mapping
+    every row, so the default costs nothing.
+
+    Applies to every source, including the ordinal and uncalibrated ones: all of
+    them are monotone in the signal that ordered the results, so the filter is
+    always a meaningful cut even where the value is not a probability.
+    """
+    if min_relevance <= 0.0:
+        return results
+    return [
+        r
+        for r in results
+        if relevance_for(
+            rerank_score=r.rerank_score,
+            score=r.score,
+            fusion=fusion,
+            algorithm=algorithm,
+            rerank_model=rerank_model,
+        )[0]
+        >= min_relevance
+    ]
+
+
 def relevance_fit_base_rate(source: str) -> float | None:
     """The prevalence a source's curve was fitted at, or None if it has no fit.
 

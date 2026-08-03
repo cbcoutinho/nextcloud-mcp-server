@@ -55,8 +55,14 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_with_context,
 )
 from nextcloud_mcp_server.search.relevance import (
+<<<<<<< HEAD
     RELEVANCE_ORDINAL,
     relevance_fit_base_rate,
+||||||| parent of 1d280ec0 (feat(search): min_relevance, a filter on the number the caller was shown)
+from nextcloud_mcp_server.search.relevance import relevance_for
+=======
+    filter_by_relevance,
+>>>>>>> 1d280ec0 (feat(search): min_relevance, a filter on the number the caller was shown)
     relevance_for,
 )
 from nextcloud_mcp_server.search.rerank import (
@@ -427,6 +433,9 @@ async def unified_search(request: Request) -> JSONResponse:
             # No upper bound: hybrid DBSF fusion can exceed 1.0, so a le=1.0 cap
             # would 400 a legitimate threshold — mirrors the round-1
             # Field(ge=0.0) fix on the nc_semantic_search tool.
+            min_relevance = _parse_float_param(
+                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
+            )
             score_threshold = _parse_float_param(
                 body.get("score_threshold"),
                 0.0,
@@ -636,6 +645,18 @@ async def unified_search(request: Request) -> JSONResponse:
         # _rerank_sort_key for why unscored rows are kept at the tail rather
         # than compared against reranked ones.
         sorted_results = sorted(all_results, key=_rerank_sort_key, reverse=True)
+
+        # Relevance cut, applied BEFORE pagination so a page fills with rows
+        # that qualify rather than returning a short page of whatever survived.
+        # Distinct from score_threshold, which Qdrant applies to the raw
+        # retrieval score before reranking even runs.
+        sorted_results = filter_by_relevance(
+            sorted_results,
+            min_relevance=min_relevance,
+            fusion=fusion,
+            algorithm=algorithm,
+            rerank_model=settings.search_rerank_model,
+        )
 
         # Calculate total and apply pagination.
         #
@@ -862,6 +883,16 @@ async def vector_search(request: Request) -> JSONResponse:
         fusion = body.get("fusion", "rrf")
         score_threshold = body.get("score_threshold", 0.0)
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
+        # Validated rather than read raw: this is a new parameter, so it starts
+        # with the same checking /api/v1/search applies. (The pre-existing
+        # `score_threshold`/`limit` reads above still lack it — tracked
+        # separately rather than widened here.)
+        try:
+            min_relevance = _parse_float_param(
+                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
         # Optional cross-encoder rerank, same flag and same gating as
@@ -999,6 +1030,17 @@ async def vector_search(request: Request) -> JSONResponse:
                     results, query, settings=settings, surface="http_viz"
                 )
                 results = sorted(results, key=_rerank_sort_key, reverse=True)
+            # Relevance cut before the trim, so a filtered request still fills
+            # up to `limit` with qualifying rows instead of returning whatever
+            # is left of the top `limit`. Runs with or without reranking.
+            results = filter_by_relevance(
+                results,
+                min_relevance=min_relevance,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
+            if rerank:
                 # Cut the deep pool back BEFORE this returns into verify-on-read.
                 # The pool exists for the reranker, not for verification, which
                 # costs one Nextcloud round-trip per candidate — leaving 200 rows
