@@ -18,6 +18,7 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     _fingerprint,
     _redact,
     _redact_error_body,
+    _redact_form,
 )
 from nextcloud_mcp_server.observability.metrics import record_oauth_grant
 
@@ -352,3 +353,38 @@ class TestGrantMetricWiring:
         rendered = "\n".join(r.getMessage() for r in caplog.records)
         for secret in _SECRET_VALUES.values():
             assert secret not in rendered
+
+
+class TestFormRedaction:
+    """``dict(FormData)`` drops repeated keys, and the drop is silent."""
+
+    @staticmethod
+    def _form(pairs):
+        from starlette.datastructures import FormData
+
+        return FormData(pairs)
+
+    def test_single_valued_form_reads_as_scalars(self):
+        redacted = _redact_form(
+            self._form([("grant_type", "refresh_token"), ("client_id", "abc")])
+        )
+        assert redacted == {"grant_type": "refresh_token", "client_id": "abc"}
+
+    def test_repeated_key_is_preserved_as_a_list(self):
+        """A token request repeating a field is a broken client or parameter
+        pollution; the log must show both values, not silently pick one."""
+        redacted = _redact_form(
+            self._form([("grant_type", "refresh_token"), ("grant_type", "password")])
+        )
+        assert redacted == {"grant_type": ["refresh_token", "password"]}
+
+    def test_repeated_secret_key_is_redacted_in_every_position(self):
+        redacted = _redact_form(
+            self._form([("code", "SECRET-ONE"), ("code", "SECRET-TWO")])
+        )
+        assert "SECRET-ONE" not in repr(redacted)
+        assert "SECRET-TWO" not in repr(redacted)
+        assert len(redacted["code"]) == 2
+
+    def test_empty_form_does_not_raise(self):
+        assert _redact_form(self._form([])) == {}

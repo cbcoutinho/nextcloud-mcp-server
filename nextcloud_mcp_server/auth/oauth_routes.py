@@ -130,7 +130,27 @@ _SECRET_FIELDS = frozenset(
 )
 
 
-def _redact_error_body(text: str) -> Any:
+def _redact_form(form: Any) -> dict[str, Any]:
+    """Redact a submitted form body, preserving repeated keys.
+
+    ``dict(FormData)`` keeps only the last value for a repeated key. A token
+    request has no legitimate reason to repeat one, so a request that does is
+    either a broken client or parameter pollution — exactly the case where the
+    log must not quietly show a single value as though it were the only one
+    sent. Repeated keys are logged as a list; the common single-value case
+    still reads as a plain scalar.
+    """
+    grouped: dict[str, list[Any]] = {}
+    for key, value in form.multi_items():
+        grouped.setdefault(key, []).append(value)
+    redacted = {
+        key: [_redact({key: value})[key] for value in values]
+        for key, values in grouped.items()
+    }
+    return {key: v[0] if len(v) == 1 else v for key, v in redacted.items()}
+
+
+def _redact_error_body(text: str) -> dict[str, Any] | str:
     """Redact a non-200 token-endpoint body before logging.
 
     An OAuth error body is normally ``{"error": ..., "error_description": ...}``
@@ -1157,7 +1177,7 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     logger.info(
         "AS proxy token request: grant_type=%s params=%s",
         grant_type,
-        _redact(dict(form)),
+        _redact_form(form),
     )
 
     if grant_type == "authorization_code":
