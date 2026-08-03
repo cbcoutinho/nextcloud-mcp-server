@@ -116,8 +116,64 @@ most consequential changes are silent — see the alerts below.
   > JWKS means tokens fall through to introspection rather than being rejected
   > as `method="jwt"`. Alert on `reason="not_configured"` rather than on a
   > particular `method`.
+- `mcp_oauth_grants_total{grant_type, result, refresh_token}` - Grants
+  processed by the AS proxy token endpoint. **This is the "why is a client
+  re-logging-in" metric**, and it complements the validation metric above: a
+  rejection disconnects a client, but so does never having been given a
+  refresh token in the first place.
+  - `grant_type`: `authorization_code` | `refresh_token` | `unsupported`
+  - `result`: `success` | `error`
+  - `refresh_token`: `issued` | `absent` | `unknown` (the grant failed, so
+    there was no response to inspect)
+
+  > A healthy client shows **one** `authorization_code` and then a steady
+  > trickle of `refresh_token` grants. `authorization_code` repeating every
+  > hour with zero `refresh_token` grants means the client never received a
+  > refresh token and is re-running the full consent flow on every access-token
+  > expiry — a user-visible re-login each time.
+  >
+  > `refresh_token="absent"` on a **`refresh_token` grant** is not a fault: an
+  > IdP that does not rotate refresh tokens returns only a new access token.
+  > It is `absent` on the **`authorization_code`** grant that is the bug.
+  >
+  > When a refresh token is missing, check which OIDC client the IdP actually
+  > applied. The AS proxy exchanges the code as *this server's own confidential
+  > client* (`MCP_SERVER_CLIENT_ID`), not the client-facing one, so
+  > `offline_access` has to be enabled on that client — enabling it only on the
+  > MCP client's registration has no effect on this exchange.
 - `mcp_oauth_token_cache_hits_total` - Cache hit/miss rate
 - `mcp_oauth_refresh_token_operations_total` - Refresh token storage ops
+
+#### Reading the token-endpoint logs
+
+Every hop of a grant is logged with credentials fingerprinted rather than
+printed: secret fields become `<len=N sha256=xxxxxxxx>`. The fingerprint is a
+truncated, unsalted SHA-256, so the *same* token can be followed across hops
+and across process restarts without the credential ever being written down.
+Non-secret fields (`scope`, `expires_in`, `token_type`, `error`) pass through
+untouched, because those are what actually answer the question.
+
+Did the IdP issue a refresh token?
+
+```logql
+{namespace="<tenant>", container="nextcloud-mcp-server"}
+  |= "AS proxy: IdP token response" |= "refresh_token=ABSENT"
+```
+
+Which grant types is a client actually using?
+
+```logql
+sum by (grant_type) (count_over_time(
+  {namespace="<tenant>", container="nextcloud-mcp-server"}
+    |= "AS proxy token request" | logfmt [1h]))
+```
+
+Follow one refresh token from issuance to reuse — same `sha256=` on both lines:
+
+```logql
+{namespace="<tenant>", container="nextcloud-mcp-server"}
+  |~ "AS proxy (: IdP token response|refresh)" |= "sha256=<fingerprint>"
+```
 
 ### Vector Sync Metrics (when enabled)
 
@@ -411,6 +467,25 @@ sum(rate(astrolabe_document_ingest_rejected_total{reason="oversize"}[1h]))
 - Token validation errors >1% for >10min
 - Vector sync queue >100 for >15min
 - Qdrant slow (p95 >500ms) for >10min
+- Clients re-authorizing instead of refreshing (below)
+
+A client that is never issued a refresh token silently degrades into a
+re-login on every access-token expiry. Nothing fails, so nothing else alerts —
+it surfaces only as users complaining that the connector keeps disconnecting:
+
+```promql
+# authorization_code grants that yielded no refresh token
+sum(increase(mcp_oauth_grants_total{
+      grant_type="authorization_code", refresh_token="absent"}[1h])) > 0
+```
+
+```promql
+# repeated full authorization flows with no refresh grants to match:
+# more than 2 re-authorizations an hour is a client stuck in a re-login loop
+sum(increase(mcp_oauth_grants_total{grant_type="authorization_code"}[1h])) > 2
+  and
+sum(increase(mcp_oauth_grants_total{grant_type="refresh_token"}[1h])) == 0
+```
 
 See the [Helm chart repository](https://github.com/cbcoutinho/helm-charts) for PrometheusRule definitions.
 
