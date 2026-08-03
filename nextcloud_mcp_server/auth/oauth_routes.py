@@ -1039,6 +1039,12 @@ async def _oauth_callback_as_proxy(
     # is usually a missing `offline_access` on whichever client the IdP
     # actually applied — and that is this server's own confidential client
     # here, not the client-facing one.
+    #
+    # The named fields duplicate values that `fields=` also carries. That is
+    # deliberate: the named ones are stable strings to alert and group on
+    # (`|= "refresh_token=ABSENT"`), while `fields=` preserves whatever else
+    # the IdP sent, which is what you actually need when the named three do
+    # not explain the behaviour. Same pattern on the two sibling log lines.
     logger.info(
         "AS proxy: IdP token response: refresh_token=%s scope=%s expires_in=%s "
         "token_type=%s fields=%s",
@@ -1155,9 +1161,9 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     )
 
     if grant_type == "authorization_code":
-        return await _token_authorization_code(request, form)
+        response = await _token_authorization_code(request, form)
     elif grant_type == "refresh_token":
-        return await _token_refresh(request, form)
+        response = await _token_refresh(request, form)
     else:
         logger.warning("AS proxy token: unsupported grant_type=%s", grant_type)
         record_oauth_grant("unsupported", "error")
@@ -1168,6 +1174,23 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
             },
             status_code=400,
         )
+
+    # Failures are counted here rather than at each `return JSONResponse(...)`
+    # inside the handlers. Between them the two handlers have fifteen error
+    # exits — expired/replayed proxy code, client_id mismatch, redirect_uri
+    # mismatch, PKCE failure, unconfigured credentials, IdP HTTP failure — and
+    # instrumenting them individually means a future early-return silently
+    # escapes the counter. This is the single choke point every one of them
+    # passes through, so `success + error` stays an exhaustive partition of
+    # grants by construction.
+    #
+    # Success is recorded inside the handlers instead, because only they can
+    # see whether the token response carried a refresh_token; they return 200
+    # exclusively on that path, so nothing is double-counted here.
+    if response.status_code != 200:
+        record_oauth_grant(grant_type, "error")
+
+    return response
 
 
 async def _token_authorization_code(request: Request, form) -> JSONResponse:
@@ -1397,7 +1420,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             response.status_code,
             _redact_error_body(response.text),
         )
-        record_oauth_grant("refresh_token", "error")
+        # Counted by oauth_token_endpoint, which sees every failure exit.
         return JSONResponse(
             {
                 "error": "invalid_grant",

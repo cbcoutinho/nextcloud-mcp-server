@@ -8,8 +8,10 @@ no secret may reach a log sink verbatim.
 """
 
 import json
+import logging
 
 import pytest
+from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.auth.oauth_routes import (
     _SECRET_FIELDS,
@@ -178,3 +180,175 @@ class TestGrantMetric:
         before = metric_sample("mcp_oauth_grants_total", labels)
         record_oauth_grant("refresh_token", "error")
         assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+
+class TestGrantMetricWiring:
+    """The counter is only useful if the real code paths reach it.
+
+    The tests above prove the helpers behave; these prove they are actually
+    called, with the labels the dashboards and alerts assume. This is the part
+    most likely to drift silently in a later refactor — a reordered early
+    return or a renamed field breaks the metric without breaking a helper.
+    """
+
+    @staticmethod
+    def _request(form: dict[str, str]):
+        """Minimal Starlette request whose .form() yields *form*."""
+        from starlette.datastructures import FormData
+
+        class _Req:
+            async def form(self):
+                return FormData(form)
+
+        return _Req()
+
+    @staticmethod
+    def _pkce_pair() -> tuple[str, str]:
+        import hashlib as _h
+        from base64 import urlsafe_b64encode
+
+        verifier = "v" * 43
+        challenge = (
+            urlsafe_b64encode(_h.sha256(verifier.encode("ascii")).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
+        return verifier, challenge
+
+    async def test_unsupported_grant_type_is_counted(self, metric_sample):
+        from nextcloud_mcp_server.auth.oauth_routes import oauth_token_endpoint
+
+        labels = {
+            "grant_type": "unsupported",
+            "result": "error",
+            "refresh_token": "unknown",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        response = await oauth_token_endpoint(
+            self._request({"grant_type": "client_credentials"})
+        )
+
+        assert response.status_code == 400
+        assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+    async def test_handler_failure_is_counted_as_error(self, metric_sample, mocker):
+        """A failing grant must move the counter.
+
+        Before this was centralised, fifteen error returns bypassed the metric
+        entirely — a client failing every exchange looked identical to a client
+        making no requests at all.
+        """
+        from nextcloud_mcp_server.auth import oauth_routes
+
+        mocker.patch.object(
+            oauth_routes,
+            "_token_authorization_code",
+            return_value=JSONResponse({"error": "invalid_grant"}, status_code=400),
+        )
+        labels = {
+            "grant_type": "authorization_code",
+            "result": "error",
+            "refresh_token": "unknown",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        await oauth_routes.oauth_token_endpoint(
+            self._request({"grant_type": "authorization_code"})
+        )
+
+        assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+    async def test_success_is_not_also_counted_as_error(self, metric_sample, mocker):
+        """Guards the double-count the split success/error recording invites."""
+        from nextcloud_mcp_server.auth import oauth_routes
+
+        mocker.patch.object(
+            oauth_routes,
+            "_token_refresh",
+            return_value=JSONResponse({"access_token": "a"}, status_code=200),
+        )
+        labels = {
+            "grant_type": "refresh_token",
+            "result": "error",
+            "refresh_token": "unknown",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        await oauth_routes.oauth_token_endpoint(
+            self._request({"grant_type": "refresh_token"})
+        )
+
+        assert metric_sample("mcp_oauth_grants_total", labels) == before
+
+    async def _exchange(self, token_response: dict):
+        """Drive a full, valid authorization_code exchange."""
+        from nextcloud_mcp_server.auth import oauth_routes
+        from nextcloud_mcp_server.auth.oauth_routes import ProxyCodeEntry
+
+        verifier, challenge = self._pkce_pair()
+        oauth_routes._proxy_codes["test-code"] = ProxyCodeEntry(
+            client_id="client-abc",
+            client_redirect_uri="https://example.test/cb",
+            client_state="state",
+            code_challenge=challenge,
+            code_challenge_method="S256",
+            nc_token_response=token_response,
+        )
+        try:
+            return await oauth_routes.oauth_token_endpoint(
+                self._request(
+                    {
+                        "grant_type": "authorization_code",
+                        "code": "test-code",
+                        "redirect_uri": "https://example.test/cb",
+                        "code_verifier": verifier,
+                        "client_id": "client-abc",
+                    }
+                )
+            )
+        finally:
+            oauth_routes._proxy_codes.pop("test-code", None)
+
+    async def test_refresh_token_issued_is_recorded(self, metric_sample):
+        labels = {
+            "grant_type": "authorization_code",
+            "result": "success",
+            "refresh_token": "issued",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        response = await self._exchange(
+            {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"}
+        )
+
+        assert response.status_code == 200
+        assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+    async def test_missing_refresh_token_is_recorded_as_absent(self, metric_sample):
+        """The motivating scenario: a grant that succeeds but strands the
+        client with no way to refresh, so it must re-authorize next hour."""
+        labels = {
+            "grant_type": "authorization_code",
+            "result": "success",
+            "refresh_token": "absent",
+        }
+        before = metric_sample("mcp_oauth_grants_total", labels)
+        response = await self._exchange({"access_token": "a", "token_type": "Bearer"})
+
+        assert response.status_code == 200
+        assert metric_sample("mcp_oauth_grants_total", labels) == before + 1
+
+    async def test_absent_refresh_token_is_logged_visibly(self, caplog):
+        """The log line an operator greps for must say ABSENT, not just omit
+        the field — an absent key is invisible to `|= "refresh_token=ABSENT"`."""
+        caplog.set_level(logging.INFO, logger="nextcloud_mcp_server.auth.oauth_routes")
+        await self._exchange({"access_token": "a", "token_type": "Bearer"})
+
+        assert any("refresh_token=ABSENT" in r.getMessage() for r in caplog.records)
+
+    async def test_no_secret_reaches_the_log_on_a_real_exchange(self, caplog):
+        """End-to-end guard: the redactor is wired into the live path, not
+        just unit-tested in isolation."""
+        caplog.set_level(logging.INFO, logger="nextcloud_mcp_server.auth.oauth_routes")
+        await self._exchange(dict(_TOKEN_RESPONSE))
+
+        rendered = "\n".join(r.getMessage() for r in caplog.records)
+        for secret in _SECRET_VALUES.values():
+            assert secret not in rendered

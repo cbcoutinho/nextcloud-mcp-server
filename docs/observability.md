@@ -122,7 +122,12 @@ most consequential changes are silent — see the alerts below.
   rejection disconnects a client, but so does never having been given a
   refresh token in the first place.
   - `grant_type`: `authorization_code` | `refresh_token` | `unsupported`
-  - `result`: `success` | `error`
+  - `result`: `success` | `error` — an exhaustive partition **by
+    construction**: success is recorded by the grant handlers (only they can
+    see whether a refresh token came back), and every failure exit is counted
+    centrally in `oauth_token_endpoint` from the response status. The handlers
+    have fifteen error returns between them; counting them individually would
+    let the next early-return added escape the metric silently.
   - `refresh_token`: `issued` | `absent` | `unknown` (the grant failed, so
     there was no response to inspect)
 
@@ -172,8 +177,13 @@ Follow one refresh token from issuance to reuse — same `sha256=` on both lines
 
 ```logql
 {namespace="<tenant>", container="nextcloud-mcp-server"}
-  |~ "AS proxy (: IdP token response|refresh)" |= "sha256=<fingerprint>"
+  |~ "AS proxy(: IdP token response| refresh)" |= "sha256=<fingerprint>"
 ```
+
+The space belongs *inside* the second alternative: the log lines are
+`AS proxy: IdP token response` (no space before the colon) and
+`AS proxy refresh: succeeded`. Hoisting the space out of the group silently
+matches only the refresh side — half of the correlation you asked for.
 
 ### Vector Sync Metrics (when enabled)
 
@@ -481,10 +491,20 @@ sum(increase(mcp_oauth_grants_total{
 
 ```promql
 # repeated full authorization flows with no refresh grants to match:
-# more than 2 re-authorizations an hour is a client stuck in a re-login loop
-sum(increase(mcp_oauth_grants_total{grant_type="authorization_code"}[1h])) > 2
+# more than 2 re-authorizations an hour is a client stuck in a re-login loop.
+# result="success" on purpose — this counts completed re-logins, so a client
+# retrying a stale code cannot inflate it into a false page.
+sum(increase(mcp_oauth_grants_total{
+      grant_type="authorization_code", result="success"}[1h])) > 2
   and
-sum(increase(mcp_oauth_grants_total{grant_type="refresh_token"}[1h])) == 0
+sum(increase(mcp_oauth_grants_total{
+      grant_type="refresh_token", result="success"}[1h])) == 0
+```
+
+```promql
+# the complementary signal, now that failures are counted too: a client
+# failing grants outright (replayed codes, PKCE mismatch, expired proxy code)
+sum by (grant_type) (increase(mcp_oauth_grants_total{result="error"}[15m])) > 0
 ```
 
 See the [Helm chart repository](https://github.com/cbcoutinho/helm-charts) for PrometheusRule definitions.
