@@ -354,7 +354,8 @@ async def get_server_status(request: Request) -> JSONResponse:
         # vector sync is off; all three (semantic, bm25, hybrid) when it is on.
         # Lets the UI gate its algorithm picker.
         "supported_search_types": supported_search_types(settings),
-        # Whether this server can serve `rerank: true` on /api/v1/search.
+        # Whether this server can serve `rerank: true` on either search endpoint
+        # (/api/v1/search and /api/v1/vector-viz/search) or the MCP tool.
         # Advertised so a client gates its UI on a capability rather than
         # discovering it by sending the request and handling the 422 — the same
         # reason supported_search_types exists. Present and false (not absent)
