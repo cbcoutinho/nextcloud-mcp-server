@@ -114,6 +114,97 @@ def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
     )
 
 
+def _parse_rerank(body: dict[str, Any]) -> tuple[bool, JSONResponse | None]:
+    """Read the optional ``rerank`` request flag (shape only).
+
+    Returns ``(rerank, error_response)``; the caller returns the response when it
+    is not None.
+
+    A non-boolean is a **400** — malformed. Coerced truthiness would let
+    ``"false"`` turn reranking ON, and a caller that asked for reranked ordering
+    and silently got retrieval ordering cannot tell that apart from a ranking
+    regression.
+
+    Deliberately SEPARATE from :func:`_rerank_capability_error`, which the caller
+    invokes later. The two checks are not interchangeable in position: this one
+    validates the request body alongside the other body parsing, while the
+    capability gate belongs after the query and algorithm checks so that a
+    request failing several validations reports the same error it always did.
+    Folding them into one call moved the 422 ahead of the empty-query
+    short-circuit and changed which error an empty query + unconfigured rerank
+    returns. Pinned by ``test_search_rerank_api.py`` precedence tests.
+    """
+    rerank = body.get("rerank", False)
+    if not isinstance(rerank, bool):
+        return False, JSONResponse(
+            {"error": f"Invalid rerank {rerank!r}. Must be a boolean"},
+            status_code=400,
+        )
+    return rerank, None
+
+
+def _rerank_capability_error(rerank: bool, settings: Settings) -> JSONResponse | None:
+    """422 when reranking was asked for on a deployment that cannot serve it.
+
+    A **422** rather than 400: the request is well-formed, this server just
+    cannot serve it. Callers discover the capability from ``rerank_available``
+    on ``GET /api/v1/status`` rather than probing for the error.
+
+    Call this AFTER the empty-query and algorithm/granularity checks — see
+    :func:`_parse_rerank` for why the position is load-bearing.
+    """
+    if rerank and not rerank_available(settings):
+        return JSONResponse(
+            {
+                "error": "rerank_not_configured",
+                "message": (
+                    "Reranking is not configured on this server. Check "
+                    "`rerank_available` on /api/v1/status before requesting it."
+                ),
+            },
+            status_code=422,
+        )
+    return None
+
+
+def _reranked_label(rerank: bool, outcome: str) -> str:
+    """Metric label for the ordering a response actually carries.
+
+    Three distinct states, not a boolean: never asked for, asked for and applied,
+    asked for and degraded. Collapsing the last two would hide a reranker outage
+    behind the same label as "not requested".
+
+    SKIPPED (nothing to reorder) reports as ``"false"``, not ``"unavailable"``: a
+    query returning 0-1 rows is routine, and folding it into the outage bucket
+    would bury real reranker failures in noise.
+    """
+    if not rerank:
+        return "false"
+    if outcome == RERANK_APPLIED:
+        return "true"
+    if outcome == RERANK_DEGRADED:
+        return "unavailable"
+    return "false"
+
+
+def _rerank_sort_key(result: Any) -> tuple[bool, float]:
+    """Order reranked results, keeping unscored rows at the tail.
+
+    Rows the reranker did not score sort behind every scored row rather than
+    being compared against them. They are different scales — a cross-encoder
+    score spans [0, 1] while ``.score`` is a rank artifact (~2/k for RRF) or an
+    unbounded raw BM25 value — so ranking them against each other lets an
+    UNSCORED row outrank a genuinely reranked one purely by scale (a raw BM25
+    8.5 beats every possible rerank score). Unscored rows are exactly the ones
+    ``rerank_results`` appends in retrieval order to sit at the tail, so this
+    preserves that placement instead of shuffling them back into the middle.
+    """
+    return (
+        result.rerank_score is not None,
+        result.rerank_score if result.rerank_score is not None else result.score,
+    )
+
+
 def _build_search_algorithm(
     requested_algorithm: str | None,
     settings: Settings,
@@ -358,16 +449,14 @@ async def unified_search(request: Request) -> JSONResponse:
                 },
                 status_code=400,
             )
-        # Optional cross-encoder rerank. Rejected rather than coerced for the
-        # same reason as granularity: a caller that asked for reranked ordering
-        # and silently got retrieval ordering cannot tell the difference from a
-        # ranking regression.
-        rerank = body.get("rerank", False)
-        if not isinstance(rerank, bool):
-            return JSONResponse(
-                {"error": f"Invalid rerank {rerank!r}. Must be a boolean"},
-                status_code=400,
-            )
+        # Optional cross-encoder rerank. Shape checked here with the rest of the
+        # body, for the same reason as granularity: a caller that asked for
+        # reranked ordering and silently got retrieval ordering cannot tell the
+        # difference from a ranking regression. The CAPABILITY gate runs later —
+        # see _rerank_capability_error.
+        rerank, rerank_error = _parse_rerank(body)
+        if rerank_error is not None:
+            return rerank_error
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -418,20 +507,13 @@ async def unified_search(request: Request) -> JSONResponse:
                 status_code=422,
             )
 
-        # Capability gate, mirroring the shape above. 422 rather than 400: the
-        # request is well-formed, this deployment just cannot serve it. Callers
-        # discover the capability from GET /api/v1/status rather than probing.
-        if rerank and not rerank_available(settings):
-            return JSONResponse(
-                {
-                    "error": "rerank_not_configured",
-                    "message": (
-                        "Reranking is not configured on this server. Check "
-                        "`rerank_available` on /api/v1/status before requesting it."
-                    ),
-                },
-                status_code=422,
-            )
+        # Capability gate, in the position it has always occupied: after the
+        # empty-query short-circuit and the algorithm/granularity check, so a
+        # request that fails several validations at once reports the same error
+        # it reported before the shared helper existed.
+        rerank_error = _rerank_capability_error(rerank, settings)
+        if rerank_error is not None:
+            return rerank_error
 
         # Request extra results to handle offset
         search_limit = limit + offset
@@ -529,25 +611,10 @@ async def unified_search(request: Request) -> JSONResponse:
 
         # Sort by rerank score when present, retrieval score otherwise —
         # without this the re-sort would silently undo the rerank ordering,
-        # since .score deliberately still holds the retrieval score.
-        #
-        # The leading `is not None` term keeps the two apart rather than
-        # comparing them. They are different scales: a rerank score is
-        # calibrated in [0, 1], while .score is a rank artifact (~2/k for RRF)
-        # or an unbounded raw BM25 value. Ranking them against each other lets
-        # an UNSCORED row outrank a genuinely reranked one purely by scale — a
-        # raw BM25 8.5 beats every possible rerank score. Unscored rows are
-        # exactly the ones rerank_results appends in retrieval order to sit at
-        # the tail, so this preserves that placement instead of shuffling them
-        # back into the middle.
-        sorted_results = sorted(
-            all_results,
-            key=lambda r: (
-                r.rerank_score is not None,
-                r.rerank_score if r.rerank_score is not None else r.score,
-            ),
-            reverse=True,
-        )
+        # since .score deliberately still holds the retrieval score. See
+        # _rerank_sort_key for why unscored rows are kept at the tail rather
+        # than compared against reranked ones.
+        sorted_results = sorted(all_results, key=_rerank_sort_key, reverse=True)
 
         # Calculate total and apply pagination.
         #
@@ -655,20 +722,7 @@ async def unified_search(request: Request) -> JSONResponse:
             except Exception as e:
                 logger.warning("Failed to compute PCA for unified search: %s", e)
 
-        # Three distinct states, not a boolean: never asked for, asked for and
-        # applied, asked for and degraded. Collapsing the last two would hide a
-        # reranker outage behind the same label as "not requested".
-        # SKIPPED (nothing to reorder) reports as "false", not "unavailable":
-        # a query returning 0-1 rows is routine, and folding it into the outage
-        # bucket would bury real reranker failures in noise.
-        if not rerank:
-            reranked_label = "false"
-        elif rerank_outcome == RERANK_APPLIED:
-            reranked_label = "true"
-        elif rerank_outcome == RERANK_DEGRADED:
-            reranked_label = "unavailable"
-        else:
-            reranked_label = "false"
+        reranked_label = _reranked_label(rerank, rerank_outcome)
 
         record_search_request(
             surface="http",
@@ -728,7 +782,9 @@ async def vector_search(request: Request) -> JSONResponse:
         "algorithm": "semantic|bm25|hybrid",  // default: hybrid
         "limit": 10,  // max: 50
         "include_pca": true,  // whether to include 2D coordinates
-        "doc_types": ["note", "file"]  // optional filter by document types
+        "doc_types": ["note", "file"],  // optional filter by document types
+        "rerank": false  // opt-in cross-encoder rerank; 422 unless the server
+                         // advertises rerank_available on /api/v1/status
     }
 
     Requires OAuth bearer token for user filtering.
@@ -768,6 +824,16 @@ async def vector_search(request: Request) -> JSONResponse:
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
+        # Optional cross-encoder rerank, same flag and same gating as
+        # /api/v1/search — including the split between the shape check here and
+        # the capability gate after the algorithm build, so the two endpoints
+        # order their validations identically. This surface is the one
+        # Astrolabe's search page calls, so without it the reranked ordering —
+        # and any signal derived from it — is unreachable from the UI no matter
+        # what the server can serve.
+        rerank, rerank_error = _parse_rerank(body)
+        if rerank_error is not None:
+            return rerank_error
         # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
         # path_prefixes list (multi-folder) alongside the legacy single
         # path_prefix; normalize drops blanks and de-dupes.
@@ -822,6 +888,28 @@ async def vector_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
+        # Capability gate after the query and algorithm checks, matching
+        # /api/v1/search so an unsupported algorithm still wins over an
+        # unconfigured reranker on both endpoints.
+        rerank_error = _rerank_capability_error(rerank, settings)
+        if rerank_error is not None:
+            return rerank_error
+
+        rerank_outcome = RERANK_SKIPPED
+        # Reranking can only reorder what retrieval supplied, so it needs a
+        # deeper candidate pool than the caller's limit. This endpoint always
+        # searches chunks (grouped=False) and has no offset, so the floor is
+        # simply `limit` — which is also what it retrieves when rerank is off,
+        # leaving that path byte-identical to before. NB with several
+        # `doc_types` this depth is fetched PER TYPE before the merge, so
+        # retrieval cost scales with len(doc_types) — the same shape as
+        # unified_search's own doc_types loop.
+        retrieval_limit = (
+            effective_pool_size(settings, floor=limit, grouped=False)
+            if rerank
+            else limit
+        )
+
         async def _execute(scope: AccessibleScope | None) -> list:
             """Run the search across requested doc_types with the given access
             scope (None ⇒ self-only)."""
@@ -838,7 +926,7 @@ async def vector_search(request: Request) -> JSONResponse:
                             await search_algo.search(
                                 query=query,
                                 user_id=user_id,
-                                limit=limit,
+                                limit=retrieval_limit,
                                 doc_type=doc_type,
                                 accessible_owners=owners,
                                 shared_root_ids=roots,
@@ -849,19 +937,39 @@ async def vector_search(request: Request) -> JSONResponse:
                         )
                 # Sort merged results by score and limit
                 results.sort(key=lambda r: r.score, reverse=True)
-                results = results[:limit]
+                results = results[:retrieval_limit]
             else:
                 # Search all document types
                 results = await search_algo.search(
                     query=query,
                     user_id=user_id,
-                    limit=limit,
+                    limit=retrieval_limit,
                     accessible_owners=owners,
                     shared_root_ids=roots,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
                 )
+            # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
+            # _search_with_acl, and after the per-doc_type merge so one pass
+            # covers every type — same ordering as unified_search.
+            nonlocal rerank_outcome
+            if rerank:
+                results, rerank_outcome = await rerank_results(
+                    results, query, settings=settings, surface="http_viz"
+                )
+                results = sorted(results, key=_rerank_sort_key, reverse=True)
+                # Cut the deep pool back BEFORE this returns into verify-on-read.
+                # The pool exists for the reranker, not for verification, which
+                # costs one Nextcloud round-trip per candidate — leaving 200 rows
+                # here would turn enabling rerank into an order-of-magnitude load
+                # increase for provisioned callers. This endpoint has no offset
+                # or pagination, so the caller's `limit` IS the budget.
+                #
+                # It is also what keeps the response shape unchanged: all_results
+                # feeds the PCA plot below, so an untrimmed pool would return 200
+                # rows and 200 plotted points to a caller that asked for 10.
+                results = results[:limit]
             return results
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
@@ -880,6 +988,12 @@ async def vector_search(request: Request) -> JSONResponse:
                 "chunk_index": result.chunk_index,
                 "total_chunks": result.total_chunks,
             }
+            # Additive, and only when reranking ran — same contract as
+            # /api/v1/search. `score` keeps the retrieval value so
+            # `score_threshold`, applied against it inside Qdrant, still refers
+            # to the same quantity a caller filters on.
+            if result.rerank_score is not None:
+                formatted_result["rerank_score"] = result.rerank_score
             # Include optional fields if present
             if result.chunk_start_offset is not None:
                 formatted_result["chunk_start_offset"] = result.chunk_start_offset
@@ -895,6 +1009,9 @@ async def vector_search(request: Request) -> JSONResponse:
             "results": formatted_results,
             "algorithm_used": algorithm,
             "total_documents": len(formatted_results),
+            # False both when not requested and when requested-but-degraded, so
+            # a caller can always tell which ordering it received.
+            "reranked": rerank_outcome == RERANK_APPLIED,
         }
 
         # Compute PCA coordinates for visualization using shared function. PCA
@@ -933,7 +1050,7 @@ async def vector_search(request: Request) -> JSONResponse:
             surface="http_viz",
             algorithm=_search_algorithm_label(algorithm, fusion),
             granularity=GRANULARITY_CHUNK,
-            reranked="false",
+            reranked=_reranked_label(rerank, rerank_outcome),
             status="success",
             results_returned=len(formatted_results),
             verification_dropped=dropped_count,
