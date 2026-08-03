@@ -19,7 +19,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api.visualization import unified_search
+from nextcloud_mcp_server.api.visualization import unified_search, vector_search
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.rerank import RERANK_APPLIED
 
@@ -162,3 +162,104 @@ def test_doc_types_branch_is_bounded_by_its_own_budget():
         "itself even without reranking"
     )
     assert rerank_seen["count"] < _POOL
+
+
+# --- /api/v1/vector-viz/search ------------------------------------------------
+#
+# The same invariant on the second search endpoint. It needs its own coverage
+# rather than trusting the sibling's: the two handlers are separate code paths
+# and the first version of the viz endpoint reranked AFTER _search_with_acl, so
+# the whole deep pool went through verification. Symmetric tests are what turn
+# that from a review catch into a build failure.
+
+
+def _viz_app() -> Starlette:
+    app = Starlette(
+        routes=[Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])]
+    )
+    app.state.oauth_context = {"config": {"nextcloud_host": "https://nc.example"}}
+    return app
+
+
+def _post_viz_provisioned(body):
+    verified: dict = {}
+
+    async def _verify(nc_client, results, **kwargs):
+        verified["count"] = len(results)
+        return results, 0
+
+    algo = MagicMock()
+
+    async def _search(**kwargs):
+        return _rows(min(kwargs.get("limit", 10), _POOL))
+
+    algo.search = AsyncMock(side_effect=_search)
+    algo.query_token_count = 0
+    algo.query_embedding = None
+
+    client = MagicMock()
+    client.sharing = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    scope = MagicMock()
+    scope.owners = ["alice"]
+    scope.share_root_ids = []
+
+    # PCA off: it is orthogonal to the verification budget and would pull an
+    # embedding provider into the test.
+    body = {"include_pca": False, **body}
+
+    mod = "nextcloud_mcp_server.api.visualization"
+    with (
+        patch(f"{mod}.get_settings", return_value=_settings()),
+        patch(
+            f"{mod}.validate_token_and_get_user",
+            new=AsyncMock(return_value=("alice", {})),
+        ),
+        patch(f"{mod}.BM25HybridSearchAlgorithm", return_value=algo),
+        patch(
+            f"{mod}.rerank_results",
+            new=AsyncMock(side_effect=lambda r, q, **kw: (r, RERANK_APPLIED)),
+        ),
+        patch(f"{mod}.list_accessible_scope", new=AsyncMock(return_value=scope)),
+        patch(f"{mod}.verify_search_results", new=_verify),
+        patch(f"{mod}.get_user_client_basic_auth", new=AsyncMock(return_value=client)),
+    ):
+        resp = TestClient(_viz_app()).post("/api/v1/vector-viz/search", json=body)
+    return resp, verified
+
+
+def test_viz_verification_budget_is_unchanged_by_reranking():
+    plain, plain_seen = _post_viz_provisioned({"query": "q", "limit": 10})
+    reranked, rerank_seen = _post_viz_provisioned(
+        {"query": "q", "limit": 10, "rerank": True}
+    )
+
+    assert plain.status_code == 200 and reranked.status_code == 200
+    assert rerank_seen["count"] == plain_seen["count"], (
+        "reranking must not enlarge the set handed to verify-on-read — that is "
+        "one Nextcloud round-trip per candidate"
+    )
+
+
+def test_viz_reranked_pool_does_not_reach_verification():
+    _, seen = _post_viz_provisioned({"query": "q", "limit": 10, "rerank": True})
+
+    assert seen["count"] < _POOL, (
+        f"the full rerank pool ({_POOL}) reached verification; the deep pool "
+        "exists for the reranker, not for verify-on-read"
+    )
+
+
+def test_viz_doc_types_branch_does_not_multiply_verification():
+    """The per-doc_type loop fetches the pool once per type, so an untrimmed
+    pool would hand verification len(doc_types) x pool rows."""
+    _, seen = _post_viz_provisioned(
+        {"query": "q", "limit": 10, "doc_types": ["file", "note"], "rerank": True}
+    )
+
+    assert seen["count"] <= 10, (
+        "verification saw more than the caller's limit; the deep pool must be "
+        "cut back inside _execute, before verify-on-read"
+    )

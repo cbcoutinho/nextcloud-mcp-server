@@ -950,22 +950,29 @@ async def vector_search(request: Request) -> JSONResponse:
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
                 )
+            # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
+            # _search_with_acl, and after the per-doc_type merge so one pass
+            # covers every type — same ordering as unified_search.
+            nonlocal rerank_outcome
+            if rerank:
+                results, rerank_outcome = await rerank_results(
+                    results, query, settings=settings, surface="http_viz"
+                )
+                results = sorted(results, key=_rerank_sort_key, reverse=True)
+                # Cut the deep pool back BEFORE this returns into verify-on-read.
+                # The pool exists for the reranker, not for verification, which
+                # costs one Nextcloud round-trip per candidate — leaving 200 rows
+                # here would turn enabling rerank into an order-of-magnitude load
+                # increase for provisioned callers. This endpoint has no offset
+                # or pagination, so the caller's `limit` IS the budget.
+                #
+                # It is also what keeps the response shape unchanged: all_results
+                # feeds the PCA plot below, so an untrimmed pool would return 200
+                # rows and 200 plotted points to a caller that asked for 10.
+                results = results[:limit]
             return results
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
-
-        if rerank:
-            all_results, rerank_outcome = await rerank_results(
-                all_results, query, settings=settings, surface="http_viz"
-            )
-            all_results = sorted(all_results, key=_rerank_sort_key, reverse=True)
-            # Trim the deep pool back to what the caller asked for. Unlike
-            # /api/v1/search there is no pagination here, and `all_results` also
-            # feeds the PCA plot below — so leaving the pool in place would
-            # return 200 rows and 200 plotted points to a caller that asked for
-            # 10. Reranking must change the ORDER of the response and nothing
-            # else about its shape.
-            all_results = all_results[:limit]
 
         # Format results for PHP client
         formatted_results = []
