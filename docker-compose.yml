@@ -410,38 +410,6 @@ services:
     profiles:
       - login-flow
 
-  # Tailscale Funnel for Claude AI connector testing
-  # Usage: docker compose --profile login-flow --profile claude-funnel up --build -d
-  # Requires: TS_AUTHKEY in .env file (see env.sample.claude-funnel)
-  tailscale-mcp:
-    image: docker.io/tailscale/tailscale:v1.98.10@sha256:cdf5612ded5be1344f1a704b8c5e53496db97376bb533e5e15f141e48bf60cc0
-    hostname: nextcloud-mcp-dev
-    restart: always
-    environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_SERVE_CONFIG=/config/serve-config.json
-      - TS_HOSTNAME=nextcloud-mcp-dev
-      - TS_EXTRA_ARGS=--advertise-tags=tag:container
-    volumes:
-      - tailscale-state:/var/lib/tailscale
-      - ./claude-funnel/serve-config.json:/config/serve-config.json:ro
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    profiles:
-      - claude-funnel
-
-  nginx-claude-filter:
-    image: docker.io/library/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
-    restart: always
-    depends_on:
-      - mcp-login-flow
-    volumes:
-      - ./claude-funnel/nginx.conf:/etc/nginx/nginx.conf:ro
-    profiles:
-      - claude-funnel
-
   qdrant:
     image: docker.io/qdrant/qdrant:v1.18.3@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286
     restart: always
@@ -561,4 +529,3 @@ volumes:
   qdrant-data:
   mcp-data:
   multi-user-basic-data:
-  tailscale-state:
