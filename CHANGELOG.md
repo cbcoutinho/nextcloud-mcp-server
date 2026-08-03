@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.164.0 (2026-08-03)
+
+### Feat
+
+- **search**: accept rerank on /api/v1/vector-viz/search
+
+### Fix
+
+- **search**: rerank before verify-on-read on the visualization endpoint
+- **search**: keep the rerank capability gate in its original position
+
 ## v0.163.0 (2026-08-03)
 
 ### Feat
