@@ -135,6 +135,17 @@ def test_rerank_on_unconfigured_server_returns_422():
     rerank_mock.assert_not_awaited()
 
 
+def test_a_missing_query_wins_over_the_rerank_capability_gate():
+    """Same validation order as /api/v1/search: the capability gate runs after
+    the query check, so a request failing both reports the query problem. Pinned
+    on both endpoints because the shared helper is what makes them agree."""
+    resp, _, rerank_mock = _post({"query": "", "rerank": True}, rerank_enabled=False)
+
+    assert resp.status_code == 400
+    assert "query" in resp.json()["error"].lower()
+    rerank_mock.assert_not_awaited()
+
+
 def test_rerank_deepens_the_candidate_pool():
     spy = AsyncMock(return_value=[])
     resp, _, _ = _post({"query": "q", "limit": 10, "rerank": True}, search_spy=spy)

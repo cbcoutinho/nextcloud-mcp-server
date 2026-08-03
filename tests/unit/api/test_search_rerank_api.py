@@ -128,6 +128,48 @@ def test_rerank_on_unconfigured_server_returns_422():
     rerank_mock.assert_not_awaited()
 
 
+def test_an_empty_query_wins_over_the_rerank_capability_gate():
+    """Validation ORDER is part of the contract, not an accident.
+
+    The capability gate deliberately runs after the empty-query short-circuit,
+    so a request that fails both reports what it always reported. Extracting the
+    rerank checks into a shared helper moved the 422 ahead of this check once;
+    this pins it so the next refactor cannot repeat that silently.
+    """
+    resp, _, rerank_mock = _post({"query": "", "rerank": True}, rerank_enabled=False)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"results": [], "total_found": 0}
+    rerank_mock.assert_not_awaited()
+
+
+def test_a_malformed_rerank_flag_is_rejected_even_for_an_empty_query():
+    """The other half of the split: the SHAPE check stays early, with the rest
+    of the body parsing, so a malformed flag is reported as malformed rather
+    than being masked by the empty-query short-circuit."""
+    resp, _, _ = _post({"query": "", "rerank": "yes"})
+
+    assert resp.status_code == 400
+    assert "Invalid rerank" in resp.json()["error"]
+
+
+def test_an_unsupported_algorithm_wins_over_the_rerank_capability_gate():
+    """Both are 422s, so the one a caller sees decides what they fix first.
+    Algorithm support is resolved before the reranker is considered."""
+    resp, _, _ = _post(
+        {
+            "query": "q",
+            "algorithm": "semantic",
+            "granularity": "document",
+            "rerank": True,
+        },
+        rerank_enabled=False,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "granularity_unsupported_for_algorithm"
+
+
 def test_rerank_deepens_the_candidate_pool():
     """Reranking can only reorder what retrieval supplied, so the pool — not the
     caller's limit — bounds how much it can improve."""

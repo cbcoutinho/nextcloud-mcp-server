@@ -114,25 +114,25 @@ def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
     )
 
 
-def _parse_rerank(
-    body: dict[str, Any], settings: Settings
-) -> tuple[bool, JSONResponse | None]:
-    """Read + gate the optional ``rerank`` request flag.
+def _parse_rerank(body: dict[str, Any]) -> tuple[bool, JSONResponse | None]:
+    """Read the optional ``rerank`` request flag (shape only).
 
     Returns ``(rerank, error_response)``; the caller returns the response when it
-    is not None. Shared by both search endpoints so the flag means the same thing
-    and fails the same way on each.
+    is not None.
 
-    Two distinct rejections, deliberately different codes:
+    A non-boolean is a **400** — malformed. Coerced truthiness would let
+    ``"false"`` turn reranking ON, and a caller that asked for reranked ordering
+    and silently got retrieval ordering cannot tell that apart from a ranking
+    regression.
 
-    * a non-boolean is a **400** — malformed. Coerced truthiness would let
-      ``"false"`` turn reranking ON, and a caller that asked for reranked
-      ordering and silently got retrieval ordering cannot tell that apart from a
-      ranking regression.
-    * asking on a deployment without a reranker configured is a **422** — the
-      request is well-formed, this server just cannot serve it. Callers discover
-      the capability from ``rerank_available`` on ``GET /api/v1/status`` rather
-      than probing for the error.
+    Deliberately SEPARATE from :func:`_rerank_capability_error`, which the caller
+    invokes later. The two checks are not interchangeable in position: this one
+    validates the request body alongside the other body parsing, while the
+    capability gate belongs after the query and algorithm checks so that a
+    request failing several validations reports the same error it always did.
+    Folding them into one call moved the 422 ahead of the empty-query
+    short-circuit and changed which error an empty query + unconfigured rerank
+    returns. Pinned by ``test_search_rerank_api.py`` precedence tests.
     """
     rerank = body.get("rerank", False)
     if not isinstance(rerank, bool):
@@ -140,8 +140,21 @@ def _parse_rerank(
             {"error": f"Invalid rerank {rerank!r}. Must be a boolean"},
             status_code=400,
         )
+    return rerank, None
+
+
+def _rerank_capability_error(rerank: bool, settings: Settings) -> JSONResponse | None:
+    """422 when reranking was asked for on a deployment that cannot serve it.
+
+    A **422** rather than 400: the request is well-formed, this server just
+    cannot serve it. Callers discover the capability from ``rerank_available``
+    on ``GET /api/v1/status`` rather than probing for the error.
+
+    Call this AFTER the empty-query and algorithm/granularity checks — see
+    :func:`_parse_rerank` for why the position is load-bearing.
+    """
     if rerank and not rerank_available(settings):
-        return False, JSONResponse(
+        return JSONResponse(
             {
                 "error": "rerank_not_configured",
                 "message": (
@@ -151,7 +164,7 @@ def _parse_rerank(
             },
             status_code=422,
         )
-    return rerank, None
+    return None
 
 
 def _reranked_label(rerank: bool, outcome: str) -> str:
@@ -436,11 +449,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 },
                 status_code=400,
             )
-        # Optional cross-encoder rerank. Parsed and capability-gated by the
-        # shared helper, for the same reason as granularity: a caller that asked
-        # for reranked ordering and silently got retrieval ordering cannot tell
-        # the difference from a ranking regression.
-        rerank, rerank_error = _parse_rerank(body, settings)
+        # Optional cross-encoder rerank. Shape checked here with the rest of the
+        # body, for the same reason as granularity: a caller that asked for
+        # reranked ordering and silently got retrieval ordering cannot tell the
+        # difference from a ranking regression. The CAPABILITY gate runs later —
+        # see _rerank_capability_error.
+        rerank, rerank_error = _parse_rerank(body)
         if rerank_error is not None:
             return rerank_error
         include_pca = body.get("include_pca", False)
@@ -492,6 +506,14 @@ async def unified_search(request: Request) -> JSONResponse:
                 },
                 status_code=422,
             )
+
+        # Capability gate, in the position it has always occupied: after the
+        # empty-query short-circuit and the algorithm/granularity check, so a
+        # request that fails several validations at once reports the same error
+        # it reported before the shared helper existed.
+        rerank_error = _rerank_capability_error(rerank, settings)
+        if rerank_error is not None:
+            return rerank_error
 
         # Request extra results to handle offset
         search_limit = limit + offset
@@ -803,10 +825,13 @@ async def vector_search(request: Request) -> JSONResponse:
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
         # Optional cross-encoder rerank, same flag and same gating as
-        # /api/v1/search. This surface is the one Astrolabe's search page calls,
-        # so without it the reranked ordering — and any signal derived from it —
-        # is unreachable from the UI no matter what the server can serve.
-        rerank, rerank_error = _parse_rerank(body, settings)
+        # /api/v1/search — including the split between the shape check here and
+        # the capability gate after the algorithm build, so the two endpoints
+        # order their validations identically. This surface is the one
+        # Astrolabe's search page calls, so without it the reranked ordering —
+        # and any signal derived from it — is unreachable from the UI no matter
+        # what the server can serve.
+        rerank, rerank_error = _parse_rerank(body)
         if rerank_error is not None:
             return rerank_error
         # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
@@ -863,12 +888,22 @@ async def vector_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
+        # Capability gate after the query and algorithm checks, matching
+        # /api/v1/search so an unsupported algorithm still wins over an
+        # unconfigured reranker on both endpoints.
+        rerank_error = _rerank_capability_error(rerank, settings)
+        if rerank_error is not None:
+            return rerank_error
+
         rerank_outcome = RERANK_SKIPPED
         # Reranking can only reorder what retrieval supplied, so it needs a
         # deeper candidate pool than the caller's limit. This endpoint always
         # searches chunks (grouped=False) and has no offset, so the floor is
         # simply `limit` — which is also what it retrieves when rerank is off,
-        # leaving that path byte-identical to before.
+        # leaving that path byte-identical to before. NB with several
+        # `doc_types` this depth is fetched PER TYPE before the merge, so
+        # retrieval cost scales with len(doc_types) — the same shape as
+        # unified_search's own doc_types loop.
         retrieval_limit = (
             effective_pool_size(settings, floor=limit, grouped=False)
             if rerank
