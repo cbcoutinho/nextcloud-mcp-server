@@ -201,6 +201,20 @@ oauth_refresh_token_operations_total = Counter(
     ],  # operation: store | retrieve | delete; status: success | error
 )
 
+oauth_grants_total = Counter(
+    "mcp_oauth_grants_total",
+    "OAuth grants processed by the AS proxy token endpoint. `refresh_token` "
+    "records whether the grant produced one — a client that never receives a "
+    "refresh token must re-run the full authorization flow, which is a "
+    "user-visible re-login, so `grant_type=authorization_code` repeating for "
+    "one client is the signature of the disconnect being investigated.",
+    # grant_type: authorization_code | refresh_token | unsupported
+    # result: success | error
+    # refresh_token: issued | absent | unknown (unknown = the grant failed, so
+    #   there was no response to inspect)
+    ["grant_type", "result", "refresh_token"],
+)
+
 # =============================================================================
 # Vector Sync Metrics (optional feature)
 # =============================================================================
@@ -1312,6 +1326,32 @@ def record_oauth_token_validation(
         result=result,
         reason=reason,
         client_id=_bounded_label(_client_label(client_id), _seen_client_ids),
+    ).inc()
+
+
+def record_oauth_grant(
+    grant_type: str, result: str, refresh_token: str = "unknown"
+) -> None:
+    """Record a grant processed by the AS proxy token endpoint.
+
+    The label vocabulary is enumerated once, on the ``oauth_grants_total``
+    definition above; this docstring does not repeat it.
+
+    ``client_id`` is deliberately NOT a label here. It would be the natural
+    fourth dimension, but the grant counters are already multiplied by
+    grant_type x result x refresh_token, and the per-client attribution is
+    available on ``oauth_token_validations_total``. The log line emitted
+    alongside each of these carries the client_id when it is needed.
+
+    Args:
+        grant_type: Which grant the client asked for.
+        result: Whether the AS proxy could satisfy it.
+        refresh_token: Whether the resulting token response carried a refresh
+            token. "unknown" when the grant failed and there was no response
+            to inspect.
+    """
+    oauth_grants_total.labels(
+        grant_type=grant_type, result=result, refresh_token=refresh_token
     ).inc()
 
 

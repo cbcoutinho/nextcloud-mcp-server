@@ -20,6 +20,7 @@ Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
 """
 
 import hashlib
+import json
 import logging
 import secrets
 import time
@@ -41,6 +42,7 @@ from nextcloud_mcp_server.auth.token_utils import (
     verify_id_token,
 )
 from nextcloud_mcp_server.config import cfg, get_settings
+from nextcloud_mcp_server.observability.metrics import record_oauth_grant
 
 from ..http import nextcloud_httpx_client
 
@@ -108,6 +110,93 @@ _as_proxy_sessions: dict[str, ASProxySession] = {}
 _dcr_rate_limit: dict[str, list[float]] = {}
 _DCR_RATE_LIMIT_MAX = 10  # max requests
 _DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+
+# Fields that carry a credential and must never reach a log sink verbatim.
+# Anything not listed here is logged as-is, which is the point: `scope`,
+# `expires_in`, `token_type` and `error` are exactly the fields that answer
+# "did the IdP issue a refresh token, and for how long".
+_SECRET_FIELDS = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "code",
+        "code_verifier",
+        "client_secret",
+        "authorization",
+        "password",
+    }
+)
+
+
+def _redact_form(form: Any) -> dict[str, Any]:
+    """Redact a submitted form body, preserving repeated keys.
+
+    ``dict(FormData)`` keeps only the last value for a repeated key. A token
+    request has no legitimate reason to repeat one, so a request that does is
+    either a broken client or parameter pollution — exactly the case where the
+    log must not quietly show a single value as though it were the only one
+    sent. Repeated keys are logged as a list; the common single-value case
+    still reads as a plain scalar.
+    """
+    grouped: dict[str, list[Any]] = {}
+    for key, value in form.multi_items():
+        grouped.setdefault(key, []).append(value)
+    redacted = {
+        key: [_redact({key: value})[key] for value in values]
+        for key, values in grouped.items()
+    }
+    return {key: v[0] if len(v) == 1 else v for key, v in redacted.items()}
+
+
+def _redact_error_body(text: str) -> dict[str, Any] | str:
+    """Redact a non-200 token-endpoint body before logging.
+
+    An OAuth error body is normally ``{"error": ..., "error_description": ...}``
+    and harmless, but it arrives from an external IdP and its shape is not
+    guaranteed — parse and fingerprint rather than trusting it.
+    """
+    try:
+        return _redact(json.loads(text))
+    except (ValueError, TypeError):
+        return f"<unparseable len={len(text)}>"
+
+
+def _fingerprint(value: str) -> str:
+    """Stable, non-reversible tag for a secret, for correlating log lines.
+
+    Truncated SHA-256 so the *same* token can be followed across hops — "the
+    refresh_token Nextcloud issued is the one we handed to the client is the
+    one that came back" — without the credential itself ever being written
+    down. 32 bits is ample to correlate and useless for reversing a
+    high-entropy OAuth artifact, which every member of ``_SECRET_FIELDS`` is.
+    Deliberately unsalted: a per-process salt would break correlation across
+    the restarts this instrumentation exists to see through.
+    """
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
+def _redact(data: Any) -> dict[str, Any]:
+    """Copy a token request/response with credential fields fingerprinted.
+
+    Returns a plain dict safe to hand to ``logger``. Non-secret fields pass
+    through untouched; secret fields become ``<len=N sha256=xxxxxxxx>``. A
+    secret field that is present but empty becomes ``<empty>`` — distinct from
+    being absent, which shows up as the key simply not appearing.
+    """
+    if not isinstance(data, dict):
+        return {"<non-dict response>": type(data).__name__}
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if key.lower() not in _SECRET_FIELDS:
+            out[key] = value
+        elif value:
+            text = str(value)
+            out[key] = f"<len={len(text)} sha256={_fingerprint(text)}>"
+        else:
+            out[key] = "<empty>"
+    return out
 
 
 # OIDC standard scopes that must never be prefixed with a resource server identifier.
@@ -939,12 +1028,16 @@ async def _oauth_callback_as_proxy(
         "client_secret": mcp_server_client_secret,
     }
 
+    logger.info("AS proxy: exchanging code with IdP: %s", _redact(token_params))
+
     async with nextcloud_httpx_client() as http_client:
         response = await http_client.post(token_endpoint, data=token_params)
 
     if response.status_code != 200:
         logger.error(
-            "AS proxy token exchange failed: %s %s", response.status_code, response.text
+            "AS proxy token exchange failed: %s %s",
+            response.status_code,
+            _redact_error_body(response.text),
         )
         params = urlencode(
             {
@@ -959,9 +1052,27 @@ async def _oauth_callback_as_proxy(
 
     nc_token_response = response.json()
 
+    # The question this instrumentation exists to answer. Without a
+    # refresh_token the client has to re-run the entire authorization flow
+    # every time the access token expires, which the user experiences as being
+    # logged out. `scope` is logged alongside because a missing refresh_token
+    # is usually a missing `offline_access` on whichever client the IdP
+    # actually applied — and that is this server's own confidential client
+    # here, not the client-facing one.
+    #
+    # The named fields duplicate values that `fields=` also carries. That is
+    # deliberate: the named ones are stable strings to alert and group on
+    # (`|= "refresh_token=ABSENT"`), while `fields=` preserves whatever else
+    # the IdP sent, which is what you actually need when the named three do
+    # not explain the behaviour. Same pattern on the two sibling log lines.
     logger.info(
-        "AS proxy: Successfully exchanged code for Nextcloud token (token_type=%s)",
+        "AS proxy: IdP token response: refresh_token=%s scope=%s expires_in=%s "
+        "token_type=%s fields=%s",
+        "issued" if nc_token_response.get("refresh_token") else "ABSENT",
+        nc_token_response.get("scope"),
+        nc_token_response.get("expires_in"),
         nc_token_response.get("token_type"),
+        _redact(nc_token_response),
     )
 
     # Verify the ID token signature + claims before caching the response
@@ -1060,11 +1171,22 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     form = await request.form()
     grant_type = form.get("grant_type")
 
+    # The whole request, credentials fingerprinted. "Why is this client
+    # re-authorizing instead of refreshing" is unanswerable without knowing
+    # which grant it actually asked for, and nothing recorded that before.
+    logger.info(
+        "AS proxy token request: grant_type=%s params=%s",
+        grant_type,
+        _redact_form(form),
+    )
+
     if grant_type == "authorization_code":
-        return await _token_authorization_code(request, form)
+        handler = _token_authorization_code
     elif grant_type == "refresh_token":
-        return await _token_refresh(request, form)
+        handler = _token_refresh
     else:
+        logger.warning("AS proxy token: unsupported grant_type=%s", grant_type)
+        record_oauth_grant("unsupported", "error")
         return JSONResponse(
             {
                 "error": "unsupported_grant_type",
@@ -1072,6 +1194,42 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
             },
             status_code=400,
         )
+
+    # Failures are counted here rather than at each `return JSONResponse(...)`
+    # inside the handlers. Between them the two handlers have fifteen error
+    # exits — expired/replayed proxy code, client_id mismatch, redirect_uri
+    # mismatch, PKCE failure, unconfigured credentials, IdP HTTP failure — and
+    # instrumenting them individually means a future early-return silently
+    # escapes the counter. This is the single choke point every one of them
+    # passes through.
+    #
+    # A raised exception is a failed grant too, and it is the failure most
+    # worth seeing: `get_oidc_discovery` and the IdP POST do real network I/O,
+    # and `response.json()` parses a body we do not control, so an IdP that is
+    # timing out or returning garbage propagates out of here rather than
+    # returning a non-200. Counting only returned responses would let exactly
+    # that outage vanish from the metric — the same silent gap this
+    # instrumentation exists to close. Count, then re-raise so the ASGI layer
+    # still produces its 500.
+    #
+    # `Exception`, not `BaseException`: anyio cancellation during shutdown is
+    # not a failed grant and must stay uncounted. `grant_type` is one of the
+    # two known literals by this point, so no client-controlled string can
+    # reach the label.
+    #
+    # Success is recorded inside the handlers instead, because only they can
+    # see whether the token response carried a refresh_token; they return 200
+    # exclusively on that path, so nothing is double-counted here.
+    try:
+        response = await handler(request, form)
+    except Exception:
+        record_oauth_grant(grant_type, "error")
+        raise
+
+    if response.status_code != 200:
+        record_oauth_grant(grant_type, "error")
+
+    return response
 
 
 async def _token_authorization_code(request: Request, form) -> JSONResponse:
@@ -1208,8 +1366,18 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
             status_code=400,
         )
 
+    has_refresh = bool(entry.nc_token_response.get("refresh_token"))
     logger.info(
-        "AS proxy token: Returning Nextcloud token for client %s", entry.client_id
+        "AS proxy token: returning IdP token to client %s: refresh_token=%s "
+        "scope=%s expires_in=%s fields=%s",
+        entry.client_id,
+        "issued" if has_refresh else "ABSENT",
+        entry.nc_token_response.get("scope"),
+        entry.nc_token_response.get("expires_in"),
+        _redact(entry.nc_token_response),
+    )
+    record_oauth_grant(
+        "authorization_code", "success", "issued" if has_refresh else "absent"
     )
 
     # Return the stored Nextcloud token response directly
@@ -1280,13 +1448,18 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
         "resource": f"{mcp_server_url}/mcp",
     }
 
+    logger.info("AS proxy refresh: proxying to IdP: %s", _redact(token_params))
+
     async with nextcloud_httpx_client() as http_client:
         response = await http_client.post(token_endpoint, data=token_params)
 
     if response.status_code != 200:
         logger.error(
-            "AS proxy token refresh failed: %s %s", response.status_code, response.text
+            "AS proxy token refresh failed: %s %s",
+            response.status_code,
+            _redact_error_body(response.text),
         )
+        # Counted by oauth_token_endpoint, which sees every failure exit.
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -1295,7 +1468,25 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             status_code=response.status_code,
         )
 
-    return JSONResponse(response.json())
+    refreshed = response.json()
+    # An absent refresh_token here is not necessarily a fault: an IdP that does
+    # not rotate refresh tokens returns only a new access token, and the
+    # client keeps using the one it already holds. Absent on the
+    # authorization_code grant above is the broken case; absent here is
+    # merely a fact worth recording.
+    has_refresh = bool(refreshed.get("refresh_token"))
+    logger.info(
+        "AS proxy refresh: succeeded: refresh_token=%s scope=%s expires_in=%s fields=%s",
+        "rotated" if has_refresh else "not-rotated",
+        refreshed.get("scope"),
+        refreshed.get("expires_in"),
+        _redact(refreshed),
+    )
+    record_oauth_grant(
+        "refresh_token", "success", "issued" if has_refresh else "absent"
+    )
+
+    return JSONResponse(refreshed)
 
 
 async def oauth_register_proxy(request: Request) -> JSONResponse:
@@ -1417,7 +1608,9 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
         logger.error(
             "DCR proxy: Upstream registration failed: %s %s",
             response.status_code,
-            response.text,
+            # A DCR response is the one other place an IdP body can carry a
+            # `client_secret`, so it gets the same treatment as the token paths.
+            _redact_error_body(response.text),
         )
         return JSONResponse(
             response.json()
