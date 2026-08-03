@@ -55,14 +55,9 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_with_context,
 )
 from nextcloud_mcp_server.search.relevance import (
-<<<<<<< HEAD
     RELEVANCE_ORDINAL,
-    relevance_fit_base_rate,
-||||||| parent of 1d280ec0 (feat(search): min_relevance, a filter on the number the caller was shown)
-from nextcloud_mcp_server.search.relevance import relevance_for
-=======
     filter_by_relevance,
->>>>>>> 1d280ec0 (feat(search): min_relevance, a filter on the number the caller was shown)
+    relevance_fit_base_rate,
     relevance_for,
 )
 from nextcloud_mcp_server.search.rerank import (
@@ -433,15 +428,18 @@ async def unified_search(request: Request) -> JSONResponse:
             # No upper bound: hybrid DBSF fusion can exceed 1.0, so a le=1.0 cap
             # would 400 a legitimate threshold — mirrors the round-1
             # Field(ge=0.0) fix on the nc_semantic_search tool.
-            min_relevance = _parse_float_param(
-                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
-            )
             score_threshold = _parse_float_param(
                 body.get("score_threshold"),
                 0.0,
                 0.0,
                 float("inf"),
                 "score_threshold",
+            )
+            # Bounded, unlike score_threshold above: `relevance` is a mapped
+            # [0, 1] value by construction, so anything outside that range is a
+            # caller mistake rather than a legitimate threshold.
+            min_relevance = _parse_float_param(
+                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
             )
 
             # ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601

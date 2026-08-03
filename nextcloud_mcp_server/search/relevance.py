@@ -61,6 +61,8 @@ percentage.
 import math
 from dataclasses import dataclass
 
+from nextcloud_mcp_server.search.algorithms import SearchResult
+
 # Source labels. Public: they appear in API responses and MCP tool output, so a
 # client can decide whether it may render the value as a percentage.
 RELEVANCE_CALIBRATED = "cross_encoder_calibrated"
@@ -191,13 +193,13 @@ def relevance_for(
 
 
 def filter_by_relevance(
-    results: list,
+    results: list[SearchResult],
     *,
     min_relevance: float,
     fusion: str,
     algorithm: str,
     rerank_model: str | None,
-) -> list:
+) -> list[SearchResult]:
     """Drop results whose mapped relevance falls below ``min_relevance``.
 
     The counterpart to ``score_threshold``, and deliberately a different
