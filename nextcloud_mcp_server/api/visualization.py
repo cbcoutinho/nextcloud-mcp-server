@@ -54,7 +54,11 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
-from nextcloud_mcp_server.search.relevance import relevance_for
+from nextcloud_mcp_server.search.relevance import (
+    RELEVANCE_ORDINAL,
+    relevance_fit_base_rate,
+    relevance_for,
+)
 from nextcloud_mcp_server.search.rerank import (
     RERANK_APPLIED,
     RERANK_DEGRADED,
@@ -212,26 +216,42 @@ def _build_search_algorithm(
     *,
     score_threshold: float,
     fusion: str,
-) -> tuple[SearchAlgorithm, str]:
+) -> tuple[SearchAlgorithm, str, str]:
     """Resolve + instantiate the search algorithm for a request.
 
     Shared by both search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`)
     so their selection logic can't drift. Raises :class:`UnsupportedSearchType`
     for an *explicit* unsupported algorithm (the caller maps it to a 422 via
     :func:`_unsupported_search_type_response`); an absent algorithm defaults
-    gracefully. Invalid fusion is normalized to ``"rrf"``. Returns the
-    ``(algorithm instance, resolved algorithm name)``.
+    gracefully. Returns ``(algorithm instance, resolved algorithm name,
+    normalized fusion)``.
+
+    **The normalized fusion is returned, not just used internally.** It used to
+    be a local, so callers kept passing the raw request value to everything
+    downstream — metrics, usage, and the relevance mapping — while retrieval ran
+    on the normalized one. That let ``{"fusion": null}`` (``.get`` returns None
+    when the key is present) or any typo produce a correct search whose response
+    reported ``relevance`` from the *uncalibrated* branch: the raw ~0.03 RRF
+    score, i.e. the exact "3%" bug ADR-034 exists to remove, reachable through a
+    malformed-but-plausible body. Callers must use the returned value.
     """
     algorithm = select_search_algorithm(requested_algorithm, settings)
+    # Normalize before the branch so every caller gets a usable value, including
+    # the dense-only path where fusion is moot but still reaches metric labels.
+    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
     if algorithm == "semantic":
-        return SemanticSearchAlgorithm(score_threshold=score_threshold), algorithm
+        return (
+            SemanticSearchAlgorithm(score_threshold=score_threshold),
+            algorithm,
+            fusion,
+        )
     # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it fuses dense
     # semantic + sparse BM25; keyword-only documents contribute via the sparse
     # side of the same query.
-    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
     return (
         BM25HybridSearchAlgorithm(score_threshold=score_threshold, fusion=fusion),
         algorithm,
+        fusion,
     )
 
 
@@ -482,7 +502,7 @@ async def unified_search(request: Request) -> JSONResponse:
         # correct it rather than silently receive fallback results. An absent
         # algorithm still defaults gracefully.
         try:
-            search_algo, algorithm = _build_search_algorithm(
+            search_algo, algorithm, fusion = _build_search_algorithm(
                 requested_algorithm,
                 settings,
                 score_threshold=score_threshold,
@@ -712,6 +732,12 @@ async def unified_search(request: Request) -> JSONResponse:
             "total_found": total_found,
             "algorithm_used": algorithm,
             "granularity": granularity,
+            # The prevalence the relevance curves were fitted at (ADR-034).
+            # Shipped WITH the number rather than left to documentation: a
+            # corpus whose relevant-document rate differs from this biases
+            # the value in a direction a caller can only reason about if it
+            # knows the fit point. Ordering is unaffected either way.
+            "relevance_fit_base_rate": relevance_fit_base_rate(RELEVANCE_ORDINAL),
             # False both when not requested and when requested-but-degraded, so
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,
@@ -893,7 +919,7 @@ async def vector_search(request: Request) -> JSONResponse:
         # correct it rather than silently receive fallback results. An absent
         # algorithm still defaults gracefully.
         try:
-            search_algo, algorithm = _build_search_algorithm(
+            search_algo, algorithm, fusion = _build_search_algorithm(
                 requested_algorithm,
                 settings,
                 score_threshold=score_threshold,
@@ -1035,6 +1061,8 @@ async def vector_search(request: Request) -> JSONResponse:
             "results": formatted_results,
             "algorithm_used": algorithm,
             "total_documents": len(formatted_results),
+            # See the sibling endpoint: the fit prevalence ships with the value.
+            "relevance_fit_base_rate": relevance_fit_base_rate(RELEVANCE_ORDINAL),
             # False both when not requested and when requested-but-degraded, so
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,

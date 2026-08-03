@@ -100,13 +100,13 @@ def test_monotone_in_the_cross_encoder_score():
     gets the same order."""
     values = [_rel(rerank_score=s)[0] for s in (0.0, 0.05, 0.2, 0.5, 0.9)]
 
-    assert values == sorted(values)
+    assert all(a <= b for a, b in zip(values, values[1:]))
 
 
 def test_monotone_in_the_fused_score():
     values = [_rel(score=s)[0] for s in (0.0, 0.008, 0.017, 0.025, 0.033)]
 
-    assert values == sorted(values)
+    assert all(a <= b for a, b in zip(values, values[1:]))
 
 
 # --- source selection ---------------------------------------------------------
@@ -125,7 +125,7 @@ def test_the_gateway_provider_prefix_resolves_to_the_same_curve():
     bare, bare_src = _rel(rerank_score=0.42, rerank_model=_M3)
     prefixed, prefixed_src = _rel(rerank_score=0.42, rerank_model=f"local/{_M3}")
 
-    assert bare == prefixed
+    assert bare == pytest.approx(prefixed)
     assert bare_src == prefixed_src == RELEVANCE_CALIBRATED
 
 
