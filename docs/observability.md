@@ -173,17 +173,20 @@ sum by (grant_type) (count_over_time(
     |= "AS proxy token request" | logfmt [1h]))
 ```
 
-Follow one refresh token from issuance to reuse — same `sha256=` on both lines:
+Follow one refresh token across every hop it appears on — same `sha256=`
+on each:
 
 ```logql
 {namespace="<tenant>", container="nextcloud-mcp-server"}
-  |~ "AS proxy(: IdP token response| refresh)" |= "sha256=<fingerprint>"
+  |= "AS proxy" |= "sha256=<fingerprint>"
 ```
 
-The space belongs *inside* the second alternative: the log lines are
-`AS proxy: IdP token response` (no space before the colon) and
-`AS proxy refresh: succeeded`. Hoisting the space out of the group silently
-matches only the refresh side — half of the correlation you asked for.
+The fingerprint is the selective filter here, so don't narrow further by
+message text. One token shows up on **four** lines — the IdP's response, what
+was handed to the client, the client's next refresh request, and the refreshed
+response — and every one of them begins `AS proxy`. Enumerating a couple of
+those prefixes in a regex is how you end up following half a token's life and
+concluding it was never reused.
 
 ### Vector Sync Metrics (when enabled)
 
