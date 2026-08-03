@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.163.0 (2026-08-03)
+
+### Feat
+
+- **auth**: record token-endpoint grants with credentials fingerprinted
+
+### Fix
+
+- **auth**: count grants that fail by raising, not just by returning
+- **auth**: log repeated form keys instead of silently dropping them
+- **auth**: count every grant failure, not just IdP-side ones
+
 ## v0.162.1 (2026-08-03)
 
 ### Fix
