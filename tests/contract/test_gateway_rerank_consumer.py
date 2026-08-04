@@ -25,7 +25,7 @@ from nextcloud_mcp_server.providers.gateway_rerank import GatewayRerankClient
 
 pytestmark = pytest.mark.contract
 
-_MODEL = "BAAI/bge-reranker-v2-m3"
+_MODEL = "local/BAAI/bge-reranker-v2-m3"
 _QUERY = "who signed in at reception"
 _DOCS = [
     "Quarterly revenue increased by twelve percent year over year.",
