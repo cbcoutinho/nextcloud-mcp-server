@@ -39,6 +39,10 @@ from nextcloud_mcp_server.search.bm25_hybrid import (
     search_method_label,
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.relevance import (
+    filter_by_relevance,
+    relevance_for,
+)
 from nextcloud_mcp_server.search.rerank import (
     RERANK_APPLIED,
     RERANK_DEGRADED,
@@ -101,6 +105,27 @@ def configure_semantic_tools(mcp: FastMCP):
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
         doc_types: list[str] | None = None,
         score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
+        min_relevance: Annotated[
+            float,
+            Field(
+                ge=0.0,
+                le=1.0,
+                description=(
+                    "Drop results whose `relevance` falls below this. Unlike "
+                    "`score_threshold` — which Qdrant applies to the raw "
+                    "retrieval score BEFORE deduplication, reranking and "
+                    "access verification, and which is therefore a recall cut "
+                    "that can remove the row reranking would have promoted to "
+                    "the top — this filters at the end, on the same [0,1] "
+                    "number reported on each result. Use it to ask for 'only "
+                    "results at least this relevant'. 0.0 (default) filters "
+                    "nothing. Note that relevance is relative to what was "
+                    "retrieved: search cannot abstain, so raising this is how "
+                    "you get an empty answer for a query the corpus has no "
+                    "answer to."
+                ),
+            ),
+        ] = 0.0,
         fusion: str = "rrf",
         granularity: Annotated[
             Literal["chunk", "document"],
@@ -609,6 +634,18 @@ def configure_semantic_tools(mcp: FastMCP):
                         for r in verified_results[:5]
                     ),
                 )
+            # Relevance cut before the trim to `limit`, so a filtered search
+            # still fills the page with qualifying rows rather than returning
+            # whatever survives out of the top `limit`. Distinct from
+            # `score_threshold`, which Qdrant applies to the raw retrieval score
+            # before reranking has had a chance to reorder anything.
+            verified_results = filter_by_relevance(
+                verified_results,
+                min_relevance=min_relevance,
+                fusion=fusion,
+                algorithm="hybrid",
+                rerank_model=settings.search_rerank_model,
+            )
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
@@ -634,12 +671,24 @@ def configure_semantic_tools(mcp: FastMCP):
                         f"the doc_type to the SemanticSearchResult.id type "
                         f"or convert at the verifier layer."
                     ) from e
+                relevance, relevance_source = relevance_for(
+                    rerank_score=r.rerank_score,
+                    score=r.score,
+                    fusion=fusion,
+                    # This tool always runs BM25HybridSearchAlgorithm, so the
+                    # fused-score branch is the right one; it never takes the
+                    # dense-only cosine path.
+                    algorithm="hybrid",
+                    rerank_model=settings.search_rerank_model,
+                )
                 results.append(
                     SemanticSearchResult(
                         id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
                         rerank_score=r.rerank_score,
+                        relevance=relevance,
+                        relevance_source=relevance_source,
                         category=r.metadata.get("category", "") if r.metadata else "",
                         excerpt=r.excerpt,
                         score=r.score,
@@ -729,6 +778,8 @@ def configure_semantic_tools(mcp: FastMCP):
                                     # rerank_score=null. See
                                     # test_semantic_result_field_parity.py.
                                     rerank_score=result.rerank_score,
+                                    relevance=result.relevance,
+                                    relevance_source=result.relevance_source,
                                     chunk_index=result.chunk_index,
                                     total_chunks=result.total_chunks,
                                     chunk_start_offset=result.chunk_start_offset,

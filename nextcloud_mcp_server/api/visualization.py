@@ -54,6 +54,12 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.relevance import (
+    RELEVANCE_ORDINAL,
+    filter_by_relevance,
+    relevance_fit_base_rate,
+    relevance_for,
+)
 from nextcloud_mcp_server.search.rerank import (
     RERANK_APPLIED,
     RERANK_DEGRADED,
@@ -211,26 +217,42 @@ def _build_search_algorithm(
     *,
     score_threshold: float,
     fusion: str,
-) -> tuple[SearchAlgorithm, str]:
+) -> tuple[SearchAlgorithm, str, str]:
     """Resolve + instantiate the search algorithm for a request.
 
     Shared by both search endpoints (`/api/v1/search`, `/api/v1/vector-viz/search`)
     so their selection logic can't drift. Raises :class:`UnsupportedSearchType`
     for an *explicit* unsupported algorithm (the caller maps it to a 422 via
     :func:`_unsupported_search_type_response`); an absent algorithm defaults
-    gracefully. Invalid fusion is normalized to ``"rrf"``. Returns the
-    ``(algorithm instance, resolved algorithm name)``.
+    gracefully. Returns ``(algorithm instance, resolved algorithm name,
+    normalized fusion)``.
+
+    **The normalized fusion is returned, not just used internally.** It used to
+    be a local, so callers kept passing the raw request value to everything
+    downstream — metrics, usage, and the relevance mapping — while retrieval ran
+    on the normalized one. That let ``{"fusion": null}`` (``.get`` returns None
+    when the key is present) or any typo produce a correct search whose response
+    reported ``relevance`` from the *uncalibrated* branch: the raw ~0.03 RRF
+    score, i.e. the exact "3%" bug ADR-034 exists to remove, reachable through a
+    malformed-but-plausible body. Callers must use the returned value.
     """
     algorithm = select_search_algorithm(requested_algorithm, settings)
+    # Normalize before the branch so every caller gets a usable value, including
+    # the dense-only path where fusion is moot but still reaches metric labels.
+    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
     if algorithm == "semantic":
-        return SemanticSearchAlgorithm(score_threshold=score_threshold), algorithm
+        return (
+            SemanticSearchAlgorithm(score_threshold=score_threshold),
+            algorithm,
+            fusion,
+        )
     # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it fuses dense
     # semantic + sparse BM25; keyword-only documents contribute via the sparse
     # side of the same query.
-    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
     return (
         BM25HybridSearchAlgorithm(score_threshold=score_threshold, fusion=fusion),
         algorithm,
+        fusion,
     )
 
 
@@ -413,6 +435,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 float("inf"),
                 "score_threshold",
             )
+            # Bounded, unlike score_threshold above: `relevance` is a mapped
+            # [0, 1] value by construction, so anything outside that range is a
+            # caller mistake rather than a legitimate threshold.
+            min_relevance = _parse_float_param(
+                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
+            )
 
             # ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
             # datetimes or Unix seconds; normalized to int Unix seconds for the
@@ -481,7 +509,7 @@ async def unified_search(request: Request) -> JSONResponse:
         # correct it rather than silently receive fallback results. An absent
         # algorithm still defaults gracefully.
         try:
-            search_algo, algorithm = _build_search_algorithm(
+            search_algo, algorithm, fusion = _build_search_algorithm(
                 requested_algorithm,
                 settings,
                 score_threshold=score_threshold,
@@ -616,6 +644,18 @@ async def unified_search(request: Request) -> JSONResponse:
         # than compared against reranked ones.
         sorted_results = sorted(all_results, key=_rerank_sort_key, reverse=True)
 
+        # Relevance cut, applied BEFORE pagination so a page fills with rows
+        # that qualify rather than returning a short page of whatever survived.
+        # Distinct from score_threshold, which Qdrant applies to the raw
+        # retrieval score before reranking even runs.
+        sorted_results = filter_by_relevance(
+            sorted_results,
+            min_relevance=min_relevance,
+            fusion=fusion,
+            algorithm=algorithm,
+            rerank_model=settings.search_rerank_model,
+        )
+
         # Calculate total and apply pagination.
         #
         # The rerank pool must NOT leak into total_found. Without reranking this
@@ -639,11 +679,24 @@ async def unified_search(request: Request) -> JSONResponse:
             if result.metadata and "note_id" in result.metadata:
                 doc_id = result.metadata["note_id"]
 
+            relevance, relevance_source = relevance_for(
+                rerank_score=result.rerank_score,
+                score=result.score,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
             result_data: dict[str, Any] = {
                 "id": doc_id,
                 "doc_type": result.doc_type,
                 "title": result.title,
                 "score": result.score,
+                # Always present, unlike `score` which is only interpretable if
+                # you know which algorithm and fusion produced it. Read
+                # `relevance_source` before rendering — only the calibrated
+                # source may be shown as a percentage. See ADR-034.
+                "relevance": relevance,
+                "relevance_source": relevance_source,
             }
             # Additive, and only when reranking ran. `score` keeps the retrieval
             # value so `score_threshold` (applied against it inside Qdrant)
@@ -698,6 +751,12 @@ async def unified_search(request: Request) -> JSONResponse:
             "total_found": total_found,
             "algorithm_used": algorithm,
             "granularity": granularity,
+            # The prevalence the relevance curves were fitted at (ADR-034).
+            # Shipped WITH the number rather than left to documentation: a
+            # corpus whose relevant-document rate differs from this biases
+            # the value in a direction a caller can only reason about if it
+            # knows the fit point. Ordering is unaffected either way.
+            "relevance_fit_base_rate": relevance_fit_base_rate(RELEVANCE_ORDINAL),
             # False both when not requested and when requested-but-degraded, so
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,
@@ -822,6 +881,16 @@ async def vector_search(request: Request) -> JSONResponse:
         fusion = body.get("fusion", "rrf")
         score_threshold = body.get("score_threshold", 0.0)
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
+        # Validated rather than read raw: this is a new parameter, so it starts
+        # with the same checking /api/v1/search applies. (The pre-existing
+        # `score_threshold`/`limit` reads above still lack it — tracked
+        # separately rather than widened here.)
+        try:
+            min_relevance = _parse_float_param(
+                body.get("min_relevance"), 0.0, 0.0, 1.0, "min_relevance"
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
         # Optional cross-encoder rerank, same flag and same gating as
@@ -879,7 +948,7 @@ async def vector_search(request: Request) -> JSONResponse:
         # correct it rather than silently receive fallback results. An absent
         # algorithm still defaults gracefully.
         try:
-            search_algo, algorithm = _build_search_algorithm(
+            search_algo, algorithm, fusion = _build_search_algorithm(
                 requested_algorithm,
                 settings,
                 score_threshold=score_threshold,
@@ -959,6 +1028,17 @@ async def vector_search(request: Request) -> JSONResponse:
                     results, query, settings=settings, surface="http_viz"
                 )
                 results = sorted(results, key=_rerank_sort_key, reverse=True)
+            # Relevance cut before the trim, so a filtered request still fills
+            # up to `limit` with qualifying rows instead of returning whatever
+            # is left of the top `limit`. Runs with or without reranking.
+            results = filter_by_relevance(
+                results,
+                min_relevance=min_relevance,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
+            if rerank:
                 # Cut the deep pool back BEFORE this returns into verify-on-read.
                 # The pool exists for the reranker, not for verification, which
                 # costs one Nextcloud round-trip per candidate — leaving 200 rows
@@ -977,12 +1057,24 @@ async def vector_search(request: Request) -> JSONResponse:
         # Format results for PHP client
         formatted_results = []
         for result in all_results:
+            relevance, relevance_source = relevance_for(
+                rerank_score=result.rerank_score,
+                score=result.score,
+                fusion=fusion,
+                algorithm=algorithm,
+                rerank_model=settings.search_rerank_model,
+            )
             formatted_result = {
                 "id": result.id,
                 "doc_type": result.doc_type,
                 "title": result.title,
                 "excerpt": result.excerpt[:200] if result.excerpt else "",
                 "score": result.score,
+                # The number a UI can filter and render honestly; `score` is a
+                # rank artifact whose scale depends on the algorithm. Gate any
+                # percentage rendering on `relevance_source`. See ADR-034.
+                "relevance": relevance,
+                "relevance_source": relevance_source,
                 "metadata": result.metadata,
                 # Chunk information for context display
                 "chunk_index": result.chunk_index,
@@ -1009,6 +1101,8 @@ async def vector_search(request: Request) -> JSONResponse:
             "results": formatted_results,
             "algorithm_used": algorithm,
             "total_documents": len(formatted_results),
+            # See the sibling endpoint: the fit prevalence ships with the value.
+            "relevance_fit_base_rate": relevance_fit_base_rate(RELEVANCE_ORDINAL),
             # False both when not requested and when requested-but-degraded, so
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,

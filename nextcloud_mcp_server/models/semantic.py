@@ -53,6 +53,30 @@ class SemanticSearchResult(BaseModel):
             "the retrieval score, keeps referring to the same quantity."
         ),
     )
+    relevance: float = Field(
+        description=(
+            "Relevance in [0, 1], present on EVERY result so a caller never has "
+            "to branch on which signal produced the ordering. Read "
+            "`relevance_source` before rendering it: only "
+            "`cross_encoder_calibrated` is a probability that may be shown as a "
+            "percentage. `fusion_ordinal` orders results honestly but is NOT a "
+            "probability, and `uncalibrated` means no fitted mapping applied. "
+            "Comparable across queries within one source; a high value means "
+            "'best of what was retrieved', never 'the answer is here' — search "
+            "cannot abstain, so an unanswerable query still returns a top "
+            "result. See ADR-034."
+        )
+    )
+    relevance_source: str = Field(
+        description=(
+            "Which mapping produced `relevance`: `cross_encoder_calibrated` (a "
+            "calibrated probability), `fusion_ordinal` (monotone, not a "
+            "probability), or `uncalibrated` (no fitted curve for this signal — "
+            "e.g. DBSF fusion, dense-only cosine, or a reranker model we ship "
+            "no fit for). Present so a client can decide how much to read into "
+            "the number rather than guessing from its magnitude."
+        )
+    )
     chunk_index: int = Field(description="Index of matching chunk in document")
     total_chunks: int = Field(description="Total number of chunks in document")
     chunk_start_offset: int | None = Field(
