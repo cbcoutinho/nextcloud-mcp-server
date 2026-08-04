@@ -207,10 +207,15 @@ _DEFAULTS: dict[str, Any] = {
     # search, and how expensive that is depends on the gateway's own deployment
     # — which this server deliberately knows nothing about beyond the URL.
     "search_rerank_enabled": False,
-    # Rerank model, addressed the way the configured embedding gateway expects
-    # (typically ``<provider>/<model>``). Any cross-encoder the gateway can
-    # serve works; set this to match your deployment.
-    "search_rerank_model": "BAAI/bge-reranker-v2-m3",
+    # Rerank model, addressed the way the configured embedding gateway expects.
+    # The ``<provider>/`` prefix is REQUIRED, not stylistic: the gateway splits on
+    # the FIRST slash to select a backend, so a bare ``BAAI/bge-reranker-v2-m3``
+    # asks for a provider named ``BAAI`` and 503s — and because a failed rerank
+    # degrades to retrieval order (``reranked: false``) rather than erroring, that
+    # looks like "reranking does nothing" instead of like a misconfiguration.
+    # The prefix is also the backend selector: ``local/`` for a self-hosted
+    # cross-encoder, ``bedrock/`` or ``openrouter/`` for a hosted one.
+    "search_rerank_model": "local/BAAI/bge-reranker-v2-m3",
     # Candidates handed to the reranker. Reranking can only reorder what
     # retrieval supplied, so this depth — not the caller's ``limit`` — bounds
     # how much a reranker can improve. Reranking just the rows a normal search
@@ -1200,7 +1205,7 @@ class Settings:
     # capability gate — a request asking to rerank on a deployment without it
     # configured is rejected rather than silently served unreranked.
     search_rerank_enabled: bool = False
-    search_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    search_rerank_model: str = "local/BAAI/bge-reranker-v2-m3"
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
     search_rerank_max_concurrency: int = 1
