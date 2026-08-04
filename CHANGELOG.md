@@ -5,6 +5,22 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.165.0 (2026-08-04)
+
+### Feat
+
+- **search**: min_relevance, a filter on the number the caller was shown
+- **search**: a [0,1] relevance value on every search result
+
+### Fix
+
+- **search**: clear the Sonar gate, and pin the shared fit base rate
+- **search**: map relevance with the fusion that actually ran
+
+### Refactor
+
+- **search**: type the filter, and stop a comment describing its neighbour
+
 ## v0.164.1 (2026-08-04)
 
 ### Fix
