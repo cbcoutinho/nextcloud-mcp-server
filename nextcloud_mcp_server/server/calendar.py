@@ -116,7 +116,7 @@ def configure_calendar_tools(mcp: FastMCP):
         description: str = "",
         location: str = "",
         categories: str = "",
-        recurring: bool = False,
+        recurring: bool | None = None,
         recurrence_rule: str = "",
         recurrence_end_date: str = "",
         reminder_minutes: int = 15,
@@ -152,8 +152,8 @@ def configure_calendar_tools(mcp: FastMCP):
             location: Event location
             categories: Comma-separated categories (e.g., "work,meeting")
             recurring: Whether this is a recurring event. A non-empty
-                ``recurrence_rule`` already implies recurrence; pass ``False``
-                only to explicitly suppress it.
+                ``recurrence_rule`` already implies recurrence, so leave this
+                unset unless you want to suppress it with ``False``.
             recurrence_rule: RFC5545 RRULE (e.g., "FREQ=WEEKLY;BYDAY=MO,WE,FR")
             recurrence_end_date: Date (or ISO datetime) the series stops
                 recurring, written as the rule's ``UNTIL``. Inclusive: a
@@ -195,7 +195,6 @@ def configure_calendar_tools(mcp: FastMCP):
             "description": description,
             "location": location,
             "categories": categories,
-            "recurring": recurring,
             "recurrence_rule": recurrence_rule,
             "recurrence_end_date": recurrence_end_date,
             "reminder_minutes": reminder_minutes,
@@ -208,6 +207,12 @@ def configure_calendar_tools(mcp: FastMCP):
             "color": color,
             "timezone": timezone,
         }
+        # Only forward ``recurring`` when the caller actually set it. Sending the
+        # default would pin it to False on every call, which is what made
+        # recurrence_rule a no-op here — the client reads a present-but-False
+        # flag as an explicit opt-out.
+        if recurring is not None:
+            event_data["recurring"] = recurring
         if reminders is not None:
             event_data["reminders"] = _reminders_to_dicts(reminders)
 
