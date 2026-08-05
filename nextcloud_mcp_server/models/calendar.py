@@ -23,7 +23,13 @@ class Reminder(BaseModel):
         ),
     )
     minutes_before: Optional[int] = Field(
-        None, description="Fire this many minutes before the trigger point"
+        None,
+        ge=0,
+        description=(
+            "Fire this many minutes before the trigger point. Negative values "
+            "are rejected rather than quietly flipped into an alarm *after* the "
+            "event — use trigger with a positive duration for that."
+        ),
     )
     trigger_at: Optional[str] = Field(
         None, description="Absolute ISO datetime to fire at"

@@ -661,6 +661,33 @@ def test_email_reminder_carries_a_summary():
     assert str(alarm.get("description"))
 
 
+def test_audio_alarm_carries_no_description():
+    """RFC 5545 §3.8.6.1: ``audioprop`` has no DESCRIPTION.
+
+    DISPLAY and EMAIL require one, AUDIO does not admit one. Writing it anyway
+    produces a spec-invalid component that only lenient parsers forgive.
+    """
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"action": "AUDIO", "minutes_before": 10}]},
+        "uid-audio",
+    )
+
+    alarm = _valarms(ical)[0]
+    assert str(alarm.get("action")) == "AUDIO"
+    assert alarm.get("description") is None
+    assert alarm.get("summary") is None
+
+
+def test_negative_minutes_before_is_rejected():
+    """The name says 'before'; a negative value would silently mean 'after'."""
+    from pydantic import ValidationError
+
+    from nextcloud_mcp_server.models.calendar import Reminder
+
+    with pytest.raises(ValidationError):
+        Reminder(minutes_before=-5)
+
+
 def test_related_is_omitted_from_an_absolute_trigger():
     """RELATED qualifies a duration. On a DATE-TIME trigger it is invalid iCal."""
     ical = _pure_client()._create_ical_event(

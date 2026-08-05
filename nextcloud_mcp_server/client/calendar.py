@@ -1280,11 +1280,16 @@ class CalendarClient:
           ``DESCRIPTION`` (the body). Nextcloud addresses the message itself,
           from the component's ATTENDEEs and the calendar's sharees, so no
           alarm-level ATTENDEE is needed.
+        * ``DESCRIPTION`` belongs to ``DISPLAY`` and ``EMAIL`` alarms only. The
+          ``audioprop`` grammar admits ACTION, TRIGGER, DURATION+REPEAT and
+          ATTACH — writing a description onto an AUDIO alarm produces a
+          spec-invalid component even though lenient parsers accept it.
         """
         alarm = Alarm()
         action = reminder.get("action", "DISPLAY")
         alarm.add("action", action)
-        alarm.add("description", reminder.get("description") or default_description)
+        if action in ("DISPLAY", "EMAIL"):
+            alarm.add("description", reminder.get("description") or default_description)
         if action == "EMAIL":
             alarm.add("summary", reminder.get("summary") or default_summary)
 
