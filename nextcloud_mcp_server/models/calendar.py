@@ -35,9 +35,13 @@ class Reminder(BaseModel):
             "that minutes_before expresses awkwardly."
         ),
     )
-    description: str = Field(
-        default="Event reminder",
-        description="Alarm body; the message text for an EMAIL alarm",
+    description: Optional[str] = Field(
+        None,
+        description=(
+            "Alarm body, and the message text for an EMAIL alarm. Defaults to "
+            "'Event reminder' or 'Todo reminder' depending on what it is "
+            "attached to."
+        ),
     )
     summary: Optional[str] = Field(
         None,

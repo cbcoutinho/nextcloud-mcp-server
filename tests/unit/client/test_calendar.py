@@ -493,6 +493,59 @@ def test_update_end_date_alone_rebounds_the_stored_rule():
     assert _rrule(moved) == "FREQ=WEEKLY;UNTIL=20260731T235959Z;BYDAY=TU"
 
 
+def test_end_date_follows_the_dtstart_written_in_the_same_update():
+    """UNTIL's value type must track the *new* DTSTART, not the replaced one.
+
+    Flipping a timed series to all-day while setting recurrence_end_date in one
+    call used to compute the value type from the stored DTSTART, because the
+    recurrence block ran before ``_apply_date_updates``. The result was a DATE
+    DTSTART against a date-time UNTIL — the mismatch clients silently discard.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU"}, "uid-flip"
+    )
+
+    flipped = client._merge_ical_properties(
+        stored,
+        {
+            "all_day": True,
+            "start_datetime": "2026-03-10",
+            "end_datetime": "2026-03-11",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert _rrule(flipped) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
+
+
+def test_end_date_follows_a_timed_dtstart_written_in_the_same_update():
+    """The mirror case: all-day flipped to timed takes a UTC date-time UNTIL."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            "title": "Bin day",
+            "start_datetime": "2026-02-10",
+            "end_datetime": "2026-02-11",
+            "all_day": True,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+        },
+        "uid-flip-back",
+    )
+
+    flipped = client._merge_ical_properties(
+        stored,
+        {
+            "all_day": False,
+            "start_datetime": "2026-03-10T09:00:00Z",
+            "end_datetime": "2026-03-10T10:00:00Z",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert _rrule(flipped) == "FREQ=WEEKLY;UNTIL=20260630T235959Z;BYDAY=TU"
+
+
 def test_update_recurring_false_clears_the_series():
     """``recurring=False`` used to do nothing; only ``recurrence_rule=""`` worked."""
     client = _pure_client()
@@ -670,6 +723,25 @@ def test_todo_reminders_round_trip():
     assert client._parse_ical_todo(ical)["reminders"] == [
         {"action": "DISPLAY", "description": "Soon", "minutes_before": 360}
     ]
+
+
+def test_todo_reminder_without_a_description_says_todo():
+    """The per-component default has to reach the explicit reminders branch.
+
+    ``Reminder.description`` deliberately defaults to None so the caller's
+    component-specific wording wins. A model-level default would silently label
+    every todo alarm "Event reminder", since the todo tools expose no
+    reminder_minutes shorthand to carry the distinction.
+    """
+    client = _pure_client()
+    ical = client._create_ical_todo(
+        {"summary": "Water plants", "reminders": [{"minutes_before": 30}]},
+        "uid-todo-default",
+    )
+
+    assert client._parse_ical_todo(ical)["reminders"][0]["description"] == (
+        "Todo reminder"
+    )
 
 
 @pytest.mark.parametrize(

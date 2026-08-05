@@ -1241,7 +1241,11 @@ class CalendarClient:
         return parsed, None
 
     @staticmethod
-    def _build_valarm(reminder: dict[str, Any], default_summary: str) -> Alarm:
+    def _build_valarm(
+        reminder: dict[str, Any],
+        default_summary: str,
+        default_description: str = "Event reminder",
+    ) -> Alarm:
         """Build one VALARM from a ``Reminder``-shaped dict.
 
         Trigger precedence is ``trigger_at`` > ``trigger`` > ``minutes_before``;
@@ -1261,7 +1265,7 @@ class CalendarClient:
         alarm = Alarm()
         action = reminder.get("action", "DISPLAY")
         alarm.add("action", action)
-        alarm.add("description", reminder.get("description", "Event reminder"))
+        alarm.add("description", reminder.get("description") or default_description)
         if action == "EMAIL":
             alarm.add("summary", reminder.get("summary") or default_summary)
 
@@ -1335,7 +1339,10 @@ class CalendarClient:
 
     @staticmethod
     def _sync_valarms(
-        component: Any, reminders: list[dict[str, Any]], default_summary: str
+        component: Any,
+        reminders: list[dict[str, Any]],
+        default_summary: str,
+        default_description: str = "Event reminder",
     ) -> None:
         """Replace every VALARM on ``component`` with ``reminders``, in order."""
         component.subcomponents = [
@@ -1343,7 +1350,9 @@ class CalendarClient:
         ]
         for reminder in reminders:
             component.add_component(
-                CalendarClient._build_valarm(reminder, default_summary)
+                CalendarClient._build_valarm(
+                    reminder, default_summary, default_description
+                )
             )
 
     def _apply_reminders(
@@ -1364,7 +1373,12 @@ class CalendarClient:
         makes an unrelated update non-destructive.
         """
         if "reminders" in data:
-            self._sync_valarms(component, data.get("reminders") or [], default_summary)
+            self._sync_valarms(
+                component,
+                data.get("reminders") or [],
+                default_summary,
+                default_description,
+            )
             return
 
         if "reminder_minutes" not in data and "reminder_email" not in data:
@@ -1803,10 +1817,39 @@ class CalendarClient:
                     elif "COLOR" in component:
                         del component["COLOR"]
 
+                # Handle attendees
+                if "attendees" in event_data:
+                    attendees_str = event_data["attendees"]
+                    # Remove all existing attendees first
+                    while "ATTENDEE" in component:
+                        del component["ATTENDEE"]
+                    if attendees_str:
+                        for email in attendees_str.split(","):
+                            if email.strip():
+                                component.add("attendee", f"mailto:{email.strip()}")
+
+                # Handle reminders (VALARM). Omitting all reminder arguments
+                # preserves the stored alarms; ``reminders: []`` clears them.
+                self._apply_reminders(
+                    component,
+                    event_data,
+                    event_data.get("title") or str(component.get("summary", "")),
+                )
+
+                # Handle dates
+                used_timezones = self._apply_date_updates(component, event_data)
+
                 # Handle recurrence. ``recurring=False`` clears the series, which
                 # previously required passing recurrence_rule="" instead — the
                 # flag itself did nothing. An end date may be applied to a rule
                 # supplied now or to the one already stored.
+                #
+                # This must run *after* _apply_date_updates: UNTIL's value type
+                # follows DTSTART, so an update that flips all_day and sets
+                # recurrence_end_date in one call has to see the DTSTART being
+                # written, not the one being replaced. Reading the stored value
+                # here would emit exactly the mismatched RRULE that makes clients
+                # discard the recurrence set.
                 if event_data.get("recurring") is False:
                     if "RRULE" in component:
                         del component["RRULE"]
@@ -1833,28 +1876,6 @@ class CalendarClient:
                         component["RRULE"] = vRecur.from_ical(rrule_str)
                     elif "RRULE" in component:
                         del component["RRULE"]
-
-                # Handle attendees
-                if "attendees" in event_data:
-                    attendees_str = event_data["attendees"]
-                    # Remove all existing attendees first
-                    while "ATTENDEE" in component:
-                        del component["ATTENDEE"]
-                    if attendees_str:
-                        for email in attendees_str.split(","):
-                            if email.strip():
-                                component.add("attendee", f"mailto:{email.strip()}")
-
-                # Handle reminders (VALARM). Omitting all reminder arguments
-                # preserves the stored alarms; ``reminders: []`` clears them.
-                self._apply_reminders(
-                    component,
-                    event_data,
-                    event_data.get("title") or str(component.get("summary", "")),
-                )
-
-                # Handle dates
-                used_timezones = self._apply_date_updates(component, event_data)
 
                 # Update timestamps
                 now = dt.datetime.now(dt.UTC)
