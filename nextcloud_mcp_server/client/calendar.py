@@ -73,6 +73,40 @@ def _rrule_to_string(rrule: Any) -> str:
         return str(rrule)
 
 
+def _shorthand_would_lose(
+    stored: list[dict[str, Any]],
+    minutes: int,
+    actions: list[str],
+    default_description: str,
+    default_summary: str,
+) -> bool:
+    """True when the shorthand rebuild cannot reproduce the stored alarms.
+
+    ``reminder_minutes``/``reminder_email`` collapse to at most one DISPLAY plus
+    one EMAIL, both at a single whole-minute offset with the default wording.
+    Anything the stored set carries beyond that — a second alarm at another
+    offset, an absolute trigger, a ``RELATED=END`` qualifier, a custom summary or
+    per-alarm description — is discarded by the rebuild.
+
+    Checking only for a missing ``minutes_before`` caught the absolute triggers
+    and none of the rest, so two DISPLAY alarms at different offsets collapsed
+    into one silently. This compares against what the rebuild will actually
+    produce instead of against one shape it cannot express.
+    """
+    if len(stored) > len(actions):
+        return True
+    return any(
+        reminder.get("minutes_before") != minutes
+        or reminder.get("action") not in actions
+        or reminder.get("related")
+        # An EMAIL alarm the shorthand itself wrote carries the component title
+        # as its subject, so that value is reproducible and not a loss.
+        or (reminder.get("summary") or default_summary) != default_summary
+        or (reminder.get("description") or default_description) != default_description
+        for reminder in stored
+    )
+
+
 def _warn_if_hex_color(color: str) -> None:
     """Warn when a COLOR value will not survive Nextcloud's Calendar UI.
 
@@ -1476,15 +1510,17 @@ class CalendarClient:
             else any(r["action"] == "EMAIL" for r in stored)
         )
 
-        # The shorthand can only express one whole-minute offset, so any stored
-        # alarm outside that shape is about to be replaced by the rebuild below.
-        unrepresentable = [r for r in stored if "minutes_before" not in r]
-        if unrepresentable:
+        actions = ["DISPLAY"] + (["EMAIL"] if want_email else [])
+        if _shorthand_would_lose(
+            stored, minutes, actions, default_description, default_summary
+        ):
             logger.warning(
-                "reminder_minutes/reminder_email will replace %d stored alarm(s) "
-                "the shorthand cannot express (absolute or sub-minute triggers); "
-                "use the reminders list to edit those without losing them",
-                len(unrepresentable),
+                "reminder_minutes/reminder_email rebuilds the alarms as one "
+                "%s at %d minutes, which does not reproduce the %d stored "
+                "alarm(s); use the reminders list to edit them without loss",
+                "/".join(actions),
+                minutes,
+                len(stored),
             )
 
         if minutes <= 0 and want_email:
@@ -1498,9 +1534,6 @@ class CalendarClient:
         if minutes <= 0:
             return
 
-        actions = ["DISPLAY"]
-        if want_email:
-            actions.append("EMAIL")
         for action in actions:
             component.add_component(
                 self._build_valarm(
@@ -1674,7 +1707,9 @@ class CalendarClient:
             if until:
                 # vRecur stores UNTIL as a single-element list of date/datetime.
                 value = until[0] if isinstance(until, list) else until
-                event_data["recurrence_end"] = value.isoformat()
+                # Same key the update tool accepts, so a read value can be fed
+                # straight back in — the write side is recurrence_end_date.
+                event_data["recurrence_end_date"] = value.isoformat()
 
         # Handle attendees
         attendees = []

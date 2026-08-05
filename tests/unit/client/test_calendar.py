@@ -770,6 +770,90 @@ def test_reminder_email_alone_can_add_an_email_alarm_to_a_display_only_event():
     assert {r["minutes_before"] for r in reminders} == {20}
 
 
+def test_recurrence_end_reads_back_under_the_name_it_is_written_with():
+    """A value read off an event must be usable as an update argument.
+
+    The write side is ``recurrence_end_date``; surfacing the read side as
+    ``recurrence_end`` would hand callers a key that does nothing when passed
+    back — the same accept-then-ignore trap this change set exists to remove.
+    """
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-readback",
+    )
+
+    parsed = client._parse_ical_event(ical)
+    assert "recurrence_end" not in parsed
+    assert parsed["recurrence_end_date"].startswith("2026-06-30")
+
+    # Feeding it straight back must be a no-op, not a rejection or a shift.
+    reapplied = client._merge_ical_properties(
+        ical, {"recurrence_end_date": parsed["recurrence_end_date"]}
+    )
+    assert _rrule(reapplied) == _rrule(ical)
+
+
+def test_shorthand_warns_when_collapsing_several_representable_alarms(caplog):
+    """Two alarms the shorthand can each express still collapse into one.
+
+    The earlier check only looked for a missing ``minutes_before``, so a pair of
+    DISPLAY alarms at different offsets was judged representable and silently
+    became a single alarm. The warning has to compare against what the rebuild
+    actually produces, not against one shape it cannot express.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"minutes_before": 10, "description": "Event reminder"},
+                {"minutes_before": 30, "description": "Event reminder"},
+            ],
+        },
+        "uid-collapse",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        updated = client._merge_ical_properties(stored, {"reminder_minutes": 5})
+
+    assert "does not reproduce" in caplog.text
+    assert [
+        r["minutes_before"] for r in client._parse_ical_event(updated)["reminders"]
+    ] == [5]
+
+
+def test_shorthand_warns_when_dropping_a_related_qualifier(caplog):
+    """``RELATED=END`` is representable-looking but not carried by the rebuild."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [{"minutes_before": 10, "related": "END"}],
+        },
+        "uid-related-loss",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, {"reminder_minutes": 10})
+
+    assert "does not reproduce" in caplog.text
+
+
+def test_shorthand_is_quiet_when_the_rebuild_reproduces_the_stored_alarms(caplog):
+    """The warning must not cry wolf on the case it is meant to allow."""
+    client, stored = _shorthand_event()
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, {"reminder_minutes": 15})
+
+    assert "does not reproduce" not in caplog.text
+
+
 def test_shorthand_update_warns_before_replacing_alarms_it_cannot_express(caplog):
     """The shorthand carries one whole-minute offset, so richer alarms are lost.
 
@@ -792,7 +876,7 @@ def test_shorthand_update_warns_before_replacing_alarms_it_cannot_express(caplog
     with caplog.at_level(logging.WARNING):
         updated = client._merge_ical_properties(stored, {"reminder_minutes": 30})
 
-    assert "cannot express" in caplog.text
+    assert "does not reproduce" in caplog.text
     reminders = client._parse_ical_event(updated)["reminders"]
     assert [r["minutes_before"] for r in reminders] == [30]
 

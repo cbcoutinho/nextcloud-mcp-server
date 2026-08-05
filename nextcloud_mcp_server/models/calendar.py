@@ -154,7 +154,14 @@ class CalendarEvent(CalendarEventSummary):
     last_modified: Optional[str] = Field(None, description="Last modification datetime")
     recurring: bool = Field(default=False, description="Whether event is recurring")
     recurrence_rule: Optional[str] = Field(None, description="RFC5545 recurrence rule")
-    recurrence_end: Optional[str] = Field(None, description="Recurrence end date")
+    recurrence_end_date: Optional[str] = Field(
+        None,
+        description=(
+            "When the series stops recurring, read back from the rule's UNTIL. "
+            "Named to match the write-side parameter so a value read from an "
+            "event can be passed straight back into an update."
+        ),
+    )
     attendees: List[str] = Field(
         default_factory=list, description="List of attendee email addresses"
     )
