@@ -7,6 +7,9 @@ ourselves — we pass the raw credential plus an explicit ``auth_type`` and let
 caldav build whichever auth its backend needs.
 """
 
+import logging
+from datetime import timedelta
+
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -352,3 +355,795 @@ def test_expand_without_window_returns_master_event(mocker):
 
     assert result == [{"uid": "master"}]
     expand.assert_not_called()
+
+
+# ============= Event property round-trips (GH #1251) =============
+#
+# These cover parameters the tools accepted but never wrote to the iCal. Every
+# assertion goes through a reparse rather than a substring check, because the
+# failure mode being guarded against is a property that serialises but does not
+# survive being read back.
+
+
+def _pure_client():
+    """A CalendarClient for the pure iCal helpers.
+
+    Built without going through ``__init__`` so no DAV client — and no
+    credential — is involved; the helpers under test only touch dicts and
+    icalendar objects.
+    """
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    return CalendarClient.__new__(CalendarClient)
+
+
+def _vevent(ical):
+    from icalendar import Calendar as ICalendar
+
+    return ICalendar.from_ical(ical).walk("VEVENT")[0]
+
+
+def _rrule(ical):
+    return _vevent(ical).get("rrule").to_ical().decode()
+
+
+def _valarms(ical):
+    return [sub for sub in _vevent(ical).subcomponents if sub.name == "VALARM"]
+
+
+TIMED_EVENT = {
+    "title": "Standup",
+    "start_datetime": "2026-02-10T10:00:00Z",
+    "end_datetime": "2026-02-10T11:00:00Z",
+}
+
+
+def test_recurrence_end_date_uses_utc_datetime_until_for_timed_events():
+    """RFC 5545 §3.3.10: a DATE-TIME DTSTART requires a UTC DATE-TIME UNTIL.
+
+    A date-only end is inclusive — bounding at midnight would drop the
+    occurrence happening later that same day.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-until-timed",
+    )
+
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630T235959Z;BYDAY=TU"
+
+
+def test_recurrence_end_date_uses_date_until_for_all_day_events():
+    """A DATE-valued DTSTART requires a DATE UNTIL, not a date-time.
+
+    Mismatched value types make clients discard the recurrence set, so the
+    series silently never ends.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "Bin day",
+            "start_datetime": "2026-02-10",
+            "end_datetime": "2026-02-11",
+            "all_day": True,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-until-allday",
+    )
+
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
+
+
+def test_all_day_end_date_drops_a_time_of_day_visibly(caplog):
+    """An all-day series can only be bounded by a DATE, so a time is dropped.
+
+    That is the sole correct reading rather than a caller error, but it should
+    not happen invisibly — every other lossy edge in this change set says so.
+    """
+    with caplog.at_level(logging.DEBUG, logger="nextcloud_mcp_server.client.calendar"):
+        ical = _pure_client()._create_ical_event(
+            {
+                "title": "Bin day",
+                "start_datetime": "2026-02-10",
+                "end_datetime": "2026-02-11",
+                "all_day": True,
+                "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+                "recurrence_end_date": "2026-06-30T18:00:00",
+            },
+            "uid-allday-truncate",
+        )
+
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
+    assert "cannot express in UNTIL" in caplog.text
+
+
+@pytest.mark.parametrize("bound", ["COUNT=5", "UNTIL=20260101T000000Z"])
+def test_recurrence_end_date_rejects_a_rule_that_already_bounds_itself(bound):
+    """Two end conditions in one request is a contradiction, not a preference.
+
+    RFC 5545 forbids COUNT and UNTIL together, and silently picking a winner is
+    exactly the ignore-the-argument behaviour this change removes.
+    """
+    event_data = {
+        **TIMED_EVENT,
+        "recurrence_rule": f"FREQ=DAILY;{bound}",
+        "recurrence_end_date": "2026-06-30",
+    }
+
+    with pytest.raises(ValueError, match="conflicts with"):
+        _pure_client()._create_ical_event(event_data, "uid-conflict")
+
+
+def test_recurrence_rule_applies_without_an_explicit_recurring_flag():
+    """A rule is itself the intent to recur.
+
+    Requiring ``recurring=True`` as well made the argument a no-op on create
+    while update honoured it unconditionally.
+    """
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "recurrence_rule": "FREQ=DAILY"}, "uid-implied"
+    )
+
+    assert _rrule(ical) == "FREQ=DAILY"
+
+
+def test_recurring_false_suppresses_the_rule_on_create():
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "recurrence_rule": "FREQ=DAILY", "recurring": False},
+        "uid-suppressed",
+    )
+
+    assert "rrule" not in _vevent(ical)
+
+
+def test_update_end_date_alone_rebounds_the_stored_rule():
+    """Moving the end of an already-bounded series is an edit, not a conflict."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-rebound",
+    )
+
+    moved = client._merge_ical_properties(stored, {"recurrence_end_date": "2026-07-31"})
+
+    assert _rrule(moved) == "FREQ=WEEKLY;UNTIL=20260731T235959Z;BYDAY=TU"
+
+
+def test_end_date_follows_the_dtstart_written_in_the_same_update():
+    """UNTIL's value type must track the *new* DTSTART, not the replaced one.
+
+    Flipping a timed series to all-day while setting recurrence_end_date in one
+    call used to compute the value type from the stored DTSTART, because the
+    recurrence block ran before ``_apply_date_updates``. The result was a DATE
+    DTSTART against a date-time UNTIL — the mismatch clients silently discard.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU"}, "uid-flip"
+    )
+
+    flipped = client._merge_ical_properties(
+        stored,
+        {
+            "all_day": True,
+            "start_datetime": "2026-03-10",
+            "end_datetime": "2026-03-11",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert _rrule(flipped) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
+
+
+def test_end_date_follows_a_timed_dtstart_written_in_the_same_update():
+    """The mirror case: all-day flipped to timed takes a UTC date-time UNTIL."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            "title": "Bin day",
+            "start_datetime": "2026-02-10",
+            "end_datetime": "2026-02-11",
+            "all_day": True,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+        },
+        "uid-flip-back",
+    )
+
+    flipped = client._merge_ical_properties(
+        stored,
+        {
+            "all_day": False,
+            "start_datetime": "2026-03-10T09:00:00Z",
+            "end_datetime": "2026-03-10T10:00:00Z",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert _rrule(flipped) == "FREQ=WEEKLY;UNTIL=20260630T235959Z;BYDAY=TU"
+
+
+def test_update_recurring_false_clears_the_series():
+    """``recurring=False`` used to do nothing; only ``recurrence_rule=""`` worked."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "recurrence_rule": "FREQ=DAILY"}, "uid-clear"
+    )
+
+    cleared = client._merge_ical_properties(stored, {"recurring": False})
+
+    assert "rrule" not in _vevent(cleared)
+
+
+def test_color_round_trips_and_can_be_removed():
+    client = _pure_client()
+    stored = client._create_ical_event({**TIMED_EVENT, "color": "tomato"}, "uid-color")
+
+    assert client._parse_ical_event(stored)["color"] == "tomato"
+
+    recoloured = client._merge_ical_properties(stored, {"color": "slateblue"})
+    assert client._parse_ical_event(recoloured)["color"] == "slateblue"
+
+    removed = client._merge_ical_properties(stored, {"color": ""})
+    assert "color" not in client._parse_ical_event(removed)
+
+
+def test_hex_color_is_written_but_warns(caplog):
+    """Nextcloud resolves COLOR through a CSS3 name table, so hex never renders.
+
+    The property is still written for other CalDAV clients; the warning is what
+    stops the caller believing it will show up in Nextcloud.
+    """
+    with caplog.at_level(logging.WARNING):
+        ical = _pure_client()._create_ical_event(
+            {**TIMED_EVENT, "color": "#FF0000"}, "uid-hex"
+        )
+
+    assert str(_vevent(ical).get("color")) == "#FF0000"
+    assert "CSS3 colour names" in caplog.text
+
+
+# ============= Ordered reminders (supersedes PR #969) =============
+
+
+def test_ordered_reminders_round_trip_in_order():
+    """Order is part of the contract: VALARMs come back as they were written."""
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"action": "EMAIL", "minutes_before": 60, "description": "Prep"},
+                {"action": "DISPLAY", "trigger": "-PT90S", "description": "Now"},
+                {
+                    "action": "DISPLAY",
+                    "trigger_at": "2026-02-09T20:00:00Z",
+                    "description": "Absolute",
+                },
+            ],
+        },
+        "uid-reminders",
+    )
+
+    reminders = client._parse_ical_event(ical)["reminders"]
+
+    assert [r["description"] for r in reminders] == ["Prep", "Now", "Absolute"]
+    # A whole-minute offset comes back as minutes_before; anything else keeps
+    # its raw duration, so exactly one trigger field is ever present.
+    assert reminders[0]["minutes_before"] == 60
+    assert reminders[1]["trigger"] == "-PT1M30S"
+    assert "minutes_before" not in reminders[1]
+    assert reminders[2]["trigger_at"].startswith("2026-02-09T20:00:00")
+
+
+def test_read_reminders_validate_as_the_reminder_model():
+    """What we hand back must be accepted as input again.
+
+    ``Reminder`` permits exactly one trigger field, so a read path emitting both
+    a duration and its minute equivalent would break the round-trip.
+    """
+    from nextcloud_mcp_server.models.calendar import Reminder
+
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"minutes_before": 30, "related": "END"},
+                {"trigger": "-PT90S"},
+                {"trigger_at": "2026-02-09T20:00:00Z"},
+            ],
+        },
+        "uid-revalidate",
+    )
+
+    for reminder in client._parse_ical_event(ical)["reminders"]:
+        Reminder(**reminder)
+
+
+def test_email_reminder_carries_a_summary():
+    """RFC 5545 §3.6.6 requires SUMMARY on an EMAIL alarm — it is the subject.
+
+    Nextcloud addresses the message from the event's ATTENDEEs and the
+    calendar's sharees, so no alarm-level ATTENDEE is needed.
+    """
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"action": "EMAIL", "minutes_before": 15}]},
+        "uid-email",
+    )
+
+    alarm = _valarms(ical)[0]
+    assert str(alarm.get("action")) == "EMAIL"
+    assert str(alarm.get("summary")) == "Standup"
+    assert str(alarm.get("description"))
+
+
+def test_audio_alarm_carries_no_description():
+    """RFC 5545 §3.8.6.1: ``audioprop`` has no DESCRIPTION.
+
+    DISPLAY and EMAIL require one, AUDIO does not admit one. Writing it anyway
+    produces a spec-invalid component that only lenient parsers forgive.
+    """
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"action": "AUDIO", "minutes_before": 10}]},
+        "uid-audio",
+    )
+
+    alarm = _valarms(ical)[0]
+    assert str(alarm.get("action")) == "AUDIO"
+    assert alarm.get("description") is None
+    assert alarm.get("summary") is None
+
+
+def test_negative_minutes_before_is_rejected():
+    """The name says 'before'; a negative value would silently mean 'after'."""
+    from pydantic import ValidationError
+
+    from nextcloud_mcp_server.models.calendar import Reminder
+
+    with pytest.raises(ValidationError):
+        Reminder(minutes_before=-5)
+
+
+def test_related_is_omitted_from_an_absolute_trigger():
+    """RELATED qualifies a duration. On a DATE-TIME trigger it is invalid iCal."""
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"trigger_at": "2026-02-09T20:00:00Z"}]},
+        "uid-related",
+    )
+
+    trigger = _valarms(ical)[0].get("trigger")
+    assert "RELATED" not in trigger.params
+    assert trigger.params.get("VALUE") == "DATE-TIME"
+
+
+def test_related_survives_on_a_duration_trigger():
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"minutes_before": 10, "related": "END"}]},
+        "uid-related-duration",
+    )
+
+    assert _valarms(ical)[0].get("trigger").params.get("RELATED") == "END"
+
+
+def test_reminder_email_shorthand_adds_a_second_email_alarm():
+    """The legacy pair stays supported: DISPLAY, plus EMAIL at the same offset."""
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "reminder_minutes": 15, "reminder_email": True},
+        "uid-shorthand",
+    )
+
+    alarms = _valarms(ical)
+    assert [str(a.get("action")) for a in alarms] == ["DISPLAY", "EMAIL"]
+    assert {a.get("trigger").dt for a in alarms} == {timedelta(minutes=-15)}
+
+
+def _shorthand_event():
+    """An event carrying both shorthand alarms, as the create path builds them."""
+    client = _pure_client()
+    return client, client._create_ical_event(
+        {**TIMED_EVENT, "reminder_minutes": 15, "reminder_email": True},
+        "uid-shorthand-update",
+    )
+
+
+def test_reminder_email_alone_keeps_the_stored_offset():
+    """Updating one shorthand field must not erase what the other one set.
+
+    ``reminder_email`` on its own used to find no ``reminder_minutes``, clear
+    every VALARM and return before adding any back — silent total loss, and
+    worse than master, where the flag was merely inert.
+    """
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_email": False})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY"]
+    assert reminders[0]["minutes_before"] == 15
+
+
+def test_reminder_minutes_alone_keeps_the_stored_email_alarm():
+    """The mirror case: changing the offset must not drop the EMAIL alarm."""
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_minutes": 45})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY", "EMAIL"]
+    assert {r["minutes_before"] for r in reminders} == {45}
+
+
+def test_reminder_email_alone_can_add_an_email_alarm_to_a_display_only_event():
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "reminder_minutes": 20}, "uid-display-only"
+    )
+
+    updated = client._merge_ical_properties(stored, {"reminder_email": True})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY", "EMAIL"]
+    assert {r["minutes_before"] for r in reminders} == {20}
+
+
+def test_recurrence_end_reads_back_under_the_name_it_is_written_with():
+    """A value read off an event must be usable as an update argument.
+
+    The write side is ``recurrence_end_date``; surfacing the read side as
+    ``recurrence_end`` would hand callers a key that does nothing when passed
+    back — the same accept-then-ignore trap this change set exists to remove.
+    """
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-readback",
+    )
+
+    parsed = client._parse_ical_event(ical)
+    assert "recurrence_end" not in parsed
+    assert parsed["recurrence_end_date"].startswith("2026-06-30")
+
+    # Feeding it straight back must be a no-op, not a rejection or a shift.
+    reapplied = client._merge_ical_properties(
+        ical, {"recurrence_end_date": parsed["recurrence_end_date"]}
+    )
+    assert _rrule(reapplied) == _rrule(ical)
+
+
+def test_shorthand_warns_when_collapsing_several_representable_alarms(caplog):
+    """Two alarms the shorthand can each express still collapse into one.
+
+    The earlier check only looked for a missing ``minutes_before``, so a pair of
+    DISPLAY alarms at different offsets was judged representable and silently
+    became a single alarm. The warning has to compare against what the rebuild
+    actually produces, not against one shape it cannot express.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"minutes_before": 10, "description": "Event reminder"},
+                {"minutes_before": 30, "description": "Event reminder"},
+            ],
+        },
+        "uid-collapse",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        updated = client._merge_ical_properties(stored, {"reminder_minutes": 5})
+
+    assert "does not reproduce" in caplog.text
+    assert [
+        r["minutes_before"] for r in client._parse_ical_event(updated)["reminders"]
+    ] == [5]
+
+
+def test_shorthand_warns_when_dropping_a_related_qualifier(caplog):
+    """``RELATED=END`` is representable-looking but not carried by the rebuild."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [{"minutes_before": 10, "related": "END"}],
+        },
+        "uid-related-loss",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, {"reminder_minutes": 10})
+
+    assert "does not reproduce" in caplog.text
+
+
+def test_shorthand_is_quiet_when_the_rebuild_reproduces_the_stored_alarms(caplog):
+    """The warning must not cry wolf on the case it is meant to allow."""
+    client, stored = _shorthand_event()
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, {"reminder_minutes": 15})
+
+    assert "does not reproduce" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"reminder_minutes": 45},
+        {"reminder_email": False},
+        {"reminder_minutes": 45, "reminder_email": False},
+    ],
+    ids=["new-offset", "drop-email", "both"],
+)
+def test_shorthand_is_quiet_when_the_caller_is_simply_changing_the_value(
+    caplog, update
+):
+    """Changing the offset, or dropping the email alarm, is the request itself.
+
+    An earlier version compared each stored offset against the new target, so it
+    fired on the most ordinary update there is — nudging a reminder's offset.
+    A warning that fires on the common path trains the reader to ignore it, which
+    costs exactly the shape-loss cases it exists to surface.
+    """
+    client, stored = _shorthand_event()
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, update)
+
+    assert "does not reproduce" not in caplog.text
+
+
+def test_shorthand_update_warns_before_replacing_alarms_it_cannot_express(caplog):
+    """The shorthand carries one whole-minute offset, so richer alarms are lost.
+
+    That is inherent to the two-field form rather than a bug, but it is
+    destructive, so it must not happen quietly — the caller needs to know the
+    reminders list is the tool for editing those.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"trigger_at": "2026-02-09T20:00:00Z", "description": "Absolute"},
+                {"trigger": "-PT90S", "description": "Sub-minute"},
+            ],
+        },
+        "uid-unrepresentable",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        updated = client._merge_ical_properties(stored, {"reminder_minutes": 30})
+
+    assert "does not reproduce" in caplog.text
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["minutes_before"] for r in reminders] == [30]
+
+
+def test_reminder_minutes_zero_still_clears_everything():
+    """An explicit zero is a request to remove the alarms, not a missing value."""
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_minutes": 0})
+
+    assert "reminders" not in client._parse_ical_event(updated)
+
+
+def test_recurrence_end_date_is_utc_even_for_a_tzid_bound_dtstart():
+    """RFC 5545 §3.3.10: UNTIL is UTC whenever DTSTART is a date-time.
+
+    A TZID-bound DTSTART is the case most likely to tempt a local-time UNTIL,
+    which clients would reject along with the whole recurrence set.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "NY standup",
+            "start_datetime": "2026-02-10T10:00:00",
+            "end_datetime": "2026-02-10T11:00:00",
+            "timezone": "America/New_York",
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-tzid-until",
+    )
+
+    assert str(_vevent(ical)["DTSTART"].params.get("TZID")) == "America/New_York"
+    # 23:59:59 in New York on the 30th, expressed as the UTC instant RFC 5545
+    # requires: 03:59:59 on July 1st.
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260701T035959Z;BYDAY=TU"
+
+
+def test_evening_occurrence_survives_its_own_recurrence_end_date():
+    """The last occurrence must not be dropped for being late in the day.
+
+    An evening event in a zone behind UTC has a real instant on the *following*
+    UTC date. Anchoring the inclusive end-of-day to UTC midnight put the cutoff
+    before that instant, silently excluding the very occurrence the caller named
+    the end date to keep. 21:00 on 2026-06-30 in New York is 01:00Z on 07-01,
+    which a UTC-anchored ``UNTIL=20260630T235959Z`` would have excluded.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "Evening class",
+            "start_datetime": "2026-06-02T21:00:00",
+            "end_datetime": "2026-06-02T22:00:00",
+            "timezone": "America/New_York",
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-evening",
+    )
+
+    component = _vevent(ical)
+    until = component.get("rrule")["UNTIL"][0]
+    last_occurrence = component["DTSTART"].dt.replace(month=6, day=30)
+
+    assert until >= last_occurrence, (
+        f"UNTIL {until} excludes the 2026-06-30 occurrence at {last_occurrence}"
+    )
+
+
+def test_unrelated_update_preserves_reminders_but_empty_list_clears_them():
+    """Omission preserves, ``[]`` clears — the distinction the API promises."""
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "reminders": [{"minutes_before": 10}, {"minutes_before": 60}]},
+        "uid-preserve",
+    )
+
+    preserved = client._merge_ical_properties(stored, {"location": "Office"})
+    assert len(client._parse_ical_event(preserved)["reminders"]) == 2
+
+    cleared = client._merge_ical_properties(stored, {"reminders": []})
+    assert "reminders" not in client._parse_ical_event(cleared)
+
+
+def test_todo_reminders_round_trip():
+    """VTODOs had no alarm handling at all before this change."""
+    client = _pure_client()
+    ical = client._create_ical_todo(
+        {
+            "summary": "Water plants",
+            "reminders": [{"trigger": "-PT6H", "description": "Soon"}],
+        },
+        "uid-todo-reminder",
+    )
+
+    assert client._parse_ical_todo(ical)["reminders"] == [
+        {"action": "DISPLAY", "description": "Soon", "minutes_before": 360}
+    ]
+
+
+def test_todo_reminder_without_a_description_says_todo():
+    """The per-component default has to reach the explicit reminders branch.
+
+    ``Reminder.description`` deliberately defaults to None so the caller's
+    component-specific wording wins. A model-level default would silently label
+    every todo alarm "Event reminder", since the todo tools expose no
+    reminder_minutes shorthand to carry the distinction.
+    """
+    client = _pure_client()
+    ical = client._create_ical_todo(
+        {"summary": "Water plants", "reminders": [{"minutes_before": 30}]},
+        "uid-todo-default",
+    )
+
+    assert client._parse_ical_todo(ical)["reminders"][0]["description"] == (
+        "Todo reminder"
+    )
+
+
+FOREIGN_ALARM_TODO = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Other Client//EN
+BEGIN:VTODO
+UID:uid-foreign
+SUMMARY:Backup
+BEGIN:VALARM
+ACTION:PROCEDURE
+TRIGGER;RELATED=PARENT:-PT30M
+DESCRIPTION:Legacy
+END:VALARM
+END:VTODO
+END:VCALENDAR
+"""
+
+
+def test_foreign_valarm_action_does_not_break_the_model(caplog):
+    """Stored data comes from any CalDAV client, not just this one.
+
+    RFC 5545 lets ACTION carry any IANA or ``X-`` token, and RELATED anything at
+    all in a malformed file. Left unnormalised, either fails ``Reminder``'s
+    Literal — and because ``Todo(**todo_data)`` is built in a plain list
+    comprehension, that would fail the entire listing rather than the one item.
+    Nextcloud discards an alarm it does not recognise; so do we.
+    """
+    from nextcloud_mcp_server.models.calendar import Todo
+
+    with caplog.at_level(logging.WARNING):
+        todo_data = _pure_client()._parse_ical_todo(FOREIGN_ALARM_TODO)
+
+    assert todo_data["reminders"] == [
+        {"action": "DISPLAY", "description": "Legacy", "minutes_before": 30}
+    ]
+    assert "PROCEDURE" in caplog.text
+
+    # The model is what actually crashed the listing, so build it.
+    todo = Todo(**todo_data)
+    assert todo.reminders[0].action == "DISPLAY"
+    assert todo.reminders[0].related is None
+
+
+def _todo_with_alarm(alarm_body: str) -> str:
+    return (
+        "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Other Client//EN\n"
+        "BEGIN:VTODO\nUID:uid-malformed\nSUMMARY:Backup\n"
+        f"BEGIN:VALARM\n{alarm_body}\nEND:VALARM\n"
+        "END:VTODO\nEND:VCALENDAR\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "alarm_body",
+    [
+        "ACTION:PROCEDURE\nTRIGGER:-PT30M\nDESCRIPTION:Legacy",
+        "ACTION:X-CUSTOM-THING\nTRIGGER:-PT30M",
+        "ACTION:DISPLAY\nTRIGGER;RELATED=PARENT:-PT30M",
+        "ACTION:DISPLAY\nDESCRIPTION:No trigger at all",
+        "ACTION:DISPLAY",
+    ],
+    ids=[
+        "legacy-procedure-action",
+        "x-prefixed-action",
+        "foreign-related-param",
+        "missing-trigger",
+        "bare-action-only",
+    ],
+)
+def test_no_stored_alarm_shape_can_break_a_listing(alarm_body):
+    """Whatever another CalDAV client wrote, one alarm costs at most itself.
+
+    ``Todo(**todo_data)`` is built in a plain list comprehension, so a
+    ValidationError from any nested Reminder fails the entire
+    ``nc_calendar_list_todos`` call rather than the single item. Every field the
+    model constrains — the action Literal, the related Literal, the exactly-one
+    trigger rule — is therefore normalised or dropped on the way out of the iCal,
+    and this covers each of those shapes rather than the one that was reported.
+    """
+    from nextcloud_mcp_server.models.calendar import Todo
+
+    todo_data = _pure_client()._parse_ical_todo(_todo_with_alarm(alarm_body))
+
+    todo = Todo(**todo_data)
+    for reminder in todo.reminders:
+        assert reminder.action in ("DISPLAY", "EMAIL", "AUDIO")
+        assert reminder.related in (None, "START", "END")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"minutes_before": 5, "trigger": "-PT5M"},
+        {"trigger_at": "2026-01-01T00:00:00Z", "related": "END"},
+    ],
+    ids=["no-trigger", "two-triggers", "related-with-absolute"],
+)
+def test_reminder_model_rejects_incoherent_triggers(payload):
+    from pydantic import ValidationError
+
+    from nextcloud_mcp_server.models.calendar import Reminder
+
+    with pytest.raises(ValidationError):
+        Reminder(**payload)

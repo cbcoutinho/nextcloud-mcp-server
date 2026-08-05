@@ -16,12 +16,23 @@ from nextcloud_mcp_server.models.calendar import (
     ListCalendarsResponse,
     ListEventsResponse,
     ListTodosResponse,
+    Reminder,
     Todo,
     UpcomingEventsResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _reminders_to_dicts(reminders: list[Reminder]) -> list[dict[str, Any]]:
+    """Flatten validated reminders for the dict-based client layer.
+
+    ``exclude_none`` matters: the client distinguishes an absent trigger field
+    from one explicitly set, so leaving ``None``s in would make every reminder
+    look like it carried all three.
+    """
+    return [reminder.model_dump(exclude_none=True) for reminder in reminders]
 
 
 def _completion_payload(completed: str | None = None) -> dict[str, Any]:
@@ -105,7 +116,7 @@ def configure_calendar_tools(mcp: FastMCP):
         description: str = "",
         location: str = "",
         categories: str = "",
-        recurring: bool = False,
+        recurring: bool | None = None,
         recurrence_rule: str = "",
         recurrence_end_date: str = "",
         reminder_minutes: int = 15,
@@ -117,6 +128,7 @@ def configure_calendar_tools(mcp: FastMCP):
         url: str = "",
         color: str = "",
         timezone: str = "",
+        reminders: list[Reminder] | None = None,
     ):
         """Create a comprehensive calendar event with full feature support.
 
@@ -139,21 +151,36 @@ def configure_calendar_tools(mcp: FastMCP):
             description: Event description/details
             location: Event location
             categories: Comma-separated categories (e.g., "work,meeting")
-            recurring: Whether this is a recurring event
+            recurring: Whether this is a recurring event. A non-empty
+                ``recurrence_rule`` already implies recurrence, so leave this
+                unset unless you want to suppress it with ``False``.
             recurrence_rule: RFC5545 RRULE (e.g., "FREQ=WEEKLY;BYDAY=MO,WE,FR")
-            recurrence_end_date: When to stop recurring
+            recurrence_end_date: Date (or ISO datetime) the series stops
+                recurring, written as the rule's ``UNTIL``. Inclusive: a
+                date-only value keeps that day's occurrence. Rejected if
+                ``recurrence_rule`` already carries ``UNTIL`` or ``COUNT``.
             reminder_minutes: Minutes before event to send reminder
-            reminder_email: Whether to send email notification
+            reminder_email: Also send an email reminder, as a second VALARM with
+                ``ACTION:EMAIL``. Nextcloud addresses it to the event's
+                attendees and the calendar's sharees.
             status: Event status: CONFIRMED, TENTATIVE, or CANCELLED
             priority: Priority level 1-9 (1=highest, 9=lowest, 5=normal)
             privacy: Privacy level: PUBLIC, PRIVATE, or CONFIDENTIAL
             attendees: Comma-separated email addresses
             url: Related URL for the event
-            color: Event color (hex or name)
+            color: Event colour as a CSS3 colour name (e.g. ``"tomato"``).
+                Nextcloud's Calendar UI resolves COLOR through a CSS3 name
+                lookup, so a hex value is stored but never rendered.
             timezone: Optional IANA timezone name (e.g. ``"America/New_York"``).
                 Applied only when ``start_datetime``/``end_datetime`` are naive
                 (no offset, no ``Z``). Ignored — with a warning — when the
                 inputs already carry an explicit offset.
+            reminders: Ordered list of alarms, replacing ``reminder_minutes`` /
+                ``reminder_email`` when given. Each needs exactly one of
+                ``minutes_before``, ``trigger`` (RFC 5545 duration) or
+                ``trigger_at`` (absolute), plus an optional ``action``
+                (DISPLAY/EMAIL/AUDIO), ``description``, ``summary`` (EMAIL
+                subject) and ``related`` (START/END).
 
         Returns:
             Dict with event creation result
@@ -168,7 +195,6 @@ def configure_calendar_tools(mcp: FastMCP):
             "description": description,
             "location": location,
             "categories": categories,
-            "recurring": recurring,
             "recurrence_rule": recurrence_rule,
             "recurrence_end_date": recurrence_end_date,
             "reminder_minutes": reminder_minutes,
@@ -181,6 +207,14 @@ def configure_calendar_tools(mcp: FastMCP):
             "color": color,
             "timezone": timezone,
         }
+        # Only forward ``recurring`` when the caller actually set it. Sending the
+        # default would pin it to False on every call, which is what made
+        # recurrence_rule a no-op here — the client reads a present-but-False
+        # flag as an explicit opt-out.
+        if recurring is not None:
+            event_data["recurring"] = recurring
+        if reminders is not None:
+            event_data["reminders"] = _reminders_to_dicts(reminders)
 
         return await client.calendar.create_event(calendar_name, event_data)
 
@@ -351,6 +385,7 @@ def configure_calendar_tools(mcp: FastMCP):
         # Recurrence updates
         recurring: bool | None = None,
         recurrence_rule: str | None = None,
+        recurrence_end_date: str | None = None,
         # Notification updates
         reminder_minutes: int | None = None,
         reminder_email: bool | None = None,
@@ -362,14 +397,26 @@ def configure_calendar_tools(mcp: FastMCP):
         url: str | None = None,
         color: str | None = None,
         timezone: str | None = None,
+        reminders: list[Reminder] | None = None,
         etag: str = "",
     ):
         """Update any aspect of an existing event.
 
-        Pass ``timezone`` (IANA name, e.g. ``"America/New_York"``) together
-        with a naive ``start_datetime`` / ``end_datetime`` to rewrite DTSTART
-        / DTEND as TZID-bound. See ``nc_calendar_create_event`` for the full
-        encoding rules.
+        Only the arguments you pass are touched. Everything else on the stored
+        event is preserved. See ``nc_calendar_create_event`` for the shared
+        parameter semantics, including the datetime encoding rules that
+        ``timezone`` selects between.
+
+        Recurrence, specifically:
+
+        * ``recurrence_rule=""`` or ``recurring=False`` removes the series.
+        * ``recurrence_end_date`` alone re-bounds the *stored* rule, replacing
+          any ``UNTIL``/``COUNT`` it carries. Combined with an explicit
+          ``recurrence_rule`` that already bounds itself, it raises instead —
+          that combination contradicts itself within one request.
+
+        Reminders, likewise. Omit them all and the stored alarms survive. Pass
+        ``reminders=[]`` to clear them, or a list to replace them wholesale.
         """
         client = await get_client(ctx)
 
@@ -393,6 +440,8 @@ def configure_calendar_tools(mcp: FastMCP):
             event_data["recurring"] = recurring
         if recurrence_rule is not None:
             event_data["recurrence_rule"] = recurrence_rule
+        if recurrence_end_date is not None:
+            event_data["recurrence_end_date"] = recurrence_end_date
         if reminder_minutes is not None:
             event_data["reminder_minutes"] = reminder_minutes
         if reminder_email is not None:
@@ -411,6 +460,8 @@ def configure_calendar_tools(mcp: FastMCP):
             event_data["color"] = color
         if timezone is not None:
             event_data["timezone"] = timezone
+        if reminders is not None:
+            event_data["reminders"] = _reminders_to_dicts(reminders)
 
         return await client.calendar.update_event(
             calendar_name, event_uid, event_data, etag
@@ -1089,6 +1140,7 @@ def configure_calendar_tools(mcp: FastMCP):
         due: str = "",
         dtstart: str = "",
         categories: str = "",
+        reminders: list[Reminder] | None = None,
     ):
         """Create a new todo/task in a calendar.
 
@@ -1102,6 +1154,8 @@ def configure_calendar_tools(mcp: FastMCP):
             due: Due date/time (ISO format, e.g., "2025-01-15T14:00:00")
             dtstart: Start date/time (ISO format)
             categories: Comma-separated categories (e.g., "work,urgent")
+            reminders: Ordered list of alarms. See ``nc_calendar_create_event``
+                for the shape.
 
         Returns:
             Dict with todo creation result
@@ -1117,6 +1171,8 @@ def configure_calendar_tools(mcp: FastMCP):
             "dtstart": dtstart,
             "categories": categories,
         }
+        if reminders is not None:
+            todo_data["reminders"] = _reminders_to_dicts(reminders)
 
         return await client.calendar.create_todo(calendar_name, todo_data)
 
@@ -1139,6 +1195,7 @@ def configure_calendar_tools(mcp: FastMCP):
         dtstart: Optional[str] = None,
         completed: Optional[str] = None,
         categories: Optional[str] = None,
+        reminders: list[Reminder] | None = None,
     ):
         """Update an existing todo/task.
 
@@ -1155,6 +1212,8 @@ def configure_calendar_tools(mcp: FastMCP):
             dtstart: New start date/time (ISO format)
             completed: Completion timestamp (ISO format)
             categories: New categories (comma-separated)
+            reminders: Replacement alarm list. Omit to keep the stored alarms,
+                or pass ``[]`` to clear them.
 
         Returns:
             Dict with todo update result
@@ -1181,6 +1240,8 @@ def configure_calendar_tools(mcp: FastMCP):
             todo_data["completed"] = completed
         if categories is not None:
             todo_data["categories"] = categories
+        if reminders is not None:
+            todo_data["reminders"] = _reminders_to_dicts(reminders)
 
         return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
 
