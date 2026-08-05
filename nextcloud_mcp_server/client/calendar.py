@@ -49,6 +49,10 @@ _TODO_DONE_STATUSES = frozenset({"COMPLETED", "CANCELLED"})
 _EVENT_REMINDER_DESCRIPTION = "Event reminder"
 _TODO_REMINDER_DESCRIPTION = "Todo reminder"
 
+# The VALARM actions Nextcloud actually schedules (ReminderService::REMINDER_TYPES).
+# RFC 5545 permits other IANA/X- tokens, which it stores but silently ignores.
+_VALARM_ACTIONS = frozenset({"DISPLAY", "EMAIL", "AUDIO"})
+
 
 def _rrule_to_string(rrule: Any) -> str:
     """Render an icalendar ``vRecur`` as an RFC 5545 RRULE value.
@@ -1319,9 +1323,29 @@ class CalendarClient:
 
     @staticmethod
     def _extract_valarm(alarm: Any) -> dict[str, Any]:
-        """Read one VALARM into a ``Reminder``-shaped dict."""
+        """Read one VALARM into a ``Reminder``-shaped dict.
+
+        Stored data is normalised to what ``Reminder`` accepts, because this
+        parses whatever any CalDAV client wrote, not only what we write. RFC 5545
+        §3.8.6.1 allows ACTION to carry any IANA or ``X-`` token, so a legacy
+        ``PROCEDURE`` or a custom action is realistic — and left unnormalised it
+        would fail the model's ``Literal`` and take down the whole listing the
+        todo appears in, rather than the one alarm. Nextcloud's own
+        ``ReminderService`` discards an alarm it does not recognise instead of
+        rejecting its component, so unknown actions degrade to DISPLAY here.
+        """
+        action = str(alarm.get("action", "DISPLAY")).upper()
+        if action not in _VALARM_ACTIONS:
+            logger.warning(
+                "VALARM action %r is not one of %s; reporting it as DISPLAY. "
+                "Nextcloud does not schedule non-standard alarms either",
+                action,
+                ", ".join(sorted(_VALARM_ACTIONS)),
+            )
+            action = "DISPLAY"
+
         reminder: dict[str, Any] = {
-            "action": str(alarm.get("action", "DISPLAY")).upper(),
+            "action": action,
             "description": str(alarm.get("description", "")),
         }
         summary = alarm.get("summary")
@@ -1348,7 +1372,9 @@ class CalendarClient:
             reminder["trigger"] = vDDDTypes(value).to_ical().decode("utf-8")
 
         related = trigger.params.get("RELATED") if trigger.params else None
-        if related:
+        if related and str(related).upper() in ("START", "END"):
+            # Same reasoning as ACTION: anything else is malformed input that
+            # must not propagate into the model and break the caller's listing.
             reminder["related"] = str(related).upper()
         return reminder
 
@@ -1418,6 +1444,17 @@ class CalendarClient:
             if "reminder_email" in data
             else any(r["action"] == "EMAIL" for r in stored)
         )
+
+        # The shorthand can only express one whole-minute offset, so any stored
+        # alarm outside that shape is about to be replaced by the rebuild below.
+        unrepresentable = [r for r in stored if "minutes_before" not in r]
+        if unrepresentable:
+            logger.warning(
+                "reminder_minutes/reminder_email will replace %d stored alarm(s) "
+                "the shorthand cannot express (absolute or sub-minute triggers); "
+                "use the reminders list to edit those without losing them",
+                len(unrepresentable),
+            )
 
         if minutes <= 0 and want_email:
             logger.warning(
@@ -1916,6 +1953,12 @@ class CalendarClient:
                             )
                         component["RRULE"] = vRecur.from_ical(rrule_str)
                     elif "RRULE" in component:
+                        if event_data.get("recurrence_end_date"):
+                            logger.warning(
+                                "recurrence_rule was cleared in the same update "
+                                "that set recurrence_end_date, so the series is "
+                                "removed and the end date has nothing to bound"
+                            )
                         del component["RRULE"]
                     elif event_data.get("recurrence_end_date"):
                         # No stored rule and none supplied: there is nothing for

@@ -856,6 +856,47 @@ def test_todo_reminder_without_a_description_says_todo():
     )
 
 
+FOREIGN_ALARM_TODO = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Other Client//EN
+BEGIN:VTODO
+UID:uid-foreign
+SUMMARY:Backup
+BEGIN:VALARM
+ACTION:PROCEDURE
+TRIGGER;RELATED=PARENT:-PT30M
+DESCRIPTION:Legacy
+END:VALARM
+END:VTODO
+END:VCALENDAR
+"""
+
+
+def test_foreign_valarm_action_does_not_break_the_model(caplog):
+    """Stored data comes from any CalDAV client, not just this one.
+
+    RFC 5545 lets ACTION carry any IANA or ``X-`` token, and RELATED anything at
+    all in a malformed file. Left unnormalised, either fails ``Reminder``'s
+    Literal — and because ``Todo(**todo_data)`` is built in a plain list
+    comprehension, that would fail the entire listing rather than the one item.
+    Nextcloud discards an alarm it does not recognise; so do we.
+    """
+    from nextcloud_mcp_server.models.calendar import Todo
+
+    with caplog.at_level(logging.WARNING):
+        todo_data = _pure_client()._parse_ical_todo(FOREIGN_ALARM_TODO)
+
+    assert todo_data["reminders"] == [
+        {"action": "DISPLAY", "description": "Legacy", "minutes_before": 30}
+    ]
+    assert "PROCEDURE" in caplog.text
+
+    # The model is what actually crashed the listing, so build it.
+    todo = Todo(**todo_data)
+    assert todo.reminders[0].action == "DISPLAY"
+    assert todo.reminders[0].related is None
+
+
 @pytest.mark.parametrize(
     "payload",
     [
