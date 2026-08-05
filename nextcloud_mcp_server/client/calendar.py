@@ -109,7 +109,11 @@ def _rrule_with_until(
     """
     parts = _rrule_parts_without_bounds(rrule_str, replace=replace)
     all_day = isinstance(dtstart, dt.date) and not isinstance(dtstart, dt.datetime)
-    return ";".join([*parts, f"UNTIL={_format_until(end_date, all_day=all_day)}"])
+    # DTSTART's zone is what "that day" means to the caller, so an end-of-day
+    # boundary has to be built in it before being converted to UTC.
+    tz = None if all_day else getattr(dtstart, "tzinfo", None)
+    until = _format_until(end_date, all_day=all_day, tz=tz)
+    return ";".join([*parts, f"UNTIL={until}"])
 
 
 def _rrule_parts_without_bounds(rrule_str: str, *, replace: bool) -> list[str]:
@@ -129,8 +133,17 @@ def _rrule_parts_without_bounds(rrule_str: str, *, replace: bool) -> list[str]:
     return parts
 
 
-def _format_until(end_date: str, *, all_day: bool) -> str:
-    """Render ``end_date`` as an UNTIL value of the type DTSTART requires."""
+def _format_until(end_date: str, *, all_day: bool, tz: dt.tzinfo | None = None) -> str:
+    """Render ``end_date`` as an UNTIL value of the type DTSTART requires.
+
+    ``tz`` is DTSTART's own zone. RFC 5545 requires UNTIL to be *formatted* in
+    UTC for a date-time DTSTART, but that is a serialisation rule, not an
+    instruction to anchor the boundary to UTC midnight: "until June 30th" means
+    the end of June 30th where the event happens. Anchoring in UTC drops the
+    last occurrence of any evening event in a zone behind UTC, because its real
+    instant falls on the following UTC date — 21:00 in New York on the 30th is
+    01:00 UTC on the 1st, past a ``T235959Z`` cutoff.
+    """
     try:
         parsed = dt.datetime.fromisoformat(end_date)
     except ValueError:
@@ -145,12 +158,9 @@ def _format_until(end_date: str, *, all_day: bool) -> str:
         # Date-only input: bound the whole day rather than midnight, which would
         # exclude an occurrence happening later on that date.
         parsed = parsed.replace(hour=23, minute=59, second=59)
-    parsed = (
-        parsed.replace(tzinfo=dt.UTC)
-        if parsed.tzinfo is None
-        else parsed.astimezone(dt.UTC)
-    )
-    return parsed.strftime("%Y%m%dT%H%M%SZ")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz or dt.UTC)
+    return parsed.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _occurrence_is_done(component: Any) -> bool:
@@ -1907,6 +1917,15 @@ class CalendarClient:
                         component["RRULE"] = vRecur.from_ical(rrule_str)
                     elif "RRULE" in component:
                         del component["RRULE"]
+                    elif event_data.get("recurrence_end_date"):
+                        # No stored rule and none supplied: there is nothing for
+                        # the end date to bound, and inventing a series from an
+                        # end date alone would be a guess.
+                        logger.warning(
+                            "recurrence_end_date was given for an event with no "
+                            "recurrence rule, so it has no effect; pass "
+                            "recurrence_rule as well to make the event recur"
+                        )
 
                 # Update timestamps
                 now = dt.datetime.now(dt.UTC)

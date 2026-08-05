@@ -771,7 +771,39 @@ def test_recurrence_end_date_is_utc_even_for_a_tzid_bound_dtstart():
     )
 
     assert str(_vevent(ical)["DTSTART"].params.get("TZID")) == "America/New_York"
-    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630T235959Z;BYDAY=TU"
+    # 23:59:59 in New York on the 30th, expressed as the UTC instant RFC 5545
+    # requires: 03:59:59 on July 1st.
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260701T035959Z;BYDAY=TU"
+
+
+def test_evening_occurrence_survives_its_own_recurrence_end_date():
+    """The last occurrence must not be dropped for being late in the day.
+
+    An evening event in a zone behind UTC has a real instant on the *following*
+    UTC date. Anchoring the inclusive end-of-day to UTC midnight put the cutoff
+    before that instant, silently excluding the very occurrence the caller named
+    the end date to keep. 21:00 on 2026-06-30 in New York is 01:00Z on 07-01,
+    which a UTC-anchored ``UNTIL=20260630T235959Z`` would have excluded.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "Evening class",
+            "start_datetime": "2026-06-02T21:00:00",
+            "end_datetime": "2026-06-02T22:00:00",
+            "timezone": "America/New_York",
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-evening",
+    )
+
+    component = _vevent(ical)
+    until = component.get("rrule")["UNTIL"][0]
+    last_occurrence = component["DTSTART"].dt.replace(month=6, day=30)
+
+    assert until >= last_occurrence, (
+        f"UNTIL {until} excludes the 2026-06-30 occurrence at {last_occurrence}"
+    )
 
 
 def test_unrelated_update_preserves_reminders_but_empty_list_clears_them():
