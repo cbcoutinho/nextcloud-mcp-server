@@ -5,6 +5,30 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.166.0 (2026-08-05)
+
+### Feat
+
+- **calendar**: write the parameters the tools only pretended to accept
+
+### Fix
+
+- **calendar**: stop the shorthand warning firing on ordinary offset changes
+- **calendar**: name the read-side end date consistently, widen shorthand loss detection
+- **calendar**: keep DESCRIPTION off AUDIO alarms and reject negative offsets
+- **calendar**: warn on the last silent recurrence conflict, reject triggerless reminders cleanly
+- **calendar**: drop VALARMs with no usable TRIGGER instead of failing the listing
+- **calendar**: normalise foreign VALARM data instead of failing the listing
+- **calendar**: build the inclusive UNTIL in DTSTART's zone, not UTC
+- **calendar**: stop the reminder shorthand erasing what the caller omitted
+- **calendar**: stop pinning recurring=False on every create call
+- **calendar**: compute UNTIL from the DTSTART being written, not the stored one
+
+### Refactor
+
+- **calendar**: name the fallback VALARM descriptions
+- **calendar**: split the UNTIL and VALARM readers to clear S3776
+
 ## v0.165.0 (2026-08-04)
 
 ### Feat
