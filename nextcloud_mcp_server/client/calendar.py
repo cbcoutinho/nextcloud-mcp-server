@@ -44,6 +44,11 @@ _PENDING_MAX_LOOKBACK = dt.timedelta(days=366 * 3)
 # An occurrence in one of these states is finished and not part of the backlog.
 _TODO_DONE_STATUSES = frozenset({"COMPLETED", "CANCELLED"})
 
+# Fallback VALARM DESCRIPTION per component type. RFC 5545 requires the property
+# on DISPLAY and EMAIL alarms, so a reminder that omits it still needs wording.
+_EVENT_REMINDER_DESCRIPTION = "Event reminder"
+_TODO_REMINDER_DESCRIPTION = "Todo reminder"
+
 
 def _rrule_to_string(rrule: Any) -> str:
     """Render an icalendar ``vRecur`` as an RFC 5545 RRULE value.
@@ -1244,7 +1249,7 @@ class CalendarClient:
     def _build_valarm(
         reminder: dict[str, Any],
         default_summary: str,
-        default_description: str = "Event reminder",
+        default_description: str = _EVENT_REMINDER_DESCRIPTION,
     ) -> Alarm:
         """Build one VALARM from a ``Reminder``-shaped dict.
 
@@ -1342,7 +1347,7 @@ class CalendarClient:
         component: Any,
         reminders: list[dict[str, Any]],
         default_summary: str,
-        default_description: str = "Event reminder",
+        default_description: str = _EVENT_REMINDER_DESCRIPTION,
     ) -> None:
         """Replace every VALARM on ``component`` with ``reminders``, in order."""
         component.subcomponents = [
@@ -1360,7 +1365,7 @@ class CalendarClient:
         component: Any,
         data: dict[str, Any],
         default_summary: str,
-        default_description: str = "Event reminder",
+        default_description: str = _EVENT_REMINDER_DESCRIPTION,
     ) -> None:
         """Write alarms onto ``component`` from whichever form the caller used.
 
@@ -1970,7 +1975,7 @@ class CalendarClient:
 
         # Alarms/reminders
         self._apply_reminders(
-            todo, todo_data, todo_data.get("summary", ""), "Todo reminder"
+            todo, todo_data, todo_data.get("summary", ""), _TODO_REMINDER_DESCRIPTION
         )
 
         # Add timestamps
@@ -2198,7 +2203,7 @@ class CalendarClient:
                         component,
                         todo_data,
                         todo_data.get("summary") or str(component.get("summary", "")),
-                        "Todo reminder",
+                        _TODO_REMINDER_DESCRIPTION,
                     )
 
                     # Update timestamps
