@@ -102,22 +102,30 @@ def _rrule_with_until(
     update path: applying an end date to the *stored* rule of an already-bounded
     series means "move the end", not "contradict yourself".
     """
+    parts = _rrule_parts_without_bounds(rrule_str, replace=replace)
+    all_day = isinstance(dtstart, dt.date) and not isinstance(dtstart, dt.datetime)
+    return ";".join([*parts, f"UNTIL={_format_until(end_date, all_day=all_day)}"])
+
+
+def _rrule_parts_without_bounds(rrule_str: str, *, replace: bool) -> list[str]:
+    """Split an RRULE into parts, dropping or rejecting UNTIL/COUNT."""
     parts = []
     for part in rrule_str.split(";"):
         if not part:
             continue
         name = part.split("=", 1)[0].strip().upper()
-        if name in ("UNTIL", "COUNT"):
-            if not replace:
-                raise ValueError(
-                    f"recurrence_end_date conflicts with {name} already present in "
-                    f"recurrence_rule ({rrule_str!r}); pass one or the other"
-                )
-            continue
-        parts.append(part)
+        if name not in ("UNTIL", "COUNT"):
+            parts.append(part)
+        elif not replace:
+            raise ValueError(
+                f"recurrence_end_date conflicts with {name} already present in "
+                f"recurrence_rule ({rrule_str!r}); pass one or the other"
+            )
+    return parts
 
-    all_day = isinstance(dtstart, dt.date) and not isinstance(dtstart, dt.datetime)
-    date_part = end_date.split("T")[0]
+
+def _format_until(end_date: str, *, all_day: bool) -> str:
+    """Render ``end_date`` as an UNTIL value of the type DTSTART requires."""
     try:
         parsed = dt.datetime.fromisoformat(end_date)
     except ValueError:
@@ -126,20 +134,18 @@ def _rrule_with_until(
         ) from None
 
     if all_day:
-        until = parsed.date().strftime("%Y%m%d")
-    else:
-        if end_date == date_part:
-            # Date-only input: bound the whole day rather than midnight, which
-            # would exclude an occurrence happening later on that date.
-            parsed = parsed.replace(hour=23, minute=59, second=59)
-        parsed = (
-            parsed.replace(tzinfo=dt.UTC)
-            if parsed.tzinfo is None
-            else parsed.astimezone(dt.UTC)
-        )
-        until = parsed.strftime("%Y%m%dT%H%M%SZ")
+        return parsed.date().strftime("%Y%m%d")
 
-    return ";".join([*parts, f"UNTIL={until}"])
+    if end_date == end_date.split("T")[0]:
+        # Date-only input: bound the whole day rather than midnight, which would
+        # exclude an occurrence happening later on that date.
+        parsed = parsed.replace(hour=23, minute=59, second=59)
+    parsed = (
+        parsed.replace(tzinfo=dt.UTC)
+        if parsed.tzinfo is None
+        else parsed.astimezone(dt.UTC)
+    )
+    return parsed.strftime("%Y%m%dT%H%M%SZ")
 
 
 def _occurrence_is_done(component: Any) -> bool:
@@ -1286,40 +1292,46 @@ class CalendarClient:
     @staticmethod
     def _extract_valarms(component: Any) -> list[dict[str, Any]]:
         """Read a component's VALARMs back into ``Reminder``-shaped dicts."""
-        reminders: list[dict[str, Any]] = []
+        reminders = []
         for sub in component.subcomponents:
-            if sub.name != "VALARM":
-                continue
-            reminder: dict[str, Any] = {
-                "action": str(sub.get("action", "DISPLAY")).upper(),
-                "description": str(sub.get("description", "")),
-            }
-            summary = sub.get("summary")
-            if summary:
-                reminder["summary"] = str(summary)
-
-            trigger = sub.get("trigger")
-            if trigger is not None:
-                value = trigger.dt
-                if isinstance(value, dt.timedelta):
-                    # Emit exactly one trigger field, because that is what
-                    # ``Reminder`` accepts — a dict carrying both would not
-                    # validate when a caller feeds a read reminder back into an
-                    # update. Whole-minute offsets take the friendlier
-                    # ``minutes_before``; anything else keeps its raw duration.
-                    total = value.total_seconds()
-                    if total <= 0 and total % 60 == 0:
-                        reminder["minutes_before"] = int(-total // 60)
-                    else:
-                        reminder["trigger"] = vDDDTypes(value).to_ical().decode("utf-8")
-                    related = trigger.params.get("RELATED") if trigger.params else None
-                    if related:
-                        reminder["related"] = str(related).upper()
-                else:
-                    reminder["trigger_at"] = value.isoformat()
-
-            reminders.append(reminder)
+            if sub.name == "VALARM":
+                reminders.append(CalendarClient._extract_valarm(sub))
         return reminders
+
+    @staticmethod
+    def _extract_valarm(alarm: Any) -> dict[str, Any]:
+        """Read one VALARM into a ``Reminder``-shaped dict."""
+        reminder: dict[str, Any] = {
+            "action": str(alarm.get("action", "DISPLAY")).upper(),
+            "description": str(alarm.get("description", "")),
+        }
+        summary = alarm.get("summary")
+        if summary:
+            reminder["summary"] = str(summary)
+
+        trigger = alarm.get("trigger")
+        if trigger is None:
+            return reminder
+
+        value = trigger.dt
+        if not isinstance(value, dt.timedelta):
+            reminder["trigger_at"] = value.isoformat()
+            return reminder
+
+        # Emit exactly one trigger field, because that is what ``Reminder``
+        # accepts — a dict carrying both would not validate when a caller feeds
+        # a read reminder back into an update. Whole-minute offsets take the
+        # friendlier ``minutes_before``, anything else keeps its raw duration.
+        total = value.total_seconds()
+        if total <= 0 and total % 60 == 0:
+            reminder["minutes_before"] = int(-total // 60)
+        else:
+            reminder["trigger"] = vDDDTypes(value).to_ical().decode("utf-8")
+
+        related = trigger.params.get("RELATED") if trigger.params else None
+        if related:
+            reminder["related"] = str(related).upper()
+        return reminder
 
     @staticmethod
     def _sync_valarms(
