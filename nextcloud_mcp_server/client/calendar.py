@@ -75,29 +75,34 @@ def _rrule_to_string(rrule: Any) -> str:
 
 def _shorthand_would_lose(
     stored: list[dict[str, Any]],
-    minutes: int,
-    actions: list[str],
     default_description: str,
     default_summary: str,
 ) -> bool:
-    """True when the shorthand rebuild cannot reproduce the stored alarms.
+    """True when the stored alarms carry shape the shorthand cannot express.
 
-    ``reminder_minutes``/``reminder_email`` collapse to at most one DISPLAY plus
-    one EMAIL, both at a single whole-minute offset with the default wording.
-    Anything the stored set carries beyond that — a second alarm at another
-    offset, an absolute trigger, a ``RELATED=END`` qualifier, a custom summary or
-    per-alarm description — is discarded by the rebuild.
+    ``reminder_minutes``/``reminder_email`` rebuild to at most one DISPLAY plus
+    one EMAIL, sharing a single whole-minute offset and the default wording. A
+    stored set outside that shape — an absolute or sub-minute trigger, several
+    distinct offsets, two alarms of the same action, a ``RELATED`` qualifier, a
+    custom summary or per-alarm description — cannot survive the rebuild.
 
-    Checking only for a missing ``minutes_before`` caught the absolute triggers
-    and none of the rest, so two DISPLAY alarms at different offsets collapsed
-    into one silently. This compares against what the rebuild will actually
-    produce instead of against one shape it cannot express.
+    What the caller is *changing* is deliberately not part of this. A new offset,
+    or dropping the EMAIL alarm via ``reminder_email=False``, is the request
+    being honoured, not data being lost. Comparing each stored offset against the
+    new target made this fire on the most ordinary update there is — nudging a
+    reminder's offset — which would have trained the reader to ignore it.
     """
-    if len(stored) > len(actions):
+    offsets = {reminder.get("minutes_before") for reminder in stored}
+    if len(offsets) > 1:
         return True
+
+    seen_actions = [reminder.get("action") for reminder in stored]
+    if len(seen_actions) != len(set(seen_actions)):
+        return True
+
     return any(
-        reminder.get("minutes_before") != minutes
-        or reminder.get("action") not in actions
+        "minutes_before" not in reminder
+        or reminder.get("action") not in ("DISPLAY", "EMAIL")
         or reminder.get("related")
         # An EMAIL alarm the shorthand itself wrote carries the component title
         # as its subject, so that value is reproducible and not a loss.
@@ -1511,9 +1516,7 @@ class CalendarClient:
         )
 
         actions = ["DISPLAY"] + (["EMAIL"] if want_email else [])
-        if _shorthand_would_lose(
-            stored, minutes, actions, default_description, default_summary
-        ):
+        if _shorthand_would_lose(stored, default_description, default_summary):
             logger.warning(
                 "reminder_minutes/reminder_email rebuilds the alarms as one "
                 "%s at %d minutes, which does not reproduce the %d stored "

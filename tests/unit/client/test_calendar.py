@@ -854,6 +854,33 @@ def test_shorthand_is_quiet_when_the_rebuild_reproduces_the_stored_alarms(caplog
     assert "does not reproduce" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"reminder_minutes": 45},
+        {"reminder_email": False},
+        {"reminder_minutes": 45, "reminder_email": False},
+    ],
+    ids=["new-offset", "drop-email", "both"],
+)
+def test_shorthand_is_quiet_when_the_caller_is_simply_changing_the_value(
+    caplog, update
+):
+    """Changing the offset, or dropping the email alarm, is the request itself.
+
+    An earlier version compared each stored offset against the new target, so it
+    fired on the most ordinary update there is — nudging a reminder's offset.
+    A warning that fires on the common path trains the reader to ignore it, which
+    costs exactly the shape-loss cases it exists to surface.
+    """
+    client, stored = _shorthand_event()
+
+    with caplog.at_level(logging.WARNING):
+        client._merge_ical_properties(stored, update)
+
+    assert "does not reproduce" not in caplog.text
+
+
 def test_shorthand_update_warns_before_replacing_alarms_it_cannot_express(caplog):
     """The shorthand carries one whole-minute offset, so richer alarms are lost.
 
