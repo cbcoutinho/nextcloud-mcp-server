@@ -437,6 +437,29 @@ def test_recurrence_end_date_uses_date_until_for_all_day_events():
     assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
 
 
+def test_all_day_end_date_drops_a_time_of_day_visibly(caplog):
+    """An all-day series can only be bounded by a DATE, so a time is dropped.
+
+    That is the sole correct reading rather than a caller error, but it should
+    not happen invisibly — every other lossy edge in this change set says so.
+    """
+    with caplog.at_level(logging.DEBUG, logger="nextcloud_mcp_server.client.calendar"):
+        ical = _pure_client()._create_ical_event(
+            {
+                "title": "Bin day",
+                "start_datetime": "2026-02-10",
+                "end_datetime": "2026-02-11",
+                "all_day": True,
+                "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+                "recurrence_end_date": "2026-06-30T18:00:00",
+            },
+            "uid-allday-truncate",
+        )
+
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630;BYDAY=TU"
+    assert "cannot express in UNTIL" in caplog.text
+
+
 @pytest.mark.parametrize("bound", ["COUNT=5", "UNTIL=20260101T000000Z"])
 def test_recurrence_end_date_rejects_a_rule_that_already_bounds_itself(bound):
     """Two end conditions in one request is a contradiction, not a preference.

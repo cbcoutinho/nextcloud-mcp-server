@@ -195,6 +195,16 @@ def _format_until(end_date: str, *, all_day: bool, tz: dt.tzinfo | None = None) 
         ) from None
 
     if all_day:
+        if end_date != end_date.split("T")[0]:
+            # RFC 5545 ties UNTIL's value type to DTSTART's, so an all-day series
+            # can only be bounded by a DATE. Dropping the time is the sole
+            # correct reading rather than a caller error, hence debug not warn —
+            # but it should still be visible to anyone wondering where it went.
+            logger.debug(
+                "recurrence_end_date %r carries a time of day, which an all-day "
+                "series cannot express in UNTIL; using the date alone",
+                end_date,
+            )
         return parsed.date().strftime("%Y%m%d")
 
     if end_date == end_date.split("T")[0]:
