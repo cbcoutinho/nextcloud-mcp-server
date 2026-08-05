@@ -122,3 +122,143 @@ async def test_mcp_update_event_extended_fields(
                 await nc_client.calendar.delete_event(calendar_name, event_uid)
             except Exception:
                 pass
+
+
+async def test_mcp_create_event_writes_previously_ignored_fields(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """recurrence_end_date, color and reminder_email reach the stored iCal (GH #1251).
+
+    All three were accepted and documented by the tool but consumed by nothing,
+    so the round trip through a real Nextcloud is the assertion that matters —
+    a unit test on the serializer would have passed before the fix as well.
+    """
+    calendar_name = temporary_calendar
+    event_uid = None
+
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        create_result = await nc_mcp_client.call_tool(
+            "nc_calendar_create_event",
+            {
+                "calendar_name": calendar_name,
+                "title": "Weekly sync",
+                "start_datetime": tomorrow.strftime("%Y-%m-%dT14:00:00"),
+                "end_datetime": tomorrow.strftime("%Y-%m-%dT15:00:00"),
+                "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+                "recurrence_end_date": "2026-12-31",
+                "color": "tomato",
+                "reminder_minutes": 15,
+                "reminder_email": True,
+            },
+        )
+        assert create_result.isError is False, (
+            f"MCP event creation failed: {create_result.content}"
+        )
+        event_uid = json.loads(create_result.content[0].text)["uid"]
+
+        event, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+
+        assert "UNTIL=20261231" in event.get("recurrence_rule", ""), (
+            f"Expected UNTIL in rrule, got: {event.get('recurrence_rule')}"
+        )
+        assert event.get("color") == "tomato", (
+            f"Expected COLOR persisted, got: {event.get('color')}"
+        )
+        actions = [r["action"] for r in event.get("reminders", [])]
+        assert actions == ["DISPLAY", "EMAIL"], (
+            f"Expected a DISPLAY and an EMAIL alarm, got: {actions}"
+        )
+
+        logger.info("MCP create with previously-ignored fields verified")
+
+    finally:
+        if event_uid:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, event_uid)
+            except Exception:
+                pass
+
+
+async def test_mcp_update_event_ordered_reminders(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Ordered reminders survive a real CalDAV round trip (supersedes PR #969).
+
+    Order, an absolute trigger and the preserve-vs-clear distinction are the
+    parts a server can quietly mangle, so all three are checked after storage
+    rather than at serialization time.
+    """
+    calendar_name = temporary_calendar
+    event_uid = None
+
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        create_result = await nc_mcp_client.call_tool(
+            "nc_calendar_create_event",
+            {
+                "calendar_name": calendar_name,
+                "title": "Launch review",
+                "start_datetime": tomorrow.strftime("%Y-%m-%dT14:00:00"),
+                "end_datetime": tomorrow.strftime("%Y-%m-%dT15:00:00"),
+                "reminders": [
+                    {"action": "EMAIL", "minutes_before": 1440, "description": "Prep"},
+                    {"action": "DISPLAY", "minutes_before": 10, "description": "Now"},
+                ],
+            },
+        )
+        assert create_result.isError is False, (
+            f"MCP event creation failed: {create_result.content}"
+        )
+        event_uid = json.loads(create_result.content[0].text)["uid"]
+
+        event, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+        stored = event.get("reminders", [])
+        assert [r["description"] for r in stored] == ["Prep", "Now"], (
+            f"Expected reminder order preserved, got: {stored}"
+        )
+        assert [r["action"] for r in stored] == ["EMAIL", "DISPLAY"]
+        assert [r["minutes_before"] for r in stored] == [1440, 10]
+
+        # An unrelated update must leave the alarms alone.
+        touch_result = await nc_mcp_client.call_tool(
+            "nc_calendar_update_event",
+            {
+                "calendar_name": calendar_name,
+                "event_uid": event_uid,
+                "location": "Room 2",
+            },
+        )
+        assert touch_result.isError is False, (
+            f"MCP event update failed: {touch_result.content}"
+        )
+        touched, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+        assert len(touched.get("reminders", [])) == 2, (
+            f"Expected reminders preserved, got: {touched.get('reminders')}"
+        )
+
+        # An explicit empty list clears them.
+        clear_result = await nc_mcp_client.call_tool(
+            "nc_calendar_update_event",
+            {
+                "calendar_name": calendar_name,
+                "event_uid": event_uid,
+                "reminders": [],
+            },
+        )
+        assert clear_result.isError is False, (
+            f"MCP reminder clear failed: {clear_result.content}"
+        )
+        cleared, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+        assert not cleared.get("reminders"), (
+            f"Expected reminders cleared, got: {cleared.get('reminders')}"
+        )
+
+        logger.info("MCP ordered reminders verified")
+
+    finally:
+        if event_uid:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, event_uid)
+            except Exception:
+                pass
