@@ -1314,16 +1314,24 @@ class CalendarClient:
 
     @staticmethod
     def _extract_valarms(component: Any) -> list[dict[str, Any]]:
-        """Read a component's VALARMs back into ``Reminder``-shaped dicts."""
+        """Read a component's VALARMs back into ``Reminder``-shaped dicts.
+
+        An alarm that cannot be represented is skipped rather than surfaced
+        half-built, because the caller's next step is model validation and a
+        malformed alarm must cost at most itself, never the listing it is in.
+        """
         reminders = []
         for sub in component.subcomponents:
-            if sub.name == "VALARM":
-                reminders.append(CalendarClient._extract_valarm(sub))
+            if sub.name != "VALARM":
+                continue
+            reminder = CalendarClient._extract_valarm(sub)
+            if reminder is not None:
+                reminders.append(reminder)
         return reminders
 
     @staticmethod
-    def _extract_valarm(alarm: Any) -> dict[str, Any]:
-        """Read one VALARM into a ``Reminder``-shaped dict.
+    def _extract_valarm(alarm: Any) -> dict[str, Any] | None:
+        """Read one VALARM into a ``Reminder``-shaped dict, or ``None``.
 
         Stored data is normalised to what ``Reminder`` accepts, because this
         parses whatever any CalDAV client wrote, not only what we write. RFC 5545
@@ -1333,6 +1341,12 @@ class CalendarClient:
         todo appears in, rather than the one alarm. Nextcloud's own
         ``ReminderService`` discards an alarm it does not recognise instead of
         rejecting its component, so unknown actions degrade to DISPLAY here.
+
+        ``None`` means the alarm has no usable TRIGGER. RFC 5545 makes TRIGGER
+        mandatory and Nextcloud cannot schedule an alarm without one, so there is
+        nothing to report — and ``Reminder`` requires exactly one trigger field,
+        so returning a trigger-less dict would fail validation for the whole
+        component just as an unknown ACTION would.
         """
         action = str(alarm.get("action", "DISPLAY")).upper()
         if action not in _VALARM_ACTIONS:
@@ -1353,8 +1367,12 @@ class CalendarClient:
             reminder["summary"] = str(summary)
 
         trigger = alarm.get("trigger")
-        if trigger is None:
-            return reminder
+        if trigger is None or getattr(trigger, "dt", None) is None:
+            logger.warning(
+                "Skipping a VALARM with no usable TRIGGER; RFC 5545 requires one "
+                "and Nextcloud cannot schedule the alarm without it"
+            )
+            return None
 
         value = trigger.dt
         if not isinstance(value, dt.timedelta):
@@ -1929,6 +1947,12 @@ class CalendarClient:
                 # here would emit exactly the mismatched RRULE that makes clients
                 # discard the recurrence set.
                 if event_data.get("recurring") is False:
+                    if event_data.get("recurrence_end_date"):
+                        logger.warning(
+                            "recurring=False was passed in the same update that "
+                            "set recurrence_end_date, so the series is removed "
+                            "and the end date has nothing to bound"
+                        )
                     if "RRULE" in component:
                         del component["RRULE"]
                 elif (

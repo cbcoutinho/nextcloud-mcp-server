@@ -897,6 +897,52 @@ def test_foreign_valarm_action_does_not_break_the_model(caplog):
     assert todo.reminders[0].related is None
 
 
+def _todo_with_alarm(alarm_body: str) -> str:
+    return (
+        "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Other Client//EN\n"
+        "BEGIN:VTODO\nUID:uid-malformed\nSUMMARY:Backup\n"
+        f"BEGIN:VALARM\n{alarm_body}\nEND:VALARM\n"
+        "END:VTODO\nEND:VCALENDAR\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "alarm_body",
+    [
+        "ACTION:PROCEDURE\nTRIGGER:-PT30M\nDESCRIPTION:Legacy",
+        "ACTION:X-CUSTOM-THING\nTRIGGER:-PT30M",
+        "ACTION:DISPLAY\nTRIGGER;RELATED=PARENT:-PT30M",
+        "ACTION:DISPLAY\nDESCRIPTION:No trigger at all",
+        "ACTION:DISPLAY",
+    ],
+    ids=[
+        "legacy-procedure-action",
+        "x-prefixed-action",
+        "foreign-related-param",
+        "missing-trigger",
+        "bare-action-only",
+    ],
+)
+def test_no_stored_alarm_shape_can_break_a_listing(alarm_body):
+    """Whatever another CalDAV client wrote, one alarm costs at most itself.
+
+    ``Todo(**todo_data)`` is built in a plain list comprehension, so a
+    ValidationError from any nested Reminder fails the entire
+    ``nc_calendar_list_todos`` call rather than the single item. Every field the
+    model constrains — the action Literal, the related Literal, the exactly-one
+    trigger rule — is therefore normalised or dropped on the way out of the iCal,
+    and this covers each of those shapes rather than the one that was reported.
+    """
+    from nextcloud_mcp_server.models.calendar import Todo
+
+    todo_data = _pure_client()._parse_ical_todo(_todo_with_alarm(alarm_body))
+
+    todo = Todo(**todo_data)
+    for reminder in todo.reminders:
+        assert reminder.action in ("DISPLAY", "EMAIL", "AUDIO")
+        assert reminder.related in (None, "START", "END")
+
+
 @pytest.mark.parametrize(
     "payload",
     [
