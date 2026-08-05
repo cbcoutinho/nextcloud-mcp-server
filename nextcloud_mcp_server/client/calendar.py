@@ -1306,9 +1306,17 @@ class CalendarClient:
                 vDDDTypes.from_ical(str(reminder["trigger"])),
                 parameters=params,
             )
-        else:
+        elif "minutes_before" in reminder:
             minutes = int(reminder["minutes_before"])
             alarm.add("trigger", dt.timedelta(minutes=-minutes), parameters=params)
+        else:
+            # The Reminder model already enforces this for anything arriving via
+            # an MCP tool, but the client is usable directly and a bare KeyError
+            # would name a dict key rather than the thing the caller got wrong.
+            raise ValueError(
+                "a reminder needs one of trigger_at, trigger or minutes_before; "
+                f"got {sorted(reminder)}"
+            )
 
         return alarm
 
@@ -1952,6 +1960,12 @@ class CalendarClient:
                             "recurring=False was passed in the same update that "
                             "set recurrence_end_date, so the series is removed "
                             "and the end date has nothing to bound"
+                        )
+                    if event_data.get("recurrence_rule"):
+                        logger.warning(
+                            "recurring=False was passed in the same update that "
+                            "set recurrence_rule, so the series is removed and "
+                            "the new rule is discarded"
                         )
                     if "RRULE" in component:
                         del component["RRULE"]

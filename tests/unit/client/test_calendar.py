@@ -743,6 +743,33 @@ def test_reminder_email_alone_can_add_an_email_alarm_to_a_display_only_event():
     assert {r["minutes_before"] for r in reminders} == {20}
 
 
+def test_shorthand_update_warns_before_replacing_alarms_it_cannot_express(caplog):
+    """The shorthand carries one whole-minute offset, so richer alarms are lost.
+
+    That is inherent to the two-field form rather than a bug, but it is
+    destructive, so it must not happen quietly — the caller needs to know the
+    reminders list is the tool for editing those.
+    """
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "reminders": [
+                {"trigger_at": "2026-02-09T20:00:00Z", "description": "Absolute"},
+                {"trigger": "-PT90S", "description": "Sub-minute"},
+            ],
+        },
+        "uid-unrepresentable",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        updated = client._merge_ical_properties(stored, {"reminder_minutes": 30})
+
+    assert "cannot express" in caplog.text
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["minutes_before"] for r in reminders] == [30]
+
+
 def test_reminder_minutes_zero_still_clears_everything():
     """An explicit zero is a request to remove the alarms, not a missing value."""
     client, stored = _shorthand_event()
