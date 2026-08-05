@@ -36,6 +36,13 @@ async def _captured_event_data(tool, mocker, **kwargs):
         "nextcloud_mcp_server.server.calendar.get_client",
         mocker.AsyncMock(return_value=client),
     )
+    # Pin the deployment mode. @require_scopes denies a request that carries a
+    # context but no verified token *only* under login-flow, so leaving this to
+    # the ambient environment makes the test pass locally and fail in CI.
+    mocker.patch(
+        "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+        return_value=mocker.MagicMock(enable_login_flow=False),
+    )
 
     await tool.fn(
         calendar_name="personal",
