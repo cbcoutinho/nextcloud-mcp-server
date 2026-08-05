@@ -694,6 +694,86 @@ def test_reminder_email_shorthand_adds_a_second_email_alarm():
     assert {a.get("trigger").dt for a in alarms} == {timedelta(minutes=-15)}
 
 
+def _shorthand_event():
+    """An event carrying both shorthand alarms, as the create path builds them."""
+    client = _pure_client()
+    return client, client._create_ical_event(
+        {**TIMED_EVENT, "reminder_minutes": 15, "reminder_email": True},
+        "uid-shorthand-update",
+    )
+
+
+def test_reminder_email_alone_keeps_the_stored_offset():
+    """Updating one shorthand field must not erase what the other one set.
+
+    ``reminder_email`` on its own used to find no ``reminder_minutes``, clear
+    every VALARM and return before adding any back — silent total loss, and
+    worse than master, where the flag was merely inert.
+    """
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_email": False})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY"]
+    assert reminders[0]["minutes_before"] == 15
+
+
+def test_reminder_minutes_alone_keeps_the_stored_email_alarm():
+    """The mirror case: changing the offset must not drop the EMAIL alarm."""
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_minutes": 45})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY", "EMAIL"]
+    assert {r["minutes_before"] for r in reminders} == {45}
+
+
+def test_reminder_email_alone_can_add_an_email_alarm_to_a_display_only_event():
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "reminder_minutes": 20}, "uid-display-only"
+    )
+
+    updated = client._merge_ical_properties(stored, {"reminder_email": True})
+
+    reminders = client._parse_ical_event(updated)["reminders"]
+    assert [r["action"] for r in reminders] == ["DISPLAY", "EMAIL"]
+    assert {r["minutes_before"] for r in reminders} == {20}
+
+
+def test_reminder_minutes_zero_still_clears_everything():
+    """An explicit zero is a request to remove the alarms, not a missing value."""
+    client, stored = _shorthand_event()
+
+    updated = client._merge_ical_properties(stored, {"reminder_minutes": 0})
+
+    assert "reminders" not in client._parse_ical_event(updated)
+
+
+def test_recurrence_end_date_is_utc_even_for_a_tzid_bound_dtstart():
+    """RFC 5545 §3.3.10: UNTIL is UTC whenever DTSTART is a date-time.
+
+    A TZID-bound DTSTART is the case most likely to tempt a local-time UNTIL,
+    which clients would reject along with the whole recurrence set.
+    """
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "NY standup",
+            "start_datetime": "2026-02-10T10:00:00",
+            "end_datetime": "2026-02-10T11:00:00",
+            "timezone": "America/New_York",
+            "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU",
+            "recurrence_end_date": "2026-06-30",
+        },
+        "uid-tzid-until",
+    )
+
+    assert str(_vevent(ical)["DTSTART"].params.get("TZID")) == "America/New_York"
+    assert _rrule(ical) == "FREQ=WEEKLY;UNTIL=20260630T235959Z;BYDAY=TU"
+
+
 def test_unrelated_update_preserves_reminders_but_empty_list_clears_them():
     """Omission preserves, ``[]`` clears — the distinction the API promises."""
     client = _pure_client()

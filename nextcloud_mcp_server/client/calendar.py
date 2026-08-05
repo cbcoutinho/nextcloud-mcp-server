@@ -1376,6 +1376,13 @@ class CalendarClient:
 
         Passing none of the three leaves existing alarms alone, which is what
         makes an unrelated update non-destructive.
+
+        The two shorthand fields are independently updatable: whichever one the
+        caller omits is read back off the stored alarms rather than assumed. The
+        rebuild would otherwise erase what the caller never mentioned —
+        ``reminder_email=True`` on its own would find no minutes, clear every
+        VALARM and add nothing back, and ``reminder_minutes=45`` on its own would
+        silently drop a stored EMAIL alarm.
         """
         if "reminders" in data:
             self._sync_valarms(
@@ -1389,13 +1396,32 @@ class CalendarClient:
         if "reminder_minutes" not in data and "reminder_email" not in data:
             return
 
-        minutes = data.get("reminder_minutes", 0) or 0
-        self._sync_valarms(component, [], default_summary)
+        stored = self._extract_valarms(component)
+        if "reminder_minutes" in data:
+            minutes = data["reminder_minutes"] or 0
+        else:
+            minutes = next(
+                (r["minutes_before"] for r in stored if "minutes_before" in r), 0
+            )
+        want_email = (
+            data["reminder_email"]
+            if "reminder_email" in data
+            else any(r["action"] == "EMAIL" for r in stored)
+        )
+
+        if minutes <= 0 and want_email:
+            logger.warning(
+                "reminder_email was requested but no reminder_minutes was given "
+                "and none could be read from the stored alarms, so there is no "
+                "offset to schedule it at"
+            )
+
+        self._sync_valarms(component, [], default_summary, default_description)
         if minutes <= 0:
             return
 
         actions = ["DISPLAY"]
-        if data.get("reminder_email"):
+        if want_email:
             actions.append("EMAIL")
         for action in actions:
             component.add_component(

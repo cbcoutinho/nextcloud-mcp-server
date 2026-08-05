@@ -180,6 +180,68 @@ async def test_mcp_create_event_writes_previously_ignored_fields(
                 pass
 
 
+async def test_mcp_update_event_shorthand_reminder_fields_are_independent(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Updating one shorthand reminder field must not erase the other's effect.
+
+    Against a real store rather than a synthesised iCal, because the bug this
+    guards was precisely that the update path rebuilt alarms from the request
+    alone and never consulted what was already saved.
+    """
+    calendar_name = temporary_calendar
+    event_uid = None
+
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        create_result = await nc_mcp_client.call_tool(
+            "nc_calendar_create_event",
+            {
+                "calendar_name": calendar_name,
+                "title": "Retro",
+                "start_datetime": tomorrow.strftime("%Y-%m-%dT14:00:00"),
+                "end_datetime": tomorrow.strftime("%Y-%m-%dT15:00:00"),
+                "reminder_minutes": 15,
+                "reminder_email": True,
+            },
+        )
+        assert create_result.isError is False, (
+            f"MCP event creation failed: {create_result.content}"
+        )
+        event_uid = json.loads(create_result.content[0].text)["uid"]
+
+        # Change only the offset: the EMAIL alarm must survive at the new offset.
+        update_result = await nc_mcp_client.call_tool(
+            "nc_calendar_update_event",
+            {
+                "calendar_name": calendar_name,
+                "event_uid": event_uid,
+                "reminder_minutes": 45,
+            },
+        )
+        assert update_result.isError is False, (
+            f"MCP event update failed: {update_result.content}"
+        )
+
+        event, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+        reminders = event.get("reminders", [])
+        assert sorted(r["action"] for r in reminders) == ["DISPLAY", "EMAIL"], (
+            f"Expected both alarms preserved, got: {reminders}"
+        )
+        assert {r.get("minutes_before") for r in reminders} == {45}, (
+            f"Expected both alarms moved to 45 minutes, got: {reminders}"
+        )
+
+        logger.info("MCP shorthand reminder independence verified")
+
+    finally:
+        if event_uid:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, event_uid)
+            except Exception:
+                pass
+
+
 async def test_mcp_update_event_ordered_reminders(
     nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
 ):
