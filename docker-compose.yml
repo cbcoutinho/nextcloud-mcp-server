@@ -411,7 +411,7 @@ services:
       - login-flow
 
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.18.3@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286
+    image: docker.io/qdrant/qdrant:v1.19.0@sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
