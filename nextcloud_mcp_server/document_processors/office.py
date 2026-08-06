@@ -83,7 +83,7 @@ class OfficeDocumentProcessor(DocumentProcessor):
 
         try:
             pdf_bytes = await _libreoffice.convert(
-                content, name, "pdf", timeout=self._timeout
+                content, name, "pdf", timeout_seconds=self._timeout
             )
         except _libreoffice.LibreOfficeError as exc:
             raise ProcessorError(f"Office rendition failed: {exc}") from exc

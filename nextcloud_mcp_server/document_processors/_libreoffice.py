@@ -46,16 +46,22 @@ async def convert(
     content: bytes,
     filename: str,
     target: str,
-    timeout: float = 120.0,
+    timeout_seconds: float = 120.0,
 ) -> bytes:
     """Convert ``content`` to ``target`` ("pdf" / "xlsx") and return the bytes.
+
+    The cap is taken as a value rather than left to the caller's own
+    ``fail_after`` because expiry is translated here into a
+    :class:`LibreOfficeError`: callers already handle that one exception type,
+    and a bare ``TimeoutError`` escaping into the processor would bypass the
+    "conversion failed" path each of them implements.
 
     Args:
         content: Source document bytes.
         filename: Source filename -- LibreOffice picks its import filter from
             the extension, so a name without one converts as the wrong format.
         target: LibreOffice output filter name.
-        timeout: Wall-clock cap; the process is killed past it.
+        timeout_seconds: Wall-clock cap; the process is killed past it.
 
     Raises:
         LibreOfficeError: LibreOffice is absent, exits non-zero, times out, or
@@ -107,11 +113,11 @@ async def convert(
         limiter = parse_process_limiter(settings.document_parse_process_slots)
         try:
             async with limiter:
-                with anyio.fail_after(timeout):
+                with anyio.fail_after(timeout_seconds):
                     result = await anyio.run_process(argv, check=False)
         except TimeoutError as exc:
             raise LibreOfficeError(
-                f"LibreOffice timed out after {timeout}s converting {filename!r}"
+                f"LibreOffice timed out after {timeout_seconds}s converting {filename!r}"
             ) from exc
 
         if result.returncode != 0:

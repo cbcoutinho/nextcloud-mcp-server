@@ -1,17 +1,23 @@
-"""Outlook ``.msg`` messages, read with extract-msg.
+"""Outlook ``.msg`` messages, formatted for indexing.
 
-The alternatives were measured and rejected on a real 1.3 MB thread:
+The container is read by :mod:`._msg_reader`, a small olefile-based reader --
+see its module docstring for why that exists rather than ``extract-msg``. This
+module only turns the fields it returns into indexable markdown.
+
+Every off-the-shelf option was measured on a real 1.3 MB thread and rejected:
 
 * markitdown emitted **27 bytes** -- the literal string ``# Email Message\\n\\n##
-  Content``. Its converter pokes at OLE streams directly and only finds an
-  uncompressed plain-text body; a modern Outlook message stores the body as
-  compressed RTF, so it silently yields nothing at all.
+  Content``. It looks for a body variant that message does not carry, while the
+  same message holds a 14,996-byte body in the other one.
 * docling-serve returned ``status=skipped``.
-* LibreOffice cannot open ``.msg``.
-* unstructured recovered the body but took 22.4s.
+* LibreOffice cannot open ``.msg`` at all.
+* unstructured recovered the body, but took 22.4s.
+* ``extract-msg`` worked (15,303 characters in 0.15s) but pulls in
+  ``red-black-tree-mod``, which PyPI publishes as an sdist only -- see
+  :mod:`._msg_reader`.
 
-extract-msg recovered 15,303 characters plus headers and attachment names in
-0.15s, so it is the only reasonable choice rather than merely the best one.
+The reader in ._msg_reader recovers 15,313 characters from that thread in
+0.02s, so nothing was given up by writing it.
 """
 
 import io

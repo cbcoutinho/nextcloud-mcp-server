@@ -82,7 +82,10 @@ class SpreadsheetProcessor(DocumentProcessor):
                 await progress_callback(0.0, None, "Converting legacy spreadsheet...")
             try:
                 content = await _libreoffice.convert(
-                    content, filename or "workbook.xls", "xlsx", timeout=self._timeout
+                    content,
+                    filename or "workbook.xls",
+                    "xlsx",
+                    timeout_seconds=self._timeout,
                 )
             except _libreoffice.LibreOfficeError as exc:
                 raise ProcessorError(

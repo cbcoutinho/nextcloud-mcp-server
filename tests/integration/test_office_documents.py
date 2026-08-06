@@ -55,7 +55,7 @@ async def _word_fixture(target_filter: str) -> bytes:
     tell which module should claim the input.
     """
     return await _libreoffice.convert(
-        TABLE_HTML.encode(), "q.html", target_filter, timeout=180.0
+        TABLE_HTML.encode(), "q.html", target_filter, timeout_seconds=180.0
     )
 
 
@@ -77,7 +77,9 @@ async def _xls_fixture() -> bytes:
         sheet.append(row)
     buf = io.BytesIO()
     workbook.save(buf)
-    return await _libreoffice.convert(buf.getvalue(), "s.xlsx", "xls", timeout=180.0)
+    return await _libreoffice.convert(
+        buf.getvalue(), "s.xlsx", "xls", timeout_seconds=180.0
+    )
 
 
 @pytest.mark.parametrize(
