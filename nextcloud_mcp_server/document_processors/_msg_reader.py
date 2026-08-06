@@ -16,6 +16,15 @@ Reading **both** string variants is the point. markitdown's converter yields 27
 bytes -- the literal ``# Email Message\\n\\n## Content`` -- on a real 1.3 MB
 thread, because it looks for a body variant that message does not carry. The
 same message holds a 14,996-byte plain-text body in the ``001E`` variant.
+
+**Scope cut worth knowing:** only the plain-text body property (``1000``) is
+read. Outlook writes it alongside the HTML (``1013``) and compressed-RTF
+(``1009``) bodies for every message observed here, so nothing was lost -- but a
+client that wrote *solely* an HTML or RTF body would be indexed with its headers
+and an empty body. If that shows up, ``1013`` is plain HTML and can go through
+``html_to_markdown``; ``1009`` needs the MS-OXRTFCP decompression that
+``compressed-rtf`` implements, which is the point at which a dependency is
+easier than more code here.
 """
 
 import logging

@@ -5,8 +5,11 @@ import io
 import openpyxl
 import pytest
 
+from nextcloud_mcp_server.document_processors import _libreoffice
+from nextcloud_mcp_server.document_processors.base import ProcessorError
 from nextcloud_mcp_server.document_processors.spreadsheet import (
     SHEET_BOUNDARIES_KEY,
+    XLS_MIME,
     XLSX_MIME,
     SpreadsheetProcessor,
 )
@@ -25,6 +28,50 @@ def _workbook(sheets: dict[str, list[list]]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+class TestLegacyXls:
+    """The .xls branch, mocked so it stays covered in the fast unit lane.
+
+    The real conversion is exercised by
+    tests/integration/test_office_documents.py, which needs a soffice binary and
+    is skipped without one -- so without these the branch has no coverage at all
+    on a machine or CI lane lacking LibreOffice.
+    """
+
+    async def test_it_converts_to_xlsx_then_reads_cells(self, mocker):
+        converted = _workbook({"Answers": [["Domain", "Answer"], ["Certs", "ISO"]]})
+        convert = mocker.patch.object(
+            _libreoffice, "convert", mocker.AsyncMock(return_value=converted)
+        )
+
+        result = await SpreadsheetProcessor().process(
+            b"legacy ole2 bytes", XLS_MIME, "s.xls"
+        )
+
+        # xlsx, never pdf: a PDF rendition loses a third of the cells.
+        assert convert.await_args.args[2] == "xlsx"
+        assert "| Certs | ISO |" in result.text
+        assert result.metadata["converted_from_mime"] == XLS_MIME
+
+    async def test_conversion_failure_becomes_a_processor_error(self, mocker):
+        mocker.patch.object(
+            _libreoffice,
+            "convert",
+            mocker.AsyncMock(side_effect=_libreoffice.LibreOfficeError("no filter")),
+        )
+
+        with pytest.raises(ProcessorError, match="Legacy spreadsheet conversion"):
+            await SpreadsheetProcessor().process(b"x", XLS_MIME, "s.xls")
+
+    async def test_xlsx_never_goes_near_libreoffice(self, mocker):
+        convert = mocker.patch.object(_libreoffice, "convert", mocker.AsyncMock())
+
+        await SpreadsheetProcessor().process(
+            _workbook({"S": [["a"]]}), XLSX_MIME, "s.xlsx"
+        )
+
+        convert.assert_not_awaited()
 
 
 async def test_rows_become_a_markdown_table():

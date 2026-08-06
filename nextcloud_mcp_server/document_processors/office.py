@@ -52,6 +52,12 @@ class OfficeDocumentProcessor(DocumentProcessor):
         # so only the structured tier's find_tables recovers the grid. Letting
         # the ladder choose would discard exactly the structure the rendition
         # exists to preserve.
+        #
+        # extract_images=False regardless of ``settings.pymupdf_extract_images``:
+        # the images in a rendition are LibreOffice's raster of the source's own
+        # figures, one indirection removed from anything a user could be shown,
+        # and writing them would spend disk on a temporary artefact that is
+        # discarded with the rendition.
         self._pdf = PyMuPDFProcessor(extract_images=False)
 
     @property
@@ -87,6 +93,26 @@ class OfficeDocumentProcessor(DocumentProcessor):
             )
         except _libreoffice.LibreOfficeError as exc:
             raise ProcessorError(f"Office rendition failed: {exc}") from exc
+
+        # A rendition reaches the PDF engine directly rather than back through
+        # ProcessorRegistry, so it would otherwise skip the size cap a PDF
+        # uploaded to Nextcloud has to pass. The *source* is already capped
+        # before download, but rendering is not size-preserving -- a modest .doc
+        # of dense vector figures can render far larger -- so the cap is applied
+        # again here, to the bytes actually about to be parsed.
+        # Imported here rather than at module scope: registry imports the
+        # processor package, so a top-level import would close a cycle.
+        from nextcloud_mcp_server.config import get_settings  # noqa: PLC0415
+
+        from .registry import get_registry  # noqa: PLC0415
+
+        oversize = get_registry().oversize_result_for_size(
+            len(pdf_bytes), name, get_settings()
+        )
+        if oversize is not None:
+            oversize.metadata[RENDERED_FROM_KEY] = content_type
+            oversize.metadata["rendition_bytes"] = len(pdf_bytes)
+            return oversize
 
         result = await self._pdf.process(
             pdf_bytes, "application/pdf", name, options, progress_callback

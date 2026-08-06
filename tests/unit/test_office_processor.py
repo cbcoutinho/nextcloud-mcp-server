@@ -2,6 +2,7 @@
 
 import pytest
 
+from nextcloud_mcp_server import config
 from nextcloud_mcp_server.document_processors import _libreoffice
 from nextcloud_mcp_server.document_processors.base import (
     ProcessingResult,
@@ -76,6 +77,44 @@ async def test_the_pdf_parse_receives_the_rendition_not_the_source(mocker):
     assert convert.await_args.args[2] == "pdf"
     assert pdf.process.await_args.args[0] == b"%PDF-1.7"
     assert pdf.process.await_args.args[1] == "application/pdf"
+
+
+async def test_an_oversize_rendition_is_rejected_before_parsing(mocker):
+    """Rendering is not size-preserving, and the rendition skips the registry.
+
+    A modest source can render far larger, and because the rendition goes
+    straight to the PDF engine it would otherwise never meet the size cap an
+    uploaded PDF has to pass.
+    """
+    processor = OfficeDocumentProcessor()
+    mocker.patch.object(
+        _libreoffice, "convert", mocker.AsyncMock(return_value=b"%PDF-" + b"x" * 4096)
+    )
+    pdf = _patch_pdf(mocker, processor)
+    mocker.patch.object(
+        config, "get_settings", lambda: mocker.Mock(document_max_pdf_size_mb=0.001)
+    )
+
+    result = await processor.process(b"docx bytes", DOCX_MIME, "big.docx")
+
+    assert result.success is False
+    assert result.metadata["parse_failed_reason"] == "oversize"
+    assert result.metadata[RENDERED_FROM_KEY] == DOCX_MIME
+    pdf.process.assert_not_awaited()
+
+
+async def test_a_rendition_within_the_cap_is_parsed(mocker):
+    processor = OfficeDocumentProcessor()
+    _patch_convert(mocker)
+    pdf = _patch_pdf(mocker, processor)
+    mocker.patch.object(
+        config, "get_settings", lambda: mocker.Mock(document_max_pdf_size_mb=100)
+    )
+
+    result = await processor.process(b"docx bytes", DOCX_MIME, "ok.docx")
+
+    assert result.success is True
+    pdf.process.assert_awaited_once()
 
 
 async def test_conversion_failure_becomes_a_processor_error(mocker):

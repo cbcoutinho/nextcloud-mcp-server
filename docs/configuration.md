@@ -723,6 +723,7 @@ shorter OCR ceiling:
 
 ```dotenv
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
+DOCUMENT_OFFICE_TIMEOUT_SECONDS=120   # Wall-clock cap per LibreOffice conversion: .doc/.docx -> pdf, .xls -> xlsx (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
 DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
@@ -750,6 +751,18 @@ A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
+
+The same cap is applied twice to a `.doc`/`.docx`: once to the source before it
+is downloaded, and again to the PDF LibreOffice renders from it. Rendering is
+not size-preserving — a modest document of dense vector figures can render much
+larger — so a source under the cap can still produce a rendition over it, and
+that rendition is what the parse tiers would have to hold.
+
+A LibreOffice conversion also pays `DOCUMENT_OFFICE_TIMEOUT_SECONDS` before the
+parse cap applies, and it takes a slot from `DOCUMENT_PARSE_PROCESS_SLOTS` while
+it runs: `soffice` holds the source and the rendered output at once, so it is
+bounded by the same limiter as the parse workers rather than being allowed to
+start one process per concurrent ingest task.
 
 **Sizing the cap for a tenant.** Two metrics make the corpus visible instead of
 requiring a manual crawl:

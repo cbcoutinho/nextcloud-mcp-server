@@ -106,6 +106,19 @@ class TestReader:
             "image001.png",
         ]
 
+    def test_a_declared_code_page_is_used_to_decode(self):
+        """PROP_INTERNET_CPID selects the decoder for the 001E variant."""
+        body = "Grüße aus München"
+        content = _build_msg(body=body, codepage=1252)
+
+        assert read_msg(io.BytesIO(content))["body"] == body
+
+    def test_an_unknown_code_page_falls_back_instead_of_raising(self):
+        """A nonsense CPID must not fail the whole message."""
+        content = _build_msg(body="plain ascii body", codepage=999999)
+
+        assert read_msg(io.BytesIO(content))["body"] == "plain ascii body"
+
     def test_a_non_ole_container_is_rejected_clearly(self):
         with pytest.raises(MsgReadError, match="not an OLE2"):
             read_msg(io.BytesIO(b"this is not a compound file"))

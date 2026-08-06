@@ -49,10 +49,11 @@ _registry.register(
 # Unstructured processor (10), which also claims these types but flattens their
 # structure, while leaving 20 for docling. Each reads its format the way that
 # measured best rather than sharing one route -- see the module docstrings.
-_registry.register(SpreadsheetProcessor(), priority=15)
+_office_timeout = _settings.document_office_timeout_seconds
+_registry.register(SpreadsheetProcessor(timeout=_office_timeout), priority=15)
 _registry.register(MsgProcessor(), priority=15)
 if _libreoffice.LIBREOFFICE_AVAILABLE:
-    _registry.register(OfficeDocumentProcessor(), priority=15)
+    _registry.register(OfficeDocumentProcessor(timeout=_office_timeout), priority=15)
 else:
     # Not an error: the API image has no reason to carry LibreOffice. Leaving
     # the processor unregistered means .doc/.docx report "no processor for
