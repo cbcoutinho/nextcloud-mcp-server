@@ -37,7 +37,20 @@ _UNNAMED = "<bytes>"
 # "ISO 27001" is embedded as "ISO<br>27001" and no search for "ISO 27001" can
 # match it. Narrow columns wrap constantly, so a form or questionnaire loses a
 # large share of its searchable phrases this way.
-_TABLE_CELL_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+#
+# One run of adjacent breaks, with the spaces around it, becomes one space. A
+# single substitution rather than "replace each tag, then collapse the runs":
+# collapsing afterwards operates on the whole line, so a legitimate double
+# space in an unrelated cell of the same row would be eaten as collateral. This
+# form can only ever rewrite the text it matched.
+#
+# The leading space is `?`, not `*`, deliberately. With `[ \t]*` the engine can
+# consume a whole run of spaces, fail to find a `<br>` after it, then retry one
+# character shorter -- quadratic in the length of any space run on the line,
+# and rendered tables are full of padding runs (python:S8786). One optional
+# character cannot backtrack, and one is all the common `word <br> word` case
+# needs; a wider run before a break survives as-is, which is the safer miss.
+_TABLE_CELL_BREAK_RE = re.compile(r"[ \t]?(?:<br\s*/?>[ \t]*)+", re.IGNORECASE)
 
 
 def _unwrap_table_cell_breaks(text: str) -> str:
