@@ -338,7 +338,7 @@ def should_use_page_aware(
 def preflight_oversize_result(
     doc_task: Any, file_path: str | None, settings: Any
 ) -> Any:
-    """Apply the PDF size cap to the scanned size, before any download.
+    """Apply the document size cap to the scanned size, before any download.
 
     ``DocumentTask.size_bytes`` carries the WebDAV ``getcontentlength`` captured
     at scan time, so an over-cap document can be rejected without fetching it.

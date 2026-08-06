@@ -1,5 +1,6 @@
 """Tagged-file discovery covers the office formats, not only PDFs."""
 
+import anyio
 import pytest
 
 from nextcloud_mcp_server.client import _as_mime_tuple
@@ -28,6 +29,129 @@ class TestMimeTupleNormalisation:
         assert "application/pdf".startswith(types)
         assert f"{DOCX}; charset=binary".startswith(types)
         assert not "image/png".startswith(types)
+
+
+class TestTaggedFolderExpansion:
+    """A tagged folder needs one SEARCH per type; they must not be sequential."""
+
+    @staticmethod
+    def _client(
+        mocker, per_type: dict[str, list[dict]] | None = None, fail: set | None = None
+    ):
+        from nextcloud_mcp_server.client import NextcloudClient
+
+        client = mocker.Mock(spec=NextcloudClient)
+        in_flight = 0
+        peak = 0
+
+        async def find_all_by_type(mime_type, scope=None):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await anyio.sleep(0.01)
+            in_flight -= 1
+            if fail and mime_type in fail:
+                raise RuntimeError(f"SEARCH failed for {mime_type}")
+            return (per_type or {}).get(mime_type, [])
+
+        client.webdav = mocker.Mock()
+        client.webdav.find_all_by_type = find_all_by_type
+        client._walk_tagged_dir = NextcloudClient._walk_tagged_dir.__get__(client)
+        client.peak = lambda: peak
+        return client
+
+    async def test_the_per_type_searches_run_concurrently(self, mocker):
+        client = self._client(mocker)
+
+        await client._walk_tagged_dir("/Docs", (DOCX, XLSX, "application/pdf"), "t")
+
+        assert client.peak() == 3, (
+            f"expected the 3 per-type SEARCHes to overlap, saw {client.peak()}"
+        )
+
+    async def test_results_are_ordered_by_type_not_by_completion(self, mocker):
+        """Deterministic discovery output for the same corpus."""
+        client = self._client(
+            mocker,
+            per_type={
+                DOCX: [{"id": 1}],
+                XLSX: [{"id": 2}],
+                "application/pdf": [{"id": 3}],
+            },
+        )
+
+        found, failed = await client._walk_tagged_dir(
+            "/Docs", (DOCX, XLSX, "application/pdf"), "t"
+        )
+
+        assert [row["id"] for row in found] == [1, 2, 3]
+        assert failed is False
+
+    async def test_one_failing_type_keeps_the_others(self, mocker):
+        """A partial folder beats an empty one."""
+        client = self._client(
+            mocker,
+            per_type={DOCX: [{"id": 1}], "application/pdf": [{"id": 3}]},
+            fail={XLSX},
+        )
+
+        found, failed = await client._walk_tagged_dir(
+            "/Docs", (DOCX, XLSX, "application/pdf"), "t"
+        )
+
+        assert [row["id"] for row in found] == [1, 3]
+        assert failed is True
+
+
+class TestDirectlyTaggedFiles:
+    """The non-folder path: a tagged file is filtered by its own content type.
+
+    `_as_mime_tuple`'s tests cover `startswith(tuple)` in isolation, but nothing
+    exercised the line in `find_files_by_tag` that applies it to a directly
+    tagged file -- which is how most office documents will actually be tagged.
+    """
+
+    @staticmethod
+    def _client(mocker, items):
+        from nextcloud_mcp_server.client import NextcloudClient
+
+        client = mocker.Mock(spec=NextcloudClient)
+        client.webdav = mocker.Mock()
+        client.webdav.get_tag_by_name = mocker.AsyncMock(return_value={"id": 7})
+        client.webdav.get_files_by_tag = mocker.AsyncMock(return_value=items)
+        client.find_files_by_tag = NextcloudClient.find_files_by_tag.__get__(client)
+        return client
+
+    async def test_office_files_pass_and_others_are_dropped(self, mocker):
+        client = self._client(
+            mocker,
+            [
+                {"id": 1, "content_type": DOCX, "path": "/a.docx"},
+                {"id": 2, "content_type": XLSX, "path": "/b.xlsx"},
+                {"id": 3, "content_type": "application/pdf", "path": "/c.pdf"},
+                {"id": 4, "content_type": "image/png", "path": "/d.png"},
+                {"id": 5, "content_type": "text/plain", "path": "/e.txt"},
+            ],
+        )
+
+        found = await client.find_files_by_tag(
+            "vector-index", mime_type_filter=Settings().indexable_mime_types
+        )
+
+        assert sorted(f["id"] for f in found) == [1, 2, 3]
+
+    async def test_a_content_type_with_parameters_still_matches(self, mocker):
+        """WebDAV may report `…document; charset=binary`; startswith handles it."""
+        client = self._client(
+            mocker,
+            [{"id": 1, "content_type": f"{DOCX}; charset=binary", "path": "/a.docx"}],
+        )
+
+        found = await client.find_files_by_tag(
+            "vector-index", mime_type_filter=Settings().indexable_mime_types
+        )
+
+        assert [f["id"] for f in found] == [1]
 
 
 class TestIndexableSetting:
