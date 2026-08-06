@@ -994,3 +994,54 @@ class TestVcardLineFolding:
         assert len(url_lines) == 1
         assert url_lines[0] == "item1.URL:https://new.example.com"
         assert "item1.X-ABLabel:homepage" in result
+
+
+def test_list_addressbooks_falls_back_to_slug_for_empty_displayname(mocker):
+    """Nextcloud returns an empty ``<d:displayname/>`` when an addressbook has
+    no display name configured. The client must fall back to the URI slug
+    instead of surfacing ``None``, which crashes the MCP tool's
+    ``AddressBook`` model.
+    """
+    client = ContactsClient.__new__(ContactsClient)
+    client.username = "testuser"
+    client._principal_discovered = True
+    mocker.patch.object(client, "_ensure_principal_id", mocker.AsyncMock())
+
+    response = mocker.Mock()
+    response.content = b"""<?xml version="1.0" encoding="utf-8"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
+      <d:response>
+        <d:href>/remote.php/dav/addressbooks/users/testuser/contacts/</d:href>
+        <d:propstat>
+          <d:prop>
+            <d:displayname/>
+            <d:getctag>"12345"</d:getctag>
+          </d:prop>
+          <d:status>HTTP/1.1 200 OK</d:status>
+        </d:propstat>
+      </d:response>
+      <d:response>
+        <d:href>/remote.php/dav/addressbooks/users/testuser/family/</d:href>
+        <d:propstat>
+          <d:prop>
+            <d:displayname>Family</d:displayname>
+            <d:getctag>"67890"</d:getctag>
+          </d:prop>
+          <d:status>HTTP/1.1 200 OK</d:status>
+        </d:propstat>
+      </d:response>
+    </d:multistatus>"""
+    mocker.patch.object(
+        client, "_make_request", mocker.AsyncMock(return_value=response)
+    )
+
+    async def _run():
+        return await client.list_addressbooks()
+
+    import anyio
+
+    addressbooks = anyio.run(_run)
+
+    by_name = {ab["name"]: ab for ab in addressbooks}
+    assert by_name["contacts"]["display_name"] == "contacts"
+    assert by_name["family"]["display_name"] == "Family"

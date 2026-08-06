@@ -430,7 +430,7 @@ class ContactsClient(BaseNextcloudClient):
 
             displayname_elem = prop.find(".//d:displayname", ns)
             displayname = (
-                displayname_elem.text
+                (displayname_elem.text or addressbook_name)
                 if displayname_elem is not None
                 else addressbook_name
             )
