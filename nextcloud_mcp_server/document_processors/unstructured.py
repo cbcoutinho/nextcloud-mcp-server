@@ -192,12 +192,23 @@ class UnstructuredProcessor(DocumentProcessor):
                 tables_as_markdown = 0
 
                 for element in elements:
+                    el_type = element.get("type", "unknown")
                     # A Table element's ``text`` is its cells flattened into one
                     # run of prose, which loses the row/column association a
                     # questionnaire or price list depends on. ``text_as_html``
                     # carries the real grid, so prefer it and render it as a
                     # markdown table.
-                    table_html = (element.get("metadata") or {}).get("text_as_html")
+                    #
+                    # Gated on the element type as well as the key. The API only
+                    # populates ``text_as_html`` for tables today, so this is not
+                    # a behaviour change -- but if it ever carries HTML on some
+                    # other element, rendering that as a table would misread it,
+                    # whereas falling through to ``text`` degrades safely.
+                    table_html = (
+                        (element.get("metadata") or {}).get("text_as_html")
+                        if el_type == "Table"
+                        else None
+                    )
                     if table_html:
                         table_md = html_to_markdown(table_html)
                         if table_md:
@@ -208,7 +219,6 @@ class UnstructuredProcessor(DocumentProcessor):
                     elif element.get("text"):
                         texts.append(element["text"])
 
-                    el_type = element.get("type", "unknown")
                     element_types[el_type] = element_types.get(el_type, 0) + 1
 
                 parsed_text = "\n\n".join(texts)

@@ -83,6 +83,42 @@ async def test_untabled_document_stays_text_only(mocker):
     assert result.metadata["parse_mode"] == "text_only"
 
 
+async def test_table_element_without_html_uses_its_text(mocker):
+    """A Table carrying no text_as_html must still contribute its cells."""
+    _mock_post(
+        mocker,
+        [{"type": "Table", "text": "Domain Answer Certifications ISO 27001"}],
+    )
+    processor = UnstructuredProcessor(api_url="http://test:8000")
+
+    result = await processor.process(b"x", "application/pdf", "t.pdf")
+
+    assert result.text == "Domain Answer Certifications ISO 27001"
+    assert result.metadata["tables_as_markdown"] == 0
+    assert result.metadata["parse_mode"] == "text_only"
+
+
+async def test_html_on_a_non_table_element_is_not_rendered_as_a_table(mocker):
+    """Only tables are read as grids; anything else keeps its own text."""
+    _mock_post(
+        mocker,
+        [
+            {
+                "type": "NarrativeText",
+                "text": "The agreement is made between the parties.",
+                "metadata": {"text_as_html": TABLE_HTML},
+            }
+        ],
+    )
+    processor = UnstructuredProcessor(api_url="http://test:8000")
+
+    result = await processor.process(b"x", "application/pdf", "n.pdf")
+
+    assert result.text == "The agreement is made between the parties."
+    assert result.metadata["tables_as_markdown"] == 0
+    assert result.metadata["parse_mode"] == "text_only"
+
+
 async def test_unconvertible_table_html_falls_back_to_text(mocker):
     """An empty/garbage text_as_html must not lose the element's text."""
     _mock_post(
