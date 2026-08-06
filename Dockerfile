@@ -6,10 +6,18 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.31@sha256:ecd4de2f060c64bea0ff8ecb182ddf46
 # 1. curl (required for container healthcheck probes)
 # 2. git (required for caldav dependency from git)
 # 3. sqlite for development with token db
+# 4. libreoffice-writer/-calc: the only readers for legacy .doc/.xls, and the
+#    renderer behind the .doc/.docx PDF rendition that gives those formats page
+#    numbers and highlight geometry. Writer and Calc specifically, not the
+#    metapackage -- Impress/Draw/Base would roughly double the layer for
+#    formats we do not index. The code degrades to "no processor for type" when
+#    the binary is absent, so a slimmer image variant stays possible.
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
     curl \
     git \
     tesseract-ocr \
+    libreoffice-writer \
+    libreoffice-calc \
     sqlite3 && apt clean
 
 # Build in /src, run in /app, keep the venv in /opt/venv. The three have

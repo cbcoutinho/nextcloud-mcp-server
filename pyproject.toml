@@ -54,6 +54,8 @@ dependencies = [
     "mistralai>=2.4.5",
     "sqlalchemy[asyncio]>=2.0",
     "pypdfium2>=5.9.0",
+    "openpyxl>=3.1.5",
+    "olefile>=0.47",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
