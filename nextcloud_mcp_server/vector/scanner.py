@@ -473,7 +473,12 @@ def _indexed_files_scroll_filter(user_id: str) -> Filter:
 async def _discover_tagged_files(
     nc_client: "NextcloudClientProtocol", settings: Settings
 ) -> list[dict]:
-    """Discover tagged PDFs for both index modes, stamping ``_index_mode``.
+    """Discover tagged indexable files for both index modes, stamping ``_index_mode``.
+
+    Which types count is ``settings.indexable_mime_types`` — PDF plus the office
+    and Outlook formats by default. It is a setting rather than "whatever the
+    processor registry can parse" so that enabling an optional processor cannot
+    silently widen the corpus, and its embedding bill, behind the operator.
 
     ``vector_sync_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
     → keyword (BM25 sparse only). Hybrid wins precedence: a file carrying both tags
@@ -485,8 +490,9 @@ async def _discover_tagged_files(
     Each returned dict is a ``find_files_by_tag`` row (id/path/etag/...) plus an
     ``_index_mode`` key consumed by the enqueue loop.
     """
+    indexable = settings.indexable_mime_types
     hybrid_files = await nc_client.find_files_by_tag(
-        settings.vector_sync_tag, mime_type_filter="application/pdf"
+        settings.vector_sync_tag, mime_type_filter=indexable
     )
     for f in hybrid_files:
         f["_index_mode"] = payload_keys.INDEX_MODE_HYBRID
@@ -509,7 +515,7 @@ async def _discover_tagged_files(
 
     hybrid_ids = {str(f["id"]) for f in hybrid_files}
     keyword_files = await nc_client.find_files_by_tag(
-        keyword_tag, mime_type_filter="application/pdf"
+        keyword_tag, mime_type_filter=indexable
     )
     # Hybrid precedence: drop keyword rows for files already tagged hybrid.
     extra_keyword_files = []

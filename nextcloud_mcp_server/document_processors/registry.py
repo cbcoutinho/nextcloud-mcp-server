@@ -633,7 +633,7 @@ class ProcessorRegistry:
         if max_pdf_mb > 0 and size_bytes > max_pdf_mb * 1024 * 1024:
             size_mb = size_bytes / (1024 * 1024)
             logger.warning(
-                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
+                "Document %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
                 filename or "<bytes>",
                 size_mb,
                 max_pdf_mb,
@@ -643,7 +643,9 @@ class ProcessorRegistry:
                 metadata={"parse_failed_reason": "oversize"},
                 processor="size_guard",
                 success=False,
-                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
+                error=(
+                    f"Document exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"
+                ),
             )
         return None
 

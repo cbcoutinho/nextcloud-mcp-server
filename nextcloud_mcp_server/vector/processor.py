@@ -352,11 +352,12 @@ def preflight_oversize_result(
     or ``None`` when the size is unknown or within the cap -- in which case the
     post-download guard still applies as the backstop.
     """
-    # The cap is PDF-specific, but content type is not known before the download.
-    # Safe because file discovery is PDF-only: _discover_tagged_files passes
-    # mime_type_filter="application/pdf" (vector/scanner.py), so every
-    # doc_type="file" task is a PDF. If discovery is ever broadened to other MIME
-    # types, gate this on content type rather than silently applying a PDF cap.
+    # Discovery is no longer PDF-only (settings.indexable_mime_types), so this
+    # cap now lands on office and Outlook documents too. That is deliberate
+    # rather than an oversight: it is a guard on *bytes*, and the formats added
+    # are if anything more dangerous at size than a PDF -- rendering a huge .doc
+    # holds the source and the rendered PDF in memory at once. The wording of
+    # the rejection was updated to say "document" rather than "PDF" to match.
     size_bytes = getattr(doc_task, "size_bytes", None)
     if not size_bytes:
         return None
