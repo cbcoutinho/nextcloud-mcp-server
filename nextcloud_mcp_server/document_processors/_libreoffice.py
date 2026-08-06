@@ -25,6 +25,10 @@ from typing import Final
 
 import anyio
 
+from nextcloud_mcp_server.config import get_settings
+
+from ._isolation import parse_process_limiter
+
 logger = logging.getLogger(__name__)
 
 # Resolved once at import, like TesseractProcessor's availability probe, so a
@@ -91,9 +95,20 @@ async def convert(
             str(src),
         ]
 
+        # Bounded by the same limiter as the isolated PDF parse. A LibreOffice
+        # process is the heaviest thing the ingest path spawns -- it holds the
+        # source document and the rendered output at once -- so leaving it
+        # unbounded would let a folder of .doc files start one soffice per
+        # concurrent task and exhaust the pod's memory, which is exactly what
+        # that limiter exists to prevent for the (lighter) parse workers.
+        # Acquired and released here, before the delegated parse acquires it in
+        # turn, so the two never nest.
+        settings = get_settings()
+        limiter = parse_process_limiter(settings.document_parse_process_slots)
         try:
-            with anyio.fail_after(timeout):
-                result = await anyio.run_process(argv, check=False)
+            async with limiter:
+                with anyio.fail_after(timeout):
+                    result = await anyio.run_process(argv, check=False)
         except TimeoutError as exc:
             raise LibreOfficeError(
                 f"LibreOffice timed out after {timeout}s converting {filename!r}"

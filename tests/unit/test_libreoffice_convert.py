@@ -78,6 +78,46 @@ async def test_missing_libreoffice_is_reported_not_crashed(mocker):
         await _libreoffice.convert(b"x", "a.docx", "pdf")
 
 
+async def test_conversions_are_bounded_by_the_parse_limiter(mocker):
+    """Unbounded, a folder of .doc files would start one soffice per task.
+
+    Counts processes actually in flight rather than inspecting the limiter
+    afterwards: the limiter always reads as empty once the work is done, so a
+    post-hoc assertion would pass even with no bound at all.
+    """
+    import anyio as anyio_module
+
+    in_flight = 0
+    peak = 0
+
+    async def fake_run(argv, **kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        # Yield so a sibling task can start if nothing is holding it back.
+        await anyio_module.sleep(0.01)
+        outdir = pathlib.Path(argv[argv.index("--outdir") + 1])
+        (outdir / "out.pdf").write_bytes(b"%PDF-1.7")
+        in_flight -= 1
+        return _Completed()
+
+    mocker.patch.object(_libreoffice.anyio, "run_process", fake_run)
+    mocker.patch.object(_libreoffice, "SOFFICE_BIN", "/usr/bin/soffice")
+    mocker.patch.object(
+        _libreoffice,
+        "get_settings",
+        lambda: mocker.Mock(document_parse_process_slots=2),
+    )
+    limiter = anyio_module.CapacityLimiter(2)
+    mocker.patch.object(_libreoffice, "parse_process_limiter", lambda slots: limiter)
+
+    async with anyio_module.create_task_group() as tg:
+        for _ in range(6):
+            tg.start_soon(_libreoffice.convert, b"x", "a.docx", "pdf")
+
+    assert peak == 2, f"expected at most 2 concurrent soffice processes, saw {peak}"
+
+
 async def test_the_temp_directory_is_cleaned_up(mocker):
     """A rendition holds the whole document twice; leaking it fills the disk."""
     run = _patch_run(mocker)
