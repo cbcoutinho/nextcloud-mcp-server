@@ -6,6 +6,7 @@ questionnaire into an unsearchable wall of words, so the processor renders the
 HTML as a markdown table.
 """
 
+import pathlib
 from typing import Any
 
 import httpx
@@ -117,6 +118,52 @@ async def test_html_on_a_non_table_element_is_not_rendered_as_a_table(mocker):
     assert result.text == "The agreement is made between the parties."
     assert result.metadata["tables_as_markdown"] == 0
     assert result.metadata["parse_mode"] == "text_only"
+
+
+async def test_markdownify_failure_does_not_report_markdown(mocker):
+    """The regex fallback returns prose, so parse_mode must not claim markdown.
+
+    html_to_markdown swallows a markdownify exception and strips tags instead.
+    That string is non-empty, so treating "truthy" as "converted" would label
+    the exact flattened output this processor exists to avoid as markdown.
+    """
+    _mock_post(
+        mocker,
+        [
+            {
+                "type": "Table",
+                "text": "Security Domain Answer",
+                "metadata": {"text_as_html": TABLE_HTML},
+            }
+        ],
+    )
+    mocker.patch("nextcloud_mcp_server.utils.html.md", side_effect=RuntimeError("boom"))
+    processor = UnstructuredProcessor(api_url="http://test:8000")
+
+    result = await processor.process(b"x", "application/pdf", "t.pdf")
+
+    assert result.metadata["tables_as_markdown"] == 0
+    assert result.metadata["parse_mode"] == "text_only"
+    # The element's own text is preferred over the flattened fallback.
+    assert result.text == "Security Domain Answer"
+
+
+def test_the_shared_helper_does_not_drag_in_the_vector_layer():
+    """document_processors must not import vector (issue #877 layering).
+
+    Importing vector.html_processor from a processor runs vector/__init__.py,
+    which pulls qdrant-client and langchain-text-splitters onto the document
+    stack's import path.
+    """
+    import nextcloud_mcp_server.utils.html as shared
+
+    assert not any(
+        name.startswith("nextcloud_mcp_server.vector")
+        for name in dir(shared)
+        if not name.startswith("_")
+    )
+    source = pathlib.Path(shared.__file__).read_text()
+    assert "nextcloud_mcp_server.vector" not in source
 
 
 async def test_unconvertible_table_html_falls_back_to_text(mocker):

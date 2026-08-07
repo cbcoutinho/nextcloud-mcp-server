@@ -9,7 +9,7 @@ from typing import Any, Optional
 import anyio
 import httpx
 
-from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.utils.html import html_to_markdown
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -211,11 +211,19 @@ class UnstructuredProcessor(DocumentProcessor):
                     )
                     if table_html:
                         table_md = html_to_markdown(table_html)
-                        if table_md:
+                        # A pipe, not just a non-empty string: html_to_markdown
+                        # falls back to a regex tag-strip if markdownify raises,
+                        # and that returns flattened prose -- the very thing this
+                        # branch exists to avoid. Counting it would report
+                        # parse_mode="markdown" over exactly the mangled output
+                        # the caller uses that flag to rule out.
+                        if "|" in table_md:
                             texts.append(table_md)
                             tables_as_markdown += 1
                         elif element.get("text"):
                             texts.append(element["text"])
+                        elif table_md:
+                            texts.append(table_md)
                     elif element.get("text"):
                         texts.append(element["text"])
 
