@@ -491,6 +491,22 @@ async def _discover_tagged_files(
     ``_index_mode`` key consumed by the enqueue loop.
     """
     indexable = settings.indexable_mime_types
+    if not indexable:
+        # An empty allowlist means "index nothing", not "no filter". Passing the
+        # empty tuple through would do neither consistently: find_files_by_tag
+        # would skip the content-type test for directly-tagged files (indexing
+        # *every* type, images and video included) while skipping tagged-folder
+        # expansion entirely (indexing none of those). That inverts the point of
+        # an allowlist, and "set it empty to disable" is exactly the convention
+        # vector_sync_keyword_tag establishes elsewhere in this config, so it is
+        # the reading an operator is likely to try.
+        logger.warning(
+            "VECTOR_SYNC_INDEXABLE_MIME_TYPES is empty; no files will be "
+            "discovered for indexing. Set it to a comma-separated MIME list "
+            "(e.g. application/pdf) to re-enable file discovery."
+        )
+        return []
+
     hybrid_files = await nc_client.find_files_by_tag(
         settings.vector_sync_tag, mime_type_filter=indexable
     )
