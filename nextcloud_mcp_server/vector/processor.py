@@ -683,8 +683,8 @@ async def _reconcile_tag_event(
 
     A SystemTag ``MapperEvent`` only tells us a fileid's tags changed — not the
     path, nor which of our index tags is (still) on it. Look up the user's current
-    tagged PDFs across BOTH tags (the same discovery the scanner uses, which
-    applies hybrid precedence and expands tagged folders into their PDF
+    tagged files across BOTH tags (the same discovery the scanner uses, which
+    applies hybrid precedence and expands tagged folders into their indexable
     descendants) and reconcile the task in place:
 
     - fileid present -> index it; fill path/etag/mtime and set ``index_mode`` from
