@@ -154,6 +154,47 @@ class TestDirectlyTaggedFiles:
         assert [f["id"] for f in found] == [1]
 
 
+class TestEmptyAllowlist:
+    """An emptied allowlist means "index nothing", not "no filter".
+
+    Passed straight through, an empty tuple did neither consistently: the
+    directly-tagged content-type test was skipped (indexing every type) while
+    tagged-folder expansion was skipped too (indexing none) — the opposite of
+    what an allowlist is for, and reachable by an operator following the
+    "set empty to disable" convention `vector_sync_keyword_tag` establishes.
+    """
+
+    @staticmethod
+    def _settings(mocker):
+        settings = mocker.MagicMock()
+        settings.vector_sync_tag = "vector-index"
+        settings.vector_sync_keyword_tag = ""
+        settings.indexable_mime_types = ()
+        return settings
+
+    async def test_nothing_is_discovered_and_the_client_is_not_called(self, mocker):
+        from nextcloud_mcp_server.vector.scanner import _discover_tagged_files
+
+        nc = mocker.MagicMock()
+        nc.find_files_by_tag = mocker.AsyncMock(
+            side_effect=AssertionError("discovery must not query with an empty list")
+        )
+
+        assert await _discover_tagged_files(nc, self._settings(mocker)) == []
+        nc.find_files_by_tag.assert_not_awaited()
+
+    async def test_it_warns_so_the_silence_is_explicable(self, mocker, caplog):
+        from nextcloud_mcp_server.vector.scanner import _discover_tagged_files
+
+        nc = mocker.MagicMock()
+        nc.find_files_by_tag = mocker.AsyncMock(return_value=[])
+
+        with caplog.at_level("WARNING"):
+            await _discover_tagged_files(nc, self._settings(mocker))
+
+        assert "VECTOR_SYNC_INDEXABLE_MIME_TYPES is empty" in caplog.text
+
+
 class TestIndexableSetting:
     def test_the_default_covers_pdf_office_and_outlook(self):
         types = Settings().indexable_mime_types
