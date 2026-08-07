@@ -48,7 +48,7 @@ dependencies = [
     # own pymupdf dependency exactly for the same reason (see their CHANGES for
     # 1.27.2.1), so the two versions must move together.
     "pymupdf==1.28.0",
-    "pymupdf4llm==1.28.0",
+    "pymupdf4llm==1.28.2",
     "openai>=2.8.1",
     "dynaconf>=3.2.13,<4.0",
     "mistralai>=2.4.5",
