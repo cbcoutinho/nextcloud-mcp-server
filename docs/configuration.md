@@ -384,6 +384,33 @@ Notes:
   returning already-indexed mail unverified.
 - Max 128 characters (validated at startup — the Mail app rejects longer names).
 
+### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
+
+Tagged-file discovery enqueues **PDF plus the Word, Excel and Outlook formats**
+(`.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.msg`). A tagged file of any other
+type is ignored. The list is an explicit allowlist rather than "whatever the
+processor registry can parse", so enabling an optional processor cannot widen
+the corpus — and its embedding bill — without someone choosing to.
+
+> **Upgrading from a PDF-only release changes what you pay to embed.** Before
+> this setting existed, discovery was hard-filtered to `application/pdf`. On
+> upgrade, any Word/Excel/Outlook file already sitting under a `vector-index`
+> (or `keyword-index`) tag — including everything beneath a tagged folder —
+> becomes eligible and will be indexed on the next scan. Nothing is removed and
+> no API changes, so this is not a breaking change; but if you tagged folders
+> broadly and only meant PDFs, narrow it back before upgrading:
+>
+> ```dotenv
+> VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
+> ```
+>
+> Setting it **empty** does not mean "no filter" — it means *index nothing*, and
+> discovery logs a warning saying so.
+
+Reading `.doc`/`.docx` and legacy `.xls` needs LibreOffice in the image. Where
+it is absent those types are simply not claimed, and each discovered file logs
+one "no processor for type" failure rather than failing mid-parse.
+
 ### Per-document keyword vs hybrid indexing — `VECTOR_SYNC_KEYWORD_TAG`
 
 Documents are indexed **hybrid** (dense semantic + BM25 sparse) or
