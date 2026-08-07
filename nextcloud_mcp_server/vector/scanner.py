@@ -1041,8 +1041,8 @@ async def scan_user_documents(
         try:
             # Find tagged files via the OCS Tags API. find_files_by_tag also
             # expands tagged directories into their indexable descendants (Depth:
-            # infinity SEARCH), so a tag on a folder applies to every PDF beneath
-            # it. Two tags feed one pipeline: ``vector_sync_tag`` →
+            # infinity SEARCH), so a tag on a folder applies to every indexable
+            # file beneath it. Two tags feed one pipeline: ``vector_sync_tag`` →
             # hybrid (dense + sparse), ``vector_sync_keyword_tag`` → keyword
             # (sparse only). Each file dict is stamped with ``_index_mode`` so the
             # per-document processor knows which to apply; hybrid wins when a file
