@@ -851,8 +851,8 @@ async def _reconcile_tag_event(
     indexable file was created or written — see
     ``webhook_parser._parse_file_event``). Neither payload says whether the file
     is (still) tagged for indexing, nor where it lives. Look up the user's current
-    tagged PDFs across BOTH tags (the same discovery the scanner uses, which
-    applies hybrid precedence and expands tagged folders into their PDF
+    tagged files across BOTH tags (the same discovery the scanner uses, which
+    applies hybrid precedence and expands tagged folders into their indexable
     descendants) and reconcile the task in place:
 
     - fileid present -> index it; fill path/etag/mtime and set ``index_mode`` from

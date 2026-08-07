@@ -996,7 +996,7 @@ async def scan_user_documents(
             logger.info("Sent %s documents for initial sync: %s", queued, user_id)
             return
 
-        # Scan tagged PDF files (after notes)
+        # Scan tagged files (after notes)
         # Get this user's readable indexed file points from Qdrant (for deletion
         # tracking), keyed on acl_principals (the observed-access set) rather than
         # the immutable user_id indexer stamp — see _indexed_files_scroll_filter
@@ -1033,14 +1033,14 @@ async def scan_user_documents(
                 sum(len(ids) for ids in indexed_by_mode.values()),
             )
 
-        # Scan for tagged PDF files
+        # Scan for tagged files
         file_count = 0
         file_queued = 0
         nextcloud_file_ids = set()
 
         try:
-            # Find tagged PDFs via the OCS Tags API. find_files_by_tag also
-            # expands tagged directories into their PDF descendants (Depth:
+            # Find tagged files via the OCS Tags API. find_files_by_tag also
+            # expands tagged directories into their indexable descendants (Depth:
             # infinity SEARCH), so a tag on a folder applies to every PDF beneath
             # it. Two tags feed one pipeline: ``vector_sync_tag`` →
             # hybrid (dense + sparse), ``vector_sync_keyword_tag`` → keyword
@@ -1384,7 +1384,7 @@ async def scan_user_documents(
                             )
 
             logger.info(
-                "[SCAN-%s] Found %s tagged PDFs for %s", scan_id, file_count, user_id
+                "[SCAN-%s] Found %s tagged files for %s", scan_id, file_count, user_id
             )
             record_vector_sync_scan(file_count)
 
