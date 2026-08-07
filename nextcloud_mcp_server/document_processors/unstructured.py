@@ -16,6 +16,38 @@ from .base import DocumentProcessor, ProcessingResult, ProcessorError
 logger = logging.getLogger(__name__)
 
 
+def _element_text(element: dict[str, Any], el_type: str) -> tuple[str, bool]:
+    """One element's contribution, and whether it counted as a rendered table.
+
+    A Table element's ``text`` is its cells flattened into one run of prose,
+    which loses the row/column association a questionnaire or price list depends
+    on. ``text_as_html`` carries the real grid, so it is preferred and rendered
+    as a markdown table.
+
+    Gated on the element type as well as the key: the API only populates
+    ``text_as_html`` for tables today, so this is not a behaviour change -- but
+    if it ever carries HTML on some other element, rendering that as a table
+    would misread it, whereas falling through to ``text`` degrades safely.
+    """
+    plain = element.get("text") or ""
+    if el_type != "Table":
+        return plain, False
+
+    table_html = (element.get("metadata") or {}).get("text_as_html")
+    if not table_html:
+        return plain, False
+
+    table_md = html_to_markdown(table_html)
+    # A pipe, not just a non-empty string: html_to_markdown falls back to a
+    # regex tag-strip if markdownify raises, and that returns flattened prose --
+    # the very thing this branch exists to avoid. Counting it would report
+    # parse_mode="markdown" over exactly the mangled output the caller uses that
+    # flag to rule out.
+    if "|" in table_md:
+        return table_md, True
+    return plain or table_md, False
+
+
 class UnstructuredProcessor(DocumentProcessor):
     """Document processor using Unstructured.io API.
 
@@ -193,39 +225,11 @@ class UnstructuredProcessor(DocumentProcessor):
 
                 for element in elements:
                     el_type = element.get("type", "unknown")
-                    # A Table element's ``text`` is its cells flattened into one
-                    # run of prose, which loses the row/column association a
-                    # questionnaire or price list depends on. ``text_as_html``
-                    # carries the real grid, so prefer it and render it as a
-                    # markdown table.
-                    #
-                    # Gated on the element type as well as the key. The API only
-                    # populates ``text_as_html`` for tables today, so this is not
-                    # a behaviour change -- but if it ever carries HTML on some
-                    # other element, rendering that as a table would misread it,
-                    # whereas falling through to ``text`` degrades safely.
-                    table_html = (
-                        (element.get("metadata") or {}).get("text_as_html")
-                        if el_type == "Table"
-                        else None
-                    )
-                    if table_html:
-                        table_md = html_to_markdown(table_html)
-                        # A pipe, not just a non-empty string: html_to_markdown
-                        # falls back to a regex tag-strip if markdownify raises,
-                        # and that returns flattened prose -- the very thing this
-                        # branch exists to avoid. Counting it would report
-                        # parse_mode="markdown" over exactly the mangled output
-                        # the caller uses that flag to rule out.
-                        if "|" in table_md:
-                            texts.append(table_md)
-                            tables_as_markdown += 1
-                        elif element.get("text"):
-                            texts.append(element["text"])
-                        elif table_md:
-                            texts.append(table_md)
-                    elif element.get("text"):
-                        texts.append(element["text"])
+                    rendered, is_table = _element_text(element, el_type)
+                    if rendered:
+                        texts.append(rendered)
+                    if is_table:
+                        tables_as_markdown += 1
 
                     element_types[el_type] = element_types.get(el_type, 0) + 1
 
