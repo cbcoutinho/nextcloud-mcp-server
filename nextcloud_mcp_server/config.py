@@ -608,6 +608,11 @@ _dynaconf = Dynaconf(
         Validator("CHUNKING_CONFIG_VERSION", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
+        # Same floor as its siblings: 0 or negative reaches anyio.fail_after in
+        # _libreoffice.convert and expires every conversion immediately, so the
+        # misconfiguration surfaces as "every .doc/.docx fails to parse" rather
+        # than as a startup error naming the setting.
+        Validator("DOCUMENT_OFFICE_TIMEOUT_SECONDS", gte=1),
         # DOCUMENT_OCR_MODE is normalised + membership-checked in
         # Settings.__post_init__ via _enum_fields (case-insensitive, like
         # DOCUMENT_OCR_PROVIDER) — no strict dynaconf Validator here, so
