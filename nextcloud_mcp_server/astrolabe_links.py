@@ -36,10 +36,10 @@ def astrolabe_browser_base() -> str | None:
     IdP rather than Nextcloud.
 
     Returns None when nothing is configured, and when the configured base URL
-    is not something a browser can open — a bare ``internal:8080`` parses as
-    scheme ``internal-host`` with no host, and would yield a non-clickable link,
-    so the misconfiguration is surfaced as a warning and callers omit the link
-    instead.
+    is not something a browser can open — a bare ``internal-host:8080`` parses
+    as scheme ``internal-host`` with no host, and would yield a non-clickable
+    link, so the misconfiguration is surfaced as a warning and callers omit the
+    link instead.
     """
     base = (get_settings().nextcloud_browser_url or "").strip()
     if not base:
