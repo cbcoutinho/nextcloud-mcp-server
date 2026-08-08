@@ -6,7 +6,7 @@ import logging
 import re
 import uuid
 from typing import Any
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
@@ -15,12 +15,18 @@ import recurring_ical_events
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
 from caldav.lib import error as caldav_error
+from caldav.lib import url as caldav_url
 from icalendar import Alarm, Calendar, Timezone, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
 from ..config import get_nextcloud_ssl_verify
+
+# Characters allowed unencoded in a CalDAV URL path (RFC 3986 pchar plus
+# "/" and "%"). "Nextcloud User"-style UIDs contain spaces, which must be
+# percent-encoded in hrefs.
+_DAV_SAFE = "/%:@&=+$,;~*()!'-._"
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +246,37 @@ def _as_utc_datetime(value: dt.date) -> dt.datetime:
     return dt.datetime(value.year, value.month, value.day, tzinfo=dt.UTC)
 
 
+def _patch_caldav_url_join() -> None:
+    """Encode spaces in caldav URL joins.
+
+    Nextcloud hrefs embed the raw username. With a space in the UID,
+    caldav's ``URL.join()`` keeps it and ``DAVObject`` rejects the URL.
+    Patch ``join()`` to percent-encode the path. ``_DAV_SAFE`` includes
+    ``%`` so ``quote()`` is idempotent on already-encoded paths.
+    """
+    if getattr(caldav_url.URL, "_patched_url_join", False):
+        return
+
+    _orig_join = caldav_url.URL.join
+
+    def _join(self, path):
+        joined = _orig_join(self, path)
+        parsed = joined.url_parsed
+        if parsed is not None and " " in (parsed.path or ""):
+            cls = type(parsed)
+            parts = list(parsed)
+            parts[2] = quote(parsed.path, safe=_DAV_SAFE)
+            joined.url_parsed = cls(*parts)
+            joined.url_raw = None
+        return joined
+
+    caldav_url.URL.join = _join
+    caldav_url.URL._patched_url_join = True
+
+
+_patch_caldav_url_join()
+
+
 class CalendarClient:
     """Client for Nextcloud CalDAV calendar and task operations."""
 
@@ -303,7 +340,7 @@ class CalendarClient:
             headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )
-        self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
+        self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{quote(username, safe=_DAV_SAFE)}/"
         self._principal_resolved = False
 
     def _calendar_home_url_from_home_set(self, home_set: Any) -> str | None:
@@ -328,6 +365,9 @@ class CalendarClient:
             # (issue #1007).
             origin = urlsplit(self.base_url)
             home_url = urlunsplit((origin.scheme, origin.netloc, home_url, "", ""))
+        if " " in home_url:
+            # Nextcloud hrefs embed the raw username; encode spaces.
+            home_url = quote(home_url, safe=_DAV_SAFE)
         if not home_url.endswith("/"):
             home_url = f"{home_url}/"
         return home_url
@@ -384,7 +424,7 @@ class CalendarClient:
             principal_id = unquote(str(principal_url).rstrip("/").split("/")[-1])
             if principal_id:
                 self._calendar_home_url = (
-                    f"{self.base_url}/remote.php/dav/calendars/{principal_id}/"
+                    f"{self.base_url}/remote.php/dav/calendars/{quote(principal_id, safe=_DAV_SAFE)}/"
                 )
                 self._principal_resolved = True
         except (caldav_error.DAVError, httpx.HTTPError, ValueError) as e:

@@ -128,7 +128,7 @@ def test_auth_username_used_for_credential_uid_for_fallback_path(mocker):
     assert client.username == "Ada Lovelace"
     assert (
         client._calendar_home_url
-        == "https://cloud.example.org/remote.php/dav/calendars/Ada Lovelace/"
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/"
     )
 
 
@@ -1147,3 +1147,60 @@ def test_reminder_model_rejects_incoherent_triggers(payload):
 
     with pytest.raises(ValidationError):
         Reminder(**payload)
+
+
+def test_calendar_home_url_encodes_username_with_space(mocker):
+    """Constructor percent-encodes a username containing a space."""
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient(
+        "https://cloud.example.org", "Nextcloud User", password="app-pw-1234"
+    )
+
+    assert client._calendar_home_url == (
+        "https://cloud.example.org/remote.php/dav/calendars/Nextcloud%20User/"
+    )
+
+
+def test_caldav_url_join_patch_encodes_spaced_paths(mocker):
+    """URL.join() patch percent-encodes spaces in joined paths.
+
+    Nextcloud hrefs embed the raw username; a spaced UID therefore
+    produces hrefs like ``.../calendars/Nextcloud User/``. caldav's
+    ``DAVObject`` rejects literal spaces, so the patch must encode them.
+    """
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from caldav.lib.url import URL
+
+    from nextcloud_mcp_server.client.calendar import _patch_caldav_url_join
+
+    _patch_caldav_url_join()
+
+    base = URL.objectify("https://cloud.example.org/remote.php/dav/")
+    joined = base.join("/remote.php/dav/calendars/Nextcloud User/personal/")
+
+    assert " " not in str(joined)
+    assert str(joined).endswith(
+        "/remote.php/dav/calendars/Nextcloud%20User/personal/"
+    )
+
+
+def test_caldav_url_join_patch_is_idempotent_for_encoded_paths(mocker):
+    """Already-encoded paths are not double-encoded."""
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from caldav.lib.url import URL
+
+    from nextcloud_mcp_server.client.calendar import _patch_caldav_url_join
+
+    _patch_caldav_url_join()
+
+    base = URL.objectify("https://cloud.example.org/remote.php/dav/")
+    joined = base.join("/remote.php/dav/calendars/Nextcloud%20User/personal/")
+
+    assert str(joined).endswith(
+        "/remote.php/dav/calendars/Nextcloud%20User/personal/"
+    )

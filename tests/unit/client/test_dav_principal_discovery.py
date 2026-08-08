@@ -473,3 +473,60 @@ async def test_caldav_event_operations_use_discovered_home_url(mocker):
         mock_calendar.call_args.kwargs["url"]
         == "https://cloud.example.org/remote.php/dav/calendars/alice_1234/team/"
     )
+
+async def test_caldav_discovery_failure_falls_back_to_encoded_username(mocker):
+    """Spaced username keeps an encoded fallback URL when discovery fails."""
+    mock_dav_client = mocker.patch(
+        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
+    )
+    dav_client = mock_dav_client.return_value
+    dav_client.get_principal = mocker.AsyncMock(
+        side_effect=caldav_error.DAVError("temporary failure")
+    )
+    dav_client.propfind = mocker.AsyncMock(
+        return_value=mocker.Mock(raw=_calendar_multistatus("Nextcloud User"))
+    )
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient(
+        "https://cloud.example.org", "Nextcloud User", password=_APP_PW
+    )
+
+    calendars = await client.list_calendars()
+
+    assert [calendar["name"] for calendar in calendars] == ["personal"]
+    assert (
+        dav_client.propfind.await_args.args[0]
+        == "https://cloud.example.org/remote.php/dav/calendars/Nextcloud%20User/"
+    )
+
+
+async def test_caldav_principal_fallback_encodes_principal_id(mocker):
+    """Principal-id fallback percent-encodes a spaced principal URL."""
+    mock_dav_client = mocker.patch(
+        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
+    )
+    dav_client = mock_dav_client.return_value
+    dav_client.get_principal = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            url="https://cloud.example.org/remote.php/dav/principals/users/Nextcloud User/"
+        )
+    )
+    dav_client.propfind = mocker.AsyncMock(
+        return_value=mocker.Mock(raw=_calendar_multistatus("Nextcloud User"))
+    )
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient(
+        "https://cloud.example.org", "Nextcloud User", password=_APP_PW
+    )
+
+    calendars = await client.list_calendars()
+
+    assert [calendar["name"] for calendar in calendars] == ["personal"]
+    assert (
+        dav_client.propfind.await_args.args[0]
+        == "https://cloud.example.org/remote.php/dav/calendars/Nextcloud%20User/"
+    )
