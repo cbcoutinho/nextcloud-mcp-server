@@ -2106,6 +2106,29 @@ class CalendarClient:
 
         return parsed_dt
 
+    @staticmethod
+    def _is_date_only(value: str) -> bool:
+        """Whether an ISO string names a whole day rather than an instant."""
+        try:
+            dt.date.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
+
+    def _parse_todo_date(self, value: str, *, date_only: bool) -> dt.date | dt.datetime:
+        """Parse a VTODO DUE/DTSTART value, keeping a whole day as a DATE.
+
+        RFC 5545 allows both DATE and DATE-TIME here, and ``date_only`` says
+        which the pair resolved to. Widening a date to midnight UTC (issue
+        #1274) both changes the value the caller gets back and lands on the
+        wrong day for anyone west of UTC.
+        """
+        return (
+            dt.date.fromisoformat(value)
+            if date_only
+            else self._ensure_timezone_aware(value)
+        )
+
     def _create_ical_todo(self, todo_data: dict[str, Any], todo_uid: str) -> str:
         """Create iCalendar VTODO content from todo data."""
         cal = Calendar()
@@ -2129,17 +2152,22 @@ class CalendarClient:
         percent = todo_data.get("percent_complete", 0)
         todo.add("percent-complete", percent)
 
-        # Due date
+        # Due / start dates. RFC 5545 §3.8.2.3 ties DUE's value type to
+        # DTSTART's, so the pair decides together: date-only on every supplied
+        # side is an all-day task (DATE), a time on either side keeps both as
+        # DATE-TIME.
         due = todo_data.get("due", "")
-        if due:
-            due_dt = self._ensure_timezone_aware(due)
-            todo.add("due", vDDDTypes(due_dt))
-
-        # Start date
         dtstart = todo_data.get("dtstart", "")
+        date_only = all(self._is_date_only(v) for v in (due, dtstart) if v)
+
+        if due:
+            todo.add("due", vDDDTypes(self._parse_todo_date(due, date_only=date_only)))
+
         if dtstart:
-            start_dt = self._ensure_timezone_aware(dtstart)
-            todo.add("dtstart", vDDDTypes(start_dt))
+            todo.add(
+                "dtstart",
+                vDDDTypes(self._parse_todo_date(dtstart, date_only=date_only)),
+            )
 
         # Completed timestamp
         completed = todo_data.get("completed", "")
@@ -2344,21 +2372,48 @@ class CalendarClient:
                         component["PERCENT-COMPLETE"] = percent_value
                         logger.debug("Set PERCENT-COMPLETE to %s", percent_value)
 
-                    # Handle due date
-                    if "due" in todo_data:
-                        due_str = todo_data["due"]
-                        if due_str:
-                            due_dt = self._ensure_timezone_aware(due_str)
-                            component["DUE"] = vDDDTypes(due_dt)
-                            logger.debug("Set DUE to %s", due_dt)
+                    # Due / start dates, paired the same way as
+                    # _create_ical_todo — except a side that isn't being
+                    # updated votes with the value type already stored.
+                    supplied = {
+                        prop: todo_data[prop]
+                        for prop in ("due", "dtstart")
+                        if todo_data.get(prop)
+                    }
+                    date_only = all(
+                        self._is_date_only(v) for v in supplied.values()
+                    ) and all(
+                        self._stored_is_all_day(component, prop.upper()) is not False
+                        for prop in ("due", "dtstart")
+                        if prop not in supplied
+                    )
 
-                    # Handle start date
-                    if "dtstart" in todo_data:
-                        dtstart_str = todo_data["dtstart"]
-                        if dtstart_str:
-                            dtstart_dt = self._ensure_timezone_aware(dtstart_str)
-                            component["DTSTART"] = vDDDTypes(dtstart_dt)
-                            logger.debug("Set DTSTART to %s", dtstart_dt)
+                    # A partial update cannot flip one half of the pair on its
+                    # own: writing the supplied side as a DATE-TIME while the
+                    # side left out stays a stored DATE is exactly the mismatch
+                    # §3.8.2.3 forbids, and there is no defensible time of day
+                    # to invent for the property the caller didn't mention.
+                    # _validate_all_day_flip rejects the same flip for VEVENT.
+                    stranded = [
+                        prop
+                        for prop in ("due", "dtstart")
+                        if supplied
+                        and not date_only
+                        and prop not in supplied
+                        and self._stored_is_all_day(component, prop.upper())
+                    ]
+                    if stranded:
+                        raise ValueError(
+                            "changing a whole-day todo to a timed one requires "
+                            f"passing {' and '.join(sorted(supplied.keys() | set(stranded)))} "
+                            "together, so DUE and DTSTART cannot end up with "
+                            "mismatched value types"
+                        )
+
+                    for prop, value in supplied.items():
+                        parsed = self._parse_todo_date(value, date_only=date_only)
+                        component[prop.upper()] = vDDDTypes(parsed)
+                        logger.debug("Set %s to %s", prop.upper(), parsed)
 
                     # Handle completed date
                     if "completed" in todo_data:
@@ -2394,6 +2449,15 @@ class CalendarClient:
 
             return cal.to_ical().decode("utf-8")
 
+        except ValueError:
+            # A rejected update — a pairing conflict, or a date string that
+            # won't parse — is the caller's to fix. The fallback below rebuilds
+            # the todo from the *partial* update dict, so swallowing this would
+            # answer "invalid input" by silently dropping every stored property
+            # the caller didn't happen to pass, and reporting success.
+            # ``_merge_ical_properties`` dropped its identical fallback for
+            # VEVENT for exactly that reason.
+            raise
         except Exception as e:
             logger.error("Error merging iCal todo properties: %s", e)
             return self._create_ical_todo(todo_data, todo_uid)

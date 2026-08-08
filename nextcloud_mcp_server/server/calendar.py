@@ -1151,8 +1151,11 @@ def configure_calendar_tools(mcp: FastMCP):
             description: Detailed description of the todo
             status: Todo status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
             priority: Priority (0=undefined, 1=highest, 9=lowest)
-            due: Due date/time (ISO format, e.g., "2025-01-15T14:00:00")
-            dtstart: Start date/time (ISO format)
+            due: Due date/time (ISO format, e.g., "2025-01-15T14:00:00"). A
+                date-only value ("2025-01-15") makes it a whole-day task.
+            dtstart: Start date/time (ISO format). Date-only means whole-day.
+                RFC 5545 requires both to be the same kind, so a time on
+                either side makes both date-times.
             categories: Comma-separated categories (e.g., "work,urgent")
             reminders: Ordered list of alarms. See ``nc_calendar_create_event``
                 for the shape.
@@ -1208,8 +1211,10 @@ def configure_calendar_tools(mcp: FastMCP):
             status: New status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
             priority: New priority (0-9)
             percent_complete: New completion percentage (0-100)
-            due: New due date/time (ISO format)
-            dtstart: New start date/time (ISO format)
+            due: New due date/time (ISO format). Date-only means whole-day.
+            dtstart: New start date/time (ISO format). Date-only means whole-day.
+                A side left unchanged keeps the stored kind, so a bare date
+                still becomes a date-time on an existing timed todo.
             completed: Completion timestamp (ISO format)
             categories: New categories (comma-separated)
             reminders: Replacement alarm list. Omit to keep the stored alarms,
