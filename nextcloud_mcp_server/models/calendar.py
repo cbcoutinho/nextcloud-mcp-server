@@ -327,8 +327,17 @@ class Todo(BaseModel):
         default=0, description="Todo priority (0=undefined, 1=highest, 9=lowest)"
     )
     percent_complete: int = Field(default=0, description="Percentage complete (0-100)")
-    due: Optional[str] = Field(None, description="Due date/time (ISO format)")
-    dtstart: Optional[str] = Field(None, description="Start date/time (ISO format)")
+    due: Optional[str] = Field(
+        None,
+        description=(
+            "Due date/time (ISO format). A date-only value like '2026-08-08' "
+            "means a whole-day task."
+        ),
+    )
+    dtstart: Optional[str] = Field(
+        None,
+        description=("Start date/time (ISO format). Date-only means a whole-day task."),
+    )
     completed: Optional[str] = Field(
         None, description="Completion timestamp (ISO format)"
     )
