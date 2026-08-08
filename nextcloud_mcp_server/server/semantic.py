@@ -13,6 +13,7 @@ from mcp.types import (
 )
 from pydantic import Field
 
+from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base, chunk_url
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
@@ -272,8 +273,16 @@ def configure_semantic_tools(mcp: FastMCP):
                 only — setting it implicitly limits results to files. None/empty = no path filter
                 (default).
 
+        To scope a search to one or more folders, pass `path_prefixes` — that is
+        the supported way to search "just this subdirectory".
+
         Returns:
             SemanticSearchResponse with matching documents ranked by fusion scores.
+
+            Each result carries a `url` that opens that exact chunk in the
+            Astrolabe UI. Offer it alongside anything you quote from `excerpt`
+            so the user can read the passage in place. It is None when the
+            server has no browser-reachable Nextcloud base URL configured.
 
             Verification fields (ADR-019 verify-on-read):
             - verified_chunk_count: chunk rows that passed access checks
@@ -648,6 +657,11 @@ def configure_semantic_tools(mcp: FastMCP):
             )
             search_results = verified_results[:limit]
 
+            # Resolved once per search rather than once per result: it reads
+            # config and logs a warning when the base URL is unusable, and doing
+            # that per row would repeat the warning `limit` times.
+            browser_base = astrolabe_browser_base()
+
             # Convert SearchResult objects to SemanticSearchResult for response.
             # SearchResult.id is `str` (Qdrant keyword-indexed payload), but
             # every currently indexed type uses numeric ids and the MCP response
@@ -681,6 +695,16 @@ def configure_semantic_tools(mcp: FastMCP):
                     algorithm="hybrid",
                     rerank_model=settings.search_rerank_model,
                 )
+                metadata = r.metadata or {}
+                # board_id is the only one of Astrolabe's access-recheck
+                # identifiers the chunk payload carries (see
+                # build_search_result_from_point); the others fall through to
+                # its MCP backstop.
+                link_extra = (
+                    {"board_id": str(metadata["board_id"])}
+                    if metadata.get("board_id")
+                    else None
+                )
                 results.append(
                     SemanticSearchResult(
                         id=narrowed_id,
@@ -689,19 +713,28 @@ def configure_semantic_tools(mcp: FastMCP):
                         rerank_score=r.rerank_score,
                         relevance=relevance,
                         relevance_source=relevance_source,
-                        category=r.metadata.get("category", "") if r.metadata else "",
+                        category=metadata.get("category", ""),
                         excerpt=r.excerpt,
                         score=r.score,
-                        chunk_index=r.metadata.get("chunk_index", 0)
-                        if r.metadata
-                        else 0,
-                        total_chunks=r.metadata.get("total_chunks", 1)
-                        if r.metadata
-                        else 1,
+                        chunk_index=metadata.get("chunk_index", 0),
+                        total_chunks=metadata.get("total_chunks", 1),
                         chunk_start_offset=r.chunk_start_offset,
                         chunk_end_offset=r.chunk_end_offset,
                         page_number=r.page_number,
                         page_end=r.page_end,
+                        url=chunk_url(
+                            browser_base,
+                            doc_type=r.doc_type,
+                            doc_id=narrowed_id,
+                            chunk_start=r.chunk_start_offset,
+                            chunk_end=r.chunk_end_offset,
+                            title=r.title,
+                            path=metadata.get("path"),
+                            page_number=r.page_number,
+                            chunk_index=metadata.get("chunk_index"),
+                            total_chunks=metadata.get("total_chunks"),
+                            extra=link_extra,
+                        ),
                     )
                 )
 
@@ -786,6 +819,7 @@ def configure_semantic_tools(mcp: FastMCP):
                                     chunk_end_offset=result.chunk_end_offset,
                                     page_number=result.page_number,
                                     page_end=result.page_end,
+                                    url=result.url,
                                     # Context expansion fields
                                     has_context_expansion=True,
                                     marked_text=chunk_context.marked_text,
