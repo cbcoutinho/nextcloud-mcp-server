@@ -2115,7 +2115,7 @@ class CalendarClient:
             return False
         return True
 
-    def _parse_todo_date(self, value: str, *, date_only: bool) -> dt.date:
+    def _parse_todo_date(self, value: str, *, date_only: bool) -> dt.date | dt.datetime:
         """Parse a VTODO DUE/DTSTART value, keeping a whole day as a DATE.
 
         RFC 5545 allows both DATE and DATE-TIME here, and ``date_only`` says
@@ -2388,6 +2388,28 @@ class CalendarClient:
                         if prop not in supplied
                     )
 
+                    # A partial update cannot flip one half of the pair on its
+                    # own: writing the supplied side as a DATE-TIME while the
+                    # side left out stays a stored DATE is exactly the mismatch
+                    # §3.8.2.3 forbids, and there is no defensible time of day
+                    # to invent for the property the caller didn't mention.
+                    # _validate_all_day_flip rejects the same flip for VEVENT.
+                    stranded = [
+                        prop
+                        for prop in ("due", "dtstart")
+                        if supplied
+                        and not date_only
+                        and prop not in supplied
+                        and self._stored_is_all_day(component, prop.upper())
+                    ]
+                    if stranded:
+                        raise ValueError(
+                            "changing a whole-day todo to a timed one requires "
+                            f"passing {' and '.join(sorted(supplied.keys() | set(stranded)))} "
+                            "together, so DUE and DTSTART cannot end up with "
+                            "mismatched value types"
+                        )
+
                     for prop, value in supplied.items():
                         parsed = self._parse_todo_date(value, date_only=date_only)
                         component[prop.upper()] = vDDDTypes(parsed)
@@ -2427,6 +2449,15 @@ class CalendarClient:
 
             return cal.to_ical().decode("utf-8")
 
+        except ValueError:
+            # A rejected update — a pairing conflict, or a date string that
+            # won't parse — is the caller's to fix. The fallback below rebuilds
+            # the todo from the *partial* update dict, so swallowing this would
+            # answer "invalid input" by silently dropping every stored property
+            # the caller didn't happen to pass, and reporting success.
+            # ``_merge_ical_properties`` dropped its identical fallback for
+            # VEVENT for exactly that reason.
+            raise
         except Exception as e:
             logger.error("Error merging iCal todo properties: %s", e)
             return self._create_ical_todo(todo_data, todo_uid)

@@ -1210,6 +1210,74 @@ def test_updating_only_the_due_date_inherits_the_stored_value_type():
     assert parsed["dtstart"] == "2026-08-01"
 
 
+def test_making_only_one_half_of_a_whole_day_pair_timed_is_rejected():
+    """The unsupplied side would be stranded as a DATE (RFC 5545 §3.8.2.3).
+
+    Rewriting the stored DUE to match would mean inventing a time of day for a
+    property the caller never mentioned — and midnight would land it *before*
+    the new DTSTART. The VEVENT path rejects the same flip.
+    """
+    client = _pure_client()
+    stored = client._create_ical_todo(
+        {"summary": "Move house", "due": "2026-08-08", "dtstart": "2026-08-01"},
+        "uid-todo-half-flip",
+    )
+
+    with pytest.raises(ValueError, match="dtstart and due"):
+        client._merge_ical_todo_properties(
+            stored, {"dtstart": "2026-08-08T09:00:00Z"}, "uid-todo-half-flip"
+        )
+
+
+def test_making_a_whole_day_todo_timed_works_when_both_sides_are_given():
+    """The rejection above is about the partial update, not the flip itself."""
+    client = _pure_client()
+    stored = client._create_ical_todo(
+        {"summary": "Move house", "due": "2026-08-08", "dtstart": "2026-08-01"},
+        "uid-todo-full-flip",
+    )
+
+    merged = client._merge_ical_todo_properties(
+        stored,
+        {"dtstart": "2026-08-08T09:00:00Z", "due": "2026-08-08T17:00:00Z"},
+        "uid-todo-full-flip",
+    )
+
+    parsed = client._parse_ical_todo(merged)
+    assert parsed["dtstart"] == "2026-08-08T09:00:00+00:00"
+    assert parsed["due"] == "2026-08-08T17:00:00+00:00"
+
+
+def test_an_unparseable_date_does_not_silently_rebuild_the_todo():
+    """The rebuild fallback answers bad input by dropping stored properties."""
+    client = _pure_client()
+    stored = client._create_ical_todo(
+        {"summary": "Keep me", "categories": "home", "due": "2026-08-08"},
+        "uid-todo-bad-date",
+    )
+
+    with pytest.raises(ValueError):
+        client._merge_ical_todo_properties(
+            stored, {"due": "not-a-date"}, "uid-todo-bad-date"
+        )
+
+
+def test_unrelated_todo_update_survives_a_stored_mismatch():
+    """The guard must only fire for the pair the caller is actually writing."""
+    client = _pure_client()
+    stored = client._create_ical_todo(
+        {"summary": "Legacy", "due": "2026-08-08"}, "uid-todo-untouched"
+    ).replace("DTSTAMP", "DTSTART;VALUE=DATE-TIME:20260801T090000Z\r\nDTSTAMP", 1)
+
+    merged = client._merge_ical_todo_properties(
+        stored, {"summary": "Renamed"}, "uid-todo-untouched"
+    )
+
+    parsed = client._parse_ical_todo(merged)
+    assert parsed["summary"] == "Renamed"
+    assert parsed["due"] == "2026-08-08"
+
+
 def test_updating_a_timed_todo_with_a_bare_date_keeps_it_timed():
     """A stored DATE-TIME DTSTART forbids a DATE-valued DUE, so it widens."""
     client = _pure_client()
