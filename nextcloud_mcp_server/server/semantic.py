@@ -699,12 +699,11 @@ def configure_semantic_tools(mcp: FastMCP):
                 # board_id is the only one of Astrolabe's access-recheck
                 # identifiers the chunk payload carries (see
                 # build_search_result_from_point); the others fall through to
-                # its MCP backstop.
-                link_extra = (
-                    {"board_id": str(metadata["board_id"])}
-                    if metadata.get("board_id")
-                    else None
-                )
+                # its MCP backstop. Tested against None rather than falsiness to
+                # match chunk_url's handling of a legitimate 0 — Nextcloud ids
+                # are 1-based, so this is consistency, not a live bug.
+                board_id = metadata.get("board_id")
+                link_extra = None if board_id is None else {"board_id": str(board_id)}
                 results.append(
                     SemanticSearchResult(
                         id=narrowed_id,

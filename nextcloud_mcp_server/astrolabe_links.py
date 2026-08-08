@@ -96,13 +96,16 @@ def chunk_url(
         "chunk_start": str(chunk_start),
         "chunk_end": str(chunk_end),
     }
+    # `extra` is spread FIRST so the named parameters win a key collision: they
+    # are the typed, documented surface, and an opaque caller-supplied dict
+    # should not be able to quietly redefine `title` or `path`.
     optional = {
+        **(extra or {}),
         "title": title,
         "path": path,
         "page_number": page_number,
         "chunk_index": chunk_index,
         "total_chunks": total_chunks,
-        **(extra or {}),
     }
     # Omit unset values rather than emitting `page_number=None`, which Astrolabe
     # would parseInt into NaN.

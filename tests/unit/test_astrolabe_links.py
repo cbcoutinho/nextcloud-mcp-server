@@ -192,6 +192,24 @@ def test_chunk_url_forwards_extra_access_ids():
     assert _params(url)["board_id"] == "12"
 
 
+def test_chunk_url_named_params_win_a_collision_with_extra():
+    """`extra` is an opaque caller-supplied dict; it must not be able to
+    redefine a named, documented parameter."""
+    url = chunk_url(
+        BASE,
+        doc_type="file",
+        doc_id=1,
+        chunk_start=0,
+        chunk_end=5,
+        title="real title",
+        extra={"title": "hijacked", "board_id": "12"},
+    )
+    assert url is not None
+    params = _params(url)
+    assert params["title"] == "real title"
+    assert params["board_id"] == "12"
+
+
 def test_chunk_url_is_none_without_a_base():
     assert (
         chunk_url(None, doc_type="file", doc_id=1, chunk_start=0, chunk_end=5) is None
