@@ -8,6 +8,7 @@ import httpx
 import pytest
 from httpx import HTTPStatusError
 
+from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import (
@@ -619,7 +620,7 @@ async def test_verify_files_tagged_is_kept(mocker):
 
     assert result == {"100"}
     client.find_files_by_tag.assert_any_await(
-        "vector-index", mime_type_filter="application/pdf"
+        "vector-index", mime_type_filter=Settings().indexable_mime_types
     )
 
 

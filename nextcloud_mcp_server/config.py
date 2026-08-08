@@ -143,6 +143,20 @@ _DEFAULTS: dict[str, Any] = {
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
     # wins if a file carries both. Set empty to disable the second tag entirely.
     "vector_sync_keyword_tag": "keyword-index",
+    # Which MIME types tagged-file discovery will enqueue. Comma-separated, and
+    # deliberately an explicit list rather than "whatever the registry can
+    # parse": enabling an optional processor (unstructured claims pptx, epub,
+    # images) would otherwise silently widen what gets indexed and billed.
+    # Adding a type here without a processor for it is harmless -- the file is
+    # discovered, fails to parse once, and is reported.
+    "vector_sync_indexable_mime_types": (
+        "application/pdf,"
+        "application/msword,"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+        "application/vnd.ms-excel,"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+        "application/vnd.ms-outlook"
+    ),
     # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
     # (the default) indexes every message in every mailbox, which is the
     # behaviour before this setting existed. Set it to a tag display name and
@@ -1135,6 +1149,28 @@ class Settings:
     # embedding). ``vector-index`` takes precedence when a file carries both tags.
     # Set empty to disable the second tag entirely.
     vector_sync_keyword_tag: str = "keyword-index"
+
+    # Comma-separated MIME types that tagged-file discovery enqueues. Explicit
+    # rather than derived from the processor registry: turning on an optional
+    # processor would otherwise silently widen the corpus (and its embedding
+    # bill). Defaults to PDF plus the office and Outlook formats.
+    vector_sync_indexable_mime_types: str = (
+        "application/pdf,"
+        "application/msword,"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+        "application/vnd.ms-excel,"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+        "application/vnd.ms-outlook"
+    )
+
+    @property
+    def indexable_mime_types(self) -> tuple[str, ...]:
+        """``vector_sync_indexable_mime_types`` as a tuple, blanks dropped."""
+        return tuple(
+            t.strip()
+            for t in self.vector_sync_indexable_mime_types.split(",")
+            if t.strip()
+        )
 
     # Mail tag (an IMAP keyword) restricting which messages are indexed — the
     # mail analogue of ``vector_sync_tag``. Empty (default) indexes every

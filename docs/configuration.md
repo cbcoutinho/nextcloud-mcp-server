@@ -384,6 +384,33 @@ Notes:
   returning already-indexed mail unverified.
 - Max 128 characters (validated at startup — the Mail app rejects longer names).
 
+### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
+
+Tagged-file discovery enqueues **PDF plus the Word, Excel and Outlook formats**
+(`.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.msg`). A tagged file of any other
+type is ignored. The list is an explicit allowlist rather than "whatever the
+processor registry can parse", so enabling an optional processor cannot widen
+the corpus — and its embedding bill — without someone choosing to.
+
+> **Upgrading from a PDF-only release changes what you pay to embed.** Before
+> this setting existed, discovery was hard-filtered to `application/pdf`. On
+> upgrade, any Word/Excel/Outlook file already sitting under a `vector-index`
+> (or `keyword-index`) tag — including everything beneath a tagged folder —
+> becomes eligible and will be indexed on the next scan. Nothing is removed and
+> no API changes, so this is not a breaking change; but if you tagged folders
+> broadly and only meant PDFs, narrow it back before upgrading:
+>
+> ```dotenv
+> VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
+> ```
+>
+> Setting it **empty** does not mean "no filter" — it means *index nothing*, and
+> discovery logs a warning saying so.
+
+Reading `.doc`/`.docx` and legacy `.xls` needs LibreOffice in the image. Where
+it is absent those types are simply not claimed, and each discovered file logs
+one "no processor for type" failure rather than failing mid-parse.
+
 ### Per-document keyword vs hybrid indexing — `VECTOR_SYNC_KEYWORD_TAG`
 
 Documents are indexed **hybrid** (dense semantic + BM25 sparse) or
@@ -725,7 +752,7 @@ shorter OCR ceiling:
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
 DOCUMENT_OFFICE_TIMEOUT_SECONDS=120   # Wall-clock cap per LibreOffice conversion: .doc/.docx -> pdf, .xls -> xlsx (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
-DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap for EVERY indexed document, not only PDFs; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
 DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
@@ -747,7 +774,13 @@ well beyond what the pod can survive. Keep
 `DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
 memory limit. The limiter is created once per worker, so a change needs a restart.
 
-A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
+**The name says PDF; the cap does not.** `DOCUMENT_MAX_PDF_SIZE_MB` guards every
+indexed document — `.docx`, `.doc`, `.xlsx`, `.xls` and `.msg` included — since
+discovery stopped being PDF-only. The setting keeps its original name so
+existing deployments are not silently re-tuned by a rename. If a large `.docx`
+is being rejected as `oversize`, this is the knob, despite the name.
+
+A document larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
@@ -1260,6 +1293,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
 | `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
+| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | `application/pdf`, `application/msword`, `…wordprocessingml.document`, `application/vnd.ms-excel`, `…spreadsheetml.sheet`, `application/vnd.ms-outlook` | Comma-separated MIME types that tagged-file discovery will enqueue — PDF plus the Word, Excel and Outlook formats. A tagged file of any other type is ignored. Deliberately an explicit allowlist rather than "whatever the processor registry can parse", so enabling an optional processor cannot silently widen the corpus (and its embedding bill). Set to `application/pdf` alone to restore PDF-only indexing. Reading `.doc`/`.docx` (and legacy `.xls`) needs LibreOffice in the image; without it those types are simply not claimed and each discovered file logs one "no processor for type" failure |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
