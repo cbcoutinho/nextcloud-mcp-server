@@ -88,6 +88,37 @@ def test_base_is_none_and_warns_when_scheme_missing(caplog):
     )
 
 
+def test_base_allows_plain_http():
+    """Local and self-hosted instances are routinely served over http (the dev
+    compose stack is http://localhost:8080). Demanding TLS would strip the link
+    from exactly the deployments that need it."""
+    fake = _fake_settings(host="http://localhost:8080")
+    with patch("nextcloud_mcp_server.astrolabe_links.get_settings", return_value=fake):
+        assert astrolabe_browser_base() == "http://localhost:8080"
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "https:",  # scheme, no host — a startswith check would let this through
+        "ftp://nc.example.com",  # a browser will not open this as a page
+        "//nc.example.com",  # protocol-relative, meaningless outside a document
+    ],
+)
+def test_base_is_none_for_unopenable_urls(configured):
+    fake = _fake_settings(host=configured)
+    with patch("nextcloud_mcp_server.astrolabe_links.get_settings", return_value=fake):
+        assert astrolabe_browser_base() is None
+
+
+def test_base_accepts_uppercase_scheme():
+    """urlparse normalizes the scheme, so HTTPS:// is a working URL rather than
+    a misconfiguration — a prefix match would have rejected it."""
+    fake = _fake_settings(host="HTTPS://nc.example.com")
+    with patch("nextcloud_mcp_server.astrolabe_links.get_settings", return_value=fake):
+        assert astrolabe_browser_base() == "HTTPS://nc.example.com"
+
+
 # --- chunk_url --------------------------------------------------------------
 
 
