@@ -10,7 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.observability.metrics import record_elicitation
 
 logger = logging.getLogger(__name__)
@@ -45,29 +45,15 @@ class ProvisioningRequiredConfirmation(BaseModel):
 def _astrolabe_settings_url() -> str | None:
     """Construct the Astrolabe settings page URL from settings.
 
-    Uses ``nextcloud_browser_url`` (the browser-reachable Nextcloud base URL:
-    ``nextcloud_public_url`` → ``nextcloud_public_issuer_url`` → ``nextcloud_host``)
-    so the link points at Nextcloud even in external-IdP deployments where the
-    OAuth issuer URL is the IdP, not Nextcloud. Returns None if none is set (or
-    set to the empty string), or if the configured base URL is missing an
-    http:// or https:// scheme — in the latter case the caller renders the
-    tool-only fallback message instead of a broken link.
+    Delegates the base-URL resolution and its scheme check to
+    :func:`astrolabe_browser_base`, so that logic lives in one place. Returns
+    None when no browser-reachable Nextcloud URL is configured — the caller then
+    renders the tool-only fallback message instead of a broken link.
     """
-    settings = get_settings()
-    base = (settings.nextcloud_browser_url or "").strip()
-    if not base:
+    base = astrolabe_browser_base()
+    if base is None:
         return None
-    if not base.startswith(("http://", "https://")):
-        # Bare hostname (e.g. "internal:8080") would silently produce a
-        # non-clickable URL. Surface the misconfiguration instead.
-        logger.warning(
-            "Cannot build Astrolabe settings URL: configured Nextcloud base URL "
-            "%r is missing an http:// or https:// scheme. Falling back to the "
-            "tool-only provisioning message.",
-            base,
-        )
-        return None
-    return f"{base.rstrip('/')}{ASTROLABE_SETTINGS_PATH}"
+    return f"{base}{ASTROLABE_SETTINGS_PATH}"
 
 
 async def _run_elicit(
