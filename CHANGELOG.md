@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.167.0 (2026-08-09)
+
+### Feat
+
+- **search**: link every semantic-search result to its chunk in Astrolabe
+
+### Fix
+
+- **search**: validate the browser base URL by parsing it, not by prefix
+
+### Refactor
+
+- **search**: close the two round-2 nits on the chunk-link builder
+
 ## v0.166.1 (2026-08-08)
 
 ### Fix
