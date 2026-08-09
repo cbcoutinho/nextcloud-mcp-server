@@ -398,7 +398,19 @@ def register_auth_tools(mcp: FastMCP) -> None:
 
         previous_scopes = existing["scopes"]
 
-        # Compute new scope set
+        # Compute new scope set.
+        #
+        # Narrowing an unrestricted (NULL) grant has to materialise a concrete
+        # list, because the stored layer expresses restrictions as an allow-list
+        # — there is no "everything except X" representation. So the vocabulary
+        # is snapshotted at this point, and a scope added to it later is not in
+        # that frozen list even if the token would grant it. This is the same
+        # staleness that made semantic.read ungrantable (GH #1277), kept here
+        # deliberately: the alternative is a deny-list, a second scope
+        # representation to store, validate and reason about, for a request
+        # ("drop this one capability") that is rare and explicitly user-driven.
+        # The escape hatch is the same as before — re-run
+        # nc_auth_provision_access to return to an unrestricted grant.
         current_set = (
             set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
         )

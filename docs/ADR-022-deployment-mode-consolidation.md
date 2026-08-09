@@ -1424,3 +1424,11 @@ Consequences worth keeping in mind:
 - Background/vector sync still consults **neither** layer — it reads the app
   password directly (`vector/oauth_sync.py`). Indexing is therefore not
   scope-limited. That gap is real and tracked separately.
+- **Narrowing an unrestricted grant snapshots the vocabulary.** Restrictions are
+  stored as an allow-list, so `nc_auth_update_scopes(remove_scopes=[...])` on a
+  NULL grant has to write a concrete list — which will not contain scopes added
+  to the vocabulary later, even when the token grants them. That is the same
+  staleness this addendum removes elsewhere, accepted here rather than
+  introducing a deny-list as a second scope representation for a rare,
+  explicitly user-driven request. Re-running `nc_auth_provision_access` returns
+  the user to an unrestricted grant.

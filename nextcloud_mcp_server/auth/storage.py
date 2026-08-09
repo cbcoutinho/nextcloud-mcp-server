@@ -2273,7 +2273,9 @@ class RefreshTokenStorage:
             logger.info(
                 "Stored scoped app password for user %s (scopes=%s, username=%s)",
                 user_id,
-                "all" if scopes is None else len(scopes),
+                # NULL is "no additional restriction", not "all allowed" — the
+                # OAuth token still bounds the session (see require_scopes).
+                "unrestricted" if scopes is None else len(scopes),
                 username or "N/A",
             )
 

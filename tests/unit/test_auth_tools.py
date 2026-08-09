@@ -309,6 +309,95 @@ async def test_provision_access_rejects_invalid_scopes(mocker):
     assert "not.a.scope" in response.message
 
 
+# ── Updating scopes on an unrestricted (NULL) grant ──
+
+
+def _update_scopes_storage(mocker, previous_scopes):
+    """Wire nc_auth_update_scopes against a user with the given stored grant.
+
+    A change (as opposed to a no-op) re-runs Login Flow v2, so the flow client
+    is stubbed too — otherwise the tool reports a connection failure and the
+    assertion under test never runs.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(
+        return_value={"scopes": previous_scopes, "app_password": "x"}
+    )
+    storage.store_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(nextcloud_host="https://nc", nextcloud_browser_url=None),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    flow_client = AsyncMock()
+    flow_client.initiate = AsyncMock(
+        return_value=MagicMock(
+            poll_token="tok",
+            poll_endpoint="https://nc/login/v2/poll",
+            login_url="https://nc/login/v2/flow",
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.elicitation.present_login_url",
+        AsyncMock(return_value="message_only"),
+    )
+    return storage
+
+
+async def test_update_scopes_add_on_unrestricted_grant_is_a_no_op(mocker):
+    """Adding to a NULL grant changes nothing, and must say why.
+
+    The stored layer already places no restriction, so the only thing that can
+    still be denying the call is the OAuth token — which this tool cannot
+    widen. Saying just "unchanged" sends an agent into a retry loop, since the
+    denial that got it here named this very tool.
+    """
+    update = _capture_registered_tools()["nc_auth_update_scopes"]
+    _update_scopes_storage(mocker, None)
+
+    response = await update(MagicMock(), add_scopes=["semantic.read"])
+
+    assert response.status == "unchanged"
+    assert "OAuth token" in response.message
+
+
+async def test_update_scopes_remove_on_unrestricted_grant_materialises_a_list(mocker):
+    """Narrowing a NULL grant necessarily snapshots the vocabulary.
+
+    Restrictions are stored as an allow-list, so "everything except X" can only
+    be written as a concrete list — which then does not include scopes added to
+    the vocabulary later, even when the token grants them. That is the same
+    staleness this change removes elsewhere, accepted here rather than
+    introducing a second (deny-list) representation for a rare, explicitly
+    user-driven request. Locked in so the trade-off is visible if it ever stops
+    being acceptable.
+    """
+    update = _capture_registered_tools()["nc_auth_update_scopes"]
+    _update_scopes_storage(mocker, None)
+
+    response = await update(MagicMock(), remove_scopes=["mail.send"])
+
+    assert response.status != "unchanged"
+    assert response.new_scopes is not None
+    assert "mail.send" not in response.new_scopes
+    assert set(response.new_scopes) == ALL_SUPPORTED_SCOPES - {"mail.send"}
+
+
 # ── Background-sync wake on provisioning ──
 
 
