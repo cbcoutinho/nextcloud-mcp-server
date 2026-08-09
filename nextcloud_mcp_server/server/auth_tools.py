@@ -61,7 +61,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
                     password — access is then bounded by your OAuth token alone,
                     which is what the Nextcloud-side provisioning flow does too.
                     Pass an explicit list only to grant *less* than your token
-                    allows; both layers must permit a scope for a tool to run.
+                    allows. Both layers must permit a scope for a tool to run.
 
         Returns:
             ProvisionAccessResponse with login URL or status
