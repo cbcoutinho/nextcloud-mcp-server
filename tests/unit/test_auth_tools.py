@@ -213,16 +213,100 @@ async def test_delete_expired_login_flow_sessions(temp_storage):
 
 
 def test_all_supported_scopes():
-    """Test that ALL_SUPPORTED_SCOPES contains expected scopes."""
+    """Test that ALL_SUPPORTED_SCOPES contains expected scopes.
+
+    Read/write pairing is deliberately not asserted: it is not a property of
+    this set (mail.send pairs with nothing, News is read-only in practice), and
+    the assertion that used to live here matched on ':read'/':write', which
+    stopped matching anything when ADR-024 moved the separator to a dot — so it
+    passed vacuously for months. Coverage of the invariant that actually
+    matters lives in tests/unit/test_scope_vocabulary_drift.py.
+    """
     assert "notes.read" in ALL_SUPPORTED_SCOPES
     assert "notes.write" in ALL_SUPPORTED_SCOPES
     assert "calendar.read" in ALL_SUPPORTED_SCOPES
     assert "files.read" in ALL_SUPPORTED_SCOPES
     assert "deck.read" in ALL_SUPPORTED_SCOPES
-    # Scopes should be in pairs (read/write)
-    read_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":read")]
-    write_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":write")]
-    assert len(read_scopes) == len(write_scopes)
+    assert "semantic.read" in ALL_SUPPORTED_SCOPES
+
+
+# ── Provisioning defaults ──
+
+
+async def test_provision_access_without_scopes_stores_no_restriction(mocker):
+    """Omitting `scopes` must persist NULL, not a snapshot of the vocabulary.
+
+    NULL is what the Nextcloud-side provisioning routes write, so both paths
+    agree, and the OAuth token stays the single live source of truth. Storing a
+    list here instead goes stale as soon as an admin edits the OIDC client —
+    which is how semantic.read became permanently ungrantable (GH #1277).
+    """
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(return_value=None)
+    storage.store_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(nextcloud_host="https://nc", nextcloud_browser_url=None),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    flow_client = AsyncMock()
+    flow_client.initiate = AsyncMock(
+        return_value=MagicMock(
+            poll_token="tok",
+            poll_endpoint="https://nc/login/v2/poll",
+            login_url="https://nc/login/v2/flow",
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.elicitation.present_login_url",
+        AsyncMock(return_value="message_only"),
+    )
+
+    response = await provision(MagicMock())
+
+    assert response.requested_scopes is None
+    assert (
+        storage.store_login_flow_session.await_args.kwargs["requested_scopes"] is None
+    )
+
+
+async def test_provision_access_rejects_invalid_scopes(mocker):
+    """An explicit list is still validated — and the None default must not make
+    that comprehension blow up on a missing list."""
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(return_value=None)
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+
+    response = await provision(MagicMock(), scopes=["notes.read", "not.a.scope"])
+
+    assert response.success is False
+    assert "not.a.scope" in response.message
 
 
 # ── Background-sync wake on provisioning ──

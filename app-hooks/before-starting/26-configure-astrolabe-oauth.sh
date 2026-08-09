@@ -39,8 +39,13 @@ NC_EXTERNAL_URL="${NC_EXTERNAL_URL%/}"
 CLIENT_ID="astrolabeMcpClientOAuth00000000000"
 REDIRECT_URI="${NC_EXTERNAL_URL}/apps/astrolabe/oauth/callback"
 
-# All scopes the MCP server supports (must match DCR scopes in app.py)
-ALLOWED_SCOPES="openid profile email offline_access notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write news.read news.write collectives.read collectives.write semantic.read"
+# Every scope the MCP server can require, i.e. ALL_SUPPORTED_SCOPES in
+# models/auth.py plus the OIDC standard ones. This is a hard ceiling on what any
+# token issued to this client can carry, and a token scope is now required for
+# every tool call (not just for tool visibility) — so a scope omitted here
+# silently removes those tools. mail.* and talk.* were missing for exactly that
+# reason. Keep in sync with models/auth.py, not with a mental list of apps.
+ALLOWED_SCOPES="openid profile email offline_access notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write news.read news.write collectives.read collectives.write mail.read mail.write mail.send talk.read talk.write semantic.read"
 
 # Create OAuth client
 CLIENT_JSON=$(php occ oidc:create "Astrolabe" \

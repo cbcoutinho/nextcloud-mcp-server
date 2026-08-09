@@ -150,9 +150,15 @@ def require_scopes(*required_scopes: str):
                 return await func(*args, **kwargs)
 
             # ── Login Flow v2: Check stored app password scopes ──
-            # In Login Flow v2 multi-user mode, OAuth tokens provide MCP session
-            # identity only. Nextcloud API access uses stored app passwords.
-            # Check if the user has a stored app password with appropriate scopes.
+            # In Login Flow v2 multi-user mode, Nextcloud API access uses stored
+            # app passwords, so the user must be provisioned before any tool can
+            # run. The stored scope list is an *additional* restriction on top of
+            # the OAuth token, not a replacement for it: this block can deny, and
+            # can decline to restrict (NULL), but never grants. Whatever survives
+            # it still has to clear the token check below, so the effective
+            # permission is:
+            #
+            #     token(consent ∩ client allowed_scopes) ∩ stored (NULL = no restriction)
             if get_settings().enable_login_flow and not set(required_scopes).issubset(
                 IDENTITY_ONLY_SCOPES
             ):
@@ -222,29 +228,35 @@ def require_scopes(*required_scopes: str):
                         raise ProvisioningRequiredError(error_msg)
 
                     if stored_scopes == "all":
-                        # NULL scopes in DB = legacy app password = all allowed
+                        # NULL scopes in DB = no *additional* restriction. This
+                        # deliberately does not grant everything: it falls
+                        # through to the token check below, so the OAuth token
+                        # remains the ceiling. Returning here instead was how a
+                        # NULL-scoped user could call tools their token never
+                        # carried — and it made list_tools (which filters on
+                        # token scopes) disagree with tools/call.
                         logger.debug(
-                            "Stored app password scope check passed for %s: all scopes",
+                            "No stored scope restriction for %s - deferring to token scopes",
                             func_name,
                         )
-                        return await func(*args, **kwargs)
+                    else:
+                        # Check stored scopes against required. This layer can
+                        # only narrow: passing it still requires the token to
+                        # carry the scope as well.
+                        stored_set = set(stored_scopes)
+                        missing = set(required_scopes) - stored_set
+                        if missing:
+                            error_msg = (
+                                f"Access denied to {func_name}: "
+                                f"Missing scopes: {', '.join(sorted(missing))}. "
+                                f"Call 'nc_auth_update_scopes' to add permissions."
+                            )
+                            logger.warning(error_msg)
+                            raise InsufficientScopeError(list(missing), error_msg)
 
-                    # Check stored scopes against required
-                    stored_set = set(stored_scopes)
-                    missing = set(required_scopes) - stored_set
-                    if missing:
-                        error_msg = (
-                            f"Access denied to {func_name}: "
-                            f"Missing scopes: {', '.join(sorted(missing))}. "
-                            f"Call 'nc_auth_update_scopes' to add permissions."
+                        logger.debug(
+                            "Stored app password scope check passed for %s", func_name
                         )
-                        logger.warning(error_msg)
-                        raise InsufficientScopeError(list(missing), error_msg)
-
-                    logger.debug(
-                        "Stored app password scope check passed for %s", func_name
-                    )
-                    return await func(*args, **kwargs)
 
             # Extract scopes from access token (strip resource prefix if configured)
             token_scopes = _strip_resource_prefix(set(access_token.scopes or []))
@@ -256,8 +268,15 @@ def require_scopes(*required_scopes: str):
             settings = get_settings()
             enable_offline_access = settings.enable_offline_access
 
-            # In offline access mode, check if Nextcloud scopes require provisioning
-            if enable_offline_access:
+            # In offline access mode, check if Nextcloud scopes require provisioning.
+            # Skipped under Login Flow v2: the two provisioning models are
+            # mutually exclusive, and this branch would send a login-flow user to
+            # 'provision_nextcloud_access' (the Flow 2 tool, only registered when
+            # offline access is on) instead of raising InsufficientScopeError —
+            # which is also the only path that carries a WWW-Authenticate step-up
+            # challenge. Before NULL scopes fell through, login_flow never reached
+            # here.
+            if enable_offline_access and not settings.enable_login_flow:
                 # Check if any required scopes are Nextcloud-specific
                 nextcloud_scopes = [
                     s
@@ -313,6 +332,23 @@ def require_scopes(*required_scopes: str):
                     f"Missing required scopes: {', '.join(sorted(missing_scopes))}. "
                     f"Token has scopes: {', '.join(sorted(token_scopes)) if token_scopes else 'none'}"
                 )
+                if settings.enable_login_flow:
+                    # Name the remedy *and* the non-remedy. These are OAuth
+                    # token scopes, so nc_auth_update_scopes can never grant
+                    # them — and an agent that has seen the stored-scope denial
+                    # will otherwise retry it forever against an "unchanged"
+                    # response. Either lever can be the cause: the admin's
+                    # allowed_scopes on the OIDC client, or the user's own
+                    # consent selection when the OIDC app permits user settings.
+                    error_msg += (
+                        ". These are OAuth token scopes, not stored app-password "
+                        "scopes: 'nc_auth_update_scopes' cannot grant them. The "
+                        "OIDC client must permit the scope (Nextcloud → "
+                        "Administration → OpenID Connect) and it must be included "
+                        "in your consent (Nextcloud → Personal settings, where "
+                        "user scope selection is enabled); then re-authorize to "
+                        "obtain a new token."
+                    )
                 logger.warning(error_msg)
                 raise InsufficientScopeError(list(missing_scopes), error_msg)
 
@@ -608,8 +644,10 @@ async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
     """Look up stored app password scopes for a user (with TTL cache).
 
     Returns:
-        - list[str]: Specific scopes granted
-        - "all": NULL scopes in DB (legacy = all allowed)
+        - list[str]: Specific scopes granted — an additional restriction on
+          top of the OAuth token
+        - "all": NULL scopes in DB = no additional restriction. Callers must
+          still apply the token check; this is not a grant.
         - None: No stored app password (provisioning required)
 
     Raises:

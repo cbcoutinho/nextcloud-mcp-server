@@ -27,7 +27,18 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
-# Default scopes for OAuth testing - all app-specific read/write scopes
+# Default scopes for OAuth testing - all app-specific read/write scopes.
+#
+# The OAuth token is the ceiling for every tool call, not just for tool
+# visibility, so a scope missing here makes those tools fail for the "full
+# access" fixture. mail.*, news.*, collectives.* and semantic.read were absent
+# while nothing in tests/server/login_flow/ called those tools — so CI stayed
+# green over a gap that would have broken real deployments (GH #1277).
+#
+# These lanes rely on the OIDC app's `allow_user_settings` defaulting to 'no'
+# (scopes auto-granted, no consent page). If a test ever enables user scope
+# selection, the token ceiling becomes the per-user consent record instead and
+# these constants stop being authoritative.
 DEFAULT_FULL_SCOPES = (
     "openid profile email "
     "notes.read notes.write "
@@ -39,7 +50,11 @@ DEFAULT_FULL_SCOPES = (
     "tables.read tables.write "
     "files.read files.write "
     "sharing.read sharing.write "
-    "talk.read talk.write"
+    "news.read news.write "
+    "collectives.read collectives.write "
+    "mail.read mail.write mail.send "
+    "talk.read talk.write "
+    "semantic.read"
 )
 
 # Read-only scopes (all read scopes across apps) - should match DEFAULT_FULL_SCOPES read portion
@@ -54,7 +69,11 @@ DEFAULT_READ_SCOPES = (
     "tables.read "
     "files.read "
     "sharing.read "
-    "talk.read"
+    "news.read "
+    "collectives.read "
+    "mail.read "
+    "talk.read "
+    "semantic.read"
 )
 
 # Write-only scopes (all write scopes across apps) - should match DEFAULT_FULL_SCOPES write portion
@@ -69,6 +88,9 @@ DEFAULT_WRITE_SCOPES = (
     "tables.write "
     "files.write "
     "sharing.write "
+    "news.write "
+    "collectives.write "
+    "mail.write mail.send "
     "talk.write"
 )
 

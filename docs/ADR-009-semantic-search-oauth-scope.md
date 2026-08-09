@@ -1,6 +1,8 @@
 # ADR-009: Generic `semantic:read` OAuth Scope for Multi-App Vector Search
 
-**Status**: Accepted — implemented (`semantic.read` scope gates the semantic-search tools)
+**Status**: Accepted — implemented (`semantic.read` scope gates the semantic-search tools).
+
+> **Was unreachable in `login_flow` mode until 0.167.0.** `semantic.read` was advertised in DCR and carried by tokens, but it was never added to `ALL_SUPPORTED_SCOPES`, so no provisioning path could put it in the stored app-password grant that Login Flow v2 checked — and `nc_auth_update_scopes` rejected it as invalid. Every semantic call was denied with no supported recovery (GH #1277). Fixed by adding it to the vocabulary and by making a NULL stored grant defer to the token instead of short-circuiting; see ADR-022.
 **Date**: 2025-01-11
 **Depends On**: ADR-007 (Background Vector Sync), ADR-008 (MCP Sampling for Semantic Search)
 
