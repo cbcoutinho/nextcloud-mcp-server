@@ -1262,6 +1262,53 @@ def test_an_unparseable_date_does_not_silently_rebuild_the_todo():
         )
 
 
+async def test_update_todo_non_value_merge_error_does_not_rebuild_or_save(mocker):
+    """An unexpected merge failure must leave the stored VTODO untouched."""
+    client = _pure_client()
+    raw_ical = client._create_ical_todo(
+        {
+            "summary": "Keep me",
+            "description": "Original details",
+            "categories": "home",
+        },
+        "uid-runtime-failure",
+    )
+    rebuild = mocker.spy(client, "_create_ical_todo")
+
+    todo = mocker.Mock(
+        data=raw_ical,
+        url="https://cloud.example.org/tasks/uid-runtime-failure.ics",
+    )
+    todo.load = mocker.Mock(return_value=None)
+    todo.save = mocker.AsyncMock()
+
+    mocker.patch.object(client, "_ensure_calendar_home", new=mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", return_value=mocker.Mock())
+    mocker.patch.object(
+        client,
+        "_async_object_by_uid",
+        new=mocker.AsyncMock(return_value=todo),
+    )
+
+    failure = RuntimeError("synthetic merge failure")
+    mocker.patch(
+        "nextcloud_mcp_server.client.calendar.Calendar.from_ical",
+        side_effect=failure,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.update_todo(
+            "tasks",
+            "uid-runtime-failure",
+            {"summary": "Changed"},
+        )
+
+    assert exc_info.value is failure
+    assert todo.data == raw_ical
+    todo.save.assert_not_awaited()
+    rebuild.assert_not_called()
+
+
 def test_unrelated_todo_update_survives_a_stored_mismatch():
     """The guard must only fire for the pair the caller is actually writing."""
     client = _pure_client()
