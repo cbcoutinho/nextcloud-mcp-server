@@ -30,7 +30,12 @@ class ProvisionStatusResponse(BaseResponse):
     message: str = Field(description="Human-readable status message")
     user_id: str | None = Field(None, description="MCP user ID")
     scopes: list[str] | None = Field(
-        None, description="Granted scopes (None = all scopes)"
+        None,
+        description=(
+            "Stored scope restriction. None means no additional restriction, "
+            "so access is bounded by your OAuth token alone. A list restricts "
+            "further than the token does. Both layers must permit a scope."
+        ),
     )
     username: str | None = Field(None, description="Nextcloud username (loginName)")
 
