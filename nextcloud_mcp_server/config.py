@@ -123,6 +123,7 @@ _DEFAULTS: dict[str, Any] = {
     "vector_density_snapshot_enabled": True,
     "vector_density_snapshot_interval": 300,
     "vector_density_snapshot_max_documents": 50000,
+    "usage_stock_snapshot_interval": 86400,
     "vector_ram_hnsw_overhead_factor": 1.5,
     "vector_sync_user_poll_interval": 60,
     "health_ready_refresh_interval": 15,
@@ -1101,6 +1102,14 @@ class Settings:
     vector_density_snapshot_enabled: bool = True
     vector_density_snapshot_interval: int = 300  # seconds
     vector_density_snapshot_max_documents: int = 50000
+    # Cadence for the billable retention snapshot (vector/metrics_publisher.py:
+    # usage_stock_task), which records the retained chunk count per index mode as
+    # a ``chunks_stored`` usage event. Daily by design: a month of readings sums
+    # to chunk-DAYS, the integral of a changing stock, so a corpus loaded or
+    # purged mid-month is charged pro rata. Shortening this does NOT bill more —
+    # the event id is derived from the UTC date, so extra runs on the same day
+    # collide on the primary key and are dropped.
+    usage_stock_snapshot_interval: int = 86400  # seconds
     # HNSW-graph/segment overhead multiplier applied when estimating dense-vector
     # RAM (``chunks * dim * 4 bytes * factor``). ~1.5 matches the cost-to-serve
     # note's ~6 KB / 1024-dim observation; a deployment knob because the real

@@ -7,6 +7,7 @@ that fixes the queue gauge reading 0 on the multi-user consumer path.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -640,3 +641,189 @@ class TestPublishDeadLetteredGauge:
         )
 
         gauge.assert_not_called()
+
+
+class TestRecordStorageStock:
+    """The billable retention snapshot (chunks_stored).
+
+    Distinct from the gauges above: this writes to usage_events, so the
+    properties that matter are billing properties -- exact counts, a correct
+    keyword derivation, and idempotency across pod restarts.
+    """
+
+    @pytest.fixture
+    def store(self, monkeypatch) -> AsyncMock:
+        store = AsyncMock()
+        monkeypatch.setattr(mp.UsageEventStore, "shared", AsyncMock(return_value=store))
+        return store
+
+    def _stub(self, monkeypatch, *, total: int, hybrid: int, enabled: bool = True):
+        settings = SimpleNamespace(
+            usage_metering_enabled=enabled,
+            get_collection_name=lambda: _COLLECTION,
+        )
+        monkeypatch.setattr(mp, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            mp, "get_qdrant_client", AsyncMock(return_value=AsyncMock())
+        )
+        monkeypatch.setattr(mp, "count_indexed", AsyncMock(return_value=(0, total)))
+        monkeypatch.setattr(mp, "count_hybrid_chunks", AsyncMock(return_value=hybrid))
+
+    async def test_records_both_modes_with_keyword_derived(
+        self, monkeypatch, store
+    ) -> None:
+        self._stub(monkeypatch, total=1000, hybrid=400)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        events = store.record_usage_events.await_args.args[0]
+        assert [(e.metric, e.metadata["index_mode"], e.value) for e in events] == [
+            ("chunks_stored", "hybrid", 400),
+            # 1000 - 400: derived, never counted separately, so the parts always
+            # sum to the total.
+            ("chunks_stored", "keyword", 600),
+        ]
+
+    async def test_counts_are_exact_not_approximate(self, monkeypatch, store) -> None:
+        # A billing figure must not use the gauges' exact=False shortcut.
+        self._stub(monkeypatch, total=10, hybrid=4)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        assert mp.count_indexed.await_args.kwargs["exact"] is True
+        assert mp.count_hybrid_chunks.await_args.kwargs["exact"] is True
+
+    async def test_event_id_is_stable_across_restarts(self, monkeypatch, store) -> None:
+        """The property that stops restarts inflating the billed chunk-days.
+
+        Two runs on the same UTC day must produce identical event ids, so the
+        second insert hits ON CONFLICT (event_id) DO NOTHING.
+        """
+        self._stub(monkeypatch, total=1000, hybrid=400)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+        first = [e.event_id for e in store.record_usage_events.await_args.args[0]]
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+        second = [e.event_id for e in store.record_usage_events.await_args.args[0]]
+
+        assert first == second
+        # ...and a different day must NOT collide, or we would bill one reading
+        # per corpus forever.
+        await mp.record_storage_stock(on_date=date(2026, 8, 10))
+        next_day = [e.event_id for e in store.record_usage_events.await_args.args[0]]
+        assert set(next_day).isdisjoint(first)
+
+    async def test_stamped_at_utc_midnight_of_the_reading_date(
+        self, monkeypatch, store
+    ) -> None:
+        # The row must land on the day it describes regardless of the hour the
+        # pod happened to wake up, for the CP's date_trunc() rollup.
+        self._stub(monkeypatch, total=10, hybrid=10)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        events = store.record_usage_events.await_args.args[0]
+        assert all(
+            e.occurred_at == datetime(2026, 8, 9, tzinfo=timezone.utc) for e in events
+        )
+
+    async def test_empty_corpus_records_nothing(self, monkeypatch, store) -> None:
+        self._stub(monkeypatch, total=0, hybrid=0)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        store.record_usage_events.assert_not_awaited()
+
+    async def test_no_op_when_metering_disabled(self, monkeypatch, store) -> None:
+        self._stub(monkeypatch, total=1000, hybrid=400, enabled=False)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        store.record_usage_events.assert_not_awaited()
+
+    async def test_keyword_never_negative(self, monkeypatch, store) -> None:
+        # The two counts are separate round-trips; an upsert landing between
+        # them must not produce a negative keyword count.
+        self._stub(monkeypatch, total=100, hybrid=140)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        events = store.record_usage_events.await_args.args[0]
+        assert [e.value for e in events] == [140, 0]
+
+    async def test_qdrant_failure_does_not_raise(self, monkeypatch, store) -> None:
+        self._stub(monkeypatch, total=10, hybrid=4)
+        monkeypatch.setattr(
+            mp, "count_indexed", AsyncMock(side_effect=RuntimeError("qdrant down"))
+        )
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        store.record_usage_events.assert_not_awaited()
+
+
+class TestUsageStockTask:
+    async def test_records_immediately_then_honours_shutdown(self, monkeypatch) -> None:
+        # A fresh pod must be represented on the day it comes up rather than
+        # waiting a full interval, so the reading happens before the sleep.
+        shutdown = anyio.Event()
+        recorded = 0
+
+        async def _fake_record() -> None:
+            nonlocal recorded
+            recorded += 1
+            shutdown.set()  # one pass, then stop the loop
+
+        monkeypatch.setattr(
+            mp, "record_storage_stock", AsyncMock(side_effect=_fake_record)
+        )
+        monkeypatch.setattr(
+            mp,
+            "get_settings",
+            lambda: SimpleNamespace(usage_stock_snapshot_interval=0),
+        )
+
+        await mp.usage_stock_task(shutdown)
+
+        assert recorded == 1
+
+    async def test_sleep_is_never_zero(self, monkeypatch) -> None:
+        """Guards against a busy-loop at the UTC day boundary.
+
+        The sleep is ``min(interval, max(1.0, until_midnight))``. Exactly at
+        midnight ``until_midnight`` collapses toward 0, so without the 1.0 floor
+        the task would spin recording (and re-dropping) the same day's reading.
+        """
+        deadlines: list[float] = []
+        original = anyio.move_on_after
+
+        def _capture(delay, **kwargs):
+            deadlines.append(delay)
+            return original(0, **kwargs)  # don't actually sleep
+
+        shutdown = anyio.Event()
+        calls = 0
+
+        async def _fake_record() -> None:
+            nonlocal calls
+            calls += 1
+            if calls >= 2:
+                shutdown.set()
+
+        monkeypatch.setattr(
+            mp, "record_storage_stock", AsyncMock(side_effect=_fake_record)
+        )
+        # A large interval so the day-boundary term is the one that binds.
+        monkeypatch.setattr(
+            mp,
+            "get_settings",
+            lambda: SimpleNamespace(usage_stock_snapshot_interval=86400),
+        )
+        monkeypatch.setattr(mp.anyio, "move_on_after", _capture)
+
+        await mp.usage_stock_task(shutdown)
+
+        assert deadlines, "expected at least one sleep"
+        assert all(d >= 1.0 for d in deadlines)
+        # And never longer than the configured interval.
+        assert all(d <= 86400 for d in deadlines)
