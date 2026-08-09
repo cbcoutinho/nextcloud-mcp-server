@@ -114,7 +114,10 @@ async def _poll_and_store(provision_id: str) -> None:
             await storage.store_app_password_with_scopes(
                 user_id=effective_user_id,
                 app_password=result.app_password,
-                scopes=None,  # All scopes
+                # No additional restriction — access stays bounded by the
+                # OAuth token, not granted outright. nc_auth_provision_access
+                # writes the same thing so both paths agree.
+                scopes=None,
                 username=result.login_name,
             )
             invalidate_scope_cache(effective_user_id)

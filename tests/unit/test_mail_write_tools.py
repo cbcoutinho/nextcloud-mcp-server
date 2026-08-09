@@ -18,6 +18,7 @@ from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.models.mail import MailActionResponse, MailTagResponse
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 from nextcloud_mcp_server.server.mail import configure_mail_tools
+from nextcloud_mcp_server.server.semantic import configure_semantic_tools
 
 pytestmark = pytest.mark.unit
 
@@ -191,9 +192,15 @@ def test_every_tool_scope_is_grantable():
     BasicAuth (where ``require_scopes`` short-circuits) — which is how
     ``mail.send`` stayed broken unnoticed. This walks every registered app so
     the next omission fails here rather than in a deployment.
+
+    ``configure_semantic_tools`` is registered explicitly because
+    ``AVAILABLE_APPS`` deliberately excludes it (semantic search is a
+    cross-app feature gated by VECTOR_SYNC_ENABLED, see server/__init__.py).
+    That exclusion was the hole this test had: ``semantic.read`` shipped
+    ungrantable and undetected (GH #1277).
     """
     mcp = FastMCP(name="test-all-tools")
-    for configure in AVAILABLE_APPS.values():
+    for configure in (*AVAILABLE_APPS.values(), configure_semantic_tools):
         configure(mcp)
 
     required = {

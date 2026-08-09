@@ -18,11 +18,15 @@ is why a regression that made ``@require_scopes`` a runtime no-op went
 unnoticed. ``test_stored_scopes_enforced_on_tool_call`` closes that gap here;
 tests/unit/test_require_scopes_enforcement.py covers the decorator directly.
 
-Enforcement in login-flow mode keys on the *stored app-password* scopes, not on
-the OAuth token's scopes. Nextcloud app passwords are unscoped — they are
-all-or-nothing against the Nextcloud API — so the per-user scope set stored
-alongside the password is the only thing that can restrict a session, and it
-must hold on the call path.
+Enforcement in login-flow mode has two layers and both must hold on the call
+path. Nextcloud app passwords are unscoped — all-or-nothing against the
+Nextcloud API — so this server applies its own limits:
+
+    token(consent ∩ client allowed_scopes) ∩ stored (NULL = no restriction)
+
+The stored per-user scope set can only narrow; a NULL grant narrows nothing and
+leaves the OAuth token as the ceiling. It used to short-circuit the check
+entirely, which let a NULL-scoped session call tools its token never carried.
 
 Not covered here: WWW-Authenticate challenge headers for step-up auth.
 """
@@ -166,6 +170,68 @@ def _tool_text(result: CallToolResult) -> str:
 
 @pytest.mark.integration
 @pytest.mark.login_flow
+async def test_semantic_tool_callable_after_default_provisioning(
+    nc_mcp_login_flow_client,
+):
+    """A semantic tool must be callable by a default-provisioned user (GH #1277).
+
+    ``semantic.read`` was required by the semantic tools but absent from
+    ALL_SUPPORTED_SCOPES, so the provisioning tool — whose default was that very
+    set — could never grant it, and nc_auth_update_scopes rejected it as
+    invalid. Every semantic call was denied with no supported way to recover.
+
+    nc_get_vector_sync_status is used rather than nc_semantic_search because it
+    needs no indexed content: the assertion here is about authorization, not
+    retrieval.
+    """
+    result = await nc_mcp_login_flow_client.call_tool("nc_get_vector_sync_status", {})
+
+    assert not result.isError, (
+        "nc_get_vector_sync_status was denied for a default-provisioned user: "
+        f"{_tool_text(result)}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.login_flow
+async def test_token_scopes_enforced_on_tool_call(
+    nc_mcp_login_flow_client,
+    nc_mcp_login_flow_client_read_only,
+):
+    """A tool call must be DENIED when the *token* doesn't carry the scope.
+
+    The stored app-password grant is an additional restriction, not a
+    replacement for the token: default provisioning stores NULL ("no additional
+    restriction"), and the OAuth token remains the ceiling. Before that, NULL
+    short-circuited the whole check, so a read-only token could create notes —
+    and list_tools (filtered on token scopes) disagreed with tools/call.
+
+    Depends on nc_mcp_login_flow_client only to guarantee the user is
+    provisioned; the read-only session is what makes the call. The assertion
+    holds whether the stored grant is NULL or an explicit list, since both
+    layers must permit the scope.
+    """
+    result = await nc_mcp_login_flow_client_read_only.call_tool(
+        "nc_notes_create_note",
+        {
+            "title": "token-scope-enforcement-probe",
+            "content": "must never be created",
+            "category": "testing",
+        },
+    )
+
+    assert result.isError, (
+        "nc_notes_create_note succeeded with a read-only token — the token "
+        "layer is not enforcing on the tools/call path"
+    )
+    message = _tool_text(result)
+    assert "notes.write" in message, (
+        f"expected the missing scope to be named in the denial, got: {message}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.login_flow
 async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
     """A tool call must be DENIED when the stored scopes don't cover it.
 
@@ -226,6 +292,11 @@ async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
         # would leave every later test denied. Never raise from here — an
         # exception in `finally` would replace whatever the test was actually
         # failing on.
+        #
+        # The fallback cannot restore NULL (the scopes endpoint takes a list),
+        # but it is equivalent for later tests: the full set covers every scope
+        # a token can carry, so `stored ∧ token` reduces to the token either
+        # way — which is exactly what NULL means.
         try:
             await _set_stored_scopes(
                 user_id,

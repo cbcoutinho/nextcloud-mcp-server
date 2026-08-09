@@ -54,7 +54,13 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
         )
         assert get_result.isError is False
 
-        # Update
+        # Update, using the etag from the read rather than the one the create
+        # returned. They are usually equal, but the Notes app can settle a
+        # note's etag after responding to the create, and then the stale
+        # create-time etag loses the optimistic-concurrency check with
+        # "modified by someone else" — a real client would refresh, and this
+        # test already has the fresh value in hand.
+        current = json.loads(get_result.content[0].text)
         update_result = await nc_mcp_client.call_tool(
             "nc_notes_update_note",
             arguments={
@@ -62,7 +68,7 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
                 "title": "Updated Smoke Test",
                 "content": "Updated content",
                 "category": "test",
-                "etag": data["etag"],
+                "etag": current["etag"],
             },
         )
         assert update_result.isError is False

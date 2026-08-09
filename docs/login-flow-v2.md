@@ -295,7 +295,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 
 The authoritative list is enumerated at runtime by [`scope_authorization.discover_all_scopes()`](../nextcloud_mcp_server/auth/scope_authorization.py) from each tool's `@require_scopes(...)` decorator and exposed via the PRM endpoint (`/.well-known/oauth-protected-resource/mcp`).
 
-Standard OIDC scopes (`openid`, `profile`, `email`) are also accepted and have no effect on tool access.
+Standard OIDC scopes (`openid`, `profile`, `email`) are accepted and grant no app access of their own. `openid` does gate the auth tools themselves (`nc_auth_provision_access` and friends), which is what keeps an unprovisioned user able to provision.
 
 ### How Scopes Are Enforced
 
@@ -308,7 +308,26 @@ async def nc_notes_get_note(note_id: int, ctx: Context):
     ...
 ```
 
-When a client calls `list_tools`, the server returns only tools the user has granted scopes for (dynamic tool filtering). When a client calls a tool whose scope is missing, the server returns:
+Two layers apply, and **both** must permit a scope:
+
+```
+effective = token(consent ∩ client allowed_scopes)  ∩  stored (NULL = no restriction)
+```
+
+**Layer 1 — the OAuth token** is the ceiling. What lands in it is decided entirely by Nextcloud's `oidc` app:
+
+1. the requested scope is filtered down to the client's **allowed scopes** (anything else is dropped silently), then
+2. the admin setting `allow_user_settings` decides who has the final say:
+   - **`no` (the default)** — everything requested is auto-granted, so the ceiling is the client's allowed-scopes list.
+   - **`yes`** — the **per-user consent record** wins. Users pick a subset on the consent page and can re-edit it later in personal settings, so the ceiling is per-user and two people on the same client can differ.
+
+Widening a client re-prompts affected users at their next authorize, but existing refresh tokens keep the scopes they were minted with until re-authorization.
+
+**Layer 2 — the stored app-password scopes** can only *narrow*. Provisioning stores `NULL` by default, meaning "no additional restriction"; an explicit list (via `nc_auth_provision_access(scopes=[...])` or `PATCH /api/v1/users/{id}/scopes`) restricts further. `NULL` is not a grant — it defers to the token.
+
+This distinction decides where a denial is fixed. A missing **stored** scope is fixed with `nc_auth_update_scopes`; a missing **token** scope cannot be — that needs the OIDC client's allowed scopes widened (admin) or the user's consent updated, followed by re-authorization.
+
+When a client calls `list_tools`, the server returns only tools the user's **token** covers (dynamic tool filtering). When a client calls a tool whose scope is missing at either layer, the server returns:
 
 ```http
 HTTP/1.1 403 Forbidden

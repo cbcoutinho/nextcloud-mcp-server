@@ -57,7 +57,11 @@ def register_auth_tools(mcp: FastMCP) -> None:
         Args:
             ctx: MCP context
             scopes: Requested application scopes (e.g. ["notes.read", "calendar.write"]).
-                    If not specified, all available scopes are requested.
+                    Omit this to place no additional restriction on the app
+                    password — access is then bounded by your OAuth token alone,
+                    which is what the Nextcloud-side provisioning flow does too.
+                    Pass an explicit list only to grant *less* than your token
+                    allows. Both layers must permit a scope for a tool to run.
 
         Returns:
             ProvisionAccessResponse with login URL or status
@@ -79,18 +83,41 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 status="already_provisioned",
                 message=(
                     f"Nextcloud access already provisioned for {user_id}. "
-                    f"Scopes: {existing['scopes'] or 'all'}. "
+                    f"Scopes: {existing['scopes'] or 'no additional restriction (bounded by your OAuth token)'}. "
                     f"Use nc_auth_update_scopes to modify permissions."
                 ),
                 user_id=user_id,
                 requested_scopes=existing["scopes"],
             )
 
-        # Determine scopes
-        requested_scopes = scopes if scopes else list(ALL_SUPPORTED_SCOPES)
+        # An empty list is rejected rather than folded into None. Both are
+        # falsy, but they ask for opposite things — "restrict me to nothing"
+        # versus "do not restrict me" — and silently turning the first into the
+        # second widens access instead of denying it. Callers that mean the
+        # latter omit the argument.
+        if scopes is not None and not scopes:
+            return ProvisionAccessResponse(
+                status="error",
+                message=(
+                    "An empty scope list would grant nothing. Omit `scopes` to "
+                    "place no additional restriction beyond your OAuth token, "
+                    "or name the scopes you want."
+                ),
+                success=False,
+            )
+
+        # Determine scopes. ``None`` (no explicit request) stores NULL, which
+        # means "no additional restriction beyond the OAuth token" — identical
+        # to what the Nextcloud-side provisioning routes write. Snapshotting a
+        # scope list here instead would go stale the moment an admin edits the
+        # OIDC client's allowed scopes, which is what left semantic.read
+        # permanently ungrantable for early adopters (GH #1277).
+        requested_scopes = scopes
 
         # Validate requested scopes
-        invalid_scopes = [s for s in requested_scopes if s not in ALL_SUPPORTED_SCOPES]
+        invalid_scopes = [
+            s for s in (requested_scopes or []) if s not in ALL_SUPPORTED_SCOPES
+        ]
         if invalid_scopes:
             return ProvisionAccessResponse(
                 status="error",
@@ -387,7 +414,19 @@ def register_auth_tools(mcp: FastMCP) -> None:
 
         previous_scopes = existing["scopes"]
 
-        # Compute new scope set
+        # Compute new scope set.
+        #
+        # Narrowing an unrestricted (NULL) grant has to materialise a concrete
+        # list, because the stored layer expresses restrictions as an allow-list
+        # — there is no "everything except X" representation. So the vocabulary
+        # is snapshotted at this point, and a scope added to it later is not in
+        # that frozen list even if the token would grant it. This is the same
+        # staleness that made semantic.read ungrantable (GH #1277), kept here
+        # deliberately: the alternative is a deny-list, a second scope
+        # representation to store, validate and reason about, for a request
+        # ("drop this one capability") that is rare and explicitly user-driven.
+        # The escape hatch is the same as before — re-run
+        # nc_auth_provision_access to return to an unrestricted grant.
         current_set = (
             set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
         )
@@ -417,9 +456,22 @@ def register_auth_tools(mcp: FastMCP) -> None:
             set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
         )
         if set(new_scopes) == previous_scopes_set:
+            # A NULL stored grant already places no restriction, so adding to it
+            # is always a no-op. Say why, and point at the layer that can
+            # actually still be denying the call — otherwise a caller told
+            # "missing scopes, call nc_auth_update_scopes" loops here forever.
+            if previous_scopes is None:
+                message = (
+                    "Your stored grant already places no additional restriction, "
+                    "so there is nothing to add here. If a tool is still denied, "
+                    "the missing scope is on your OAuth token, not this grant — "
+                    "the OIDC client must allow it and you must re-authorize."
+                )
+            else:
+                message = "Requested scopes match current scopes. No changes needed."
             return UpdateScopesResponse(
                 status="unchanged",
-                message="Requested scopes match current scopes. No changes needed.",
+                message=message,
                 previous_scopes=previous_scopes,
                 new_scopes=new_scopes,
             )

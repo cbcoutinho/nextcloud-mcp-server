@@ -1382,3 +1382,53 @@ All tests must pass before the feature is considered complete.
 13. Verify scope enforcement cannot be bypassed via direct API calls
 14. Verify app password encryption and secure storage
 15. Verify rate limiting prevents abuse
+
+## Addendum (0.167.0): a NULL stored grant defers to the token
+
+The original implementation treated a `NULL` `scopes` column as *"legacy app
+password = all allowed"* and returned from `require_scopes` immediately. Every
+branch of the stored-scope check terminated, so **the OAuth token was never
+consulted on the call path** for a provisioned user. Two problems followed.
+
+1. **The two layers disagreed.** `list_tools` filters on token scopes while
+   `tools/call` enforced on stored scopes, so a NULL-scoped session was offered
+   one set of tools and could successfully call a larger one — including tools
+   whose scope the user had explicitly declined at the consent screen.
+2. **The two provisioning paths were not interchangeable.** The Nextcloud-side
+   routes write `NULL` (no enforcement); `nc_auth_provision_access` wrote a
+   snapshot of `ALL_SUPPORTED_SCOPES` (enforced, and frozen at provisioning
+   time). A scope added to the vocabulary later — `semantic.read` — was
+   therefore grantable to nobody who had used the tool, with no supported
+   recovery. See GH #1277.
+
+`NULL` now means **"no additional restriction"**, not "everything allowed": the
+check falls through to the token, which stays the ceiling. The stored list can
+only ever narrow, and `nc_auth_provision_access` writes `NULL` by default so
+both provisioning paths produce identical rows.
+
+```
+effective = token(consent ∩ client allowed_scopes)  ∩  stored (NULL = no restriction)
+```
+
+Do not restore the short-circuit. It reads like a harmless fast path for the
+common case, and it silently disables the layer that honours user consent.
+
+Consequences worth keeping in mind:
+
+- The OIDC client's allowed scopes are now a **hard ceiling on tool calls**, not
+  merely on tool visibility. A scope missing there removes those tools —
+  which is why `mail.*` and `talk.*` had to be added to the Astrolabe client.
+- Where the `oidc` app has `allow_user_settings=yes`, the ceiling is the
+  **per-user consent record**, so the same client can behave differently for
+  two users. Denial messages name both levers for that reason.
+- Background/vector sync still consults **neither** layer — it reads the app
+  password directly (`vector/oauth_sync.py`). Indexing is therefore not
+  scope-limited. That gap is real and tracked separately.
+- **Narrowing an unrestricted grant snapshots the vocabulary.** Restrictions are
+  stored as an allow-list, so `nc_auth_update_scopes(remove_scopes=[...])` on a
+  NULL grant has to write a concrete list — which will not contain scopes added
+  to the vocabulary later, even when the token grants them. That is the same
+  staleness this addendum removes elsewhere, accepted here rather than
+  introducing a deny-list as a second scope representation for a rare,
+  explicitly user-driven request. Re-running `nc_auth_provision_access` returns
+  the user to an unrestricted grant.

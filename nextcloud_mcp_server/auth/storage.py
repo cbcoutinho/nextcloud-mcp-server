@@ -2214,7 +2214,9 @@ class RefreshTokenStorage:
         Args:
             user_id: MCP user ID (identity from OAuth token or session)
             app_password: Nextcloud app password to encrypt and store
-            scopes: List of granted scopes (None = all scopes allowed)
+            scopes: Scope restriction to store. None means no additional
+                restriction — access stays bounded by the OAuth token rather
+                than being granted outright (see require_scopes).
             username: Nextcloud loginName from Login Flow v2 response
 
         Raises:
@@ -2273,7 +2275,9 @@ class RefreshTokenStorage:
             logger.info(
                 "Stored scoped app password for user %s (scopes=%s, username=%s)",
                 user_id,
-                "all" if scopes is None else len(scopes),
+                # NULL is "no additional restriction", not "all allowed" — the
+                # OAuth token still bounds the session (see require_scopes).
+                "unrestricted" if scopes is None else len(scopes),
                 username or "N/A",
             )
 

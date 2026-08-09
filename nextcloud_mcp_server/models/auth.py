@@ -30,7 +30,12 @@ class ProvisionStatusResponse(BaseResponse):
     message: str = Field(description="Human-readable status message")
     user_id: str | None = Field(None, description="MCP user ID")
     scopes: list[str] | None = Field(
-        None, description="Granted scopes (None = all scopes)"
+        None,
+        description=(
+            "Stored scope restriction. None means no additional restriction, "
+            "so access is bounded by your OAuth token alone. A list restricts "
+            "further than the token does. Both layers must permit a scope."
+        ),
     )
     username: str | None = Field(None, description="Nextcloud username (loginName)")
 
@@ -51,7 +56,13 @@ class UpdateScopesResponse(BaseResponse):
     new_scopes: list[str] | None = Field(None, description="Updated scope set")
 
 
-# All supported application-level scopes (frozenset for O(1) membership tests)
+# All supported application-level scopes (frozenset for O(1) membership tests).
+#
+# Every scope named in a ``@require_scopes`` decorator must be a member: a scope
+# outside this set cannot be granted by any provisioning path, so the tool
+# requiring it is permanently unreachable in Login Flow v2 mode. That is how
+# ``semantic.read`` shipped dead (GH #1277) and how ``mail.send`` did before it.
+# ``test_every_tool_scope_is_grantable`` enforces the invariant.
 ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
     {
         "notes.read",
@@ -81,5 +92,9 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "talk.write",
         "collectives.read",
         "collectives.write",
+        # MCP-server-level rather than a Nextcloud app, but it gates tools the
+        # same way, so it lives in the same vocabulary. Advertised in DCR only
+        # when vector sync is enabled — see app.py.
+        "semantic.read",
     }
 )
