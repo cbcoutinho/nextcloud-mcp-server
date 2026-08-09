@@ -491,16 +491,18 @@ async def record_storage_stock(on_date: date | None = None) -> None:
     try:
         qdrant_client = await get_qdrant_client()
         collection = settings.get_collection_name()
-        _, total = await count_indexed(qdrant_client, collection, exact=True)
+        # count_indexed returns (documents, chunks); only the chunk total is
+        # billable here -- documents are a display figure.
+        _, total_chunks = await count_indexed(qdrant_client, collection, exact=True)
         hybrid = await count_hybrid_chunks(qdrant_client, collection, exact=True)
         # Clamp: the two counts are separate round-trips, so an upsert landing
         # between them could otherwise yield a negative keyword count.
-        keyword = max(0, total - hybrid)
+        keyword = max(0, total_chunks - hybrid)
 
         # A never-indexed tenant records nothing rather than zero-value billing
         # rows, matching the chunk_count guard in record_indexing_usage
         # (vector/processor.py).
-        if total <= 0:
+        if total_chunks <= 0:
             return
 
         # Stamp the reading at midnight UTC of the day it describes, so a pod
