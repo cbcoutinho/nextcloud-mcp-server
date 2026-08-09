@@ -733,6 +733,9 @@ class TestRecordStorageStock:
         await mp.record_storage_stock(on_date=date(2026, 8, 9))
 
         store.record_usage_events.assert_not_awaited()
+        # ...and bails before the hybrid count, so a never-indexed tenant costs
+        # one Qdrant round-trip rather than three.
+        mp.count_hybrid_chunks.assert_not_awaited()
 
     async def test_no_op_when_metering_disabled(self, monkeypatch, store) -> None:
         self._stub(monkeypatch, total=1000, hybrid=400, enabled=False)
@@ -820,6 +823,14 @@ class TestNextReadingDelay:
         now = datetime(2026, 8, 9, 0, 0, tzinfo=timezone.utc)
 
         assert mp._next_reading_delay(now, 60.0) == 60.0
+
+    def test_floors_a_zero_interval(self) -> None:
+        # An operator setting USAGE_STOCK_SNAPSHOT_INTERVAL=0 must not hot-loop
+        # the task against Qdrant. The floor is applied after the cap so it
+        # covers a zero interval as well as the midnight boundary.
+        now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+
+        assert mp._next_reading_delay(now, 0.0) == 1.0
 
     def test_never_zero_across_the_whole_day(self) -> None:
         # Sweep every minute: no clock position may produce a zero-length sleep.

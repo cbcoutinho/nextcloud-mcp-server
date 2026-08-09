@@ -494,16 +494,26 @@ async def record_storage_stock(on_date: date | None = None) -> None:
         # count_indexed returns (documents, chunks); only the chunk total is
         # billable here -- documents are a display figure.
         _, total_chunks = await count_indexed(qdrant_client, collection, exact=True)
-        hybrid = await count_hybrid_chunks(qdrant_client, collection, exact=True)
-        # Clamp: the two counts are separate round-trips, so an upsert landing
-        # between them could otherwise yield a negative keyword count.
-        keyword = max(0, total_chunks - hybrid)
 
         # A never-indexed tenant records nothing rather than zero-value billing
         # rows, matching the chunk_count guard in record_indexing_usage
-        # (vector/processor.py).
+        # (vector/processor.py). Checked BEFORE the hybrid count so an empty
+        # tenant costs one Qdrant round-trip instead of three.
         if total_chunks <= 0:
             return
+
+        hybrid = await count_hybrid_chunks(qdrant_client, collection, exact=True)
+        # Clamp: the two counts are separate round-trips, so an upsert landing
+        # between them could otherwise yield a negative keyword count.
+        #
+        # Deliberate tradeoff: in that same race the clamp also lets
+        # hybrid + keyword exceed the total_chunks the first query observed, so a
+        # day's reading can overstate by the handful of chunks written between
+        # the two counts. Bounded by that window and re-read from scratch the
+        # next day, which is why it is preferred over a transaction: an exact
+        # snapshot would mean holding a consistent read across two counts on a
+        # collection that is being written to continuously.
+        keyword = max(0, total_chunks - hybrid)
 
         # Stamp the reading at midnight UTC of the day it describes, so a pod
         # that wakes at an arbitrary hour still lands the row on the right day
@@ -539,9 +549,13 @@ def _next_reading_delay(now: datetime, interval: float) -> float:
 
     Aligns to the next UTC midnight so readings land one per calendar day
     instead of drifting across days on every restart, capped at ``interval`` so
-    a shortened interval stays testable. The ``1.0`` floor matters: exactly at
-    the boundary the midnight term collapses toward zero, which would spin the
-    task re-recording (and re-dropping) the same day's reading.
+    a shortened interval stays testable.
+
+    The ``1.0`` floor is applied **last**, so it covers both ways the delay can
+    collapse to zero: standing exactly on the midnight boundary, and an operator
+    setting the interval to 0. Either would spin the task re-recording (and,
+    thanks to the idempotent event id, re-dropping) the same day's reading —
+    harmless billing-wise, but needless Qdrant load.
 
     Pure so the boundary behaviour can be tested without patching the clock or
     the sleep primitive.
@@ -549,7 +563,7 @@ def _next_reading_delay(now: datetime, interval: float) -> float:
     next_midnight = datetime.combine(
         now.date() + timedelta(days=1), time.min, tzinfo=timezone.utc
     )
-    return min(interval, max(1.0, (next_midnight - now).total_seconds()))
+    return max(1.0, min(interval, (next_midnight - now).total_seconds()))
 
 
 async def usage_stock_task(
