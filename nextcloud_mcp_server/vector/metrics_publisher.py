@@ -498,7 +498,8 @@ async def record_storage_stock(on_date: date | None = None) -> None:
         keyword = max(0, total - hybrid)
 
         # A never-indexed tenant records nothing rather than zero-value billing
-        # rows, matching the chunk_count guard in _record_indexing_usage.
+        # rows, matching the chunk_count guard in record_indexing_usage
+        # (vector/processor.py).
         if total <= 0:
             return
 
@@ -531,6 +532,24 @@ async def record_storage_stock(on_date: date | None = None) -> None:
         logger.warning("Failed to record storage-stock usage events: %s", exc)
 
 
+def _next_reading_delay(now: datetime, interval: float) -> float:
+    """Seconds to sleep before the next reading.
+
+    Aligns to the next UTC midnight so readings land one per calendar day
+    instead of drifting across days on every restart, capped at ``interval`` so
+    a shortened interval stays testable. The ``1.0`` floor matters: exactly at
+    the boundary the midnight term collapses toward zero, which would spin the
+    task re-recording (and re-dropping) the same day's reading.
+
+    Pure so the boundary behaviour can be tested without patching the clock or
+    the sleep primitive.
+    """
+    next_midnight = datetime.combine(
+        now.date() + timedelta(days=1), time.min, tzinfo=timezone.utc
+    )
+    return min(interval, max(1.0, (next_midnight - now).total_seconds()))
+
+
 async def usage_stock_task(
     shutdown_event: anyio.Event,
     *,
@@ -552,14 +571,6 @@ async def usage_stock_task(
 
     while not shutdown_event.is_set():
         await record_storage_stock()
-        # Sleep to the next UTC midnight, capped at the configured interval so a
-        # shortened interval stays testable and the daily default still aligns.
-        now = datetime.now(timezone.utc)
-        until_midnight = (
-            datetime.combine(
-                now.date() + timedelta(days=1), time.min, tzinfo=timezone.utc
-            )
-            - now
-        ).total_seconds()
-        with anyio.move_on_after(min(interval, max(1.0, until_midnight))):
+        delay = _next_reading_delay(datetime.now(timezone.utc), interval)
+        with anyio.move_on_after(delay):
             await shutdown_event.wait()

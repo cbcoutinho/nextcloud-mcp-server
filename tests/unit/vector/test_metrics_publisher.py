@@ -7,7 +7,7 @@ that fixes the queue gauge reading 0 on the multi-user consumer path.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -787,43 +787,47 @@ class TestUsageStockTask:
 
         assert recorded == 1
 
-    async def test_sleep_is_never_zero(self, monkeypatch) -> None:
-        """Guards against a busy-loop at the UTC day boundary.
 
-        The sleep is ``min(interval, max(1.0, until_midnight))``. Exactly at
-        midnight ``until_midnight`` collapses toward 0, so without the 1.0 floor
+class TestNextReadingDelay:
+    """The day-boundary sleep, tested as a pure function.
+
+    Extracted from the task loop so the boundary behaviour can be asserted
+    without patching the clock or anyio's sleep primitive.
+    """
+
+    DAY = 86400.0
+
+    def test_aligns_to_next_utc_midnight(self) -> None:
+        # 21:00 UTC -> 3h to midnight, so the reading lands on the next
+        # calendar day rather than drifting by a fixed interval.
+        now = datetime(2026, 8, 9, 21, 0, tzinfo=timezone.utc)
+
+        assert mp._next_reading_delay(now, self.DAY) == 3 * 3600
+
+    def test_floors_at_one_second_on_the_boundary(self) -> None:
+        """Guards against a busy-loop exactly at the UTC day boundary.
+
+        At 23:59:59.5 the midnight term collapses toward 0; without the floor
         the task would spin recording (and re-dropping) the same day's reading.
         """
-        deadlines: list[float] = []
-        original = anyio.move_on_after
+        now = datetime(2026, 8, 9, 23, 59, 59, 500_000, tzinfo=timezone.utc)
 
-        def _capture(delay, **kwargs):
-            deadlines.append(delay)
-            return original(0, **kwargs)  # don't actually sleep
+        assert mp._next_reading_delay(now, self.DAY) == 1.0
 
-        shutdown = anyio.Event()
-        calls = 0
+    def test_capped_by_the_configured_interval(self) -> None:
+        # A shortened interval must win over the day boundary, so the cadence
+        # stays testable/tunable.
+        now = datetime(2026, 8, 9, 0, 0, tzinfo=timezone.utc)
 
-        async def _fake_record() -> None:
-            nonlocal calls
-            calls += 1
-            if calls >= 2:
-                shutdown.set()
+        assert mp._next_reading_delay(now, 60.0) == 60.0
 
-        monkeypatch.setattr(
-            mp, "record_storage_stock", AsyncMock(side_effect=_fake_record)
-        )
-        # A large interval so the day-boundary term is the one that binds.
-        monkeypatch.setattr(
-            mp,
-            "get_settings",
-            lambda: SimpleNamespace(usage_stock_snapshot_interval=86400),
-        )
-        monkeypatch.setattr(mp.anyio, "move_on_after", _capture)
+    def test_never_zero_across_the_whole_day(self) -> None:
+        # Sweep every minute: no clock position may produce a zero-length sleep.
+        base = datetime(2026, 8, 9, tzinfo=timezone.utc)
+        delays = [
+            mp._next_reading_delay(base + timedelta(minutes=m), self.DAY)
+            for m in range(0, 1440)
+        ]
 
-        await mp.usage_stock_task(shutdown)
-
-        assert deadlines, "expected at least one sleep"
-        assert all(d >= 1.0 for d in deadlines)
-        # And never longer than the configured interval.
-        assert all(d <= 86400 for d in deadlines)
+        assert all(d >= 1.0 for d in delays)
+        assert all(d <= self.DAY for d in delays)
