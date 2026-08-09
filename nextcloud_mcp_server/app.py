@@ -127,6 +127,7 @@ from nextcloud_mcp_server.server import (
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector.metrics_publisher import (
+    usage_stock_task,
     vector_density_snapshot_task,
     vector_sync_metrics_task,
 )
@@ -2257,6 +2258,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 if settings.vector_density_snapshot_enabled:
                     await tg.start(vector_density_snapshot_task, shutdown_event)
 
+                # Billable retention snapshot (chunks_stored), once per UTC day.
+                # Gated on metering alone — the task no-ops otherwise, and it must
+                # run on BOTH consumer paths or multi-user tenants go un-metered.
+                if settings.usage_metering_enabled:
+                    await tg.start(usage_stock_task, shutdown_event)
+
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
                     ingest_transport.active_consumer_count,
@@ -2493,6 +2500,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # VECTOR_DENSITY_SNAPSHOT_ENABLED.
                     if settings.vector_density_snapshot_enabled:
                         await tg.start(vector_density_snapshot_task, shutdown_event)
+
+                    # Billable retention snapshot (chunks_stored), once per UTC
+                    # day. Must be spawned here too: this is the multi-user
+                    # consumer path, and omitting it would silently un-meter
+                    # every multi-user tenant's storage.
+                    if settings.usage_metering_enabled:
+                        await tg.start(usage_stock_task, shutdown_event)
 
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",

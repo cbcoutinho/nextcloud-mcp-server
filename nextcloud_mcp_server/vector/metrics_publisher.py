@@ -20,6 +20,8 @@ document has (both fields are payload-indexed), avoiding a Qdrant facet pass.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import anyio
@@ -44,6 +46,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_vector_sync_queue_size,
 )
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import DEAD_LETTER_KEY
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
@@ -429,4 +432,167 @@ async def vector_density_snapshot_task(
         await publish_chunk_density_snapshot()
         # Sleep until the next snapshot or until shutdown, whichever comes first.
         with anyio.move_on_after(interval):
+            await shutdown_event.wait()
+
+
+# Metric name for the retention (storage) meter. Distinct from the ingest-flow
+# metrics recorded in vector/processor.py: this is a STOCK — what is retained
+# right now — so a month of daily readings sums to chunk-DAYS, the integral of a
+# changing corpus. Summing bytes_stored instead would count a re-indexed document
+# again on every pass and measure churn, not retention.
+#
+# CROSS-REPO: this is a NEW metric name. Per migration 007, the control-plane
+# rollup silently ignores a metric its catalog does not know, so it bills nothing
+# until the CP catalog + Stripe meter learn ``chunks_stored`` too. The mode split
+# rides in the event metadata and the rollup currently groups by (day, metric)
+# only, so both modes bill as one line until the CP groups on index_mode as well.
+CHUNKS_STORED_METRIC = "chunks_stored"
+
+
+def _stock_event_id(index_mode: str, on_date: date) -> str:
+    """Return the deterministic event id for one mode's reading on one day.
+
+    ``usage_events`` inserts are ``ON CONFLICT (event_id) DO NOTHING``
+    (usage/store.py), so deriving the id from (metric, mode, UTC date) makes the
+    daily snapshot idempotent: a pod that restarts five times in a day still
+    contributes exactly one reading per mode. Without this every restart would
+    add another reading and silently inflate the billed chunk-days.
+
+    Uses ``NAMESPACE_DNS`` with a distinguishing prefix, matching the other
+    uuid5 id builders in this package (``placeholder.py``, ``dead_letter.py``).
+    These ids live in a different space entirely — the ``usage_events`` primary
+    key rather than Qdrant point ids — so the shared namespace costs nothing.
+    """
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_DNS,
+            f"{CHUNKS_STORED_METRIC}:{index_mode}:{on_date.isoformat()}",
+        )
+    )
+
+
+async def record_storage_stock(on_date: date | None = None) -> None:
+    """Record one day's retained-chunk count, split by index mode.
+
+    Counts are **exact** (unlike the every-few-seconds gauges, which trade
+    accuracy for cost): this runs once a day and the figure is billable.
+
+    Keyword chunks are derived as ``total - hybrid`` rather than counted
+    separately — one fewer Qdrant round-trip, and the two figures cannot drift
+    apart into a total that disagrees with its own parts.
+
+    Never raises: metering is best-effort and must not disturb the ingest
+    pipeline (same contract as ``publish_vector_sync_metrics``).
+    """
+    settings = get_settings()
+    if not settings.usage_metering_enabled:
+        return
+
+    reading_date = on_date or datetime.now(timezone.utc).date()
+    try:
+        qdrant_client = await get_qdrant_client()
+        collection = settings.get_collection_name()
+        # count_indexed returns (documents, chunks); only the chunk total is
+        # billable here -- documents are a display figure.
+        _, total_chunks = await count_indexed(qdrant_client, collection, exact=True)
+
+        # A never-indexed tenant records nothing rather than zero-value billing
+        # rows, matching the chunk_count guard in record_indexing_usage
+        # (vector/processor.py). Checked BEFORE the hybrid count so an empty
+        # tenant costs one Qdrant round-trip instead of three.
+        if total_chunks <= 0:
+            return
+
+        hybrid = await count_hybrid_chunks(qdrant_client, collection, exact=True)
+        # Clamp: the two counts are separate round-trips, so an upsert landing
+        # between them could otherwise yield a negative keyword count.
+        #
+        # Deliberate tradeoff: in that same race the clamp also lets
+        # hybrid + keyword exceed the total_chunks the first query observed, so a
+        # day's reading can overstate by the handful of chunks written between
+        # the two counts. Bounded by that window and re-read from scratch the
+        # next day, which is why it is preferred over a transaction: an exact
+        # snapshot would mean holding a consistent read across two counts on a
+        # collection that is being written to continuously.
+        keyword = max(0, total_chunks - hybrid)
+
+        # Stamp the reading at midnight UTC of the day it describes, so a pod
+        # that wakes at an arbitrary hour still lands the row on the right day
+        # for the control plane's date_trunc()-based rollup.
+        occurred_at = datetime.combine(reading_date, time.min, tzinfo=timezone.utc)
+        # Skip zero-value rows: a single-mode tenant would otherwise accumulate a
+        # no-op row for the unused mode every day forever. Matches the
+        # ``if bytes_ingested > 0`` guards in record_indexing_usage. Absence and
+        # an explicit zero mean the same thing to a SUM, so nothing is lost.
+        events = [
+            UsageEvent(
+                metric=CHUNKS_STORED_METRIC,
+                value=count,
+                metadata={"index_mode": mode},
+                occurred_at=occurred_at,
+                event_id=_stock_event_id(mode, reading_date),
+            )
+            for mode, count in (
+                (payload_keys.INDEX_MODE_HYBRID, hybrid),
+                (payload_keys.INDEX_MODE_KEYWORD, keyword),
+            )
+            if count > 0
+        ]
+        store = await UsageEventStore.shared()
+        await store.record_usage_events(events, enabled=True)
+        logger.info(
+            "Recorded retention snapshot for %s: %d hybrid + %d keyword chunks",
+            reading_date.isoformat(),
+            hybrid,
+            keyword,
+        )
+    except Exception as exc:  # noqa: BLE001 — metering must not break ingest
+        logger.warning("Failed to record storage-stock usage events: %s", exc)
+
+
+def _next_reading_delay(now: datetime, interval: float) -> float:
+    """Seconds to sleep before the next reading.
+
+    Aligns to the next UTC midnight so readings land one per calendar day
+    instead of drifting across days on every restart, capped at ``interval`` so
+    a shortened interval stays testable.
+
+    The ``1.0`` floor is applied **last**, so it covers both ways the delay can
+    collapse to zero: standing exactly on the midnight boundary, and an operator
+    setting the interval to 0. Either would spin the task re-recording (and,
+    thanks to the idempotent event id, re-dropping) the same day's reading —
+    harmless billing-wise, but needless Qdrant load.
+
+    Pure so the boundary behaviour can be tested without patching the clock or
+    the sleep primitive.
+    """
+    next_midnight = datetime.combine(
+        now.date() + timedelta(days=1), time.min, tzinfo=timezone.utc
+    )
+    return max(1.0, min(interval, (next_midnight - now).total_seconds()))
+
+
+async def usage_stock_task(
+    shutdown_event: anyio.Event,
+    *,
+    task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
+) -> None:
+    """Record the billable retention snapshot once per UTC day.
+
+    Spawned only when usage metering and vector sync are both on (see app
+    startup wiring). Takes a reading immediately on start so a fresh pod is
+    represented on the day it comes up, then aligns to the **UTC day boundary**
+    rather than sleeping a fixed interval from process start: a restart-driven
+    drift would otherwise walk the reading across days, and two readings landing
+    in one calendar day would be dropped by the idempotent event id anyway.
+    """
+    settings = get_settings()
+    interval = settings.usage_stock_snapshot_interval
+    logger.info("Usage stock snapshot task started (interval=%ss)", interval)
+    task_status.started()
+
+    while not shutdown_event.is_set():
+        await record_storage_stock()
+        delay = _next_reading_delay(datetime.now(timezone.utc), interval)
+        with anyio.move_on_after(delay):
             await shutdown_event.wait()
