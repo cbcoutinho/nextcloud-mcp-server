@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.168.0 (2026-08-09)
+
+### BREAKING CHANGE
+
+- the OAuth token is now enforced on every tool call in
+login_flow mode, not just on tool visibility. A NULL stored grant no longer
+bypasses it. Operators must ensure the OIDC client permits every scope in use —
+the Astrolabe client hook was missing mail.read, mail.write, mail.send,
+talk.read and talk.write; it is fixed here, but the hook skips already
+configured installs, so existing deployments need `occ oidc:update` (or delete
+and recreate the client) and users must re-consent. Users provisioned through
+`nc_auth_provision_access` before this release hold an explicit scope list that
+cannot contain semantic.read; one `nc_auth_update_scopes(add_scopes=
+["semantic.read"])` or `PATCH /api/v1/users/{id}/scopes` grants it. No
+migration is required.
+
+### Fix
+
+- **auth**: drop a semicolon from the nc_auth_provision_access description
+- **auth**: reject an empty scope list instead of reading it as unrestricted
+- **auth**: consolidate provisioning onto the OAuth token's scopes
+
 ## v0.167.0 (2026-08-09)
 
 ### Feat
