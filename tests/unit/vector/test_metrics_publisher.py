@@ -752,7 +752,26 @@ class TestRecordStorageStock:
         await mp.record_storage_stock(on_date=date(2026, 8, 9))
 
         events = store.record_usage_events.await_args.args[0]
-        assert [e.value for e in events] == [140, 0]
+        # Clamped to 0, and the zero row is then skipped by the guard below.
+        assert [e.value for e in events] == [140]
+
+    async def test_single_mode_tenant_writes_no_zero_row(
+        self, monkeypatch, store
+    ) -> None:
+        """A 100%-hybrid tenant must not accrue a keyword row every day forever.
+
+        Absence and an explicit zero are identical to a SUM, so the row would be
+        permanent no-op storage. Mirrors the zero-value guards in
+        record_indexing_usage.
+        """
+        self._stub(monkeypatch, total=500, hybrid=500)
+
+        await mp.record_storage_stock(on_date=date(2026, 8, 9))
+
+        events = store.record_usage_events.await_args.args[0]
+        assert [(e.metadata["index_mode"], e.value) for e in events] == [
+            ("hybrid", 500)
+        ]
 
     async def test_qdrant_failure_does_not_raise(self, monkeypatch, store) -> None:
         self._stub(monkeypatch, total=10, hybrid=4)

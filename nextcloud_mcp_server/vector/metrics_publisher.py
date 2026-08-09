@@ -435,10 +435,6 @@ async def vector_density_snapshot_task(
             await shutdown_event.wait()
 
 
-# Namespace for the deterministic per-day event ids below. A fixed, arbitrary
-# UUID: its only job is to make uuid5 collision-free against other uuid5 users.
-_USAGE_STOCK_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
-
 # Metric name for the retention (storage) meter. Distinct from the ingest-flow
 # metrics recorded in vector/processor.py: this is a STOCK — what is retained
 # right now — so a month of daily readings sums to chunk-DAYS, the integral of a
@@ -461,10 +457,15 @@ def _stock_event_id(index_mode: str, on_date: date) -> str:
     daily snapshot idempotent: a pod that restarts five times in a day still
     contributes exactly one reading per mode. Without this every restart would
     add another reading and silently inflate the billed chunk-days.
+
+    Uses ``NAMESPACE_DNS`` with a distinguishing prefix, matching the other
+    uuid5 id builders in this package (``placeholder.py``, ``dead_letter.py``).
+    These ids live in a different space entirely — the ``usage_events`` primary
+    key rather than Qdrant point ids — so the shared namespace costs nothing.
     """
     return str(
         uuid.uuid5(
-            _USAGE_STOCK_NAMESPACE,
+            uuid.NAMESPACE_DNS,
             f"{CHUNKS_STORED_METRIC}:{index_mode}:{on_date.isoformat()}",
         )
     )
@@ -519,6 +520,10 @@ async def record_storage_stock(on_date: date | None = None) -> None:
         # that wakes at an arbitrary hour still lands the row on the right day
         # for the control plane's date_trunc()-based rollup.
         occurred_at = datetime.combine(reading_date, time.min, tzinfo=timezone.utc)
+        # Skip zero-value rows: a single-mode tenant would otherwise accumulate a
+        # no-op row for the unused mode every day forever. Matches the
+        # ``if bytes_ingested > 0`` guards in record_indexing_usage. Absence and
+        # an explicit zero mean the same thing to a SUM, so nothing is lost.
         events = [
             UsageEvent(
                 metric=CHUNKS_STORED_METRIC,
@@ -531,6 +536,7 @@ async def record_storage_stock(on_date: date | None = None) -> None:
                 (payload_keys.INDEX_MODE_HYBRID, hybrid),
                 (payload_keys.INDEX_MODE_KEYWORD, keyword),
             )
+            if count > 0
         ]
         store = await UsageEventStore.shared()
         await store.record_usage_events(events, enabled=True)
