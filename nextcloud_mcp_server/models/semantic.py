@@ -96,6 +96,16 @@ class SemanticSearchResult(BaseModel):
     page_count: int | None = Field(
         default=None, description="Total number of pages in PDF document"
     )
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Deep link that opens this exact chunk in the Astrolabe UI. Offer "
+            "it to the user alongside a quotation from `excerpt` so they can "
+            "read the passage in place and check it in context. None when the "
+            "server has no browser-reachable Nextcloud base URL configured, or "
+            "when this chunk carries no character offsets."
+        ),
+    )
     # Context expansion fields (optional, populated when include_context=True)
     has_context_expansion: bool = Field(
         default=False, description="Whether context expansion was performed"
