@@ -90,13 +90,29 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 requested_scopes=existing["scopes"],
             )
 
+        # An empty list is rejected rather than folded into None. Both are
+        # falsy, but they ask for opposite things — "restrict me to nothing"
+        # versus "do not restrict me" — and silently turning the first into the
+        # second widens access instead of denying it. Callers that mean the
+        # latter omit the argument.
+        if scopes is not None and not scopes:
+            return ProvisionAccessResponse(
+                status="error",
+                message=(
+                    "An empty scope list would grant nothing. Omit `scopes` to "
+                    "place no additional restriction beyond your OAuth token, "
+                    "or name the scopes you want."
+                ),
+                success=False,
+            )
+
         # Determine scopes. ``None`` (no explicit request) stores NULL, which
         # means "no additional restriction beyond the OAuth token" — identical
         # to what the Nextcloud-side provisioning routes write. Snapshotting a
         # scope list here instead would go stale the moment an admin edits the
         # OIDC client's allowed scopes, which is what left semantic.read
         # permanently ungrantable for early adopters (GH #1277).
-        requested_scopes = scopes or None
+        requested_scopes = scopes
 
         # Validate requested scopes
         invalid_scopes = [

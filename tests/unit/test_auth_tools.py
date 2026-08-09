@@ -309,6 +309,34 @@ async def test_provision_access_rejects_invalid_scopes(mocker):
     assert "not.a.scope" in response.message
 
 
+async def test_provision_access_rejects_empty_scope_list(mocker):
+    """`scopes=[]` must not be folded into "no restriction".
+
+    Both are falsy but they ask for opposite things — "restrict me to nothing"
+    versus "do not restrict me" — so treating them alike widens access instead
+    of denying it.
+    """
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(return_value=None)
+    storage.store_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+
+    response = await provision(MagicMock(), scopes=[])
+
+    assert response.success is False
+    assert "empty scope list" in response.message
+    storage.store_login_flow_session.assert_not_awaited()
+
+
 # ── Updating scopes on an unrestricted (NULL) grant ──
 
 
