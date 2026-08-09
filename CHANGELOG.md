@@ -5,6 +5,24 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.169.0 (2026-08-09)
+
+### Feat
+
+- **usage**: add chunks_stored retention meter
+
+### Fix
+
+- **usage**: skip zero-value chunks_stored rows
+
+### Refactor
+
+- **usage**: extract the day-boundary sleep into a pure helper
+
+### Perf
+
+- **usage**: bail before the hybrid count on an empty corpus
+
 ## v0.168.0 (2026-08-09)
 
 ### BREAKING CHANGE
