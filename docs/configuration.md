@@ -1575,9 +1575,8 @@ host bits set such as `10.0.0.1/8`) are never matched. Startup reports the trust
 list and warns about such entries:
 
 ```
-INFO     Trusting X-Forwarded-* headers from: 10.0.0.1/8
-WARNING  FORWARDED_ALLOW_IPS entries are not IP addresses or networks and will
-         only ever match a client address literally: 10.0.0.1/8
+INFO [2026-08-11 18:40:33] nextcloud_mcp_server.cli - Trusting X-Forwarded-* headers from: 10.0.0.1/8
+WARNING [2026-08-11 18:40:33] nextcloud_mcp_server.cli - FORWARDED_ALLOW_IPS entries are not IP addresses or networks and will only ever match a client address literally: 10.0.0.1/8
 ```
 
 ---

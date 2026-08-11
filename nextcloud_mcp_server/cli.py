@@ -1,5 +1,6 @@
 import ipaddress
 import logging
+import logging.config
 from importlib.metadata import version
 from typing import TYPE_CHECKING
 
@@ -285,6 +286,15 @@ def run(
         log_level=settings.log_level,
         include_trace_context=settings.log_include_trace_context,
     )
+
+    # Apply the config now rather than leaving it to uvicorn.run(). Anything we
+    # log before that call otherwise escapes this pipeline: the MCP SDK's
+    # configure_logging() has already run logging.basicConfig() with a rich
+    # handler, so a startup line would render as rich text even under
+    # LOG_FORMAT=json — and would vanish entirely if that side effect ever went
+    # away. dictConfig is idempotent (disable_existing_loggers is False), so
+    # uvicorn re-applying the same dict internally is a no-op.
+    logging.config.dictConfig(uvicorn_log_config)
 
     _log_forwarded_allow_ips(settings.forwarded_allow_ips)
 

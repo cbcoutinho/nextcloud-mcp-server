@@ -11,8 +11,14 @@ from __future__ import annotations
 import logging
 
 import pytest
+from click.testing import CliRunner
 
-from nextcloud_mcp_server.cli import _is_trusted_proxy_token, _log_forwarded_allow_ips
+from nextcloud_mcp_server.cli import (
+    _is_trusted_proxy_token,
+    _log_forwarded_allow_ips,
+    run,
+)
+from nextcloud_mcp_server.config import Settings
 
 pytestmark = pytest.mark.unit
 
@@ -64,3 +70,38 @@ def test_silent_when_unset(value, caplog):
         _log_forwarded_allow_ips(value)
 
     assert not caplog.records
+
+
+def test_run_configures_logging_before_reporting(mocker):
+    """The startup report must not out-run the log config that formats it.
+
+    `uvicorn.run()` applies `log_config` itself, but only once it is called —
+    anything logged before that lands wherever the MCP SDK's `basicConfig()`
+    rich handler left the root logger, i.e. rich text even under
+    LOG_FORMAT=json. `caplog` attaches its own handler, so the tests above
+    cannot see that ordering; this one asserts it directly.
+    """
+    calls: list[str] = []
+    mocker.patch("nextcloud_mcp_server.cli.set_override")  # keep dynaconf pristine
+    mocker.patch("nextcloud_mcp_server.cli.get_app")
+    mocker.patch(
+        "nextcloud_mcp_server.cli.get_settings",
+        return_value=Settings(forwarded_allow_ips="10.0.0.0/8"),
+    )
+    mocker.patch(
+        "logging.config.dictConfig", side_effect=lambda _cfg: calls.append("dictConfig")
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.cli._log_forwarded_allow_ips",
+        side_effect=lambda _v: calls.append("report"),
+    )
+    uvicorn_run = mocker.patch(
+        "nextcloud_mcp_server.cli.uvicorn.run",
+        side_effect=lambda **_kw: calls.append("uvicorn.run"),
+    )
+
+    result = CliRunner().invoke(run, [])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["dictConfig", "report", "uvicorn.run"]
+    assert uvicorn_run.call_args.kwargs["forwarded_allow_ips"] == "10.0.0.0/8"
