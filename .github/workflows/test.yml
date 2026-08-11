@@ -25,6 +25,10 @@ jobs:
         run: uv run --frozen ruff check
       - name: Type check
         run: uv run --frozen ty check -- nextcloud_mcp_server
+      # Fails if a module is imported at runtime but not declared in
+      # [project.dependencies] (#1285). Config in pyproject.toml [tool.deptry].
+      - name: Check for undeclared dependencies
+        run: uv run --frozen deptry .
 
   unit-test:
     runs-on: ubuntu-latest
