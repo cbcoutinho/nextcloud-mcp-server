@@ -1848,7 +1848,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Card Dependency Tools
     @mcp.tool(
         title="Add Dependent Card to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
