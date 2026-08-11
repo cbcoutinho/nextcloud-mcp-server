@@ -12,9 +12,10 @@ import logging
 
 import pytest
 from click.testing import CliRunner
+from uvicorn.middleware.proxy_headers import _TrustedHosts
 
 from nextcloud_mcp_server.cli import (
-    _is_trusted_proxy_token,
+    _is_ip_or_network,
     _log_forwarded_allow_ips,
     run,
 )
@@ -25,10 +26,10 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize(
     "token",
-    ["*", "127.0.0.1", "192.168.1.5", "10.0.0.0/8", "::1", "fd00::/8"],
+    ["127.0.0.1", "192.168.1.5", "10.0.0.0/8", "::1", "fd00::/8"],
 )
 def test_parseable_tokens(token):
-    assert _is_trusted_proxy_token(token) is True
+    assert _is_ip_or_network(token) is True
 
 
 @pytest.mark.parametrize(
@@ -37,11 +38,33 @@ def test_parseable_tokens(token):
         "proxy.internal",  # hostname: uvicorn compares against an IP string
         "10.0.0.1/8",  # host bits set — uvicorn's ip_network() is strict
         "10.0.0.256",
+        "*",  # only a wildcard as the whole value, never as one entry
         "",
     ],
 )
 def test_unparseable_tokens(token):
-    assert _is_trusted_proxy_token(token) is False
+    assert _is_ip_or_network(token) is False
+
+
+@pytest.mark.parametrize(
+    ("value", "trusts_a_public_address"),
+    [
+        ("*", True),
+        ("10.0.0.0/8,*", False),
+        (" * ", False),
+    ],
+)
+def test_wildcard_semantics_match_uvicorn(value, trusts_a_public_address):
+    """Pin the behavior `_log_forwarded_allow_ips` mirrors, against real uvicorn.
+
+    `_TrustedHosts.always_trust` is an exact match on the whole raw value, so a
+    "*" that is not the entire setting parses as neither address nor network
+    and becomes an inert literal — narrowing the list instead of widening it.
+    """
+    hosts = _TrustedHosts(value)
+
+    assert hosts.always_trust is (value == "*")
+    assert ("203.0.113.9" in hosts) is trusts_a_public_address
 
 
 def test_warns_only_about_the_bad_entries(caplog):
@@ -57,10 +80,30 @@ def test_warns_only_about_the_bad_entries(caplog):
 
 def test_no_warning_when_all_entries_parse(caplog):
     with caplog.at_level(logging.INFO, logger="nextcloud_mcp_server.cli"):
-        _log_forwarded_allow_ips("10.0.0.0/8,192.168.1.5,*")
+        _log_forwarded_allow_ips("10.0.0.0/8,192.168.1.5")
 
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
     assert "Trusting X-Forwarded-* headers from" in caplog.text
+
+
+def test_bare_wildcard_is_not_flagged(caplog):
+    """The one form uvicorn honors as trust-everything."""
+    with caplog.at_level(logging.INFO, logger="nextcloud_mcp_server.cli"):
+        _log_forwarded_allow_ips("*")
+
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "Trusting X-Forwarded-* headers from: *" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["10.0.0.0/8,*", " * "])
+def test_inert_wildcard_is_flagged(value, caplog):
+    """A "*" that isn't the whole value silently narrows the list — say so."""
+    with caplog.at_level(logging.INFO, logger="nextcloud_mcp_server.cli"):
+        _log_forwarded_allow_ips(value)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "*" in warnings[0].getMessage()
 
 
 @pytest.mark.parametrize("value", [None, ""])

@@ -311,16 +311,16 @@ def run(
     )
 
 
-def _is_trusted_proxy_token(token: str) -> bool:
+def _is_ip_or_network(token: str) -> bool:
     """Whether uvicorn will parse ``token`` as an IP address or network.
 
-    Mirrors ``uvicorn.middleware.proxy_headers._TrustedHosts.__init__``
-    exactly, including its strict network parsing — anything it cannot parse is
-    kept as a string literal there, so "10.0.0.1/8" (host bits set) is a
-    literal, not the /8 the operator meant.
+    Mirrors the per-entry half of
+    ``uvicorn.middleware.proxy_headers._TrustedHosts.__init__``, including its
+    strict network parsing — anything it cannot parse is kept as a string
+    literal there, so "10.0.0.1/8" (host bits set) is a literal, not the /8 the
+    operator meant. The wildcard is deliberately not accepted here; it is not a
+    per-entry concern (see ``_log_forwarded_allow_ips``).
     """
-    if token == "*":
-        return True
     if "/" in token:
         try:
             ipaddress.ip_network(token)
@@ -346,9 +346,19 @@ def _log_forwarded_allow_ips(value: str | None) -> None:
     if not value:
         return
 
-    tokens = [token.strip() for token in value.split(",")]
-    unparsed = [t for t in tokens if t and not _is_trusted_proxy_token(t)]
     logger.info("Trusting X-Forwarded-* headers from: %s", value)
+
+    # uvicorn's trust-everything switch is an exact match on the whole raw
+    # value (``_TrustedHosts.always_trust``), so a "*" is only a wildcard when
+    # it is the entire setting. Anywhere else — even alone but padded, and
+    # notably in "10.0.0.0/8,*" — it parses as neither address nor network and
+    # becomes an inert literal, quietly narrowing the list rather than widening
+    # it. Verified against uvicorn 0.51.0. So it gets no special case below.
+    if value == "*":
+        return
+
+    tokens = [token.strip() for token in value.split(",")]
+    unparsed = [t for t in tokens if t and not _is_ip_or_network(t)]
     if unparsed:
         logger.warning(
             "FORWARDED_ALLOW_IPS entries are not IP addresses or networks and "

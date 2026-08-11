@@ -1534,8 +1534,8 @@ INFO     172.16.0.7:44832 - "POST /mcp HTTP/1.1" 401
 The server reads `X-Forwarded-For` / `X-Forwarded-Proto`, but only from proxies it
 has been told to trust — the default trust list is `127.0.0.1`, so a proxy on
 another host or container is ignored and its headers are discarded. Name the proxy
-with `FORWARDED_ALLOW_IPS` (a comma-separated list of IP addresses, CIDR networks,
-or `*`):
+with `FORWARDED_ALLOW_IPS` (a comma-separated list of IP addresses and CIDR
+networks, or `*` on its own to trust everything):
 
 ```bash
 # Environment variable
@@ -1569,6 +1569,10 @@ per-IP rate limiting. With an explicit list, the header is walked from the right
 past each trusted hop, which cannot be spoofed past a proxy that appends honestly.
 Use `*` only where the server is unreachable except through the proxy, and prefer a
 CIDR even then.
+
+`*` is a wildcard **only as the entire value**. Anywhere else it is inert — it
+matches nothing, so `10.0.0.0/8,*` trusts the `/8` alone, narrowing the list
+rather than widening it. Startup warns when a `*` is used this way.
 
 Entries that are not valid IP addresses or networks (a hostname, or a CIDR with
 host bits set such as `10.0.0.1/8`) are never matched. Startup reports the trust
