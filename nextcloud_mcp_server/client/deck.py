@@ -456,6 +456,39 @@ class DeckClient(BaseNextcloudClient):
             json=json_data,
         )
 
+    async def assign_dependent_card(
+        self, board_id: int, stack_id: int, card_id: int, dependent_card_id: int
+    ) -> DeckCard:
+        """Record that ``card_id`` depends on ``dependent_card_id``.
+
+        Mirrors Deck's "Add dependent card" card action. The dependency is
+        directional: it is stored on ``card_id`` and surfaces in that card's
+        ``dependentCards`` list. The caller needs read access to the dependent
+        card. Returns the updated (depending) card.
+        """
+        headers = self._get_deck_headers()
+        response = await self._make_request(
+            "POST",
+            f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/dependentCards/{dependent_card_id}",
+            headers=headers,
+        )
+        return DeckCard(**response.json())
+
+    async def remove_dependent_card(
+        self, board_id: int, stack_id: int, card_id: int, dependent_card_id: int
+    ) -> DeckCard:
+        """Remove the dependency of ``card_id`` on ``dependent_card_id``.
+
+        Returns the updated (depending) card.
+        """
+        headers = self._get_deck_headers()
+        response = await self._make_request(
+            "DELETE",
+            f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/dependentCards/{dependent_card_id}",
+            headers=headers,
+        )
+        return DeckCard(**response.json())
+
     async def reorder_card(
         self,
         board_id: int,

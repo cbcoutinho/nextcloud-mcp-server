@@ -92,6 +92,7 @@ class DeckCard(BaseModel):
     createdAt: Optional[int] = None
     labels: Optional[List[DeckLabel]] = None
     assignedUsers: Optional[List[Union[DeckUser, DeckAssignedUser]]] = None
+    dependentCards: Optional[List[int]] = None  # IDs of cards this card depends on
     attachments: Optional[List[Any]] = None  # Define a proper Attachment model later
     attachmentCount: Optional[int] = None
     deletedAt: Optional[int] = None

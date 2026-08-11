@@ -335,6 +335,60 @@ async def test_deck_get_card(mocker):
     assert "/boards/123/stacks/456/cards/789" in mock_make_request.call_args[0][1]
 
 
+async def test_deck_assign_dependent_card(mocker):
+    """Test that assign_dependent_card POSTs to the right route and parses the card."""
+    mock_response = create_mock_deck_card_response(
+        card_id=789, title="Test Card", stack_id=456, dependentCards=[555]
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    card = await client.assign_dependent_card(
+        board_id=123, stack_id=456, card_id=789, dependent_card_id=555
+    )
+
+    assert isinstance(card, DeckCard)
+    assert card.dependentCards == [555]
+
+    mock_make_request.assert_called_once()
+    assert mock_make_request.call_args[0][0] == "POST"
+    assert (
+        "/boards/123/stacks/456/cards/789/dependentCards/555"
+        in mock_make_request.call_args[0][1]
+    )
+
+
+async def test_deck_remove_dependent_card(mocker):
+    """Test that remove_dependent_card DELETEs the right route and parses the card."""
+    mock_response = create_mock_deck_card_response(
+        card_id=789, title="Test Card", stack_id=456, dependentCards=[]
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    card = await client.remove_dependent_card(
+        board_id=123, stack_id=456, card_id=789, dependent_card_id=555
+    )
+
+    assert isinstance(card, DeckCard)
+    assert card.dependentCards == []
+
+    mock_make_request.assert_called_once()
+    assert mock_make_request.call_args[0][0] == "DELETE"
+    assert (
+        "/boards/123/stacks/456/cards/789/dependentCards/555"
+        in mock_make_request.call_args[0][1]
+    )
+
+
 async def test_deck_update_card(mocker):
     """Test that update_card makes the correct API calls."""
     # Mock get_card response (update_card calls get_card first)
