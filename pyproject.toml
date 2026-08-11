@@ -12,6 +12,16 @@ keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude",
 dependencies = [
     "mcp[cli] (>=1.29,<1.30)",
     "httpx (>=0.28.1,<0.29.0)",
+    # Imported directly at runtime. Each was previously reachable only because
+    # some other dependency happened to pull it in — the accident that broke
+    # #1285 when the resolver stopped doing so. Declared explicitly so the
+    # install closure no longer depends on a transitive coincidence.
+    "anyio>=4.0", # structured concurrency, used throughout
+    "uvicorn>=0.30", # cli.py serves the ASGI app
+    "cryptography>=42.0", # auth/storage.py token encryption
+    "lxml>=5.0", # client/calendar.py CalDAV XML parsing
+    "botocore>=1.35.0", # providers/bedrock.py exception types
+    "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "pillow (>=10.3.0,<12.0.0)", # Compatible with fastembed
     "icalendar (>=7.2.0,<7.3.0)",
     "pythonvcard4>=0.2.0",
@@ -114,6 +124,22 @@ extend-select = ["I", "PLC0415", "G004"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLC0415"]
 
+# Guard against undeclared ("phantom") dependencies — a module imported at
+# runtime but absent from [project.dependencies], which only works while some
+# transitive dep happens to pull it in. That is how #1285 shipped: tracing.py
+# imported the `importlib-metadata` backport, present only because
+# opentelemetry-api depended on it. package-smoke can't catch this — it proves
+# only that one resolution happened to work, not that we declare what we need.
+# DEP001 (missing) and DEP003 (relying on a transitive dep) are enforced —
+# #1285 was a DEP003. DEP002 (declared but unused) and DEP004 are noisy here
+# (re-exports, plugin-only deps like pyroscope-io) and stay off.
+[tool.deptry]
+ignore = ["DEP002", "DEP004"]
+
+[tool.deptry.per_rule_ignores]
+# Optional local-OCR extra, imported inside a try/except ImportError.
+DEP001 = ["pytesseract"]
+
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
@@ -125,6 +151,7 @@ module-root = ""
 [dependency-groups]
 dev = [
     "commitizen>=4.8.2",
+    "deptry>=0.20.0",
     "ipython>=9.2.0",
     "playwright>=1.49.1",
     "pytest>=8.3.5",

@@ -12,9 +12,9 @@ This module provides:
 import logging
 from collections.abc import Mapping
 from contextlib import contextmanager
+from importlib.metadata import version
 from typing import Any
 
-from importlib_metadata import version
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
