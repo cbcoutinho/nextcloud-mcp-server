@@ -44,8 +44,8 @@ async def board_with_two_cards(nc_client: NextcloudClient):
         if board:
             try:
                 await nc_client.deck.delete_board(board.id)
-            except Exception as e:
-                logger.warning("Error cleaning up board: %s", e)
+            except Exception:
+                logger.warning("Error cleaning up board %s", board.id, exc_info=True)
 
 
 async def test_assign_and_remove_dependent_card(
