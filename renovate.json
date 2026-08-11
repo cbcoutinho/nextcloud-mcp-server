@@ -13,6 +13,12 @@
       "allowedVersions": "<12.0.0"
     },
     {
+      "description": "pymupdf and pymupdf4llm are released in lockstep — update them together",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["pymupdf", "pymupdf4llm"],
+      "groupName": "pymupdf"
+    },
+    {
       "description": "Pin each Nextcloud matrix entry to its own major version",
       "matchDepNames": ["nextcloud-32"],
       "allowedVersions": "/^32\\./"
