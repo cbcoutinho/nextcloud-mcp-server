@@ -1394,6 +1394,73 @@ Notes:
 
 ---
 
+## Capability-Gated Tools
+
+Some tools need an upstream Nextcloud app that may be missing, disabled for the
+account, or too old to serve them — Deck's card dependencies, for instance, only
+exist from Deck 1.18.0. Rather than let the model discover that as a 404, the
+server reads what the instance advertises on
+`GET /ocs/v2.php/cloud/capabilities` and:
+
+- **hides** the tool from `tools/list`, and
+- **refuses** `tools/call` with the reason, for clients holding a stale list.
+
+Nothing to configure — it is on by default and applies per user, so a Talk
+account with Talk disabled sees no Talk tools while their colleague does.
+
+### Behaviour
+
+- The lookup is cached for 30 seconds per user, so enabling or upgrading an app
+  makes its tools appear **without restarting the server**.
+- It **fails open**: if capabilities can't be read (OCS error, unexpected
+  payload, unparseable version), the tool stays listed. Availability beats
+  precision — an instance we can't interrogate behaves exactly as before.
+- Only apps that actually publish a capability block are gated: **Notes, Tables,
+  Deck, Cookbook and Talk** (`spreed`). Calendar and Contacts tools speak
+  CalDAV/CardDAV and keep working with those web apps uninstalled, so they are
+  never gated; Collectives, News and Mail publish nothing to gate on.
+- Version floors follow PEP 440, so a pre-release (`1.18.0-beta.3`) sorts
+  *below* the release it precedes and stays gated out.
+
+### Escape hatch
+
+```bash
+MCP_DISABLE_CAPABILITY_GATING=true    # list and run every registered tool
+```
+
+Set this if tools you expect are missing; it restores the pre-gating behaviour
+so you can confirm gating is the cause (and please open an issue).
+
+### Verifying it
+
+```bash
+docker compose exec app php occ app:disable cookbook
+sleep 31                       # outlive the capability cache
+# re-list tools -> nc_cookbook_* are gone; calling one returns the reason
+docker compose exec app php occ app:enable cookbook
+sleep 31                       # they come back, no restart
+```
+
+(Kept as a manual check rather than an automated one: the integration lane runs
+tests in parallel against a shared Nextcloud, where disabling an app would race
+whatever else is exercising it.)
+
+### Adding a gate to a new tool
+
+```python
+from nextcloud_mcp_server.capabilities import require_capability
+
+@mcp.tool()
+@require_capability("deck", min_version="1.18.0")
+async def deck_assign_dependent_card(ctx: Context, ...): ...
+```
+
+`app` is the OCS capability key (the app id for most apps — Talk's is `spreed`),
+and `min_version` is compared against the `version` the app advertises. Whole-app
+presence gates are applied automatically from `APP_CAPABILITY_KEY` in
+`nextcloud_mcp_server/server/__init__.py`; only add an app there after confirming
+it publishes a capability block, because a missing key is what closes the gate.
+
 ## Tag-Based File Exclusion (Optional)
 
 Some files (contracts, medical records, credentials, private notes) should

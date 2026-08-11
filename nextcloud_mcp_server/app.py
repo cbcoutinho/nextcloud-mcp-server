@@ -122,6 +122,7 @@ from nextcloud_mcp_server.observability.readiness import ReadinessCache
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
+    configure_app_tools,
     configure_semantic_tools,
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
@@ -1814,7 +1815,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     for app_name in enabled_apps:
         if app_name in AVAILABLE_APPS:
             logger.info("Configuring %s tools", app_name)
-            AVAILABLE_APPS[app_name](mcp)
+            configure_app_tools(mcp, app_name)
         else:
             logger.warning(
                 "Unknown app: %s. Available apps: %s",

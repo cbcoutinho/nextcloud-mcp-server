@@ -112,6 +112,36 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **FastMCP decorators**: `@mcp.tool()`, `@mcp.resource()`
 - **Token acquisition**: `get_client()` resolves credentials per deployment mode (see Deployment Modes below)
 
+### Version-dependent API surface: gate, don't try/except
+
+When a tool wraps an endpoint that **does not exist on every supported version**
+of the upstream app, declare it — do not discover it as a 404 at call time:
+
+```python
+from nextcloud_mcp_server.capabilities import require_capability
+
+@mcp.tool()
+@require_capability("deck", min_version="1.18.0")   # dependentCards landed in Deck 1.18.0
+async def deck_assign_dependent_card(ctx: Context, ...) -> DeckCardResponse: ...
+```
+
+`NextcloudFastMCP` then hides the tool from `tools/list` and refuses
+`tools/call` with the reason, per user, from the OCS capabilities the instance
+advertises (`capabilities.<app>.version`). Notes/Tables/Deck/Cookbook/Talk are
+additionally gated on the app being installed at all, via `APP_CAPABILITY_KEY`
+in `server/__init__.py`.
+
+Rules that matter:
+
+- **Fail-open is the contract.** Unknown capability ⇒ tool stays visible. Never
+  make a gate strict "to be safe" — that hides working tools on instances we
+  can't interrogate.
+- Only gate on an app that **publishes a capability block** (absence of the key
+  is what closes the gate). Verified set is the map above; CalDAV/CardDAV tools
+  must never be gated on the Calendar/Contacts web apps.
+- `MCP_DISABLE_CAPABILITY_GATING=true` is the operator escape hatch.
+- See `docs/configuration.md` → *Capability-Gated Tools*.
+
 ### MCP Tool Annotations (ADR-017)
 
 **All tools MUST include annotations** following these patterns:

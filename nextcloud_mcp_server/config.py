@@ -81,6 +81,12 @@ _DEFAULTS: dict[str, Any] = {
     # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` are
     # intentionally absent — they are derived from MCP_DEPLOYMENT_MODE in
     # Settings.__post_init__ (ADR-022) and not read from the dynaconf store.
+    # Escape hatch for the per-tool capability gate (capabilities.py). Set
+    # MCP_DISABLE_CAPABILITY_GATING=true to list and run every registered tool
+    # regardless of what the instance advertises — the answer to "why did my
+    # deck tools disappear?" without a code read. Read via cfg(), not a
+    # Settings field: nothing but the two gate helpers looks at it.
+    "mcp_disable_capability_gating": False,
     "enable_semantic_search": False,
     "enable_background_operations": False,
     "vector_sync_enabled": False,
