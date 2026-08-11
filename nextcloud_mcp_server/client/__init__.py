@@ -1,6 +1,8 @@
 import logging
+from collections.abc import Sequence
 from email.utils import parsedate_to_datetime
 
+import anyio
 from httpx import (
     AsyncBaseTransport,
     AsyncClient,
@@ -69,6 +71,25 @@ async def log_response(response: Response):
         return
     await response.aread()
     logger.debug("Response [%s] %s", response.status_code, response.text)
+
+
+def _as_mime_tuple(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    """Normalise one-or-many MIME types to a tuple.
+
+    A tuple specifically: it is passed straight to ``str.startswith``, which
+    accepts a tuple of prefixes and so does the OR for free. A bare string is
+    wrapped rather than iterated -- iterating it would match every file whose
+    content type starts with any single letter of the type.
+    """
+    # One return, so the varying length is plainly a collection rather than a
+    # record whose shape a caller might unpack (python:S8495).
+    if value is None:
+        types: Sequence[str] = ()
+    elif isinstance(value, str):
+        types = (value,)
+    else:
+        types = value
+    return tuple(types)
 
 
 def _normalise_search_result(item: dict) -> dict:
@@ -275,10 +296,69 @@ class NextcloudClient:
         all_notes = self.notes.get_all_notes()
         return await self._notes_search.search_notes(all_notes, query)
 
+    async def _walk_tagged_dir(
+        self,
+        dir_path: str,
+        mime_types: tuple[str, ...],
+        tag_name: str,
+    ) -> tuple[list[dict], bool]:
+        """Descendants of ``dir_path`` matching any of ``mime_types``.
+
+        Nextcloud's SEARCH takes a single content type per query, so this is one
+        request per type -- issued concurrently rather than in sequence, or a
+        tagged folder would cost six sequential round-trips at the default type
+        list where it used to cost one, and discovery latency scales with the
+        number of tagged folders.
+
+        Returns the descendants found plus whether any type's walk failed. A
+        failure for one type does not discard the types that succeeded: those
+        files are indexable now, and a partial folder beats an empty one.
+        """
+        results: list[list[dict]] = [[] for _ in mime_types]
+        failed = False
+
+        async def walk(index: int, mime_type: str) -> None:
+            nonlocal failed
+            try:
+                # find_all_by_type pages past Nextcloud's default ~100-result
+                # SEARCH page so every tagged-folder descendant is discovered;
+                # find_by_type would silently cap a large folder.
+                results[index] = await self.webdav.find_all_by_type(
+                    mime_type, scope=dir_path
+                )
+            except Exception as e:
+                failed = True
+                logger.warning(
+                    "Tag-based directory walk failed for %r (tag %r, mime %s): "
+                    "%s. Files of that type under this folder will NOT be "
+                    "indexed until the walk succeeds.",
+                    dir_path,
+                    tag_name,
+                    mime_type,
+                    e,
+                )
+
+        # Results are collected by index rather than appended, so the order does
+        # not depend on which request finished first -- discovery output stays
+        # deterministic for the same corpus.
+        async with anyio.create_task_group() as tg:
+            for index, mime_type in enumerate(mime_types):
+                tg.start_soon(walk, index, mime_type)
+
+        return [row for rows in results for row in rows], failed
+
     async def find_files_by_tag(
-        self, tag_name: str, mime_type_filter: str | None = None
+        self,
+        tag_name: str,
+        mime_type_filter: str | Sequence[str] | None = None,
     ) -> list[dict]:
-        """Return files carrying ``tag_name``, expanding tagged folders into matching descendants when ``mime_type_filter`` is set."""
+        """Return files carrying ``tag_name``, expanding tagged folders into matching descendants when ``mime_type_filter`` is set.
+
+        ``mime_type_filter`` accepts one MIME type or several. Several are
+        OR-ed: a tagged folder is expanded once per type, because Nextcloud's
+        SEARCH takes a single content type per query.
+        """
+        mime_types = _as_mime_tuple(mime_type_filter)
         tag = await self.webdav.get_tag_by_name(tag_name)
         if not tag:
             logger.debug("Tag %r not found, returning empty list", tag_name)
@@ -300,9 +380,7 @@ class NextcloudClient:
             if item.get("is_directory"):
                 tagged_dirs.append(item)
                 continue
-            if mime_type_filter and not item.get("content_type", "").startswith(
-                mime_type_filter
-            ):
+            if mime_types and not item.get("content_type", "").startswith(mime_types):
                 continue
             file_id = item.get("id")
             if file_id is None:
@@ -311,25 +389,13 @@ class NextcloudClient:
 
         # Expand each tagged directory into its descendant files matching
         # the MIME filter. Skip when no MIME filter is set — see docstring.
-        if mime_type_filter and tagged_dirs:
+        if mime_types and tagged_dirs:
             for dir_info in tagged_dirs:
                 dir_path = dir_info.get("path", "").strip("/")
-                try:
-                    # find_all_by_type pages past Nextcloud's default ~100-result
-                    # SEARCH page so every tagged-folder descendant is discovered;
-                    # find_by_type would silently cap a large folder.
-                    descendants = await self.webdav.find_all_by_type(
-                        mime_type_filter, scope=dir_path
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Tag-based directory walk failed for %r (tag %r): %s. "
-                        "Skipping this folder and all its descendants — those "
-                        "files will NOT be indexed until the walk succeeds.",
-                        dir_path,
-                        tag_name,
-                        e,
-                    )
+                descendants, walk_failed = await self._walk_tagged_dir(
+                    dir_path, mime_types, tag_name
+                )
+                if walk_failed and not descendants:
                     continue
 
                 added = 0
@@ -355,17 +421,17 @@ class NextcloudClient:
                     tag_name,
                     dir_path,
                     added,
-                    mime_type_filter,
+                    ", ".join(mime_types),
                 )
 
         files = list(by_id.values())
-        if mime_type_filter:
+        if mime_types:
             logger.info(
                 "Returning %d file(s) with tag %r (mime_type=%s, "
                 "%d directly-tagged folder(s) expanded)",
                 len(files),
                 tag_name,
-                mime_type_filter,
+                ", ".join(mime_types),
                 len(tagged_dirs),
             )
         else:

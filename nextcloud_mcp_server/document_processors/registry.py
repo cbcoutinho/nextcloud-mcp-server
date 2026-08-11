@@ -629,21 +629,25 @@ class ProcessorRegistry:
         Returns an explicit ``oversize`` failure so the caller marks the
         placeholder "failed" instead of retrying; 0 disables the cap.
         """
-        max_pdf_mb = settings.document_max_pdf_size_mb
-        if max_pdf_mb > 0 and size_bytes > max_pdf_mb * 1024 * 1024:
+        # Local named for what it caps, not for PDFs; the setting keeps its
+        # pre-existing name, which is out of scope to rename here.
+        max_size_mb = settings.document_max_pdf_size_mb
+        if max_size_mb > 0 and size_bytes > max_size_mb * 1024 * 1024:
             size_mb = size_bytes / (1024 * 1024)
             logger.warning(
-                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
+                "Document %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
                 filename or "<bytes>",
                 size_mb,
-                max_pdf_mb,
+                max_size_mb,
             )
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "oversize"},
                 processor="size_guard",
                 success=False,
-                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
+                error=(
+                    f"Document exceeds size cap: {size_mb:.1f} MB > {max_size_mb:.1f} MB"
+                ),
             )
         return None
 
