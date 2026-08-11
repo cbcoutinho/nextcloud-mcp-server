@@ -6,6 +6,7 @@ import pytest
 from mistralai.client.errors import SDKError
 
 from nextcloud_mcp_server.providers.mistral import (
+    _EMBED_TIMEOUT_MS,
     BATCH_SIZE,
     MISTRAL_EMBEDDING_DIMENSIONS,
     MistralProvider,
@@ -50,9 +51,12 @@ async def test_mistral_embedding_single(mock_mistral_client):
     embedding = await provider.embed("hello world")
 
     assert embedding == [0.1, 0.2, 0.3]
+    # An explicit timeout_ms is always passed: the SDK ignores client-level
+    # httpx timeouts for embeddings (see NOTE in mistral.py / upstream #449).
     mock_mistral_client.embeddings.create_async.assert_awaited_once_with(
         model="mistral-embed",
         inputs=["hello world"],
+        timeout_ms=_EMBED_TIMEOUT_MS,
     )
 
 
