@@ -34,7 +34,31 @@ pytestmark = pytest.mark.unit
 SESSION_LIFESPANS = {"oauth_lifespan", "app_lifespan_basic"}
 
 # Storage objects owned elsewhere: built at startup or by the process lifespan.
-FOREIGN_STORAGE = {"refresh_token_storage", "basic_auth_storage", "storage_from_state"}
+FOREIGN_STORAGE = {"refresh_token_storage", "basic_auth_storage"}
+
+# The same objects reached through app.state rather than by local name --
+# starlette_lifespan publishes basic_auth_storage as app.state.storage, so
+# `app.state.storage.close()` is the same mistake spelled differently.
+FOREIGN_STORAGE_ATTRS = {"storage"}
+
+
+def _closed_receiver(node: ast.Call) -> str | None:
+    """Name of the object a ``<obj>.close()`` call disposes, else None.
+
+    Matches a bare local (``refresh_token_storage.close()``) and an attribute
+    chain ending in a known state slot (``app.state.storage.close()``). It is
+    deliberately syntactic: an alias (``s = refresh_token_storage; s.close()``)
+    slips past, since the point is to pin the invariant at the shapes the
+    codebase actually uses, not to reimplement data-flow analysis.
+    """
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr == "close"):
+        return None
+    receiver = node.func.value
+    if isinstance(receiver, ast.Name) and receiver.id in FOREIGN_STORAGE:
+        return receiver.id
+    if isinstance(receiver, ast.Attribute) and receiver.attr in FOREIGN_STORAGE_ATTRS:
+        return ast.unparse(receiver)
+    return None
 
 
 def _app_tree() -> ast.Module:
@@ -62,13 +86,10 @@ def test_session_lifespan_never_closes_foreign_storage(
 ):
     """A session teardown must not dispose storage owned by the process."""
     offenders = [
-        f"{node.func.value.id}.close() at app.py:{node.lineno}"
+        f"{receiver}.close() at app.py:{node.lineno}"
         for node in ast.walk(lifespan)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "close"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in FOREIGN_STORAGE
+        and (receiver := _closed_receiver(node)) is not None
     ]
     assert not offenders, (
         f"{lifespan.name} is per-session but closes process-lifetime storage: "
