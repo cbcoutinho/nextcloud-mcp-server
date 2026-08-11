@@ -249,6 +249,11 @@ _DEFAULTS: dict[str, Any] = {
     # PDF parse isolation (OOM guard)
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
+    # Wall-clock cap on one LibreOffice conversion (.doc/.docx -> pdf,
+    # .xls -> xlsx). Separate from document_parse_timeout_seconds: a rendition
+    # pays this first and then the parse cap, and the two are tuned against
+    # different costs (page layout vs. table detection).
+    "document_office_timeout_seconds": 120.0,
     # Optional wall-clock cap (seconds) on the SYNCHRONOUS parse inside the
     # nc_webdav_read_file MCP tool. None (default) = disabled: an interactive read
     # is bounded only by the underlying processor timeout (DOCLING_TIMEOUT /
@@ -604,6 +609,11 @@ _dynaconf = Dynaconf(
         Validator("CHUNKING_CONFIG_VERSION", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
+        # Same floor as its siblings: 0 or negative reaches anyio.fail_after in
+        # _libreoffice.convert and expires every conversion immediately, so the
+        # misconfiguration surfaces as "every .doc/.docx fails to parse" rather
+        # than as a startup error naming the setting.
+        Validator("DOCUMENT_OFFICE_TIMEOUT_SECONDS", gte=1),
         # DOCUMENT_OCR_MODE is normalised + membership-checked in
         # Settings.__post_init__ via _enum_fields (case-insensitive, like
         # DOCUMENT_OCR_PROVIDER) — no strict dynaconf Validator here, so
@@ -1244,6 +1254,11 @@ class Settings:
     # float so a fractional DOCUMENT_PARSE_TIMEOUT_SECONDS is honoured, matching
     # anyio.move_on_after's float seconds.
     document_parse_timeout_seconds: float = 120.0
+    # Wall-clock cap on one LibreOffice conversion (.doc/.docx -> pdf,
+    # .xls -> xlsx). Separate from document_parse_timeout_seconds because a
+    # rendition pays this first and the parse cap afterwards, and the two bound
+    # different costs -- page layout vs. table detection.
+    document_office_timeout_seconds: float = 120.0
     # Optional cap (seconds) on the synchronous parse in the nc_webdav_read_file
     # tool. None = disabled (bounded only by the processor timeout). When set,
     # anyio.fail_after aborts a slow interactive convert and the tool returns
