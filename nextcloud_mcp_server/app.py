@@ -1766,15 +1766,22 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             finally:
                 logger.info("Shutting down MCP server")
-                # Dispose the RefreshTokenStorage engine so pooled
-                # psycopg connections drain cleanly on SIGTERM instead
-                # of leaking server-side slots until the Postgres
-                # idle-timeout fires (ADR-026, PR #798 round-4).
-                if refresh_token_storage is not None:
-                    try:
-                        await refresh_token_storage.close()
-                    except Exception as e:
-                        logger.warning("Error disposing refresh-token storage: %s", e)
+                # NOTE: refresh_token_storage is deliberately NOT closed here.
+                # This lifespan is per MCP *session*, but the storage was built
+                # once at startup (setup_oauth_config) and is handed to the
+                # process-lifetime background tasks — user_manager_task and
+                # credential_cleanup_task both hold this very object
+                # (see the token_storage wiring in starlette_lifespan). Closing
+                # it nulls the shared engine, so the first client session to end
+                # killed new-user discovery for the rest of the pod's life:
+                # every later poll raised
+                # AssertionError('RefreshTokenStorage.initialize() not called')
+                # and a newly provisioned user got no scanner until a restart.
+                # Nothing is leaked by leaving it open: under NullPool
+                # (ADR-026) there is no idle pool to drain and _db() closes each
+                # connection in its own finally. Whoever creates the storage
+                # closes it — app_lifespan_basic still closes the instance it
+                # builds itself.
                 # OAuth client cleanup (if it has a close method)
                 if oauth_client and hasattr(oauth_client, "close"):
                     try:
