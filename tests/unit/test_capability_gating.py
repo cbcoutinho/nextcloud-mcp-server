@@ -56,17 +56,25 @@ def _clean_capability_cache():
 
 
 @pytest.fixture
-def disable_gating():
-    """Set the MCP_DISABLE_CAPABILITY_GATING escape hatch, then restore it.
+def set_gating_flag():
+    """Set MCP_DISABLE_CAPABILITY_GATING to a raw value, then restore it.
 
     ``_reload_config`` only drops the memoisation cache, so the override has to
     be written back explicitly or it leaks into the next test.
     """
-    set_override(_GATING_KEY, True)
-    _reload_config()
-    yield
+
+    def _apply(value) -> None:
+        set_override(_GATING_KEY, value)
+        _reload_config()
+
+    yield _apply
     set_override(_GATING_KEY, _DEFAULTS[_GATING_KEY.lower()])
     _reload_config()
+
+
+@pytest.fixture
+def disable_gating(set_gating_flag):
+    set_gating_flag(True)
 
 
 # ---------------------------------------------------------------------------
@@ -310,3 +318,31 @@ async def test_escape_hatch_disables_hiding_and_refusal(mocker, disable_gating):
     assert "deck_assign_dependent_card" in names
     assert "assigned" in str(result)
     assert client.capabilities.await_count == 0
+
+
+@pytest.mark.parametrize(
+    "raw,expected_disabled",
+    [
+        # Dynaconf casts env vars with TOML syntax, which only recognises
+        # lowercase true/false — so a capitalised or numeric value arrives as a
+        # string, and `bool("False")` would invert the operator's intent.
+        ("true", True),
+        ("True", True),
+        ("1", True),
+        ("yes", True),
+        ("false", False),
+        ("False", False),
+        ("0", False),
+        ("", False),
+    ],
+)
+async def test_escape_hatch_reads_env_var_spellings(
+    mocker, set_gating_flag, raw, expected_disabled
+):
+    set_gating_flag(raw)
+    mcp, client = _server(_payload(deck={"version": "1.17.2"}))
+    _patch_gate_client(mocker, client)
+
+    names = {tool.name for tool in await mcp.list_tools()}
+
+    assert ("deck_assign_dependent_card" in names) is expected_disabled

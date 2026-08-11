@@ -2056,6 +2056,22 @@ def cfg(key: str, default=None):
     return value if value is not None else default
 
 
+def cfg_bool(key: str, default: bool = False) -> bool:
+    """``cfg()`` for a boolean flag, tolerant of how operators actually spell it.
+
+    Never write ``bool(cfg("SOME_FLAG"))``: dynaconf casts env vars with TOML
+    syntax, which only recognises lowercase ``true``/``false``, so
+    ``SOME_FLAG=False`` survives as the *string* ``"False"`` — and
+    ``bool("False")`` is ``True``, inverting the operator's intent. This accepts
+    the spellings a human plausibly types (``true``/``1``/``yes``/``on``, any
+    case) and treats everything else as false.
+    """
+    value = cfg(key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def set_override(key: str, value) -> None:
     """Set a runtime config override in dynaconf (the documented ``.set`` path).
 

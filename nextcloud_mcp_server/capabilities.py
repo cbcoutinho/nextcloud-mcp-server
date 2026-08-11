@@ -35,7 +35,7 @@ from typing import Any, Protocol
 from mcp.server.fastmcp.exceptions import ToolError
 from packaging.version import InvalidVersion, Version
 
-from nextcloud_mcp_server.config import cfg
+from nextcloud_mcp_server.config import cfg_bool
 from nextcloud_mcp_server.context import get_client
 
 logger = logging.getLogger(__name__)
@@ -266,7 +266,7 @@ async def unmet_capability(
 
 
 def _gating_disabled() -> bool:
-    return bool(cfg("MCP_DISABLE_CAPABILITY_GATING", False))
+    return cfg_bool("MCP_DISABLE_CAPABILITY_GATING")
 
 
 def _tool_gate(mcp: Any, name: str) -> tuple[str, str | None] | None:
