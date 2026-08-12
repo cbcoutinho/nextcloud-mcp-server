@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.171.0 (2026-08-12)
+
+### Feat
+
+- **deck**: gate card-dependency tools on Deck >= 1.18.0
+- **deck**: add card dependency tools
+
+### Fix
+
+- **deck**: mark deck_assign_dependent_card as non-idempotent
+
 ## v0.170.2 (2026-08-12)
 
 ### Fix
