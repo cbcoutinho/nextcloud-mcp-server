@@ -91,6 +91,12 @@ otel_traces_sampler_arg = 1.0
 log_format = "text"
 log_level = "INFO"
 log_include_trace_context = true
+# Comma-separated hosts/CIDRs whose X-Forwarded-For/-Proto headers are trusted,
+# so logs and per-client rate limiting see the real client rather than your
+# reverse proxy. Unset means uvicorn's default of 127.0.0.1 only. "*" trusts
+# everything and is spoofable -- prefer the proxy's address or CIDR, and note
+# that "*" only works as the entire value. See docs/configuration.md.
+# forwarded_allow_ips = "10.42.0.0/16"
 
 # --- Document processing ---
 # No master switch: PDF extraction is built in, each optional processor below has

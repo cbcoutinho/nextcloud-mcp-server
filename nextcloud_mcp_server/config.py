@@ -359,6 +359,11 @@ _DEFAULTS: dict[str, Any] = {
     "log_format": "text",
     "log_level": "INFO",
     "log_include_trace_context": True,
+    # Reverse-proxy trust list for X-Forwarded-For (GH #1284). Passed to
+    # uvicorn; None keeps uvicorn's own resolution (which itself falls back to
+    # 127.0.0.1). Declared here so the key is settable from settings.toml, not
+    # only as the env var uvicorn already reads on its own.
+    "forwarded_allow_ips": None,
     # Document processing (no master switch: each optional processor has its own
     # ENABLE_* flag, and parsing on read is the caller's per-call decision)
     "document_processor": "unstructured",
@@ -1406,6 +1411,15 @@ class Settings:
     log_format: str = "text"  # "json" or "text"
     log_level: str = "INFO"
     log_include_trace_context: bool = True
+
+    # Comma-separated hosts/CIDRs whose X-Forwarded-For/-Proto headers uvicorn
+    # trusts, or "*" (GH #1284). Behind a reverse proxy this is what makes
+    # request.client the real client rather than the proxy — it feeds the access
+    # log, app.py's missing-Authorization warning, and the DCR rate-limit bucket
+    # in auth/oauth_routes.py. None means "leave uvicorn's own resolution alone"
+    # (its FORWARDED_ALLOW_IPS env read, defaulting to 127.0.0.1), so declaring
+    # the setting changes nothing until an operator sets it.
+    forwarded_allow_ips: str | None = None
 
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags

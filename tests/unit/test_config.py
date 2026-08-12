@@ -229,6 +229,32 @@ class TestGetSettings:
         assert settings.pod_namespace == "tenant-example"
         assert settings.pod_name == "backend-7c95d96fd9-mh2d7"
 
+    @patch.dict(
+        os.environ,
+        {"FORWARDED_ALLOW_IPS": "10.42.0.0/16,192.168.1.5"},
+        clear=True,
+    )
+    def test_get_settings_forwarded_allow_ips_from_env(self):
+        """FORWARDED_ALLOW_IPS must reach settings (GH #1284).
+
+        The env var is uvicorn's own, and uvicorn reads it directly — but only
+        a _DEFAULTS + _FIELD_MAP entry makes it settable from settings.toml
+        too, which is how the helm chart carries non-secret config.
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.forwarded_allow_ips == "10.42.0.0/16,192.168.1.5"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_forwarded_allow_ips_unset_by_default(self):
+        """None means "don't touch uvicorn's own resolution" (127.0.0.1).
+
+        Defaulting to anything wider would silently make client IPs spoofable,
+        and the DCR rate limiter in auth/oauth_routes.py keys on them.
+        """
+        _reload_config()
+        assert get_settings().forwarded_allow_ips is None
+
     @patch.dict(os.environ, {}, clear=True)
     def test_pyroscope_disabled_by_default(self):
         """Profiling is opt-in: default off with no server address."""

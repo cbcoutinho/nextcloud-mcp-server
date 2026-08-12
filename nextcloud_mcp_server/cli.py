@@ -1,4 +1,6 @@
+import ipaddress
 import logging
+import logging.config
 from importlib.metadata import version
 from typing import TYPE_CHECKING
 
@@ -285,13 +287,84 @@ def run(
         include_trace_context=settings.log_include_trace_context,
     )
 
+    # Apply the config now rather than leaving it to uvicorn.run(). Anything we
+    # log before that call otherwise escapes this pipeline: the MCP SDK's
+    # configure_logging() has already run logging.basicConfig() with a rich
+    # handler, so a startup line would render as rich text even under
+    # LOG_FORMAT=json — and would vanish entirely if that side effect ever went
+    # away. dictConfig is idempotent (disable_existing_loggers is False), so
+    # uvicorn re-applying the same dict internally is a no-op.
+    logging.config.dictConfig(uvicorn_log_config)
+
+    _log_forwarded_allow_ips(settings.forwarded_allow_ips)
+
     uvicorn.run(
         app=app,
         host=host,
         port=port,
         log_level=log_level,
         log_config=uvicorn_log_config,
+        # None reproduces uvicorn's own resolution (FORWARDED_ALLOW_IPS env,
+        # else 127.0.0.1), so passing it unconditionally only ever adds the
+        # settings.toml source on top. See GH #1284.
+        forwarded_allow_ips=settings.forwarded_allow_ips,
     )
+
+
+def _is_ip_or_network(token: str) -> bool:
+    """Whether uvicorn will parse ``token`` as an IP address or network.
+
+    Mirrors the per-entry half of
+    ``uvicorn.middleware.proxy_headers._TrustedHosts.__init__``, including its
+    strict network parsing — anything it cannot parse is kept as a string
+    literal there, so "10.0.0.1/8" (host bits set) is a literal, not the /8 the
+    operator meant. The wildcard is deliberately not accepted here; it is not a
+    per-entry concern (see ``_log_forwarded_allow_ips``).
+    """
+    if "/" in token:
+        try:
+            ipaddress.ip_network(token)
+        except ValueError:
+            return False
+        return True
+    try:
+        ipaddress.ip_address(token)
+    except ValueError:
+        return False
+    return True
+
+
+def _log_forwarded_allow_ips(value: str | None) -> None:
+    """Report the effective proxy trust list, warning about unusable entries.
+
+    uvicorn silently demotes an entry it cannot parse to a string literal,
+    which then matches no real client — its own source calls this out as
+    something that "may lead to unexpected / difficult to debug behaviour". A
+    typo therefore looks configured while leaving GH #1284's symptom (every
+    request logged as the proxy's IP) fully in place, so say so at startup.
+    """
+    if not value:
+        return
+
+    logger.info("Trusting X-Forwarded-* headers from: %s", value)
+
+    # uvicorn's trust-everything switch is an exact match on the whole raw
+    # value (``_TrustedHosts.always_trust``), so a "*" is only a wildcard when
+    # it is the entire setting. Anywhere else — even alone but padded, and
+    # notably in "10.0.0.0/8,*" — it parses as neither address nor network and
+    # becomes an inert literal, quietly narrowing the list rather than widening
+    # it. Verified against uvicorn 0.51.0. So it gets no special case below.
+    if value == "*":
+        return
+
+    tokens = [token.strip() for token in value.split(",")]
+    unparsed = [t for t in tokens if t and not _is_ip_or_network(t)]
+    if unparsed:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS entries are not IP addresses or networks and "
+            "will only ever match a client address literally: %s",
+            ", ".join(unparsed),
+        )
 
 
 def _init_worker_observability(settings: Settings) -> None:

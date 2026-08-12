@@ -1588,6 +1588,70 @@ the logs after changing configuration if a setting does not seem to apply.
 
 ---
 
+## Running Behind a Reverse Proxy
+
+When a proxy (nginx, Traefik, Caddy, an ingress controller, Envoy) sits in front of
+the server, every log line shows the *proxy's* address instead of the client's:
+
+```
+WARNING  /mcp request WITHOUT Authorization header from Address(host='172.16.0.7', port=44832)
+INFO     172.16.0.7:44832 - "POST /mcp HTTP/1.1" 401
+```
+
+The server reads `X-Forwarded-For` / `X-Forwarded-Proto`, but only from proxies it
+has been told to trust — the default trust list is `127.0.0.1`, so a proxy on
+another host or container is ignored and its headers are discarded. Name the proxy
+with `FORWARDED_ALLOW_IPS` (a comma-separated list of IP addresses and CIDR
+networks, or `*` on its own to trust everything):
+
+```bash
+# Environment variable
+FORWARDED_ALLOW_IPS=172.16.0.7
+```
+
+```toml
+# settings.toml — equivalent, and what the Helm chart mounts as a ConfigMap
+[default]
+forwarded_allow_ips = "172.16.0.7"
+```
+
+The address to trust is the one the server currently logs — the proxy as seen from
+the server, not the proxy's public address. Examples:
+
+| Deployment | Value |
+|------------|-------|
+| docker compose, proxy in the same network | the proxy container's IP, e.g. `172.16.0.7` |
+| Kubernetes, nginx-ingress or Envoy Gateway | the cluster **pod** CIDR, e.g. `10.42.0.0/16` |
+| Proxy on the same host (`--net=host`, local dev) | `127.0.0.1` (already the default) |
+
+This affects more than log readability: rate limiting on OAuth dynamic client
+registration is keyed on the client address, so while the real address is unknown
+every client behind the proxy shares a single bucket.
+
+### Prefer a CIDR over `*`
+
+`*` trusts *any* source and takes the **left-most** `X-Forwarded-For` entry, which
+is attacker-controlled — a client can then claim any address it likes and evade
+per-IP rate limiting. With an explicit list, the header is walked from the right
+past each trusted hop, which cannot be spoofed past a proxy that appends honestly.
+Use `*` only where the server is unreachable except through the proxy, and prefer a
+CIDR even then.
+
+`*` is a wildcard **only as the entire value**. Anywhere else it is inert — it
+matches nothing, so `10.0.0.0/8,*` trusts the `/8` alone, narrowing the list
+rather than widening it. Startup warns when a `*` is used this way.
+
+Entries that are not valid IP addresses or networks (a hostname, or a CIDR with
+host bits set such as `10.0.0.1/8`) are never matched. Startup reports the trust
+list and warns about such entries:
+
+```
+INFO [2026-08-11 18:40:33] nextcloud_mcp_server.cli - Trusting X-Forwarded-* headers from: 10.0.0.1/8
+WARNING [2026-08-11 18:40:33] nextcloud_mcp_server.cli - FORWARDED_ALLOW_IPS entries are not IP addresses or networks and will only ever match a client address literally: 10.0.0.1/8
+```
+
+---
+
 ## CLI Configuration
 
 Some configuration options can also be provided via CLI arguments. CLI arguments take precedence over environment variables.
