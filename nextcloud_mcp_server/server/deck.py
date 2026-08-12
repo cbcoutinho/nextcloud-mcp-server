@@ -923,6 +923,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_stack(
         ctx: Context,
@@ -1010,6 +1011,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_archived_stacks(
         ctx: Context,
@@ -1490,6 +1492,10 @@ def configure_deck_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("deck.write")
+    # No @with_links here, deliberately: the card is gone by the time this
+    # returns, so a link to it would 404. Every other CardOperationResponse tool
+    # leaves the card in place and does carry one. Asserted by
+    # tests/unit/test_links_tool_coverage.py.
     @instrument_tool
     async def deck_delete_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -1516,6 +1522,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_archive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -1542,6 +1549,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_unarchive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -1568,6 +1576,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_reorder_card(
         ctx: Context,
@@ -1608,6 +1617,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_move_card_to_board(
         ctx: Context,
@@ -1747,6 +1757,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_assign_label_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
@@ -1774,6 +1785,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_remove_label_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
@@ -1802,6 +1814,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_assign_user_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
@@ -1831,6 +1844,7 @@ def configure_deck_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_unassign_user_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str

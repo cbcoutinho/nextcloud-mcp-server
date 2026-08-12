@@ -187,4 +187,10 @@ def with_links(fn):
             attach_urls(result, kwargs)
         return result
 
+    # Marks the tool as opted in, so a test can check that every tool returning
+    # a linkable model actually applies this decorator — the registry test alone
+    # cannot see that. Written into __dict__ because that is precisely what
+    # functools.wraps copies, so the flag stays visible through any outer
+    # decorator (@require_scopes) on the fully decorated tool.
+    wrapper.__dict__["__with_links__"] = True
     return wrapper

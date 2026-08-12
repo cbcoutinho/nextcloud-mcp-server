@@ -96,6 +96,44 @@ async def test_directory_listing_links_files_by_their_file_id(
         _assert_openable(entry["url"], f"/f/{entry['file_id']}")
 
 
+async def test_file_link_opens_the_file_not_just_its_folder(
+    nc_mcp_client, nc_client, temporary_note
+):
+    """The /f/ permalink must land on the file itself, opened in the viewer.
+
+    Nextcloud's ViewController.redirectToFile adds ``openfile=true`` for a file
+    and omits it for a folder, so the link we emit needs no query parameters of
+    its own. This pins that behaviour: if a future Nextcloud stopped opening the
+    file, the link would silently degrade to "here is the folder it lives in"
+    and nothing else would notice.
+    """
+    payload = _payload(
+        await nc_mcp_client.call_tool("nc_webdav_list_directory", {"path": ""})
+    )
+    a_file = next(
+        (
+            f
+            for f in payload["files"]
+            if not f["is_directory"] and f.get("file_id") is not None
+        ),
+        None,
+    )
+    if a_file is None:
+        pytest.skip("no file with a file_id in the home directory")
+
+    # Follow the permalink without redirects to read where it points.
+    response = await nc_client._client.get(
+        f"/index.php/f/{a_file['file_id']}", follow_redirects=False
+    )
+    assert response.status_code in (301, 302, 303, 307, 308), (
+        f"expected a redirect from the permalink, got {response.status_code}"
+    )
+    location = response.headers["location"]
+    assert "openfile=true" in location, (
+        f"permalink no longer opens the file itself: {location}"
+    )
+
+
 async def test_board_overview_links_cards_using_the_boards_id(nc_mcp_client, nc_client):
     """Cards carry no boardId — the link proves the id was threaded from the envelope."""
     boards = await nc_client.deck.get_boards()
