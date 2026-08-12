@@ -8,6 +8,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import require_capability
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
@@ -1851,6 +1852,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @require_capability("deck", min_version="1.18.0")
     @instrument_tool
     async def deck_assign_dependent_card(
         ctx: Context,
@@ -1891,6 +1893,7 @@ def configure_deck_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("deck.write")
+    @require_capability("deck", min_version="1.18.0")
     @instrument_tool
     async def deck_remove_dependent_card(
         ctx: Context,
