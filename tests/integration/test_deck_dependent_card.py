@@ -11,10 +11,24 @@ import uuid
 import pytest
 from mcp import ClientSession
 
+from nextcloud_mcp_server.capabilities import unmet_capability
 from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
+
+# Card dependencies first ship in Deck v1.18.0 (Nextcloud 34+). On older
+# instances the API endpoints don't exist and the MCP tools are capability-gated
+# out, so these tests skip rather than fail.
+DECK_DEPENDENCIES_MIN_VERSION = "1.18.0"
+
+
+async def _skip_without_dependency_support(nc_client: NextcloudClient) -> None:
+    reason = await unmet_capability(
+        nc_client, nc_client.username, "deck", DECK_DEPENDENCIES_MIN_VERSION
+    )
+    if reason:
+        pytest.skip(reason)
 
 
 @pytest.fixture
@@ -24,6 +38,7 @@ async def board_with_two_cards(nc_client: NextcloudClient):
     Yields:
         tuple: (board_id, stack_id, card_id, dependency_card_id)
     """
+    await _skip_without_dependency_support(nc_client)
     unique_suffix = uuid.uuid4().hex[:8]
     board = None
     try:
@@ -84,6 +99,7 @@ async def test_assign_and_remove_dependent_card_via_mcp(
 ):
     """The same round-trip driven through the MCP tools, with the dependency
     read back via the ``deck_get_card`` tool."""
+    await _skip_without_dependency_support(nc_client)
     board_data, stack_data, card_data = temporary_board_with_card
     board_id = board_data["id"]
     stack_id = stack_data["id"]
