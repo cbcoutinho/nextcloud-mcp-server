@@ -611,8 +611,11 @@ class WebDAVClient(BaseNextcloudClient):
 
         logger.debug("Listing directory: %s", path)
 
+        # oc:fileid is requested alongside the DAV properties because it is the
+        # only stable identity a browser link can use (/index.php/f/<id>); paths
+        # move and rename. The search PROPFINDs below already ask for it.
         propfind_body = """<?xml version="1.0"?>
-        <d:propfind xmlns:d="DAV:">
+        <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
             <d:prop>
                 <d:displayname/>
                 <d:getcontentlength/>
@@ -620,6 +623,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:getlastmodified/>
                 <d:getetag/>
                 <d:resourcetype/>
+                <oc:fileid/>
             </d:prop>
         </d:propfind>"""
 
@@ -693,6 +697,21 @@ class WebDAVClient(BaseNextcloudClient):
                     else None
                 )
 
+                # Parsed defensively, unlike the sizes above: file_id only feeds
+                # the deep link, so a server that ever returns a non-numeric one
+                # should cost the caller that link, not the whole listing.
+                fileid_elem = prop.find(".//{http://owncloud.org/ns}fileid")
+                file_id = None
+                if fileid_elem is not None and fileid_elem.text:
+                    try:
+                        file_id = int(fileid_elem.text)
+                    except ValueError:
+                        logger.warning(
+                            "Ignoring non-numeric oc:fileid %r for %s",
+                            fileid_elem.text,
+                            name,
+                        )
+
                 items.append(
                     {
                         "name": name,
@@ -702,6 +721,7 @@ class WebDAVClient(BaseNextcloudClient):
                         "content_type": content_type,
                         "last_modified": modified,
                         "etag": etag,
+                        "file_id": file_id,
                     }
                 )
 

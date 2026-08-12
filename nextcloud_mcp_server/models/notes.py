@@ -7,6 +7,14 @@ from pydantic import BaseModel, Field
 
 from .base import BaseResponse, IdResponse, StatusResponse
 
+#: Shared wording for the deep link, so all five notes responses describe it the
+#: same way. Populated by ``links.with_links``; see ADR-035.
+NOTE_URL_DESCRIPTION = (
+    "Link that opens this note in the Nextcloud Notes app. Offer it to the user "
+    "when referring to the note so they can read or edit it in place. None when "
+    "the server has no browser-reachable Nextcloud base URL configured."
+)
+
 
 class Note(BaseModel):
     """Model for a Nextcloud note."""
@@ -21,6 +29,7 @@ class Note(BaseModel):
     )
     etag: str = Field(description="ETag for versioning")
     readonly: bool = Field(default=False, description="Whether note is read-only")
+    url: str | None = Field(default=None, description=NOTE_URL_DESCRIPTION)
 
     @property
     def modified_datetime(self) -> datetime:
@@ -35,6 +44,7 @@ class NoteSearchResult(BaseModel):
     title: str = Field(description="Note title")
     category: str = Field(default="", description="Note category")
     score: Optional[float] = Field(None, description="Search relevance score")
+    url: str | None = Field(default=None, description=NOTE_URL_DESCRIPTION)
 
 
 class NotesSettings(BaseModel):
@@ -51,6 +61,7 @@ class CreateNoteResponse(IdResponse):
     title: str = Field(description="The created note title")
     category: str = Field(description="The created note category")
     etag: str = Field(description="Current ETag for the created note")
+    url: str | None = Field(default=None, description=NOTE_URL_DESCRIPTION)
 
 
 class UpdateNoteResponse(BaseResponse):
@@ -60,6 +71,7 @@ class UpdateNoteResponse(BaseResponse):
     title: str = Field(description="The updated note title")
     category: str = Field(description="The updated note category")
     etag: str = Field(description="Current ETag for the updated note")
+    url: str | None = Field(default=None, description=NOTE_URL_DESCRIPTION)
 
 
 class DeleteNoteResponse(StatusResponse):
@@ -75,6 +87,7 @@ class AppendContentResponse(BaseResponse):
     title: str = Field(description="The updated note title")
     category: str = Field(description="The updated note category")
     etag: str = Field(description="Current ETag for the updated note")
+    url: str | None = Field(default=None, description=NOTE_URL_DESCRIPTION)
 
 
 class SearchNotesResponse(BaseResponse):

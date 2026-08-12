@@ -136,7 +136,10 @@ async def test_deck_card_mcp_tools(
     created_card_response = json.loads(create_result.content[0].text)
     card_id = created_card_response["id"]
     assert created_card_response["title"] == card_title
-    assert created_card_response["description"] == card_description
+    # The create response no longer echoes the description back — the caller just
+    # sent it. That it was actually stored is asserted on the fetched card below,
+    # which is the stronger check anyway.
+    assert "description" not in created_card_response
     logger.info("Card created via MCP with ID: %s", card_id)
 
     try:
@@ -149,6 +152,7 @@ async def test_deck_card_mcp_tools(
         assert len(get_result.contents) == 1, "Expected exactly one content item"
         get_card_response = json.loads(get_result.contents[0].text)
         assert get_card_response["title"] == card_title
+        assert get_card_response["description"] == card_description
         logger.info("Card retrieved via MCP resource successfully")
 
         # 3. Update card via MCP tool
