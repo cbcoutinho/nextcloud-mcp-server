@@ -2,6 +2,8 @@ from collections.abc import Callable
 
 from mcp.server.fastmcp import FastMCP
 
+from nextcloud_mcp_server.capabilities import stamp_required_capability
+
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
@@ -35,8 +37,51 @@ AVAILABLE_APPS: dict[str, Callable[[FastMCP], None]] = {
     "talk": configure_talk_tools,
 }
 
+# App name → the key it publishes on /ocs/v2.php/cloud/capabilities, for apps
+# whose absence should hide their tools. Verified against each app's
+# Capabilities.php; an app missing from this map is NEVER gated, because
+# absence of a key is what closes the gate and most apps publish nothing:
+#
+#   notes / tables / deck / cookbook → own key, carries `version`
+#   talk                             → `spreed`; the whole block is omitted for
+#                                      a user Talk is disabled for, which is
+#                                      exactly when its tools should vanish
+#   calendar (`calendar`, no version) and contacts (nested under
+#     `client_integration`) are deliberately absent: those tools speak
+#     CalDAV/CardDAV and keep working with the web app uninstalled
+#   collectives / news / mail        → publish no capability block at all
+#   webdav / sharing                 → core `files`/`files_sharing`, always there
+APP_CAPABILITY_KEY: dict[str, str] = {
+    "notes": "notes",
+    "tables": "tables",
+    "deck": "deck",
+    "cookbook": "cookbook",
+    "talk": "spreed",
+}
+
+
+def configure_app_tools(mcp: FastMCP, app_name: str) -> None:
+    """Register one app's tools, gated on the app being installed for the user.
+
+    Used by both transports (app.py, stdio.py) so their tool sets cannot drift.
+    Tools that declare their own ``@require_capability`` (e.g. a version floor)
+    keep it — see ``stamp_required_capability``.
+    """
+    before = {tool.name for tool in mcp._tool_manager.list_tools()}
+    AVAILABLE_APPS[app_name](mcp)
+
+    capability = APP_CAPABILITY_KEY.get(app_name)
+    if capability is None:
+        return
+    for tool in mcp._tool_manager.list_tools():
+        if tool.name not in before:
+            stamp_required_capability(tool.fn, capability)
+
+
 __all__ = [
+    "APP_CAPABILITY_KEY",
     "AVAILABLE_APPS",
+    "configure_app_tools",
     "configure_calendar_tools",
     "configure_collectives_tools",
     "configure_contacts_tools",

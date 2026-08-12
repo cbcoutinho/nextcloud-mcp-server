@@ -20,7 +20,7 @@ from nextcloud_mcp_server.config_validators import AuthMode, validate_configurat
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudFastMCP
-from nextcloud_mcp_server.server import AVAILABLE_APPS
+from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
     for app_name in enabled_apps:
         if app_name in AVAILABLE_APPS:
             logger.info("Configuring %s tools", app_name)
-            AVAILABLE_APPS[app_name](mcp)
+            configure_app_tools(mcp, app_name)
         else:
             logger.warning(
                 "Unknown app: %s. Available apps: %s",

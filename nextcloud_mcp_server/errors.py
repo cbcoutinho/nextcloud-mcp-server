@@ -18,6 +18,12 @@ from httpx import URL, HTTPStatusError, RequestError, Response, ResponseNotRead
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ContentBlock
+from mcp.types import Tool as MCPTool
+
+from nextcloud_mcp_server.capabilities import (
+    enforce_capability,
+    filter_by_capability,
+)
 
 #: ``summary``/``hint`` per status. 429 is rare -- ``retry_on_429`` in
 #: ``client/base.py`` absorbs it -- but ``_stream_request`` re-raises it once
@@ -182,15 +188,22 @@ def friendly_tool_error(exc: BaseException | None, tool_name: str) -> str | None
 
 
 class NextcloudFastMCP(FastMCP):
-    """FastMCP that rewrites raw HTTP failures into LLM-friendly messages.
+    """FastMCP that rewrites raw HTTP failures into LLM-friendly messages and
+    hides tools this Nextcloud instance cannot serve.
 
     Subclass rather than patch: ``FastMCP._setup_handlers`` binds
-    ``self.call_tool`` during ``__init__``, so a later reassignment is ignored.
+    ``self.call_tool``/``self.list_tools`` during ``__init__``, so a later
+    reassignment is ignored.
     """
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        return await filter_by_capability(self, tools)
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any]
     ) -> Sequence[ContentBlock] | dict[str, Any]:
+        await enforce_capability(self, name)
         try:
             return await super().call_tool(name, arguments)
         except ToolError as e:
