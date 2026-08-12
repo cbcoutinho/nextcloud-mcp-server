@@ -75,20 +75,27 @@ class TestInstrumentToolDecorator:
     async def test_decorator_sanitizes_sensitive_arguments(
         self, mock_tracer, mock_metrics
     ):
-        """Test that sensitive arguments are excluded from span attributes."""
+        """Sensitive values are redacted; the key stays so you can see it was sent."""
 
         @instrument_tool
         async def example_tool(
-            query: str, password: str, token: str, api_key: str, ctx: object
+            query: str,
+            password: str,
+            access_token: str,
+            client_secret: str,
+            apiKey: str,  # noqa: N803 - deliberately camelCase, as a client would send
+            ctx: object,
         ):
             return {"success": True}
 
-        # Call with sensitive parameters
+        # Call with sensitive parameters. access_token/client_secret/apiKey are
+        # the cases the old exact-match denylist missed entirely.
         await example_tool(
             query="test",
             password="secret123",
-            token="bearer_token",
-            api_key="api_key_123",
+            access_token="bearer_token",
+            client_secret="shh",
+            apiKey="api_key_123",
             ctx=MagicMock(),
         )
 
@@ -96,14 +103,13 @@ class TestInstrumentToolDecorator:
         mock_tracer.assert_called_once()
         attributes = mock_tracer.call_args[1]["attributes"]
 
-        # Check that sensitive fields are NOT in attributes
+        # No secret value survives
         tool_args = attributes["mcp.tool.args"]
-        assert "password" not in tool_args
-        assert "secret123" not in tool_args
-        assert "token" not in tool_args
-        assert "bearer_token" not in tool_args
-        assert "api_key" not in tool_args
-        assert "api_key_123" not in tool_args
+        for secret in ("secret123", "bearer_token", "shh", "api_key_123"):
+            assert secret not in tool_args
+        assert tool_args.count("[redacted]") == 4
+
+        # The injected context is dropped entirely, not redacted
         assert "ctx" not in tool_args
 
         # Check that non-sensitive field IS included
@@ -113,23 +119,27 @@ class TestInstrumentToolDecorator:
     async def test_decorator_limits_argument_string_length(
         self, mock_tracer, mock_metrics
     ):
-        """Test that tool arguments are limited to 500 characters."""
+        """One huge argument is capped so it cannot hide the others."""
 
         @instrument_tool
-        async def example_tool(query: str):
+        async def example_tool(query: str, limit: int):
             return {"results": []}
 
-        # Create a very long query string (>500 chars)
+        # Create a very long query string
         long_query = "x" * 1000
 
-        await example_tool(query=long_query)
+        await example_tool(query=long_query, limit=5)
 
         # Verify arguments were truncated
         mock_tracer.assert_called_once()
         attributes = mock_tracer.call_args[1]["attributes"]
         tool_args = attributes["mcp.tool.args"]
 
-        assert len(tool_args) <= 500
+        assert "x" * 150 in tool_args
+        assert "x" * 300 not in tool_args
+        assert len(tool_args) <= 1000
+        # The argument after the long one is still visible
+        assert "'limit': 5" in tool_args
 
     async def test_decorator_records_success_metrics(self, mock_tracer, mock_metrics):
         """Test that successful tool execution records metrics."""
@@ -213,5 +223,7 @@ class TestInstrumentToolDecorator:
         mock_tracer.assert_called_once()
         attributes = mock_tracer.call_args[1]["attributes"]
 
-        # tool_args should be None when there are no kwargs
-        assert attributes["mcp.tool.args"] is None
+        # The attribute is omitted rather than set to None: OTel rejects
+        # None-valued attributes, warning and dropping them on every call.
+        assert "mcp.tool.args" not in attributes
+        assert attributes["mcp.tool.name"] == "no_args_tool"

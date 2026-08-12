@@ -25,6 +25,7 @@ from nextcloud_mcp_server.auth.token_utils import (
     extract_user_id_from_token as extract_user_id_from_token,  # noqa: PLC0414
 )
 from nextcloud_mcp_server.config import cfg, get_settings
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -613,7 +614,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_provision_access(ctx: Context) -> ProvisioningResult:
+    @instrument_tool
+    async def provision_nextcloud_access(ctx: Context) -> ProvisioningResult:
         user_id = await extract_user_id_from_token(ctx)
         return await _provision_nextcloud_access(ctx, user_id)
 
@@ -628,7 +630,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_revoke_access(ctx: Context) -> RevocationResult:
+    @instrument_tool
+    async def revoke_nextcloud_access(ctx: Context) -> RevocationResult:
         user_id = await extract_user_id_from_token(ctx)
         return await _revoke_nextcloud_access(ctx, user_id)
 
@@ -642,7 +645,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_check_status(ctx: Context) -> ProvisioningStatus:
+    @instrument_tool
+    async def check_provisioning_status(ctx: Context) -> ProvisioningStatus:
         user_id = await extract_user_id_from_token(ctx)
         return await _check_provisioning_status(ctx, user_id)
 
@@ -659,6 +663,7 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_check_logged_in(ctx: Context) -> str:
+    @instrument_tool
+    async def check_logged_in(ctx: Context) -> str:
         user_id = await extract_user_id_from_token(ctx)
         return await _check_logged_in(ctx, user_id)
