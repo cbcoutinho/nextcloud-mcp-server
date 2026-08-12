@@ -2,7 +2,9 @@
 
 Provides a minimal FastMCP instance suitable for ``mcp.run(transport="stdio")``.
 Only single-user BasicAuth mode is supported.  Background sync, semantic search,
-OAuth, and observability infrastructure are deliberately excluded.
+OAuth, and the observability *plumbing* — the Prometheus HTTP endpoint and the
+OTel tracing setup — are deliberately excluded; the per-tool-call logging and
+metrics are wired in, mirroring ``app.py``, since they cost nothing here.
 """
 
 from __future__ import annotations

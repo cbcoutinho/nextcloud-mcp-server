@@ -119,9 +119,10 @@ mcp_tool_outcomes_total = Counter(
     "mcp_tool_outcomes_total",
     "How the MCP SDK delivered each tool call: success | tool_error "
     "(CallToolResult.isError, the model sees the message) | protocol_error "
-    "(JSON-RPC error, the model does not). Note tool_name here is the tool's "
-    "*registered* MCP name, which differs from mcp_tool_calls_total's "
-    "func.__name__ for the OAuth tools.",
+    "(JSON-RPC error, the model does not). tool_name here is the tool's "
+    "*registered* MCP name, while mcp_tool_calls_total uses the decorated "
+    "function's __name__. Every tool function is named after the tool it "
+    "registers, so the two agree — test_tool_call_logging.py guards that.",
     ["tool_name", "outcome"],
 )
 
