@@ -5,6 +5,22 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.172.0 (2026-08-12)
+
+### BREAKING CHANGE
+
+- deck_create_card no longer echoes `description` back in its
+response. The caller just supplied it, and card descriptions are full
+markdown bodies. Read it from deck_get_card if it is genuinely needed.
+
+### Feat
+
+- **links**: point notes, files and deck responses back at Nextcloud
+
+### Fix
+
+- **links**: link every deck tool whose result still has a card to open
+
 ## v0.171.0 (2026-08-12)
 
 ### Feat
