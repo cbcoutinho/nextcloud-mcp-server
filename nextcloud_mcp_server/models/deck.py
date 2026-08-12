@@ -19,6 +19,21 @@ class DeckPermissions(BaseModel):
     PERMISSION_SHARE: bool
 
 
+#: Shared wording for the deep links, so every Deck response describes them the
+#: same way. Populated by ``links.with_links``; see ADR-035. Deck has no route
+#: that opens a single stack, so a stack links to its board.
+BOARD_URL_DESCRIPTION = (
+    "Link that opens this board in the Nextcloud Deck app. None when the server "
+    "has no browser-reachable Nextcloud base URL configured."
+)
+CARD_URL_DESCRIPTION = (
+    "Link that opens this card in the Nextcloud Deck app. Offer it to the user "
+    "when referring to the card so they can open it in place. None when the "
+    "server has no browser-reachable Nextcloud base URL configured, or when the "
+    "card's board is not known from the response or the tool's arguments."
+)
+
+
 class DeckLabel(BaseModel):
     id: int
     title: str
@@ -58,6 +73,7 @@ class DeckBoard(BaseModel):
     users: List[DeckUser]
     deletedAt: int
     lastModified: Optional[int] = None
+    url: str | None = Field(default=None, description=BOARD_URL_DESCRIPTION)
     settings: Optional[DeckBoardSettings] = None
     etag: Optional[str] = Field(default=None, alias="ETag")
 
@@ -98,6 +114,7 @@ class DeckCard(BaseModel):
     commentsUnread: Optional[int] = None
     overdue: Optional[int] = None
     etag: Optional[str] = Field(default=None, alias="ETag")
+    url: str | None = Field(default=None, description=CARD_URL_DESCRIPTION)
 
     @field_validator("owner", mode="before")
     @classmethod
@@ -165,6 +182,7 @@ class DeckCardSummary(BaseModel):
     descriptionPreview: str | None = Field(
         default=None, description="Truncated preview of the card description"
     )
+    url: str | None = Field(default=None, description=CARD_URL_DESCRIPTION)
 
 
 class DeckStack(BaseModel):
@@ -178,6 +196,14 @@ class DeckStack(BaseModel):
     # detail="summary" (the default for list tools).
     cards: list[DeckCard | DeckCardSummary] | None = None
     etag: Optional[str] = Field(default=None, alias="ETag")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens this stack's board in the Nextcloud Deck app; Deck "
+            "has no route that opens a single stack. None when the server has no "
+            "browser-reachable Nextcloud base URL configured."
+        ),
+    )
 
 
 class DeckAttachmentExtendedData(BaseModel):
@@ -327,8 +353,8 @@ class CreateCardResponse(BaseResponse):
 
     id: int = Field(description="The created card ID")
     title: str = Field(description="The created card title")
-    description: Optional[str] = Field(description="The created card description")
     stackId: int = Field(description="The stack ID the card belongs to")
+    url: str | None = Field(default=None, description=CARD_URL_DESCRIPTION)
 
 
 class CardOperationResponse(StatusResponse):
@@ -345,6 +371,7 @@ class CardOperationResponse(StatusResponse):
             "the destination board"
         ),
     )
+    url: str | None = Field(default=None, description=CARD_URL_DESCRIPTION)
 
 
 # Label Response Models

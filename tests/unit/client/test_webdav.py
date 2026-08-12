@@ -1480,3 +1480,97 @@ async def test_404_without_destination_etag_keeps_original_message(mocker, verb)
     result = await getattr(client, f"{verb}_resource")("a/old.txt", "b/new.txt")
 
     assert result["message"] == "Source resource not found"
+
+
+@pytest.mark.unit
+async def test_list_directory_requests_and_parses_fileid(mocker):
+    """list_directory must request <oc:fileid/> and expose it.
+
+    The file id is the only stable identity a browser deep link can use
+    (/index.php/f/<id>) -- paths move and rename. The property was previously
+    never requested, so FileInfo.file_id was always None for listings even
+    though the model declared it; parity with the search/find paths.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/notes.txt</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>notes.txt</d:displayname>
+                    <d:getcontentlength>10</d:getcontentlength>
+                    <d:resourcetype/>
+                    <oc:fileid>12345</oc:fileid>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    mock_response = AsyncMock()
+    mock_response.content = xml_content
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    items = await client.list_directory("")
+
+    # The PROPFIND body must ask for it, or the property never arrives.
+    sent_body = mock_http_client.request.call_args.kwargs["content"]
+    assert "fileid" in sent_body
+
+    by_name = {item["name"]: item for item in items}
+    assert by_name["notes.txt"]["file_id"] == 12345
+
+
+@pytest.mark.unit
+async def test_list_directory_survives_a_non_numeric_fileid(mocker):
+    """A bad fileid costs that entry its link, not the whole listing.
+
+    file_id only feeds a deep link, and the int() cast sits inside
+    list_directory's catch-all handler -- so without this guard one malformed
+    property would turn a core read into "unexpected error listing directory".
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/notes.txt</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>notes.txt</d:displayname>
+                    <d:resourcetype/>
+                    <oc:fileid>not-a-number</oc:fileid>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    mock_response = AsyncMock()
+    mock_response.content = xml_content
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    items = await client.list_directory("")
+
+    by_name = {item["name"]: item for item in items}
+    assert by_name["notes.txt"]["file_id"] is None

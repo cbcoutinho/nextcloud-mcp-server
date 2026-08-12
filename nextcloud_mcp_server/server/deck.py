@@ -10,6 +10,7 @@ from mcp.types import ErrorData, ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.deck import (
     AttachFileResponse,
     AttachmentOperationResponse,
@@ -783,6 +784,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_boards(ctx: Context) -> ListBoardsResponse:
         """Get all Nextcloud Deck boards"""
@@ -795,6 +797,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_board(
         ctx: Context,
@@ -829,6 +832,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_stacks(
         ctx: Context,
@@ -1071,6 +1075,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_cards(
         ctx: Context,
@@ -1149,6 +1154,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_board_overview(
         ctx: Context,
@@ -1246,6 +1252,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("deck.read")
+    @with_links
     @instrument_tool
     async def deck_get_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -1385,6 +1392,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_create_card(
         ctx: Context,
@@ -1414,7 +1422,6 @@ def configure_deck_tools(mcp: FastMCP):
         return CreateCardResponse(
             id=card.id,
             title=card.title,
-            description=card.description,
             stackId=card.stackId,
         )
 
@@ -1423,6 +1430,7 @@ def configure_deck_tools(mcp: FastMCP):
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
+    @with_links
     @instrument_tool
     async def deck_update_card(
         ctx: Context,

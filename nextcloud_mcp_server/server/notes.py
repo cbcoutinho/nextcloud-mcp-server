@@ -7,6 +7,7 @@ from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.notes import (
     AppendContentResponse,
     CreateNoteResponse,
@@ -93,6 +94,7 @@ def configure_notes_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("notes.write")
+    @with_links
     @instrument_tool
     async def nc_notes_create_note(
         title: str, content: str, category: str, ctx: Context
@@ -146,6 +148,7 @@ def configure_notes_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("notes.write")
+    @with_links
     @instrument_tool
     async def nc_notes_update_note(
         note_id: int,
@@ -218,6 +221,7 @@ def configure_notes_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("notes.write")
+    @with_links
     @instrument_tool
     async def nc_notes_append_content(
         note_id: int, content: str, ctx: Context
@@ -275,6 +279,7 @@ def configure_notes_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("notes.read")
+    @with_links
     @instrument_tool
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
         """Search notes by title or content, returning only id, title, and category (requires notes.read scope)."""
@@ -328,6 +333,7 @@ def configure_notes_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("notes.read")
+    @with_links
     @instrument_tool
     async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
         """Get a specific note by its ID (requires notes.read scope)"""

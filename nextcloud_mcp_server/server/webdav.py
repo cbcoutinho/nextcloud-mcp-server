@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
     DirectoryListing,
@@ -148,6 +149,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_list_directory(
         ctx: Context, path: str = ""
@@ -717,6 +719,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_search_files(
         ctx: Context,
@@ -853,6 +856,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_find_by_name(
         pattern: str, ctx: Context, scope: str = "", limit: int | None = None
@@ -896,6 +900,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_find_by_type(
         mime_type: str, ctx: Context, scope: str = "", limit: int | None = None
@@ -939,6 +944,7 @@ def configure_webdav_tools(mcp: FastMCP):
         ),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_list_favorites(
         ctx: Context, scope: str = "", limit: int | None = None

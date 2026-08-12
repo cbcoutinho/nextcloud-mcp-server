@@ -30,6 +30,15 @@ class FileInfo(BaseModel):
     etag: Optional[str] = Field(None, description="ETag for versioning")
     file_id: Optional[int] = Field(None, description="Nextcloud file ID")
     is_favorite: Optional[bool] = Field(None, description="Whether file is favorited")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens this file or folder in Nextcloud. Offer it to the "
+            "user when referring to the file so they can open it in place. None "
+            "when the server has no browser-reachable Nextcloud base URL "
+            "configured, or when this entry carries no file_id."
+        ),
+    )
 
     @property
     def last_modified_datetime(self) -> Optional[datetime]:
