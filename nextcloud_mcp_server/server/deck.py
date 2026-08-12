@@ -8,6 +8,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import require_capability
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
@@ -1840,6 +1841,85 @@ def configure_deck_tools(mcp: FastMCP):
         return CardOperationResponse(
             success=True,
             message="User unassigned from card successfully",
+            card_id=card_id,
+            stack_id=stack_id,
+            board_id=board_id,
+        )
+
+    # Card Dependency Tools
+    @mcp.tool(
+        title="Add Dependent Card to Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write")
+    @require_capability("deck", min_version="1.18.0")
+    @instrument_tool
+    async def deck_assign_dependent_card(
+        ctx: Context,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        dependent_card_id: int,
+    ) -> CardOperationResponse:
+        """Mark a Nextcloud Deck card as depending on another card.
+
+        Mirrors Deck's "Add dependent card" action. The dependency is
+        directional and stored on ``card_id``: it surfaces in that card's
+        ``dependentCards`` list (visible via deck_get_card). You need read
+        access to the dependent card.
+
+        Args:
+            board_id: The ID of the board containing the depending card
+            stack_id: The ID of the stack containing the depending card
+            card_id: The ID of the card that depends on another card
+            dependent_card_id: The ID of the card that card_id depends on
+        """
+        client = await get_client(ctx)
+        await client.deck.assign_dependent_card(
+            board_id, stack_id, card_id, dependent_card_id
+        )
+        return CardOperationResponse(
+            success=True,
+            message=f"Card {dependent_card_id} added as a dependency of card {card_id}",
+            card_id=card_id,
+            stack_id=stack_id,
+            board_id=board_id,
+        )
+
+    @mcp.tool(
+        title="Remove Dependent Card from Deck Card",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
+    @require_scopes("deck.write")
+    @require_capability("deck", min_version="1.18.0")
+    @instrument_tool
+    async def deck_remove_dependent_card(
+        ctx: Context,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        dependent_card_id: int,
+    ) -> CardOperationResponse:
+        """Remove a dependency between two Nextcloud Deck cards.
+
+        Removes the dependency of ``card_id`` on ``dependent_card_id`` that was
+        created by deck_assign_dependent_card.
+
+        Args:
+            board_id: The ID of the board containing the depending card
+            stack_id: The ID of the stack containing the depending card
+            card_id: The ID of the card that depends on another card
+            dependent_card_id: The ID of the dependency to remove
+        """
+        client = await get_client(ctx)
+        await client.deck.remove_dependent_card(
+            board_id, stack_id, card_id, dependent_card_id
+        )
+        return CardOperationResponse(
+            success=True,
+            message=f"Card {dependent_card_id} removed as a dependency of card {card_id}",
             card_id=card_id,
             stack_id=stack_id,
             board_id=board_id,

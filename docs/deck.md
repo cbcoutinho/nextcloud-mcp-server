@@ -35,6 +35,8 @@
 | `deck_remove_label_from_card` | Remove a label from a card |
 | `deck_assign_user_to_card` | Assign a user to a card |
 | `deck_unassign_user_from_card` | Remove a user assignment from a card |
+| `deck_assign_dependent_card` | Mark a card as depending on another card ("Add dependent card") |
+| `deck_remove_dependent_card` | Remove a dependency between two cards |
 
 ### Deck Resources
 | Resource | Description |
