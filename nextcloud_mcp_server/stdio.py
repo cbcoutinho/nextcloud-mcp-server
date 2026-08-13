@@ -2,7 +2,9 @@
 
 Provides a minimal FastMCP instance suitable for ``mcp.run(transport="stdio")``.
 Only single-user BasicAuth mode is supported.  Background sync, semantic search,
-OAuth, and observability infrastructure are deliberately excluded.
+OAuth, and the observability *plumbing* — the Prometheus HTTP endpoint and the
+OTel tracing setup — are deliberately excluded; the per-tool-call logging and
+metrics are wired in, mirroring ``app.py``, since they cost nothing here.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from nextcloud_mcp_server.config_validators import AuthMode, validate_configurat
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudFastMCP
+from nextcloud_mcp_server.observability.metrics import instrument_call_tool_outcomes
 from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 
 logger = logging.getLogger(__name__)
@@ -105,5 +108,10 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
                 app_name,
                 list(AVAILABLE_APPS.keys()),
             )
+
+    # Mirrors app.py: the per-tool-call log line, the client-fleet metrics and
+    # the delivery-outcome counter all hang off this wrapper, so the stdio
+    # server is otherwise invisible.
+    instrument_call_tool_outcomes(mcp)
 
     return mcp

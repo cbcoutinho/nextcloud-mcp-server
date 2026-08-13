@@ -27,6 +27,7 @@ from nextcloud_mcp_server.models.auth import (
     ProvisionStatusResponse,
     UpdateScopesResponse,
 )
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
         ),
     )
     @require_scopes("openid")
+    @instrument_tool
     async def nc_auth_provision_access(
         ctx: Context,
         scopes: list[str] | None = None,
@@ -222,6 +224,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
         ),
     )
     @require_scopes("openid")
+    @instrument_tool
     async def nc_auth_check_status(
         ctx: Context,
     ) -> ProvisionStatusResponse:
@@ -371,6 +374,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
         ),
     )
     @require_scopes("openid")
+    @instrument_tool
     async def nc_auth_update_scopes(
         ctx: Context,
         add_scopes: list[str] | None = None,

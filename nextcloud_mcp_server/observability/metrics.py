@@ -18,8 +18,11 @@ import functools
 import logging
 import threading
 import time
+from collections.abc import Mapping
+from typing import Any
 
 from mcp import types
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from prometheus_client import (
@@ -116,9 +119,10 @@ mcp_tool_outcomes_total = Counter(
     "mcp_tool_outcomes_total",
     "How the MCP SDK delivered each tool call: success | tool_error "
     "(CallToolResult.isError, the model sees the message) | protocol_error "
-    "(JSON-RPC error, the model does not). Note tool_name here is the tool's "
-    "*registered* MCP name, which differs from mcp_tool_calls_total's "
-    "func.__name__ for the OAuth tools.",
+    "(JSON-RPC error, the model does not). tool_name here is the tool's "
+    "*registered* MCP name, while mcp_tool_calls_total uses the decorated "
+    "function's __name__. Every tool function is named after the tool it "
+    "registers, so the two agree — test_tool_call_logging.py guards that.",
     ["tool_name", "outcome"],
 )
 
@@ -1202,6 +1206,106 @@ def record_elicitation(prompt: str, outcome: str, reason: str = "none") -> None:
     mcp_elicitation_total.labels(prompt=prompt, outcome=outcome, reason=reason).inc()
 
 
+# Redaction is by key *substring*, case-insensitively: the arguments reaching
+# the CallToolRequest handler are unvalidated client input (FastMCP registers it
+# with validate_input=False), so a caller can send "password" to a tool that
+# declares no such parameter, and a tool that does take one may call it
+# "access_token" or "clientSecret".
+_SENSITIVE_ARG_SUBSTRINGS = (
+    "password",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "credential",
+    "authorization",
+    "cookie",
+)
+
+# Arguments that say nothing about how the tool is being used: the injected
+# FastMCP Context and the concurrency etag every update tool carries.
+_UNINTERESTING_ARGS = ("ctx", "etag")
+
+# Per value first, so one huge argument (a file body, a note) cannot fill the
+# whole budget and hide every other argument.
+_MAX_ARG_VALUE_CHARS = 200
+_MAX_ARGS_CHARS = 1000
+
+
+def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
+    """Render tool arguments for a log line or a span attribute.
+
+    Returns ``None`` when there is nothing worth recording, so callers omit the
+    field entirely — OTel rejects None-valued attributes, logging a warning and
+    dropping them.
+    """
+    if not arguments:
+        return None
+
+    parts = []
+    for key, value in arguments.items():
+        if key in _UNINTERESTING_ARGS:
+            continue
+        if any(s in key.lower() for s in _SENSITIVE_ARG_SUBSTRINGS):
+            rendered = repr("[redacted]")
+        else:
+            rendered = repr(value)
+            if len(rendered) > _MAX_ARG_VALUE_CHARS:
+                rendered = rendered[:_MAX_ARG_VALUE_CHARS] + "…"
+        parts.append(f"{key!r}: {rendered}")
+
+    if not parts:
+        return None
+    return ("{" + ", ".join(parts) + "}")[:_MAX_ARGS_CHARS]
+
+
+def _log_tool_call(
+    req: types.CallToolRequest, tool_name: str, outcome: str, started: float
+) -> None:
+    """Emit the one structured line per tool call that Loki queries.
+
+    The spans from ``instrument_tool`` carry the same tool name and arguments,
+    but traces are sampled and short-retention, so they cannot answer "which
+    tools ran, with what inputs, over the last month". Logs are unsampled; that
+    is the whole point of duplicating the information here.
+
+    Field names are prefixed to stay clear of reserved ``LogRecord`` attributes
+    (``name``, ``args``, ``message``), which ``extra=`` may not overwrite.
+    """
+    fields: dict[str, Any] = {
+        "mcp_tool": tool_name,
+        "outcome": outcome,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+    }
+
+    if req.params.name != tool_name:
+        # Kept out of the metric label to bound cardinality, kept here because a
+        # client sending an unregistered name is exactly what you want to see.
+        fields["mcp_tool_requested"] = req.params.name[:100]
+
+    args = _sanitize_tool_args(req.params.arguments)
+    if args:
+        fields["mcp_tool_args"] = args
+
+    # None in BasicAuth / single-user / stdio, where there is no OAuth identity.
+    # Deliberately not extract_user_id_from_token(): that raises McpError on a
+    # token without a sub claim, which would turn logging into a tool failure.
+    token = get_access_token()
+    if token:
+        if token.resource:
+            fields["mcp_user"] = token.resource
+        fields["mcp_client_id"] = token.client_id
+
+    logger.log(
+        logging.INFO if outcome == "success" else logging.WARNING,
+        "tool call %s %s in %dms",
+        tool_name,
+        outcome,
+        fields["duration_ms"],
+        extra=fields,
+    )
+
+
 def instrument_call_tool_outcomes(mcp: FastMCP) -> None:
     """Wrap the low-level CallToolRequest handler to record how the SDK replied.
 
@@ -1242,6 +1346,7 @@ def instrument_call_tool_outcomes(mcp: FastMCP) -> None:
     async def handler(req: types.CallToolRequest) -> types.ServerResult:
         record_client_session()
         tool_name = _tool_label(req.params.name)
+        started = time.perf_counter()
         try:
             result = await original(req)
         except Exception:
@@ -1250,13 +1355,14 @@ def instrument_call_tool_outcomes(mcp: FastMCP) -> None:
             mcp_tool_outcomes_total.labels(
                 tool_name=tool_name, outcome="protocol_error"
             ).inc()
+            _log_tool_call(req, tool_name, "protocol_error", started)
             raise
         # v1 wraps the result in the ServerResult RootModel; v2 returns the
         # CallToolResult directly.
         is_error = bool(getattr(getattr(result, "root", result), "isError", False))
-        mcp_tool_outcomes_total.labels(
-            tool_name=tool_name, outcome="tool_error" if is_error else "success"
-        ).inc()
+        outcome = "tool_error" if is_error else "success"
+        mcp_tool_outcomes_total.labels(tool_name=tool_name, outcome=outcome).inc()
+        _log_tool_call(req, tool_name, outcome, started)
         return result
 
     server.request_handlers[types.CallToolRequest] = handler
@@ -1989,23 +2095,17 @@ def instrument_tool(func):
         tool_name = func.__name__
         start_time = time.time()
 
-        # Extract tool arguments for tracing (sanitize sensitive fields)
-        # kwargs contains the actual arguments passed to the tool
-        tool_args = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in ("password", "token", "secret", "api_key", "etag", "ctx")
-        }
+        # kwargs is post-validation, so it carries the tool's defaults and the
+        # injected ctx — unlike the raw wire arguments _log_tool_call renders.
+        attributes: dict[str, Any] = {"mcp.tool.name": tool_name}
+        tool_args = _sanitize_tool_args(kwargs)
+        if tool_args:
+            attributes["mcp.tool.args"] = tool_args
 
         # Create trace span with metrics collection
         with trace_operation(
             f"mcp.tool.{tool_name}",
-            attributes={
-                "mcp.tool.name": tool_name,
-                "mcp.tool.args": str(tool_args)[:500]
-                if tool_args
-                else None,  # Limit to 500 chars
-            },
+            attributes=attributes,
             record_exception=True,
         ):
             try:

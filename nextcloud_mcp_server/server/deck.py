@@ -1875,6 +1875,7 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck.write")
     @require_capability("deck", min_version="1.18.0")
+    @with_links
     @instrument_tool
     async def deck_assign_dependent_card(
         ctx: Context,
@@ -1916,6 +1917,7 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck.write")
     @require_capability("deck", min_version="1.18.0")
+    @with_links
     @instrument_tool
     async def deck_remove_dependent_card(
         ctx: Context,
