@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.173.0 (2026-08-13)
+
+### Feat
+
+- **observability**: log every MCP tool call with its arguments
+
 ## v0.172.0 (2026-08-12)
 
 ### BREAKING CHANGE
