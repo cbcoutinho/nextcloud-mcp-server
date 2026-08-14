@@ -1790,9 +1790,11 @@ def record_document_dead_lettered(reason: str) -> None:
     Args:
         reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
             reason carried from the isolated worker), ``oversize`` (rejected by
-            the pre-parse size guard, which no tier can ever parse), or
+            the pre-parse size guard, which no tier can ever parse),
             ``unreadable`` (the bytes are not a document the engine can open --
-            no tier will do better, so it is terminal on the first attempt).
+            no tier will do better, so it is terminal on the first attempt), or
+            ``unsupported_type`` (no registered processor claims the mime type --
+            a config property of the deployment, not a fault of the document).
     """
     document_dead_lettered_total.labels(reason=reason).inc()
 
