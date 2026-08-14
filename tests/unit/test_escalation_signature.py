@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nextcloud_mcp_server.document_processors import escalation as esc_mod
 from nextcloud_mcp_server.document_processors.escalation import (
     escalation_tiers_signature,
 )
@@ -84,6 +85,36 @@ def test_markdown_page_gate_change_changes_signature() -> None:
     assert escalation_tiers_signature(
         _settings(ocr=False, markdown_max_pages=150)
     ) != escalation_tiers_signature(_settings(ocr=False, markdown_max_pages=50))
+
+
+def test_enabling_a_processor_changes_signature(mocker) -> None:
+    # Deck #1016: an unsupported mime type is terminal, so enabling a processor
+    # that claims it (docling/unstructured/tesseract/custom) must re-drive the
+    # documents dead-lettered while it was off -- their etag never changes.
+    before = escalation_tiers_signature(_settings(ocr=False))
+    mocker.patch.object(
+        esc_mod,
+        "get_document_processor_config",
+        lambda: {"processors": {"docling": {}}},
+    )
+    assert escalation_tiers_signature(_settings(ocr=False)) != before
+
+
+def test_processor_set_order_does_not_change_signature(mocker) -> None:
+    # Sorted, so dict ordering (config source, insertion order) cannot spuriously
+    # invalidate every dead letter on the tenant.
+    mocker.patch.object(
+        esc_mod,
+        "get_document_processor_config",
+        lambda: {"processors": {"unstructured": {}, "docling": {}}},
+    )
+    one = escalation_tiers_signature(_settings(ocr=False))
+    mocker.patch.object(
+        esc_mod,
+        "get_document_processor_config",
+        lambda: {"processors": {"docling": {}, "unstructured": {}}},
+    )
+    assert escalation_tiers_signature(_settings(ocr=False)) == one
 
 
 def test_disabling_markdown_changes_signature() -> None:

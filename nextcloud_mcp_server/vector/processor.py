@@ -1370,6 +1370,9 @@ async def _index_document_inner(
                 EscalateError,
                 escalation_tiers_signature,
             )
+            from nextcloud_mcp_server.document_processors.registry import (  # noqa: PLC0415
+                UNSUPPORTED_TYPE_REASON,
+            )
 
             registry = get_registry()
 
@@ -1427,10 +1430,14 @@ async def _index_document_inner(
                     # (``None`` == terminal). An oversize PDF is rejected by the
                     # pre-parse size guard before any tier runs (no pipeline_tier
                     # stamped on the inline path) and no tier can ever parse it, so
-                    # it is terminal regardless of failing_tier.
+                    # it is terminal regardless of failing_tier. Same for
+                    # ``unsupported_type``: the tier ladder is PDF-only, so a mime
+                    # type no processor claims cannot be parsed by a higher rung
+                    # either -- escalating it would just walk the queues to burn
+                    # the same dispatch failure three times (Deck #1016).
                     next_avail = (
                         None
-                        if reason == "oversize"
+                        if reason in ("oversize", UNSUPPORTED_TYPE_REASON)
                         else registry.next_available_tier(failing_tier, settings)
                     )
                     # #399: a hard parse failure (an isolated-worker timeout/OOM on

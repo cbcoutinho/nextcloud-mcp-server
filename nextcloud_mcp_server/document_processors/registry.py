@@ -29,6 +29,36 @@ logger = logging.getLogger(__name__)
 
 PDF_MIME_TYPE = "application/pdf"
 
+# parse_failed_reason for "no registered processor claims this mime type".
+UNSUPPORTED_TYPE_REASON = "unsupported_type"
+
+
+def _unsupported_type_result(
+    content_type: str, registered: list[str]
+) -> ProcessingResult:
+    """Permanent, non-raising failure for a mime type nothing can parse.
+
+    Returned rather than raised (Deck #1016): a ``ProcessorError`` from dispatch
+    unwinds past the ingest caller's ``if not result.success:`` block -- the one
+    that owns dead-lettering -- and lands in the generic retry handler, which
+    treats the fault as transient and lets the next scan re-queue the document.
+    Forever, because "nothing is registered for this type" never changes on its
+    own. Failing gracefully instead routes it to the dead-letter marker, whose
+    signature covers the configured processor set (see
+    ``escalation.escalation_tiers_signature``) so enabling a processor later
+    re-drives the document.
+    """
+    return ProcessingResult(
+        text="",
+        metadata={"parse_failed_reason": UNSUPPORTED_TYPE_REASON},
+        processor="registry",
+        success=False,
+        error=(
+            f"No processor found for type: {content_type}. "
+            f"Registered processors: {', '.join(registered)}"
+        ),
+    )
+
 
 @dataclass
 class _LadderState:
@@ -180,10 +210,14 @@ class ProcessorRegistry:
             progress_callback: Optional async callback for progress updates
 
         Returns:
-            ProcessingResult with extracted text and metadata
+            ProcessingResult with extracted text and metadata. A mime type no
+            registered processor claims comes back as ``success=False`` /
+            ``parse_failed_reason="unsupported_type"`` rather than raising, so
+            callers dead-letter it instead of retrying forever (Deck #1016).
 
         Raises:
-            ProcessorError: If no processor found or processing fails
+            ProcessorError: If a named ``processor_name`` is unknown, or the
+                selected processor fails
         """
         # Forced processor bypasses tiering.
         if processor_name:
@@ -206,10 +240,7 @@ class ProcessorRegistry:
 
         processor = self.find_processor(content_type)
         if not processor:
-            raise ProcessorError(
-                f"No processor found for type: {content_type}. "
-                f"Registered processors: {', '.join(self.list_processors())}"
-            )
+            return _unsupported_type_result(content_type, self.list_processors())
         return await self._run_processor(
             processor, content, content_type, filename, options, progress_callback
         )
@@ -826,10 +857,7 @@ class ProcessorRegistry:
 
         processor = self.find_processor(source.content_type)
         if not processor:
-            raise ProcessorError(
-                f"No processor found for type: {source.content_type}. "
-                f"Registered processors: {', '.join(self.list_processors())}"
-            )
+            return _unsupported_type_result(source.content_type, self.list_processors())
         return await self._run_processor_source(
             processor, source, options, progress_callback
         )

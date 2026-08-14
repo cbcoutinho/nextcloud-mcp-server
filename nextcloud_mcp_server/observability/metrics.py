@@ -1735,11 +1735,17 @@ def record_document_parse_failed(reason: str) -> None:
     """Record a hard parse failure from the isolated worker.
 
     Args:
-        reason: ``timeout`` | ``oom`` | ``error`` (from the isolated worker), or
+        reason: ``timeout`` | ``oom`` | ``error`` (from the isolated worker);
             ``unreadable`` -- the engine could not open the bytes as a document
             at all, i.e. the file's content does not match the mime type its
             extension claimed. Distinguished from ``error`` on purpose: it means
-            corrupt input, not a failure of ours, so it should not page anyone.
+            corrupt input, not a failure of ours, so it should not page anyone;
+            ``oversize`` -- rejected by the pre-parse size guard, no tier can
+            ever parse it; or ``unsupported_type`` -- no registered processor
+            claims the mime type, which is a property of what this deployment
+            has enabled rather than of the document. Kept in step with
+            ``record_document_dead_lettered`` below: the terminal ones are
+            counted on both.
     """
     document_parse_failed_total.labels(reason=reason).inc()
 
@@ -1790,9 +1796,11 @@ def record_document_dead_lettered(reason: str) -> None:
     Args:
         reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
             reason carried from the isolated worker), ``oversize`` (rejected by
-            the pre-parse size guard, which no tier can ever parse), or
+            the pre-parse size guard, which no tier can ever parse),
             ``unreadable`` (the bytes are not a document the engine can open --
-            no tier will do better, so it is terminal on the first attempt).
+            no tier will do better, so it is terminal on the first attempt), or
+            ``unsupported_type`` (no registered processor claims the mime type --
+            a config property of the deployment, not a fault of the document).
     """
     document_dead_lettered_total.labels(reason=reason).inc()
 

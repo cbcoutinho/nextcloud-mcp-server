@@ -346,6 +346,34 @@ async def test_oversize_failure_dead_letters_regardless_of_tier(mocker):
     spies.update_ph.assert_not_awaited()
 
 
+async def test_unsupported_mime_type_dead_letters(mocker):
+    """Deck #1016: a non-PDF nothing can parse dead-letters instead of looping.
+
+    Registry dispatch used to raise past the terminal-failure block, so the
+    document was never marked and every scan cycle re-queued it (the 12
+    ``text/html`` documents on the dev tenant, 8 doomed jobs each per 6h). It is
+    terminal at any tier — the tier ladder is PDF-only — so ``fast`` must
+    dead-letter rather than escalate to ``structured``.
+    """
+    spies = _patch_common(mocker, ocr_enabled=False)
+    nc = _nc_client()
+    nc.webdav.read_file = AsyncMock(
+        return_value=(b"<html></html>", "text/html; charset=UTF-8", None)
+    )
+    task = _file_task()
+    task.file_path = "/Export/messages.html"
+
+    result = await processor._index_document(task, nc, MagicMock(), tier="fast")
+
+    assert result is False
+    spies.mark.assert_awaited_once()
+    assert spies.mark.await_args.args[4] == "unsupported_type"  # reason
+    spies.dead_metric.assert_called_once_with("unsupported_type")
+    spies.parse_failed.assert_called_once_with("unsupported_type")
+    spies.escalation.assert_not_called()  # no pointless walk up the queues
+    spies.update_ph.assert_not_awaited()
+
+
 async def test_terminal_failure_without_etag_uses_legacy_mark(mocker):
     """A terminal failure with no etag can't be content-addressed, so fall back to
     the legacy per-user placeholder mark instead of writing an unmatchable marker."""

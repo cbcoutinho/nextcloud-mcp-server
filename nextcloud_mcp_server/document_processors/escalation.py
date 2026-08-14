@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from nextcloud_mcp_server.config import get_document_processor_config
+
 # Cheapest-first. ``ocr`` is the single configurable OCR tier: the backend (direct
 # Mistral vs the embedding gateway, which can route Mistral, surya, etc.) and the
 # model are chosen by ``document_ocr_provider`` + ``document_ocr_model``. ``llm`` is
@@ -42,10 +44,11 @@ def escalation_tiers_signature(settings: Any) -> str:
     at runtime — flip it and previously dead-lettered documents become retryable.
 
     Derived purely from settings (not the live ``ProcessorRegistry``) so it is
-    identical across the API/scanner and worker roles: the *registered* processor
-    set is build-constant, so the only runtime variables are the OCR-enabled gate
-    (``document_ocr_enabled`` — the single OCR-tier toggle) and the tier-1 engine
-    pin (``document_tier1_engine``). Enabling OCR changes the signature, so the
+    identical across the API/scanner and worker roles: the built-in processor set
+    is build-constant, so the runtime variables are the OCR-enabled gate
+    (``document_ocr_enabled`` — the single OCR-tier toggle), the tier-1 engine
+    pin (``document_tier1_engine``) and the configured *optional* processors
+    (below). Enabling OCR changes the signature, so the
     pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
     re-attempted automatically.
 
@@ -74,16 +77,30 @@ def escalation_tiers_signature(settings: Any) -> str:
     ``150`` must not change the fingerprint (and ``:d`` would raise on a float,
     breaking the dead-letter key for the whole tenant).
 
+    The *optional* processor set is included for the same reason (Deck #1016): a
+    document whose mime type no registered processor claims fails
+    ``unsupported_type``, which is terminal — so without this, enabling
+    ``docling``/``unstructured``/``tesseract``/``custom`` later would never
+    re-drive the documents dead-lettered while they were off. Taken from
+    ``get_document_processor_config()`` (settings, via the same ``ENABLE_*``
+    flags app startup registers from) rather than from the live registry, so the
+    scanner and worker roles agree even though only the worker imports the parse
+    stack. The built-in PDF tiers are build-constant and covered by ``t1``/``ocr``.
+
     TODO: when a future setting can make a previously-terminal document parseable,
     fold it in here so raising it auto-retries existing dead-letters. Known
     remaining candidate: a new escalation tier becoming toggleable (e.g. the
     reserved ``llm`` rung in ``TIER_LADDER``).
     """
+    optional_processors = ",".join(
+        sorted(get_document_processor_config()["processors"])
+    )
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
         f"t1={settings.document_tier1_engine};"
         f"maxmb={settings.document_max_pdf_size_mb:g};"
-        f"mdpages={settings.document_markdown_max_pages:g}"
+        f"mdpages={settings.document_markdown_max_pages:g};"
+        f"procs={optional_processors}"
     )
 
 
