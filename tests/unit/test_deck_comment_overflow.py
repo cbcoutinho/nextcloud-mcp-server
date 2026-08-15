@@ -438,7 +438,18 @@ async def test_limit_plus_trailing_whitespace_is_accepted(
     fake_client.deck.create_comment.assert_awaited_once()
 
 
-@pytest.mark.parametrize("message", ["", "   \n\t "])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "",
+        "   \n\t ",
+        # Non-blank to Python's strip(), but PHP's trim() takes NUL, so Deck
+        # would store an empty comment and report success.
+        "\0",
+        # Blank to Python's strip(), non-blank to PHP's: an ideographic space.
+        "　",
+    ],
+)
 @pytest.mark.parametrize("overflow", ["error", "split"])
 async def test_blank_message_is_rejected_in_both_modes(
     create_comment, fake_client, patch_get_client, message, overflow, ctx

@@ -45,6 +45,7 @@ from nextcloud_mcp_server.models.deck import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
+    is_blank_comment,
     measured_length,
     split_message,
 )
@@ -96,13 +97,10 @@ def _validate_comment_message_not_blank(message: str) -> None:
     Deck would happily store one, but a blank row in an activity log is noise
     nobody asked for and almost always signals a bug in the caller.
 
-    Uses Python's broad ``str.strip()`` on purpose, unlike
-    :func:`measured_length`, which must mirror PHP's narrower ``trim()``
-    charlist exactly. This guard is our own policy rather than a restatement of
-    the server's rule, and a comment of nothing but ideographic spaces is just
-    as useless as one of nothing but spaces -- so do not "align" it.
+    Blankness is deliberately the *union* of our rule and the server's -- see
+    :func:`is_blank_comment` for why neither trim charlist alone is enough.
     """
-    if not message.strip():
+    if is_blank_comment(message):
         raise ValueError("Comment message must not be empty or whitespace-only")
 
 

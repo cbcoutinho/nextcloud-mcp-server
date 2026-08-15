@@ -33,6 +33,7 @@ from nextcloud_mcp_server.server.tag_exclusion import (
 )
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
+    is_blank_comment,
     measured_length,
 )
 
@@ -1095,7 +1096,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             CreateFileCommentResponse with the new comment's ID.
         """
-        if not message.strip():
+        if is_blank_comment(message):
             raise ValueError("Comment message must not be empty or whitespace-only")
         length = measured_length(message)
         if length > COMMENT_MAX_LENGTH:

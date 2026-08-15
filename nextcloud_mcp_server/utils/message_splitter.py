@@ -87,6 +87,26 @@ def measured_length(message: str) -> int:
     return len(message.strip(_PHP_TRIM_CHARS))
 
 
+def is_blank_comment(message: str) -> bool:
+    """True when a comment carries no content by *either* trim rule.
+
+    The two rules disagree in both directions and each gap posts a useless
+    comment, so blankness is the union of them:
+
+    * Python's ``str.strip()`` also strips every Unicode Zs space -- U+00A0,
+      U+3000 -- which PHP leaves in place. A comment of nothing but ideographic
+      spaces is as useless as one of nothing but spaces, so we reject it even
+      though the server would store it.
+    * PHP's ``trim()`` strips NUL, which Python's does not. ``"\\0"`` is
+      non-blank to Python but measures 0 to the server, which would store an
+      empty comment and report success.
+
+    Shared by every comment surface (Deck cards, file comments) so the two
+    cannot drift into rejecting different things.
+    """
+    return not message.strip() or measured_length(message) == 0
+
+
 def split_message(
     message: str,
     *,

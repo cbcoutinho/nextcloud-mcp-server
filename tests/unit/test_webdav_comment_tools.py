@@ -104,7 +104,18 @@ async def test_create_comment_at_the_limit_is_accepted(create_comment, fake_clie
     fake_client.webdav.create_comment.assert_awaited_once()
 
 
-@pytest.mark.parametrize("message", ["", "   \n\t "])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "",
+        "   \n\t ",
+        # Non-blank to Python's strip(), but PHP's trim() takes NUL, so the
+        # server would store an empty comment and report success.
+        "\0",
+        # Blank to Python's strip(), non-blank to PHP's: an ideographic space.
+        "　",
+    ],
+)
 async def test_create_comment_rejects_blank(create_comment, fake_client, message):
     with pytest.raises(ValueError, match="must not be empty"):
         await create_comment("/report.pdf", message, _ctx())
