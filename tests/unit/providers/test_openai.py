@@ -169,6 +169,32 @@ async def test_openai_unknown_dimension_detected(mock_openai_client):
 
 
 @pytest.mark.unit
+async def test_openai_detect_dimension_hook(mock_openai_client):
+    """_detect_dimension() resolves an unknown model's size at startup.
+
+    Vector-sync bootstrap calls this before any embed (discussion #1302: a
+    self-hosted OpenAI-compatible model failed startup with "dimension not
+    detected yet").
+    """
+    mock_embedding_data = MagicMock()
+    mock_embedding_data.embedding = [0.1] * 384
+    mock_embedding_data.index = 0
+
+    mock_response = MagicMock()
+    mock_response.data = [mock_embedding_data]
+    mock_openai_client.embeddings.create = AsyncMock(return_value=mock_response)
+
+    provider = OpenAIProvider(api_key="test-key", embedding_model="bekko8")
+
+    await provider._detect_dimension()
+    assert provider.get_dimension() == 384
+
+    # Idempotent: a second call does not re-probe the service.
+    await provider._detect_dimension()
+    assert mock_openai_client.embeddings.create.await_count == 1
+
+
+@pytest.mark.unit
 async def test_openai_github_models_api(mock_openai_client):
     """Test OpenAI provider with GitHub Models API configuration."""
     # Mock response

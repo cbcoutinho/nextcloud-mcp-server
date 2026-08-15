@@ -144,6 +144,23 @@ async def test_mistral_get_dimension_unknown_model_detected(mock_mistral_client)
 
 
 @pytest.mark.unit
+async def test_mistral_detect_dimension_hook(mock_mistral_client):
+    """_detect_dimension() resolves an unknown model's size at startup."""
+    mock_mistral_client.embeddings.create_async = AsyncMock(
+        return_value=_make_response([[0.1] * 512])
+    )
+
+    provider = MistralProvider(api_key="test-key", embedding_model="custom-mistral")
+
+    await provider._detect_dimension()
+    assert provider.get_dimension() == 512
+
+    # Idempotent: a second call does not re-probe the API.
+    await provider._detect_dimension()
+    assert mock_mistral_client.embeddings.create_async.await_count == 1
+
+
+@pytest.mark.unit
 async def test_mistral_no_embeddings_disabled(mock_mistral_client):
     """Setting embedding_model=None disables the embedding capability."""
     provider = MistralProvider(api_key="test-key", embedding_model=None)

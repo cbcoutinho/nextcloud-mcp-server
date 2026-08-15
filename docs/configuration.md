@@ -1075,6 +1075,12 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small  # default
 # OPENAI_BASE_URL=https://models.github.ai/inference  # optional
 ```
 
+There is no dimension setting: the vector size is read from the model itself.
+Known OpenAI models use a built-in lookup; any other model (a local
+llama.cpp / LM Studio / vLLM endpoint behind `OPENAI_BASE_URL`) is probed with
+a single test embedding at startup. The same applies to Ollama, Bedrock and
+Mistral. The model must therefore be reachable when vector sync starts.
+
 #### Mistral
 
 Hosted Mistral embeddings. Requires a Mistral API key from

@@ -223,6 +223,19 @@ class MistralProvider(Provider):
         )
         return result, tokens
 
+    async def _detect_dimension(self) -> None:
+        """Detect the embedding dimension by embedding a probe string.
+
+        Same startup hook as the OpenAI/Ollama/Bedrock providers: Qdrant needs
+        the vector size before the first real embed, and a model outside
+        MISTRAL_EMBEDDING_DIMENSIONS is only knowable by asking the API.
+        """
+        if self._dimension is None and self.supports_embeddings:
+            logger.debug(
+                "Detecting embedding dimension for model %s...", self.embedding_model
+            )
+            await self.embed("test")
+
     def get_dimension(self) -> int:
         if not self.supports_embeddings:
             raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)
