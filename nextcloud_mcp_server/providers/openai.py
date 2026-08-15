@@ -250,6 +250,22 @@ class OpenAIProvider(Provider):
         )
         return embeddings, tokens
 
+    async def _detect_dimension(self) -> None:
+        """Detect the embedding dimension by embedding a probe string.
+
+        Qdrant collection init needs the vector size at startup, before any
+        real embed. Models outside OPENAI_EMBEDDING_DIMENSIONS — every model on
+        an OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, ...) — are
+        only knowable by asking the service, so the vector-sync bootstrap calls
+        this hook (``vector/qdrant_client.py``) the same way it does for
+        Ollama/Bedrock. ``embed()`` caches the dimension it observes.
+        """
+        if self._dimension is None and self.supports_embeddings:
+            logger.debug(
+                "Detecting embedding dimension for model %s...", self.embedding_model
+            )
+            await self.embed("test")
+
     def get_dimension(self) -> int:
         """
         Get embedding dimension.
