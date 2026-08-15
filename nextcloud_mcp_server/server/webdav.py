@@ -15,8 +15,11 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
+    CreateFileCommentResponse,
     DirectoryListing,
+    FileComment,
     FileInfo,
+    ListFileCommentsResponse,
     MoveResourceResponse,
     ReadFileResponse,
     SearchFilesResponse,
@@ -28,8 +31,13 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+from nextcloud_mcp_server.utils.message_splitter import (
+    COMMENT_MAX_LENGTH,
+    measured_length,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
+    from nextcloud_mcp_server.client import NextcloudClient
     from nextcloud_mcp_server.document_processors.source import DocumentSource
 
 logger = logging.getLogger(__name__)
@@ -137,6 +145,34 @@ async def _raw_response(
         parsing_metadata=parsing_metadata,
         etag=etag,
     )
+
+
+async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
+    """Resolve ``path`` to the file ID the comments collection is keyed by.
+
+    Shared by both comment tools so the excluded-tag guard and the
+    does-it-exist check cannot drift between reading and writing comments.
+
+    Raises:
+        ToolError: If the path is excluded by tag, resolves to nothing, or
+            resolves to something that is not a numeric file id.
+    """
+    excluded = await get_excluded_file_paths(client.webdav)
+    if is_path_excluded(path, excluded):
+        raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+    file_id = await client.webdav.get_fileid(path)
+    if file_id is None:
+        raise ToolError(f"File not found: {path!r}")
+    try:
+        return int(file_id)
+    except ValueError:
+        # Nextcloud always reports a numeric oc:fileid; anything else means the
+        # PROPFIND response shape changed, and a clear refusal beats a
+        # ValueError from deep inside the URL we would have built with it.
+        raise ToolError(
+            f"Unexpected non-numeric file id {file_id!r} for {path!r}"
+        ) from None
 
 
 def configure_webdav_tools(mcp: FastMCP):
@@ -975,4 +1011,110 @@ def configure_webdav_tools(mcp: FastMCP):
             total_found=len(file_infos),
             scope=scope,
             filters_applied={"only_favorites": True},
+        )
+
+    @mcp.tool(
+        title="List File Comments",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_comments(
+        path: str, ctx: Context, limit: int = 20, offset: int = 0
+    ) -> ListFileCommentsResponse:
+        """Read the comments people have left on a file in NextCloud.
+
+        Comments are how a team annotates a file in place -- review requests,
+        hand-offs, context that does not belong in the file itself.
+
+        Raises ``ToolError`` when the file does not exist, or when
+        ``EXCLUDED_TAGS`` is configured and the file (or an ancestor folder)
+        carries an excluded system tag.
+
+        Args:
+            path: Full path to the file (e.g. "/Documents/report.pdf")
+            limit: Maximum number of comments to return (default: 20)
+            offset: How many of the newest comments to skip, for paging
+
+        Returns:
+            ListFileCommentsResponse with the comments, newest first.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        if offset < 0:
+            raise ValueError(f"offset must not be negative, got {offset}")
+
+        client = await get_client(ctx)
+        file_id = await _resolve_commented_file(client, path)
+
+        comments = await client.webdav.list_comments(
+            file_id, limit=limit, offset=offset
+        )
+        return ListFileCommentsResponse(
+            results=[FileComment(**comment) for comment in comments],
+            count=len(comments),
+            path=path,
+            file_id=file_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @mcp.tool(
+        title="Comment on File",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Each call adds another comment
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_create_comment(
+        path: str, message: str, ctx: Context
+    ) -> CreateFileCommentResponse:
+        """Post a comment on a file in NextCloud.
+
+        To notify someone, mention them by Nextcloud user ID: ``@username``, or
+        ``@"user id with spaces"``. Nextcloud parses the mention out of the
+        message when it stores the comment and sends the notification itself --
+        nothing else is needed here.
+
+        Raises ``ToolError`` when the file does not exist, or when
+        ``EXCLUDED_TAGS`` is configured and the file (or an ancestor folder)
+        carries an excluded system tag. Raises ``ValueError`` for a blank
+        message, or one over Nextcloud's limit -- nothing is posted in either
+        case.
+
+        Args:
+            path: Full path to the file to comment on
+            message: The comment text (max 1000 characters, measured after
+                trimming whitespace, counting Unicode code points)
+
+        Returns:
+            CreateFileCommentResponse with the new comment's ID.
+        """
+        if not message.strip():
+            raise ValueError("Comment message must not be empty or whitespace-only")
+        length = measured_length(message)
+        if length > COMMENT_MAX_LENGTH:
+            raise ValueError(
+                f"Comment message is {length} characters; Nextcloud's limit is "
+                f"{COMMENT_MAX_LENGTH} (measured after trimming whitespace, "
+                f"counting Unicode code points). It is "
+                f"{length - COMMENT_MAX_LENGTH} characters over. Nothing was "
+                f"posted -- shorten it, or put the content in the file itself "
+                f"and leave a short pointer comment."
+            )
+
+        client = await get_client(ctx)
+        file_id = await _resolve_commented_file(client, path)
+
+        comment_id = await client.webdav.create_comment(file_id, message)
+        return CreateFileCommentResponse(
+            path=path,
+            file_id=file_id,
+            comment_id=comment_id,
+            message=message,
         )

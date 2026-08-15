@@ -186,6 +186,61 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return raw.strip('"') if raw is not None else None
 
 
+#: The ownCloud/Nextcloud DAV property namespace.
+_OC_NS = "http://owncloud.org/ns"
+
+#: Collection holding one file's comments, addressed by file id.
+_COMMENTS_PATH = "/remote.php/dav/comments/files"
+
+
+def _dav_props_ok(response_elem: ET.Element) -> dict[str, str]:
+    """Return a multistatus response's ``200 OK`` properties, keyed by local name.
+
+    A response carries one ``propstat`` block per status: the 200 one holds the
+    values, while a 404 one lists the properties the server does *not* have.
+    Folding those in would fabricate empty values for them.
+    """
+    props: dict[str, str] = {}
+    for propstat in response_elem.findall("{DAV:}propstat"):
+        # "HTTP/1.1 200 OK" -> the code is the second token. Matching the token
+        # rather than a " 200 " substring keeps a reason-phrase-less status line
+        # (legal per RFC 9110) working.
+        status = (propstat.findtext("{DAV:}status") or "").split()
+        if len(status) < 2 or status[1] != "200":
+            continue
+        prop = propstat.find("{DAV:}prop")
+        if prop is None:
+            continue
+        for child in prop:
+            props[str(child.tag).rsplit("}", 1)[-1]] = (child.text or "").strip()
+    return props
+
+
+def _parse_comment_props(props: dict[str, str]) -> dict[str, Any] | None:
+    """Shape one comment's DAV properties into the dict ``FileComment`` consumes.
+
+    Returns None for a row without a usable id — one malformed comment should
+    cost the caller that comment, not the whole thread.
+    """
+    try:
+        comment_id = int(props["id"])
+    except (KeyError, ValueError):
+        logger.warning("Skipping comment with unusable id %r", props.get("id"))
+        return None
+    return {
+        "id": comment_id,
+        "message": props.get("message", ""),
+        "actor_id": props.get("actorId", ""),
+        "actor_type": props.get("actorType", ""),
+        "actor_display_name": props.get("actorDisplayName") or None,
+        # Raw DAV date (RFC 1123), like every other timestamp this client
+        # surfaces -- see FileInfo.last_modified.
+        "creation_datetime": props.get("creationDateTime") or None,
+        "verb": props.get("verb", ""),
+        "is_unread": props.get("isUnread", "").lower() == "true",
+    }
+
+
 def _destination_precondition_header(
     destination_webdav_path: str, if_destination_match: str
 ) -> dict[str, str]:
@@ -1957,6 +2012,86 @@ class WebDAVClient(BaseNextcloudClient):
                 if text:
                     return text
         return None
+
+    async def list_comments(
+        self, file_id: int, *, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Return comments on a file, newest first.
+
+        A ``REPORT`` carrying ``oc:filter-comments`` rather than a ``PROPFIND``:
+        the report is the only form that takes ``limit``/``offset``, and a
+        Depth-1 PROPFIND on the collection would return the entire thread.
+
+        Args:
+            file_id: Nextcloud file ID (see :meth:`get_fileid`).
+            limit: Maximum comments to return.
+            offset: How many of the newest comments to skip.
+
+        Returns:
+            One dict per comment, in the shape ``FileComment`` expects.
+        """
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            f'<oc:filter-comments xmlns:oc="{_OC_NS}">'
+            f"<oc:limit>{int(limit)}</oc:limit>"
+            f"<oc:offset>{int(offset)}</oc:offset>"
+            "</oc:filter-comments>"
+        )
+        response = await self._make_request(
+            "REPORT",
+            f"{_COMMENTS_PATH}/{int(file_id)}",
+            content=body,
+            headers={"Depth": "0", "Content-Type": "application/xml"},
+        )
+
+        root = ET.fromstring(response.content)
+        comments = []
+        for response_elem in root.findall("{DAV:}response"):
+            props = _dav_props_ok(response_elem)
+            if not props:
+                continue
+            comment = _parse_comment_props(props)
+            if comment is not None:
+                comments.append(comment)
+
+        logger.debug("Found %s comment(s) on file %s", len(comments), file_id)
+        return comments
+
+    async def create_comment(self, file_id: int, message: str) -> int | None:
+        """Post a comment on a file and return the new comment's ID.
+
+        Nextcloud answers ``201`` with an **empty body**, naming the new comment
+        only in the ``Content-Location`` header — so the ID is read from there
+        rather than by fetching the comment back.
+
+        Mentions are the server's business: it parses ``@"username"`` out of the
+        message when storing it and sends the notification itself.
+
+        Args:
+            file_id: Nextcloud file ID (see :meth:`get_fileid`).
+            message: Comment text. The caller is expected to have checked it
+                against Nextcloud's 1000-character limit.
+
+        Returns:
+            The new comment's ID, or None if the server named no location.
+        """
+        response = await self._make_request(
+            "POST",
+            f"{_COMMENTS_PATH}/{int(file_id)}",
+            json={"actorType": "users", "verb": "comment", "message": message},
+        )
+
+        location = response.headers.get("Content-Location", "")
+        comment_id = location.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            return int(comment_id)
+        except ValueError:
+            logger.warning(
+                "Comment created on file %s but Content-Location %r carries no id",
+                file_id,
+                location,
+            )
+            return None
 
     async def _get_file_info_by_id(self, file_id: int) -> Dict[str, Any]:
         """Get file information by Nextcloud file ID using WebDAV.

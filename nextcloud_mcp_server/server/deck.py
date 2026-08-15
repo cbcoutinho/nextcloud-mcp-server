@@ -44,6 +44,7 @@ from nextcloud_mcp_server.models.deck import (
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.utils.message_splitter import (
+    COMMENT_MAX_LENGTH,
     measured_length,
     split_message,
 )
@@ -73,12 +74,12 @@ def _validate_positive_length(
         raise ValueError(f"{name} must be positive, got {value}")
 
 
-# Nextcloud core caps a comment at IComment::MAX_MESSAGE_LENGTH, checked in
-# OC\Comments\Comment::setMessage AFTER trim(), in UTF-8 code points, with a
-# strict ">" so exactly 1000 is legal. Deck adds no check of its own: its
-# CommentService::create translates the overflow into a 400, but its update()
-# has no such catch and leaks a masked 500 (see _comment_http_error).
-_COMMENT_MAX_LENGTH: Final[int] = 1000
+# Nextcloud's core comment cap (see COMMENT_MAX_LENGTH). Deck adds no check of
+# its own: its CommentService::create translates the overflow into a 400, but
+# its update() has no such catch and leaks a masked 500 (see
+# _comment_http_error). Aliased rather than re-declared so the many references
+# below -- and their tests -- keep reading the same value as file comments.
+_COMMENT_MAX_LENGTH: Final[int] = COMMENT_MAX_LENGTH
 
 # Ceiling on overflow="split". Ten comments is already a wall of text on a card;
 # past that the content wants to be a note or a file attachment, not an

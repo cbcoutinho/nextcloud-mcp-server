@@ -48,6 +48,14 @@ MENTION_PATTERN: Final[re.Pattern[str]] = re.compile(r'@(?:"[^"\n]*"|[\w.\-@]+)'
 
 PART_PREFIX_TEMPLATE: Final[str] = "({index}/{total}) "
 
+# Nextcloud core caps a comment at IComment::MAX_MESSAGE_LENGTH, checked in
+# OC\Comments\Comment::setMessage AFTER trim(), in UTF-8 code points, with a
+# strict ">" so exactly 1000 is legal. It is a *core* rule, not a Deck one, so
+# every comment surface (Deck cards, file comments) measures against this one
+# definition -- next to measured_length, which is what makes the measurement
+# agree with the server's.
+COMMENT_MAX_LENGTH: Final[int] = 1000
+
 # The prefix width depends on the part count, which depends on the budget, which
 # depends on the prefix width. The fixed point converges as soon as the digit
 # count stops moving -- three rounds is already generous.

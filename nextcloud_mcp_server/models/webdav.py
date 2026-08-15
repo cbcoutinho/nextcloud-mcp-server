@@ -184,6 +184,57 @@ class CopyResourceResponse(StatusResponse):
     )
 
 
+class FileComment(BaseModel):
+    """A single comment on a file."""
+
+    id: int = Field(description="Comment ID")
+    message: str = Field(description="Comment text, mentions included as typed")
+    actor_id: str = Field(description="User ID of the comment's author")
+    actor_type: str = Field(description="Actor type, normally 'users'")
+    actor_display_name: Optional[str] = Field(
+        None, description="Display name of the comment's author"
+    )
+    creation_datetime: Optional[str] = Field(
+        None, description="When the comment was posted (RFC 1123 date)"
+    )
+    verb: str = Field(description="Comment verb, normally 'comment'")
+    is_unread: bool = Field(
+        default=False, description="Whether the comment is unread by you"
+    )
+
+
+class ListFileCommentsResponse(BaseResponse):
+    """Response model for listing the comments on a file."""
+
+    results: List[FileComment] = Field(description="Comments, newest first")
+    count: int = Field(
+        description=(
+            "Number of comments in this page. Nextcloud does not report a "
+            "thread total — a full page means there may be more, so page with "
+            "`offset`."
+        )
+    )
+    path: str = Field(description="Path of the commented file")
+    file_id: int = Field(description="Nextcloud file ID the comments belong to")
+    limit: int = Field(description="Page size that was requested")
+    offset: int = Field(description="Number of newest comments that were skipped")
+
+
+class CreateFileCommentResponse(BaseResponse):
+    """Response model for posting a comment on a file."""
+
+    path: str = Field(description="Path of the commented file")
+    file_id: int = Field(description="Nextcloud file ID the comment was posted on")
+    comment_id: Optional[int] = Field(
+        None,
+        description=(
+            "ID of the created comment. None if the server did not name the new "
+            "comment's location — the comment was still posted."
+        ),
+    )
+    message: str = Field(description="The comment text that was posted")
+
+
 class SearchFilesResponse(BaseResponse):
     """Response model for WebDAV search operations."""
 
