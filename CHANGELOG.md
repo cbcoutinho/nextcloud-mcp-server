@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.174.1 (2026-08-15)
+
+### Fix
+
+- **providers**: detect embedding dimension for OpenAI/Mistral models
+
 ## v0.174.0 (2026-08-15)
 
 ### Feat
