@@ -46,9 +46,11 @@ def build_embedding_identity(settings: Settings | None = None) -> str:
     truth for the identity stamped on chunk points, the collection sentinel, the
     admin backfill, and the cross-user dedup comparison, so all four agree.
 
-    It is the active dense embedding MODEL name: the gateway and query path route
-    on it, matching the collection-name derivation, and a model switch changes it
-    so the dedup lookup misses and forces a re-embed. It is orthogonal to
+    It is the active dense embedding MODEL name, widened by the requested
+    Matryoshka width when one is set (``get_embedding_identity``): the gateway and
+    query path route on it, matching the collection-name derivation, and a model
+    switch — or a width switch, which likewise changes the vector length — changes
+    it so the dedup lookup misses and forces a re-embed. It is orthogonal to
     keyword-vs-hybrid — keyword documents share this collection and carry the same
     model identity (they simply omit the dense vector), so both modes dedup in one
     identity space. The keyword/hybrid distinction is tracked separately by
@@ -56,7 +58,7 @@ def build_embedding_identity(settings: Settings | None = None) -> str:
     identity is written OR compared (Deck #509).
     """
     s = settings or get_settings()
-    return s.get_embedding_model_name()
+    return s.get_embedding_identity()
 
 
 def env_default_metadata(settings: Settings | None = None) -> dict[str, Any]:

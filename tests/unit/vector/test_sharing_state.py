@@ -27,12 +27,13 @@ _MODEL = "model-x"
 
 
 class _Settings:
-    # The dedup identity is always the dense embedding model name (keyword-vs-
-    # hybrid is tracked per-document via payload_keys.INDEX_MODE, not the identity).
+    # The dedup identity is always the dense embedding model name, widened by
+    # the Matryoshka output width when one is configured (keyword-vs-hybrid is
+    # tracked per-document via payload_keys.INDEX_MODE, not the identity).
     def get_collection_name(self) -> str:
         return _COLLECTION
 
-    def get_embedding_model_name(self) -> str:
+    def get_embedding_identity(self) -> str:
         return _MODEL
 
 

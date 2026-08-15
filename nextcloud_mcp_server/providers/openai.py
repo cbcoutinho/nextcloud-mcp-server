@@ -8,7 +8,7 @@ Supports:
 
 import logging
 
-from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI
+from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Omit, omit
 
 from ..retry import retry_on_transient
 from .base import Provider
@@ -68,6 +68,7 @@ class OpenAIProvider(Provider):
         base_url: str | None = None,
         embedding_model: str | None = None,
         timeout: float = 120.0,
+        embedding_dimensions: int | None = None,
     ):
         """
         Initialize OpenAI provider.
@@ -78,9 +79,12 @@ class OpenAIProvider(Provider):
             embedding_model: Model for embeddings (e.g., "text-embedding-3-small").
                             None disables embeddings.
             timeout: HTTP timeout in seconds (default: 120)
+            embedding_dimensions: Matryoshka output width to request. None (the
+                            default) leaves the model at its full width.
         """
         self.embedding_model = embedding_model
         self._dimension: int | None = None
+        self._requested_dimensions = embedding_dimensions
 
         # Initialize async client
         self.client = AsyncOpenAI(
@@ -89,22 +93,43 @@ class OpenAIProvider(Provider):
             timeout=timeout,
         )
 
-        # Try to get known dimension without API call
-        if embedding_model and embedding_model in OPENAI_EMBEDDING_DIMENSIONS:
+        # Try to get known dimension without API call. Skipped when a truncation
+        # is requested: the static map records each model's FULL width, so
+        # trusting it would size the collection wrong. Leaving the dimension
+        # unset makes the first embed observe what the endpoint actually
+        # returned — which is also what catches an endpoint that ignored the
+        # parameter (see Provider._record_dimension).
+        if (
+            embedding_model
+            and embedding_dimensions is None
+            and embedding_model in OPENAI_EMBEDDING_DIMENSIONS
+        ):
             self._dimension = OPENAI_EMBEDDING_DIMENSIONS[embedding_model]
 
         logger.info(
             "Initialized OpenAI provider: base_url=%s "
-            "(embedding_model=%s, dimension=%s)",
+            "(embedding_model=%s, dimension=%s, requested_dimensions=%s)",
             base_url or "default",
             embedding_model,
             self._dimension,
+            embedding_dimensions,
         )
 
     @property
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return self.embedding_model is not None
+
+    def _dimensions_arg(self) -> int | Omit:
+        """The ``dimensions`` request argument, when an output width is configured.
+
+        The SDK's ``omit`` sentinel drops the key from the request body entirely
+        — passing ``None`` would serialise an explicit null, which several
+        OpenAI-compatible endpoints reject.
+        """
+        if self._requested_dimensions is None:
+            return omit
+        return self._requested_dimensions
 
     @_retry_transient
     async def embed(self, text: str) -> list[float]:
@@ -129,18 +154,12 @@ class OpenAIProvider(Provider):
         response = await self.client.embeddings.create(
             input=text,
             model=self.embedding_model,
+            dimensions=self._dimensions_arg(),
         )
 
         embedding = response.data[0].embedding
 
-        # Update dimension if not set
-        if self._dimension is None:
-            self._dimension = len(embedding)
-            logger.info(
-                "Detected embedding dimension: %d for model %s",
-                self._dimension,
-                self.embedding_model,
-            )
+        self._record_dimension(len(embedding))
 
         return embedding
 
@@ -208,14 +227,8 @@ class OpenAIProvider(Provider):
             all_embeddings.extend(batch_embeddings)
             total_tokens += batch_tokens
 
-            # Update dimension if not set
-            if self._dimension is None and batch_embeddings:
-                self._dimension = len(batch_embeddings[0])
-                logger.info(
-                    "Detected embedding dimension: %d for model %s",
-                    self._dimension,
-                    self.embedding_model,
-                )
+            if batch_embeddings:
+                self._record_dimension(len(batch_embeddings[0]))
 
         return all_embeddings, total_tokens
 
@@ -233,6 +246,7 @@ class OpenAIProvider(Provider):
         response = await self.client.embeddings.create(
             input=batch,
             model=self.embedding_model,
+            dimensions=self._dimensions_arg(),
         )
         # Sort by index to maintain order
         sorted_data = sorted(response.data, key=lambda x: x.index)

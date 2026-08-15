@@ -1118,6 +1118,56 @@ its embeddings have no semantic meaning.
 SIMPLE_EMBEDDING_DIMENSION=384  # optional; default 384
 ```
 
+#### Matryoshka Truncation (`EMBEDDING_DIMENSIONS`)
+
+Some embedding models are trained with Matryoshka Representation Learning (MRL):
+information is front-loaded, so a **prefix** of the vector is itself a valid
+embedding. Truncating cuts storage and vector RAM linearly — the dense-vector
+footprint is `chunks × dimension × 4 bytes × HNSW overhead`, so 3072 → 512 is a
+6× reduction.
+
+`EMBEDDING_DIMENSIONS` requests a narrower output width from whichever provider
+is active (OpenAI, Ollama, or the gateway). Unset (the default) leaves the model
+at its full width.
+
+```dotenv
+OPENAI_EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIMENSIONS=512   # 3072 -> 512
+```
+
+**Only set this for a model documented as MRL-capable.** Nothing upstream
+validates it: Ollama will truncate a non-MRL model (e.g.
+`snowflake-arctic-embed:110m`) just as readily as an MRL one, with no error and
+silent recall loss.
+
+MRL-capable models: `text-embedding-3-small`/`-large`, `nomic-embed-text-v1.5`,
+`Qwen3-Embedding-*`, `jina-embeddings-v3`, `snowflake-arctic-embed-v2`, and
+`amazon.titan-embed-text-v2:0` (256/512/1024). Fixed-width — do **not** set this:
+`mistral-embed`, `bge-m3`, `text-embedding-ada-002`, `snowflake-arctic-embed` v1.
+
+Being MRL-capable is a property of the *model*; whether this server can request
+it also depends on the provider. `EMBEDDING_DIMENSIONS` is wired through the
+**OpenAI**, **Ollama** and **gateway** providers. The **Bedrock** provider does
+not send it yet, so `amazon.titan-embed-text-v2:0` runs at full width when
+reached directly through Bedrock (it can still be truncated when served via a
+gateway that forwards the parameter).
+
+Behaviour worth knowing:
+
+- **The width is part of the collection identity.** The collection name and the
+  stored `embedding_identity` become `{model}-{dimensions}`, so changing the
+  width behaves exactly like changing the model: a new collection, and a dedup
+  miss that forces a re-embed. Vectors at two widths are different lengths and
+  cannot share a collection.
+- **An endpoint that ignores the parameter is a startup error, not a silent
+  fallback.** Some services accept `dimensions` and return the full width
+  anyway — as the Astrolabe embedding gateway currently does on every backend
+  path. The server refuses to continue rather than index at a width its
+  collection name misreports. Unset `EMBEDDING_DIMENSIONS` to run at full width.
+- Quality retention is model- and corpus-dependent. Published benchmarks
+  (~98–99% at 512-of-1536) are measured on far smaller corpora than a
+  production index; measure recall on your own data before narrowing.
+
 ### Document Chunking Configuration
 
 The server chunks documents before embedding to handle documents larger than the embedding model's context window. Chunk size and overlap can be tuned based on your embedding model and content type.
@@ -1283,6 +1333,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `BEDROCK_EMBEDDING_MODEL` | ⚠️ Optional | - | Bedrock embedding model ID |
 | `BEDROCK_GENERATION_MODEL` | ⚠️ Optional | - | Bedrock generation model ID |
 | `SIMPLE_EMBEDDING_DIMENSION` | ⚠️ Optional | `384` | Dimension for the fallback Simple provider |
+| `EMBEDDING_DIMENSIONS` | ⚠️ Optional | - | Matryoshka output width requested from the active embedding provider (OpenAI/Ollama/gateway). Unset = the model's full width. Only valid for MRL-trained models — nothing upstream validates this, and truncating a non-MRL model silently degrades recall. The width joins the collection name and embedding identity, so changing it forces a new collection and a re-embed; an endpoint that ignores the parameter fails at startup rather than indexing at the wrong width. See *Matryoshka Truncation* above. |
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `2048` | Characters per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `200` | Overlapping characters between chunks (must be < chunk size) |
 | `DOCUMENT_CHUNK_PAGE_AWARE` | ⚠️ Optional | `true` | Split PDFs on page boundaries first (one chunk per page; oversized pages split within the page). Exact page numbers, clean snippets, and a predictable ~1 chunk/page when chunk size ≥ the largest page. Set `false` for the legacy char-based path. |

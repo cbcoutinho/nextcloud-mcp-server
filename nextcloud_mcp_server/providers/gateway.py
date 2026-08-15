@@ -119,6 +119,7 @@ class GatewayProvider(OpenAIProvider):
         embedding_model: str,
         token_provider: GatewayTokenProvider | None = None,
         timeout: float = 120.0,
+        embedding_dimensions: int | None = None,
     ):
         # The gateway exposes its OpenAI-compatible API under the /v1 base path
         # (/v1/embeddings, /v1/models). Callers configure EMBEDDING_GATEWAY_URL
@@ -140,13 +141,16 @@ class GatewayProvider(OpenAIProvider):
             base_url=normalized_base_url,
             embedding_model=embedding_model,
             timeout=timeout,
+            embedding_dimensions=embedding_dimensions,
         )
         self._token_provider = token_provider
         logger.info(
-            "Initialized gateway embedding provider: base_url=%s, model=%s, auth=%s",
+            "Initialized gateway embedding provider: base_url=%s, model=%s, "
+            "auth=%s, requested_dimensions=%s",
             normalized_base_url,
             embedding_model,
             "oidc-m2m" if token_provider else "none",
+            embedding_dimensions,
         )
 
     async def _ensure_bearer(self) -> None:
@@ -175,6 +179,15 @@ class GatewayProvider(OpenAIProvider):
         """
         if self._dimension is not None:
             return  # already known (e.g. an OpenAI model in the static map)
+
+        if self._requested_dimensions is not None:
+            # The catalogue reports each model's FULL width, so it cannot answer
+            # for a truncated request. Fall through to the inherited probe,
+            # which reads the width off an actual embedding — and therefore also
+            # catches a gateway that accepted `dimensions` and ignored it
+            # (measured 2026-08-15: it does, silently, on every backend path).
+            await super()._detect_dimension()
+            return
 
         # ``models`` is a sibling of ``embeddings`` under the gateway's base —
         # derive it from the same base_url the OpenAI client uses for embeds so

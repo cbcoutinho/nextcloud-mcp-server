@@ -559,8 +559,11 @@ Known gaps (tracked on board 11):
   (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`,
   `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
   pending the ADR-029 phase-4 Bearer-token/provider-state hook.
-- The gateway **embeddings** consumer pact (`/v1/embeddings` + `/v1/models`) is
-  not yet written — only OCR is pacted.
+- The gateway **embeddings** consumer pact covers one interaction: a *truncated*
+  request (`dimensions`), pinning the base64 wire format and the returned width
+  (`test_gateway_embeddings_consumer.py`). The full-width request, batch input,
+  and the 400 for an unsupported width are not pacted. (`/v1/models`, rerank and
+  OCR have their own consumer pacts.)
 - There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
   is spread across `tests/integration/` + `tests/smoke/`.
 - `can-i-deploy` runs in non-blocking **shadow mode**.

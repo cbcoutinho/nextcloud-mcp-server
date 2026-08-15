@@ -70,6 +70,7 @@ def create_provider() -> Provider:
             base_url=settings.embedding_gateway_url,
             embedding_model=settings.embedding_gateway_model,
             token_provider=token_provider,
+            embedding_dimensions=settings.embedding_dimensions,
         )
 
     # 1. Bedrock
@@ -97,6 +98,7 @@ def create_provider() -> Provider:
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
             embedding_model=settings.openai_embedding_model,
+            embedding_dimensions=settings.embedding_dimensions,
         )
 
     # 3. Mistral
@@ -123,6 +125,7 @@ def create_provider() -> Provider:
             base_url=settings.ollama_base_url,
             embedding_model=settings.ollama_embedding_model,
             verify_ssl=settings.ollama_verify_ssl,
+            embedding_dimensions=settings.embedding_dimensions,
         )
 
     # 5. Simple (fallback)

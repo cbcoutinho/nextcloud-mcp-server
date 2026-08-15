@@ -189,6 +189,10 @@ _DEFAULTS: dict[str, Any] = {
     "mistral_api_key": None,
     "mistral_embedding_model": "mistral-embed",
     "mistral_base_url": None,
+    # Matryoshka output width requested from the embedding endpoint (None =
+    # the model's full width). Provider-agnostic: only one provider is active
+    # at a time, so a single knob covers openai/ollama/gateway.
+    "embedding_dimensions": None,
     # Simple (fallback) embedding dimension
     "simple_embedding_dimension": 384,
     # Document chunking
@@ -646,6 +650,14 @@ _dynaconf = Dynaconf(
         # 1/(rank + k) with rank 0-indexed, so k=0 divides by zero on the
         # top-ranked point.
         Validator("VECTOR_SEARCH_RRF_K", gte=1),
+        # Matryoshka truncation width. Optional (None = the model's full
+        # width), but a non-positive value would size the Qdrant collection at
+        # zero — catch it here rather than at collection creation.
+        Validator(
+            "EMBEDDING_DIMENSIONS",
+            condition=lambda v: v is None or v >= 1,
+            messages={"condition": "EMBEDDING_DIMENSIONS must be >= 1 when set"},
+        ),
         Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
         Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
         Validator("SEARCH_RERANK_TIMEOUT_SECONDS", gt=0),
@@ -1197,6 +1209,12 @@ class Settings:
     mistral_api_key: str | None = None
     mistral_embedding_model: str = "mistral-embed"
     mistral_base_url: str | None = None
+
+    # Matryoshka (MRL) output width requested from the embedding endpoint.
+    # None leaves the model at its full width. Only valid for MRL-trained
+    # models — nothing upstream validates this (Ollama happily truncates a
+    # non-MRL model, with silent recall loss), so it is the operator's call.
+    embedding_dimensions: int | None = None
 
     # Simple (fallback) provider — dimension when no real provider configured
     simple_embedding_dimension: int = 384
@@ -1781,6 +1799,29 @@ class Settings:
         # derived from these two methods.
         return self._detect_base_provider()[1]
 
+    def get_embedding_identity(self) -> str:
+        """The active embedding model name, widened by the requested Matryoshka
+        width when one is configured (e.g. ``text-embedding-3-large-512``).
+
+        This — not ``get_embedding_model_name()`` — is what the Qdrant collection
+        name and the stored ``embedding_identity`` are derived from. Vectors of
+        the same model at two different widths are NOT interchangeable: they are
+        different lengths, so a collection cannot hold both, and the cross-user
+        dedup lookup must miss and force a re-embed rather than match a stored
+        full-width chunk against a truncated one. Folding the width into the
+        identity makes a width change behave exactly like a model change, which
+        is already handled correctly everywhere.
+
+        Deliberately separate from ``get_embedding_model_name()``, which stays
+        the bare model name for tracing and for the usage-metering ``model``
+        field — those record which model ran, a question the width does not
+        change.
+        """
+        model = self.get_embedding_model_name()
+        if self.embedding_dimensions is None:
+            return model
+        return f"{model}-{self.embedding_dimensions}"
+
     def get_embedding_provider_family(self) -> str:
         """
         Get the active dense-embedding provider family (a low-cardinality label).
@@ -1846,7 +1887,9 @@ class Settings:
         # omit the dense vector per-point — they share this collection with
         # hybrid documents (per-document index mode), so the name is always
         # keyed on the embedding model.
-        model_name = self.get_embedding_model_name().replace("/", "-").replace(":", "-")
+        # Identity, not bare model name: a Matryoshka width change must land in
+        # a different collection (the vectors are a different length).
+        model_name = self.get_embedding_identity().replace("/", "-").replace(":", "-")
 
         return f"{deployment_id}-{model_name}"
 
