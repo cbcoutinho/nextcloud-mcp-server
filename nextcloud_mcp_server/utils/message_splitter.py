@@ -48,6 +48,14 @@ MENTION_PATTERN: Final[re.Pattern[str]] = re.compile(r'@(?:"[^"\n]*"|[\w.\-@]+)'
 
 PART_PREFIX_TEMPLATE: Final[str] = "({index}/{total}) "
 
+# Nextcloud core caps a comment at IComment::MAX_MESSAGE_LENGTH, checked in
+# OC\Comments\Comment::setMessage AFTER trim(), in UTF-8 code points, with a
+# strict ">" so exactly 1000 is legal. It is a *core* rule, not a Deck one, so
+# every comment surface (Deck cards, file comments) measures against this one
+# definition -- next to measured_length, which is what makes the measurement
+# agree with the server's.
+COMMENT_MAX_LENGTH: Final[int] = 1000
+
 # The prefix width depends on the part count, which depends on the budget, which
 # depends on the prefix width. The fixed point converges as soon as the digit
 # count stops moving -- three rounds is already generous.
@@ -77,6 +85,26 @@ def measured_length(message: str) -> int:
     to be PHP's notion of trimming, not Python's. See ``_PHP_TRIM_CHARS``.
     """
     return len(message.strip(_PHP_TRIM_CHARS))
+
+
+def is_blank_comment(message: str) -> bool:
+    """True when a comment carries no content by *either* trim rule.
+
+    The two rules disagree in both directions and each gap posts a useless
+    comment, so blankness is the union of them:
+
+    * Python's ``str.strip()`` also strips every Unicode Zs space -- U+00A0,
+      U+3000 -- which PHP leaves in place. A comment of nothing but ideographic
+      spaces is as useless as one of nothing but spaces, so we reject it even
+      though the server would store it.
+    * PHP's ``trim()`` strips NUL, which Python's does not. ``"\\0"`` is
+      non-blank to Python but measures 0 to the server, which would store an
+      empty comment and report success.
+
+    Shared by every comment surface (Deck cards, file comments) so the two
+    cannot drift into rejecting different things.
+    """
+    return not message.strip() or measured_length(message) == 0
 
 
 def split_message(

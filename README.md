@@ -84,7 +84,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Notes** | 7 | Full CRUD, keyword search, semantic search |
 | **Calendar** | 20+ | Events, todos (tasks), recurring events, attendees, availability |
 | **Contacts** | 8 | Full CardDAV support, address books |
-| **Files (WebDAV)** | 12 | Filesystem access, OCR/document processing |
+| **Files (WebDAV)** | 14 | Filesystem access, OCR/document processing, file comments |
 | **Deck** | 15 | Boards, stacks, cards, labels, assignments |
 | **Cookbook** | 13 | Recipe management, URL import (schema.org) |
 | **Tables** | 5 | Row operations on Nextcloud Tables |

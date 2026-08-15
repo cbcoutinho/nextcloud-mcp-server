@@ -11,6 +11,8 @@
 | `nc_webdav_delete_resource` | Delete files or directories |
 | `nc_webdav_move_resource` | Move or rename files and directories |
 | `nc_webdav_copy_resource` | Copy files and directories |
+| `nc_webdav_list_comments` | Read the comments on a file |
+| `nc_webdav_create_comment` | Comment on a file, mentioning people to notify them |
 
 ### WebDAV File System Access
 
@@ -73,6 +75,33 @@ await nc_webdav_copy_resource("document.txt", "Backup/document.txt")
 # Copy a directory
 await nc_webdav_copy_resource("Projects/ProjectA", "Projects/ProjectA_Backup")
 ```
+
+### File Comments
+
+Comments annotate a file in place — review requests, hand-offs, context that
+does not belong in the file itself. They are the same comments the Nextcloud
+web UI shows in a file's sidebar.
+
+```python
+# Ask a colleague to review; @-mentioning them sends the notification
+await nc_webdav_create_comment(
+    "Reports/q3.pdf", 'numbers updated, please review @"alice"'
+)
+
+# Read the thread, newest first
+await nc_webdav_list_comments("Reports/q3.pdf")
+
+# Page through a long thread
+await nc_webdav_list_comments("Reports/q3.pdf", limit=20, offset=20)
+```
+
+Mention a user by their Nextcloud user ID: `@alice`, or `@"user id with spaces"`.
+Nextcloud parses the mention out of the message when it stores the comment and
+sends the notification itself.
+
+A comment is capped at **1000 characters** (measured after trimming whitespace,
+counting Unicode code points — Nextcloud's own rule). Longer content belongs in
+the file, with a short pointer comment.
 
 ### Safe Writes: Concurrent Edits and Locks
 
