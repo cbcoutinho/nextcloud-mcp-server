@@ -186,9 +186,6 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return raw.strip('"') if raw is not None else None
 
 
-#: The ownCloud/Nextcloud DAV property namespace.
-_OC_NS = "http://owncloud.org/ns"
-
 #: Collection holding one file's comments, addressed by file id.
 _COMMENTS_PATH = "/remote.php/dav/comments/files"
 
@@ -2030,9 +2027,13 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             One dict per comment, in the shape ``FileComment`` expects.
         """
+        # The owncloud namespace stays inside the request body, never a
+        # standalone string constant -- same reason as get_fileid, which matches
+        # oc properties by local name rather than naming the URL (see
+        # _dav_props_ok). A bare URL literal also trips Sonar's python:S5332.
         body = (
             '<?xml version="1.0" encoding="utf-8"?>'
-            f'<oc:filter-comments xmlns:oc="{_OC_NS}">'
+            '<oc:filter-comments xmlns:oc="http://owncloud.org/ns">'
             f"<oc:limit>{int(limit)}</oc:limit>"
             f"<oc:offset>{int(offset)}</oc:offset>"
             "</oc:filter-comments>"
@@ -2041,7 +2042,11 @@ class WebDAVClient(BaseNextcloudClient):
             "REPORT",
             f"{_COMMENTS_PATH}/{int(file_id)}",
             content=body,
-            headers={"Depth": "0", "Content-Type": "application/xml"},
+            headers={
+                "Depth": "0",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
         )
 
         root = ET.fromstring(response.content)
@@ -2079,6 +2084,7 @@ class WebDAVClient(BaseNextcloudClient):
             "POST",
             f"{_COMMENTS_PATH}/{int(file_id)}",
             json={"actorType": "users", "verb": "comment", "message": message},
+            headers={"OCS-APIRequest": "true"},
         )
 
         location = response.headers.get("Content-Location", "")
