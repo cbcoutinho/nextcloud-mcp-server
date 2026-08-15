@@ -41,6 +41,12 @@ class Provider(ABC):
         the truncation was meant to avoid. So it is fatal here, where the cause is
         still legible, rather than surfacing as a dimension error at first upsert
         three layers away.
+
+        The check runs on EVERY embed, not only the one that first resolves the
+        width. Caching short-circuits after the first call, but the comparison
+        does not: a backend that changes width mid-run — a failover to a
+        different model behind one endpoint, say — is caught instead of quietly
+        mixing widths within a single collection.
         """
         if (
             self._requested_dimensions is not None

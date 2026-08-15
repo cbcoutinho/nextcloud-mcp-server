@@ -1138,11 +1138,19 @@ EMBEDDING_DIMENSIONS=512   # 3072 -> 512
 **Only set this for a model documented as MRL-capable.** Nothing upstream
 validates it: Ollama will truncate a non-MRL model (e.g.
 `snowflake-arctic-embed:110m`) just as readily as an MRL one, with no error and
-silent recall loss. Known-capable: `text-embedding-3-small`/`-large`,
-`nomic-embed-text-v1.5`, `amazon.titan-embed-text-v2:0` (256/512/1024),
-`Qwen3-Embedding-*`, `jina-embeddings-v3`, `snowflake-arctic-embed-v2`.
-Fixed-width (do **not** set this): `mistral-embed`, `bge-m3`,
-`text-embedding-ada-002`, `snowflake-arctic-embed` v1.
+silent recall loss.
+
+MRL-capable models: `text-embedding-3-small`/`-large`, `nomic-embed-text-v1.5`,
+`Qwen3-Embedding-*`, `jina-embeddings-v3`, `snowflake-arctic-embed-v2`, and
+`amazon.titan-embed-text-v2:0` (256/512/1024). Fixed-width — do **not** set this:
+`mistral-embed`, `bge-m3`, `text-embedding-ada-002`, `snowflake-arctic-embed` v1.
+
+Being MRL-capable is a property of the *model*; whether this server can request
+it also depends on the provider. `EMBEDDING_DIMENSIONS` is wired through the
+**OpenAI**, **Ollama** and **gateway** providers. The **Bedrock** provider does
+not send it yet, so `amazon.titan-embed-text-v2:0` runs at full width when
+reached directly through Bedrock (it can still be truncated when served via a
+gateway that forwards the parameter).
 
 Behaviour worth knowing:
 

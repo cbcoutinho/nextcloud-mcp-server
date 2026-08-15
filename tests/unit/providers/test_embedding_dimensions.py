@@ -169,6 +169,31 @@ async def test_ollama_raises_when_endpoint_ignores_dimensions():
         await provider.embed_batch_with_usage(["probe"])
 
 
+async def test_width_is_revalidated_on_every_batch_not_just_the_first():
+    """The guard is not a first-call-only check.
+
+    Caching short-circuits once the width is known, but the comparison does not,
+    so a backend that changes width part-way through a run — a failover to a
+    different model behind one endpoint — is caught rather than quietly mixing
+    widths inside one collection. The first batch here is well-formed; the
+    second is not.
+    """
+    provider = OllamaProvider(
+        base_url="https://ollama:11434", embedding_dimensions=_TRUNCATED
+    )
+    provider.embedding_model = "nomic-embed-text"
+    provider.client.post = AsyncMock(
+        side_effect=[_ollama_response(_TRUNCATED), _ollama_response(768)]
+    )
+
+    with pytest.raises(RuntimeError, match="ignored"):
+        await provider.embed_batch_with_usage(["first", "second"], batch_size=1)
+
+    # The width learned from the good batch is still cached; the guard fired on
+    # the comparison, not on a re-detection.
+    assert provider.get_dimension() == _TRUNCATED
+
+
 async def test_gateway_detect_dimension_ignores_catalogue_when_truncating(mocker):
     """``/v1/models`` reports the model's full width, so it cannot answer for a
     truncated request — the probe path must be used instead."""
