@@ -22,6 +22,7 @@ class OllamaProvider(Provider):
         embedding_model: str | None = None,
         verify_ssl: bool = True,
         timeout: httpx.Timeout | None = None,
+        embedding_dimensions: int | None = None,
     ):
         """
         Initialize Ollama provider.
@@ -31,6 +32,15 @@ class OllamaProvider(Provider):
             embedding_model: Model for embeddings (e.g., "nomic-embed-text"). None disables embeddings.
             verify_ssl: Verify SSL certificates (default: True)
             timeout: HTTP timeout configuration
+            embedding_dimensions: Matryoshka output width to request. None (the
+                default) leaves the model at its full width.
+
+        Note: Ollama honours ``dimensions`` on ``/api/embed`` and truncates
+        *and* re-normalises server-side (verified against nomic-embed-text: the
+        256-wide result is the 768-wide prefix rescaled by 1/||prefix||, norm
+        1.0). It does NOT validate that the model is Matryoshka-trained —
+        snowflake-arctic-embed:110m truncates just as happily, with silent
+        recall loss. Only set this for a model documented as MRL-capable.
         """
         self.base_url = base_url.rstrip("/")
         self.embedding_model = embedding_model
@@ -41,12 +51,15 @@ class OllamaProvider(Provider):
 
         self.client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout)
         self._dimension: int | None = None  # Detected dynamically for embeddings
+        self._requested_dimensions = embedding_dimensions
 
         logger.info(
-            "Initialized Ollama provider: %s (embedding_model=%s, verify_ssl=%s)",
+            "Initialized Ollama provider: %s "
+            "(embedding_model=%s, verify_ssl=%s, requested_dimensions=%s)",
             base_url,
             embedding_model,
             verify_ssl,
+            embedding_dimensions,
         )
 
         # Pre-check and auto-load models
@@ -57,6 +70,16 @@ class OllamaProvider(Provider):
     def supports_embeddings(self) -> bool:
         """Whether this provider supports embedding generation."""
         return self.embedding_model is not None
+
+    def _dimension_params(self) -> dict[str, int]:
+        """The ``dimensions`` field for the ``/api/embed`` body, when configured.
+
+        Omitted entirely rather than sent as ``None``: Ollama would treat an
+        explicit null as a requested width of nothing.
+        """
+        if self._requested_dimensions is None:
+            return {}
+        return {"dimensions": self._requested_dimensions}
 
     async def embed(self, text: str) -> list[float]:
         """
@@ -142,16 +165,22 @@ class OllamaProvider(Provider):
             batch = texts[i : i + batch_size]
             response = await self.client.post(
                 f"{self.base_url}/api/embed",
-                json={"model": self.embedding_model, "input": batch},
+                json={
+                    "model": self.embedding_model,
+                    "input": batch,
+                    **self._dimension_params(),
+                },
             )
             response.raise_for_status()
             data = response.json()
             all_embeddings.extend(data["embeddings"])
 
-            # Cache the dimension inline (mirrors OpenAI/Mistral) so it is set
-            # via any embed path, not only an explicit _detect_dimension() call.
-            if self._dimension is None and data["embeddings"]:
-                self._dimension = len(data["embeddings"][0])
+            # Cache the dimension inline (mirrors OpenAI) so it is set via any
+            # embed path, not only an explicit _detect_dimension() call. Also
+            # where a requested truncation is enforced, so an endpoint that
+            # ignored `dimensions` cannot get past the first batch.
+            if data["embeddings"]:
+                self._record_dimension(len(data["embeddings"][0]))
 
             # ``prompt_eval_count`` is assumed to be the batch-level total for a
             # multi-input /api/embed call. Ollama's API docs aren't explicit
@@ -180,13 +209,9 @@ class OllamaProvider(Provider):
             logger.debug(
                 "Detecting embedding dimension for model %s...", self.embedding_model
             )
-            test_embedding = await self.embed("test")
-            self._dimension = len(test_embedding)
-            logger.info(
-                "Detected embedding dimension: %s for model %s",
-                self._dimension,
-                self.embedding_model,
-            )
+            # embed() routes through embed_batch_with_usage(), which records the
+            # observed width (and enforces any requested truncation) already.
+            await self.embed("test")
 
     def get_dimension(self) -> int:
         """

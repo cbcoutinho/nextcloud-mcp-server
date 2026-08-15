@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openai import omit
 
 from nextcloud_mcp_server.providers.openai import (
     OPENAI_EMBEDDING_DIMENSIONS,
@@ -50,6 +51,10 @@ async def test_openai_embedding(mock_openai_client):
     mock_openai_client.embeddings.create.assert_called_once_with(
         input="test text",
         model="text-embedding-3-small",
+        # No EMBEDDING_DIMENSIONS configured. ``omit`` is the SDK's absence
+        # sentinel — it drops the key from the request body, unlike None, which
+        # would serialise an explicit null.
+        dimensions=omit,
     )
 
 
@@ -85,6 +90,7 @@ async def test_openai_embedding_batch(mock_openai_client):
     mock_openai_client.embeddings.create.assert_called_once_with(
         input=["text1", "text2"],
         model="text-embedding-3-small",
+        dimensions=omit,
     )
 
 

@@ -1,7 +1,10 @@
 """Unified provider interface for embeddings."""
 
+import logging
 import math
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 
 
 class Provider(ABC):
@@ -11,6 +14,53 @@ class Provider(ABC):
     Use the ``supports_embeddings`` capability property to determine whether a
     provider is usable before calling ``embed``/``embed_batch``.
     """
+
+    # Dimension bookkeeping shared by every provider that learns its vector
+    # width from the wire. Declared as class attributes so the helpers below can
+    # be inherited without each subclass having to re-state them; subclasses
+    # still assign the instance attributes in their own ``__init__``.
+    _dimension: int | None = None
+    _requested_dimensions: int | None = None
+    # Every embedding provider sets this in __init__; declared here so shared
+    # helpers can read it directly rather than via a defensive getattr, which
+    # would silently swallow a future rename.
+    embedding_model: str | None = None
+
+    def _record_dimension(self, observed: int) -> None:
+        """Cache the vector width seen on the wire, enforcing any requested truncation.
+
+        Matryoshka-capable models accept a ``dimensions`` request parameter and
+        return a truncated, re-normalised prefix. Endpoints that do NOT support
+        it ignore the parameter *silently* and return the model's full width with
+        no error — measured 2026-08-15 against the astrolabe embedding gateway on
+        all three of its backend paths, and against Ollama for a non-Matryoshka
+        model (which truncates blindly instead).
+
+        Letting a mismatch through would size the Qdrant collection from a name
+        claiming one width while it holds another, and bill the full vector RAM
+        the truncation was meant to avoid. So it is fatal here, where the cause is
+        still legible, rather than surfacing as a dimension error at first upsert
+        three layers away.
+        """
+        if (
+            self._requested_dimensions is not None
+            and observed != self._requested_dimensions
+        ):
+            raise RuntimeError(
+                f"Requested {self._requested_dimensions}-dimensional embeddings "
+                f"(EMBEDDING_DIMENSIONS) but the endpoint returned {observed}. "
+                "The 'dimensions' parameter was ignored — either the model is not "
+                "Matryoshka-capable, or the service does not forward the parameter "
+                "to its backend. Unset EMBEDDING_DIMENSIONS to index at the "
+                "model's full width."
+            )
+        if self._dimension is None:
+            self._dimension = observed
+            logger.info(
+                "Detected embedding dimension: %d for model %s",
+                observed,
+                self.embedding_model,
+            )
 
     @property
     @abstractmethod

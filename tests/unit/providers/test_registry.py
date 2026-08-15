@@ -35,6 +35,7 @@ def _clear_provider_envs(monkeypatch: pytest.MonkeyPatch) -> None:
         "OLLAMA_GENERATION_MODEL",
         "OLLAMA_VERIFY_SSL",
         "SIMPLE_EMBEDDING_DIMENSION",
+        "EMBEDDING_DIMENSIONS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -66,6 +67,50 @@ def test_registry_picks_simple_with_custom_dimension(clean_provider_env):
     provider = get_provider()
     assert isinstance(provider, SimpleProvider)
     assert provider.get_dimension() == 512
+
+
+@pytest.mark.unit
+def test_registry_threads_embedding_dimensions_to_openai(clean_provider_env):
+    """EMBEDDING_DIMENSIONS must actually reach the constructed provider.
+
+    A setting can be present in _DEFAULTS and the Settings dataclass yet be
+    dropped on the way to the provider — either by an omission in _FIELD_MAP
+    (which silently disabled OCR batch mode, Deck #332) or by a missing kwarg in
+    create_provider(). Neither shows up in a settings-only assertion, so assert
+    on the provider instance.
+    """
+    clean_provider_env.setenv("OPENAI_API_KEY", "test-key")
+    clean_provider_env.setenv("EMBEDDING_DIMENSIONS", "512")
+    _reload_config()
+
+    provider = get_provider()
+    assert isinstance(provider, OpenAIProvider)
+    assert provider._requested_dimensions == 512
+
+
+@pytest.mark.unit
+def test_registry_threads_embedding_dimensions_to_ollama(clean_provider_env, mocker):
+    """Same wire-through, for the other provider that supports truncation."""
+    mocker.patch(
+        "nextcloud_mcp_server.providers.ollama.OllamaProvider._check_model_is_loaded"
+    )
+    clean_provider_env.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    clean_provider_env.setenv("EMBEDDING_DIMENSIONS", "256")
+    _reload_config()
+
+    provider = get_provider()
+    assert isinstance(provider, OllamaProvider)
+    assert provider._requested_dimensions == 256
+
+
+@pytest.mark.unit
+def test_registry_leaves_dimensions_unset_by_default(clean_provider_env):
+    """Unset EMBEDDING_DIMENSIONS means full width, not a coerced 0."""
+    clean_provider_env.setenv("OPENAI_API_KEY", "test-key")
+    _reload_config()
+
+    provider = get_provider()
+    assert provider._requested_dimensions is None
 
 
 @pytest.mark.unit

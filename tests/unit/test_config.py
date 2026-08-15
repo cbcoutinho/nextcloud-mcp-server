@@ -186,6 +186,27 @@ class TestGetSettings:
         settings = get_settings()
         assert settings.vector_sync_empty_discovery_delete_threshold == 5
 
+    @patch.dict(os.environ, {"EMBEDDING_DIMENSIONS": "512"}, clear=True)
+    def test_get_settings_embedding_dimensions_from_env(self):
+        """EMBEDDING_DIMENSIONS must reach settings as an int.
+
+        Same _DEFAULTS / _FIELD_MAP omission guard as the settings above — a key
+        declared on the dataclass but missing from the field map is silently
+        ignored, which here would mean indexing at full width while the operator
+        believes truncation is on.
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.embedding_dimensions == 512
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_embedding_dimensions_unset_by_default(self):
+        """Unset means the model's full width, not zero."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.embedding_dimensions is None
+        assert settings.get_embedding_identity() == settings.get_embedding_model_name()
+
     @patch.dict(os.environ, {}, clear=True)
     def test_empty_discovery_threshold_default(self):
         """Default is 3 consecutive empty cycles before deletions are believed."""
@@ -667,6 +688,46 @@ class TestCollectionNameWithProviders:
             openai_embedding_model="text-embedding-3-large",
         )
         assert settings.get_collection_name() == "custom-collection"
+
+
+class TestEmbeddingIdentityWithMatryoshkaWidth:
+    """A requested Matryoshka width is part of the embedding identity.
+
+    Vectors of one model at two widths are different lengths, so a collection
+    cannot hold both and a dedup hit across widths would be wrong. Folding the
+    width into the identity makes a width change behave like a model change.
+    """
+
+    def _settings(self, **overrides):
+        return Settings(
+            openai_api_key="test-key",
+            openai_embedding_model="text-embedding-3-large",
+            otel_service_name="my-deployment",
+            **overrides,
+        )
+
+    def test_identity_is_bare_model_at_full_width(self):
+        assert self._settings().get_embedding_identity() == "text-embedding-3-large"
+
+    def test_identity_carries_the_requested_width(self):
+        settings = self._settings(embedding_dimensions=512)
+        assert settings.get_embedding_identity() == "text-embedding-3-large-512"
+
+    def test_collection_name_separates_widths(self):
+        """The dimension-mismatch guard in qdrant_client only fires on a REUSED
+        collection, so the two widths must not resolve to the same name."""
+        full = self._settings().get_collection_name()
+        truncated = self._settings(embedding_dimensions=512).get_collection_name()
+        assert full == "my-deployment-text-embedding-3-large"
+        assert truncated == "my-deployment-text-embedding-3-large-512"
+
+    def test_model_name_stays_bare_for_metering_and_tracing(self):
+        """``get_embedding_model_name`` feeds the usage-metering ``model`` field
+        and the embedding span attribute — both record which model ran, which the
+        width does not change. Widening it there would rewrite a billing
+        dimension's values."""
+        settings = self._settings(embedding_dimensions=512)
+        assert settings.get_embedding_model_name() == "text-embedding-3-large"
 
 
 class TestDynaconfValidators:
