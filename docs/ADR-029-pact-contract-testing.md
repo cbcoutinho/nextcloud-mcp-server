@@ -19,7 +19,7 @@ integrate over HTTP **in both directions**:
 - **astrolabe → MCP server** (~10 calls): astrolabe's `McpServerClient` consumes
   this server's `/api/v1/*` HTTP API — `status`, `vector-sync/status`, `search`,
   `vector-viz/search`, `webhooks` (GET/POST/DELETE), `apps`, `chunk-context`
-  (`nextcloud_mcp_server/app.py` route table, `api/webhooks.py`).
+  (`nextcloud_mcp_server/app.py` route table, `api/apps.py`).
 
 Today nothing guarantees the two stay wire-compatible. A renamed JSON field or a
 changed status code on either side is only caught — if at all — by the heavy

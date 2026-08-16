@@ -151,23 +151,6 @@ async def test_oauth_session_lifecycle(storage: RefreshTokenStorage):
     assert by_code is not None and by_code["session_id"] == "sess-1"
 
 
-async def test_webhook_tracking(storage: RefreshTokenStorage):
-    """Tracks webhook ↔ preset mappings via ON CONFLICT upserts."""
-    await storage.store_webhook(webhook_id=101, preset_id="notes_sync")
-    await storage.store_webhook(webhook_id=202, preset_id="notes_sync")
-    await storage.store_webhook(webhook_id=303, preset_id="calendar_sync")
-
-    assert sorted(await storage.get_webhooks_by_preset("notes_sync")) == [101, 202]
-    assert await storage.get_webhooks_by_preset("calendar_sync") == [303]
-
-    # Re-storing the same webhook_id is a no-op upsert.
-    await storage.store_webhook(webhook_id=101, preset_id="notes_sync")
-    assert sorted(await storage.get_webhooks_by_preset("notes_sync")) == [101, 202]
-
-    assert await storage.delete_webhook(webhook_id=101) is True
-    assert await storage.get_webhooks_by_preset("notes_sync") == [202]
-
-
 async def test_audit_log_capture(storage: RefreshTokenStorage):
     """Audit events from upstream methods land in audit_logs."""
     carol_pw = "x"  # NOSONAR

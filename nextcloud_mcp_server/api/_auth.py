@@ -1,6 +1,6 @@
 """Credential resolution helpers for non-MCP-Context API endpoints.
 
-Starlette routes (e.g. ``api/webhooks.py``) authenticate the inbound request
+Starlette routes (e.g. ``api/apps.py``) authenticate the inbound request
 via OAuth bearer validation, then need to make Nextcloud API calls on behalf
 of that user. Per ADR-022 / ``docs/login-flow-v2.md`` the data leg to
 Nextcloud always uses **HTTP Basic Auth with the user's app password**, never

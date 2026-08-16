@@ -678,10 +678,13 @@ async def processor_task(
 async def _reconcile_tag_event(
     doc_task: DocumentTask, nc_client: NextcloudClient
 ) -> None:
-    """Resolve a tag-webhook file task into a concrete index or delete.
+    """Resolve a webhook file task into a concrete index or delete.
 
-    A SystemTag ``MapperEvent`` only tells us a fileid's tags changed — not the
-    path, nor which of our index tags is (still) on it. Look up the user's current
+    Two producers land here, both carrying only a fileid (``file_path is None``):
+    a SystemTag ``MapperEvent`` (tags changed) and a file node event (an
+    indexable file was created or written — see
+    ``webhook_parser._parse_file_event``). Neither payload says whether the file
+    is (still) tagged for indexing, nor where it lives. Look up the user's current
     tagged PDFs across BOTH tags (the same discovery the scanner uses, which
     applies hybrid precedence and expands tagged folders into their PDF
     descendants) and reconcile the task in place:
@@ -803,11 +806,11 @@ async def process_document(
         try:
             qdrant_client = await get_qdrant_client()
 
-            # Tag-webhook reconcile: a SystemTag MapperEvent enqueues a file task
-            # carrying only a fileid (file_path is None — see
-            # webhook_parser._parse_tag_event). Resolve the file's current
-            # vector-index membership into a concrete index (path/etag filled) or
-            # a delete before dispatching below.
+            # Webhook reconcile: a SystemTag MapperEvent or a file node event
+            # enqueues a file task carrying only a fileid (file_path is None —
+            # see webhook_parser). Resolve the file's current vector-index
+            # membership into a concrete index (path/etag filled) or a delete
+            # before dispatching below.
             if (
                 doc_task.doc_type == "file"
                 and doc_task.operation == "index"

@@ -216,7 +216,7 @@ While AppAPI provides valuable benefits for Nextcloud integration, research has 
 
 **Outbound Webhooks (Nextcloud → ExApp)**: ✅ **Well Supported**
 
-ExApps can register webhooks via the `webhooks_listener` app:
+ExApps can subscribe to Nextcloud change events and receive them over HTTP:
 ```python
 nc.webhooks.register(
     http_method="POST",

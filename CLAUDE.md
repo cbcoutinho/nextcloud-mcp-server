@@ -396,7 +396,6 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 - `audit_logs` - Security audit trail
 - `oauth_clients` - DCR OAuth client credentials
 - `oauth_sessions` - OAuth flow session state
-- `registered_webhooks` - Webhook registrations
 - `app_passwords` - Multi-user BasicAuth passwords
 - `alembic_version` - Migration tracking
 
@@ -556,7 +555,7 @@ Known gaps (tracked on board 11):
 
 - Provider verification currently covers only the **public** endpoints
   (`/api/v1/status`, `/api/v1/vector-sync/status`). The authenticated surface
-  (`/search`, `/webhooks` CRUD, `/apps`, `/chunk-context`,
+  (`/search`, `/apps`, `/chunk-context`,
   `/vector-sync/purge`, per-user app-password/session routes) is **unverified**
   pending the ADR-029 phase-4 Bearer-token/provider-state hook.
 - The gateway **embeddings** consumer pact covers one interaction: a *truncated*

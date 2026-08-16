@@ -1,7 +1,7 @@
 """Provider verification: astrolabe -> nextcloud-mcp-server /api/v1 API.
 
 The astrolabe Nextcloud app consumes this server's ``/api/v1/*`` HTTP API
-(``lib/Service/McpServerClient.php``: ``search``, ``webhooks`` CRUD, ``apps``,
+(``lib/Service/McpServerClient.php``: ``search``, ``apps``,
 ``status``, ``vector-sync/status``, ``chunk-context``,
 ``vector-viz/search``). This test plays the **provider** role: it pulls the
 pacts astrolabe published to the broker and replays each interaction against a
@@ -66,8 +66,7 @@ pytestmark = [
 
 # Map astrolabe-side provider-state strings -> setup callables. astrolabe's
 # consumer pacts declare the ``given(...)`` provider states; add one handler per
-# state name here as those pacts are written (seeding webhooks DB, qdrant
-# fixtures, etc.). Keep the keys identical to the astrolabe ``given(...)``
+# state name here as those pacts are written (seeding qdrant fixtures, etc.). Keep the keys identical to the astrolabe ``given(...)``
 # strings. Unhandled states fall through to ``_dispatch_state`` which logs and
 # no-ops, so state-less interactions still verify.
 def _state_admin_can_purge() -> None:
@@ -117,7 +116,6 @@ _PROVIDER_STATES: dict[str, Callable[[], None]] = {
     # test_mcp_status_search_types_consumer.py / astrolabe's published pact.
     "the server advertises hybrid search support": _state_search_mode_hybrid,
     "the server has vector sync disabled": _state_vector_sync_disabled,
-    # "a webhook is registered for user alice": _state_webhook_registered,
     # "vector sync has indexed documents": _state_vector_sync_ran,
     # "the search index returns a hit for 'budget'": _state_search_has_hit,
 }

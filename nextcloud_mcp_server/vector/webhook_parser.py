@@ -4,10 +4,11 @@ Maps Nextcloud webhook events to vector-sync DocumentTasks. The handler at
 ``/webhooks/nextcloud`` calls :func:`extract_document_task` and forwards any
 non-None result to the same processor send-stream the scanner uses.
 
-Currently scoped to file (note) events, Deck card events, and SystemTag
-assign/unassign events (which drive ``vector-index`` (re)indexing of files).
-Calendar / Tables events fall through to ``None`` for now; those parsers can
-be added in follow-up changes.
+Covers the doc types vector sync actually indexes through file events: notes
+(markdown under a user's Notes folder), tagged files (``doc_type="file"``),
+Deck cards, and SystemTag assign/unassign events. Doc types with no index —
+calendar objects, Tables rows, Forms submissions — fall through to ``None``;
+Astrolabe no longer ships presets that deliver them.
 
 See ADR-010 for the design and ``webhook-testing-findings.md`` for real
 captured payloads.
@@ -45,6 +46,12 @@ _DECK_CARD_EVENTS = frozenset(
 # Matches paths inside any user's Notes folder ending in .md, e.g.
 # "/admin/files/Notes/Sub/Note.md" or "/alice/files/Notes/foo.md".
 _NOTES_PATH_RE = re.compile(r"^/[^/]+/files/Notes/.+\.md$")
+
+# File extensions vector sync can index as ``doc_type="file"``. Mirrors the
+# ``mime_type_filter="application/pdf"`` that scanner._discover_tagged_files
+# applies — the webhook payload carries no mime type, so the suffix is the only
+# signal available. Broaden both together.
+_INDEXABLE_FILE_SUFFIXES = (".pdf",)
 
 
 def extract_document_task(payload: dict) -> DocumentTask | None:
@@ -87,8 +94,10 @@ def _parse_file_event(
     path = node.get("path", "")
     node_id = node.get("id")
 
-    if not _NOTES_PATH_RE.match(path):
-        # Not a note file — could be a parent folder, an unrelated file, etc.
+    is_note = bool(_NOTES_PATH_RE.match(path))
+    is_indexable_file = path.lower().endswith(_INDEXABLE_FILE_SUFFIXES)
+    if not is_note and not is_indexable_file:
+        # A folder, or a file type vector sync never indexes.
         return None
 
     if node_id is None:
@@ -96,7 +105,7 @@ def _parse_file_event(
         # we can't address the Qdrant points to delete. Skip rather than
         # guess — the polling scanner will catch up via its grace period.
         logger.warning(
-            "Webhook %s for note %s missing node.id; falling back to scanner",
+            "Webhook %s for %s missing node.id; falling back to scanner",
             event_class,
             path,
         )
@@ -104,12 +113,30 @@ def _parse_file_event(
 
     operation = "delete" if event_class == _FILE_EVENT_BEFORE_DELETED else "index"
 
+    if is_note:
+        return DocumentTask(
+            user_id=user_id,
+            doc_id=str(node_id),
+            doc_type="note",
+            operation=operation,
+            modified_at=time,
+        )
+
+    # A regular file. Unlike notes, a file is only indexed when it carries an
+    # index tag (directly or by living under a tagged folder), which the payload
+    # can't tell us — so an index goes out as a reconcile task exactly like a tag
+    # event: file_path=None makes the processor resolve current tag membership
+    # and either index it (filling path/etag/mode) or release it.
+    # ponytail: one tagged-file discovery per write of an indexable file. Add a
+    # short-TTL discovery memo (or an ingest-side dedup window) if bulk imports
+    # make that expensive.
     return DocumentTask(
         user_id=user_id,
         doc_id=str(node_id),
-        doc_type="note",
+        doc_type="file",
         operation=operation,
         modified_at=time,
+        file_path=None,
     )
 
 

@@ -7,7 +7,7 @@ authentication via the UnifiedTokenVerifier.
 This package is organized into modules by domain:
 - management.py: Server status, user sessions, shared helpers
 - passwords.py: App password provisioning for multi-user BasicAuth
-- webhooks.py: Webhook registration management
+- apps.py: Installed Nextcloud apps
 - visualization.py: Search and PDF visualization endpoints
 """
 
@@ -16,6 +16,7 @@ from nextcloud_mcp_server.api.access import (
     list_supported_scopes,
     update_user_scopes,
 )
+from nextcloud_mcp_server.api.apps import get_installed_apps
 
 # Re-export all public functions for backward compatibility
 from nextcloud_mcp_server.api.management import (
@@ -44,12 +45,6 @@ from nextcloud_mcp_server.api.visualization import (
     unified_search,
     vector_search,
 )
-from nextcloud_mcp_server.api.webhooks import (
-    create_webhook,
-    delete_webhook,
-    get_installed_apps,
-    list_webhooks,
-)
 
 __all__ = [
     # Access endpoints (from access.py)
@@ -75,11 +70,8 @@ __all__ = [
     "provision_app_password",
     "get_app_password_status",
     "delete_app_password",
-    # Webhook endpoints (from webhooks.py)
+    # Installed-apps endpoint (from apps.py)
     "get_installed_apps",
-    "list_webhooks",
-    "create_webhook",
-    "delete_webhook",
     # Vector-sync admin endpoints (from vector_sync.py)
     "purge_doc_types_route",
     # Visualization endpoints (from visualization.py)

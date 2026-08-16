@@ -307,3 +307,121 @@ def test_tag_event_missing_object_id_returns_none():
     }
 
     assert extract_document_task(payload) is None
+
+
+# --- Regular files (doc_type="file") ---------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "event_class",
+    [
+        "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+        "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+    ],
+)
+def test_indexable_file_event_returns_reconcile_task(event_class):
+    """A PDF write can't say whether the file is tagged, so it goes out as a
+    reconcile task (``file_path is None``) for the processor to resolve."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": event_class,
+            "node": {"id": 8123, "path": "/alice/files/Documents/report.pdf"},
+        },
+    }
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert task.doc_type == "file"
+    assert task.doc_id == "8123"
+    assert task.operation == "index"
+    assert task.file_path is None
+    assert task.modified_at == 1762850245
+
+
+@pytest.mark.unit
+def test_indexable_file_delete_returns_delete_task():
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent",
+            "node": {"id": 8123, "path": "/alice/files/Documents/report.pdf"},
+        },
+    }
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert task.doc_type == "file"
+    assert task.operation == "delete"
+    assert task.doc_id == "8123"
+
+
+@pytest.mark.unit
+def test_indexable_file_suffix_is_case_insensitive():
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+            "node": {"id": 9, "path": "/alice/files/Scans/SCAN.PDF"},
+        },
+    }
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert task.doc_type == "file"
+
+
+@pytest.mark.unit
+def test_non_indexable_file_event_returns_none():
+    """Vector sync only indexes PDFs, so other file types stay ignored — no
+    reconcile job for every image or spreadsheet saved on the instance."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+            "node": {"id": 10, "path": "/alice/files/Photos/holiday.jpg"},
+        },
+    }
+
+    assert extract_document_task(payload) is None
+
+
+@pytest.mark.unit
+def test_indexable_file_without_node_id_returns_none():
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent",
+            "node": {"path": "/alice/files/Documents/report.pdf"},
+        },
+    }
+
+    assert extract_document_task(payload) is None
+
+
+@pytest.mark.unit
+def test_pdf_inside_notes_folder_is_a_file_not_a_note():
+    """The Notes branch only claims markdown; a PDF stored under Notes/ is an
+    ordinary tagged-file candidate."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+            "node": {"id": 11, "path": "/alice/files/Notes/attachment.pdf"},
+        },
+    }
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert task.doc_type == "file"

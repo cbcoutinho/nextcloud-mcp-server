@@ -33,9 +33,7 @@ from starlette.types import Scope as StarletteScope
 
 from nextcloud_mcp_server.admin.payload_backfill import handle_payload_backfill
 from nextcloud_mcp_server.api import (
-    create_webhook,
     delete_app_password,
-    delete_webhook,
     get_app_password_status,
     get_chunk_context,
     get_installed_apps,
@@ -44,7 +42,6 @@ from nextcloud_mcp_server.api import (
     get_user_session,
     get_vector_sync_status,
     list_supported_scopes,
-    list_webhooks,
     provision_app_password,
     purge_doc_types_route,
     revoke_user_access,
@@ -86,11 +83,6 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     revoke_session,
     user_info_html,
     vector_sync_status_fragment,
-)
-from nextcloud_mcp_server.auth.webhook_routes import (
-    disable_webhook_preset,
-    enable_webhook_preset,
-    webhook_management_pane,
 )
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
@@ -970,10 +962,10 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             "Multi-user mode - clients created per-request from BasicAuth headers"
         )
 
-    # Initialize persistent storage (for webhook tracking and future features)
+    # Initialize persistent storage (tokens, sessions, app passwords)
     storage = RefreshTokenStorage.from_env()
     await storage.initialize()
-    logger.info("Persistent storage initialized (webhook tracking enabled)")
+    logger.info("Persistent storage initialized")
 
     # Initialize document processors
     initialize_document_processors()
@@ -1465,7 +1457,7 @@ async def setup_oauth_config_for_multi_user_basic(
             logger.error("Failed to initialize refresh token storage: %s", e)
             logger.debug("Full traceback:\\n%s", traceback.format_exc())
             logger.warning(
-                "Continuing without refresh token storage - webhook management may be limited"
+                "Continuing without refresh token storage - management APIs may be limited"
             )
 
     logger.info(
@@ -2067,10 +2059,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 client_id[:16],
             )
         else:
-            # BasicAuth mode - initialize storage for webhook management
+            # BasicAuth mode - initialize storage for the management APIs
             basic_auth_storage = RefreshTokenStorage.from_env()
             await basic_auth_storage.initialize()
-            logger.info("Initialized refresh token storage for webhook management")
+            logger.info("Initialized refresh token storage for management APIs")
 
             app.state.storage = basic_auth_storage
 
@@ -2119,7 +2111,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "OAuth infrastructure setup failed - management API will be unavailable. "
                         "This is expected if OIDC discovery failed or token verifier creation failed. "
-                        "Webhook management from Astrolabe admin UI will not work."
+                        "The Astrolabe admin UI will not be able to reach them."
                     )
                 else:
                     logger.warning(
@@ -2128,7 +2120,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         "Webhook management from Astrolabe admin UI will not work."
                     )
 
-            # Also share with browser_app for webhook routes
+            # Also share with browser_app for its session-authenticated routes
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
                     browser_app = cast(Starlette, route.app)
@@ -2142,9 +2134,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         logger.info(
                             "OAuth context shared with browser_app for management APIs"
                         )
-                    logger.info(
-                        "Storage shared with browser_app for webhook management"
-                    )
+                    logger.info("Storage shared with browser_app")
                     break
 
         # Start background vector sync tasks (ADR-007)
@@ -2757,12 +2747,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # ADR-018: Unified search endpoint for Nextcloud PHP app integration
         routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
         routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
-        # Webhook management endpoints
-        routes.append(Route("/api/v1/webhooks", list_webhooks, methods=["GET"]))
-        routes.append(Route("/api/v1/webhooks", create_webhook, methods=["POST"]))
-        routes.append(
-            Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
-        )
         # Vector-sync admin: purge indexed vectors by doc type (admin consent —
         # called by Astrolabe when a source is disabled for semantic search).
         # Gated on vector_sync_enabled: without it there is no Qdrant client, so
@@ -2797,8 +2781,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
             "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
             "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
-            "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
-            "/api/v1/webhooks"
+            "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps"
         )
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
@@ -2968,18 +2951,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             vector_sync_status_fragment,
             methods=["GET"],
         ),  # /app/vector-sync/status
-        # Webhook management routes (admin-only)
-        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
-        Route(
-            "/webhooks/enable/{preset_id:str}",
-            enable_webhook_preset,
-            methods=["POST"],
-        ),
-        Route(
-            "/webhooks/disable/{preset_id:str}",
-            disable_webhook_preset,
-            methods=["DELETE"],
-        ),
     ]
 
     # Login Flow v2 web provisioning (only when Login Flow is enabled)
@@ -3012,7 +2983,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Mount browser app at /app (webapp and admin routes)
     routes.append(Mount("/app", app=browser_app))
-    logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
+    logger.info("App routes with session auth: /app, /app/revoke")
 
     # Favicon for connector directory discovery (Google favicon service)
     favicon_path = os.path.join(

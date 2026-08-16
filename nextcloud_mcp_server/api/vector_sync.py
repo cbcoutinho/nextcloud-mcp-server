@@ -8,9 +8,8 @@ globally (every owner) — see :mod:`nextcloud_mcp_server.vector.purge`.
 Auth: the OAuth bearer identifies the caller (``validate_token_and_get_user``);
 because the purge deletes every owner's content for a doc type, it is further
 restricted to Nextcloud administrators (verified via the ``admin`` group using
-the caller's app password). This is stricter than the per-user webhook routes
-in :mod:`nextcloud_mcp_server.api.webhooks` precisely because the blast radius
-is global.
+the caller's app password). This is stricter than the per-user management
+routes precisely because the blast radius is global.
 """
 
 import logging

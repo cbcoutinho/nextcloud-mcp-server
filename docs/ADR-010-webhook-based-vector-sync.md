@@ -1,8 +1,18 @@
 # ADR-010: Webhook-Based Vector Database Synchronization
 
-**Status**: Accepted — implemented (webhook listener registration; see `auth/webhook_routes.py` and the `registered_webhooks` store)
+**Status**: Accepted — implemented; delivery mechanism superseded
 **Date**: 2025-01-10
 **Depends On**: ADR-007 (Background Vector Sync)
+
+> **Current state (2026-08):** the ingress (`POST /webhooks/nextcloud`, envelope
+> format, `WEBHOOK_SECRET` auth, `DocumentTask` queueing) is unchanged and
+> current. What changed is *who delivers*: the
+> [Astrolabe app](https://github.com/cbcoutinho/astrolabe) subscribes to
+> Nextcloud events itself and POSTs the envelope directly, configured from its
+> admin settings. There is no separate listener registration to perform. See
+> [webhook-management-guide.md](webhook-management-guide.md). Sections below
+> that describe registering listeners in Nextcloud core are retained as the
+> historical record of the original decision.
 
 ## Context
 
@@ -34,11 +44,14 @@ This architecture works but has fundamental limitations:
 
 These limitations are inherent to any polling-based architecture. Reducing the scan interval (e.g., to 5 minutes) reduces latency but exacerbates API load, resource waste, and rate limiting issues. The fundamental problem is that the system has no way to know *when* content changes occur—it must repeatedly check to find out.
 
-### Nextcloud Webhook Listeners
+### Nextcloud Change Events
 
-Nextcloud provides a webhook_listeners app (bundled with Nextcloud 30+) that enables push-based change notifications. Instead of polling for changes, external services can register webhook endpoints and receive HTTP POST requests when specific events occur. Administrators register these webhooks using Nextcloud's OCS API or occ commands.
+Nextcloud dispatches change events that can be serialized for push delivery
+(`IWebhookCompatibleEvent`), letting an external service be told *when* content
+changes instead of polling to find out. Astrolabe subscribes to these events and
+delivers them to the MCP server.
 
-The webhook_listeners app supports events for all Nextcloud apps relevant to this MCP server's vector database:
+The relevant events for this MCP server's vector database are:
 
 **Files/Notes Events** (notes are stored as files):
 - `OCP\Files\Events\Node\NodeCreatedEvent`
@@ -76,7 +89,7 @@ While webhooks provide superior latency and efficiency, they cannot fully replac
 
 **Missed Events**: If the MCP server is down when a webhook fires, the notification is lost. Nextcloud's background job system processes webhooks asynchronously, but does not queue failed deliveries indefinitely.
 
-**Administrator Setup**: Webhooks must be registered by Nextcloud administrators using the OCS API or occ commands. This is an optional optimization that administrators can enable when they want to reduce polling frequency.
+**Administrator Setup**: Delivery must be switched on by a Nextcloud administrator (Astrolabe's MCP server URL, shared secret and sync presets). This is an optional optimization that administrators can enable when they want to reduce polling frequency.
 
 **Filter Configuration**: Webhook filters must be carefully configured to avoid notification floods. A poorly configured filter could send thousands of notifications for bulk operations (e.g., importing a calendar with hundreds of events).
 
@@ -101,7 +114,7 @@ The system may receive duplicate notifications (webhook + next scan) or out-of-o
 Nextcloud processes webhooks via background jobs, introducing delivery latency (typically seconds to minutes depending on background job configuration). This affects testing strategies—integration tests cannot rely on immediate webhook delivery.
 
 **Deployment Patterns**:
-The MCP server webhook endpoint is accessible at the same host/port as the MCP server itself. Administrators configure Nextcloud to POST to `https://<mcp-server-host>:<port>/webhooks/nextcloud` when registering webhook listeners.
+The MCP server webhook endpoint is accessible at the same host/port as the MCP server itself. Administrators point Nextcloud at `https://<mcp-server-host>:<port>/webhooks/nextcloud` (Astrolabe's **MCP Server URL** admin setting).
 
 ## Decision
 
@@ -168,31 +181,16 @@ The endpoint:
 - Returns quickly (<50ms) to avoid blocking Nextcloud's webhook workers
 - Handles errors gracefully (invalid payload, queue full, etc.)
 
-**2. Webhook Registration Helper (Development Only)**
+**2. Delivery Configuration**
 
-For development and testing purposes, a helper method will be added to `NextcloudClient` for registering webhooks via the OCS API. This is NOT exposed as an MCP tool—administrators register webhooks manually using Nextcloud's admin interface or the OCS API directly.
+Delivery is configured on the Nextcloud side, not through an MCP tool: an admin
+sets Astrolabe's **MCP Server URL** and **Webhook shared secret** and enables the
+sync presets they want. Nothing is registered on the MCP server, so there is no
+registration state that can drift from what the ingress accepts.
 
-```python
-class NextcloudClient:
-    async def register_webhook(
-        self,
-        event_type: str,
-        uri: str,
-        http_method: str = "POST",
-        auth_method: str = "none",
-        headers: dict[str, str] | None = None,
-    ) -> dict:
-        """
-        Register a webhook with Nextcloud (requires admin credentials).
-
-        Used for development/testing. Production admins should register
-        webhooks using Nextcloud's admin UI or occ commands.
-        """
-        # Implementation uses OCS API: POST /ocs/v2.php/apps/webhook_listeners/api/v1/webhooks
-        ...
-```
-
-This keeps webhook registration out of the MCP tool surface while providing a convenient API for integration tests.
+*(Originally this ADR specified a `NextcloudClient.register_webhook()` helper
+that registered listeners with Nextcloud core over OCS. That path was replaced by
+Astrolabe's native event listeners.)*
 
 **3. Event Parsing**
 
@@ -299,16 +297,14 @@ Path filters in webhook registration ensure only relevant files trigger notifica
 
 Administrators who want to enable webhooks:
 
-1. **Enable webhook_listeners app** in Nextcloud: `occ app:enable webhook_listeners`
-2. **Register webhook endpoints** using Nextcloud's OCS API or admin UI:
-   - Endpoint: `https://<mcp-server-host>:<port>/webhooks/nextcloud`
-   - Events: File created/updated/deleted, Calendar object events, Table row events
-   - Filters: Exclude non-content files (images, videos), system directories
-   - Required: Configure `Authorization: Bearer <WEBHOOK_SECRET>` header (the
-     MCP server's registration endpoints inject this automatically once
-     `WEBHOOK_SECRET` is set)
+1. **Set `WEBHOOK_SECRET`** on the MCP server (without it the ingress is not mounted)
+2. **Configure Astrolabe** (Nextcloud → Administration settings → Astrolabe):
+   - **MCP Server URL** — `https://<mcp-server-host>:<port>`; the ingress is `/webhooks/nextcloud`
+   - **Webhook shared secret** — must equal `WEBHOOK_SECRET`; sent as `Authorization: Bearer <secret>` on every delivery
+   - **Sync presets** — which event bundles are delivered
+   - See [webhook-management-guide.md](webhook-management-guide.md)
 3. **Optionally reduce scanner frequency**: Set `VECTOR_SYNC_SCAN_INTERVAL=86400` (24 hours)
-4. **Set up webhook workers** (optional): Configure dedicated background job workers for low-latency delivery
+4. **Run background job workers**: delivery is enqueued as a Nextcloud background job, so cron cadence sets the delivery latency
 
 Deployments without `WEBHOOK_SECRET` continue using polling without any changes — the webhook route is simply not mounted. Webhooks are additive but require a configured secret (GHSA-8vh3-g2qg-2h2c).
 
@@ -338,7 +334,7 @@ Deployments without `WEBHOOK_SECRET` continue using polling without any changes 
 
 **New Failure Modes**: Webhook endpoint downtime, network issues between Nextcloud and MCP server, webhook notification floods from bulk operations. The system must handle these gracefully.
 
-**Version Dependencies**: The webhook_listeners app requires Nextcloud 30+. Older versions continue using polling exclusively.
+**Version Dependencies**: Webhook delivery requires the Astrolabe app (Nextcloud 30+). Instances without it continue using polling exclusively.
 
 ### Monitoring and Observability
 
@@ -432,7 +428,7 @@ Manual validation of Nextcloud webhook schemas and behavior confirmed that webho
 
 **Test Environment:**
 - Nextcloud 30+ (Docker compose)
-- webhook_listeners app enabled
+- Nextcloud core webhook delivery enabled
 - Test endpoint: `http://mcp:8000/webhooks/nextcloud`
 - Background webhook worker running (60s timeout)
 
@@ -665,7 +661,6 @@ See `webhook-testing-findings.md` in the repository root for:
 ## References
 
 - ADR-007: Background Vector Database Synchronization (polling architecture)
-- Nextcloud Documentation: `~/Software/documentation/admin_manual/webhook_listeners/index.rst`
-- Nextcloud OCS API: Webhook registration endpoint
+- Astrolabe app (event listeners + delivery): https://github.com/cbcoutinho/astrolabe
 - Current scanner implementation: `nextcloud_mcp_server/vector/scanner.py:37`
 - Webhook Testing Report: `webhook-testing-findings.md` (2025-01-11)
