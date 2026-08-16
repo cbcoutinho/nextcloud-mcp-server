@@ -62,8 +62,8 @@ async def get_installed_apps(request: Request) -> JSONResponse:
             raise ValueError("Nextcloud host not configured")
 
         # OCS v2 capabilities is keyed by app-id for every enabled app that
-        # implements OCSCapabilities — sufficient for the webhook presets UI
-        # without needing the admin-only /cloud/apps endpoint.
+        # implements OCSCapabilities — sufficient for Astrolabe's sync-preset
+        # filtering without needing the admin-only /cloud/apps endpoint.
         async with nextcloud_httpx_client(
             base_url=nextcloud_host,
             auth=httpx.BasicAuth(username, app_password),
