@@ -1697,7 +1697,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.debug("Full traceback:\\n%s", traceback.format_exc())
                 logger.warning(
                     "Management API will be unavailable. "
-                    "Webhook management from Astrolabe admin UI will not work."
+                    "The Astrolabe admin UI will not be able to reach it."
                 )
                 # Set to None to indicate failure
                 multi_user_token_verifier = None
@@ -2117,7 +2117,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "OAuth credentials not available - management API will be unavailable. "
                         "This is expected if DCR failed or static credentials were not provided. "
-                        "Webhook management from Astrolabe admin UI will not work."
+                        "The Astrolabe admin UI will not be able to reach it."
                     )
 
             # Also share with browser_app for its session-authenticated routes

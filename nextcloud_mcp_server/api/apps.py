@@ -35,7 +35,8 @@ logger = logging.getLogger(__name__)
 async def get_installed_apps(request: Request) -> JSONResponse:
     """GET /api/v1/apps - Get list of installed Nextcloud apps.
 
-    Returns a list of installed app IDs for filtering webhook presets.
+    Returns a list of installed app IDs. Astrolabe calls this to filter its own
+    sync-preset catalogue down to the apps an instance actually has.
 
     Requires OAuth bearer token for authentication.
     """
