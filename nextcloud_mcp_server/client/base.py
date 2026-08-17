@@ -327,7 +327,14 @@ class BaseNextcloudClient(ABC):
             # so every existing handler -- including retry_on_429's status check
             # around this method -- is unaffected.
             if isinstance(e, HTTPStatusError):
-                raise enrich_dav_error(e) from e
+                enriched = enrich_dav_error(e)
+                # ``enrich_dav_error`` hands back the *same* object when there is
+                # no DAV document to add, and ``raise e from e`` would set
+                # ``e.__cause__ = e`` -- an exception caused by itself. Re-raise
+                # it plainly instead, so ``from`` always means a real wrapping.
+                if enriched is not e:
+                    raise enriched from e
+                raise
 
             # Re-raise the exception
             raise

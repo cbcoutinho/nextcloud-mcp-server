@@ -9,6 +9,7 @@ catches plain ``HTTPStatusError``.
 import httpx
 import pytest
 
+from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.dav_errors import (
     MAX_ERROR_BODY_BYTES,
     DavError,
@@ -137,3 +138,54 @@ def test_unread_streaming_response_yields_no_detail():
         _ = response.content
 
     assert parse_dav_error_body(response) == (None, None)
+
+
+class _Client(BaseNextcloudClient):
+    """Minimal concrete client -- BaseNextcloudClient is abstract."""
+
+    app_name = "test"
+
+
+async def test_make_request_raises_the_enriched_type(mocker):
+    """The wiring, not the building block: a DAV failure through _make_request.
+
+    The unit tests above prove the parser works in isolation. This is the line
+    that decides whether callers ever see it.
+    """
+    request = httpx.Request("PUT", "https://nc.example.com/remote.php/dav/files/u/a")
+    response = httpx.Response(
+        423,
+        content=_dav_body("Sabre\\DAV\\Exception\\Locked", "File is write locked"),
+        request=request,
+    )
+    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client.request = mocker.AsyncMock(return_value=response)
+
+    client = _Client(http_client, "alice")
+
+    with pytest.raises(DavLocked) as exc_info:
+        await client._make_request("PUT", "/remote.php/dav/files/u/a")
+
+    assert exc_info.value.dav_message == "File is write locked"
+
+
+async def test_make_request_leaves_a_non_dav_failure_unwrapped(mocker):
+    """A non-DAV failure keeps its identity, and does not become its own cause.
+
+    ``enrich_dav_error`` returns the same object here, so re-raising it with
+    ``from`` would set ``__cause__`` to the exception itself.
+    """
+    request = httpx.Request("GET", "https://nc.example.com/ocs/v2.php/x")
+    response = httpx.Response(
+        400, content=b'{"ocs":{"meta":{"statuscode":400}}}', request=request
+    )
+    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client.request = mocker.AsyncMock(return_value=response)
+
+    client = _Client(http_client, "alice")
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await client._make_request("GET", "/ocs/v2.php/x")
+
+    assert type(exc_info.value) is httpx.HTTPStatusError
+    assert exc_info.value.__cause__ is not exc_info.value
