@@ -37,13 +37,19 @@ def validate_share_with(share_type: int, share_with: str | None) -> None:
 
     if share_type == ShareType.PUBLIC_LINK:
         if has_recipient:
+            # Deliberately names no alternative *call* here. This message is
+            # shared between direct client callers and the MCP tool, which
+            # surfaces it verbatim, and the two layers have different names for
+            # the same operation -- pointing an agent at a callable that does
+            # not exist on its side is worse than not suggesting one. The tool
+            # appends its own suggestion when it translates this.
             raise ValueError(
                 f"shareType {ShareType.PUBLIC_LINK} (public link) must not carry "
                 f"shareWith: Nextcloud ignores the recipient and publishes the "
                 f"file to anyone holding the URL, so it would NOT be shared with "
                 f"{share_with!r}. Use shareType {ShareType.USER} (user) or "
-                f"{ShareType.GROUP} (group) to share with a recipient, or "
-                f"create_public_link() for an anonymous link."
+                f"{ShareType.GROUP} (group) to share with a recipient, or omit "
+                f"shareWith to create an anonymous public link."
             )
         return
 

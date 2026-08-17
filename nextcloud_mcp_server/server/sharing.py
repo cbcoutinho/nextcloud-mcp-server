@@ -143,8 +143,12 @@ def configure_sharing_tools(mcp: FastMCP):
         except ValueError as e:
             # Surface the pairing rejection as a tool error the caller can read
             # and act on, rather than an opaque internal failure. The client
-            # layer owns the rule so direct client callers are guarded too.
-            raise ToolError(str(e)) from e
+            # layer owns the rule so direct client callers are guarded too, and
+            # names no alternative call itself -- the tool that an MCP caller
+            # can actually invoke is only known here.
+            raise ToolError(
+                f"{e} For a public download link, use nc_share_create_public_link."
+            ) from e
         return json.dumps(share_data, indent=2)
 
     @mcp.tool(

@@ -69,6 +69,11 @@ async def test_public_link_with_recipient_raises_a_readable_tool_error(
     message = str(exc_info.value)
     assert "must not carry shareWith" in message
     assert "anyone holding the URL" in message
+    # ...and point at a tool this caller can actually invoke. The client-layer
+    # message deliberately names no call, because its own method names do not
+    # exist on the MCP side.
+    assert "nc_share_create_public_link" in message
+    assert "create_public_link()" not in message
 
 
 async def test_missing_recipient_raises_a_tool_error(
