@@ -205,6 +205,30 @@ async def test_nc_webdav_search_files_basic(
         assert name.endswith(".md"), f"Expected .md file, got {name}"
 
 
+async def test_nc_webdav_search_files_unfiltered(
+    nc_mcp_client: ClientSession, search_test_files: str
+):
+    """An unfiltered search returns the scope's contents instead of erroring.
+
+    Regression: with no ``name_pattern`` / ``mime_type`` / ``only_favorites``
+    the SEARCH body carried an empty ``<d:where>``, which Nextcloud answers
+    with ``500 TypeError`` (confirmed on 32.0.14) — so "list everything under
+    this folder" failed outright.
+    """
+    result = await nc_mcp_client.call_tool(
+        "nc_webdav_search_files",
+        arguments={"scope": search_test_files},
+    )
+
+    assert not result.isError, f"unfiltered search failed: {result.content[0].text}"
+
+    files = normalize_search_response(json.loads(result.content[0].text))
+    logger.info("Unfiltered search returned %s files", len(files))
+
+    # The fixture writes 8 files into the scope; all of them match.
+    assert len(files) >= 8, f"Expected the scope's 8 files, got {len(files)}"
+
+
 async def test_nc_webdav_search_files_combined(
     nc_mcp_client: ClientSession, search_test_files: str
 ):
