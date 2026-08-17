@@ -150,7 +150,7 @@ def enrich_dav_error(exc: HTTPStatusError) -> HTTPStatusError:
     # Single line on purpose: callers log this with "%s" (webdav.py does), and a
     # newline here would split one failure across two log records -- which line-
     # oriented log shipping then indexes as two unrelated events.
-    message = f"{exc} Server said: {detail}" if detail else str(exc)
+    message = f"{exc} -- Server said: {detail}" if detail else str(exc)
 
     return (error_type or DavError)(
         message,
