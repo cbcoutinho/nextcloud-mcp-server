@@ -1,0 +1,33 @@
+# Build context for podman/buildah. Docker reads only .dockerignore; podman
+# reads .containerignore in preference to it. This file exists because the two
+# engines disagree about re-inclusion patterns, and under podman that
+# disagreement silently produces a broken image.
+#
+# .dockerignore re-includes sources with `!nextcloud_mcp_server/**/*.py`. Once
+# `*` has excluded everything, BuildKit keeps descending into excluded
+# directories in case a later `!` pattern matches inside; buildah does not, so
+# the glob never fires for nested packages. `podman build` therefore ships an
+# image containing no subpackage except auth/ -- which survives only because
+# `!nextcloud_mcp_server/auth/static/*` names it literally -- and the container
+# dies at startup with:
+#
+#   ModuleNotFoundError: No module named 'nextcloud_mcp_server.alembic'
+#
+# Re-including the package directory itself, rather than globbing into it, is
+# handled the same way by both engines.
+#
+# Keep this equivalent to .dockerignore rather than relaxing it into a plain
+# denylist: the Dockerfile is single-stage, so whatever `COPY . .` pulls in
+# stays in the shipped image. A denylist measured 13 MB / 757 files against
+# .dockerignore's 5 MB / 206.
+
+*
+
+!pyproject.toml
+!README.md
+!uv.lock
+
+!nextcloud_mcp_server
+
+**/__pycache__
+**/*.pyc
