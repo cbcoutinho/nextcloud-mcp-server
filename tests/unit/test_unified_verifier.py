@@ -1296,7 +1296,9 @@ class TestRejectionObservability:
             "The JWK Set did not contain any keys"
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.auth.unified_verifier"
+        ):
             assert await verifier._verify_jwt_signature(self._jwt_for()) is None
 
         assert any(
