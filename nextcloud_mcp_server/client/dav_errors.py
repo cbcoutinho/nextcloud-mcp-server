@@ -27,12 +27,9 @@ Everything here derives from :class:`httpx.HTTPStatusError`, so handlers that
 predate this module keep catching these unchanged.
 """
 
-import logging
 import xml.etree.ElementTree as ET
 
-from httpx import HTTPStatusError, Response, ResponseNotRead
-
-logger = logging.getLogger(__name__)
+from httpx import HTTPStatusError, Request, Response, ResponseNotRead
 
 SABREDAV_NAMESPACE = "http://sabredav.org/ns"
 
@@ -49,7 +46,7 @@ class DavError(HTTPStatusError):
         self,
         message: str,
         *,
-        request,
+        request: Request,
         response: Response,
         dav_exception: str | None = None,
         dav_message: str | None = None,
@@ -121,8 +118,16 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
 def enrich_dav_error(exc: HTTPStatusError) -> HTTPStatusError:
     """Return *exc* re-expressed with the server's explanation attached.
 
-    Returns the original exception untouched when the response carries no DAV
-    error document, so non-DAV callers (OCS, the app APIs) are unaffected.
+    Returns the original exception untouched when there is nothing to add, so
+    non-DAV callers (OCS, the app APIs) are unaffected on every status *except*
+    412/423/507. Those three are typed off the status code alone, whatever the
+    body: the type says "the server answered 412", not "a Sabre document was
+    found". A 412 with no parseable body still becomes a
+    :class:`DavPreconditionFailed`, just without the ``Server said:`` suffix.
+    That is deliberate -- callers branch on those statuses, and a type that
+    appeared only when the body happened to parse would be useless to branch on.
+    Nothing downstream is affected either way, since every catch site tests
+    ``isinstance`` or ``.response.status_code`` rather than an exact type.
     """
     dav_exception, dav_message = parse_dav_error_body(exc.response)
     status = exc.response.status_code
