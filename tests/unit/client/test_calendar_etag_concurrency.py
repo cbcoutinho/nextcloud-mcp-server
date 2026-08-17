@@ -76,6 +76,41 @@ async def test_object_etag_degrades_when_the_server_withholds_one(mocker):
     assert await CalendarClient._object_etag(obj) == ""
 
 
+async def test_collection_etags_degrades_when_the_propfind_fails(client, mocker):
+    """The batched fetch degrades the same way the per-object one does.
+
+    Listings call this before iterating, so a raise here would fail the whole
+    listing over a concurrency token the caller may not even use.
+    """
+    calendar = mocker.Mock()
+    calendar.url = "https://cloud.example.org/remote.php/dav/calendars/alice/personal/"
+    client._dav_client.request = mocker.AsyncMock(
+        side_effect=RuntimeError("PROPFIND failed")
+    )
+
+    assert await client._collection_etags(calendar) == {}
+
+
+async def test_collection_etags_maps_decoded_href_to_etag(client, mocker):
+    """Keys are decoded paths, matching how callers look objects up."""
+    calendar = mocker.Mock()
+    calendar.url = "https://cloud.example.org/remote.php/dav/calendars/alice/personal/"
+    response = mocker.Mock()
+    response.expand_simple_props.return_value = {
+        # Percent-encoded on the wire; callers hold the decoded path.
+        "/remote.php/dav/calendars/alice/personal/my%20event.ics": {
+            dav.GetEtag.tag: ETAG
+        },
+        # An object the server reports without an etag is simply absent.
+        "/remote.php/dav/calendars/alice/personal/other.ics": {},
+    }
+    client._dav_client.request = mocker.AsyncMock(return_value=response)
+
+    assert await client._collection_etags(calendar) == {
+        "/remote.php/dav/calendars/alice/personal/my event.ics": ETAG
+    }
+
+
 async def test_conditional_put_sends_if_match_and_returns_the_new_etag(client, mocker):
     obj = mocker.Mock()
     obj.url = "https://cloud.example.org/remote.php/dav/calendars/alice/personal/e.ics"

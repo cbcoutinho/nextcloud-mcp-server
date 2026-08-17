@@ -993,6 +993,11 @@ class CalendarClient:
             response = await self._dav_client.request(
                 str(calendar.url), "PROPFIND", body, {"Depth": "1"}
             )
+            # Depth 1 includes the collection's own href. Unlike the REPORT
+            # parser, this does not skip it: nothing ever looks the collection
+            # up (only object hrefs are queried), and a collection ctag in the
+            # map is inert. Left in rather than filtered so this stays a plain
+            # transcription of the response.
             return {
                 unquote(urlsplit(href).path): etag
                 for href, props in response.expand_simple_props([dav.GetEtag()]).items()
