@@ -189,3 +189,26 @@ async def test_make_request_leaves_a_non_dav_failure_unwrapped(mocker):
 
     assert type(exc_info.value) is httpx.HTTPStatusError
     assert exc_info.value.__cause__ is not exc_info.value
+
+
+async def test_stream_request_raises_the_enriched_type(mocker):
+    """The streaming path is wired too, not just the buffered one.
+
+    ``_stream_request`` raises inside the stream context, so the body is unread
+    and no detail can be attached -- but the status-based type still applies. A
+    quota failure on a download should arrive as ``DavInsufficientStorage``, not
+    a bare ``HTTPStatusError``.
+    """
+    request = httpx.Request("GET", "https://nc.example.com/remote.php/dav/files/u/a")
+    response = httpx.Response(507, request=request, stream=httpx.ByteStream(b""))
+
+    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client.stream = mocker.MagicMock()
+    http_client.stream.return_value.__aenter__ = mocker.AsyncMock(return_value=response)
+    http_client.stream.return_value.__aexit__ = mocker.AsyncMock(return_value=False)
+
+    client = _Client(http_client, "alice")
+
+    with pytest.raises(DavInsufficientStorage):
+        async with client._stream_request("GET", "/remote.php/dav/files/u/a"):
+            pass  # pragma: no cover - the enter itself raises

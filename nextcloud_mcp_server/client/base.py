@@ -257,6 +257,13 @@ class BaseNextcloudClient(ABC):
                     record_nextcloud_api_retry(app=self.app_name, reason="429")
                     await anyio.sleep(5)
                     continue
+                # Same typing as the buffered path. The body is unread here (the
+                # status is raised inside the stream context), so this degrades
+                # to status-only typing -- a 507 download still arrives as
+                # DavInsufficientStorage, just without the server's wording.
+                enriched = enrich_dav_error(e)
+                if enriched is not e:
+                    raise enriched from e
                 raise
             finally:
                 # A retried 429 is metered as its own attempt, matching how

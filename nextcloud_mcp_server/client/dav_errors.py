@@ -25,6 +25,12 @@ Three statuses get their own type because callers branch on them:
 
 Everything here derives from :class:`httpx.HTTPStatusError`, so handlers that
 predate this module keep catching these unchanged.
+
+Both of ``BaseNextcloudClient``'s request paths are wired to this: the buffered
+``_make_request`` and the streaming ``_stream_request``. The streaming one
+raises before its body is read, so it gets the status-based type without the
+server's wording -- a 507 download is still a
+:class:`DavInsufficientStorage`.
 """
 
 import xml.etree.ElementTree as ET
