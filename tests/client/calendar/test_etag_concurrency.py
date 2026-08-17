@@ -142,3 +142,46 @@ async def test_date_range_listing_costs_one_request(
     assert all(event.get("etag") for event in events), (
         "the REPORT must carry an etag for every event"
     )
+
+
+@pytest.mark.parametrize("todo_count", [2, 5])
+async def test_todo_listing_request_count_does_not_scale(
+    nc_client: NextcloudClient, temporary_calendar: str, todo_count: int
+):
+    """Listing todos must cost a fixed number of requests, not one per todo.
+
+    caldav's ``todos()`` REPORT asks for calendar-data only, so surfacing an
+    ETag per todo originally sent ``_object_etag`` to a PROPFIND *each* --
+    measured at 1 + N on a live instance. Its ``props`` argument cannot carry
+    getetag, so the ETags come from one batched collection PROPFIND instead.
+
+    Parametrized over two sizes precisely because a fixed-count assertion is
+    only meaningful if it holds as N changes.
+    """
+    for i in range(todo_count):
+        await nc_client.calendar.create_todo(
+            temporary_calendar, {"summary": f"etag listing probe {i}"}
+        )
+
+    calls: list[str] = []
+    dav_client = nc_client.calendar._dav_client
+    original = dav_client.request
+
+    async def counting_request(url, method="GET", body="", headers=None, **kwargs):
+        calls.append(method)
+        return await original(url, method, body, headers or {}, **kwargs)
+
+    dav_client.request = counting_request
+    try:
+        todos = await nc_client.calendar.list_todos(temporary_calendar)
+    finally:
+        dav_client.request = original
+
+    assert len(todos) >= todo_count
+    assert len(calls) <= 2, (
+        f"listing {len(todos)} todos took {len(calls)} requests ({calls}) -- "
+        "the cost must not scale with the number of todos"
+    )
+    assert all(todo.get("etag") for todo in todos), (
+        "every listed todo needs an etag to be updatable safely"
+    )

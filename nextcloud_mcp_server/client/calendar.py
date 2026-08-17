@@ -967,6 +967,32 @@ class CalendarClient:
 
         return props.get(dav.GetEtag.tag) or ""
 
+    async def _collection_etags(self, calendar: Any) -> dict[str, str]:
+        """Map decoded href path -> ETag for every object in *calendar*.
+
+        One ``PROPFIND`` (Depth 1, ``getetag`` only) instead of one per object.
+        Mirrors the lightweight ctag/etag PROPFIND the contacts client already
+        uses. Returns ``{}`` on failure -- an ETag is a token for the caller,
+        not a reason to fail the listing that produced it.
+        """
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>'
+        )
+
+        try:
+            response = await self._dav_client.request(
+                str(calendar.url), "PROPFIND", body, {"Depth": "1"}
+            )
+            return {
+                unquote(urlsplit(href).path): etag
+                for href, props in response.expand_simple_props([dav.GetEtag()]).items()
+                if (etag := props.get(dav.GetEtag.tag))
+            }
+        except Exception as e:
+            logger.debug("Collection etag PROPFIND failed for %s: %s", calendar.url, e)
+            return {}
+
     async def _conditional_put(
         self, obj: Any, ical: str, etag: str, *, kind: str, uid: str
     ) -> str:
@@ -1156,6 +1182,13 @@ class CalendarClient:
         # Get all todos including completed ones (filtering is done client-side)
         todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
+        # caldav's todos() REPORT asks for calendar-data only, so none of these
+        # objects carry an etag and _object_etag would PROPFIND once per todo --
+        # measured at 1 + N against a live instance. Its ``props`` argument
+        # cannot carry getetag (it expects calendar-data-shaped elements only),
+        # so fetch them all in a single collection PROPFIND instead: 1 + 1.
+        etags = await self._collection_etags(calendar)
+
         result = []
         for todo in todos:
             # Only load if data not already present from REPORT response
@@ -1166,8 +1199,9 @@ class CalendarClient:
             else:
                 continue
             if todo_dict:
-                todo_dict["href"] = str(todo.url)
-                todo_dict["etag"] = await self._object_etag(todo)
+                href = str(todo.url)
+                todo_dict["href"] = href
+                todo_dict["etag"] = etags.get(unquote(urlsplit(href).path), "")
 
                 # Apply filters if provided
                 if not filters or self._todo_matches_filters(todo_dict, filters):
