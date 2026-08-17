@@ -459,7 +459,13 @@ async def test_caldav_event_operations_use_discovered_home_url(mocker):
     client, dav_client = _calendar_client_with_principal(mocker, "alice_1234")
     fake_calendar = mocker.Mock()
     fake_calendar.save_event = mocker.AsyncMock(
-        return_value=SimpleNamespace(url="https://cloud.example.org/event.ics")
+        # ``etag`` mirrors the real caldav object, whose ``etag`` property is
+        # always present (it reads from ``props``). create_event reads it to
+        # hand the caller a concurrency token.
+        return_value=SimpleNamespace(
+            url="https://cloud.example.org/event.ics",
+            etag='"abc123"',
+        )
     )
     mock_calendar = mocker.patch(
         "nextcloud_mcp_server.client.calendar.AsyncCalendar",

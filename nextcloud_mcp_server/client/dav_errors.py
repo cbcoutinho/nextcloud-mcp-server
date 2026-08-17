@@ -125,6 +125,31 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
     )
 
 
+def dav_error_from_response(
+    status: int, *, method: str, url: str, body: bytes | str = b""
+) -> HTTPStatusError:
+    """Build the typed error for a DAV failure observed outside httpx.
+
+    The CalDAV client talks through the ``caldav`` library rather than
+    ``BaseNextcloudClient._make_request`` (an intentional exception -- it has
+    its own DAV session), and ``caldav``'s ``put`` *returns* a 412 rather than
+    raising. So that path has a status, a URL and a body but no
+    ``HTTPStatusError`` to enrich. This wraps them into the same vocabulary, so
+    a stale-ETag CalDAV write raises the same
+    :class:`DavPreconditionFailed` a WebDAV one would.
+    """
+    if isinstance(body, str):
+        body = body.encode("utf-8", errors="replace")
+
+    request = Request(method, url)
+    response = Response(status, content=body, request=request)
+    return enrich_dav_error(
+        HTTPStatusError(
+            f"{status} error for {method} {url}", request=request, response=response
+        )
+    )
+
+
 def enrich_dav_error(exc: HTTPStatusError) -> HTTPStatusError:
     """Return *exc* re-expressed with the server's explanation attached.
 
