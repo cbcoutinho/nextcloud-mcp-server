@@ -1257,6 +1257,68 @@ class TestRejectionObservability:
 
         assert metric_sample(self.VALIDATIONS, labels) - before == 1
 
+    async def test_empty_jwks_is_no_signing_keys_not_unknown(
+        self, base_settings, metric_sample
+    ):
+        """An IdP publishing no keys is a misconfiguration, not an unknown error.
+
+        `PyJWKSetError` derives straight from `PyJWTError`, NOT from the
+        `PyJWKClientError` the outage clause catches, so it used to fall through
+        to the generic handler as "unknown" — indistinguishable from a real
+        internal bug. The operator saw a bare 401 and had to read server logs to
+        find out their provider was signing with HS256.
+        """
+        labels = {
+            "method": "jwt",
+            "result": "error",
+            "reason": "no_signing_keys",
+            "client_id": "mistral-client",
+        }
+        before = metric_sample(self.VALIDATIONS, labels)
+
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        verifier.jwks_client.uri = "https://idp.example/jwks"
+        verifier.jwks_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKSetError(
+            "The JWK Set did not contain any keys"
+        )
+
+        assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert metric_sample(self.VALIDATIONS, labels) - before == 1
+
+    async def test_empty_jwks_rejection_names_the_endpoint(self, base_settings, caplog):
+        """The log must point at the JWKS URI — that is the thing to go fix."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        verifier.jwks_client = MagicMock()
+        verifier.jwks_client.uri = "https://idp.example/application/o/nc/jwks/"
+        verifier.jwks_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKSetError(
+            "The JWK Set did not contain any keys"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert await verifier._verify_jwt_signature(self._jwt_for()) is None
+
+        assert any(
+            "https://idp.example/application/o/nc/jwks/" in r.message
+            for r in caplog.records
+        )
+
+    async def test_real_pyjwt_raises_pyjwksseterror_on_an_empty_key_set(
+        self, base_settings
+    ):
+        """Pin the upstream behaviour the clause above depends on.
+
+        If PyJWT ever re-parents `PyJWKSetError` under `PyJWKClientError`, or
+        changes which error an empty key set raises, this fix silently reverts
+        to reporting "network_error"/"unknown" — so assert against the real
+        library rather than only our mock of it.
+        """
+        assert not issubclass(jwt.PyJWKSetError, jwt.PyJWKClientError)
+
+        with pytest.raises(jwt.PyJWKSetError):
+            jwt.PyJWKSet.from_dict({"keys": []})
+
     def test_empty_verified_client_id_falls_back(self, base_settings, metric_sample):
         """An empty verified id recovers azp/aud rather than recording nothing.
 

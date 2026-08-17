@@ -641,7 +641,9 @@ class UnifiedTokenVerifier(TokenVerifier):
     # took the default, which put the single most total failure mode in the
     # system (no validator configured at all) on the *client's* side of the
     # split, contradicting the documented contract.
-    _OUR_FAULT_REASONS = frozenset({"not_configured", "network_error", "unknown"})
+    _OUR_FAULT_REASONS = frozenset(
+        {"not_configured", "network_error", "no_signing_keys", "unknown"}
+    )
 
     def _reject(
         self,
@@ -823,6 +825,26 @@ class UnifiedTokenVerifier(TokenVerifier):
         except jwt.InvalidTokenError as e:
             # Covers signature failures, malformed tokens and bad `iat`.
             return self._note(chain, "jwt", "bad_signature", token, str(e))
+        except jwt.PyJWKSetError as e:
+            # The JWKS was fetched and parsed fine but carries no usable signing
+            # key, so every JWT is unverifiable. That is an IdP/operator
+            # misconfiguration, not an outage and not a bad token — most often
+            # a provider left on symmetric (HS256) signing, which serves an
+            # empty key set: Authentik and Keycloak both publish JWKS keys only
+            # for asymmetric signing keys.
+            #
+            # Separate from PyJWKClientError below because PyJWKSetError is NOT
+            # a subclass of it (both derive straight from PyJWTError), so it
+            # otherwise fell through to the generic handler and surfaced as
+            # "unknown" — indistinguishable from a real internal bug, and the
+            # operator got a bare 401 with the cause only in our logs.
+            return self._note(
+                chain,
+                "jwt",
+                "no_signing_keys",
+                token,
+                f"{e} (JWKS: {getattr(self.jwks_client, 'uri', 'unknown')})",
+            )
         except jwt.PyJWKClientError as e:
             # Fetching the signing key failed — the JWKS endpoint is down, slow
             # or unreachable. Nothing is wrong with the caller's token. This is

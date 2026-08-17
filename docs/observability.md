@@ -106,7 +106,7 @@ most consequential changes are silent — see the alerts below.
     Derived from `reason`, not set independently, so the two cannot drift.
   - `reason`: `expired`, `inactive`, `bad_signature`, `bad_issuer`,
     `bad_audience`, `not_allowlisted`, `not_configured`, `network_error`,
-    `unknown` — `none` when valid
+    `no_signing_keys`, `unknown` — `none` when valid
   - `client_id`: read from the *unverified* token, so length-clamped and capped
     at 50 distinct values (`_other` beyond), on a budget of its own
 
@@ -437,7 +437,7 @@ sum by (client_id, method, reason) (
 
 Split by who is at fault: `result="invalid"` is the caller's token (expired,
 revoked, wrong audience); `result="error"` is ours (`not_configured`,
-`network_error`) and should page:
+`network_error`, `no_signing_keys`) and should page:
 ```promql
 sum by (reason) (increase(mcp_oauth_token_validations_total{result="error"}[15m])) > 0
 ```
@@ -449,6 +449,16 @@ allowlist path: an empty allowlist is `not_configured` (ours, pageable) while a
 client merely absent from a populated one is `not_allowlisted` (theirs):
 ```promql
 sum(increase(mcp_oauth_token_validations_total{reason="not_configured"}[5m])) > 0
+```
+
+`reason="no_signing_keys"` is the same shape of total outage and belongs on the
+same alert: the JWKS was fetched and parsed but contains no usable key, so every
+JWT is unverifiable. It is a configuration fault rather than an outage — most
+often an IdP provider left on symmetric (HS256) signing, which makes Authentik
+and Keycloak serve an empty key set. The rejection detail carries the JWKS URI,
+so the log line names the endpoint to look at:
+```promql
+sum(increase(mcp_oauth_token_validations_total{reason="no_signing_keys"}[5m])) > 0
 ```
 
 **MCP client fleet — who is connected, at which protocol version**:
