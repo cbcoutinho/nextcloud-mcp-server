@@ -5,6 +5,7 @@ Tests multi-audience token validation without requiring real network calls or
 IdP connections.
 """
 
+import hashlib
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -471,6 +472,73 @@ class TestAccessTokenCreation:
         # Should have set a default expiry
         assert result.expires_at > int(time.time())
 
+    def test_create_access_token_reads_azp_when_no_client_id(self, base_settings):
+        """Keycloak et al stamp `azp` and never `client_id`.
+
+        Reading only `client_id` left every external-IdP token looking
+        client-less, so ALLOWED_MGMT_CLIENT rejected it however it was
+        configured (cbcoutinho/astrolabe#324).
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        payload = {
+            "sub": "testuser",
+            "scope": "openid profile",
+            "exp": int(time.time() + 3600),
+            "azp": "nextcloud",  # no client_id claim at all
+        }
+
+        result = verifier._create_access_token("test-token-123", payload)
+        assert result is not None
+        assert result.client_id == "nextcloud"
+
+    def test_create_access_token_prefers_client_id_over_azp(self, base_settings):
+        """RFC 9068's spelling wins when a token carries both."""
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        payload = {
+            "sub": "testuser",
+            "scope": "openid",
+            "exp": int(time.time() + 3600),
+            "client_id": "rfc9068-client",
+            "azp": "oidc-core-client",
+        }
+
+        result = verifier._create_access_token("test-token-123", payload)
+        assert result is not None
+        assert result.client_id == "rfc9068-client"
+
+    def test_client_id_from_claims_ignores_audience(self, base_settings):
+        """`aud` says who a token is for, not who obtained it.
+
+        Accepting it as an identity would let any token minted for an
+        allowlisted audience through the allowlist.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert verifier._client_id_from_claims({"aud": "some-allowlisted-id"}) == ""
+        assert verifier._client_id_from_claims({}) == ""
+        assert verifier._client_id_from_claims({"azp": ""}) == ""
+
+    def test_client_id_from_claims_falls_through_empty_client_id(self, base_settings):
+        """A present-but-empty `client_id` must not shadow a usable `azp`.
+
+        The guard tests the value, not the key, so an IdP that stamps
+        `client_id: ""` alongside a real `azp` still resolves to a client
+        rather than fail-closing to "".
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert (
+            verifier._client_id_from_claims({"client_id": "", "azp": "nextcloud"})
+            == "nextcloud"
+        )
+        # Non-string claims fall through the same way.
+        assert (
+            verifier._client_id_from_claims({"client_id": 42, "azp": "nextcloud"})
+            == "nextcloud"
+        )
+
 
 class TestVerifyTokenFlow:
     """Test complete verify_token flow."""
@@ -630,6 +698,39 @@ class TestManagementApiAllowlist:
         ):
             result = await verifier.verify_token_for_management_api("any-token")
             assert result is None
+
+    async def test_cache_hit_resolves_azp_against_allowlist(
+        self, monkeypatch, base_settings
+    ):
+        """The cache-hit path must resolve `azp` too, not just fresh validation.
+
+        This is the hot path in practice — Astrolabe polls the management API
+        often enough that most validations are served from the cache — so an
+        external-IdP token that passed on first validation would otherwise be
+        rejected on every subsequent request.
+        """
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "nextcloud")
+        from nextcloud_mcp_server.config import _reload_config
+
+        _reload_config()
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._allowed_mgmt_clients == {"nextcloud"}
+
+        # Seed the cache the way _create_access_token_with_cache_key would for a
+        # Keycloak token: `azp`, no `client_id` claim at all.
+        token = "keycloak-token"
+        cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
+        verifier._token_cache[cache_key] = (
+            {"sub": "alice", "scope": "openid profile", "azp": "nextcloud"},
+            time.time() + 3600,
+        )
+
+        # No _verify_without_audience_check patch: a cache miss would try to
+        # reach the IdP, so reaching the allowlist at all proves the cache hit.
+        result = await verifier.verify_token_for_management_api(token)
+        assert result is not None
+        assert result.client_id == "nextcloud"
+        assert result.resource == "alice"
 
     async def test_cache_hit_also_enforces_allowlist(self, monkeypatch, base_settings):
         """A previously-cached token must still be re-checked against the allowlist."""
