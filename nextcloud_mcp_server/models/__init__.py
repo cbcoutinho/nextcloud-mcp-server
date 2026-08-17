@@ -52,6 +52,7 @@ from .notes import (
 # Sharing models
 from .sharing import (
     PublicDownloadLinkResponse,
+    ShareType,
 )
 
 # Tables models
@@ -129,6 +130,7 @@ __all__ = [
     "DeleteAddressBookResponse",
     # Sharing models
     "PublicDownloadLinkResponse",
+    "ShareType",
     # Tables models
     "Table",
     "TableColumn",

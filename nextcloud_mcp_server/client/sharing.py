@@ -109,8 +109,11 @@ class SharingClient(BaseNextcloudClient):
         # Omit shareWith entirely for a public link rather than sending an empty
         # value: validate_share_with has already established there is no
         # recipient, and OCS treats a present-but-empty field inconsistently.
-        if share_with:
-            payload["shareWith"] = share_with
+        # Send it trimmed, matching the value validation just accepted -- an
+        # untrimmed " alice " would otherwise reach OCS as a different recipient
+        # id than the one that was checked.
+        if share_with and share_with.strip():
+            payload["shareWith"] = share_with.strip()
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
@@ -176,7 +179,7 @@ class SharingClient(BaseNextcloudClient):
         """
         data: dict[str, Any] = {
             "path": path,
-            "shareType": 3,
+            "shareType": ShareType.PUBLIC_LINK,
             "permissions": permissions,
         }
         if expire_date is not None:
