@@ -519,6 +519,25 @@ class TestAccessTokenCreation:
         assert verifier._client_id_from_claims({}) == ""
         assert verifier._client_id_from_claims({"azp": ""}) == ""
 
+    def test_client_id_from_claims_falls_through_empty_client_id(self, base_settings):
+        """A present-but-empty `client_id` must not shadow a usable `azp`.
+
+        The guard tests the value, not the key, so an IdP that stamps
+        `client_id: ""` alongside a real `azp` still resolves to a client
+        rather than fail-closing to "".
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert (
+            verifier._client_id_from_claims({"client_id": "", "azp": "nextcloud"})
+            == "nextcloud"
+        )
+        # Non-string claims fall through the same way.
+        assert (
+            verifier._client_id_from_claims({"client_id": 42, "azp": "nextcloud"})
+            == "nextcloud"
+        )
+
 
 class TestVerifyTokenFlow:
     """Test complete verify_token flow."""
