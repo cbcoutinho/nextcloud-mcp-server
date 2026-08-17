@@ -106,8 +106,9 @@ async def test_write_with_the_current_etag_succeeds(
     assert event["title"] == "v3"
 
 
+@pytest.mark.parametrize("extra_events", [0, 3])
 async def test_unfiltered_event_listing_request_count_does_not_scale(
-    nc_client: NextcloudClient, etag_test_event
+    nc_client: NextcloudClient, etag_test_event, extra_events: int
 ):
     """The no-date-range branch must not scale requests with the event count.
 
@@ -115,8 +116,24 @@ async def test_unfiltered_event_listing_request_count_does_not_scale(
     which (verified) leaves ``.etag`` unset on every object it returns -- so this
     path needed the same treatment as the date-range REPORT, via one batched
     collection PROPFIND rather than a PROPFIND per event.
+
+    Parametrized over two sizes deliberately: with only the single fixture
+    event, "at most 2 requests" cannot tell one batched PROPFIND apart from one
+    PROPFIND *per event* -- both total 2 -- so the assertion would pass against
+    the very regression it exists to catch.
     """
     calendar_name, _ = etag_test_event
+
+    tomorrow = datetime.now() + timedelta(days=1)
+    for i in range(extra_events):
+        await nc_client.calendar.create_event(
+            calendar_name,
+            {
+                "title": f"scale probe {i}",
+                "start_datetime": tomorrow.strftime(f"%Y-%m-%dT1{i}:00:00"),
+                "end_datetime": tomorrow.strftime(f"%Y-%m-%dT1{i}:30:00"),
+            },
+        )
 
     calls: list[str] = []
     dav_client = nc_client.calendar._dav_client
