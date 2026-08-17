@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -227,7 +228,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 scopes = scope_string.split() if scope_string else []
                 access_token = AccessToken(
                     token=token,
-                    client_id=userinfo.get("client_id", ""),
+                    client_id=self._client_id_from_claims(userinfo),
                     scopes=scopes,
                     expires_at=int(expiry),
                     resource=username,
@@ -562,6 +563,35 @@ class UnifiedTokenVerifier(TokenVerifier):
             True if token appears to be JWT format
         """
         return "." in token and token.count(".") == 2
+
+    @staticmethod
+    def _client_id_from_claims(claims: Mapping[str, Any]) -> str:
+        """The client identity of a *verified* payload.
+
+        Two spellings are in the wild and an IdP generally stamps only one.
+        RFC 9068 (JWT access tokens) puts it in ``client_id`` — that is what the
+        Nextcloud ``oidc`` app emits. Keycloak, Authentik and the rest of the
+        OIDC-Core lineage use ``azp`` (authorized party) instead and never emit
+        ``client_id`` at all.
+
+        Reading only ``client_id`` therefore made every token from an external
+        IdP look like it had no client, so ``ALLOWED_MGMT_CLIENT`` refused it no
+        matter how it was configured (cbcoutinho/astrolabe#324).
+
+        ``aud`` is deliberately NOT consulted here, unlike in
+        :meth:`_claimed_client_id`, which only feeds a log line. The audience
+        says who a token is *for*, not who asked for it; treating it as an
+        identity would let any token minted for an allowlisted audience pass the
+        allowlist regardless of which client obtained it.
+
+        Returns "" when neither claim is a non-empty string — the same
+        fail-closed value the allowlist already rejects.
+        """
+        for key in ("client_id", "azp"):
+            value = claims.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
 
     @staticmethod
     def _claimed_client_id(token: str) -> str | None:
@@ -1062,7 +1092,7 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         return AccessToken(
             token=token,
-            client_id=payload.get("client_id", ""),
+            client_id=self._client_id_from_claims(payload),
             scopes=scopes,
             expires_at=exp,
             resource=username,  # Store username in resource field (RFC 8707)
@@ -1097,7 +1127,7 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         return AccessToken(
             token=token,
-            client_id=userinfo.get("client_id", ""),
+            client_id=self._client_id_from_claims(userinfo),
             scopes=scopes,
             expires_at=int(expiry),
             resource=username,

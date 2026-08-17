@@ -471,6 +471,54 @@ class TestAccessTokenCreation:
         # Should have set a default expiry
         assert result.expires_at > int(time.time())
 
+    def test_create_access_token_reads_azp_when_no_client_id(self, base_settings):
+        """Keycloak et al stamp `azp` and never `client_id`.
+
+        Reading only `client_id` left every external-IdP token looking
+        client-less, so ALLOWED_MGMT_CLIENT rejected it however it was
+        configured (cbcoutinho/astrolabe#324).
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        payload = {
+            "sub": "testuser",
+            "scope": "openid profile",
+            "exp": int(time.time() + 3600),
+            "azp": "nextcloud",  # no client_id claim at all
+        }
+
+        result = verifier._create_access_token("test-token-123", payload)
+        assert result is not None
+        assert result.client_id == "nextcloud"
+
+    def test_create_access_token_prefers_client_id_over_azp(self, base_settings):
+        """RFC 9068's spelling wins when a token carries both."""
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        payload = {
+            "sub": "testuser",
+            "scope": "openid",
+            "exp": int(time.time() + 3600),
+            "client_id": "rfc9068-client",
+            "azp": "oidc-core-client",
+        }
+
+        result = verifier._create_access_token("test-token-123", payload)
+        assert result is not None
+        assert result.client_id == "rfc9068-client"
+
+    def test_client_id_from_claims_ignores_audience(self, base_settings):
+        """`aud` says who a token is for, not who obtained it.
+
+        Accepting it as an identity would let any token minted for an
+        allowlisted audience through the allowlist.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        assert verifier._client_id_from_claims({"aud": "some-allowlisted-id"}) == ""
+        assert verifier._client_id_from_claims({}) == ""
+        assert verifier._client_id_from_claims({"azp": ""}) == ""
+
 
 class TestVerifyTokenFlow:
     """Test complete verify_token flow."""
