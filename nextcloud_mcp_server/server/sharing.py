@@ -9,6 +9,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.sharing import PublicLinkRecipientError
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -140,15 +141,19 @@ def configure_sharing_tools(mcp: FastMCP):
                 share_type=share_type,
                 permissions=permissions,
             )
-        except ValueError as e:
-            # Surface the pairing rejection as a tool error the caller can read
-            # and act on, rather than an opaque internal failure. The client
-            # layer owns the rule so direct client callers are guarded too, and
-            # names no alternative call itself -- the tool that an MCP caller
-            # can actually invoke is only known here.
+        except PublicLinkRecipientError as e:
+            # The redirect fits only this rejection. The client layer names no
+            # tool (its own method names do not exist on the MCP side), and this
+            # is the layer that knows what the caller can actually invoke.
             raise ToolError(
                 f"{e} For a public download link, use nc_share_create_public_link."
             ) from e
+        except ValueError as e:
+            # Every other pairing rejection -- a recipient-typed share with no
+            # recipient. Suggesting the public-link tool here would be a wrong
+            # redirect, which is the failure this whole message path exists to
+            # avoid.
+            raise ToolError(str(e)) from e
         return json.dumps(share_data, indent=2)
 
     @mcp.tool(

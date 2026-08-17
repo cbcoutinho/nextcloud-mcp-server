@@ -10,6 +10,14 @@ from .base import BaseNextcloudClient, retry_on_429
 logger = logging.getLogger(__name__)
 
 
+class PublicLinkRecipientError(ValueError):
+    """A public-link share was given a recipient it cannot address.
+
+    Its own type, rather than a plain ``ValueError``, so callers can attach a
+    redirect that only fits this case without matching on message text.
+    """
+
+
 def validate_share_with(share_type: int, share_with: str | None) -> None:
     """Check the ``shareType``/``shareWith`` pairing before it reaches the wire.
 
@@ -30,8 +38,8 @@ def validate_share_with(share_type: int, share_with: str | None) -> None:
         share_with: Recipient identifier, if any.
 
     Raises:
-        ValueError: If a public link carries a recipient, or a recipient-typed
-            share is missing one.
+        PublicLinkRecipientError: If a public link carries a recipient.
+        ValueError: If a recipient-typed share is missing one.
     """
     has_recipient = bool(share_with and share_with.strip())
 
@@ -43,7 +51,7 @@ def validate_share_with(share_type: int, share_with: str | None) -> None:
             # the same operation -- pointing an agent at a callable that does
             # not exist on its side is worse than not suggesting one. The tool
             # appends its own suggestion when it translates this.
-            raise ValueError(
+            raise PublicLinkRecipientError(
                 f"shareType {ShareType.PUBLIC_LINK} (public link) must not carry "
                 f"shareWith: Nextcloud ignores the recipient and publishes the "
                 f"file to anyone holding the URL, so it would NOT be shared with "

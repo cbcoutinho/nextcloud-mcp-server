@@ -85,3 +85,22 @@ async def test_missing_recipient_raises_a_tool_error(
             share_type=0,
             ctx=mocker.MagicMock(),
         )
+
+
+async def test_missing_recipient_does_not_suggest_the_public_link_tool(
+    share_create_tool, stub_client, mocker
+):
+    """A wrong redirect is the failure this message path exists to avoid.
+
+    The public-link suggestion belongs only to the public-link-with-recipient
+    rejection. Appending it to "you forgot the recipient" would send a caller
+    who wants a *user* share off to create an anonymous link instead.
+    """
+    with pytest.raises(ToolError) as exc_info:
+        await share_create_tool.fn(
+            path="/Documents/report.md",
+            share_type=0,
+            ctx=mocker.MagicMock(),
+        )
+
+    assert "nc_share_create_public_link" not in str(exc_info.value)
