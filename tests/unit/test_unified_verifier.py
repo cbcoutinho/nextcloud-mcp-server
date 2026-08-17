@@ -5,6 +5,7 @@ Tests multi-audience token validation without requiring real network calls or
 IdP connections.
 """
 
+import hashlib
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -697,6 +698,39 @@ class TestManagementApiAllowlist:
         ):
             result = await verifier.verify_token_for_management_api("any-token")
             assert result is None
+
+    async def test_cache_hit_resolves_azp_against_allowlist(
+        self, monkeypatch, base_settings
+    ):
+        """The cache-hit path must resolve `azp` too, not just fresh validation.
+
+        This is the hot path in practice — Astrolabe polls the management API
+        often enough that most validations are served from the cache — so an
+        external-IdP token that passed on first validation would otherwise be
+        rejected on every subsequent request.
+        """
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "nextcloud")
+        from nextcloud_mcp_server.config import _reload_config
+
+        _reload_config()
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._allowed_mgmt_clients == {"nextcloud"}
+
+        # Seed the cache the way _create_access_token_with_cache_key would for a
+        # Keycloak token: `azp`, no `client_id` claim at all.
+        token = "keycloak-token"
+        cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
+        verifier._token_cache[cache_key] = (
+            {"sub": "alice", "scope": "openid profile", "azp": "nextcloud"},
+            time.time() + 3600,
+        )
+
+        # No _verify_without_audience_check patch: a cache miss would try to
+        # reach the IdP, so reaching the allowlist at all proves the cache hit.
+        result = await verifier.verify_token_for_management_api(token)
+        assert result is not None
+        assert result.client_id == "nextcloud"
+        assert result.resource == "alice"
 
     async def test_cache_hit_also_enforces_allowlist(self, monkeypatch, base_settings):
         """A previously-cached token must still be re-checked against the allowlist."""
