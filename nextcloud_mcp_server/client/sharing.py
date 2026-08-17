@@ -110,7 +110,11 @@ class SharingClient(BaseNextcloudClient):
             Share data including share ID
 
         Raises:
-            ValueError: If the ``share_type``/``share_with`` pairing is invalid
+            PublicLinkRecipientError: If a public link carries a recipient. A
+                ``ValueError`` subclass, so existing ``except ValueError``
+                handlers keep working; catch it specifically to react to just
+                that case.
+            ValueError: If a recipient-typed share is missing its recipient.
             HTTPStatusError: If the request fails
         """
         validate_share_with(share_type, share_with)
