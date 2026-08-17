@@ -186,7 +186,7 @@ oauth_token_validations_total = Counter(
     #         reason in _reject(), never set independently
     # reason: none (valid) | expired | inactive | bad_signature | bad_issuer
     #         | bad_audience | not_allowlisted | not_configured
-    #         | network_error | unknown
+    #         | network_error | no_signing_keys | unknown
     ["method", "result", "reason", "client_id"],
 )
 
