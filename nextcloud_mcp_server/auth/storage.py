@@ -606,12 +606,21 @@ class RefreshTokenStorage:
         from scratch — the second one crashes with "relation already
         exists". On Postgres we acquire a session-level
         :func:`pg_advisory_lock` so the second pod blocks until the
-        first finishes. SQLite serializes writes via its own file lock
-        and needs no extra coordination, so this is a no-op there.
+        first finishes. This is a no-op on SQLite: its file lock serializes
+        individual writes but does not make a multi-statement migration
+        atomic, so a shared-file multi-process SQLite deployment is not a
+        supported topology here.
 
         The lock is held on a separate connection from the engine pool
         so it survives the worker-thread ``to_thread.run_sync`` call
         that actually runs Alembic.
+
+        This does **not** cover racing migrations inside one process —
+        ``initialize()`` runs per MCP session, and each instance takes its
+        own advisory lock. That serialization lives in
+        :data:`nextcloud_mcp_server.migrations._ALEMBIC_COMMAND_LOCK`,
+        which has to be process-wide anyway because Alembic keeps its
+        environment proxies in module globals.
         """
         assert self.engine is not None, "engine must be built before migration lock"
         if is_sqlite_url(self.database_url):
