@@ -11,6 +11,7 @@ from urllib.parse import unquote
 import anyio
 from httpx import AsyncClient, HTTPError, HTTPStatusError, RequestError, codes
 
+from nextcloud_mcp_server.client.dav_errors import enrich_dav_error
 from nextcloud_mcp_server.observability.metrics import (
     record_nextcloud_api_call,
     record_nextcloud_api_retry,
@@ -318,6 +319,15 @@ class BaseNextcloudClient(ABC):
                 status_code=status_code,
                 duration=duration,
             )
+
+            # Attach the server's own explanation before re-raising. DAV replies
+            # name the concrete failure in the body (Sabre s:exception/s:message)
+            # and 412/423/507 become distinguishable types. Non-DAV responses are
+            # returned unchanged, and the result still subclasses HTTPStatusError,
+            # so every existing handler -- including retry_on_429's status check
+            # around this method -- is unaffected.
+            if isinstance(e, HTTPStatusError):
+                raise enrich_dav_error(e) from e
 
             # Re-raise the exception
             raise
