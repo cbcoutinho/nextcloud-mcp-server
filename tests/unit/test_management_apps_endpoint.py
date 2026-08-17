@@ -16,7 +16,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api.webhooks import get_installed_apps
+from nextcloud_mcp_server.api.apps import get_installed_apps
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 
 pytestmark = pytest.mark.unit
@@ -30,7 +30,7 @@ def _build_test_app() -> Starlette:
 
 def _patch_token_validation(mocker, user_id: str = "admin") -> None:
     mocker.patch(
-        "nextcloud_mcp_server.api.webhooks.validate_token_and_get_user",
+        "nextcloud_mcp_server.api.apps.validate_token_and_get_user",
         new=AsyncMock(return_value=(user_id, {"sub": user_id})),
     )
 
@@ -40,7 +40,7 @@ def _patch_basic_auth(
 ) -> AsyncMock:
     """Patch get_basic_auth_for_user to return canned credentials."""
     return mocker.patch(
-        "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
+        "nextcloud_mcp_server.api.apps.get_basic_auth_for_user",
         new=AsyncMock(return_value=(username, app_password)),
     )
 
@@ -58,9 +58,7 @@ def _patch_outbound_client(mocker, response: MagicMock) -> MagicMock:
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     mock_factory = MagicMock(return_value=mock_client)
-    mocker.patch(
-        "nextcloud_mcp_server.api.webhooks.nextcloud_httpx_client", mock_factory
-    )
+    mocker.patch("nextcloud_mcp_server.api.apps.nextcloud_httpx_client", mock_factory)
     mock_factory.attach_mock(mock_get, "get")
     return mock_factory
 
@@ -173,7 +171,7 @@ async def test_unprovisioned_user_returns_428(mocker):
     prerequisite step (provisioning) before it can succeed."""
     _patch_token_validation(mocker)
     mocker.patch(
-        "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
+        "nextcloud_mcp_server.api.apps.get_basic_auth_for_user",
         new=AsyncMock(side_effect=ProvisioningRequiredError("not provisioned")),
     )
 

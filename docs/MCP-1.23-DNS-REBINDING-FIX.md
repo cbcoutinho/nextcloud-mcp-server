@@ -42,10 +42,7 @@ Explicitly disable DNS rebinding protection by passing `transport_security=Trans
 Modified `nextcloud_mcp_server/app.py`:
 
 1. **Import** `TransportSecuritySettings` from `mcp.server.transport_security`
-2. **Updated all three FastMCP initializations**:
-   - OAuth mode (line 1015)
-   - Smithery stateless mode (line 1030)
-   - BasicAuth mode (line 1040)
+2. **Updated every FastMCP initialization** (OAuth mode, BasicAuth mode)
 
 Each now includes:
 ```python

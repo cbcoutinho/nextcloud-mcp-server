@@ -170,25 +170,6 @@ TOKEN_EXCHANGE_CACHE_TTL=300  # Cache exchanged tokens
 
 ---
 
-#### 5. Smithery Stateless
-
-**Use Case:** Multi-tenant SaaS deployment via Smithery platform
-
-**Required Configuration:**
-- None! Configuration comes from session URL params: `?nextcloud_url=...&username=...&app_password=...`
-
-**Forbidden Configuration:**
-- Must NOT set: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD`, `ENABLE_MULTI_USER_BASIC_AUTH`, `ENABLE_TOKEN_EXCHANGE`, `ENABLE_OFFLINE_ACCESS`, `VECTOR_SYNC_ENABLED`, `NEXTCLOUD_OIDC_CLIENT_ID`, `NEXTCLOUD_OIDC_CLIENT_SECRET`
-
-**Characteristics:**
-- No persistent storage (stateless)
-- Client created per-request from session config
-- No vector sync (disabled)
-- No admin UI (no /app routes)
-- No OAuth infrastructure
-
----
-
 ### Configuration Validation
 
 **Implementation:** `nextcloud_mcp_server/config_validators.py`
@@ -199,11 +180,10 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     """Detect authentication mode from configuration.
 
     Priority (most specific to most general):
-    1. Smithery (explicit flag)
-    2. Token exchange (most specific OAuth mode)
-    3. Multi-user BasicAuth
-    4. Single-user BasicAuth
-    5. OAuth single-audience (default OAuth mode)
+    1. Token exchange (most specific OAuth mode)
+    2. Multi-user BasicAuth
+    3. Single-user BasicAuth
+    4. OAuth single-audience (default OAuth mode)
     """
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
@@ -251,21 +231,21 @@ Conditional requirements:
 
 ### Configuration Matrix
 
-| Variable | Single BasicAuth | Multi BasicAuth | OAuth Single | OAuth Exchange | Smithery |
-|----------|------------------|-----------------|--------------|----------------|----------|
-| **NEXTCLOUD_HOST** | Required | Required | Required | Required | Forbidden |
-| **NEXTCLOUD_USERNAME** | Required | Forbidden | Forbidden | Forbidden | Forbidden |
-| **NEXTCLOUD_PASSWORD** | Required | Forbidden | Forbidden | Forbidden | Forbidden |
-| **ENABLE_MULTI_USER_BASIC_AUTH** | Forbidden | Required | Forbidden | Forbidden | Forbidden |
-| **ENABLE_TOKEN_EXCHANGE** | Forbidden | Forbidden | Forbidden | Required | Forbidden |
-| **ENABLE_OFFLINE_ACCESS** | Optional\* | Optional\* | Optional\* | Optional\* | Forbidden |
-| **TOKEN_ENCRYPTION_KEY** | If offline | If offline | If offline | If offline | Forbidden |
-| **TOKEN_STORAGE_DB** | If offline | If offline | If offline | If offline | Forbidden |
-| **OIDC_CLIENT_ID** | Forbidden | If offline | Optional\*\* | Optional\*\* | Forbidden |
-| **OIDC_CLIENT_SECRET** | Forbidden | If offline | Optional\*\* | Optional\*\* | Forbidden |
-| **VECTOR_SYNC_ENABLED** | Optional | Optional | Optional | Optional | Forbidden |
-| **QDRANT_URL/LOCATION** | If vector | If vector | If vector | If vector | Forbidden |
-| **OLLAMA_BASE_URL/OPENAI_API_KEY** | Optional | Optional | Optional | Optional | Forbidden |
+| Variable | Single BasicAuth | Multi BasicAuth | OAuth Single | OAuth Exchange |
+|----------|------------------|-----------------|--------------|----------------|
+| **NEXTCLOUD_HOST** | Required | Required | Required | Required |
+| **NEXTCLOUD_USERNAME** | Required | Forbidden | Forbidden | Forbidden |
+| **NEXTCLOUD_PASSWORD** | Required | Forbidden | Forbidden | Forbidden |
+| **ENABLE_MULTI_USER_BASIC_AUTH** | Forbidden | Required | Forbidden | Forbidden |
+| **ENABLE_TOKEN_EXCHANGE** | Forbidden | Forbidden | Forbidden | Required |
+| **ENABLE_OFFLINE_ACCESS** | Optional\* | Optional\* | Optional\* | Optional\* |
+| **TOKEN_ENCRYPTION_KEY** | If offline | If offline | If offline | If offline |
+| **TOKEN_STORAGE_DB** | If offline | If offline | If offline | If offline |
+| **OIDC_CLIENT_ID** | Forbidden | If offline | Optional\*\* | Optional\*\* |
+| **OIDC_CLIENT_SECRET** | Forbidden | If offline | Optional\*\* | Optional\*\* |
+| **VECTOR_SYNC_ENABLED** | Optional | Optional | Optional | Optional |
+| **QDRANT_URL/LOCATION** | If vector | If vector | If vector | If vector |
+| **OLLAMA_BASE_URL/OPENAI_API_KEY** | Optional | Optional | Optional | Optional |
 
 \* Only enables background sync for semantic search
 \*\* Uses DCR if not provided
@@ -321,7 +301,6 @@ The `mcp-oauth` service configuration was updated to remove `ENABLE_MULTI_USER_B
 - Multi-user BasicAuth validation (7 tests)
 - OAuth single-audience validation (6 tests)
 - OAuth token exchange validation (3 tests)
-- Smithery validation (4 tests)
 - Mode summary generation (3 tests)
 - Edge cases (3 tests)
 

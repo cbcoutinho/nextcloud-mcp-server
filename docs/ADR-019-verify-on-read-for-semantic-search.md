@@ -28,7 +28,7 @@ The vector index in Qdrant is a *recall layer*, not the source of truth. Authori
 
 Two mechanisms keep Qdrant in sync with Nextcloud, and both have non-zero latency:
 
-1. **Webhook delivery (ADR-010)**. Nextcloud's `webhook_listeners` app dispatches change notifications via background jobs. The default `cron` job runs every 5 minutes, so even a healthy webhook pipeline opens a 0–5 minute window where deletions/unshares are not yet reflected in the index. Operators with dedicated webhook workers can shrink this, but most production deployments stay on the default cadence.
+1. **Webhook delivery (ADR-010)**. Astrolabe dispatches change notifications to the MCP server via Nextcloud background jobs. The default `cron` job runs every 5 minutes, so even a healthy webhook pipeline opens a 0–5 minute window where deletions/unshares are not yet reflected in the index. Operators with dedicated webhook workers can shrink this, but most production deployments stay on the default cadence.
 
 2. **Periodic scanner (ADR-007)**. The fallback reconciliation scan runs on `vector_sync_scan_interval`. The dev default is 60 seconds, but ADR-010 explicitly recommends raising this to 1 hour or more in production once webhooks are in place, since the scanner exists primarily to recover from missed events. Large deployments may run it once per day.
 

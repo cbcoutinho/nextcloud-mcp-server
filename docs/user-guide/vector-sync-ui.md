@@ -49,7 +49,8 @@ VECTOR_SYNC_ENABLED=true
 NEXTCLOUD_PUBLIC_ISSUER_URL=https://your-public-nextcloud-url.com
 ```
 
-**Admin Access**: Webhooks tab only visible to Nextcloud admins (verified via Provisioning API).
+Webhook-based sync is configured in Nextcloud's Astrolabe admin settings, not
+here — see the [Webhook Management Guide](../webhook-management-guide.md).
 
 ## Use Cases
 

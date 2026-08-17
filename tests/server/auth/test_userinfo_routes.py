@@ -92,9 +92,7 @@ def test_user_info_safe_fragments_are_still_raw():
     rendered = _jinja_env.get_template("user_info.html").render(
         user_info_tab_html="<table><tr><td>marker-cell</td></tr></table>",
         vector_sync_tab_html="",
-        webhooks_tab_html="",
         show_vector_sync_tab=False,
-        show_webhooks_tab=False,
         logout_url=None,
     )
 
@@ -120,11 +118,6 @@ async def test_user_info_html_escapes_username_exactly_once(mocker):
         "nextcloud_mcp_server.auth.userinfo_routes._get_processing_status",
         return_value=None,
     )
-    mocker.patch(
-        "nextcloud_mcp_server.auth.userinfo_routes._get_authenticated_client_for_userinfo",
-        side_effect=RuntimeError("not needed"),
-    )
-
     request = Mock()
     request.app.state = Mock(spec=[])  # no oauth_context -> BasicAuth rendering
 

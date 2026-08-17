@@ -1,6 +1,15 @@
 # Webhook Management Guide
 
-This guide explains how to enable and disable webhooks for vector sync in each MCP server deployment mode. Webhooks enable near-real-time synchronization of content changes to the vector database, complementing the default polling-based sync.
+This guide explains how to enable and disable webhook-based vector sync.
+Webhooks give near-real-time synchronization of content changes to the vector
+database, complementing the default polling-based sync.
+
+Change events are delivered by the
+**[Astrolabe app](https://github.com/cbcoutinho/astrolabe)**: it subscribes to
+Nextcloud's events and POSTs each one to the MCP server's ingress at
+`/webhooks/nextcloud`. There is nothing to register on either side and no occ
+command for adding or removing listeners — delivery is configured entirely from
+Astrolabe's admin settings (equivalently, `occ config:system:set`).
 
 **Related ADRs:**
 - ADR-010: Webhook-Based Vector Sync
@@ -8,319 +17,170 @@ This guide explains how to enable and disable webhooks for vector sync in each M
 
 ## Prerequisites
 
-Before enabling webhooks, ensure:
+1. **MCP server** reachable from Nextcloud over HTTP(S), with
+   `VECTOR_SYNC_ENABLED=true` and `WEBHOOK_SECRET` set
+2. **Astrolabe app** installed in Nextcloud (Nextcloud 30+)
+3. **Background sync credentials** provisioned per user — the receiver needs
+   them to read the changed content back
+4. **Nextcloud background jobs running** — delivery is enqueued as a job, so
+   cron cadence is your delivery latency
 
-1. **Nextcloud 30+** with `webhook_listeners` app enabled
-2. **[Astrolabe app](https://github.com/cbcoutinho/astrolabe)** installed in Nextcloud (provides settings UI and credentials API)
-3. **MCP server** accessible from Nextcloud via HTTP(S)
-4. **Vector sync enabled** on the MCP server
+## How It Works
 
-## Webhook Architecture Overview
+Two pieces must both be in place:
 
-The webhook system has two components:
+1. **Change delivery** — Astrolabe's event listeners enqueue a background job
+   that POSTs the change envelope to `{mcp_server_url}/webhooks/nextcloud` with
+   `Authorization: Bearer <shared secret>`.
+2. **Background sync credentials** — the MCP server reads the changed content
+   back out of Nextcloud on behalf of that user (see below).
 
-1. **Webhook Registration** - Configuring Nextcloud to send change notifications to the MCP server
-2. **Background Sync Credentials** - Allowing the MCP server to access Nextcloud APIs on behalf of users
+Webhooks are additive: the polling scanner keeps running and reconciles anything
+not delivered (server down, job backlog, unsupported event).
 
-Both must be configured for webhooks to function properly.
+## Setup
 
-## Deployment Mode Specifics
+### Step 1: Configure the MCP server
 
-### 1. Single-User BasicAuth
-
-**Configuration:**
 ```bash
-NEXTCLOUD_HOST=http://localhost:8080
+VECTOR_SYNC_ENABLED=true
+# generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+WEBHOOK_SECRET=<secret>
+```
+
+Without `WEBHOOK_SECRET` the `/webhooks/nextcloud` route is **not mounted**
+(404) and vector sync falls back to polling only (GHSA-8vh3-g2qg-2h2c).
+
+### Step 2: Point Astrolabe at the MCP server
+
+In Nextcloud, **Administration settings → Astrolabe**:
+
+- **MCP Server URL (internal)** — the address Nextcloud can reach the MCP server
+  on
+- **Webhook shared secret** — must equal the server's `WEBHOOK_SECRET`
+  (write-only: the stored value is never displayed, and leaving the field blank
+  keeps the current one)
+
+Both are Nextcloud *system* config values, so they can equally be set from the
+CLI:
+
+```bash
+php occ config:system:set mcp_server_url --value="https://mcp.example.com"
+php occ config:system:set mcp_webhook_secret --value="<secret>"
+```
+
+Use an `https://` URL — the secret travels as a bearer token.
+
+### Step 3: Enable sync presets
+
+On the same admin page, toggle the presets you want. Presets are stored in app
+config (`astrolabe.enabled_sync_presets`); with none enabled, no listener fires.
+
+| Preset | Events delivered | What it keeps in sync |
+|---|---|---|
+| `notes_sync` | Node created/written/deleted under `…/files/Notes/` | Notes (`.md`) |
+| `files_sync` | Node created/written/deleted anywhere, plus SystemTag changes (NC 32+) | Notes, tagged PDFs, and index-tag changes |
+| `deck_sync` | Deck card created/updated/deleted, board updated | Deck cards (board updates are reconciled by the scanner) |
+
+Every preset maps to a doc type vector sync actually indexes; the receiver
+ignores anything else it is handed. Files are indexed only when they carry an
+index tag (`vector-index` / `keyword-index`, directly or via a tagged folder), so
+a file event is delivered as a *reconcile*: the server resolves the file's
+current tag membership and then indexes or releases it. Calendar objects, Tables
+rows and Forms submissions have no index and therefore no preset.
+
+### Disabling
+
+- **System-wide:** toggle the presets off, or flip the master switch
+  (`php occ config:app:set astrolabe native_sync_enabled --value=false --type=boolean`).
+- **Per user:** revoke that user's background sync credentials (Nextcloud →
+  Personal settings → Astrolabe → *Revoke Access*). Events still arrive but
+  cannot be processed for them.
+
+## Background Sync Credentials
+
+Delivery alone is not enough — the MCP server must read the changed content
+back. How credentials are provisioned depends on deployment mode:
+
+### Single-user BasicAuth
+
+```bash
 NEXTCLOUD_USERNAME=admin
-NEXTCLOUD_PASSWORD=password
-VECTOR_SYNC_ENABLED=true
+NEXTCLOUD_PASSWORD=<app-password>
 ```
 
-**Enable Webhooks:**
-1. Register webhooks using occ commands (requires Nextcloud admin):
-   ```bash
-   # Enable webhook_listeners app
-   php occ app:enable webhook_listeners
+Nothing per-user to provision; background sync runs as that account.
 
-   # Register webhooks for vector sync
-   php occ webhook_listeners:add \
-     --event "OCP\Files\Events\Node\NodeCreatedEvent" \
-     --uri "http://mcp-server:8000/webhooks/nextcloud" \
-     --method POST
+### Multi-user BasicAuth / OAuth modes
 
-   # Repeat for other events (see Event Types below)
-   ```
-
-2. Optionally reduce polling frequency:
-   ```bash
-   VECTOR_SYNC_SCAN_INTERVAL=86400  # 24 hours
-   ```
-
-**Disable Webhooks:**
 ```bash
-# List registered webhooks
-php occ webhook_listeners:list
-
-# Remove specific webhook by ID
-php occ webhook_listeners:remove <webhook-id>
-```
-
-**Notes:**
-- Simplest mode - admin credentials used for all operations
-- No per-user provisioning required
-- Background sync runs as the configured admin user
-
----
-
-### 2. Multi-User BasicAuth Pass-Through
-
-**Configuration:**
-```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=multi_user_basic
+MCP_DEPLOYMENT_MODE=multi_user_basic     # or the OAuth default
 ENABLE_BACKGROUND_OPERATIONS=true
 TOKEN_ENCRYPTION_KEY=<key>
 TOKEN_STORAGE_DB=/app/data/tokens.db
-VECTOR_SYNC_ENABLED=true
-# OAuth client for Astrolabe API access
-NEXTCLOUD_OIDC_CLIENT_ID=<client-id>
-NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret>
 ```
 
-**Credential Architecture:**
-This mode uses **two separate credential mechanisms**:
+Each user provisions once, from **Nextcloud → Personal settings → Astrolabe**:
 
-1. **OAuth Session** (for management API access, including webhooks):
-   - Obtained via browser OAuth flow (`/oauth/login`)
-   - Stores refresh token in MCP server's `tokens.db`
-   - Used for webhook registration/management APIs
+1. **Authorize via OAuth** — stores a refresh token in the MCP server's
+   `tokens.db`, used for management API access.
+2. **App password** — generate one under Nextcloud → Security and paste it into
+   the Astrolabe panel. Stored encrypted in `oc_preferences` and used by the
+   background scanners; needed because OAuth refresh tokens expire sooner.
 
-2. **App Password** (for background sync):
-   - Generated in Nextcloud Security settings
-   - Stored encrypted in Nextcloud's `oc_preferences` via Astrolabe
-   - Used by background scanners to access Nextcloud APIs
-
-**Enable Webhooks:**
-
-#### Step 1: Complete OAuth Login (for Management API)
-Users must authorize the MCP server to access their Nextcloud:
-
-1. Navigate to **Nextcloud Settings → Astrolabe** (Personal settings)
-2. Click **"Authorize via OAuth"** under "Option 1"
-3. Complete OAuth consent flow
-4. Verify the page shows "Background Sync Access: Active"
-
-#### Step 2: Configure App Password (for Background Sync)
-Since OAuth refresh tokens have short expiry, users should also configure an app password:
-
-1. Navigate to **Nextcloud Settings → Security**
-2. Generate a new app password (name it "Astrolabe" or "MCP Server")
-3. Return to **Nextcloud Settings → Astrolabe**
-4. Under "Option 2: App Password", paste the app password
-5. Click **Save**
-
-#### Step 3: Register Webhooks (Admin)
-Same as Single-User BasicAuth:
-```bash
-php occ webhook_listeners:add \
-  --event "OCP\Files\Events\Node\NodeCreatedEvent" \
-  --uri "http://mcp-server:8003/webhooks/nextcloud" \
-  --method POST
-```
-
-**Disable Webhooks:**
-
-*Per-User:*
-1. Navigate to **Nextcloud Settings → Astrolabe**
-2. Click **"Revoke Access"** (for OAuth tokens) or **"Revoke Access"** (for app password)
-
-*System-Wide:*
-```bash
-php occ webhook_listeners:remove <webhook-id>
-```
-
-**Troubleshooting:**
-
-If OAuth login fails with "Access forbidden - Your client is not authorized":
-1. Check if OAuth client is registered:
-   ```sql
-   SELECT id, name, client_identifier FROM oc_oidc_clients
-   WHERE dcr = 1 ORDER BY id DESC LIMIT 5;
-   ```
-2. Restart MCP server to trigger DCR re-registration
-3. Verify `NEXTCLOUD_OIDC_CLIENT_ID` and `NEXTCLOUD_OIDC_CLIENT_SECRET` are set
-
-If background sync fails with "User no longer provisioned":
-1. Verify app password is stored:
-   ```sql
-   SELECT userid, configkey FROM oc_preferences
-   WHERE appid = 'astrolabe' AND userid = 'username';
-   ```
-2. Ensure user completed **both** OAuth login AND app password setup
-
----
-
-### 3. OAuth Single-Audience (Default OAuth Mode)
-
-**Configuration:**
-```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
-# No NEXTCLOUD_USERNAME/PASSWORD
-ENABLE_BACKGROUND_OPERATIONS=true
-TOKEN_ENCRYPTION_KEY=<key>
-TOKEN_STORAGE_DB=/app/data/tokens.db
-VECTOR_SYNC_ENABLED=true
-```
-
-**Enable Webhooks:**
-
-#### Step 1: User Provisioning
-Users authorize via OAuth with `offline_access` scope:
-
-1. MCP client initiates OAuth flow
-2. User consents to requested scopes including `offline_access`
-3. MCP server stores refresh token for background operations
-
-Alternatively, via Astrolabe UI:
-1. Navigate to **Nextcloud Settings → Astrolabe**
-2. Click **"Authorize via OAuth"**
-3. Complete consent flow
-
-#### Step 2: Register Webhooks (Admin)
-```bash
-php occ webhook_listeners:add \
-  --event "OCP\Files\Events\Node\NodeCreatedEvent" \
-  --uri "http://mcp-server:8001/webhooks/nextcloud" \
-  --method POST
-```
-
-**Disable Webhooks:**
-
-*Per-User:*
-- Via Astrolabe UI: Click "Disable Indexing" or "Disconnect"
-- Via MCP tool: Use `revoke_nextcloud_access` if available
-
-*System-Wide:*
-```bash
-php occ webhook_listeners:remove <webhook-id>
-```
-
----
-
-### 4. Smithery Stateless
-
-**Configuration:**
-- Configuration from session URL params
-- `VECTOR_SYNC_ENABLED=false` (required)
-
-**Webhooks:**
-**Not supported.** This mode is stateless with no persistent storage or background operations.
-
----
-
-## Webhook Event Types
-
-Register these webhook events for full vector sync coverage:
-
-### File/Note Events
-```bash
-# Use BeforeNodeDeletedEvent for deletions (includes node.id)
-php occ webhook_listeners:add --event "OCP\Files\Events\Node\NodeCreatedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCP\Files\Events\Node\NodeWrittenEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCP\Files\Events\Node\BeforeNodeDeletedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-```
-
-### Calendar Events
-```bash
-php occ webhook_listeners:add --event "OCP\Calendar\Events\CalendarObjectCreatedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCP\Calendar\Events\CalendarObjectUpdatedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCP\Calendar\Events\CalendarObjectDeletedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-```
-
-### Tables Events
-```bash
-php occ webhook_listeners:add --event "OCA\Tables\Event\RowAddedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCA\Tables\Event\RowUpdatedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-php occ webhook_listeners:add --event "OCA\Tables\Event\RowDeletedEvent" --uri "$MCP_URL/webhooks/nextcloud"
-```
-
-## Security Considerations
-
-### Webhook Authentication (required — GHSA-8vh3-g2qg-2h2c)
-`WEBHOOK_SECRET` is **required** to use webhooks. The receiver trusts the
-`user.uid` in the payload and feeds it to Qdrant, so an unauthenticated POST
-could delete or re-index any user's embeddings. When `WEBHOOK_SECRET` is unset,
-the `/webhooks/nextcloud` route is **not mounted** (404) and registration
-refuses to create webhooks; vector sync still runs via the polling scanner.
-
-```bash
-# MCP Server (generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
-WEBHOOK_SECRET=<generate-random-secret>
-
-# Nextcloud webhook registration — the Authorization header is mandatory
-php occ webhook_listeners:add \
-  --event "..." \
-  --uri "$MCP_URL/webhooks/nextcloud" \
-  --header "Authorization: Bearer <secret>"
-```
-
-### Token Storage
-- Refresh tokens and app passwords are encrypted using `TOKEN_ENCRYPTION_KEY`
-- Store the key securely (environment variable, secrets manager)
-- Different users have isolated credential storage
+Verify the panel shows "Background Sync Access: Active".
 
 ## Monitoring
 
-### MCP Server Logs
 ```bash
-# Docker
-docker compose logs mcp-multi-user-basic | grep -i webhook
+# MCP server
+docker compose logs mcp | grep -i webhook
+#   "Queued document from webhook: ..."   → success
+#   401 on /webhooks/nextcloud            → secret mismatch
+#   "User X no longer provisioned"        → missing background credentials
 
-# Key log messages
-# - "Queued document from webhook: ..." - Success
-# - "Webhook authentication failed" - Auth error
-# - "User X no longer provisioned" - Missing credentials
-```
-
-### Nextcloud Logs
-```bash
+# Nextcloud
 docker compose exec app cat /var/www/html/data/nextcloud.log | \
-  jq 'select(.message | contains("webhook"))' | tail
+  jq 'select(.app == "astrolabe")' | tail
 ```
 
-### Database Checks
 ```sql
--- Check registered webhooks
-SELECT * FROM oc_webhook_listeners;
+-- Astrolabe sync settings (presets, master switch)
+SELECT configkey, configvalue FROM oc_appconfig WHERE appid = 'astrolabe';
 
--- Check OAuth clients
-SELECT id, name, token_type FROM oc_oidc_clients WHERE dcr = 1;
-
--- Check user credentials stored by Astrolabe app
+-- Per-user background sync credentials
 SELECT userid, configkey FROM oc_preferences WHERE appid = 'astrolabe';
 ```
 
 ## Common Issues
 
-### "Access forbidden - Your client is not authorized to connect"
-**Cause:** OAuth client registration expired or not present in Nextcloud
-**Fix:** Restart MCP server to trigger DCR re-registration
+### Webhooks never arrive
+1. `WEBHOOK_SECRET` unset on the MCP server → the route returns 404. Set it and
+   restart.
+2. No presets enabled, or `mcp_server_url` unreachable from the Nextcloud
+   container (`localhost` inside a container is not your laptop).
+3. Background jobs not running — delivery is a queued job
+   (`php occ background:job:worker`, or a working cron).
+4. The change was to something vector sync doesn't index — an untagged file, a
+   file type other than PDF, a calendar event (see the preset table).
+
+### 401 on `/webhooks/nextcloud`
+`mcp_webhook_secret` (Nextcloud) does not match `WEBHOOK_SECRET` (MCP server).
 
 ### "User X no longer provisioned, stopping scanner"
-**Cause:** Background sync credentials missing or expired
-**Fix:** User must complete credential provisioning (see mode-specific steps)
+Background sync credentials missing or expired — re-provision from Personal
+settings → Astrolabe.
 
-### "Failed to fetch" in browser console during OAuth
-**Cause:** Network issue between browser and MCP server callback endpoint
-**Fix:** Verify MCP server is accessible at the configured `NEXTCLOUD_MCP_SERVER_URL`
+### "Access forbidden - Your client is not authorized to connect"
+OAuth client registration expired or absent; restart the MCP server to trigger
+DCR re-registration and confirm `NEXTCLOUD_OIDC_CLIENT_ID` /
+`NEXTCLOUD_OIDC_CLIENT_SECRET`.
 
-### Webhooks not firing
-**Causes:**
-1. `webhook_listeners` app not enabled
-2. Webhook not registered for the event type
-3. Background job workers not running
-**Fix:**
-```bash
-php occ app:enable webhook_listeners
-php occ background:cron  # or configure systemd cron
-```
+## Security Considerations
+
+- `WEBHOOK_SECRET` is **required** (GHSA-8vh3-g2qg-2h2c). The receiver trusts
+  the `user.uid` in the payload and feeds it to Qdrant, so an unauthenticated
+  POST could delete or re-index any user's embeddings.
+- Serve the MCP server over HTTPS; the secret is a static bearer token.
+- Refresh tokens and app passwords are encrypted with `TOKEN_ENCRYPTION_KEY` —
+  keep it in a secrets manager, not in the image.

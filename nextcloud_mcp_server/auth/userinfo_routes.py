@@ -13,15 +13,12 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from httpx import BasicAuth
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
-from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import cfg, get_settings
+from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -40,65 +37,6 @@ _jinja_env = Environment(
     loader=FileSystemLoader(_template_dir),
     autoescape=select_autoescape(["html", "xml"]),
 )
-
-
-async def _get_authenticated_client_for_userinfo(request: Request) -> NextcloudClient:
-    """Get an authenticated Nextcloud client for user info page operations.
-
-    This is a shared helper for authenticated routes that need to access
-    Nextcloud APIs. It handles both BasicAuth and OAuth authentication modes.
-
-    Args:
-        request: Starlette request object
-
-    Returns:
-        Authenticated NextcloudClient
-
-    Raises:
-        RuntimeError: If credentials/session not configured
-    """
-    oauth_ctx = getattr(request.app.state, "oauth_context", None)
-
-    # BasicAuth mode - use credentials from environment
-    if not oauth_ctx:
-        nextcloud_host = get_settings().nextcloud_host
-        username = cfg("NEXTCLOUD_USERNAME")
-        password = cfg("NEXTCLOUD_PASSWORD")
-
-        if not all([nextcloud_host, username, password]):
-            raise RuntimeError("BasicAuth credentials not configured")
-
-        assert nextcloud_host is not None
-        assert username is not None
-        assert password is not None
-        return NextcloudClient(
-            base_url=nextcloud_host,
-            username=username,
-            auth=BasicAuth(username, password),
-            password=password,
-        )
-
-    # OAuth mode - get token from session
-    storage = oauth_ctx.get("storage")
-    session_id = request.cookies.get("mcp_session")
-
-    if not storage or not session_id:
-        raise RuntimeError("Session not found")
-
-    token_data = await storage.get_refresh_token(session_id)
-    if not token_data or "access_token" not in token_data:
-        raise RuntimeError("No access token found in session")
-
-    access_token = token_data["access_token"]
-    username = token_data.get("username")
-    nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
-
-    if not nextcloud_host or not username:
-        raise RuntimeError("Nextcloud host or username not configured")
-
-    return NextcloudClient.from_token(
-        base_url=nextcloud_host, token=access_token, username=username
-    )
 
 
 async def _get_processing_status(request: Request) -> dict[str, Any] | None:
@@ -455,17 +393,6 @@ async def user_info_html(request: Request) -> HTMLResponse:
     # Get vector sync processing status
     processing_status = await _get_processing_status(request)
 
-    # Check if user is admin (for Webhooks tab)
-    is_admin = False
-    try:
-        # Get authenticated Nextcloud client
-        nc_client = await _get_authenticated_client_for_userinfo(request)
-        is_admin = await is_nextcloud_admin(request, nc_client._client)
-        await nc_client.close()
-    except Exception as e:
-        logger.warning("Failed to check admin status: %s", e)
-        # Default to not admin if check fails
-
     # Check for error
     if "error" in user_context and user_context["error"] != "":
         # Get login URL dynamically
@@ -658,21 +585,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
 
     # Determine which tabs to show
     show_vector_sync_tab = processing_status is not None
-    show_webhooks_tab = is_admin
 
     # Build vector sync tab content (only if enabled)
     vector_sync_tab_html = ""
     if show_vector_sync_tab:
         vector_sync_tab_html = vector_status_html
-
-    # Build webhooks tab content (only if admin)
-    webhooks_tab_html = ""
-    if show_webhooks_tab:
-        webhooks_tab_html = """
-            <div hx-get="/app/webhooks" hx-trigger="load" hx-swap="outerHTML">
-                <p style="color: #999;">Loading webhook management...</p>
-            </div>
-        """
 
     # Check if vector sync is enabled (needed for Welcome tab)
     # Note: get_settings() supports both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED
@@ -685,9 +602,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
         content=template.render(
             user_info_tab_html=user_info_tab_html,
             vector_sync_tab_html=vector_sync_tab_html,
-            webhooks_tab_html=webhooks_tab_html,
             show_vector_sync_tab=show_vector_sync_tab,
-            show_webhooks_tab=show_webhooks_tab,
             logout_url=logout_url if auth_mode == "oauth" else None,
             # Additional context for Welcome tab
             vector_sync_enabled=vector_sync_enabled,

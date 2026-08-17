@@ -20,13 +20,12 @@ Concerns covered:
    - Queried ONCE at login, displayed from cache thereafter
    - NOT used for authorization decisions or background jobs
 
-3. **Webhook Registration Tracking** (both modes, for webhook management)
-   - Tracks registered webhook IDs mapped to presets
-   - Enables persistent webhook state across restarts
-   - Avoids redundant Nextcloud API calls for webhook status
+3. **App Passwords and Sessions** (both modes)
+   - Per-user app passwords for background jobs (multi-user BasicAuth)
+   - Browser session state for the session-authenticated /app routes
 
 IMPORTANT: The database is initialized in both BasicAuth and OAuth modes.
-Token storage requires TOKEN_ENCRYPTION_KEY, but webhook tracking does not.
+Token storage requires TOKEN_ENCRYPTION_KEY; the other stores do not.
 
 Sensitive data (tokens, secrets) is encrypted at rest using Fernet symmetric encryption.
 """
@@ -292,7 +291,7 @@ class _DBConn:
 
 
 class RefreshTokenStorage:
-    """Persistent storage for MCP server state (tokens, webhooks, and future features).
+    """Persistent storage for MCP server state (tokens, sessions, app passwords).
 
     This class manages multiple concerns across both BasicAuth and OAuth modes:
 
@@ -303,10 +302,10 @@ class RefreshTokenStorage:
     - OAuth sessions: Temporary session state for progressive consent flow
 
     **Both modes**:
-    - Webhook registration: Track registered webhooks mapped to presets
+    - App passwords: Encrypted per-user passwords for background jobs
     - Schema versioning: Handle database migrations automatically
 
-    Token-related operations require TOKEN_ENCRYPTION_KEY, but webhook operations do not.
+    Token-related operations require TOKEN_ENCRYPTION_KEY; the other stores do not.
     """
 
     def __init__(
@@ -325,7 +324,7 @@ class RefreshTokenStorage:
                 :func:`get_database_url` (honors ``DATABASE_URL`` env, then
                 ``TOKEN_STORAGE_DB``).
             encryption_key: Optional Fernet encryption key (32 bytes, base64-encoded).
-                Required for token storage operations, not required for webhook tracking.
+                Required for token storage operations, not for the other stores.
             db_path: Deprecated SQLite-only constructor argument retained for
                 tests that pass a tempfile path. Internally converted to
                 ``sqlite+aiosqlite:///{db_path}``.
@@ -374,7 +373,7 @@ class RefreshTokenStorage:
 
         Note:
             If TOKEN_ENCRYPTION_KEY is not set, token storage operations will fail,
-            but webhook tracking will still work.
+            but the unencrypted stores will still work.
         """
         database_url = get_database_url()
         if is_sqlite_url(database_url):
@@ -412,7 +411,7 @@ class RefreshTokenStorage:
         else:
             logger.info(
                 "TOKEN_ENCRYPTION_KEY not set - token storage operations will be unavailable, "
-                "but webhook tracking will still work"
+                "but the unencrypted stores will still work"
             )
 
         return cls(database_url=database_url, encryption_key=encryption_key)
@@ -1829,129 +1828,6 @@ class RefreshTokenStorage:
 
         if deleted > 0:
             logger.info("Cleaned up %s expired browser session(s)", deleted)
-
-        return deleted
-
-    # ============================================================================
-    # Webhook Registration Tracking (both BasicAuth and OAuth modes)
-    # ============================================================================
-
-    async def store_webhook(self, webhook_id: int, preset_id: str) -> None:
-        """
-        Store registered webhook ID for tracking.
-
-        Args:
-            webhook_id: Nextcloud webhook ID
-            preset_id: Preset identifier (e.g., "notes_sync", "calendar_sync")
-        """
-        if not self._initialized:
-            await self.initialize()
-
-        async with self._db() as db:
-            await db.execute(
-                """
-                INSERT INTO registered_webhooks (webhook_id, preset_id, created_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT (webhook_id) DO UPDATE SET
-                    preset_id = EXCLUDED.preset_id,
-                    created_at = EXCLUDED.created_at
-                """,
-                (webhook_id, preset_id, int(time.time())),
-            )
-            await db.commit()
-
-        logger.debug("Stored webhook %s for preset '%s'", webhook_id, preset_id)
-
-    async def get_webhooks_by_preset(self, preset_id: str) -> list[int]:
-        """
-        Get all webhook IDs registered for a preset.
-
-        Args:
-            preset_id: Preset identifier
-
-        Returns:
-            List of webhook IDs
-        """
-        if not self._initialized:
-            await self.initialize()
-
-        async with self._db() as db:
-            cursor = await db.execute(
-                "SELECT webhook_id FROM registered_webhooks WHERE preset_id = ?",
-                (preset_id,),
-            )
-            rows = await cursor.fetchall()
-
-        return [row[0] for row in rows]
-
-    async def delete_webhook(self, webhook_id: int) -> bool:
-        """
-        Remove webhook from tracking.
-
-        Args:
-            webhook_id: Nextcloud webhook ID to remove
-
-        Returns:
-            True if webhook was deleted, False if not found
-        """
-        if not self._initialized:
-            await self.initialize()
-
-        async with self._db() as db:
-            cursor = await db.execute(
-                "DELETE FROM registered_webhooks WHERE webhook_id = ?", (webhook_id,)
-            )
-            await db.commit()
-            deleted = cursor.rowcount > 0
-
-        if deleted:
-            logger.debug("Deleted webhook %s from tracking", webhook_id)
-
-        return deleted
-
-    async def list_all_webhooks(self) -> list[dict]:
-        """
-        List all tracked webhooks with metadata.
-
-        Returns:
-            List of webhook dictionaries with keys: webhook_id, preset_id, created_at
-        """
-        if not self._initialized:
-            await self.initialize()
-
-        async with self._db() as db:
-            cursor = await db.execute(
-                "SELECT webhook_id, preset_id, created_at FROM registered_webhooks ORDER BY created_at DESC"
-            )
-            rows = await cursor.fetchall()
-
-        return [
-            {"webhook_id": row[0], "preset_id": row[1], "created_at": row[2]}
-            for row in rows
-        ]
-
-    async def clear_preset_webhooks(self, preset_id: str) -> int:
-        """
-        Delete all webhooks for a preset (bulk operation).
-
-        Args:
-            preset_id: Preset identifier
-
-        Returns:
-            Number of webhooks deleted
-        """
-        if not self._initialized:
-            await self.initialize()
-
-        async with self._db() as db:
-            cursor = await db.execute(
-                "DELETE FROM registered_webhooks WHERE preset_id = ?", (preset_id,)
-            )
-            await db.commit()
-            deleted = cursor.rowcount
-
-        if deleted > 0:
-            logger.debug("Cleared %s webhook(s) for preset '%s'", deleted, preset_id)
 
         return deleted
 

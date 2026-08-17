@@ -149,6 +149,26 @@ _NOTE_CREATED_MISSING_ID = {
 }
 
 
+_PDF_WRITTEN = {
+    "user": {"uid": "alice"},
+    "time": 1762850500,
+    "event": {
+        "class": "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+        "node": {"id": 8123, "path": "/alice/files/Documents/report.pdf"},
+    },
+}
+
+
+_PDF_DELETED = {
+    "user": {"uid": "alice"},
+    "time": 1762850600,
+    "event": {
+        "class": "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent",
+        "node": {"id": 8123, "path": "/alice/files/Documents/report.pdf"},
+    },
+}
+
+
 _DECK_CARD_CREATED_MISSING_ID = {
     "user": {"uid": "admin"},
     "time": 1762900300,
@@ -192,6 +212,41 @@ def test_delete_event_queues_delete_task():
     assert task.operation == "delete"
     assert task.doc_id == "99"
     assert task.user_id == "alice"
+
+
+def test_pdf_written_queues_reconcile_task():
+    """An indexable file write queues a reconcile task (file_path=None); the
+    processor resolves whether the file is tagged for indexing."""
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with _client(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_PDF_WRITTEN)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+
+    task = receive_stream.receive_nowait()
+    assert task.doc_type == "file"
+    assert task.doc_id == "8123"
+    assert task.operation == "index"
+    assert task.file_path is None
+
+
+def test_pdf_deleted_queues_delete_task():
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with _client(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_PDF_DELETED)
+
+    assert response.status_code == 200
+    assert response.json()["operation"] == "delete"
+
+    task = receive_stream.receive_nowait()
+    assert task.doc_type == "file"
+    assert task.operation == "delete"
+    assert task.doc_id == "8123"
 
 
 def test_unsupported_event_is_ignored():
