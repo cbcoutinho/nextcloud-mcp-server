@@ -104,3 +104,41 @@ async def test_write_with_the_current_etag_succeeds(
 
     event, _ = await nc_client.calendar.get_event(calendar_name, uid)
     assert event["title"] == "v3"
+
+
+async def test_date_range_listing_costs_one_request(
+    nc_client: NextcloudClient, etag_test_event
+):
+    """Surfacing ETags must not turn one REPORT into 1 + N requests.
+
+    The date-range REPORT is the hot path for "list events in a range". Objects
+    it returns are already loaded, so if the REPORT does not ask for getetag,
+    every event falls through to an individual PROPFIND to find one. Measured
+    against a live instance: 1 REPORT with the getetag prop, versus 1 + N
+    without it.
+    """
+    calendar_name, created = etag_test_event
+    start = datetime.now() - timedelta(days=1)
+    end = datetime.now() + timedelta(days=3)
+
+    calls: list[str] = []
+    dav_client = nc_client.calendar._dav_client
+    original = dav_client.request
+
+    async def counting_request(url, method="GET", body="", headers=None, **kwargs):
+        calls.append(method)
+        return await original(url, method, body, headers or {}, **kwargs)
+
+    dav_client.request = counting_request
+    try:
+        events = await nc_client.calendar.get_calendar_events(
+            calendar_name, start_datetime=start, end_datetime=end
+        )
+    finally:
+        dav_client.request = original
+
+    assert events, "fixture event should fall inside the range"
+    assert calls == ["REPORT"], f"expected a single REPORT, got {calls}"
+    assert all(event.get("etag") for event in events), (
+        "the REPORT must carry an etag for every event"
+    )

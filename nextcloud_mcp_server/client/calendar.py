@@ -810,8 +810,15 @@ class CalendarClient:
         outer_comp_filter = cdav.CompFilter(name="VCALENDAR") + inner_comp_filter
         filter_element = cdav.Filter() + outer_comp_filter
 
+        # Ask for the ETag alongside the calendar data. The REPORT is the hot
+        # path for "list events in a range", and objects built from it are
+        # already loaded -- so without getetag here, surfacing an ETag per event
+        # would fall back to one PROPFIND *each*, turning a single REPORT into
+        # 1 + N requests.
         data = cdav.CalendarData()
-        query = cdav.CalendarQuery() + [dav.Prop() + data] + filter_element
+        query = (
+            cdav.CalendarQuery() + [dav.Prop() + data + dav.GetEtag()] + filter_element
+        )
 
         body = etree.tostring(
             query.xmlelement(), encoding="utf-8", xml_declaration=True
@@ -821,17 +828,24 @@ class CalendarClient:
 
         # Parse response (same pattern as AsyncCalendar.search)
         objects = []
-        response_data = response.expand_simple_props([cdav.CalendarData()])
+        response_data = response.expand_simple_props(
+            [cdav.CalendarData(), dav.GetEtag()]
+        )
         for href, props in response_data.items():
             if href == str(calendar.url):
                 continue
             cal_data = props.get(cdav.CalendarData.tag)
             if cal_data:
+                etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
                     url=calendar.url.join(href),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
+                    # caldav's ``etag`` property reads straight from ``props``,
+                    # so seeding it here is what keeps _object_etag off the
+                    # PROPFIND fallback.
+                    props={dav.GetEtag.tag: etag} if etag else None,
                 )
                 objects.append(obj)
 
