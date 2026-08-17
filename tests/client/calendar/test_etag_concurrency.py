@@ -106,6 +106,42 @@ async def test_write_with_the_current_etag_succeeds(
     assert event["title"] == "v3"
 
 
+async def test_unfiltered_event_listing_request_count_does_not_scale(
+    nc_client: NextcloudClient, etag_test_event
+):
+    """The no-date-range branch must not scale requests with the event count.
+
+    ``get_calendar_events`` without a range falls back to caldav's ``events()``,
+    which (verified) leaves ``.etag`` unset on every object it returns -- so this
+    path needed the same treatment as the date-range REPORT, via one batched
+    collection PROPFIND rather than a PROPFIND per event.
+    """
+    calendar_name, _ = etag_test_event
+
+    calls: list[str] = []
+    dav_client = nc_client.calendar._dav_client
+    original = dav_client.request
+
+    async def counting_request(url, method="GET", body="", headers=None, **kwargs):
+        calls.append(method)
+        return await original(url, method, body, headers or {}, **kwargs)
+
+    dav_client.request = counting_request
+    try:
+        events = await nc_client.calendar.get_calendar_events(calendar_name)
+    finally:
+        dav_client.request = original
+
+    assert events, "fixture event should be listed"
+    assert len(calls) <= 2, (
+        f"listing {len(events)} events took {len(calls)} requests ({calls}) -- "
+        "the cost must not scale with the number of events"
+    )
+    assert all(event.get("etag") for event in events), (
+        "every listed event needs an etag to be updatable safely"
+    )
+
+
 async def test_date_range_listing_costs_one_request(
     nc_client: NextcloudClient, etag_test_event
 ):

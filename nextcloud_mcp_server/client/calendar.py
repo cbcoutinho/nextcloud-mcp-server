@@ -696,9 +696,17 @@ class CalendarClient:
             # (floating / TZID / UTC). RFC 4791 <C:expand> would normalize
             # everything to UTC and erase the original timezone context.
             do_expand = bool(start_datetime and end_datetime)
+            # The REPORT above asks for getetag, so the objects carry their own.
+            fallback_etags: dict[str, str] = {}
         else:
             events = await calendar.events()  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
             do_expand = False
+            # caldav's events() asks for calendar-data only (verified: .etag is
+            # None on every object it returns), so without this the unfiltered
+            # listing would pay one PROPFIND per event -- the same 1 + N the
+            # date-range path and list_todos were fixed for. One batched
+            # collection PROPFIND covers the whole result set.
+            fallback_etags = await self._collection_etags(calendar)
 
         result = []
         for event in events:
@@ -715,8 +723,9 @@ class CalendarClient:
             href = str(event.url)
             # One ETag per stored object: expanded recurrence instances are
             # views of the same resource, so a conditional write against any of
-            # them targets that one object.
-            etag = await self._object_etag(event)
+            # them targets that one object. Both sources are per-listing, never
+            # per-event -- see the branch above.
+            etag = event.etag or fallback_etags.get(unquote(urlsplit(href).path), "")
             event_dicts = self._expand_event_occurrences(
                 cal, start_datetime, end_datetime, do_expand
             )
@@ -1187,7 +1196,8 @@ class CalendarClient:
         # measured at 1 + N against a live instance. Its ``props`` argument
         # cannot carry getetag (it expects calendar-data-shaped elements only),
         # so fetch them all in a single collection PROPFIND instead: 1 + 1.
-        etags = await self._collection_etags(calendar)
+        # Skipped entirely for an empty calendar -- there is nothing to key.
+        etags = await self._collection_etags(calendar) if todos else {}
 
         result = []
         for todo in todos:
