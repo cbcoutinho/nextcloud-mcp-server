@@ -10,6 +10,7 @@ back to :func:`nextcloud_mcp_server.config.get_database_url`.
 """
 
 import logging
+import threading
 from pathlib import Path
 
 from alembic.config import Config
@@ -20,6 +21,27 @@ from alembic import command
 from nextcloud_mcp_server.config import get_database_url, mask_db_password
 
 logger = logging.getLogger(__name__)
+
+# Alembic's EnvironmentContext is NOT re-entrant across threads: entering it
+# installs the ``config``/``script`` proxies as *module globals* on
+# ``alembic.context`` (``alembic.util.langhelpers._install_proxy``) and exiting
+# ``del``s them again. Two threads running a command concurrently therefore
+# clobber each other's globals — the loser's ``env.py`` blows up with
+# ``AttributeError: module 'alembic.context' has no attribute 'config'`` and the
+# teardown then raises ``KeyError: 'script'``.
+#
+# This bites us because migrations run per MCP session (``app_lifespan_basic``
+# -> ``RefreshTokenStorage.initialize`` -> ``to_thread.run_sync(upgrade_database)``),
+# so a client opening several sessions at once crashes those sessions. The
+# Postgres advisory lock in ``RefreshTokenStorage._migration_lock`` only covers
+# cross-pod races and is a no-op on SQLite, so the serialization has to live
+# here, next to the shared global state it protects.
+#
+# A ``threading.Lock`` (not ``anyio.Lock``, despite the repo default) is the
+# right primitive: these are blocking calls made from worker threads, possibly
+# under different event loops, and the lock is only ever held inside the worker
+# thread — never on an event loop.
+_ALEMBIC_COMMAND_LOCK = threading.Lock()
 
 
 def _coerce_url(database_url: str | Path | None) -> str:
@@ -114,7 +136,8 @@ def upgrade_database(
     """Upgrade database to a specific revision (default: latest)."""
     config = get_alembic_config(database_url)
     logger.info("Upgrading database to revision: %s", revision)
-    command.upgrade(config, revision)
+    with _ALEMBIC_COMMAND_LOCK:
+        command.upgrade(config, revision)
     logger.info("Database upgrade completed successfully")
 
 
@@ -124,7 +147,8 @@ def downgrade_database(
     """Downgrade database to a specific revision (default: previous)."""
     config = get_alembic_config(database_url)
     logger.warning("Downgrading database to revision: %s", revision)
-    command.downgrade(config, revision)
+    with _ALEMBIC_COMMAND_LOCK:
+        command.downgrade(config, revision)
     logger.info("Database downgrade completed successfully")
 
 
@@ -171,14 +195,16 @@ def stamp_database(
     """
     config = get_alembic_config(database_url)
     logger.info("Stamping database with revision: %s", revision)
-    command.stamp(config, revision)
+    with _ALEMBIC_COMMAND_LOCK:
+        command.stamp(config, revision)
     logger.info("Database stamped successfully")
 
 
 def show_migration_history(database_url: str | Path | None = None) -> None:
     """Display migration history."""
     config = get_alembic_config(database_url)
-    command.history(config, verbose=True)
+    with _ALEMBIC_COMMAND_LOCK:
+        command.history(config, verbose=True)
 
 
 def create_migration(message: str, autogenerate: bool = False) -> None:
@@ -204,5 +230,6 @@ def create_migration(message: str, autogenerate: bool = False) -> None:
             "Migration will be created with empty upgrade/downgrade functions."
         )
 
-    command.revision(config, message=message, autogenerate=False)
+    with _ALEMBIC_COMMAND_LOCK:
+        command.revision(config, message=message, autogenerate=False)
     logger.info("Migration created successfully. Edit the file to add SQL statements.")
