@@ -9,7 +9,14 @@ from functools import wraps
 from urllib.parse import unquote
 
 import anyio
-from httpx import AsyncClient, HTTPError, HTTPStatusError, RequestError, codes
+from httpx import (
+    AsyncClient,
+    HTTPError,
+    HTTPStatusError,
+    RequestError,
+    Response,
+    codes,
+)
 
 from nextcloud_mcp_server.client.dav_errors import enrich_dav_error
 from nextcloud_mcp_server.observability.metrics import (
@@ -265,7 +272,7 @@ class BaseNextcloudClient(ABC):
         )
 
     @retry_on_429
-    async def _make_request(self, method: str, url: str, **kwargs):
+    async def _make_request(self, method: str, url: str, **kwargs) -> Response:
         """Common request wrapper with logging, tracing, and error handling.
 
         Args:

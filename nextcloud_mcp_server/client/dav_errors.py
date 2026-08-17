@@ -31,7 +31,11 @@ import xml.etree.ElementTree as ET
 
 from httpx import HTTPStatusError, Request, Response, ResponseNotRead
 
-SABREDAV_NAMESPACE = "http://sabredav.org/ns"
+# An XML namespace URI, not an address anything is fetched from. Namespaces are
+# matched as exact strings, so "upgrading" this to https would stop every Sabre
+# error document from being recognised. The same literal appears inline in
+# webdav.py's PROPFIND bodies.
+SABREDAV_NAMESPACE = "http://sabredav.org/ns"  # NOSONAR(S5332)
 
 # DAV error documents run to a few hundred bytes. Anything larger is not one,
 # and handing it to the XML parser would turn a failed request into an
@@ -137,7 +141,10 @@ def enrich_dav_error(exc: HTTPStatusError) -> HTTPStatusError:
         return exc
 
     detail = ": ".join(part for part in (dav_exception, dav_message) if part)
-    message = f"{exc}\nServer said: {detail}" if detail else str(exc)
+    # Single line on purpose: callers log this with "%s" (webdav.py does), and a
+    # newline here would split one failure across two log records -- which line-
+    # oriented log shipping then indexes as two unrelated events.
+    message = f"{exc} Server said: {detail}" if detail else str(exc)
 
     return (error_type or DavError)(
         message,
