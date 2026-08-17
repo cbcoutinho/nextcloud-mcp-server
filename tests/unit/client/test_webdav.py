@@ -1121,6 +1121,52 @@ def test_build_search_xml_escapes_angle_brackets_in_scope():
 
 
 @pytest.mark.unit
+def test_build_search_xml_unfiltered_emits_a_predicate():
+    """An unfiltered SEARCH must still carry a predicate inside ``<d:where>``.
+
+    Regression: ``nc_webdav_search_files`` with no ``name_pattern`` /
+    ``mime_type`` / ``only_favorites`` passes ``where_conditions=None``, which
+    rendered as an *empty* ``<d:where></d:where>``. Nextcloud 34 answers that
+    with an internal type error (HTTP 500), so "search everything under this
+    folder" -- the most obvious call an MCP client can make -- failed outright
+    rather than returning the folder's contents.
+    """
+    client = WebDAVClient(AsyncMock(), "testuser")
+
+    body = client._build_search_xml(
+        scope="Documents",
+        where_conditions=None,
+        properties=["displayname"],
+        order_by=None,
+        limit=None,
+    )
+
+    where = ET.fromstring(body).find(".//{DAV:}where")
+    assert where is not None
+    # The empty element is what Nextcloud rejects; any child predicate is fine.
+    assert len(where) > 0, "unfiltered SEARCH emitted an empty <d:where>"
+
+
+@pytest.mark.unit
+def test_build_search_xml_keeps_supplied_conditions():
+    """The match-all fallback must not displace a caller's own predicate."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    condition = "<d:eq><d:prop><oc:favorite/></d:prop><d:literal>1</d:literal></d:eq>"
+
+    body = client._build_search_xml(
+        scope="",
+        where_conditions=condition,
+        properties=["displayname"],
+        order_by=None,
+        limit=None,
+    )
+
+    where = ET.fromstring(body).find(".//{DAV:}where")
+    assert where is not None
+    assert [child.tag for child in where] == ["{DAV:}eq"]
+
+
+@pytest.mark.unit
 async def test_find_by_name_escapes_special_chars_in_pattern(mocker):
     # The filename pattern is embedded in a <d:literal>; '&'/'<'/'>' must be
     # escaped or the SEARCH body is malformed and Sabre 400s — the same bug class
