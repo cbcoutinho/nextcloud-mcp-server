@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.176.0 (2026-08-17)
+
+### BREAKING CHANGE
+
+- the webhook registration API is removed. `GET/POST /api/v1/webhooks`,
+`DELETE /api/v1/webhooks/{id}` and the `/app/webhooks` management pane now 404, and the
+`registered_webhooks` table is dropped. Webhook delivery is configured in Astrolabe's
+admin settings (`mcp_server_url` + `mcp_webhook_secret` + sync presets); the
+`/webhooks/nextcloud` ingress and `WEBHOOK_SECRET` are unchanged.
+
+### Feat
+
+- **vector**: deliver file changes over webhooks; drop webhook registration
+
 ## v0.175.0 (2026-08-15)
 
 ### Feat
