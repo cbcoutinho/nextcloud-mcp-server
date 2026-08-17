@@ -489,6 +489,11 @@ async def record_indexing_usage(
       Qdrant payload excerpts, recorded for *every* embedded document. Reflects
       the indexed footprint and so includes chunk-overlap duplication; it is
       therefore typically larger than ``bytes_ingested`` for text content.
+    - ``chunks_ingested`` — the number of chunks this indexing pass produced,
+      recorded for every embedded document. This is the **billed** ingestion
+      dimension (Deck #1036): it shares its unit with the ``chunks_stored``
+      retention meter, so an invoice's indexing and storage lines are directly
+      comparable. ``bytes_ingested`` is retained as a monitor-only signal.
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
     indexing. ``chunk_count`` is the empty-batch no-op guard — a document that
@@ -574,6 +579,12 @@ async def record_indexing_usage(
         events.append(
             UsageEvent(metric="bytes_stored", value=bytes_stored, metadata=metadata)
         )
+    # chunks_ingested (Deck #1036): the billed ingestion dimension, in the same
+    # unit as the chunks_stored retention meter. No guard — the chunk_count == 0
+    # early return above already established it's positive.
+    events.append(
+        UsageEvent(metric="chunks_ingested", value=chunk_count, metadata=metadata)
+    )
 
     try:
         store = await UsageEventStore.shared()

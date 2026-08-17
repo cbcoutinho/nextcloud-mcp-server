@@ -115,6 +115,7 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
         "pages_embedded": 12,
         "bytes_ingested": 204800,
         "bytes_stored": 178000,
+        "chunks_ingested": 110,
     }
     # Intentional ordering: tokens (recorded for every doc) before pages (the
     # conditional parsing cost). Asserted so a refactor can't silently reverse
@@ -158,6 +159,7 @@ async def test_text_doc_records_tokens_and_bytes_no_pages(store_spy):
         "tokens_embedded": 512,
         "bytes_ingested": 7100,
         "bytes_stored": 8200,
+        "chunks_ingested": 4,
     }
     assert "pages_embedded" not in by_metric
 
@@ -185,6 +187,7 @@ async def test_zero_pages_skips_pages(store_spy):
         "tokens_embedded": 99,
         "bytes_ingested": 2048,
         "bytes_stored": 1100,
+        "chunks_ingested": 4,
     }
 
 
@@ -211,6 +214,7 @@ async def test_negative_pages_skips_pages(store_spy):
         "tokens_embedded": 99,
         "bytes_ingested": 2048,
         "bytes_stored": 1100,
+        "chunks_ingested": 4,
     }
 
 
@@ -234,7 +238,7 @@ async def test_nonpositive_bytes_skip_byte_rows(store_spy):
 
     by_metric = {e.metric: e.value for e in _events(store_spy)}
     # Only tokens_embedded survives — neither byte row is written.
-    assert by_metric == {"tokens_embedded": 99}
+    assert by_metric == {"tokens_embedded": 99, "chunks_ingested": 4}
 
 
 @pytest.mark.unit
@@ -330,6 +334,7 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
         "pages_ocr": 8,
         "bytes_ingested": 51200,
         "bytes_stored": 41000,
+        "chunks_ingested": 20,
     }
     # pipeline_tier is threaded into the billing metadata for CP attribution.
     for e in events:
@@ -361,6 +366,7 @@ async def test_fast_tier_does_not_record_pages_ocr(store_spy):
         "pages_embedded",
         "bytes_ingested",
         "bytes_stored",
+        "chunks_ingested",
     }
 
 
@@ -391,6 +397,7 @@ async def test_keyword_mode_meters_bytes_not_tokens(store_spy):
         "pages_embedded": 5,
         "bytes_ingested": 40960,
         "bytes_stored": 30500,
+        "chunks_ingested": 12,
     }
     assert "tokens_embedded" not in by_metric
     # Every event carries the keyword mode so the CP can attribute it separately.
@@ -419,4 +426,4 @@ async def test_hybrid_zero_tokens_still_skips_tokens_row(store_spy):
     )
     metrics = {e.metric for e in _events(store_spy)}
     assert "tokens_embedded" not in metrics
-    assert metrics == {"bytes_ingested", "bytes_stored"}
+    assert metrics == {"bytes_ingested", "bytes_stored", "chunks_ingested"}
