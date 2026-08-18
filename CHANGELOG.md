@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.177.2 (2026-08-18)
+
+### Fix
+
+- **providers**: retry only genuinely-transient Ollama transport errors
+- **providers**: log a failed Ollama batch once, not once per retry attempt
+- **providers**: log the batch shape on every Ollama embed failure
+- **providers**: give Ollama the transient retry every other provider has
+- **providers**: bound Ollama embed requests by characters, not item count
+- **vector**: clear the dead-letter marker only after the upsert succeeds
+- **vector**: dead-letter documents after repeated index failures
+
 ## v0.177.1 (2026-08-18)
 
 ### Fix
