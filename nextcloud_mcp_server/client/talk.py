@@ -105,16 +105,15 @@ class TalkClient(BaseNextcloudClient):
         room_name: str,
         invite: str | None = None,
     ) -> TalkConversation:
-        """Create a new conversation (used for tests/fixtures).
+        """Create a new conversation.
 
         Args:
             room_type: 1=one-to-one, 2=group, 3=public. Defaults to 2.
             room_name: Display name (required for group/public rooms).
             invite: Optional user/group ID to invite at creation time.
 
-        This client method is not exposed as an MCP tool in the initial
-        Talk integration; it exists so integration tests can spin up
-        scratch rooms.
+        Exposed to agents as the ``talk_create_conversation`` MCP tool.
+        Also used by integration tests for scratch rooms.
         """
         body: dict[str, Any] = {"roomType": room_type, "roomName": room_name}
         if invite is not None:
@@ -123,6 +122,30 @@ class TalkClient(BaseNextcloudClient):
             "POST", self._ROOM_BASE, json=body, headers=self._talk_headers()
         )
         return TalkConversation(**response.json()["ocs"]["data"])
+
+    async def add_participant(
+        self,
+        token: str,
+        *,
+        user_id: str,
+        source: str = "users",
+    ) -> None:
+        """Invite a user (or circle/group) into an existing conversation.
+
+        Args:
+            token: Conversation token.
+            user_id: Nextcloud user id (or group/circle id when source differs).
+            source: spreed participant source; usually ``users``.
+        """
+        _validate_token(token)
+        if not (user_id or "").strip():
+            raise ValueError("user_id must not be empty")
+        await self._make_request(
+            "POST",
+            f"{self._ROOM_BASE}/{token}/participants",
+            json={"newParticipant": user_id.strip(), "source": source},
+            headers=self._talk_headers(),
+        )
 
     async def delete_conversation(self, token: str) -> None:
         """Delete a conversation. Used by integration test cleanup."""
@@ -281,3 +304,77 @@ class TalkClient(BaseNextcloudClient):
         )
         data = response.json()["ocs"]["data"]
         return [TalkParticipant(**p) for p in data]
+
+    # Reactions (spreed api/v1/reaction)
+
+    _REACTION_BASE = "/ocs/v2.php/apps/spreed/api/v1/reaction"
+
+    @staticmethod
+    def _normalize_reactions_payload(data: Any) -> dict[str, list[dict[str, Any]]]:
+        """Spreed may return ``{emoji: [actors…]}`` or a flat actor list."""
+        if data is None:
+            return {}
+        if isinstance(data, dict):
+            out: dict[str, list[dict[str, Any]]] = {}
+            for key, val in data.items():
+                if isinstance(val, list):
+                    out[str(key)] = [x for x in val if isinstance(x, dict)]
+                elif isinstance(val, dict):
+                    out[str(key)] = [val]
+            return out
+        if isinstance(data, list):
+            # Filtered GET sometimes returns a bare actor list — stash under "".
+            return {"": [x for x in data if isinstance(x, dict)]}
+        return {}
+
+    async def list_reactions(
+        self,
+        token: str,
+        message_id: int,
+        *,
+        reaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """List who reacted to a message (optionally filter by emoji)."""
+        _validate_token(token)
+        params: dict[str, Any] = {}
+        if reaction:
+            params["reaction"] = reaction
+        response = await self._make_request(
+            "GET",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            params=params or None,
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
+
+    async def add_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Add an emoji reaction to a message."""
+        _validate_token(token)
+        emoji = (reaction or "").strip()
+        if not emoji:
+            raise ValueError("reaction emoji must not be empty")
+        response = await self._make_request(
+            "POST",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            json={"reaction": emoji},
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
+
+    async def delete_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Remove own emoji reaction from a message."""
+        _validate_token(token)
+        emoji = (reaction or "").strip()
+        if not emoji:
+            raise ValueError("reaction emoji must not be empty")
+        response = await self._make_request(
+            "DELETE",
+            f"{self._REACTION_BASE}/{token}/{int(message_id)}",
+            json={"reaction": emoji},
+            headers=self._talk_headers(),
+        )
+        return self._normalize_reactions_payload(response.json()["ocs"]["data"])
