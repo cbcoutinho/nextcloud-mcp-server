@@ -13,13 +13,15 @@ application/json`` is sent.
 
 import logging
 import re
-from typing import Any, Literal
+from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.talk import (
     TalkConversation,
     TalkMessage,
     TalkParticipant,
+    TalkParticipantSource,
+    TalkRoomType,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,19 +31,6 @@ logger = logging.getLogger(__name__)
 # httpx does not normalise path traversal sequences, so a pathological token
 # like ``"../foo"`` would be sent verbatim. Validate up-front for clearer
 # errors and defence-in-depth.
-#: The actor sources spreed accepts when adding a participant. A ``Literal``
-#: rather than a bare ``str`` so an unsupported source is rejected by the schema
-#: -- and shows up as an enum in the MCP tool definition -- instead of reaching
-#: the server as a bare 400 that names no field.
-TalkParticipantSource = Literal[
-    "users", "groups", "emails", "circles", "federated_users"
-]
-
-#: The room types spreed accepts: 1=one-to-one, 2=group, 3=public. A ``Literal``
-#: for the same reason as the source above -- an out-of-range value is rejected
-#: by the schema rather than reaching the server as a bare 400.
-TalkRoomType = Literal[1, 2, 3]
-
 _TALK_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 

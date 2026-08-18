@@ -9,7 +9,6 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability
-from nextcloud_mcp_server.client.talk import TalkParticipantSource, TalkRoomType
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
     AddParticipantResponse,
@@ -21,6 +20,8 @@ from nextcloud_mcp_server.models.talk import (
     MarkAsReadResponse,
     ReactionsResponse,
     SendMessageResponse,
+    TalkParticipantSource,
+    TalkRoomType,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 

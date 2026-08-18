@@ -399,3 +399,65 @@ async def test_feature_and_version_gates_compose():
 
     assert reason is not None
     assert "13.0.0" in reason
+
+
+# The Talk reaction tools' own gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["talk_list_reactions", "talk_react", "talk_remove_reaction"]
+)
+def test_reaction_tools_declare_the_spreed_reactions_gate(tool_name):
+    """The real tools carry the exact gate, not just a gate.
+
+    The machinery is tested above against synthetic functions, and the
+    integration suite proves these tools work on an instance that *does*
+    advertise `reactions` -- but nothing tied those two together, so "an old
+    Talk hides these three tools" was inferred across two files rather than
+    asserted. A typo in the app key or the flag would have passed both.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from nextcloud_mcp_server.server.talk import configure_talk_tools
+
+    mcp = FastMCP("test")
+    configure_talk_tools(mcp)
+
+    tool = mcp._tool_manager.get_tool(tool_name)
+
+    assert get_required_capability(tool.fn) == ("spreed", None, "reactions")
+
+
+def test_non_reaction_talk_tools_are_not_feature_gated():
+    """Only the reaction tools carry the flag.
+
+    Gating the read/send tools on `reactions` would hide working tools on an
+    older Talk -- the failure mode the fail-open contract exists to avoid.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from nextcloud_mcp_server.server.talk import configure_talk_tools
+
+    mcp = FastMCP("test")
+    configure_talk_tools(mcp)
+
+    for tool_name in ("talk_list_conversations", "talk_send_message"):
+        gate = get_required_capability(mcp._tool_manager.get_tool(tool_name).fn)
+        # Either ungated here, or carrying only the module-wide presence gate.
+        assert gate is None or gate[2] is None, f"{tool_name} is feature-gated"
+
+
+async def test_both_conditions_failing_still_closes_the_gate():
+    """When feature and version both fail, the gate closes on the feature.
+
+    Precedence is worth pinning rather than leaving to reading order: a caller
+    that switched on the wording would otherwise break silently if the checks
+    were ever reordered.
+    """
+    client = _client(_payload(spreed={"version": "10.0.0", "features": ["chat-v2"]}))
+
+    reason = await unmet_capability(client, "alice", "spreed", "13.0.0", "reactions")
+
+    assert reason is not None
+    assert "reactions" in reason

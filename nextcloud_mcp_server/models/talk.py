@@ -1,10 +1,22 @@
 """Pydantic models for the Nextcloud Talk (spreed) integration."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, StatusResponse
+
+#: The actor sources spreed accepts when adding a participant. A ``Literal``
+#: rather than a bare ``str`` so an unsupported source is rejected by the schema
+#: -- and appears as an enum in the MCP tool definition -- instead of reaching
+#: the server as a bare 400 that names no field.
+TalkParticipantSource = Literal[
+    "users", "groups", "emails", "circles", "federated_users"
+]
+
+#: The room types spreed accepts: 1=one-to-one, 2=group, 3=public. A ``Literal``
+#: for the same reason as the source above.
+TalkRoomType = Literal[1, 2, 3]
 
 # Domain models
 
@@ -196,7 +208,9 @@ class AddParticipantResponse(StatusResponse):
 
     conversation_token: str = Field(description="Token of the conversation")
     participant: str = Field(description="Identifier of the added participant")
-    source: str = Field(description="Actor source the participant was added from")
+    source: TalkParticipantSource = Field(
+        description="Actor source the participant was added from"
+    )
 
 
 class ReactionsResponse(BaseResponse):
