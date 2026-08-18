@@ -1,6 +1,8 @@
 """Unified Ollama provider for embeddings."""
 
 import logging
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
@@ -169,7 +171,7 @@ class OllamaProvider(Provider):
         embedding, _ = await self.embed_with_usage(text)
         return embedding
 
-    def _iter_batches(self, texts: list[str], batch_size: int):
+    def _iter_batches(self, texts: list[str], batch_size: int) -> Iterator[list[str]]:
         """Split ``texts`` into requests bounded by BOTH item count and characters.
 
         The item cap alone is not enough (GH #1345). Ollama embeds a batch
@@ -297,7 +299,7 @@ class OllamaProvider(Provider):
         return all_embeddings, total_tokens
 
     @_retry_transient
-    async def _embed_batch_request(self, batch: list[str]) -> dict:
+    async def _embed_batch_request(self, batch: list[str]) -> dict[str, Any]:
         """One ``/api/embed`` request, retried on transient failures.
 
         Mirrors ``MistralProvider._embed_batch_request`` /
