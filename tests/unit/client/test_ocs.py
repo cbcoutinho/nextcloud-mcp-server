@@ -141,3 +141,28 @@ def test_unreadable_statuscode_is_a_failure():
     payload = {"ocs": {"meta": {"statuscode": "not-a-number"}}}
 
     assert parse_ocs_envelope(payload).status_code == 500
+
+
+def test_collectives_error_string_is_not_double_prefixed():
+    """``str(OCSError)`` must not repeat the status code.
+
+    ``describe_ocs_failure`` already names the code, and ``OCSError`` used to
+    prefix it again -- yielding "OCS error 404: OCS API error (code 404): ..."
+    in logs and tracebacks. Nothing caught it because the existing collectives
+    tests assert on ``.message`` and substring matches, never on ``str(e)``.
+    Exercised through the real ``_unwrap_ocs`` failure path rather than by
+    constructing the exception directly, since that is where the two layers
+    meet. Caught in review of #1343.
+    """
+    from nextcloud_mcp_server.client.collectives import CollectivesClient, OCSError
+
+    client = CollectivesClient.__new__(CollectivesClient)
+    payload = {"ocs": {"meta": {"statuscode": 404, "message": "Not found"}}}
+
+    with pytest.raises(OCSError) as exc_info:
+        client._unwrap_ocs(payload)
+
+    rendered = str(exc_info.value)
+    assert rendered.count("404") == 1, rendered
+    assert not rendered.startswith("OCS error 404:")
+    assert exc_info.value.status_code == 404

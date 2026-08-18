@@ -68,10 +68,10 @@ def _ocs_response(response: Response) -> Any:
             f"Unexpected response format: expected dict, got {type(body).__name__}"
         )
 
-    if not isinstance(body.get("ocs"), dict):
+    ocs = body.get("ocs")
+    if not isinstance(ocs, dict):
         raise RequestError(
-            f"Unexpected OCS format: expected dict, got "
-            f"{type(body.get('ocs')).__name__}"
+            f"Unexpected OCS format: expected dict, got {type(ocs).__name__}"
         )
 
     # Parsing and failure wording are shared with the other OCS clients; the

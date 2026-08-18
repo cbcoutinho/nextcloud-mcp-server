@@ -24,7 +24,12 @@ class OCSError(Exception):
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
-        super().__init__(f"OCS error {status_code}: {message}")
+        # No status prefix here: server-side failures arrive already described
+        # by ``describe_ocs_failure``, which names the code (and, for 997, what
+        # it actually means). Re-prefixing produced "OCS error 404: OCS API
+        # error (code 404): ..." in logs and tracebacks. ``status_code`` stays
+        # available for the internally-raised cases that carry a bare message.
+        super().__init__(message)
 
 
 class CollectivesClient(BaseNextcloudClient):
