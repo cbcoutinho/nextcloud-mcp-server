@@ -143,16 +143,12 @@ class TalkClient(BaseNextcloudClient):
         room_name: str,
         invite: str | None = None,
     ) -> TalkConversation:
-        """Create a new conversation (used for tests/fixtures).
+        """Create a new conversation.
 
         Args:
             room_type: 1=one-to-one, 2=group, 3=public. Defaults to 2.
             room_name: Display name (required for group/public rooms).
             invite: Optional user/group ID to invite at creation time.
-
-        This client method is not exposed as an MCP tool in the initial
-        Talk integration; it exists so integration tests can spin up
-        scratch rooms.
         """
         body: dict[str, Any] = {"roomType": room_type, "roomName": room_name}
         if invite is not None:

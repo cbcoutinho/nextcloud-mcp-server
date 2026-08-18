@@ -286,3 +286,45 @@ async def test_talk_create_conversation_rejects_blank_name(
 
     assert result.isError is True
     assert "whitespace" in result.content[0].text.lower()
+
+
+async def test_talk_add_participant_is_idempotent(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """Adding the same participant twice is a no-op, not an error or a duplicate.
+
+    This is the claim `talk_add_participant`'s `idempotentHint=True` makes, and
+    it was the one idempotency claim in this PR resting on a manual probe rather
+    than a test -- the reaction tools got a re-apply assertion and this did not.
+    """
+    room_name = f"MCP Idempotency Room {uuid.uuid4().hex[:8]}"
+    token = None
+    try:
+        created = await nc_mcp_client.call_tool(
+            "talk_create_conversation", {"room_name": room_name}
+        )
+        token = json.loads(created.content[0].text)["conversation"]["token"]
+
+        first = await nc_mcp_client.call_tool(
+            "talk_add_participant", {"token": token, "participant": "admin"}
+        )
+        assert first.isError is False, first.content[0].text
+
+        before = await nc_mcp_client.call_tool(
+            "talk_list_participants", {"token": token}
+        )
+        count_before = json.loads(before.content[0].text)["count"]
+
+        # Same call again: succeeds, and leaves the roster untouched.
+        second = await nc_mcp_client.call_tool(
+            "talk_add_participant", {"token": token, "participant": "admin"}
+        )
+        assert second.isError is False, second.content[0].text
+
+        after = await nc_mcp_client.call_tool(
+            "talk_list_participants", {"token": token}
+        )
+        assert json.loads(after.content[0].text)["count"] == count_before
+    finally:
+        if token:
+            await nc_client.talk.delete_conversation(token)

@@ -299,6 +299,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             conversation_token=token,
             participant=participant,
             source=source,
+            message=f"Added {participant} ({source}) to the conversation",
         )
 
     @mcp.tool(
