@@ -37,6 +37,43 @@ def _validate_token(token: str) -> None:
         raise ValueError(f"Invalid Talk conversation token: {token!r}")
 
 
+def _validate_message_id(message_id: int) -> None:
+    """Reject message ids that cannot address a message.
+
+    ``bool`` is excluded explicitly: it is an ``int`` subclass, so ``True``
+    would otherwise sail through as message id 1.
+    """
+    if isinstance(message_id, bool) or not isinstance(message_id, int):
+        raise ValueError(f"Message ID must be an integer: {message_id!r}")
+    if message_id <= 0:
+        raise ValueError(f"Message ID must be positive: {message_id}")
+
+
+def _validate_reaction(reaction: str) -> None:
+    """Reject an empty reaction before it reaches the wire.
+
+    spreed rejects these too, but with a bare 400 that says nothing about which
+    field was at fault.
+    """
+    if not reaction or not reaction.strip():
+        raise ValueError("Reaction must not be empty or whitespace-only")
+
+
+def _reaction_map(data: Any) -> dict[str, list[dict[str, Any]]]:
+    """Normalise spreed's reactions payload to a map.
+
+    An empty reaction set comes back as ``{}`` on Talk 22, but PHP serialises
+    empty maps as ``[]`` elsewhere in this API, and ``null`` shows up on some
+    error paths. All three mean "no reactions".
+    """
+    if not data:
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Unexpected reactions payload of type %s", type(data).__name__)
+        return {}
+    return data
+
+
 class TalkClient(BaseNextcloudClient):
     """Client for Nextcloud Talk (spreed) app operations."""
 
@@ -44,6 +81,7 @@ class TalkClient(BaseNextcloudClient):
 
     _ROOM_BASE = "/ocs/v2.php/apps/spreed/api/v4/room"
     _CHAT_BASE = "/ocs/v2.php/apps/spreed/api/v1/chat"
+    _REACTION_BASE = "/ocs/v2.php/apps/spreed/api/v1/reaction"
 
     def _talk_headers(self) -> dict[str, str]:
         """Standard OCS+JSON headers for spreed API calls.
@@ -281,3 +319,102 @@ class TalkClient(BaseNextcloudClient):
         )
         data = response.json()["ocs"]["data"]
         return [TalkParticipant(**p) for p in data]
+
+    async def add_participant(
+        self, token: str, participant: str, *, source: str = "users"
+    ) -> None:
+        """Add a participant to a group or public conversation.
+
+        Returns nothing: spreed answers a successful add with an empty ``data``
+        payload (verified against Talk 22.0.17), so there is no participant
+        object to hand back.
+
+        Adding someone who is already in the room succeeds as a no-op, which is
+        why the tool in front of this is marked idempotent.
+
+        Args:
+            token: Conversation token.
+            participant: Identifier to add, interpreted per ``source``.
+            source: Actor source -- ``users`` (default), ``groups``, ``emails``,
+                ``circles``, or ``federated_users``.
+
+        Raises:
+            HTTPStatusError: 404 when the participant does not exist
+                (``data.error == "new-participant"``), 400 for a one-to-one
+                room, which cannot take additional participants
+                (``data.error == "room-type"``).
+        """
+        _validate_token(token)
+        await self._make_request(
+            "POST",
+            f"{self._ROOM_BASE}/{token}/participants",
+            json={"newParticipant": participant, "source": source},
+            headers=self._talk_headers(),
+        )
+
+    # Reactions
+
+    async def list_reactions(
+        self, token: str, message_id: int, *, reaction: str | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        """List reactions on a chat message, keyed by emoji.
+
+        Args:
+            token: Conversation token.
+            message_id: ID of the message.
+            reaction: Optional single emoji to filter to.
+
+        Returns:
+            ``{emoji: [actor, ...]}``. Empty when nothing has been reacted.
+        """
+        _validate_token(token)
+        _validate_message_id(message_id)
+        params = {"reaction": reaction} if reaction is not None else None
+        response = await self._make_request(
+            "GET",
+            f"{self._REACTION_BASE}/{token}/{message_id}",
+            params=params,
+            headers=self._talk_headers(),
+        )
+        return _reaction_map(response.json()["ocs"]["data"])
+
+    async def add_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """React to a chat message, returning the message's updated reactions.
+
+        spreed answers ``201`` for a new reaction and ``200`` when the actor had
+        already reacted with that emoji -- the end state is the same either way,
+        which is why the tool is marked idempotent.
+        """
+        _validate_token(token)
+        _validate_message_id(message_id)
+        _validate_reaction(reaction)
+        response = await self._make_request(
+            "POST",
+            f"{self._REACTION_BASE}/{token}/{message_id}",
+            json={"reaction": reaction},
+            headers=self._talk_headers(),
+        )
+        return _reaction_map(response.json()["ocs"]["data"])
+
+    async def remove_reaction(
+        self, token: str, message_id: int, reaction: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Remove the user's reaction, returning the updated reactions.
+
+        Raises:
+            HTTPStatusError: 404 if the user has no such reaction on the
+                message. The end state matches a successful removal, but spreed
+                reports it as an error rather than a no-op.
+        """
+        _validate_token(token)
+        _validate_message_id(message_id)
+        _validate_reaction(reaction)
+        response = await self._make_request(
+            "DELETE",
+            f"{self._REACTION_BASE}/{token}/{message_id}",
+            json={"reaction": reaction},
+            headers=self._talk_headers(),
+        )
+        return _reaction_map(response.json()["ocs"]["data"])
