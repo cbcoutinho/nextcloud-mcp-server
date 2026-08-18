@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.177.1 (2026-08-18)
+
+### Fix
+
+- **collectives**: stop OCSError double-prefixing the status code
+- **client**: preserve mail's falsy-statuscode default, finish the extraction
+- **webdav**: escape caller values in SEARCH predicates
+- **providers**: bound Mistral embedding requests at 120s
+
+### Refactor
+
+- **client**: centralise OCS envelope parsing and name 997
+
 ## v0.177.0 (2026-08-18)
 
 ### BREAKING CHANGE
