@@ -4,6 +4,11 @@ import logging
 from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.client.ocs import (
+    OCS_REQUEST_HEADERS,
+    describe_ocs_failure,
+    parse_ocs_envelope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +24,12 @@ class OCSError(Exception):
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
-        super().__init__(f"OCS error {status_code}: {message}")
+        # No status prefix here: server-side failures arrive already described
+        # by ``describe_ocs_failure``, which names the code (and, for 997, what
+        # it actually means). Re-prefixing produced "OCS error 404: OCS API
+        # error (code 404): ..." in logs and tracebacks. ``status_code`` stays
+        # available for the internally-raised cases that carry a bare message.
+        super().__init__(message)
 
 
 class CollectivesClient(BaseNextcloudClient):
@@ -27,29 +37,34 @@ class CollectivesClient(BaseNextcloudClient):
 
     app_name = "collectives"
 
-    _OCS_HEADERS: dict[str, str] = {
-        "OCS-APIRequest": "true",
-        "Accept": "application/json",
-    }
+    # Sourced from the shared OCS module so a new call site cannot pick up a
+    # drifted copy of the header set -- omitting OCS-APIRequest is what makes
+    # Nextcloud answer 997, the failure this module exists to make legible.
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
 
     _OCS_HEADERS_JSON: dict[str, str] = {
-        **_OCS_HEADERS,
+        **OCS_REQUEST_HEADERS,
         "Content-Type": "application/json",
     }
 
     def _unwrap_ocs(self, response_json: dict[str, Any]) -> Any:
-        """Unwrap OCS envelope, validating the status before returning data."""
-        ocs = response_json.get("ocs")
-        if ocs is None:
-            raise OCSError(500, "Response is not an OCS envelope")
-        meta = ocs.get("meta", {})
-        status_code = meta.get("statuscode", 200)
-        if status_code >= 400:
-            message = meta.get("message", "OCS error")
-            raise OCSError(status_code, message)
-        if "data" not in ocs:
+        """Unwrap OCS envelope, validating the status before returning data.
+
+        Raises ``OCSError``, which ``server/collectives`` catches in a dozen
+        places. Parsing and failure wording come from :mod:`.ocs`; the
+        ``>= 400`` rule stays local because it is looser than the documented
+        100/200 success codes and retightening it here would be a behaviour
+        change smuggled into a refactor.
+        """
+        envelope = parse_ocs_envelope(response_json)
+        if envelope.status_code >= 400:
+            raise OCSError(
+                envelope.status_code,
+                describe_ocs_failure(envelope.status_code, envelope.message),
+            )
+        if not envelope.has_data:
             raise OCSError(500, "OCS response missing 'data' field")
-        return ocs["data"]
+        return envelope.data
 
     # Collectives
 

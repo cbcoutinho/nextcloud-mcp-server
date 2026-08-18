@@ -293,6 +293,32 @@ def _validate_destination_precondition(
         )
 
 
+def like_predicate(prop_element: str, value: str) -> str:
+    """Build a ``<d:like>`` SEARCH predicate with *value* XML-escaped.
+
+    Every caller-supplied literal in a SEARCH body goes through here. A value
+    containing ``&``, ``<`` or ``>`` -- "Costs & Revenue%" is the everyday case
+    -- otherwise produces malformed XML that Sabre/DAV rejects with 400, and
+    the search fails rather than returning nothing.
+
+    It exists as a shared builder rather than an escaping call each site
+    remembers to make: the same predicate was being assembled in five places,
+    two of which had no escaping at all. Routing construction through one
+    function makes the escaping structural instead of a convention.
+
+    Args:
+        prop_element: Namespaced property element, e.g. ``"d:displayname"`` or
+            ``"oc:tags"``. Not caller-supplied -- callers pass a literal.
+        value: The match value, including any ``%`` wildcards. Escaped here.
+    """
+    return (
+        "<d:like>"
+        f"<d:prop><{prop_element}/></d:prop>"
+        f"<d:literal>{xml_escape(value)}</d:literal>"
+        "</d:like>"
+    )
+
+
 def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
     """Pick the single conditional header for a fail-closed PUT.
 
@@ -1737,14 +1763,7 @@ class WebDAVClient(BaseNextcloudClient):
             # Find files starting with "report"
             results = await find_by_name("report%")
         """
-        where_conditions = f"""
-            <d:like>
-                <d:prop>
-                    <d:displayname/>
-                </d:prop>
-                <d:literal>{xml_escape(pattern)}</d:literal>
-            </d:like>
-        """
+        where_conditions = like_predicate("d:displayname", pattern)
 
         return await self.search_files(
             scope=scope, where_conditions=where_conditions, limit=limit
@@ -1813,14 +1832,7 @@ class WebDAVClient(BaseNextcloudClient):
         # Escape so a caller-supplied MIME type can't break the SEARCH XML or
         # inject elements. All current callers pass literal strings, but this
         # keeps the boundary safe for any future user-supplied value.
-        where_conditions = f"""
-            <d:like>
-                <d:prop>
-                    <d:getcontenttype/>
-                </d:prop>
-                <d:literal>{xml_escape(mime_type)}</d:literal>
-            </d:like>
-        """
+        where_conditions = like_predicate("d:getcontenttype", mime_type)
 
         # fileid is required by callers like NextcloudClient.find_files_by_tag
         # that dedupe results by id; the default property set in search_files
@@ -1909,14 +1921,7 @@ class WebDAVClient(BaseNextcloudClient):
             results = await find_by_tag("vector-index", scope="Documents")
         """
         # Use LIKE for tag matching since tags can be comma-separated
-        where_conditions = f"""
-            <d:like>
-                <d:prop>
-                    <oc:tags/>
-                </d:prop>
-                <d:literal>%{xml_escape(tag_name)}%</d:literal>
-            </d:like>
-        """
+        where_conditions = like_predicate("oc:tags", f"%{tag_name}%")
 
         # Request tag property along with standard properties
         properties = [

@@ -7,6 +7,7 @@ from mistralai.client.errors import SDKError
 
 from nextcloud_mcp_server.providers.mistral import (
     BATCH_SIZE,
+    EMBED_TIMEOUT_MS,
     MISTRAL_EMBEDDING_DIMENSIONS,
     MistralProvider,
     _is_transient,
@@ -205,6 +206,7 @@ async def test_mistral_base_url_passed_to_sdk(mocker):
     mock_ctor.assert_called_once_with(
         api_key="test-key",
         server_url="https://example.com/mistral",
+        timeout_ms=EMBED_TIMEOUT_MS,
     )
 
 
@@ -381,3 +383,34 @@ async def test_mistral_embed_batch_retries_on_5xx(mock_mistral_client, monkeypat
     embeddings = await provider.embed_batch(["a", "b"])
     assert embeddings == [[0.1, 0.2], [0.3, 0.4]]
     assert mock_mistral_client.embeddings.create_async.await_count == 2
+
+
+@pytest.mark.unit
+def test_client_is_constructed_with_an_explicit_timeout(mocker):
+    """Embedding calls must be bounded, not left on the SDK's 300 s default.
+
+    The timeout is set on the client rather than per call because this SDK
+    version resolves a call's own ``timeout_ms`` first, then
+    ``sdk_configuration.timeout_ms`` -- so one knob covers every call site,
+    including ones added later.
+    """
+    mock_mistral = mocker.patch("nextcloud_mcp_server.providers.mistral.Mistral")
+
+    MistralProvider(api_key="k")
+
+    assert mock_mistral.call_args.kwargs["timeout_ms"] == EMBED_TIMEOUT_MS
+    # Sized to match every sibling embedding provider (bedrock/ollama/gateway).
+    assert EMBED_TIMEOUT_MS == 120_000
+
+
+@pytest.mark.unit
+async def test_configured_timeout_reaches_the_sdk_configuration(mocker):
+    """The client-level value is what the SDK falls back to per request.
+
+    Guards the reason this is set once rather than at each call: if a future
+    SDK stopped honouring ``sdk_configuration.timeout_ms``, embeddings would
+    silently revert to the 300 s default with nothing else to catch it.
+    """
+    provider = MistralProvider(api_key="k")
+
+    assert provider.client.sdk_configuration.timeout_ms == EMBED_TIMEOUT_MS
