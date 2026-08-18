@@ -15,13 +15,29 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_BATCH_CHARS = 16_000
 
 
+# Transport failures that a retry can plausibly clear: a restarting Ollama, one
+# still loading the model into memory, a dropped connection, a flaky proxy, or a
+# server that hung up mid-response. An ALLOW-LIST rather than "any RequestError",
+# because that base also covers deterministic misconfiguration —
+# UnsupportedProtocol (a bad scheme in OLLAMA_BASE_URL), LocalProtocolError (our
+# own bug), TooManyRedirects, DecodingError — which fail identically on every
+# attempt, so retrying them only delays the error an operator needs to see.
+# RemoteProtocolError is named specifically: its sibling LocalProtocolError
+# shares the ProtocolError parent but is not transient.
+_TRANSIENT_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,  # Connect/Read/Write/Pool
+    httpx.NetworkError,  # Connect/Read/Write/Close
+    httpx.RemoteProtocolError,
+    httpx.ProxyError,
+)
+
+
 def _is_transient(exc: BaseException) -> bool:
     """Whether an httpx error against Ollama is worth retrying.
 
-    Same shape as the OpenAI/Mistral predicates: connection drops and timeouts
-    (a restarting Ollama, or one still loading the model into memory) plus
-    429 / 5xx. Permanent 4xx — an unknown model, a malformed request — are NOT
-    retried; they fail identically every attempt.
+    Same shape as the OpenAI/Mistral predicates: an explicit allow-list of
+    transport failures, plus 429 / 5xx. Permanent 4xx — an unknown model, a
+    malformed request — are NOT retried; they fail identically every attempt.
 
     Timeouts ARE retried, matching ``OpenAIProvider`` (which retries
     ``APITimeoutError`` via ``APIConnectionError``). Worth knowing what that
@@ -34,9 +50,7 @@ def _is_transient(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         return status == 429 or status >= 500
-    # Everything else caught here is an httpx.RequestError: a transport-level
-    # failure (timeout, connect, read, protocol) with no response at all.
-    return True
+    return isinstance(exc, _TRANSIENT_TRANSPORT_ERRORS)
 
 
 # Catch the httpx.HTTPError base (parent of both RequestError and

@@ -189,6 +189,25 @@ class TestTransientRetry:
         assert not _is_transient(self._status_error(401))
 
     @pytest.mark.unit
+    def test_deterministic_transport_errors_are_not_retried(self):
+        # httpx.RequestError is NOT a usable proxy for "transient": it also
+        # covers misconfiguration that fails identically every attempt, and
+        # retrying those only delays the error an operator needs to see. A bad
+        # scheme in OLLAMA_BASE_URL should surface at once, not after 5 backoffs.
+        assert not _is_transient(httpx.UnsupportedProtocol("bad scheme"))
+        assert not _is_transient(httpx.LocalProtocolError("our bug"))
+        assert not _is_transient(httpx.TooManyRedirects("loop"))
+        assert not _is_transient(httpx.DecodingError("bad encoding"))
+
+    @pytest.mark.unit
+    def test_remote_protocol_error_is_transient_but_local_is_not(self):
+        # Both subclass ProtocolError, so the allow-list has to name the remote
+        # one specifically — a server hanging up mid-response is a restart, a
+        # local protocol violation is a bug on our side.
+        assert _is_transient(httpx.RemoteProtocolError("server hung up"))
+        assert not _is_transient(httpx.LocalProtocolError("malformed request"))
+
+    @pytest.mark.unit
     async def test_retries_then_succeeds(self, ollama_provider, monkeypatch):
         monkeypatch.setattr("anyio.sleep", AsyncMock())  # don't wait out the backoff
         ollama_provider.client.post = AsyncMock(
