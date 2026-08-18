@@ -251,6 +251,14 @@ async def record_index_failure(
     is genuinely per-document (an oversize payload, a chunk the backend always
     rejects) is exactly what parking is for; a backend-wide outage is not.
     Distinguishing them needs cross-document state this function does not have.
+
+    The read-then-write is deliberately NOT compare-and-swap. Two concurrent
+    failures for the same document can both read ``attempts=N`` and both write
+    ``N+1``, undercounting by one — and that is reachable in normal operation,
+    since a file shared by N users produces N tasks for the same ``doc_id``. The
+    consequence is the safe direction: parking is delayed by a round, never
+    triggered early. Qdrant offers no payload-level CAS to close it with, and
+    trading a lost round for that machinery is not worth it.
     """
     settings = get_settings()
     limit = settings.vector_sync_max_index_failures

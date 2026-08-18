@@ -972,9 +972,15 @@ async def process_document(
                         # consecutive failures per content-version and park it once
                         # the budget is spent. Clearing on success (see
                         # _index_document) is what keeps the count consecutive, so
-                        # an outage that recovers costs no document. Files only:
-                        # the marker is content-addressed by etag, which other doc
-                        # types don't carry.
+                        # an outage that recovers costs no document.
+                        #
+                        # Files only (card 1061): the marker is content-addressed
+                        # by etag, and DocumentTask.etag is None for every non-file
+                        # producer (scanner.py) -- without a version token a marker
+                        # could never be invalidated when the document changes. So a
+                        # note/calendar/deck_card that fails persistently is still
+                        # re-queued forever; widening this needs a per-doc_type
+                        # version token, tracked on that card.
                         if doc_task.doc_type == "file" and doc_task.etag:
                             # Lazy import for the #877 invariant: the document
                             # stack must stay off processor.py's module load path,
