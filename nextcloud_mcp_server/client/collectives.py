@@ -4,6 +4,10 @@ import logging
 from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.client.ocs import (
+    describe_ocs_failure,
+    parse_ocs_envelope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +42,23 @@ class CollectivesClient(BaseNextcloudClient):
     }
 
     def _unwrap_ocs(self, response_json: dict[str, Any]) -> Any:
-        """Unwrap OCS envelope, validating the status before returning data."""
-        ocs = response_json.get("ocs")
-        if ocs is None:
-            raise OCSError(500, "Response is not an OCS envelope")
-        meta = ocs.get("meta", {})
-        status_code = meta.get("statuscode", 200)
-        if status_code >= 400:
-            message = meta.get("message", "OCS error")
-            raise OCSError(status_code, message)
-        if "data" not in ocs:
+        """Unwrap OCS envelope, validating the status before returning data.
+
+        Raises ``OCSError``, which ``server/collectives`` catches in a dozen
+        places. Parsing and failure wording come from :mod:`.ocs`; the
+        ``>= 400`` rule stays local because it is looser than the documented
+        100/200 success codes and retightening it here would be a behaviour
+        change smuggled into a refactor.
+        """
+        envelope = parse_ocs_envelope(response_json)
+        if envelope.status_code >= 400:
+            raise OCSError(
+                envelope.status_code,
+                describe_ocs_failure(envelope.status_code, envelope.message),
+            )
+        if not envelope.has_data:
             raise OCSError(500, "OCS response missing 'data' field")
-        return ocs["data"]
+        return envelope.data
 
     # Collectives
 

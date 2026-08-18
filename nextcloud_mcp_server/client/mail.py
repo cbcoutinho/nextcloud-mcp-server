@@ -31,6 +31,10 @@ from urllib.parse import quote
 from httpx import HTTPStatusError, RequestError, Response
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.client.ocs import (
+    describe_ocs_failure,
+    parse_ocs_envelope,
+)
 
 # Nextcloud's primary blue. Shared with the nc_mail_create_tag tool so the two
 # defaults cannot drift into creating differently-coloured tags for the same
@@ -63,24 +67,25 @@ def _ocs_response(response: Response) -> Any:
             f"Unexpected response format: expected dict, got {type(body).__name__}"
         )
 
-    ocs = body.get("ocs")
-    if not isinstance(ocs, dict):
+    if not isinstance(body.get("ocs"), dict):
         raise RequestError(
-            f"Unexpected OCS format: expected dict, got {type(ocs).__name__}"
+            f"Unexpected OCS format: expected dict, got "
+            f"{type(body.get('ocs')).__name__}"
         )
 
-    meta = ocs.get("meta", {})
-    if not isinstance(meta, dict):
-        meta = {}
-    status_code = int(meta.get("statuscode", 200) or 200)
+    # Parsing and failure wording are shared with the other OCS clients; the
+    # >= 400 rule and the HTTPStatusError contract stay local, since callers
+    # here branch on status_code and a stricter rule would be a behaviour
+    # change rather than a refactor.
+    envelope = parse_ocs_envelope(body)
 
-    if status_code >= 400:
-        message = meta.get("message", "Unknown OCS error")
+    if envelope.status_code >= 400:
+        message = describe_ocs_failure(envelope.status_code, envelope.message)
         # Synthesise a Response-like object so callers can check status_code
-        synthetic = Response(status_code=status_code, text=message)
+        synthetic = Response(status_code=envelope.status_code, text=message)
         raise HTTPStatusError(message, request=response.request, response=synthetic)
 
-    return ocs.get("data")
+    return envelope.data
 
 
 class MailClient(BaseNextcloudClient):
