@@ -263,6 +263,15 @@ async def record_index_failure(
     early — and the straggler's own next round re-parks it. Qdrant offers no
     payload-level CAS to close either with, and trading a lost round for that
     machinery is not worth it.
+
+    Those two are delays. A third hazard was NOT, and is worth naming because it
+    is the one that actually bit: the count only accumulates while nothing else
+    clears the marker mid-round. ``_index_document`` used to call
+    ``clear_dead_letter`` *before* its final Qdrant upsert, so a persistently
+    failing upsert deleted its own count every round — ``attempts`` was rewritten
+    to 1 forever and the document could never park. The clear now runs only after
+    the upsert succeeds. Any future caller of ``clear_dead_letter`` on a path that
+    can still fail afterwards reintroduces that bug.
     """
     settings = get_settings()
     limit = settings.vector_sync_max_index_failures

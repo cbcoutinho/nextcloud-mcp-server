@@ -2305,17 +2305,6 @@ async def _index_document_inner(
             )
         )
 
-    # A successful (re-)index supersedes any prior terminal failure: clear a
-    # stale dead-letter marker (e.g. the file was fixed/replaced, or a new
-    # escalation tier finally parsed it) so it isn't left behind. Only files are
-    # ever dead-lettered, and only with a non-empty etag (is_dead_lettered
-    # early-returns without one), so skip the extra Qdrant round-trip otherwise.
-    # Cleared before the real-chunk upsert below: if that upsert then fails
-    # transiently, the document is re-queued and re-parses once on the next scan
-    # (an extra parse, never a silent drop) -- the safe ordering.
-    if doc_task.doc_type == "file" and doc_task.etag:
-        await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
-
     # Delete placeholder before writing real vectors
     # This prevents duplicates and cleans up the placeholder state
     try:
@@ -2360,6 +2349,27 @@ async def _index_document_inner(
                     batch_start // BATCH_SIZE + 1,
                     (len(points) + BATCH_SIZE - 1) // BATCH_SIZE,
                 )
+
+    # A successful (re-)index supersedes any prior failure record: clear the
+    # marker (e.g. the file was fixed/replaced, or a new escalation tier finally
+    # parsed it) so it isn't left behind. Only files are ever dead-lettered, and
+    # only with a non-empty etag (is_dead_lettered early-returns without one), so
+    # skip the extra Qdrant round-trip otherwise.
+    #
+    # Must run AFTER the upsert loop, not before it (GH #1345). The marker now
+    # also carries the consecutive-index-failure counter, and clear_dead_letter
+    # deletes by point ID -- so clearing first meant a persistently-failing
+    # upsert wiped its own count every round: `attempts` was rewritten to 1 each
+    # time, never reached VECTOR_SYNC_MAX_INDEX_FAILURES, and the document was
+    # re-queued forever. Exactly the case parking exists for.
+    #
+    # The old ordering existed so a stale TERMINAL marker could not block a
+    # re-queue if the upsert then failed. That is still safe here: on failure
+    # record_index_failure upserts the same point ID, overwriting any stale
+    # terminal marker with a soft one, so the document stays retryable either
+    # way.
+    if doc_task.doc_type == "file" and doc_task.etag:
+        await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
     logger.info(
         "Indexed %s_%s for %s (%s chunks)",
