@@ -397,10 +397,14 @@ async def sweep_orphan_placeholders(
         for point in points:
             payload = point.payload or {}
             # Dead-letter markers (vector/dead_letter.py) reuse is_placeholder=True
-            # for the search exclusion but are DURABLE terminal-state records, not
+            # for the search exclusion but are DURABLE failure records, not
             # in-flight placeholders -- they carry no/foreign instance_id and must
-            # survive a Pod restart, so never sweep them as orphans.
-            if payload.get("dead_letter") is True:
+            # survive a Pod restart, so never sweep them as orphans. Keyed on the
+            # field's PRESENCE, not its value: a soft marker still counting index
+            # failures towards VECTOR_SYNC_MAX_INDEX_FAILURES carries
+            # dead_letter=False, and sweeping it would reset the count on every
+            # Pod restart and restore the GH #1345 infinite retry loop.
+            if payload.get("dead_letter") is not None:
                 # Tenant-wide and always kept (not Pod-scoped); counted under
                 # ``kept`` only because the sweep's tally has no separate bucket.
                 kept += 1

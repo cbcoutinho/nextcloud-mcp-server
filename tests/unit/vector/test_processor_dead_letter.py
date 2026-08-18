@@ -519,3 +519,72 @@ async def test_buffered_fallback_cleans_up_its_temp_file(mocker):
     assert materialised, "the parse stub should have materialised the source"
     for path in materialised:
         assert not path.exists(), f"leaked temp file for the buffered path: {path}"
+
+
+class TestIndexFailureIsBounded:
+    """GH #1345: a document that fails INDEXING must not be re-queued forever.
+
+    The reported symptom was a 206-page PDF re-parsed 45 times in one morning:
+    the embedding provider timed out, ``process_document`` exhausted its retries
+    and re-raised without marking the document, and the scanner re-picked it
+    every cycle. Parsing succeeded every time — so the terminal-parse-failure
+    dead-letter above never applied.
+    """
+
+    def _patch(self, mocker, *, exc: BaseException):
+        mocker.patch.object(
+            processor, "get_settings", lambda: _settings(ocr_enabled=False)
+        )
+        mocker.patch.object(processor, "get_qdrant_client", AsyncMock())
+        mocker.patch.object(
+            processor, "allowed_doc_types", AsyncMock(return_value=None)
+        )
+        mocker.patch.object(processor, "_index_document", AsyncMock(side_effect=exc))
+        return SimpleNamespace(
+            record=mocker.patch.object(
+                processor, "record_index_failure", AsyncMock(return_value=False)
+            ),
+            dead_metric=mocker.patch.object(processor, "record_document_dead_lettered"),
+            dropped=mocker.patch.object(processor, "record_ingest_dropped"),
+        )
+
+    async def test_exhausted_retries_record_a_bounded_failure(self, mocker):
+        import httpx
+
+        spies = self._patch(mocker, exc=httpx.ReadTimeout(""))
+
+        with pytest.raises(httpx.ReadTimeout):
+            await processor.process_document(_file_task(), _nc_client(), max_retries=1)
+
+        spies.dropped.assert_called_once_with("timeout")
+        spies.record.assert_awaited_once()
+        args = spies.record.await_args.args
+        assert args[0] == "520189" and args[1] == "file"
+        assert args[2] == "etag-1"  # content-addressed, like the parse path
+        assert "ocr=0" in args[3]  # tiers_sig
+        assert args[4] == "timeout"  # drop reason
+        # Still below the limit -> not parked, so no dead-letter metric.
+        spies.dead_metric.assert_not_called()
+
+    async def test_metric_fires_when_the_failure_parks_the_document(self, mocker):
+        import httpx
+
+        spies = self._patch(mocker, exc=httpx.ConnectError(""))
+        spies.record.return_value = True  # this failure hit the limit
+
+        with pytest.raises(httpx.ConnectError):
+            await processor.process_document(_file_task(), _nc_client(), max_retries=1)
+
+        spies.dead_metric.assert_called_once_with("connection")
+
+    async def test_document_without_an_etag_is_not_counted(self, mocker):
+        import httpx
+
+        spies = self._patch(mocker, exc=httpx.ReadTimeout(""))
+        task = _file_task()
+        task.etag = ""  # nothing to content-address the marker with
+
+        with pytest.raises(httpx.ReadTimeout):
+            await processor.process_document(task, _nc_client(), max_retries=1)
+
+        spies.record.assert_not_awaited()

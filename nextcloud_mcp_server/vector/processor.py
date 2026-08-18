@@ -60,6 +60,7 @@ from nextcloud_mcp_server.vector.collection_metadata import build_embedding_iden
 from nextcloud_mcp_server.vector.dead_letter import (
     clear_dead_letter,
     mark_dead_letter,
+    record_index_failure,
 )
 from nextcloud_mcp_server.vector.document_chunker import (
     ChunkWithPosition,
@@ -766,6 +767,14 @@ async def process_document(
     5×3=15 provider calls (~90s wall-clock) before the document is dropped and
     re-picked on the next scan; the procrastinate path (max_retries=1) caps it at
     one outer attempt (~30s) and defers. Don't stack a third retry layer here.
+
+    Bounding the re-queue (GH #1345): being re-picked by the next scan is what
+    lets a transient outage recover, but on its own it never terminates — a
+    document that fails every round is re-downloaded and re-parsed forever. So
+    exhausting ``max_retries`` also records a consecutive-failure count against
+    the document's content version (``dead_letter.record_index_failure``), and the
+    document is dead-lettered once it reaches ``VECTOR_SYNC_MAX_INDEX_FAILURES``.
+    A successful index clears the count, so this bounds only *persistent* failure.
     """
     # EscalateError and BatchPending are control-flow signals that arise ONLY on
     # the per-tier external path (tier set). Bind them lazily here, and only when a
@@ -952,12 +961,38 @@ async def process_document(
                         # to mcp_qdrant_operations_total{error} would inflate that
                         # signal. The cause is captured by record_ingest_dropped
                         # instead, and the processing-error metric is recorded
-                        # once by the outer handler below (no double-count). The
-                        # document is NOT marked failed, so the next scan re-picks
-                        # it (re-queue via the scan loop, card 309).
+                        # once by the outer handler below (no double-count).
                         if reason == "qdrant":
                             record_qdrant_operation("upsert", "error")
                         record_ingest_dropped(reason)
+                        # The document is re-queued by the next scan (card 309) --
+                        # correct for a transient backend outage, but unbounded on
+                        # its own: a document that fails EVERY round loops forever,
+                        # re-downloading and re-parsing each time (GH #1345). Count
+                        # consecutive failures per content-version and park it once
+                        # the budget is spent. Clearing on success (see
+                        # _index_document) is what keeps the count consecutive, so
+                        # an outage that recovers costs no document. Files only:
+                        # the marker is content-addressed by etag, which other doc
+                        # types don't carry.
+                        if doc_task.doc_type == "file" and doc_task.etag:
+                            # Lazy import for the #877 invariant: the document
+                            # stack must stay off processor.py's module load path,
+                            # and this is a file-only, failure-only branch.
+                            from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                                escalation_tiers_signature,
+                            )
+
+                            parked = await record_index_failure(
+                                doc_task.doc_id,
+                                doc_task.doc_type,
+                                doc_task.etag,
+                                escalation_tiers_signature(get_settings()),
+                                reason,
+                                file_path=doc_task.file_path,
+                            )
+                            if parked:
+                                record_document_dead_lettered(reason)
                         raise
 
         except Exception as e:

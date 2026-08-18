@@ -28,6 +28,8 @@ _COLLECTION = "test_collection"
 class _Settings:
     # The dense slot is always sized from the embedding provider (no keyword
     # branch anymore); the embedding service stub in the fixture returns dim=4.
+    vector_sync_max_index_failures = 3
+
     def get_collection_name(self) -> str:
         return _COLLECTION
 
@@ -46,6 +48,7 @@ def client(monkeypatch) -> AsyncMock:
     """
     qc = AsyncMock()
     qc.scroll.return_value = ([], None)
+    qc.retrieve.return_value = []
     monkeypatch.setattr(dl, "get_qdrant_client", AsyncMock(return_value=qc))
     monkeypatch.setattr(dl, "get_settings", lambda: _Settings())
     monkeypatch.setattr(
@@ -163,14 +166,110 @@ class TestIsDeadLettered:
 
 
 class TestClearDeadLetter:
-    async def test_deletes_by_marker_filter(self, client) -> None:
+    async def test_deletes_by_point_id(self, client) -> None:
+        # By ID, not by _dead_letter_filter: that filter matches dead_letter=True
+        # only, so a filter-based delete would leave a SOFT counting marker behind
+        # and the consecutive-failure count would never reset on success.
         await dl.clear_dead_letter("520189", "file")
         client.delete.assert_awaited_once()
-        flt = client.delete.await_args.kwargs["points_selector"]
-        conds = _must_conditions(flt)
-        assert conds[dl.DEAD_LETTER_KEY] is True
-        assert conds["doc_id"] == "520189"
+        selector = client.delete.await_args.kwargs["points_selector"]
+        assert selector.points == [dl._generate_dead_letter_id("file", "520189")]
 
     async def test_failure_is_swallowed(self, client) -> None:
         client.delete.side_effect = RuntimeError("qdrant down")
         await dl.clear_dead_letter("520189", "file")
+
+
+class TestRecordIndexFailure:
+    """GH #1345: bound the scanner's re-queue of a persistently failing document.
+
+    ``_Settings.vector_sync_max_index_failures`` is 3 in these tests.
+    """
+
+    def _marker(self, attempts, etag="e1", tiers_sig="sig1") -> SimpleNamespace:
+        payload = {
+            "doc_id": "520189",
+            dl.DEAD_LETTER_KEY: False,
+            "etag": etag,
+            "tiers_sig": tiers_sig,
+        }
+        if attempts is not None:
+            payload[dl.ATTEMPTS_KEY] = attempts
+        return _point(payload)
+
+    def _written(self, client) -> dict:
+        return client.upsert.await_args.kwargs["points"][0].payload
+
+    async def test_first_failure_writes_a_soft_marker(self, client) -> None:
+        parked = await dl.record_index_failure(
+            "520189", "file", "e1", "sig1", "timeout"
+        )
+        assert parked is False
+        payload = self._written(client)
+        assert payload[dl.ATTEMPTS_KEY] == 1
+        # Soft: is_dead_lettered filters on dead_letter=True, so the scanner keeps
+        # re-queuing — a transient outage must still recover on its own.
+        assert payload[dl.DEAD_LETTER_KEY] is False
+
+    async def test_counts_up_without_parking(self, client) -> None:
+        client.retrieve.return_value = [self._marker(1)]
+        parked = await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        assert parked is False
+        assert self._written(client)[dl.ATTEMPTS_KEY] == 2
+
+    async def test_parks_at_the_limit(self, client) -> None:
+        client.retrieve.return_value = [self._marker(2)]
+        parked = await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        assert parked is True
+        payload = self._written(client)
+        assert payload[dl.ATTEMPTS_KEY] == 3
+        assert payload[dl.DEAD_LETTER_KEY] is True
+
+    async def test_etag_change_restarts_the_budget(self, client) -> None:
+        client.retrieve.return_value = [self._marker(2, etag="old")]
+        # New content deserves its own budget rather than inheriting the previous
+        # version's — otherwise an edit one failure short of the limit is parked
+        # on its first attempt.
+        parked = await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        assert parked is False
+        assert self._written(client)[dl.ATTEMPTS_KEY] == 1
+
+    async def test_tiers_sig_change_restarts_the_budget(self, client) -> None:
+        client.retrieve.return_value = [self._marker(2, tiers_sig="ocr=0")]
+        parked = await dl.record_index_failure("520189", "file", "e1", "ocr=1", "x")
+        assert parked is False
+        assert self._written(client)[dl.ATTEMPTS_KEY] == 1
+
+    async def test_legacy_marker_without_attempts_counts_as_one(self, client) -> None:
+        # A marker written before ATTEMPTS_KEY existed still recorded a failure,
+        # so it counts as one prior attempt rather than zero.
+        client.retrieve.return_value = [self._marker(None)]
+        await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        assert self._written(client)[dl.ATTEMPTS_KEY] == 2
+
+    async def test_retrieve_error_counts_as_the_first(self, client) -> None:
+        client.retrieve.side_effect = RuntimeError("qdrant down")
+        # Fail-safe: at worst this delays parking; it must never park early.
+        parked = await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        assert parked is False
+        assert self._written(client)[dl.ATTEMPTS_KEY] == 1
+
+    async def test_retrieves_by_point_id(self, client) -> None:
+        await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        # By ID, so no payload index is needed and a SOFT marker is reachable
+        # (_dead_letter_filter matches dead_letter=True only).
+        assert client.retrieve.await_args.kwargs["ids"] == [
+            dl._generate_dead_letter_id("file", "520189")
+        ]
+
+    async def test_upsert_failure_is_swallowed(self, client) -> None:
+        client.upsert.side_effect = RuntimeError("qdrant down")
+        await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+
+    async def test_parked_marker_is_visible_to_is_dead_lettered(self, client) -> None:
+        # End-to-end on the payload contract: what record_index_failure writes at
+        # the limit is exactly what the scanner's lookup treats as parked.
+        client.retrieve.return_value = [self._marker(2)]
+        await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+        client.scroll.return_value = ([_point(self._written(client))], None)
+        assert await dl.is_dead_lettered("520189", "file", "e1", "sig1") is True

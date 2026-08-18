@@ -663,6 +663,7 @@ ENABLE_SEMANTIC_SEARCH=true           # Enable background indexing
 # Tuning parameters (advanced - only modify if needed)
 VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
 VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
+VECTOR_SYNC_MAX_INDEX_FAILURES=5      # Failed index attempts before a document is parked
 # Optional per-tier concurrency overrides (unset = inherit PROCESSOR_WORKERS).
 # Precedence: worker --concurrency flag > tier override > PROCESSOR_WORKERS.
 VECTOR_SYNC_FAST_CONCURRENCY=         # Fast-tier worker concurrency (default: unset)
@@ -1313,6 +1314,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
 | `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero (while Qdrant still holds points for it) before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty (a genuine mass-untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
+| `VECTOR_SYNC_MAX_INDEX_FAILURES` | ⚠️ Optional | `5` | Consecutive failed **index** attempts before a document is dead-lettered instead of re-queued by the next scan (GH #1345). A hard *parse* failure at the deepest tier is terminal on its first attempt; an embedding / Qdrant / transport failure is treated as transient at first, so parking it takes this many rounds — otherwise a backend outage would drop every in-flight document. The count is per content-version (`etag` + escalation-tier signature) and is cleared by a successful index, so it bounds only *persistent* failure. Each attempt already costs the in-process retries, so the default spans roughly 5 scan cycles. Must be `>= 1`; `1` parks on the first exhausted-retry round. |
 | `VECTOR_SYNC_FAST_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **fast** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Resolution precedence: the worker `--concurrency` flag > this tier override > `VECTOR_SYNC_PROCESSOR_WORKERS`. |
 | `VECTOR_SYNC_STRUCTURED_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **structured** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Same precedence as `VECTOR_SYNC_FAST_CONCURRENCY`. |
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
