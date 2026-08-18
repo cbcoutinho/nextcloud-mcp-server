@@ -40,7 +40,7 @@ class CollectivesClient(BaseNextcloudClient):
     # Sourced from the shared OCS module so a new call site cannot pick up a
     # drifted copy of the header set -- omitting OCS-APIRequest is what makes
     # Nextcloud answer 997, the failure this module exists to make legible.
-    _OCS_HEADERS: dict[str, str] = OCS_REQUEST_HEADERS
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
 
     _OCS_HEADERS_JSON: dict[str, str] = {
         **OCS_REQUEST_HEADERS,

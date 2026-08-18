@@ -108,6 +108,13 @@ def parse_ocs_envelope(payload: Any) -> OCSEnvelope:
     except (TypeError, ValueError):
         status_code = 500
 
+    # One fallback string for all three clients. They previously differed --
+    # sharing "Unknown error", collectives "OCS error", mail "Unknown OCS
+    # error" -- and consolidating is deliberate rather than incidental: this is
+    # the text shown only when the server sent no message at all, so a
+    # per-client variant conveys nothing a caller can act on. Called out
+    # explicitly because the statuscode default next to it was preserved
+    # exactly, and the difference in treatment should not look accidental.
     message = meta.get("message") or "Unknown error"
     return OCSEnvelope(status_code, str(message), ocs.get("data"), "data" in ocs)
 

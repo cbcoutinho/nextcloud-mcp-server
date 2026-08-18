@@ -68,6 +68,11 @@ def _ocs_response(response: Response) -> Any:
             f"Unexpected response format: expected dict, got {type(body).__name__}"
         )
 
+    # These shape checks are not redundant with parse_ocs_envelope: it reports
+    # a malformed body as a 500 envelope, whereas this client's contract is to
+    # raise RequestError for a body that is not an OCS response at all. Callers
+    # distinguish "the server said no" from "that was not OCS", so the checks
+    # stay ahead of the shared parser.
     ocs = body.get("ocs")
     if not isinstance(ocs, dict):
         raise RequestError(
@@ -114,7 +119,7 @@ class MailClient(BaseNextcloudClient):
     # direct routes from CSRF, so both families use the same headers.
     # Shared with the other OCS clients -- see collectives for why the header
     # set has a single home.
-    _API_HEADERS = OCS_REQUEST_HEADERS
+    _API_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"
 

@@ -166,3 +166,19 @@ def test_collectives_error_string_is_not_double_prefixed():
     assert rendered.count("404") == 1, rendered
     assert not rendered.startswith("OCS error 404:")
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "meta", [{"statuscode": 404}, {"statuscode": 404, "message": ""}]
+)
+def test_absent_server_message_uses_one_shared_default(meta):
+    """All three clients now share a single "no message" fallback.
+
+    They used to differ ("Unknown error" / "OCS error" / "Unknown OCS error").
+    Consolidating is deliberate -- the text appears only when the server sent no
+    message, so a per-client variant conveys nothing actionable -- but it is
+    pinned here so the change is a decision on record rather than drift.
+    """
+    envelope = parse_ocs_envelope({"ocs": {"meta": meta}})
+
+    assert envelope.message == "Unknown error"
