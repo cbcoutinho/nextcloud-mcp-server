@@ -120,6 +120,10 @@ _DEFAULTS: dict[str, Any] = {
     # Vector sync
     "vector_sync_scan_interval": 300,
     "vector_sync_processor_workers": 3,
+    # Consecutive failed index attempts (embed / Qdrant / transport — NOT a
+    # parse failure, which is terminal on the first try) before a document is
+    # dead-lettered instead of re-queued forever. See vector/dead_letter.py.
+    "vector_sync_max_index_failures": 5,
     # Optional per-tier concurrency overrides (None = fall back to
     # vector_sync_processor_workers). Consumed by the `worker` CLI per --tier.
     "vector_sync_fast_concurrency": None,
@@ -176,6 +180,11 @@ _DEFAULTS: dict[str, Any] = {
     "ollama_base_url": None,
     "ollama_embedding_model": "nomic-embed-text",
     "ollama_verify_ssl": True,
+    # Ollama embeds a batch serially on whatever hardware it has, so the wall
+    # clock of one /api/embed call scales with the batch's total text, not its
+    # item count. Bound the request by characters (GH #1345).
+    "ollama_embed_max_batch_chars": 16000,
+    "ollama_embed_timeout": 120,
     # OpenAI
     "openai_api_key": None,
     "openai_base_url": None,
@@ -585,8 +594,13 @@ _dynaconf = Dynaconf(
         Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
         Validator("QDRANT_INIT_BACKOFF_BASE", gte=0),
         Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
+        Validator("OLLAMA_EMBED_MAX_BATCH_CHARS", gte=1),
+        Validator("OLLAMA_EMBED_TIMEOUT", gte=1),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
+        # 1 = park on the first exhausted-retry round. 0/negative would park a
+        # document before any attempt was recorded.
+        Validator("VECTOR_SYNC_MAX_INDEX_FAILURES", gte=1),
         # Optional per-tier concurrency overrides (None = fall back to
         # VECTOR_SYNC_PROCESSOR_WORKERS). Like the sibling above they must be
         # >=1 when set — a 0/negative value would otherwise reach
@@ -1107,6 +1121,13 @@ class Settings:
     vector_sync_enabled: bool = False
     vector_sync_scan_interval: int = 300  # seconds (5 minutes)
     vector_sync_processor_workers: int = 3
+    # Consecutive failed index attempts before a document is dead-lettered
+    # (GH #1345). A parse failure is terminal on its first attempt; an
+    # embed/Qdrant/transport failure is transient-until-proven-otherwise, so it
+    # is counted per (doc_id, etag) and only parked once the count is reached.
+    # Each attempt already costs `max_retries` in-process tries, so the default
+    # spans roughly 5 scan cycles before the document stops being re-queued.
+    vector_sync_max_index_failures: int = 5
     # Optional per-tier concurrency overrides for the ingest worker (None = use
     # vector_sync_processor_workers). Only fast/structured are exposed; the
     # CPU-heavy PDF paths are serialized (see document_processors/_native_locks).
@@ -1193,6 +1214,16 @@ class Settings:
     ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
+    # Max characters per /api/embed request. A fixed 32-item batch put up to
+    # ~65k chars in a single call at the default chunk size, which a CPU-only
+    # Ollama could not finish inside the read timeout on a large document
+    # (GH #1345). Bounding by characters makes the per-request cost predictable
+    # regardless of DOCUMENT_CHUNK_SIZE.
+    ollama_embed_max_batch_chars: int = 16000
+    # Timeout (seconds) for an /api/embed request. Applied to the read, write
+    # and pool phases alike; the connect timeout stays at 5s (see
+    # providers/registry.py), matching the previously-hardcoded value.
+    ollama_embed_timeout: int = 120
 
     # OpenAI settings
     openai_api_key: str | None = None

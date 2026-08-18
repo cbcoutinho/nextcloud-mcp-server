@@ -15,6 +15,7 @@ The sweep contract this file pins:
 * placeholder with **absent** ``instance_id`` → deleted
   (back-compat for placeholders written by pre-fix Pod versions)
 * placeholder with ``instance_id == _INSTANCE_ID`` → kept
+* dead-letter marker (``dead_letter`` present, True OR False) → kept
 * empty / no-results scroll → no-op (no spurious delete call)
 * multi-page scroll → all pages visited, deletes batched per page
 """
@@ -121,6 +122,38 @@ async def test_keeps_dead_letter_markers(monkeypatch):
     marker = SimpleNamespace(
         id="dl-1",
         payload={"is_placeholder": True, "dead_letter": True, "instance_id": "pod-old"},
+    )
+    client = _make_client([([marker], None)])
+
+    swept, kept = await sweep_orphan_placeholders(client, "nextcloud_content")
+
+    assert (swept, kept) == (0, 1)
+    client.delete.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_keeps_soft_dead_letter_markers(monkeypatch):
+    """A SOFT marker (``dead_letter=False``) must survive the sweep too.
+
+    GH #1345 added a consecutive-index-failure counter carried on the same
+    marker point, which stays ``dead_letter=False`` until the failure count
+    reaches the limit. The carve-out therefore keys off the field's PRESENCE,
+    not its value — sweeping a soft marker would reset the failure budget on
+    every Pod restart and restore the infinite retry loop the counter exists to
+    stop.
+
+    This is the case a future refactor is most likely to break, because
+    ``dead_letter is True`` reads more intuitively than ``is not None``.
+    """
+    monkeypatch.setattr(placeholder_module, "_INSTANCE_ID", "pod-new")
+    marker = SimpleNamespace(
+        id="dl-soft-1",
+        payload={
+            "is_placeholder": True,
+            "dead_letter": False,
+            "attempts": 2,
+            "instance_id": "pod-old",
+        },
     )
     client = _make_client([([marker], None)])
 

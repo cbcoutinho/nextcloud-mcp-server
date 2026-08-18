@@ -60,6 +60,7 @@ from nextcloud_mcp_server.vector.collection_metadata import build_embedding_iden
 from nextcloud_mcp_server.vector.dead_letter import (
     clear_dead_letter,
     mark_dead_letter,
+    record_index_failure,
 )
 from nextcloud_mcp_server.vector.document_chunker import (
     ChunkWithPosition,
@@ -766,6 +767,14 @@ async def process_document(
     5×3=15 provider calls (~90s wall-clock) before the document is dropped and
     re-picked on the next scan; the procrastinate path (max_retries=1) caps it at
     one outer attempt (~30s) and defers. Don't stack a third retry layer here.
+
+    Bounding the re-queue (GH #1345): being re-picked by the next scan is what
+    lets a transient outage recover, but on its own it never terminates — a
+    document that fails every round is re-downloaded and re-parsed forever. So
+    exhausting ``max_retries`` also records a consecutive-failure count against
+    the document's content version (``dead_letter.record_index_failure``), and the
+    document is dead-lettered once it reaches ``VECTOR_SYNC_MAX_INDEX_FAILURES``.
+    A successful index clears the count, so this bounds only *persistent* failure.
     """
     # EscalateError and BatchPending are control-flow signals that arise ONLY on
     # the per-tier external path (tier set). Bind them lazily here, and only when a
@@ -952,12 +961,44 @@ async def process_document(
                         # to mcp_qdrant_operations_total{error} would inflate that
                         # signal. The cause is captured by record_ingest_dropped
                         # instead, and the processing-error metric is recorded
-                        # once by the outer handler below (no double-count). The
-                        # document is NOT marked failed, so the next scan re-picks
-                        # it (re-queue via the scan loop, card 309).
+                        # once by the outer handler below (no double-count).
                         if reason == "qdrant":
                             record_qdrant_operation("upsert", "error")
                         record_ingest_dropped(reason)
+                        # The document is re-queued by the next scan (card 309) --
+                        # correct for a transient backend outage, but unbounded on
+                        # its own: a document that fails EVERY round loops forever,
+                        # re-downloading and re-parsing each time (GH #1345). Count
+                        # consecutive failures per content-version and park it once
+                        # the budget is spent. Clearing on success (see
+                        # _index_document) is what keeps the count consecutive, so
+                        # an outage that recovers costs no document.
+                        #
+                        # Files only (card 1061): the marker is content-addressed
+                        # by etag, and DocumentTask.etag is None for every non-file
+                        # producer (scanner.py) -- without a version token a marker
+                        # could never be invalidated when the document changes. So a
+                        # note/calendar/deck_card that fails persistently is still
+                        # re-queued forever; widening this needs a per-doc_type
+                        # version token, tracked on that card.
+                        if doc_task.doc_type == "file" and doc_task.etag:
+                            # Lazy import for the #877 invariant: the document
+                            # stack must stay off processor.py's module load path,
+                            # and this is a file-only, failure-only branch.
+                            from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                                escalation_tiers_signature,
+                            )
+
+                            parked = await record_index_failure(
+                                doc_task.doc_id,
+                                doc_task.doc_type,
+                                doc_task.etag,
+                                escalation_tiers_signature(get_settings()),
+                                reason,
+                                file_path=doc_task.file_path,
+                            )
+                            if parked:
+                                record_document_dead_lettered(reason)
                         raise
 
         except Exception as e:
@@ -2264,17 +2305,6 @@ async def _index_document_inner(
             )
         )
 
-    # A successful (re-)index supersedes any prior terminal failure: clear a
-    # stale dead-letter marker (e.g. the file was fixed/replaced, or a new
-    # escalation tier finally parsed it) so it isn't left behind. Only files are
-    # ever dead-lettered, and only with a non-empty etag (is_dead_lettered
-    # early-returns without one), so skip the extra Qdrant round-trip otherwise.
-    # Cleared before the real-chunk upsert below: if that upsert then fails
-    # transiently, the document is re-queued and re-parses once on the next scan
-    # (an extra parse, never a silent drop) -- the safe ordering.
-    if doc_task.doc_type == "file" and doc_task.etag:
-        await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
-
     # Delete placeholder before writing real vectors
     # This prevents duplicates and cleans up the placeholder state
     try:
@@ -2319,6 +2349,27 @@ async def _index_document_inner(
                     batch_start // BATCH_SIZE + 1,
                     (len(points) + BATCH_SIZE - 1) // BATCH_SIZE,
                 )
+
+    # A successful (re-)index supersedes any prior failure record: clear the
+    # marker (e.g. the file was fixed/replaced, or a new escalation tier finally
+    # parsed it) so it isn't left behind. Only files are ever dead-lettered, and
+    # only with a non-empty etag (is_dead_lettered early-returns without one), so
+    # skip the extra Qdrant round-trip otherwise.
+    #
+    # Must run AFTER the upsert loop, not before it (GH #1345). The marker now
+    # also carries the consecutive-index-failure counter, and clear_dead_letter
+    # deletes by point ID -- so clearing first meant a persistently-failing
+    # upsert wiped its own count every round: `attempts` was rewritten to 1 each
+    # time, never reached VECTOR_SYNC_MAX_INDEX_FAILURES, and the document was
+    # re-queued forever. Exactly the case parking exists for.
+    #
+    # The old ordering existed so a stale TERMINAL marker could not block a
+    # re-queue if the upsert then failed. That is still safe here: on failure
+    # record_index_failure upserts the same point ID, overwriting any stale
+    # terminal marker with a soft one, so the document stays retryable either
+    # way.
+    if doc_task.doc_type == "file" and doc_task.etag:
+        await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
     logger.info(
         "Indexed %s_%s for %s (%s chunks)",

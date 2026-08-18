@@ -479,8 +479,14 @@ document_parse_failed_total = Counter(
 # changes and it is re-attempted.
 document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
-    "Documents dead-lettered after a terminal parse failure (no escalation tier)",
-    ["reason"],  # reason: timeout | oom | error | oversize | unreadable
+    "Documents dead-lettered by a terminal parse failure (no escalation tier) "
+    "or by repeated index failures",
+    # reason: a parse-failure reason (timeout | oom | error | oversize |
+    # unreadable | unsupported_type) OR a vector.processor._drop_reason value
+    # (timeout | connection | rate_limit | server | qdrant | other) for the
+    # repeated-index-failure path. Keep in step with record_document_dead_lettered's
+    # docstring below and with _drop_reason.
+    ["reason"],
 )
 
 # Documents dropped after exhausting in-process indexing retries (the scanner
@@ -1786,7 +1792,7 @@ def record_document_parse_mode(mode: str) -> None:
 
 
 def record_document_dead_lettered(reason: str) -> None:
-    """Record a document dead-lettered after a terminal parse failure.
+    """Record a document dead-lettered, by parse failure or repeated index failure.
 
     Counts the dead-letter *attempt*: it is incremented alongside the
     ``mark_dead_letter`` call, which is fail-safe (a Qdrant write error is logged,
@@ -1794,13 +1800,22 @@ def record_document_dead_lettered(reason: str) -> None:
     above the live marker count in Qdrant.
 
     Args:
-        reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
-            reason carried from the isolated worker), ``oversize`` (rejected by
-            the pre-parse size guard, which no tier can ever parse),
-            ``unreadable`` (the bytes are not a document the engine can open --
-            no tier will do better, so it is terminal on the first attempt), or
-            ``unsupported_type`` (no registered processor claims the mime type --
-            a config property of the deployment, not a fault of the document).
+        reason: for a **terminal parse failure** — ``timeout`` | ``oom`` |
+            ``error`` (the reason carried from the isolated worker),
+            ``oversize`` (rejected by the pre-parse size guard, which no tier can
+            ever parse), ``unreadable`` (the bytes are not a document the engine
+            can open -- no tier will do better, so it is terminal on the first
+            attempt), or ``unsupported_type`` (no registered processor claims the
+            mime type -- a config property of the deployment, not a fault of the
+            document).
+
+            For a document parked after ``VECTOR_SYNC_MAX_INDEX_FAILURES``
+            consecutive **index** failures (GH #1345), the label is instead a
+            ``vector.processor._drop_reason`` value: ``timeout`` |
+            ``connection`` | ``rate_limit`` | ``server`` | ``qdrant`` |
+            ``other``. ``timeout`` is therefore shared by both paths. The label
+            set is not validated anywhere, so this list is the only contract --
+            keep it in step with ``_drop_reason``.
     """
     document_dead_lettered_total.labels(reason=reason).inc()
 
