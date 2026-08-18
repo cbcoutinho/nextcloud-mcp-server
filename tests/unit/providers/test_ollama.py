@@ -230,6 +230,28 @@ class TestTransientRetry:
         # `ReadTimeout('')` alone told an operator nothing — the log must name
         # the batch shape and the knob that fixes it.
         logged = caplog.text
+        assert "ReadTimeout" in logged
         assert "2 texts" in logged
         assert "1000 chars" in logged
         assert "OLLAMA_EMBED_MAX_BATCH_CHARS" in logged
+
+    @pytest.mark.unit
+    async def test_non_timeout_failures_also_log_the_batch_shape(
+        self, ollama_provider, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("anyio.sleep", AsyncMock())
+        ollama_provider.client.post = AsyncMock(
+            side_effect=httpx.ConnectError("ollama restarting")
+        )
+
+        with caplog.at_level(logging.WARNING), pytest.raises(httpx.ConnectError):
+            await ollama_provider.embed_batch_with_usage(["x" * 500])
+
+        logged = caplog.text
+        assert "ConnectError" in logged
+        assert "1 texts" in logged
+        assert "500 chars" in logged
+        # The batch-size hint is timeout-specific: a connection failure has
+        # nothing to do with how much text the request carried, so pointing the
+        # operator at OLLAMA_EMBED_MAX_BATCH_CHARS here would misdirect them.
+        assert "OLLAMA_EMBED_MAX_BATCH_CHARS" not in logged
