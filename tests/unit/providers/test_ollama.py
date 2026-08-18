@@ -163,9 +163,12 @@ class TestBatchSplitting:
 
         calls = ollama_provider.client.post.await_args_list
         assert len(calls) > 11  # more than the old fixed 32-item batching
+        # Hard budget, no slack: every text here is under it, so no batch can
+        # legitimately overflow (12 x 1320 = 15,840 fits; a 13th would not).
+        # Allowing a text's worth of headroom would have made this assert a
+        # weaker bound than the code actually guarantees.
         assert all(
-            sum(len(t) for t in c.kwargs["json"]["input"]) <= 16_000 + 1320
-            for c in calls
+            sum(len(t) for t in c.kwargs["json"]["input"]) <= 16_000 for c in calls
         )
 
 
