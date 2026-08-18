@@ -93,6 +93,11 @@ class SharingClient(BaseNextcloudClient):
 
     app_name = "sharing"
 
+    # Own copy, matching collectives and mail: the module-level dict is shared
+    # by all three clients, so passing it straight through would make any
+    # future in-place edit a cross-client bug.
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
+
     @retry_on_429
     async def create_share(
         self,
@@ -150,7 +155,7 @@ class SharingClient(BaseNextcloudClient):
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
             data=payload,
         )
         response.raise_for_status()
@@ -214,7 +219,7 @@ class SharingClient(BaseNextcloudClient):
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
             data=data,
         )
         response.raise_for_status()
@@ -251,7 +256,7 @@ class SharingClient(BaseNextcloudClient):
         """
         response = await self._client.delete(
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -275,7 +280,7 @@ class SharingClient(BaseNextcloudClient):
         """
         response = await self._client.get(
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -311,7 +316,7 @@ class SharingClient(BaseNextcloudClient):
         response = await self._client.get(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             params=params,
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -344,7 +349,7 @@ class SharingClient(BaseNextcloudClient):
 
         response = await self._client.put(
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
-            headers=OCS_REQUEST_HEADERS,
+            headers=self._OCS_HEADERS,
             data=data,
         )
         response.raise_for_status()
