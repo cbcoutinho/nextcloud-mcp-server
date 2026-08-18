@@ -168,7 +168,8 @@ def clear_cache() -> None:
 # Per-tool capability gates
 # ---------------------------------------------------------------------------
 
-#: Where the gate is stashed on a tool function: ``(app, min_version | None)``.
+#: Where the gate is stashed on a tool function:
+#: ``(app, min_version | None, feature | None)``.
 #: Mirrors ``_required_scopes`` in auth/scope_authorization.py — metadata on the
 #: function, read back at ``tools/list`` / ``tools/call`` time. ``functools.wraps``
 #: copies ``__dict__``, so this survives (and composes with) ``@require_scopes``
@@ -176,12 +177,20 @@ def clear_cache() -> None:
 _GATE_ATTR = "_required_capability"
 
 
-def require_capability(app: str, min_version: str | None = None) -> Callable:
+def require_capability(
+    app: str, min_version: str | None = None, feature: str | None = None
+) -> Callable:
     """Gate an MCP tool on what the upstream Nextcloud app advertises.
 
     ``app`` is the OCS capability key (the app id for most apps — note Talk's is
     ``spreed``). With ``min_version`` the app must also advertise a
-    ``version`` at least that high.
+    ``version`` at least that high. With ``feature`` it must list that string
+    in its advertised ``features``.
+
+    Prefer ``feature`` where the app publishes one: it states what the tool
+    actually needs, and it is checked against what the instance says about
+    itself rather than against a version floor someone has to look up and keep
+    correct.
 
     Only use this for apps that actually publish a capability block: absence of
     the key is what closes the gate, so gating an app that advertises nothing
@@ -199,14 +208,16 @@ def require_capability(app: str, min_version: str | None = None) -> Callable:
         Version(min_version)  # fail at import on a typo'd floor, not at runtime
 
     def decorator(func: Callable) -> Callable:
-        setattr(func, _GATE_ATTR, (app, min_version))
+        setattr(func, _GATE_ATTR, (app, min_version, feature))
         return func
 
     return decorator
 
 
-def get_required_capability(func: Callable) -> tuple[str, str | None] | None:
-    """The ``(app, min_version)`` gate declared on ``func``, if any."""
+def get_required_capability(
+    func: Callable,
+) -> tuple[str, str | None, str | None] | None:
+    """The ``(app, min_version, feature)`` gate declared on ``func``, if any."""
     return getattr(func, _GATE_ATTR, None)
 
 
@@ -217,7 +228,7 @@ def stamp_required_capability(func: Callable, app: str) -> None:
     carry a stricter version floor) always wins.
     """
     if get_required_capability(func) is None:
-        setattr(func, _GATE_ATTR, (app, None))
+        setattr(func, _GATE_ATTR, (app, None, None))
 
 
 async def unmet_capability(
@@ -225,6 +236,7 @@ async def unmet_capability(
     user_id: str,
     app: str,
     min_version: str | None,
+    feature: str | None = None,
 ) -> str | None:
     """Why this instance cannot serve a tool gated on ``app``, else ``None``.
 
@@ -243,6 +255,16 @@ async def unmet_capability(
             f"the Nextcloud '{app}' app is not installed, or is not enabled "
             "for this account"
         )
+    if feature is not None:
+        advertised_features = block.get("features")
+        if isinstance(advertised_features, list) and feature not in advertised_features:
+            return (
+                f"the Nextcloud '{app}' app here does not advertise the "
+                f"'{feature}' feature"
+            )
+        # A missing or non-list ``features`` key says nothing, so it does not
+        # gate -- same fail-open rule the version check follows.
+
     if min_version is None:
         return None
 
@@ -269,7 +291,7 @@ def _gating_disabled() -> bool:
     return cfg_bool("MCP_DISABLE_CAPABILITY_GATING")
 
 
-def _tool_gate(mcp: Any, name: str) -> tuple[str, str | None] | None:
+def _tool_gate(mcp: Any, name: str) -> tuple[str, str | None, str | None] | None:
     """The gate declared by the tool registered as ``name``, if any."""
     tool = mcp._tool_manager.get_tool(name)
     return get_required_capability(tool.fn) if tool is not None else None
@@ -301,8 +323,8 @@ async def filter_by_capability(mcp: Any, tools: list) -> list:
         client, user_id = await _gate_client(mcp)
         hidden = {
             tool.name
-            for tool, (app, min_version) in gated
-            if await unmet_capability(client, user_id, app, min_version)
+            for tool, (app, min_version, feature) in gated
+            if await unmet_capability(client, user_id, app, min_version, feature)
         }
     except Exception as exc:  # noqa: BLE001 — availability beats accuracy here
         logger.warning("Capability gating skipped (%s); listing every tool", exc)

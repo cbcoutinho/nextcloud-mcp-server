@@ -8,6 +8,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import require_capability
+from nextcloud_mcp_server.client.talk import TalkParticipantSource
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
     AddParticipantResponse,
@@ -277,7 +279,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         ctx: Context,
         token: str,
         participant: str,
-        source: str = "users",
+        source: TalkParticipantSource = "users",
     ) -> AddParticipantResponse:
         """Add a participant to a group or public Talk conversation.
 
@@ -306,6 +308,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         title="List Talk Message Reactions",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
+    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.read")
     @instrument_tool
     async def talk_list_reactions(
@@ -341,6 +344,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             openWorldHint=True,
         ),
     )
+    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.write")
     @instrument_tool
     async def talk_react(
@@ -378,6 +382,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             openWorldHint=True,
         ),
     )
+    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.write")
     @instrument_tool
     async def talk_remove_reaction(

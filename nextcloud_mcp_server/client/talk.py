@@ -13,7 +13,7 @@ application/json`` is sent.
 
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.talk import (
@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 # httpx does not normalise path traversal sequences, so a pathological token
 # like ``"../foo"`` would be sent verbatim. Validate up-front for clearer
 # errors and defence-in-depth.
+#: The actor sources spreed accepts when adding a participant. A ``Literal``
+#: rather than a bare ``str`` so an unsupported source is rejected by the schema
+#: -- and shows up as an enum in the MCP tool definition -- instead of reaching
+#: the server as a bare 400 that names no field.
+TalkParticipantSource = Literal[
+    "users", "groups", "emails", "circles", "federated_users"
+]
+
 _TALK_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 
@@ -317,7 +325,11 @@ class TalkClient(BaseNextcloudClient):
         return [TalkParticipant(**p) for p in data]
 
     async def add_participant(
-        self, token: str, participant: str, *, source: str = "users"
+        self,
+        token: str,
+        participant: str,
+        *,
+        source: TalkParticipantSource = "users",
     ) -> None:
         """Add a participant to a group or public conversation.
 
@@ -365,6 +377,8 @@ class TalkClient(BaseNextcloudClient):
         """
         _validate_token(token)
         _validate_message_id(message_id)
+        if reaction is not None:
+            _validate_reaction(reaction)
         params = {"reaction": reaction} if reaction is not None else None
         response = await self._make_request(
             "GET",

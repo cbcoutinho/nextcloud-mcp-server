@@ -87,7 +87,7 @@ def test_require_capability_stamps_metadata():
     def tool():
         pass
 
-    assert get_required_capability(tool) == ("deck", "1.18.0")
+    assert get_required_capability(tool) == ("deck", "1.18.0", None)
 
 
 def test_require_capability_rejects_unparseable_floor():
@@ -110,7 +110,7 @@ def test_stamp_does_not_override_an_explicit_gate():
 
     stamp_required_capability(tool, "deck")
 
-    assert get_required_capability(tool) == ("deck", "1.18.0")
+    assert get_required_capability(tool) == ("deck", "1.18.0", None)
 
 
 def test_stamp_applies_presence_gate_when_undeclared():
@@ -119,7 +119,7 @@ def test_stamp_applies_presence_gate_when_undeclared():
 
     stamp_required_capability(tool, "spreed")
 
-    assert get_required_capability(tool) == ("spreed", None)
+    assert get_required_capability(tool) == ("spreed", None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +346,56 @@ async def test_escape_hatch_reads_env_var_spellings(
     names = {tool.name for tool in await mcp.list_tools()}
 
     assert ("deck_assign_dependent_card" in names) is expected_disabled
+
+
+# Feature-flag gating
+# ---------------------------------------------------------------------------
+
+
+async def test_feature_gate_refuses_a_feature_the_app_does_not_advertise():
+    """A declared feature the app omits closes the gate.
+
+    Preferred over a version floor where the app publishes flags: it states
+    what the tool needs, checked against what the instance says about itself.
+    """
+    client = _client(
+        _payload(spreed={"version": "22.0.17", "features": ["chat-v2", "favorites"]})
+    )
+
+    reason = await unmet_capability(client, "alice", "spreed", None, "reactions")
+
+    assert reason is not None
+    assert "reactions" in reason
+
+
+async def test_feature_gate_allows_a_feature_the_app_advertises():
+    client = _client(
+        _payload(spreed={"version": "22.0.17", "features": ["chat-v2", "reactions"]})
+    )
+
+    assert await unmet_capability(client, "alice", "spreed", None, "reactions") is None
+
+
+@pytest.mark.parametrize("features", [None, "not-a-list", 42])
+async def test_feature_gate_fails_open_when_features_are_unreadable(features):
+    """An app saying nothing usable about its features must not be gated.
+
+    Same rule the version check follows: close the gate only on a positive
+    statement that the instance cannot serve the tool, never on a hunch.
+    """
+    block: dict = {"version": "22.0.17"}
+    if features is not None:
+        block["features"] = features
+    client = _client(_payload(spreed=block))
+
+    assert await unmet_capability(client, "alice", "spreed", None, "reactions") is None
+
+
+async def test_feature_and_version_gates_compose():
+    """Both conditions apply; failing either closes the gate."""
+    client = _client(_payload(spreed={"version": "10.0.0", "features": ["reactions"]}))
+
+    reason = await unmet_capability(client, "alice", "spreed", "13.0.0", "reactions")
+
+    assert reason is not None
+    assert "13.0.0" in reason
