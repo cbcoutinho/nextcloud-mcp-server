@@ -267,6 +267,10 @@ again, so a period sum measures *churn*:
 - `pages_ocr` - Pages that hit the OCR tier specifically, billed separately
   from CPU-cheap parsing. Mode-independent.
 - `bytes_ingested` / `bytes_stored` - Source size and persisted chunk-text size.
+  Monitor-only since Deck #1036 — both price at zero.
+- `chunks_ingested` - Chunks produced by this indexing pass. The **billed**
+  ingestion dimension, sharing its unit with the `chunks_stored` retention stock
+  below so indexing and storage are directly comparable on an invoice.
 
 **Retention stock** — emitted once per UTC day (`record_storage_stock`,
 `vector/metrics_publisher.py`):
