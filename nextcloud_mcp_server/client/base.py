@@ -9,8 +9,16 @@ from functools import wraps
 from urllib.parse import unquote
 
 import anyio
-from httpx import AsyncClient, HTTPError, HTTPStatusError, RequestError, codes
+from httpx import (
+    AsyncClient,
+    HTTPError,
+    HTTPStatusError,
+    RequestError,
+    Response,
+    codes,
+)
 
+from nextcloud_mcp_server.client.dav_errors import enrich_dav_error
 from nextcloud_mcp_server.observability.metrics import (
     record_nextcloud_api_call,
     record_nextcloud_api_retry,
@@ -249,6 +257,13 @@ class BaseNextcloudClient(ABC):
                     record_nextcloud_api_retry(app=self.app_name, reason="429")
                     await anyio.sleep(5)
                     continue
+                # Same typing as the buffered path. The body is unread here (the
+                # status is raised inside the stream context), so this degrades
+                # to status-only typing -- a 507 download still arrives as
+                # DavInsufficientStorage, just without the server's wording.
+                enriched = enrich_dav_error(e)
+                if enriched is not e:
+                    raise enriched from e
                 raise
             finally:
                 # A retried 429 is metered as its own attempt, matching how
@@ -264,7 +279,7 @@ class BaseNextcloudClient(ABC):
         )
 
     @retry_on_429
-    async def _make_request(self, method: str, url: str, **kwargs):
+    async def _make_request(self, method: str, url: str, **kwargs) -> Response:
         """Common request wrapper with logging, tracing, and error handling.
 
         Args:
@@ -318,6 +333,22 @@ class BaseNextcloudClient(ABC):
                 status_code=status_code,
                 duration=duration,
             )
+
+            # Attach the server's own explanation before re-raising. DAV replies
+            # name the concrete failure in the body (Sabre s:exception/s:message)
+            # and 412/423/507 become distinguishable types. Non-DAV responses are
+            # returned unchanged, and the result still subclasses HTTPStatusError,
+            # so every existing handler -- including retry_on_429's status check
+            # around this method -- is unaffected.
+            if isinstance(e, HTTPStatusError):
+                enriched = enrich_dav_error(e)
+                # ``enrich_dav_error`` hands back the *same* object when there is
+                # no DAV document to add, and ``raise e from e`` would set
+                # ``e.__cause__ = e`` -- an exception caused by itself. Re-raise
+                # it plainly instead, so ``from`` always means a real wrapping.
+                if enriched is not e:
+                    raise enriched from e
+                raise
 
             # Re-raise the exception
             raise

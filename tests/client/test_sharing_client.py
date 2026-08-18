@@ -171,3 +171,77 @@ async def test_create_share_raises_on_ocs_failure(sharing_client, mocker):
             share_with="1",
             share_type=12,
         )
+
+
+async def test_create_share_rejects_public_link_with_recipient(sharing_client):
+    """A public link carrying a recipient must be refused before the request.
+
+    Nextcloud accepts this pairing and silently ignores ``shareWith``, handing
+    back a valid anonymous link. The caller is told the share succeeded and
+    believes the file went to the named user, when it was actually published to
+    anyone holding the URL -- so the check has to happen client-side.
+    """
+    with pytest.raises(ValueError, match="must not carry shareWith"):
+        await sharing_client.create_share(
+            path="/Secrets/salaries.xlsx",
+            share_with="alice",
+            share_type=3,
+        )
+
+    # Refused before the wire: nothing was sent.
+    sharing_client._client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("recipient", [None, "", "   "])
+async def test_create_share_requires_recipient_for_user_share(
+    sharing_client, recipient
+):
+    """A recipient-typed share with no usable recipient is refused locally.
+
+    The server does reject this, but as a generic OCS 400 that names neither
+    the field nor what belongs in it. Blank and whitespace-only are treated the
+    same as absent.
+    """
+    with pytest.raises(ValueError, match="requires a non-empty shareWith"):
+        await sharing_client.create_share(
+            path="/Documents/report.md",
+            share_with=recipient,
+            share_type=0,
+        )
+
+    sharing_client._client.post.assert_not_called()
+
+
+async def test_create_share_public_link_omits_share_with(sharing_client, mocker):
+    """A recipient-less public link is allowed and sends no shareWith field."""
+    sharing_client._client.post.return_value = _ok_share_response(mocker, share_id=11)
+
+    await sharing_client.create_share(
+        path="/Public/flyer.pdf",
+        share_type=3,
+    )
+
+    assert sharing_client._client.post.call_args.kwargs["data"] == {
+        "path": "/Public/flyer.pdf",
+        "shareType": 3,
+        "permissions": 1,
+    }
+
+
+async def test_create_share_allows_unknown_share_type_with_recipient(
+    sharing_client, mocker
+):
+    """An unrecognised share type is passed through, not rejected.
+
+    Nextcloud may add share types we do not know about; refusing them here
+    would break an otherwise-correct caller. Only the recipient rule applies.
+    """
+    sharing_client._client.post.return_value = _ok_share_response(mocker, share_id=12)
+
+    await sharing_client.create_share(
+        path="/Documents/report.md",
+        share_with="some-identifier",
+        share_type=99,
+    )
+
+    assert sharing_client._client.post.call_args.kwargs["data"]["shareType"] == 99

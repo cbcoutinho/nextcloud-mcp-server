@@ -21,6 +21,7 @@ from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
 from ..config import get_nextcloud_ssl_verify
+from .dav_errors import dav_error_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -695,9 +696,17 @@ class CalendarClient:
             # (floating / TZID / UTC). RFC 4791 <C:expand> would normalize
             # everything to UTC and erase the original timezone context.
             do_expand = bool(start_datetime and end_datetime)
+            # The REPORT above asks for getetag, so the objects carry their own.
+            fallback_etags: dict[str, str] = {}
         else:
             events = await calendar.events()  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
             do_expand = False
+            # caldav's events() asks for calendar-data only (verified: .etag is
+            # None on every object it returns), so without this the unfiltered
+            # listing would pay one PROPFIND per event -- the same 1 + N the
+            # date-range path and list_todos were fixed for. One batched
+            # collection PROPFIND covers the whole result set.
+            fallback_etags = await self._collection_etags(calendar)
 
         result = []
         for event in events:
@@ -712,12 +721,17 @@ class CalendarClient:
                 continue
 
             href = str(event.url)
+            # One ETag per stored object: expanded recurrence instances are
+            # views of the same resource, so a conditional write against any of
+            # them targets that one object. Both sources are per-listing, never
+            # per-event -- see the branch above.
+            etag = event.etag or fallback_etags.get(unquote(urlsplit(href).path), "")
             event_dicts = self._expand_event_occurrences(
                 cal, start_datetime, end_datetime, do_expand
             )
             for event_dict in event_dicts:
                 event_dict["href"] = href
-                event_dict["etag"] = ""
+                event_dict["etag"] = etag
                 result.append(event_dict)
 
                 if len(result) >= limit:
@@ -805,8 +819,15 @@ class CalendarClient:
         outer_comp_filter = cdav.CompFilter(name="VCALENDAR") + inner_comp_filter
         filter_element = cdav.Filter() + outer_comp_filter
 
+        # Ask for the ETag alongside the calendar data. The REPORT is the hot
+        # path for "list events in a range", and objects built from it are
+        # already loaded -- so without getetag here, surfacing an ETag per event
+        # would fall back to one PROPFIND *each*, turning a single REPORT into
+        # 1 + N requests.
         data = cdav.CalendarData()
-        query = cdav.CalendarQuery() + [dav.Prop() + data] + filter_element
+        query = (
+            cdav.CalendarQuery() + [dav.Prop() + data + dav.GetEtag()] + filter_element
+        )
 
         body = etree.tostring(
             query.xmlelement(), encoding="utf-8", xml_declaration=True
@@ -816,17 +837,24 @@ class CalendarClient:
 
         # Parse response (same pattern as AsyncCalendar.search)
         objects = []
-        response_data = response.expand_simple_props([cdav.CalendarData()])
+        response_data = response.expand_simple_props(
+            [cdav.CalendarData(), dav.GetEtag()]
+        )
         for href, props in response_data.items():
             if href == str(calendar.url):
                 continue
             cal_data = props.get(cdav.CalendarData.tag)
             if cal_data:
+                etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
                     url=calendar.url.join(href),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
+                    # caldav's ``etag`` property reads straight from ``props``,
+                    # so seeding it here is what keeps _object_etag off the
+                    # PROPFIND fallback.
+                    props={dav.GetEtag.tag: etag} if etag else None,
                 )
                 objects.append(obj)
 
@@ -850,7 +878,7 @@ class CalendarClient:
         return {
             "uid": event_uid,
             "href": str(event.url),
-            "etag": "",
+            "etag": await self._object_etag(event),
             "status_code": 201,
         }
 
@@ -861,7 +889,17 @@ class CalendarClient:
         event_data: dict[str, Any],
         etag: str = "",
     ) -> dict[str, Any]:
-        """Update an existing calendar event."""
+        """Update an existing calendar event.
+
+        Args:
+            etag: The ETag the caller last read. The write is refused with
+                :class:`DavPreconditionFailed` if the event changed since. When
+                omitted, the ETag observed during this call's own read is used,
+                which still closes the read-modify-write window opened here.
+
+        Raises:
+            DavPreconditionFailed: If the event changed since ``etag`` was read.
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -871,17 +909,24 @@ class CalendarClient:
         )
         await _maybe_await(event.load(only_if_unloaded=True))
 
+        # The caller's ETag wins: it is their concurrency assertion, covering
+        # the whole read-modify-write cycle rather than just our own read.
+        # Matches the rule the contacts client already follows.
+        if not etag:
+            etag = await self._object_etag(event)
+
         # Merge updates into existing iCal data
         updated_ical = self._merge_ical_properties(event.data, event_data)  # type: ignore[arg-type]
-        event.data = updated_ical  # type: ignore[misc]
 
-        await _maybe_await(event.save())
+        new_etag = await self._conditional_put(
+            event, updated_ical, etag, kind="event", uid=event_uid
+        )
 
         logger.debug("Updated event %s", event_uid)
         return {
             "uid": event_uid,
             "href": str(event.url),
-            "etag": "",
+            "etag": new_etag,
             "status_code": 200,
         }
 
@@ -906,6 +951,94 @@ class CalendarClient:
             if match:
                 return int(match.group(1))
         return None
+
+    @staticmethod
+    async def _object_etag(obj: Any) -> str:
+        """Return *obj*'s current strong ETag, or ``""`` if the server withheld one.
+
+        ``load()`` already populates ``{DAV:}getetag`` from the GET response
+        (verified against Nextcloud 32.0.14), so the common path costs no extra
+        request. The PROPFIND is the fallback for an object reached without a
+        load.
+        """
+        etag = obj.etag
+        if etag:
+            return etag
+
+        try:
+            props = await obj.get_properties([dav.GetEtag()])
+        except Exception as e:
+            # An ETag is an optimisation for the caller, not a precondition for
+            # returning the object they asked for. Failing the read because the
+            # concurrency token could not be fetched would be a worse trade.
+            logger.debug("Could not fetch etag for %s: %s", obj.url, e)
+            return ""
+
+        return props.get(dav.GetEtag.tag) or ""
+
+    async def _collection_etags(self, calendar: Any) -> dict[str, str]:
+        """Map decoded href path -> ETag for every object in *calendar*.
+
+        One ``PROPFIND`` (Depth 1, ``getetag`` only) instead of one per object.
+        Mirrors the lightweight ctag/etag PROPFIND the contacts client already
+        uses. Returns ``{}`` on failure -- an ETag is a token for the caller,
+        not a reason to fail the listing that produced it.
+        """
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>'
+        )
+
+        try:
+            response = await self._dav_client.request(
+                str(calendar.url), "PROPFIND", body, {"Depth": "1"}
+            )
+            # Depth 1 includes the collection's own href. Unlike the REPORT
+            # parser, this does not skip it: nothing ever looks the collection
+            # up (only object hrefs are queried), and a collection ctag in the
+            # map is inert. Left in rather than filtered so this stays a plain
+            # transcription of the response.
+            return {
+                unquote(urlsplit(href).path): etag
+                for href, props in response.expand_simple_props([dav.GetEtag()]).items()
+                if (etag := props.get(dav.GetEtag.tag))
+            }
+        except Exception as e:
+            logger.debug("Collection etag PROPFIND failed for %s: %s", calendar.url, e)
+            return {}
+
+    async def _conditional_put(
+        self, obj: Any, ical: str, etag: str, *, kind: str, uid: str
+    ) -> str:
+        """PUT *ical* over *obj*, guarded by ``If-Match``. Returns the new ETag.
+
+        ``caldav``'s own ``save()`` sends no ``If-Match``, so two concurrent
+        updates silently last-write-win. It also *returns* a 412 rather than
+        raising, so the status is checked here explicitly.
+
+        Raises:
+            DavPreconditionFailed: If the object changed since *etag* was read.
+            HTTPStatusError: For any other refusal.
+        """
+        url = str(obj.url)
+        headers = {"Content-Type": "text/calendar; charset=utf-8"}
+        if etag:
+            headers["If-Match"] = etag
+
+        response = await self._dav_client.put(url, ical, headers)
+        status = response.status
+
+        if status >= 400:
+            logger.warning(
+                "Conditional PUT of %s %s refused with %s", kind, uid, status
+            )
+            raise dav_error_from_response(
+                status, method="PUT", url=url, body=getattr(response, "raw", b"") or b""
+            )
+
+        # Nextcloud returns the new ETag on the write, so the caller can chain
+        # another conditional update without re-reading.
+        return response.headers.get("etag", "")
 
     async def _delete_dav_object(
         self,
@@ -1002,11 +1135,12 @@ class CalendarClient:
         if not event_data:
             raise ValueError(f"Failed to parse event data for {event_uid}")
 
+        etag = await self._object_etag(event)
         event_data["href"] = str(event.url)
-        event_data["etag"] = ""
+        event_data["etag"] = etag
 
         logger.debug("Retrieved event %s", event_uid)
-        return event_data, ""
+        return event_data, etag
 
     async def search_events_across_calendars(
         self,
@@ -1062,6 +1196,14 @@ class CalendarClient:
         # Get all todos including completed ones (filtering is done client-side)
         todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
 
+        # caldav's todos() REPORT asks for calendar-data only, so none of these
+        # objects carry an etag and _object_etag would PROPFIND once per todo --
+        # measured at 1 + N against a live instance. Its ``props`` argument
+        # cannot carry getetag (it expects calendar-data-shaped elements only),
+        # so fetch them all in a single collection PROPFIND instead: 1 + 1.
+        # Skipped entirely for an empty calendar -- there is nothing to key.
+        etags = await self._collection_etags(calendar) if todos else {}
+
         result = []
         for todo in todos:
             # Only load if data not already present from REPORT response
@@ -1072,8 +1214,9 @@ class CalendarClient:
             else:
                 continue
             if todo_dict:
-                todo_dict["href"] = str(todo.url)
-                todo_dict["etag"] = ""
+                href = str(todo.url)
+                todo_dict["href"] = href
+                todo_dict["etag"] = etags.get(unquote(urlsplit(href).path), "")
 
                 # Apply filters if provided
                 if not filters or self._todo_matches_filters(todo_dict, filters):
@@ -1100,7 +1243,7 @@ class CalendarClient:
         return {
             "uid": todo_uid,
             "href": str(todo.url),
-            "etag": "",
+            "etag": await self._object_etag(todo),
             "status_code": 201,
         }
 
@@ -1111,7 +1254,16 @@ class CalendarClient:
         todo_data: dict[str, Any],
         etag: str = "",
     ) -> dict[str, Any]:
-        """Update an existing todo/task."""
+        """Update an existing todo/task.
+
+        Args:
+            etag: The ETag the caller last read. The write is refused with
+                :class:`DavPreconditionFailed` if the todo changed since. When
+                omitted, the ETag observed during this call's own read is used.
+
+        Raises:
+            DavPreconditionFailed: If the todo changed since ``etag`` was read.
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -1126,6 +1278,10 @@ class CalendarClient:
                 "Loaded todo %s, current data length: %s", todo_uid, len(todo.data)
             )
 
+            # The caller's ETag wins -- see update_event for the reasoning.
+            if not etag:
+                etag = await self._object_etag(todo)
+
             # Merge updates into existing iCal data
             updated_ical = self._merge_ical_todo_properties(
                 todo.data,  # type: ignore[arg-type]
@@ -1133,17 +1289,16 @@ class CalendarClient:
                 todo_uid,
             )
             logger.debug("Merged iCal data length: %s", len(updated_ical))
-            logger.debug("Updated iCal content:\\n%s", updated_ical)
 
-            todo.data = updated_ical
-
-            await _maybe_await(todo.save())
+            new_etag = await self._conditional_put(
+                todo, updated_ical, etag, kind="todo", uid=todo_uid
+            )
 
             logger.debug("Updated todo %s", todo_uid)
             return {
                 "uid": todo_uid,
                 "href": str(todo.url),
-                "etag": "",
+                "etag": new_etag,
                 "status_code": 200,
             }
         except Exception as e:

@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.sharing import PublicLinkRecipientError
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -92,8 +94,8 @@ def configure_sharing_tools(mcp: FastMCP):
     @instrument_tool
     async def nc_share_create(
         path: str,
-        share_with: str,
         ctx: Context,
+        share_with: str | None = None,
         share_type: int = 0,
         permissions: int = 1,
     ) -> str:
@@ -104,10 +106,18 @@ def configure_sharing_tools(mcp: FastMCP):
 
         Args:
             path: Path to file/folder to share (relative to your files, e.g., "/document.txt")
-            share_with: Username (for user share) or group name (for group share)
-            share_type: Share type - 0 for user (default), 1 for group, 3 for
-                public link (prefer nc_share_create_public_link for short-lived,
-                read-only download links with managed expiry)
+            share_with: Recipient identifier, required for every share type
+                except a public link: user id, group id, email address,
+                federated "user@remote", circle id, Talk conversation token or
+                Deck card id, matching share_type. Passing a recipient together
+                with share_type=3 is rejected -- a public link addresses nobody,
+                and Nextcloud would silently ignore the recipient and publish
+                the file to anyone holding the URL.
+            share_type: Share type - 0 for user (default), 1 for group, 4 for
+                email, 6 for federated, 7 for circle, 10 for Talk conversation,
+                12 for Deck card. Use 3 for a public link, though
+                nc_share_create_public_link is preferred for short-lived,
+                read-only download links with managed expiry
             permissions: Share permissions (default: 1 for read-only):
                 - 1 = read
                 - 2 = update
@@ -119,14 +129,31 @@ def configure_sharing_tools(mcp: FastMCP):
 
         Returns:
             JSON string with share information including share ID
+
+        Raises:
+            ToolError: If the share_type/share_with pairing is invalid
         """
         client = await get_client(ctx)
-        share_data = await client.sharing.create_share(
-            path=path,
-            share_with=share_with,
-            share_type=share_type,
-            permissions=permissions,
-        )
+        try:
+            share_data = await client.sharing.create_share(
+                path=path,
+                share_with=share_with,
+                share_type=share_type,
+                permissions=permissions,
+            )
+        except PublicLinkRecipientError as e:
+            # The redirect fits only this rejection. The client layer names no
+            # tool (its own method names do not exist on the MCP side), and this
+            # is the layer that knows what the caller can actually invoke.
+            raise ToolError(
+                f"{e} For a public download link, use nc_share_create_public_link."
+            ) from e
+        except ValueError as e:
+            # Every other pairing rejection -- a recipient-typed share with no
+            # recipient. Suggesting the public-link tool here would be a wrong
+            # redirect, which is the failure this whole message path exists to
+            # avoid.
+            raise ToolError(str(e)) from e
         return json.dumps(share_data, indent=2)
 
     @mcp.tool(

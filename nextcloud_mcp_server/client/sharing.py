@@ -3,9 +3,74 @@
 import logging
 from typing import Any
 
+from nextcloud_mcp_server.models.sharing import ShareType
+
 from .base import BaseNextcloudClient, retry_on_429
 
 logger = logging.getLogger(__name__)
+
+
+class PublicLinkRecipientError(ValueError):
+    """A public-link share was given a recipient it cannot address.
+
+    Its own type, rather than a plain ``ValueError``, so callers can attach a
+    redirect that only fits this case without matching on message text.
+    """
+
+
+def validate_share_with(share_type: int, share_with: str | None) -> None:
+    """Check the ``shareType``/``shareWith`` pairing before it reaches the wire.
+
+    The case worth guarding is a public link that carries a recipient.
+    Nextcloud does not reject it: it ignores ``shareWith`` and returns a
+    perfectly valid anonymous link. The caller is then told the share
+    succeeded and reasonably believes the file went to the named person, when
+    it was actually published to anyone holding the URL. A silent success with
+    the wrong audience is worse than an error, which is why this is checked
+    client-side rather than left to the server.
+
+    The inverse — a recipient-typed share with no ``shareWith`` — does fail
+    server-side, but as a generic OCS 400 that names neither the field nor what
+    belongs in it.
+
+    Args:
+        share_type: OCS ``shareType`` value (see :class:`ShareType`).
+        share_with: Recipient identifier, if any.
+
+    Raises:
+        PublicLinkRecipientError: If a public link carries a recipient.
+        ValueError: If a recipient-typed share is missing one.
+    """
+    has_recipient = bool(share_with and share_with.strip())
+
+    if share_type == ShareType.PUBLIC_LINK:
+        if has_recipient:
+            # Deliberately names no alternative *call* here. This message is
+            # shared between direct client callers and the MCP tool, which
+            # surfaces it verbatim, and the two layers have different names for
+            # the same operation -- pointing an agent at a callable that does
+            # not exist on its side is worse than not suggesting one. The tool
+            # appends its own suggestion when it translates this.
+            raise PublicLinkRecipientError(
+                f"shareType {ShareType.PUBLIC_LINK} (public link) must not carry "
+                f"shareWith: Nextcloud ignores the recipient and publishes the "
+                f"file to anyone holding the URL, so it would NOT be shared with "
+                f"{share_with!r}. Use shareType {ShareType.USER} (user) or "
+                f"{ShareType.GROUP} (group) to share with a recipient, or omit "
+                f"shareWith to create an anonymous public link."
+            )
+        return
+
+    # Everything that is not a public link addresses someone. Unknown types are
+    # treated as recipient-typed rather than rejected outright -- Nextcloud may
+    # add share types we do not know about, and refusing them here would break
+    # a caller that is otherwise correct.
+    if not has_recipient:
+        raise ValueError(
+            f"shareType {share_type} requires a non-empty shareWith recipient "
+            "(user id, group id, email address, federated user@remote, circle "
+            "id, Talk conversation token or Deck card id, depending on the type)"
+        )
 
 
 class SharingClient(BaseNextcloudClient):
@@ -17,7 +82,7 @@ class SharingClient(BaseNextcloudClient):
     async def create_share(
         self,
         path: str,
-        share_with: str,
+        share_with: str | None = None,
         share_type: int = 0,
         permissions: int = 1,
     ) -> dict[str, Any]:
@@ -25,8 +90,13 @@ class SharingClient(BaseNextcloudClient):
 
         Args:
             path: Path to file/folder to share (relative to user's files)
-            share_with: Username (for user share) or group name (for group share)
-            share_type: Share type (0=user, 1=group, 3=public link)
+            share_with: Recipient identifier — user id, group id, email address,
+                federated ``user@remote``, circle id, Talk conversation token or
+                Deck card id, depending on ``share_type``. Omit it only for a
+                public link (``share_type=3``), which addresses nobody.
+            share_type: OCS share type — see :class:`ShareType`. 0=user
+                (default), 1=group, 3=public link, 4=email, 6=federated,
+                7=circle, 10=Talk conversation, 12=Deck card
             permissions: Share permissions:
                 - 1 = read
                 - 2 = update
@@ -40,17 +110,33 @@ class SharingClient(BaseNextcloudClient):
             Share data including share ID
 
         Raises:
+            PublicLinkRecipientError: If a public link carries a recipient. A
+                ``ValueError`` subclass, so existing ``except ValueError``
+                handlers keep working; catch it specifically to react to just
+                that case.
+            ValueError: If a recipient-typed share is missing its recipient.
             HTTPStatusError: If the request fails
         """
+        validate_share_with(share_type, share_with)
+
+        payload: dict[str, Any] = {
+            "path": path,
+            "shareType": share_type,
+            "permissions": permissions,
+        }
+        # Omit shareWith entirely for a public link rather than sending an empty
+        # value: validate_share_with has already established there is no
+        # recipient, and OCS treats a present-but-empty field inconsistently.
+        # Send it trimmed, matching the value validation just accepted -- an
+        # untrimmed " alice " would otherwise reach OCS as a different recipient
+        # id than the one that was checked.
+        if share_with and share_with.strip():
+            payload["shareWith"] = share_with.strip()
+
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
-            data={
-                "path": path,
-                "shareType": share_type,
-                "shareWith": share_with,
-                "permissions": permissions,
-            },
+            data=payload,
         )
         response.raise_for_status()
         data = response.json()
@@ -111,7 +197,7 @@ class SharingClient(BaseNextcloudClient):
         """
         data: dict[str, Any] = {
             "path": path,
-            "shareType": 3,
+            "shareType": ShareType.PUBLIC_LINK,
             "permissions": permissions,
         }
         if expire_date is not None:
