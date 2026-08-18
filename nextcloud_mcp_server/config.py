@@ -1220,7 +1220,9 @@ class Settings:
     # (GH #1345). Bounding by characters makes the per-request cost predictable
     # regardless of DOCUMENT_CHUNK_SIZE.
     ollama_embed_max_batch_chars: int = 16000
-    # Read timeout (seconds) for an /api/embed request.
+    # Timeout (seconds) for an /api/embed request. Applied to the read, write
+    # and pool phases alike; the connect timeout stays at 5s (see
+    # providers/registry.py), matching the previously-hardcoded value.
     ollama_embed_timeout: int = 120
 
     # OpenAI settings

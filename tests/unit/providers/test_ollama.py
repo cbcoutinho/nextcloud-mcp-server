@@ -234,6 +234,10 @@ class TestTransientRetry:
         assert "2 texts" in logged
         assert "1000 chars" in logged
         assert "OLLAMA_EMBED_MAX_BATCH_CHARS" in logged
+        # ONCE per exhausted batch, not once per retry attempt: retry.py already
+        # logs every attempt, so a rich line per attempt made one failing batch
+        # emit 5+5 warnings.
+        assert logged.count("/api/embed failed") == 1
 
     @pytest.mark.unit
     async def test_non_timeout_failures_also_log_the_batch_shape(
