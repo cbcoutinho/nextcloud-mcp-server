@@ -32,10 +32,9 @@ BATCH_SIZE = 64
 # Without this the SDK falls back to its own 300 s default (verified against
 # mistralai 2.7.0, the locked version: ``embeddings.create_async`` resolves the
 # per-call argument, then ``sdk_configuration.timeout_ms``, then a hardcoded
-# ``300000``). Five
-# minutes is far longer than the 120 s every sibling embedding provider uses
-# (bedrock, ollama, gateway), and an ingest worker blocked that long on one
-# request is indistinguishable from a hung one.
+# ``300000``). Five minutes is far longer than the 120 s every sibling
+# embedding provider uses (bedrock, ollama, gateway), and an ingest worker
+# blocked that long on one request is indistinguishable from a hung one.
 #
 # Set on the client rather than per call: this SDK version reads
 # ``sdk_configuration.timeout_ms`` whenever a call omits its own, so one knob
