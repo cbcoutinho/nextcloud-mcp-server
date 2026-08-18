@@ -256,9 +256,13 @@ async def record_index_failure(
     failures for the same document can both read ``attempts=N`` and both write
     ``N+1``, undercounting by one — and that is reachable in normal operation,
     since a file shared by N users produces N tasks for the same ``doc_id``. The
-    consequence is the safe direction: parking is delayed by a round, never
-    triggered early. Qdrant offers no payload-level CAS to close it with, and
-    trading a lost round for that machinery is not worth it.
+    write is also last-write-wins on a deterministic point ID, so a straggling
+    task holding a stale pre-terminal count can overwrite an already-terminal
+    marker back to ``dead_letter=False`` shortly after it parked. Both land in
+    the same safe direction — parking is delayed by a round, never triggered
+    early — and the straggler's own next round re-parks it. Qdrant offers no
+    payload-level CAS to close either with, and trading a lost round for that
+    machinery is not worth it.
     """
     settings = get_settings()
     limit = settings.vector_sync_max_index_failures
