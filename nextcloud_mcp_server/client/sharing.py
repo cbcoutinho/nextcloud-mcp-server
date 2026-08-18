@@ -280,9 +280,7 @@ class SharingClient(BaseNextcloudClient):
         response.raise_for_status()
         data = response.json()
 
-        _ocs_data(data)
-
-        share_data = data["ocs"]["data"]
+        share_data = _ocs_data(data)
         # The API returns a list with a single share, extract the first element
         if isinstance(share_data, list) and len(share_data) > 0:
             return share_data[0]
@@ -318,10 +316,8 @@ class SharingClient(BaseNextcloudClient):
         response.raise_for_status()
         data = response.json()
 
-        _ocs_data(data)
-
         # Handle both single share and list of shares
-        shares_data = data["ocs"]["data"]
+        shares_data = _ocs_data(data)
         if isinstance(shares_data, dict):
             return [shares_data]
         return shares_data if shares_data else []
@@ -354,7 +350,7 @@ class SharingClient(BaseNextcloudClient):
         response.raise_for_status()
         result = response.json()
 
-        _ocs_data(result)
+        share_data = _ocs_data(result)
 
         logger.info("Updated share %s", share_id)
-        return result["ocs"]["data"]
+        return share_data

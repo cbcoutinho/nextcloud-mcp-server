@@ -5,6 +5,7 @@ from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import (
+    OCS_REQUEST_HEADERS,
     describe_ocs_failure,
     parse_ocs_envelope,
 )
@@ -31,13 +32,13 @@ class CollectivesClient(BaseNextcloudClient):
 
     app_name = "collectives"
 
-    _OCS_HEADERS: dict[str, str] = {
-        "OCS-APIRequest": "true",
-        "Accept": "application/json",
-    }
+    # Sourced from the shared OCS module so a new call site cannot pick up a
+    # drifted copy of the header set -- omitting OCS-APIRequest is what makes
+    # Nextcloud answer 997, the failure this module exists to make legible.
+    _OCS_HEADERS: dict[str, str] = OCS_REQUEST_HEADERS
 
     _OCS_HEADERS_JSON: dict[str, str] = {
-        **_OCS_HEADERS,
+        **OCS_REQUEST_HEADERS,
         "Content-Type": "application/json",
     }
 

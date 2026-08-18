@@ -31,6 +31,11 @@ from typing import Any, NamedTuple
 #: Headers Nextcloud's CSRF check requires on every OCS request. Omitting
 #: ``OCS-APIRequest`` yields ``meta.statuscode: 997``, not a 4xx, which is why
 #: it is easy to misdiagnose.
+#:
+#: Used by the three clients this module serves (sharing, collectives, mail).
+#: The same literal still appears inline elsewhere -- deck, groups, tables,
+#: users, and the DAV calls in webdav that send it for unrelated reasons --
+#: which is a wider sweep than this module's scope.
 OCS_REQUEST_HEADERS: dict[str, str] = {
     "OCS-APIRequest": "true",
     "Accept": "application/json",
@@ -91,7 +96,13 @@ def parse_ocs_envelope(payload: Any) -> OCSEnvelope:
     if not isinstance(meta, dict):
         meta = {}
 
-    raw_status = meta.get("statuscode", 200)
+    # ``or 200`` covers falsy-but-present values (``0``, ``""``, ``None``) the
+    # same way the mail client did before this module existed. Without it an
+    # empty statuscode parses to 500, which crosses mail's ``>= 400`` gate and
+    # turns a response that used to succeed into a raised error. A genuinely
+    # non-numeric value still falls through to 500 -- an unreadable status is
+    # not something to report as success.
+    raw_status = meta.get("statuscode") or 200
     try:
         status_code = int(raw_status)
     except (TypeError, ValueError):

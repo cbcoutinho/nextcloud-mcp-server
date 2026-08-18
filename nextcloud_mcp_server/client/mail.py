@@ -32,6 +32,7 @@ from httpx import HTTPStatusError, RequestError, Response
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import (
+    OCS_REQUEST_HEADERS,
     describe_ocs_failure,
     parse_ocs_envelope,
 )
@@ -111,10 +112,9 @@ class MailClient(BaseNextcloudClient):
 
     # The OCS-APIRequest header authenticates the OCS routes and exempts the
     # direct routes from CSRF, so both families use the same headers.
-    _API_HEADERS = {
-        "OCS-APIRequest": "true",
-        "Accept": "application/json",
-    }
+    # Shared with the other OCS clients -- see collectives for why the header
+    # set has a single home.
+    _API_HEADERS = OCS_REQUEST_HEADERS
 
     app_name = "mail"
 

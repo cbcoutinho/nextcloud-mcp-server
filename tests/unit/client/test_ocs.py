@@ -121,3 +121,23 @@ def test_request_headers_carry_the_csrf_header():
     """Shipping the header from one place is what stops a new call site
     forgetting it and then hitting the 997 it just made confusing."""
     assert OCS_REQUEST_HEADERS["OCS-APIRequest"] == "true"
+
+
+@pytest.mark.parametrize("raw", [0, "", None])
+def test_falsy_statuscode_falls_back_to_success(raw):
+    """A present-but-falsy statuscode defaults to 200, as mail's parser did.
+
+    Without this an empty statuscode resolves to 500, which crosses mail's
+    ``>= 400`` gate and turns a response that previously succeeded into a
+    raised error. Caught in review of #1343.
+    """
+    payload = {"ocs": {"meta": {"statuscode": raw}, "data": {}}}
+
+    assert parse_ocs_envelope(payload).is_success
+
+
+def test_unreadable_statuscode_is_a_failure():
+    """A non-numeric status is not something to report as success."""
+    payload = {"ocs": {"meta": {"statuscode": "not-a-number"}}}
+
+    assert parse_ocs_envelope(payload).status_code == 500
