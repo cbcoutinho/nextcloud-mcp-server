@@ -234,6 +234,23 @@ async def record_index_failure(
     the dead-letter metric), False while it is still being retried. Fail-safe: a
     Qdrant read error counts the attempt as the first, which at worst delays
     parking — it never parks a document early.
+
+    **A Qdrant outage cannot park anything**, and that is load-bearing rather
+    than incidental: the counter lives in the very store whose availability it
+    is judging, so while Qdrant is down both the read and the write here fail
+    and the count cannot advance. Were it kept anywhere else, an outage longer
+    than ``limit × VECTOR_SYNC_SCAN_INTERVAL`` would park every in-flight
+    document, and they would stay parked until their etag changed — i.e. never,
+    for a static corpus. Pinned by
+    ``test_a_qdrant_outage_cannot_park_anything``; do not "fix" the swallowed
+    errors into a fallback that keeps counting.
+
+    Note the asymmetry: a *Qdrant* fault self-protects this way, but a sustained
+    **embedding-backend** outage does not — Qdrant stays healthy, so the count
+    advances normally and documents park after ``limit`` rounds. A failure that
+    is genuinely per-document (an oversize payload, a chunk the backend always
+    rejects) is exactly what parking is for; a backend-wide outage is not.
+    Distinguishing them needs cross-document state this function does not have.
     """
     settings = get_settings()
     limit = settings.vector_sync_max_index_failures

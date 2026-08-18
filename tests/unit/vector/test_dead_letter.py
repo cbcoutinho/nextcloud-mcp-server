@@ -266,6 +266,27 @@ class TestRecordIndexFailure:
         client.upsert.side_effect = RuntimeError("qdrant down")
         await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
 
+    async def test_a_qdrant_outage_cannot_park_anything(self, client) -> None:
+        """The counter lives in the store whose availability it is judging.
+
+        This is the load-bearing safety property for a Qdrant outage: the
+        marker read AND write both go to Qdrant, so while Qdrant is down the
+        count cannot advance and no document can be parked. Without it, a
+        >(limit x scan_interval) outage would park every in-flight document,
+        and they would stay parked until their etag changed — i.e. never, for a
+        static corpus.
+
+        Asserted across more rounds than the limit, since one swallowed failure
+        would pass by accident.
+        """
+        client.retrieve.side_effect = RuntimeError("qdrant down")
+        client.upsert.side_effect = RuntimeError("qdrant down")
+
+        limit = _Settings.vector_sync_max_index_failures
+        for _ in range(limit + 2):
+            parked = await dl.record_index_failure("520189", "file", "e1", "sig1", "x")
+            assert parked is False
+
     async def test_parked_marker_is_visible_to_is_dead_lettered(self, client) -> None:
         # End-to-end on the payload contract: what record_index_failure writes at
         # the limit is exactly what the scanner's lookup treats as parked.
