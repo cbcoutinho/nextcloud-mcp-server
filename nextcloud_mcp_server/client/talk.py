@@ -37,6 +37,11 @@ TalkParticipantSource = Literal[
     "users", "groups", "emails", "circles", "federated_users"
 ]
 
+#: The room types spreed accepts: 1=one-to-one, 2=group, 3=public. A ``Literal``
+#: for the same reason as the source above -- an out-of-range value is rejected
+#: by the schema rather than reaching the server as a bare 400.
+TalkRoomType = Literal[1, 2, 3]
+
 _TALK_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 
@@ -147,7 +152,7 @@ class TalkClient(BaseNextcloudClient):
     async def create_conversation(
         self,
         *,
-        room_type: int = 2,
+        room_type: TalkRoomType = 2,
         room_name: str,
         invite: str | None = None,
     ) -> TalkConversation:

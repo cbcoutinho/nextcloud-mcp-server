@@ -9,7 +9,7 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability
-from nextcloud_mcp_server.client.talk import TalkParticipantSource
+from nextcloud_mcp_server.client.talk import TalkParticipantSource, TalkRoomType
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
     AddParticipantResponse,
@@ -239,7 +239,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
     async def talk_create_conversation(
         ctx: Context,
         room_name: str,
-        room_type: int = 2,
+        room_type: TalkRoomType = 2,
         invite: str | None = None,
     ) -> CreateConversationResponse:
         """Create a new Talk conversation (room).
@@ -308,8 +308,8 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         title="List Talk Message Reactions",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.read")
+    @require_capability("spreed", feature="reactions")
     @instrument_tool
     async def talk_list_reactions(
         ctx: Context,
@@ -344,8 +344,8 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             openWorldHint=True,
         ),
     )
-    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.write")
+    @require_capability("spreed", feature="reactions")
     @instrument_tool
     async def talk_react(
         ctx: Context,
@@ -382,8 +382,8 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             openWorldHint=True,
         ),
     )
-    @require_capability("spreed", feature="reactions")
     @require_scopes("talk.write")
+    @require_capability("spreed", feature="reactions")
     @instrument_tool
     async def talk_remove_reaction(
         ctx: Context,
