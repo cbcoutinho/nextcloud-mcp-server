@@ -2,6 +2,8 @@
 
 import logging
 
+import httpx
+
 from ..config import get_settings
 from .base import Provider
 from .bedrock import BedrockProvider
@@ -126,6 +128,8 @@ def create_provider() -> Provider:
             embedding_model=settings.ollama_embedding_model,
             verify_ssl=settings.ollama_verify_ssl,
             embedding_dimensions=settings.embedding_dimensions,
+            max_batch_chars=settings.ollama_embed_max_batch_chars,
+            timeout=httpx.Timeout(settings.ollama_embed_timeout, connect=5),
         )
 
     # 5. Simple (fallback)

@@ -1322,6 +1322,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
 | `OLLAMA_GENERATION_MODEL` | ⚠️ Optional | - | Ollama model for text generation |
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
+| `OLLAMA_EMBED_MAX_BATCH_CHARS` | ⚠️ Optional | `16000` | Character budget for one `/api/embed` request. Ollama embeds a batch serially, so a request's wall clock tracks the batch's **total text**, not its item count — a fixed 32-item batch carried up to ~65k chars at the default `DOCUMENT_CHUNK_SIZE` and could not complete inside the read timeout on a CPU-only instance (GH #1345). Lower it if large documents still time out; raise it on a GPU instance to cut request overhead. The 32-item cap still applies as a second bound (Ollama issue #6262 reports quality degradation above it). A single chunk larger than this budget is sent on its own rather than split. |
+| `OLLAMA_EMBED_TIMEOUT` | ⚠️ Optional | `120` | Read timeout (seconds) for an `/api/embed` request. Prefer lowering `OLLAMA_EMBED_MAX_BATCH_CHARS` over raising this: a longer timeout makes a slow document block an ingest worker for longer, whereas a smaller batch makes each request cheaper. Must be `>= 1`. |
 | `OPENAI_API_KEY` | ⚠️ Optional | - | OpenAI API key (selects OpenAI provider) |
 | `OPENAI_BASE_URL` | ⚠️ Optional | - | OpenAI base URL override (for compatible APIs) |
 | `OPENAI_EMBEDDING_MODEL` | ⚠️ Optional | `text-embedding-3-small` | OpenAI embedding model |

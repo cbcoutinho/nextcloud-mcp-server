@@ -8,6 +8,11 @@ from .base import Provider
 
 logger = logging.getLogger(__name__)
 
+# Read timeout for an /api/embed call, and the character budget that keeps one
+# call inside it. See OllamaProvider._iter_batches.
+DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_MAX_BATCH_CHARS = 16_000
+
 
 class OllamaProvider(Provider):
     """
@@ -23,6 +28,7 @@ class OllamaProvider(Provider):
         verify_ssl: bool = True,
         timeout: httpx.Timeout | None = None,
         embedding_dimensions: int | None = None,
+        max_batch_chars: int = DEFAULT_MAX_BATCH_CHARS,
     ):
         """
         Initialize Ollama provider.
@@ -34,6 +40,9 @@ class OllamaProvider(Provider):
             timeout: HTTP timeout configuration
             embedding_dimensions: Matryoshka output width to request. None (the
                 default) leaves the model at its full width.
+            max_batch_chars: Character budget for one ``/api/embed`` request.
+                See :meth:`_iter_batches` for why this, and not the item count,
+                is what bounds the request.
 
         Note: Ollama honours ``dimensions`` on ``/api/embed`` and truncates
         *and* re-normalises server-side (verified against nomic-embed-text: the
@@ -45,9 +54,10 @@ class OllamaProvider(Provider):
         self.base_url = base_url.rstrip("/")
         self.embedding_model = embedding_model
         self.verify_ssl = verify_ssl
+        self.max_batch_chars = max(1, max_batch_chars)
 
         if timeout is None:
-            timeout = httpx.Timeout(timeout=120, connect=5)
+            timeout = httpx.Timeout(timeout=DEFAULT_TIMEOUT_SECONDS, connect=5)
 
         self.client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout)
         self._dimension: int | None = None  # Detected dynamically for embeddings
@@ -101,6 +111,39 @@ class OllamaProvider(Provider):
         embedding, _ = await self.embed_with_usage(text)
         return embedding
 
+    def _iter_batches(self, texts: list[str], batch_size: int):
+        """Split ``texts`` into requests bounded by BOTH item count and characters.
+
+        The item cap alone is not enough (GH #1345). Ollama embeds a batch
+        serially, so one ``/api/embed`` call costs roughly the batch's *total*
+        text — at the default 2048-char chunk size a 32-item batch carries up to
+        ~65k chars, which a CPU-only instance cannot finish inside the read
+        timeout. The document that surfaced this (206 pages, 326 chunks) timed
+        out on its very first batch, every round, forever.
+
+        So the character budget is what actually bounds the request, and
+        ``batch_size`` stays as a second cap for the quality degradation Ollama
+        issue #6262 reports above ~32 inputs.
+
+        A single text longer than the budget is emitted alone rather than
+        dropped: splitting it here would silently change what gets embedded, and
+        chunk sizing is the caller's business.
+        """
+        batch: list[str] = []
+        chars = 0
+        for text in texts:
+            # Only overflow a non-empty batch — an oversize lone text must still
+            # be emitted, otherwise this never terminates.
+            if batch and (
+                len(batch) >= batch_size or chars + len(text) > self.max_batch_chars
+            ):
+                yield batch
+                batch, chars = [], 0
+            batch.append(text)
+            chars += len(text)
+        if batch:
+            yield batch
+
     async def embed_batch(
         self, texts: list[str], batch_size: int = 32
     ) -> list[list[float]]:
@@ -108,8 +151,8 @@ class OllamaProvider(Provider):
         Generate embeddings for multiple texts using Ollama's batch API.
 
         Uses /api/embed endpoint with array input for efficient batch processing.
-        Conservative batch size (32) prevents quality degradation observed in
-        Ollama issue #6262 with larger batches.
+        Batches are bounded by ``max_batch_chars`` as well as ``batch_size`` —
+        see :meth:`_iter_batches`.
 
         Note: Ollama processes batches serially, not in parallel.
 
@@ -149,7 +192,8 @@ class OllamaProvider(Provider):
 
         Returns ``(embeddings, total_tokens)``. Ollama's ``/api/embed`` may
         omit ``prompt_eval_count`` (older versions); a char-based estimate is
-        used per batch when it does.
+        used per batch when it does. Batching is bounded by characters as well
+        as by ``batch_size`` — see :meth:`_iter_batches`.
         """
         if not self.supports_embeddings:
             raise NotImplementedError(
@@ -161,8 +205,7 @@ class OllamaProvider(Provider):
 
         all_embeddings: list[list[float]] = []
         total_tokens = 0
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for batch in self._iter_batches(texts, batch_size):
             response = await self.client.post(
                 f"{self.base_url}/api/embed",
                 json={

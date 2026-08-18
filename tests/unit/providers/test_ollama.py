@@ -67,3 +67,75 @@ async def test_ollama_empty_batch_with_usage(ollama_provider):
     assert embeddings == []
     assert tokens == 0
     ollama_provider.client.post.assert_not_called()
+
+
+class TestBatchSplitting:
+    """GH #1345: one /api/embed call must stay inside the read timeout.
+
+    Ollama embeds a batch serially, so a request's wall clock tracks its total
+    text, not its item count. A fixed 32-item batch carried up to ~65k chars at
+    the default chunk size and never completed on a CPU-only instance.
+    """
+
+    def _batches(self, provider, texts, batch_size=32):
+        return list(provider._iter_batches(texts, batch_size))
+
+    def test_splits_on_the_character_budget(self, ollama_provider):
+        ollama_provider.max_batch_chars = 100
+        # Well under the 32-item cap, so only the char budget can split these.
+        batches = self._batches(ollama_provider, ["x" * 40] * 5)
+
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert all(sum(len(t) for t in b) <= 100 for b in batches)
+
+    def test_still_splits_on_the_item_cap(self, ollama_provider):
+        # Ollama issue #6262: quality degrades past ~32 inputs, so the item cap
+        # survives as a second bound even when the text is tiny.
+        batches = self._batches(ollama_provider, ["a"] * 70)
+
+        assert [len(b) for b in batches] == [32, 32, 6]
+
+    def test_oversize_single_text_is_emitted_alone(self, ollama_provider):
+        ollama_provider.max_batch_chars = 10
+        # Must not be dropped (silent data loss) and must not loop forever.
+        batches = self._batches(ollama_provider, ["a" * 50])
+
+        assert batches == [["a" * 50]]
+
+    def test_oversize_text_does_not_swallow_its_neighbours(self, ollama_provider):
+        ollama_provider.max_batch_chars = 10
+        batches = self._batches(ollama_provider, ["a" * 50, "b", "c"])
+
+        assert batches == [["a" * 50], ["b", "c"]]
+
+    def test_every_text_survives_the_split(self, ollama_provider):
+        ollama_provider.max_batch_chars = 37
+        texts = [f"chunk-{i}" * (i % 5 + 1) for i in range(50)]
+
+        assert [t for b in self._batches(ollama_provider, texts) for t in b] == texts
+
+    def test_no_empty_batches(self, ollama_provider):
+        ollama_provider.max_batch_chars = 5
+        # Empty strings cost nothing and must not produce an empty request.
+        batches = self._batches(ollama_provider, ["", "", "abcdef", ""])
+
+        assert all(batches)
+
+    @pytest.mark.unit
+    async def test_large_document_issues_several_requests(self, ollama_provider):
+        ollama_provider.max_batch_chars = 16_000
+        ollama_provider.client.post = AsyncMock(
+            return_value=_embed_response([[0.1]], prompt_eval_count=1)
+        )
+        # The reported document's shape: 326 chunks of ~1.3 KB. One 32-item
+        # batch would have been ~42 KB in a single call.
+        texts = ["x" * 1320] * 326
+
+        await ollama_provider.embed_batch_with_usage(texts)
+
+        calls = ollama_provider.client.post.await_args_list
+        assert len(calls) > 11  # more than the old fixed 32-item batching
+        assert all(
+            sum(len(t) for t in c.kwargs["json"]["input"]) <= 16_000 + 1320
+            for c in calls
+        )
