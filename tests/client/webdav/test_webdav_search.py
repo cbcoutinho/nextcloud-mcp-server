@@ -290,3 +290,40 @@ async def test_search_scope_with_ampersand_does_not_400(nc_client: NextcloudClie
             await nc_client.webdav.delete_resource(test_dir)
         except Exception as e:
             logger.warning("Failed to cleanup test directory %s: %s", test_dir, e)
+
+
+async def test_search_with_xml_special_chars_in_pattern(nc_client: NextcloudClient):
+    """A name pattern containing ``&`` must search, not 400.
+
+    Regression for the unescaped ``<d:literal>``: an unescaped ``&`` makes the
+    SEARCH body malformed, and Sabre/DAV rejects the whole request. The failure
+    mode is what makes it worth an integration test -- the search errors rather
+    than returning no matches, so a caller cannot tell "nothing matched" from
+    "your query was rejected".
+    """
+    test_dir = f"mcp_search_amp_{uuid.uuid4().hex[:8]}"
+    await nc_client.webdav.create_directory(test_dir)
+    try:
+        await nc_client.webdav.write_file(
+            f"{test_dir}/Costs & Revenue.txt", b"quarterly", "text/plain"
+        )
+
+        results = await nc_client.webdav.find_by_name(
+            "%Costs & Revenue%", scope=test_dir
+        )
+
+        assert [r["name"] for r in results] == ["Costs & Revenue.txt"]
+    finally:
+        await nc_client.webdav.delete_resource(test_dir)
+
+
+async def test_search_with_xml_special_chars_in_mime_type(nc_client: NextcloudClient):
+    """The mime_type predicate is escaped too, on the same code path.
+
+    No real MIME type contains ``&``, so this asserts the request is *accepted*
+    and simply matches nothing -- the behaviour an unescaped literal replaces
+    with a 400.
+    """
+    results = await nc_client.webdav.find_by_type("text/<nonexistent & odd>")
+
+    assert results == []

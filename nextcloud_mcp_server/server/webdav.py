@@ -10,6 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
@@ -794,28 +795,10 @@ def configure_webdav_tools(mcp: FastMCP):
         conditions = []
 
         if name_pattern:
-            conditions.append(
-                f"""
-                <d:like>
-                    <d:prop>
-                        <d:displayname/>
-                    </d:prop>
-                    <d:literal>{name_pattern}</d:literal>
-                </d:like>
-            """
-            )
+            conditions.append(like_predicate("d:displayname", name_pattern))
 
         if mime_type:
-            conditions.append(
-                f"""
-                <d:like>
-                    <d:prop>
-                        <d:getcontenttype/>
-                    </d:prop>
-                    <d:literal>{mime_type}</d:literal>
-                </d:like>
-            """
-            )
+            conditions.append(like_predicate("d:getcontenttype", mime_type))
 
         if only_favorites:
             conditions.append(

@@ -9,6 +9,7 @@ from httpx import HTTPStatusError
 from nextcloud_mcp_server.client.webdav import (
     WebDAVClient,
     _normalize_etag,
+    like_predicate,
 )
 
 
@@ -1615,3 +1616,35 @@ async def test_list_directory_survives_a_non_numeric_fileid(mocker):
 
     by_name = {item["name"]: item for item in items}
     assert by_name["notes.txt"]["file_id"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "escaped"),
+    [
+        ("Costs & Revenue%", "Costs &amp; Revenue%"),
+        ("<draft>%", "&lt;draft&gt;%"),
+        ("a > b", "a &gt; b"),
+    ],
+)
+def test_like_predicate_escapes_the_literal(value, escaped):
+    """Every caller-supplied literal is escaped by construction."""
+    predicate = like_predicate("d:displayname", value)
+
+    # Well-formed once namespaced (raised ParseError when unescaped).
+    ET.fromstring(f"<root xmlns:d='DAV:'>{predicate}</root>")
+    assert escaped in predicate
+    assert value not in predicate
+
+
+@pytest.mark.unit
+def test_like_predicate_keeps_wildcards_intact():
+    """``%`` is SEARCH syntax, not XML -- escaping must leave it alone."""
+    predicate = like_predicate("oc:tags", "%vector-index%")
+
+    root = ET.fromstring(
+        f"<root xmlns:d='DAV:' xmlns:oc='http://owncloud.org/ns'>{predicate}</root>"
+    )
+    literal = root.find(".//{DAV:}literal")
+    assert literal is not None
+    assert literal.text == "%vector-index%"
