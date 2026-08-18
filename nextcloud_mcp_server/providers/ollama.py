@@ -9,8 +9,16 @@ from .base import Provider
 
 logger = logging.getLogger(__name__)
 
-# Read timeout for an /api/embed call, and the character budget that keeps one
-# call inside it. See OllamaProvider._iter_batches.
+# Timeout for an /api/embed call, and the character budget that keeps one call
+# inside it. See OllamaProvider._iter_batches.
+#
+# These are fallbacks for DIRECT construction only (tests, or a caller that
+# bypasses the registry). The production path always passes explicit values from
+# settings, so these must stay in step with OLLAMA_EMBED_TIMEOUT and
+# OLLAMA_EMBED_MAX_BATCH_CHARS in config.py -- two sources of truth that would
+# otherwise drift silently if one were retuned. They are deliberately NOT
+# imported from config: providers/registry.py imports config, so pulling config
+# into a leaf provider module inverts that direction for two integers' sake.
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_BATCH_CHARS = 16_000
 

@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from nextcloud_mcp_server.providers.ollama import OllamaProvider, _is_transient
+from nextcloud_mcp_server.providers.ollama import (
+    DEFAULT_MAX_BATCH_CHARS,
+    DEFAULT_TIMEOUT_SECONDS,
+    OllamaProvider,
+    _is_transient,
+)
 
 
 @pytest.fixture
@@ -69,6 +74,21 @@ async def test_ollama_empty_batch_with_usage(ollama_provider):
     assert embeddings == []
     assert tokens == 0
     ollama_provider.client.post.assert_not_called()
+
+
+@pytest.mark.unit
+def test_provider_defaults_match_the_settings_defaults():
+    """The provider's direct-construction fallbacks must not drift from config.
+
+    `registry.py` always passes explicit values from settings, so these two
+    constants only apply to direct construction — which is exactly why a retune
+    of one could silently leave the other behind. A comment saying "keep these in
+    sync" relies on someone reading it; this fails instead.
+    """
+    from nextcloud_mcp_server.config import _DEFAULTS
+
+    assert DEFAULT_TIMEOUT_SECONDS == _DEFAULTS["ollama_embed_timeout"]
+    assert DEFAULT_MAX_BATCH_CHARS == _DEFAULTS["ollama_embed_max_batch_chars"]
 
 
 class TestBatchSplitting:
