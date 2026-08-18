@@ -104,6 +104,31 @@ def test_registry_threads_embedding_dimensions_to_ollama(clean_provider_env, moc
 
 
 @pytest.mark.unit
+def test_registry_threads_embed_batch_knobs_to_ollama(clean_provider_env, mocker):
+    """The GH #1345 knobs must actually reach the provider, not just validate.
+
+    ``test_provider_defaults_match_the_settings_defaults`` pins the provider's
+    *fallback* constants against ``config._DEFAULTS``, but never calls
+    ``create_provider()`` — so swapping which settings field feeds which kwarg
+    here would go unnoticed. Distinct non-default values catch exactly that.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.providers.ollama.OllamaProvider._check_model_is_loaded"
+    )
+    clean_provider_env.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    clean_provider_env.setenv("OLLAMA_EMBED_MAX_BATCH_CHARS", "8000")
+    clean_provider_env.setenv("OLLAMA_EMBED_TIMEOUT", "30")
+    _reload_config()
+
+    provider = get_provider()
+    assert isinstance(provider, OllamaProvider)
+    assert provider.max_batch_chars == 8000
+    # Positional httpx.Timeout: read/write/pool take the value, connect stays 5s.
+    assert provider.client.timeout.read == 30
+    assert provider.client.timeout.connect == 5
+
+
+@pytest.mark.unit
 def test_registry_leaves_dimensions_unset_by_default(clean_provider_env):
     """Unset EMBEDDING_DIMENSIONS means full width, not a coerced 0."""
     clean_provider_env.setenv("OPENAI_API_KEY", "test-key")
