@@ -479,8 +479,14 @@ document_parse_failed_total = Counter(
 # changes and it is re-attempted.
 document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
-    "Documents dead-lettered after a terminal parse failure (no escalation tier)",
-    ["reason"],  # reason: timeout | oom | error | oversize | unreadable
+    "Documents dead-lettered by a terminal parse failure (no escalation tier) "
+    "or by repeated index failures",
+    # reason: a parse-failure reason (timeout | oom | error | oversize |
+    # unreadable | unsupported_type) OR a vector.processor._drop_reason value
+    # (timeout | connection | rate_limit | server | qdrant | other) for the
+    # repeated-index-failure path. Keep in step with record_document_dead_lettered's
+    # docstring below and with _drop_reason.
+    ["reason"],
 )
 
 # Documents dropped after exhausting in-process indexing retries (the scanner
