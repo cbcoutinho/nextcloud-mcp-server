@@ -4,6 +4,7 @@ import logging
 
 import httpx
 
+from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,41 @@ logger = logging.getLogger(__name__)
 # call inside it. See OllamaProvider._iter_batches.
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_BATCH_CHARS = 16_000
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Whether an httpx error against Ollama is worth retrying.
+
+    Same shape as the OpenAI/Mistral predicates: connection drops and timeouts
+    (a restarting Ollama, or one still loading the model into memory) plus
+    429 / 5xx. Permanent 4xx — an unknown model, a malformed request — are NOT
+    retried; they fail identically every attempt.
+
+    Timeouts ARE retried, matching ``OpenAIProvider`` (which retries
+    ``APITimeoutError`` via ``APIConnectionError``). Worth knowing what that
+    costs here: Ollama's read timeout is 120s by default, so a document that
+    times out deterministically now burns up to 5×120s per outer attempt rather
+    than 1. That is bounded — the ingest loop dead-letters it after
+    ``VECTOR_SYNC_MAX_INDEX_FAILURES`` rounds — and the char-bounded batching
+    above is what stops it happening in the first place.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    # Everything else caught here is an httpx.RequestError: a transport-level
+    # failure (timeout, connect, read, protocol) with no response at all.
+    return True
+
+
+# Catch the httpx.HTTPError base (parent of both RequestError and
+# HTTPStatusError) and let the predicate decide; permanent errors re-raise
+# immediately.
+_retry_transient = retry_on_transient(
+    httpx.HTTPError,
+    should_retry=_is_transient,
+    provider_name="Ollama",
+    label="transient error",
+)
 
 
 class OllamaProvider(Provider):
@@ -206,16 +242,7 @@ class OllamaProvider(Provider):
         all_embeddings: list[list[float]] = []
         total_tokens = 0
         for batch in self._iter_batches(texts, batch_size):
-            response = await self.client.post(
-                f"{self.base_url}/api/embed",
-                json={
-                    "model": self.embedding_model,
-                    "input": batch,
-                    **self._dimension_params(),
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+            data = await self._embed_batch_request(batch)
             all_embeddings.extend(data["embeddings"])
 
             # Cache the dimension inline (mirrors OpenAI) so it is set via any
@@ -240,6 +267,48 @@ class OllamaProvider(Provider):
             )
 
         return all_embeddings, total_tokens
+
+    @_retry_transient
+    async def _embed_batch_request(self, batch: list[str]) -> dict:
+        """One ``/api/embed`` request, retried on transient failures.
+
+        Mirrors ``MistralProvider._embed_batch_request`` /
+        ``OpenAIProvider``'s batch helper: the retry sits on the single request
+        so a partial batch is never re-sent, and only transient failures are
+        retried (see :func:`_is_transient`). Until this existed, Ollama was the
+        only embedding provider with no retry layer at all, so a momentary blip
+        went straight to the ingest retry loop (GH #1345).
+        """
+        chars = sum(len(t) for t in batch)
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/embed",
+                json={
+                    "model": self.embedding_model,
+                    "input": batch,
+                    **self._dimension_params(),
+                },
+            )
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            # httpx timeouts carry an empty message, so the default log line
+            # degrades to `ReadTimeout('')` and tells an operator nothing about
+            # WHY (GH #1345). Name the batch shape and the knob that fixes it:
+            # the request cost tracks total characters, because Ollama embeds a
+            # batch serially.
+            logger.warning(
+                "Ollama /api/embed timed out: %d texts, %d chars, model=%s, "
+                "read timeout=%ss. The request cost scales with total "
+                "characters — lower OLLAMA_EMBED_MAX_BATCH_CHARS (currently "
+                "%d) before raising OLLAMA_EMBED_TIMEOUT.",
+                len(batch),
+                chars,
+                self.embedding_model,
+                self.client.timeout.read,
+                self.max_batch_chars,
+            )
+            raise
+        return response.json()
 
     async def _detect_dimension(self):
         """

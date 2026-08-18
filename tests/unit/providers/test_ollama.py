@@ -5,11 +5,13 @@ methods added for usage metering (Deck #67) — provider-reported
 ``prompt_eval_count`` and the char-based estimate fallback when it's absent.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
-from nextcloud_mcp_server.providers.ollama import OllamaProvider
+from nextcloud_mcp_server.providers.ollama import OllamaProvider, _is_transient
 
 
 @pytest.fixture
@@ -80,6 +82,7 @@ class TestBatchSplitting:
     def _batches(self, provider, texts, batch_size=32):
         return list(provider._iter_batches(texts, batch_size))
 
+    @pytest.mark.unit
     def test_splits_on_the_character_budget(self, ollama_provider):
         ollama_provider.max_batch_chars = 100
         # Well under the 32-item cap, so only the char budget can split these.
@@ -88,6 +91,7 @@ class TestBatchSplitting:
         assert [len(b) for b in batches] == [2, 2, 1]
         assert all(sum(len(t) for t in b) <= 100 for b in batches)
 
+    @pytest.mark.unit
     def test_still_splits_on_the_item_cap(self, ollama_provider):
         # Ollama issue #6262: quality degrades past ~32 inputs, so the item cap
         # survives as a second bound even when the text is tiny.
@@ -95,6 +99,7 @@ class TestBatchSplitting:
 
         assert [len(b) for b in batches] == [32, 32, 6]
 
+    @pytest.mark.unit
     def test_oversize_single_text_is_emitted_alone(self, ollama_provider):
         ollama_provider.max_batch_chars = 10
         # Must not be dropped (silent data loss) and must not loop forever.
@@ -102,18 +107,21 @@ class TestBatchSplitting:
 
         assert batches == [["a" * 50]]
 
+    @pytest.mark.unit
     def test_oversize_text_does_not_swallow_its_neighbours(self, ollama_provider):
         ollama_provider.max_batch_chars = 10
         batches = self._batches(ollama_provider, ["a" * 50, "b", "c"])
 
         assert batches == [["a" * 50], ["b", "c"]]
 
+    @pytest.mark.unit
     def test_every_text_survives_the_split(self, ollama_provider):
         ollama_provider.max_batch_chars = 37
         texts = [f"chunk-{i}" * (i % 5 + 1) for i in range(50)]
 
         assert [t for b in self._batches(ollama_provider, texts) for t in b] == texts
 
+    @pytest.mark.unit
     def test_no_empty_batches(self, ollama_provider):
         ollama_provider.max_batch_chars = 5
         # Empty strings cost nothing and must not produce an empty request.
@@ -139,3 +147,89 @@ class TestBatchSplitting:
             sum(len(t) for t in c.kwargs["json"]["input"]) <= 16_000 + 1320
             for c in calls
         )
+
+
+class TestTransientRetry:
+    """Ollama was the only embedding provider with no retry layer (GH #1345).
+
+    A blip went straight to the ingest retry loop, while openai/mistral/gateway
+    all rode it out. These pin the predicate; the shared backoff loop itself is
+    covered by the retry helper's own tests.
+    """
+
+    def _request(self):
+        return httpx.Request("POST", "https://ollama:11434/api/embed")
+
+    def _status_error(self, code):
+        request = self._request()
+        return httpx.HTTPStatusError(
+            f"HTTP {code}",
+            request=request,
+            response=httpx.Response(code, request=request),
+        )
+
+    @pytest.mark.unit
+    def test_transport_errors_are_transient(self):
+        assert _is_transient(httpx.ReadTimeout("", request=self._request()))
+        assert _is_transient(httpx.ConnectError("refused"))
+        # A model still loading into memory looks exactly like this.
+        assert _is_transient(httpx.ConnectTimeout(""))
+
+    @pytest.mark.unit
+    def test_rate_limit_and_server_errors_are_transient(self):
+        assert _is_transient(self._status_error(429))
+        assert _is_transient(self._status_error(500))
+        assert _is_transient(self._status_error(503))
+
+    @pytest.mark.unit
+    def test_permanent_client_errors_are_not_retried(self):
+        # An unknown model or malformed request fails identically every attempt.
+        assert not _is_transient(self._status_error(404))
+        assert not _is_transient(self._status_error(400))
+        assert not _is_transient(self._status_error(401))
+
+    @pytest.mark.unit
+    async def test_retries_then_succeeds(self, ollama_provider, monkeypatch):
+        monkeypatch.setattr("anyio.sleep", AsyncMock())  # don't wait out the backoff
+        ollama_provider.client.post = AsyncMock(
+            side_effect=[
+                httpx.ConnectError("ollama restarting"),
+                _embed_response([[0.1, 0.2]], prompt_eval_count=3),
+            ]
+        )
+
+        embeddings, tokens = await ollama_provider.embed_batch_with_usage(["a"])
+
+        assert embeddings == [[0.1, 0.2]]
+        assert tokens == 3
+        assert ollama_provider.client.post.await_count == 2
+
+    @pytest.mark.unit
+    async def test_permanent_error_is_not_retried(self, ollama_provider):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock(side_effect=self._status_error(404))
+        ollama_provider.client.post = AsyncMock(return_value=resp)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await ollama_provider.embed_batch_with_usage(["a"])
+
+        ollama_provider.client.post.assert_awaited_once()
+
+    @pytest.mark.unit
+    async def test_timeout_logs_the_batch_shape(
+        self, ollama_provider, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("anyio.sleep", AsyncMock())
+        ollama_provider.client.post = AsyncMock(
+            side_effect=httpx.ReadTimeout("", request=self._request())
+        )
+
+        with caplog.at_level(logging.WARNING), pytest.raises(httpx.ReadTimeout):
+            await ollama_provider.embed_batch_with_usage(["x" * 500, "y" * 500])
+
+        # `ReadTimeout('')` alone told an operator nothing — the log must name
+        # the batch shape and the knob that fixes it.
+        logged = caplog.text
+        assert "2 texts" in logged
+        assert "1000 chars" in logged
+        assert "OLLAMA_EMBED_MAX_BATCH_CHARS" in logged
