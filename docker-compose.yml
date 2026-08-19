@@ -102,6 +102,56 @@ services:
     profiles:
       - docling
 
+  # infinity: self-hosted embeddings + CROSS-ENCODER RERANKING. Opt-in via the
+  # "infinity" profile. The reason it exists here: Ollama serves no rerank
+  # models at all, so a self-hoster who wants the rerank stage needs either a
+  # hosted rerank API or a local server that speaks the Cohere rerank protocol.
+  # Infinity does both jobs from one process — OpenAI-compatible /embeddings
+  # AND Cohere-protocol /rerank — so it replaces Ollama rather than joining it.
+  #
+  # Point the MCP server at it (see docs/reranking.md):
+  #   SEARCH_RERANK_ENABLED=true
+  #   SEARCH_RERANK_URL=http://infinity:7997/rerank
+  #   SEARCH_RERANK_MODEL=BAAI/bge-reranker-v2-m3   # bare id, no gateway prefix
+  #   OPENAI_BASE_URL=http://infinity:7997          # embeddings from the same box
+  #   OPENAI_API_KEY=dummy                          # unused; presence selects the provider
+  #   OPENAI_EMBEDDING_MODEL=BAAI/bge-m3
+  #
+  # CPU image: no CUDA runtime, so it runs on a plain runner or laptop. CPU
+  # cross-encoding is slow — a 200-candidate pool takes tens of seconds — so
+  # raise SEARCH_RERANK_TIMEOUT_SECONDS or lower SEARCH_RERANK_POOL_SIZE, or
+  # use the GPU image (drop the "-cpu" suffix) for real workloads.
+  infinity:
+    image: docker.io/michaelf34/infinity:0.0.77-cpu@sha256:94db836145f609c508f3f296f3b9bd0e78ae088025e879664d073dfd9f929e96
+    restart: always
+    command:
+      - v2
+      - --model-id
+      - BAAI/bge-m3
+      - --model-id
+      - BAAI/bge-reranker-v2-m3
+      - --port
+      - "7997"
+    ports:
+      - 127.0.0.1:7997:7997
+    volumes:
+      # Model weights are ~2.5 GB and are downloaded on first boot; cache them
+      # so a `docker compose down` isn't a re-download.
+      - infinity-cache:/app/.cache
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:7997/health").read()
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      # Two models to fetch and load before the first probe can pass.
+      start_period: 300s
+    profiles:
+      - infinity
+
   mcp:
     build: .
     restart: always
@@ -529,3 +579,4 @@ volumes:
   qdrant-data:
   mcp-data:
   multi-user-basic-data:
+  infinity-cache:

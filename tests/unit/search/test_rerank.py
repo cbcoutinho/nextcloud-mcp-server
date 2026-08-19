@@ -12,7 +12,7 @@ would be indistinguishable from a ranking regression.
 import anyio
 import pytest
 
-from nextcloud_mcp_server.providers.gateway_rerank import (
+from nextcloud_mcp_server.providers.rerank import (
     RerankedIndex,
     RerankError,
 )
@@ -37,6 +37,8 @@ def _settings(**overrides):
     class _S:
         search_rerank_enabled = True
         embedding_gateway_url = "https://gw.example"
+        search_rerank_url = None
+        search_rerank_api_key = None
         search_rerank_model = "vendor/model"
         search_rerank_pool_size = 200
         search_rerank_timeout_seconds = 30.0
@@ -82,11 +84,107 @@ class TestAvailability:
     def test_unavailable_without_flag(self):
         assert not rerank_mod.rerank_available(_settings(search_rerank_enabled=False))
 
-    def test_unavailable_without_gateway(self):
-        assert not rerank_mod.rerank_available(_settings(embedding_gateway_url=""))
+    def test_unavailable_without_any_endpoint(self):
+        assert not rerank_mod.rerank_available(
+            _settings(embedding_gateway_url="", search_rerank_url=None)
+        )
 
     def test_available_when_both_present(self):
         assert rerank_mod.rerank_available(_settings())
+
+    def test_available_with_a_direct_url_and_no_gateway(self):
+        """Discussion #1354: a self-hoster running Infinity has no gateway, and
+        must still be able to rerank."""
+        assert rerank_mod.rerank_available(
+            _settings(
+                embedding_gateway_url=None,
+                search_rerank_url="http://infinity:7997/rerank",
+            )
+        )
+
+
+class TestEndpointResolution:
+    @pytest.mark.parametrize(
+        "gateway,expected",
+        [
+            ("https://gw.example", "https://gw.example/v1/rerank"),
+            ("https://gw.example/", "https://gw.example/v1/rerank"),
+            ("https://gw.example/v1", "https://gw.example/v1/rerank"),
+            ("https://gw.example/v1/", "https://gw.example/v1/rerank"),
+        ],
+    )
+    def test_gateway_url_normalisation_is_idempotent(self, gateway, expected):
+        """EMBEDDING_GATEWAY_URL is a bare origin in some deployments and already
+        /v1-suffixed in others; both must reach the same endpoint."""
+        assert (
+            rerank_mod.rerank_endpoint(_settings(embedding_gateway_url=gateway))
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://infinity:7997/rerank",
+            "http://vllm:8000/v1/rerank",
+            "https://api.cohere.com/v2/rerank",
+        ],
+    )
+    def test_explicit_url_is_used_verbatim(self, url):
+        """The path differs per backend and a wrong guess degrades silently to
+        retrieval order, so nothing is appended, stripped or normalised."""
+        assert rerank_mod.rerank_endpoint(_settings(search_rerank_url=url)) == url
+
+    def test_explicit_url_wins_over_the_gateway(self):
+        assert (
+            rerank_mod.rerank_endpoint(
+                _settings(
+                    embedding_gateway_url="https://gw.example",
+                    search_rerank_url="http://infinity:7997/rerank",
+                )
+            )
+            == "http://infinity:7997/rerank"
+        )
+
+    def test_no_endpoint_without_either(self):
+        assert rerank_mod.rerank_endpoint(_settings(embedding_gateway_url="")) is None
+
+
+class TestClientCredentials:
+    """The gateway's M2M token is scoped to the gateway. Sending it to whatever
+    third-party host SEARCH_RERANK_URL names would leak a credential, so the
+    two auth paths must not blur together."""
+
+    def _built(self, monkeypatch, settings):
+        built = {}
+
+        class _Client:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        monkeypatch.setattr(rerank_mod, "RerankClient", _Client)
+        monkeypatch.setattr(
+            rerank_mod,
+            "build_gateway_token_provider",
+            lambda _s: "gateway-token-provider",
+        )
+        return built
+
+    async def test_gateway_endpoint_uses_the_m2m_token_provider(self, monkeypatch):
+        built = self._built(monkeypatch, None)
+        await rerank_mod._get_client(_settings())
+        assert built["token_provider"] == "gateway-token-provider"
+        assert built["url"] == "https://gw.example/v1/rerank"
+
+    async def test_direct_endpoint_never_sends_the_gateway_token(self, monkeypatch):
+        built = self._built(monkeypatch, None)
+        await rerank_mod._get_client(
+            _settings(
+                search_rerank_url="https://api.cohere.com/v2/rerank",
+                search_rerank_api_key="secret",
+            )
+        )
+        assert built["token_provider"] is None
+        assert built["api_key"] == "secret"
 
 
 class TestReordering:

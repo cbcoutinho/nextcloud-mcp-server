@@ -1,12 +1,17 @@
-"""Cross-encoder reranking against the embedding gateway's ``/v1/rerank``.
+"""Cross-encoder reranking against a Cohere-protocol ``/rerank`` endpoint.
 
-A plain-httpx sub-client rather than a :class:`~.base.Provider`: the ``Provider``
-ABC is an embedding contract (``embed``/``embed_batch``/``get_dimension``) and a
-reranker satisfies none of it. Mirrors :mod:`.gateway_batch`, which is the
-existing precedent for a gateway surface that is not an embedding provider.
+One wire format covers every backend we care about — Cohere itself
+(``POST /v2/rerank``), a self-hosted `Infinity <https://github.com/michaelfeil/infinity>`_
+(``POST /rerank``), a vLLM server (``POST /v1/rerank``), and the Astrolabe
+embedding gateway (``POST /v1/rerank``): request ``{model, query, documents,
+top_n}``, response ``{"results": [{"index", "relevance_score"}]}``. So this is a
+single client and *which* reranker you use is configuration
+(:func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`), not a code path.
 
-The gateway takes a namespaced model id, so choosing a self-hosted versus a
-hosted reranker is configuration rather than a code path here.
+A plain-httpx client rather than a :class:`~.base.Provider`: the ``Provider`` ABC
+is an embedding contract (``embed``/``embed_batch``/``get_dimension``) and a
+reranker satisfies none of it. Mirrors :mod:`.gateway_batch`, the existing
+precedent for a non-embedding upstream surface.
 """
 
 import logging
@@ -31,7 +36,7 @@ _RERANK_REQUEST_TIMEOUT_SECONDS = 120.0
 #   1. ``document_chunk_size`` is operator-configurable with no upper bound, so
 #      "pool size x chunk size" is an unbounded request body. At a large chunk
 #      size a full pool exceeds a typical 1 MB ingress limit and fails as a 413
-#      from the proxy, not as anything the gateway ever sees.
+#      from the proxy, not as anything the reranker ever sees.
 #   2. Cross-encoders truncate their input near the model's sequence limit
 #      anyway, so text beyond roughly this length is not scored — trimming it
 #      costs no ranking quality and buys proportional latency.
@@ -44,7 +49,7 @@ _MAX_QUERY_CHARS = 1000
 
 
 class RerankError(Exception):
-    """The gateway could not rerank. Callers degrade to retrieval order rather
+    """The reranker could not be used. Callers degrade to retrieval order rather
     than failing the search, so this is a signal to fall back, not to retry."""
 
 
@@ -59,7 +64,7 @@ class RerankedIndex:
 def _parse_entry(item: object, sent: int, seen: set[int]) -> RerankedIndex | None:
     """One ``results`` entry, or ``None`` if it cannot be trusted.
 
-    Split out of :meth:`GatewayRerankClient._parse` to keep each piece simple
+    Split out of :meth:`RerankClient._parse` to keep each piece simple
     enough to read as a single rule (and under the project's cognitive-complexity
     gate). Every rejection here is a case a provider has been observed to
     produce or could plausibly produce:
@@ -82,25 +87,37 @@ def _parse_entry(item: object, sent: int, seen: set[int]) -> RerankedIndex | Non
     return RerankedIndex(index=idx, score=float(score))
 
 
-class GatewayRerankClient:
-    """Scores query/document pairs with a cross-encoder via the gateway."""
+class RerankClient:
+    """Scores query/document pairs with a cross-encoder over HTTP."""
 
     def __init__(
         self,
-        base_url: str,
+        url: str,
         model: str,
         token_provider: GatewayTokenProvider | None = None,
         *,
+        api_key: str | None = None,
         timeout_seconds: float = _RERANK_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
-        # EMBEDDING_GATEWAY_URL is a bare origin; rerank lives under /v1 like the
-        # rest of the gateway API. Idempotent if already /v1-suffixed.
-        base = base_url.rstrip("/")
-        if not base.endswith("/v1"):
-            base = f"{base}/v1"
-        self._base = base
+        """
+        Args:
+            url: The FULL rerank endpoint, e.g. ``http://infinity:7997/rerank``.
+                Deliberately not a base URL to normalise: the path differs per
+                backend (``/rerank``, ``/v1/rerank``, ``/v2/rerank``) and
+                guessing wrong degrades silently to retrieval order rather than
+                erroring. Callers derive it in one place — see
+                :func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`.
+            model: Model id as the endpoint expects it. The Astrolabe gateway
+                needs a ``<provider>/`` prefix; a direct Infinity/vLLM/Cohere
+                endpoint wants the bare id.
+            token_provider: OIDC client-credentials source, for the gateway.
+            api_key: Static bearer (a Cohere key, an Infinity ``--api-key``).
+                Takes precedence over ``token_provider`` when both are given.
+        """
+        self._url = url
         self._model = model
         self._token_provider = token_provider
+        self._api_key = api_key
         self._timeout = timeout_seconds
 
     @property
@@ -108,6 +125,8 @@ class GatewayRerankClient:
         return self._model
 
     async def _headers(self) -> dict[str, str]:
+        if self._api_key:
+            return {"Authorization": f"Bearer {self._api_key}"}
         if self._token_provider is None:
             return {}
         return {"Authorization": f"Bearer {await self._token_provider.get_token()}"}
@@ -164,7 +183,7 @@ class GatewayRerankClient:
                 timeout=httpx.Timeout(self._timeout, connect=connect_timeout)
             ) as client:
                 resp = await client.post(
-                    f"{self._base}/rerank",
+                    self._url,
                     json=payload,
                     headers=await self._headers(),
                 )
@@ -172,10 +191,10 @@ class GatewayRerankClient:
                 body = resp.json()
         except httpx.HTTPStatusError as e:
             raise RerankError(
-                f"gateway rerank returned HTTP {e.response.status_code}"
+                f"rerank endpoint returned HTTP {e.response.status_code}"
             ) from e
         except Exception as e:  # transport, JSON decode, timeout
-            raise RerankError(f"gateway rerank failed: {e}") from e
+            raise RerankError(f"rerank request failed: {e}") from e
 
         return self._parse(body, len(documents))
 
@@ -183,7 +202,7 @@ class GatewayRerankClient:
     def _parse(body: object, sent: int) -> list[RerankedIndex]:
         """Turn a rerank response into a clean ranking over the submitted list.
 
-        Deliberately defensive about the index set. Providers behind the gateway
+        Deliberately defensive about the index set. A rerank backend
         may cap results, and a malformed or partial response must not silently
         delete candidates — dropping an entry here would look like a ranking
         change while actually being lost recall. Out-of-range and duplicate
@@ -193,11 +212,11 @@ class GatewayRerankClient:
         """
         if not isinstance(body, dict):
             raise RerankError(
-                f"gateway rerank returned {type(body).__name__}, not an object"
+                f"rerank endpoint returned {type(body).__name__}, not an object"
             )
         raw = body.get("results")
         if not isinstance(raw, list):
-            raise RerankError("gateway rerank response has no 'results' list")
+            raise RerankError("rerank response has no 'results' list")
 
         ranked: list[RerankedIndex] = []
         seen: set[int] = set()
@@ -209,7 +228,7 @@ class GatewayRerankClient:
             ranked.append(entry)
 
         if not ranked:
-            raise RerankError("gateway rerank returned no usable results")
+            raise RerankError("rerank endpoint returned no usable results")
         if len(ranked) < sent:
             # Not an error — the caller re-appends the remainder in retrieval
             # order — but it means part of the pool went unscored, which is

@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
 
+# Leading segments the embedding gateway treats as a BACKEND ROUTE rather than
+# as part of the model id (it splits on the first slash). Two places need the
+# same set and must not drift: this module warns when such a prefix is paired
+# with a direct SEARCH_RERANK_URL, and `search.relevance` strips it so
+# `local/BAAI/bge-reranker-v2-m3` and a bare `BAAI/bge-reranker-v2-m3` resolve
+# to the same fitted calibration curve.
+GATEWAY_MODEL_NAMESPACES = frozenset(
+    {"local", "openrouter", "mistral", "bedrock", "vllm"}
+)
+
 # Built-in defaults — declared in Python so env vars work without any settings
 # file being present (e.g., `uvx` / `pip install` deployments). Mirrors the
 # [default] section that used to live in settings.toml. Keys set here are
@@ -224,17 +234,43 @@ _DEFAULTS: dict[str, Any] = {
     # A cross-encoder reorders the retrieved candidates by scoring each against
     # the query directly, which is more accurate than the fusion rank it
     # replaces. Ships OFF because it adds an upstream round-trip to every
-    # search, and how expensive that is depends on the gateway's own deployment
+    # search, and how expensive that is depends on how the reranker is deployed
     # — which this server deliberately knows nothing about beyond the URL.
     "search_rerank_enabled": False,
-    # Rerank model, addressed the way the configured embedding gateway expects.
-    # The ``<provider>/`` prefix is REQUIRED, not stylistic: the gateway splits on
-    # the FIRST slash to select a backend, so a bare ``BAAI/bge-reranker-v2-m3``
-    # asks for a provider named ``BAAI`` and 503s — and because a failed rerank
-    # degrades to retrieval order (``reranked: false``) rather than erroring, that
-    # looks like "reranking does nothing" instead of like a misconfiguration.
-    # The prefix is also the backend selector: ``local/`` for a self-hosted
-    # cross-encoder, ``bedrock/`` or ``openrouter/`` for a hosted one.
+    # Where reranking is served. A FULL endpoint URL, because the path differs
+    # per backend and there is no safe guess: Infinity serves ``POST /rerank``,
+    # vLLM ``POST /v1/rerank``, Cohere ``POST /v2/rerank``, the Astrolabe
+    # embedding gateway ``POST /v1/rerank``. All four speak the same Cohere
+    # request/response protocol, so choosing one is configuration, not code.
+    #
+    # Unset = derive it from EMBEDDING_GATEWAY_URL, which is what every existing
+    # deployment does. Set it to run reranking WITHOUT a gateway — the reason
+    # this exists (discussion #1354): Ollama serves no rerank models at all, so
+    # a self-hoster's only options are a hosted rerank API or a local Infinity /
+    # vLLM, and neither should require standing up a gateway first.
+    "search_rerank_url": None,
+    # Static bearer for SEARCH_RERANK_URL (a Cohere API key, an Infinity
+    # ``--api-key``). Wins over the gateway's M2M OIDC credentials when both are
+    # present. Unset = send no Authorization header, which is correct for a
+    # local Infinity/vLLM on a private network.
+    "search_rerank_api_key": None,
+    # Rerank model, addressed the way the CONFIGURED ENDPOINT expects — which
+    # differs between the two, so the default is only right for one of them.
+    #
+    # Against the embedding gateway the ``<provider>/`` prefix is REQUIRED, not
+    # stylistic: the gateway splits on the FIRST slash to select a backend, so a
+    # bare ``BAAI/bge-reranker-v2-m3`` asks for a provider named ``BAAI`` and
+    # 503s — and because a failed rerank degrades to retrieval order
+    # (``reranked: false``) rather than erroring, that looks like "reranking does
+    # nothing" instead of like a misconfiguration. The prefix is also the backend
+    # selector: ``local/`` for a self-hosted cross-encoder, ``bedrock/`` or
+    # ``openrouter/`` for a hosted one.
+    #
+    # Against a direct SEARCH_RERANK_URL there is no such routing layer, so use
+    # the bare id the server serves (``BAAI/bge-reranker-v2-m3`` for
+    # Infinity/vLLM, ``rerank-v3.5`` for Cohere). The relevance calibration
+    # (ADR-034) strips known provider prefixes, so both spellings resolve to the
+    # same fitted curve.
     "search_rerank_model": "local/BAAI/bge-reranker-v2-m3",
     # Candidates handed to the reranker. Reranking can only reorder what
     # retrieval supplied, so this depth — not the caller's ``limit`` — bounds
@@ -251,15 +287,16 @@ _DEFAULTS: dict[str, Any] = {
     # Generous headroom over a normal rerank, not a target. Exceeding it
     # degrades to retrieval order rather than failing the search.
     "search_rerank_timeout_seconds": 30.0,
-    # Concurrent rerank calls this process keeps in flight against the gateway.
+    # Concurrent rerank calls this process keeps in flight against the reranker.
     #
     # Conservative at 1 because reranking is the heaviest request this server
-    # makes of a service it shares with its own embedding traffic and with other
-    # callers. Bounding our own concurrency keeps a burst of searches from
+    # makes of a service it may share with its own embedding traffic and with
+    # other callers. Bounding our own concurrency keeps a burst of searches from
     # queueing unbounded work upstream, and keeps rerank latency predictable
     # here. It is a client-side courtesy, not a throughput control: what the
-    # gateway does with the request, and how it schedules against everything
-    # else it serves, is its business. Raise it if your gateway has headroom.
+    # reranker does with the request, and how it schedules against everything
+    # else it serves, is its business. Raise it if yours has headroom — a CPU
+    # cross-encoder almost certainly does not.
     "search_rerank_max_concurrency": 1,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
@@ -1274,6 +1311,8 @@ class Settings:
     # capability gate — a request asking to rerank on a deployment without it
     # configured is rejected rather than silently served unreranked.
     search_rerank_enabled: bool = False
+    search_rerank_url: str | None = None
+    search_rerank_api_key: str | None = None
     search_rerank_model: str = "local/BAAI/bge-reranker-v2-m3"
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
@@ -1671,15 +1710,39 @@ class Settings:
                 "routes through the embedding gateway); use DOCUMENT_OCR_MODE=sync "
                 "for the direct backend without a gateway"
             )
-        # Reranking is served through the embedding gateway, so enabling it
-        # without one configured would fail at the first search rather than at
-        # startup. Fail loudly here instead: the alternative is a deployment
-        # that advertises the capability and then degrades on every request.
-        if self.search_rerank_enabled and not self.embedding_gateway_url:
+        # Reranking needs somewhere to send the request. Without one, every
+        # search would degrade to retrieval order with `reranked: false` — a
+        # deployment that advertises the capability and then silently never
+        # applies it. Fail at startup instead.
+        if (
+            self.search_rerank_enabled
+            and not self.search_rerank_url
+            and not self.embedding_gateway_url
+        ):
             raise ValueError(
-                "SEARCH_RERANK_ENABLED requires EMBEDDING_GATEWAY_URL (reranking "
-                "is served through the embedding gateway)"
+                "SEARCH_RERANK_ENABLED requires SEARCH_RERANK_URL (the full URL "
+                "of a Cohere-protocol rerank endpoint — Infinity, vLLM, Cohere) "
+                "or EMBEDDING_GATEWAY_URL"
             )
+        # The default model id is namespaced for the gateway's routing layer. A
+        # direct endpoint has no such layer and will 404/422 on `local/...`,
+        # which degrades to retrieval order with `reranked: false` — i.e. it
+        # presents as "reranking does nothing" rather than as an error. Warn
+        # rather than raise: the prefix set is the gateway's, not a closed
+        # universe, and refusing to boot over a model name we cannot validate
+        # would be worse than saying so.
+        if self.search_rerank_enabled and self.search_rerank_url:
+            _prefix, _, _bare = self.search_rerank_model.partition("/")
+            if _prefix in GATEWAY_MODEL_NAMESPACES:
+                logger.warning(
+                    "SEARCH_RERANK_MODEL=%r carries the embedding gateway's %r "
+                    "routing prefix, but SEARCH_RERANK_URL points at a direct "
+                    "endpoint which has no such routing. Use the bare model id "
+                    "(%r) or reranking will silently degrade to retrieval order.",
+                    self.search_rerank_model,
+                    f"{_prefix}/",
+                    _bare,
+                )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is

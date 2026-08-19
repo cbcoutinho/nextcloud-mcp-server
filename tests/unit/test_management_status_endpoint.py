@@ -500,17 +500,24 @@ class TestStatusEndpointSearchTypes:
 
 
 @pytest.mark.parametrize(
-    "rerank_enabled,gateway_url,expected",
+    "rerank_enabled,gateway_url,rerank_url,expected",
     [
-        (True, "https://gw.example", True),
-        (False, "https://gw.example", False),
-        # Enabled without a gateway cannot actually serve a rerank, so the
-        # capability must not be advertised — Settings.__post_init__ rejects this
-        # combination at startup, but the endpoint must not depend on that.
-        (True, "", False),
+        (True, "https://gw.example", None, True),
+        (False, "https://gw.example", None, False),
+        # Enabled with nowhere to send the request cannot actually serve a
+        # rerank, so the capability must not be advertised — Settings.__post_init__
+        # rejects this combination at startup, but the endpoint must not depend
+        # on that.
+        (True, "", None, False),
+        # A direct rerank endpoint is a full deployment on its own; no gateway
+        # is involved (discussion #1354).
+        (True, "", "http://infinity:7997/rerank", True),
+        (False, "", "http://infinity:7997/rerank", False),
     ],
 )
-def test_status_advertises_rerank_capability(rerank_enabled, gateway_url, expected):
+def test_status_advertises_rerank_capability(
+    rerank_enabled, gateway_url, rerank_url, expected
+):
     """Clients gate their UI on this rather than sending `rerank: true` and
     handling the 422 — the same reason supported_search_types is advertised.
 
@@ -520,6 +527,7 @@ def test_status_advertises_rerank_capability(rerank_enabled, gateway_url, expect
     settings = create_mock_settings(vector_sync_enabled=True)
     settings.search_rerank_enabled = rerank_enabled
     settings.embedding_gateway_url = gateway_url
+    settings.search_rerank_url = rerank_url
 
     with (
         patch(

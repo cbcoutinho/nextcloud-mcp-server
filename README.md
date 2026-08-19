@@ -130,6 +130,8 @@ To set it up, see the [Astrolabe setup guide](https://docs.astrolabecloud.com/us
 
 An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires a vector database and embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
 
+For result *ordering* — turning the fused rank score into a calibrated relevance score with a cross-encoder, self-hosted via Infinity/vLLM or hosted via Cohere, with or without an embedding gateway — see [docs/reranking.md](docs/reranking.md).
+
 > [!TIP]
 > **Don't want to run Qdrant and an embedding service?** [Astrolabe Cloud](https://astrolabecloud.com) (under development) provides semantic search and background sync as a managed service.
 
@@ -141,6 +143,7 @@ An experimental RAG pipeline that lets MCP clients find Nextcloud content by **m
 - **[Running the Server](docs/running.md)** — Start, manage, troubleshoot
 - **[App Documentation](docs/)** — Per-app guides (Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables)
 - **[Semantic Search Architecture](docs/semantic-search-architecture.md)** + **[Vector Sync UI](docs/user-guide/vector-sync-ui.md)**
+- **[Reranking](docs/reranking.md)** — cross-encoder relevance scoring (Infinity, vLLM, Cohere); no embedding gateway required
 - **[Login Flow v2](docs/login-flow-v2.md)** — recommended multi-user setup (architecture, env vars, scope reference, troubleshooting)
 - **[Troubleshooting](docs/troubleshooting.md)** · **[Comparison with Context Agent](docs/comparison-context-agent.md)**
 

@@ -309,6 +309,72 @@ class TestGetSettings:
         with pytest.raises(ValueError, match="DOCUMENT_OCR_MODE=batch requires"):
             get_settings()
 
+    @patch.dict(os.environ, {"SEARCH_RERANK_ENABLED": "true"}, clear=True)
+    def test_rerank_requires_an_endpoint(self):
+        """Enabled with nowhere to send the request would degrade every search to
+        retrieval order with `reranked: false` — a deployment that advertises the
+        capability and silently never applies it."""
+        _reload_config()
+        with pytest.raises(ValueError, match="SEARCH_RERANK_ENABLED requires"):
+            get_settings()
+
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_RERANK_ENABLED": "true",
+            "SEARCH_RERANK_URL": "http://infinity:7997/rerank",
+        },
+        clear=True,
+    )
+    def test_rerank_url_satisfies_the_requirement_without_a_gateway(self):
+        """Discussion #1354: reranking against a self-hosted Infinity/vLLM or a
+        hosted Cohere endpoint must not require standing up an embedding
+        gateway first."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.search_rerank_enabled
+        assert settings.embedding_gateway_url is None
+        assert settings.search_rerank_url == "http://infinity:7997/rerank"
+
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_RERANK_ENABLED": "true",
+            "SEARCH_RERANK_URL": "http://infinity:7997/rerank",
+        },
+        clear=True,
+    )
+    def test_direct_url_warns_about_the_gateway_namespaced_default_model(self, caplog):
+        """The shipped default is namespaced for the gateway's routing layer. A
+        direct endpoint has none, rejects `local/...`, and the search degrades to
+        retrieval order — i.e. it presents as "reranking does nothing" rather
+        than as an error, so the only signal is this warning."""
+        _reload_config()
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
+            settings = get_settings()
+
+        assert settings.search_rerank_model == "local/BAAI/bge-reranker-v2-m3"
+        assert "SEARCH_RERANK_MODEL" in caplog.text
+        assert "BAAI/bge-reranker-v2-m3" in caplog.text
+
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_RERANK_ENABLED": "true",
+            "SEARCH_RERANK_URL": "http://infinity:7997/rerank",
+            "SEARCH_RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
+        },
+        clear=True,
+    )
+    def test_direct_url_with_a_bare_model_id_is_quiet(self, caplog):
+        """`BAAI` is an org, not a gateway backend route, so it must not trip the
+        warning — otherwise the correct configuration is the noisy one."""
+        _reload_config()
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
+            get_settings()
+
+        assert "SEARCH_RERANK_MODEL" not in caplog.text
+
     @patch.dict(
         os.environ,
         {"QDRANT_LOCATION": "/app/data/qdrant"},
