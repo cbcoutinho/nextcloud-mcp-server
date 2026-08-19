@@ -1731,7 +1731,20 @@ class Settings:
         # rather than raise: the prefix set is the gateway's, not a closed
         # universe, and refusing to boot over a model name we cannot validate
         # would be worse than saying so.
-        if self.search_rerank_enabled and self.search_rerank_url:
+        #
+        # "Explicit URL" does NOT imply "not the gateway": pointing
+        # SEARCH_RERANK_URL at the gateway's own /v1/rerank is a legitimate
+        # configuration (it is how you pin the endpoint while still using the
+        # gateway), and the routing prefix is correct there. Only warn when the
+        # URL is somewhere OTHER than the configured gateway — otherwise the
+        # warning fires on a working setup and trains operators to ignore it.
+        _direct_rerank = bool(self.search_rerank_url) and not (
+            self.embedding_gateway_url
+            and self.search_rerank_url.startswith(
+                self.embedding_gateway_url.rstrip("/")
+            )
+        )
+        if self.search_rerank_enabled and _direct_rerank:
             _prefix, _, _bare = self.search_rerank_model.partition("/")
             if _prefix in GATEWAY_MODEL_NAMESPACES:
                 logger.warning(
