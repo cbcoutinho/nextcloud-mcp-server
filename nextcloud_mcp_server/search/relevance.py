@@ -61,6 +61,7 @@ percentage.
 import math
 from dataclasses import dataclass
 
+from nextcloud_mcp_server.config import GATEWAY_MODEL_NAMESPACES
 from nextcloud_mcp_server.search.algorithms import SearchResult
 
 # Source labels. Public: they appear in API responses and MCP tool output, so a
@@ -144,7 +145,7 @@ def _normalize_model(model: str | None) -> str:
     # slashes (`BAAI/bge-reranker-v2-m3`), so split once and keep the remainder
     # when the head looks like a provider rather than an org.
     head, _, tail = model.partition("/")
-    if tail and head in {"local", "openrouter", "mistral", "bedrock", "vllm"}:
+    if tail and head in GATEWAY_MODEL_NAMESPACES:
         return tail
     return model
 

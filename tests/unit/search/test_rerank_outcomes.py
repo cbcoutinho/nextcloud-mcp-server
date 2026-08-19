@@ -12,7 +12,7 @@ be acted on downstream.
 
 import pytest
 
-from nextcloud_mcp_server.providers.gateway_rerank import RerankedIndex, RerankError
+from nextcloud_mcp_server.providers.rerank import RerankedIndex, RerankError
 from nextcloud_mcp_server.search import rerank as rerank_mod
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.rerank import (

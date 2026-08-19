@@ -7,9 +7,11 @@ once real retrieval has produced the candidates, which is what this covers:
 ``BM25HybridSearchAlgorithm.search()`` against an in-memory Qdrant, then the
 real ``rerank_results`` stage over its output.
 
-The cross-encoder itself is stubbed — the gateway is not part of this repo's
-docker-compose, so a live rerank cannot run in CI. What is real here is the
-retrieval, the candidate pool, the reordering, and the degradation path.
+The cross-encoder itself is stubbed. A real one is reachable now — the
+``infinity`` compose profile serves ``BAAI/bge-reranker-v2-m3`` — but it costs a
+~2.5 GB model download and tens of seconds per CPU rerank, so it stays opt-in
+and out of CI. What is real here is the retrieval, the candidate pool, the
+reordering, and the degradation path.
 
 No Nextcloud, no verification layer, no background sync.
 """
@@ -24,7 +26,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from nextcloud_mcp_server.providers.gateway_rerank import (
+from nextcloud_mcp_server.providers.rerank import (
     RerankedIndex,
     RerankError,
 )

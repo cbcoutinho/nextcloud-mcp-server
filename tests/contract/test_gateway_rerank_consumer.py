@@ -11,7 +11,7 @@ additive-safe.
 Deliberately NOT pinned here: the client's defensive handling of out-of-range,
 duplicate, partial and malformed index sets. A pact fixes ONE example response;
 branching on response *content* belongs a tier down in
-``tests/unit/providers/test_gateway_rerank.py`` — same split the models pact
+``tests/unit/providers/test_rerank_client.py`` — same split the models pact
 documents. What matters at this boundary is that the provider keeps returning
 ``index`` as an integer and ``relevance_score`` as a number.
 
@@ -21,7 +21,7 @@ The gateway is unauthenticated today, so no bearer is sent. See ADR-029.
 import pytest
 from pact import match
 
-from nextcloud_mcp_server.providers.gateway_rerank import GatewayRerankClient
+from nextcloud_mcp_server.providers.rerank import RerankClient
 
 pytestmark = pytest.mark.contract
 
@@ -72,7 +72,7 @@ async def test_rerank_returns_indices_and_scores(gateway_consumer_pact):
     )
 
     with gateway_consumer_pact.serve() as srv:
-        client = GatewayRerankClient(str(srv.url), _MODEL)
+        client = RerankClient(f"{str(srv.url).rstrip('/')}/v1/rerank", _MODEL)
         ranked = await client.rerank(_QUERY, _DOCS)
 
     assert [r.index for r in ranked] == [1, 0]

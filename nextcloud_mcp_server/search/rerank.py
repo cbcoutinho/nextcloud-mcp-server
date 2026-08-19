@@ -27,8 +27,8 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.providers.gateway import build_gateway_token_provider
-from nextcloud_mcp_server.providers.gateway_rerank import (
-    GatewayRerankClient,
+from nextcloud_mcp_server.providers.rerank import (
+    RerankClient,
     RerankError,
 )
 from nextcloud_mcp_server.search.algorithms import SearchResult
@@ -59,7 +59,7 @@ RERANK_APPLIED = "applied"
 RERANK_SKIPPED = "skipped"
 RERANK_DEGRADED = "degraded"
 
-_client: GatewayRerankClient | None = None
+_client: RerankClient | None = None
 _client_lock: anyio.Lock | None = None
 _limiter: anyio.CapacityLimiter | None = None
 _cooldown_until: float = 0.0
@@ -75,6 +75,33 @@ def _reset_rerank_state() -> None:
     _cooldown_until = 0.0
 
 
+def rerank_endpoint(settings: Any) -> str | None:
+    """The rerank URL this deployment should POST to, or ``None`` if it has
+    none configured.
+
+    Two ways to get here, and they are not symmetric:
+
+    * ``SEARCH_RERANK_URL`` is used **verbatim** — a full endpoint, path and
+      all. Backends disagree on the path (Infinity ``/rerank``, vLLM
+      ``/v1/rerank``, Cohere ``/v2/rerank``) and a wrong guess degrades to
+      retrieval order rather than erroring, so guessing is worse than asking.
+    * Otherwise it is derived from ``EMBEDDING_GATEWAY_URL``, which is a bare
+      origin in some deployments and already ``/v1``-suffixed in others. That
+      normalisation lives here rather than in the client so the client stays a
+      plain Cohere-protocol client with no gateway knowledge.
+    """
+    url = getattr(settings, "search_rerank_url", None)
+    if url:
+        return url
+    gateway = getattr(settings, "embedding_gateway_url", None)
+    if not gateway:
+        return None
+    base = gateway.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return f"{base}/rerank"
+
+
 def rerank_available(settings: Any) -> bool:
     """Whether reranking can run at all on this deployment.
 
@@ -83,15 +110,19 @@ def rerank_available(settings: Any) -> bool:
     of probing it and eating an error.
     """
     return bool(
-        getattr(settings, "search_rerank_enabled", False)
-        and getattr(settings, "embedding_gateway_url", None)
+        getattr(settings, "search_rerank_enabled", False) and rerank_endpoint(settings)
     )
 
 
-async def _get_client(settings: Any) -> GatewayRerankClient | None:
+async def _get_client(settings: Any) -> RerankClient | None:
     """Build (once) the shared rerank client. ``None`` when unavailable."""
     global _client, _client_lock
-    if not rerank_available(settings):
+    # One source of truth for "can this deployment rerank": the same predicate
+    # /api/v1/status advertises. Resolving the URL separately here would let the
+    # two drift, so a caller could be told the capability exists and then get a
+    # silent skip.
+    url = rerank_endpoint(settings) if rerank_available(settings) else None
+    if url is None:
         return None
     if _client is not None:
         return _client
@@ -99,10 +130,18 @@ async def _get_client(settings: Any) -> GatewayRerankClient | None:
         _client_lock = anyio.Lock()
     async with _client_lock:
         if _client is None:
-            _client = GatewayRerankClient(
-                base_url=settings.embedding_gateway_url,
+            # The gateway's M2M token is scoped to the gateway, so it is only
+            # sent when the endpoint IS the gateway's. A direct Infinity/vLLM/
+            # Cohere URL authenticates with SEARCH_RERANK_API_KEY or not at all
+            # — never by leaking a gateway credential to a third party.
+            direct = bool(getattr(settings, "search_rerank_url", None))
+            _client = RerankClient(
+                url=url,
                 model=settings.search_rerank_model,
-                token_provider=build_gateway_token_provider(settings),
+                token_provider=(
+                    None if direct else build_gateway_token_provider(settings)
+                ),
+                api_key=getattr(settings, "search_rerank_api_key", None),
                 timeout_seconds=float(settings.search_rerank_timeout_seconds),
             )
     return _client
@@ -112,11 +151,11 @@ def _get_limiter(settings: Any) -> anyio.CapacityLimiter:
     """Bound concurrent rerank calls.
 
     Bounds how many rerank requests THIS process has in flight against the
-    gateway. That keeps a burst of searches from queueing unbounded work on a
-    service we share with our own embedding traffic and with other callers, and
-    keeps rerank latency here predictable.
+    reranker. That keeps a burst of searches from queueing unbounded work on a
+    service we may share with our own embedding traffic and with other callers,
+    and keeps rerank latency here predictable.
 
-    It is not a throughput control for the gateway: how that service schedules
+    It is not a throughput control for the reranker: how that service schedules
     reranking against everything else it serves is its own concern, and this
     server knows nothing about its topology beyond a URL.
     """
