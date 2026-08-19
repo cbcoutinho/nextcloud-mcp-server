@@ -239,23 +239,36 @@ def configure_talk_tools(mcp: FastMCP) -> None:
     @instrument_tool
     async def talk_create_conversation(
         ctx: Context,
-        room_name: str,
+        room_name: str | None = None,
         room_type: TalkRoomType = 2,
         invite: str | None = None,
     ) -> CreateConversationResponse:
         """Create a new Talk conversation (room).
 
         Args:
-            room_name: Display name for the room. Required for group and
-                public rooms.
-            room_type: 2 for a group room (default), 3 for a public room.
-                Type 1 is a one-to-one room, which is created by inviting a
-                single user rather than by naming a room.
-            invite: Optional user or group ID to add at creation time. For a
-                one-to-one room this is the other participant.
+            room_name: Display name for the room. Required for a group (2) or
+                public (3) room. Omit it for a one-to-one room, which spreed
+                names after the other participant.
+            room_type: 2 for a group room (default), 3 for a public room, 1 for
+                a one-to-one room.
+            invite: User or group ID to add at creation time. Required for a
+                one-to-one room, where it is the other participant and is what
+                defines the room. Optional otherwise.
         """
-        if not room_name or not room_name.strip():
-            raise ToolError("room_name must not be empty or whitespace-only")
+        if room_type == 1:
+            # A one-to-one room is defined by who is in it, not by a name --
+            # spreed accepts the create with no roomName at all. Without an
+            # invite there is no second participant, so there is no room.
+            if not invite or not invite.strip():
+                raise ToolError(
+                    "invite is required for a one-to-one room (room_type=1): "
+                    "the other participant is what identifies the room"
+                )
+        elif not room_name or not room_name.strip():
+            raise ToolError(
+                f"room_name is required for room_type={room_type} and must not "
+                "be empty or whitespace-only"
+            )
 
         client = await get_client(ctx)
         conversation = await client.talk.create_conversation(

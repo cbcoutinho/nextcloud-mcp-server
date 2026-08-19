@@ -328,3 +328,61 @@ async def test_talk_add_participant_is_idempotent(
     finally:
         if token:
             await nc_client.talk.delete_conversation(token)
+
+
+async def test_talk_create_one_to_one_conversation_without_a_name(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, test_user
+):
+    """A one-to-one room is created from the invitee alone, with no room_name.
+
+    The tool used to require `room_name` for every room type, forcing callers
+    to invent a name spreed ignores for one-to-one rooms. This is the path that
+    was documented as supported and never exercised.
+    """
+    await nc_client.users.create_user(**test_user)
+    other = test_user["userid"]
+    token = None
+    try:
+        result = await nc_mcp_client.call_tool(
+            "talk_create_conversation", {"room_type": 1, "invite": other}
+        )
+        assert result.isError is False, result.content[0].text
+
+        conversation = json.loads(result.content[0].text)["conversation"]
+        token = conversation["token"]
+        assert conversation["room_type"] == 1
+
+        # The other user is really in it -- a one-to-one room that did not
+        # actually pair the two would still have returned a token.
+        participants = await nc_mcp_client.call_tool(
+            "talk_list_participants", {"token": token}
+        )
+        actor_ids = {
+            p["actorId"] for p in json.loads(participants.content[0].text)["results"]
+        }
+        assert other in actor_ids
+    finally:
+        if token:
+            await nc_client.talk.delete_conversation(token)
+
+
+async def test_talk_create_one_to_one_requires_an_invite(
+    nc_mcp_client: ClientSession,
+):
+    """Without an invitee there is no second participant, so there is no room."""
+    result = await nc_mcp_client.call_tool("talk_create_conversation", {"room_type": 1})
+
+    assert result.isError is True
+    assert "invite is required" in result.content[0].text
+
+
+async def test_talk_create_group_room_still_requires_a_name(
+    nc_mcp_client: ClientSession,
+):
+    """Relaxing room_name for one-to-one must not relax it for group rooms."""
+    result = await nc_mcp_client.call_tool(
+        "talk_create_conversation", {"room_type": 2, "invite": "admin"}
+    )
+
+    assert result.isError is True
+    assert "room_name is required" in result.content[0].text

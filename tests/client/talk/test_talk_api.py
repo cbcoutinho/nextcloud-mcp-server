@@ -591,3 +591,63 @@ async def test_add_participant_rejects_path_traversal_token(mocker):
         await client.add_participant("../../admin", "bob")
 
     mock_request.assert_not_called()
+
+
+async def test_create_one_to_one_conversation_omits_room_name(mocker):
+    """A one-to-one room is created with no roomName at all.
+
+    spreed names those after the other participant (verified against Talk
+    22.0.17), so sending a blank name is a different request from sending
+    none -- the key is omitted rather than emptied.
+    """
+    response = mocker.Mock()
+    response.json.return_value = {
+        "ocs": {
+            "meta": {"statuscode": 200},
+            "data": {
+                "id": 7,
+                "token": "abc123",
+                "type": 1,
+                "name": "bob",
+                "displayName": "Bob",
+            },
+        }
+    }
+    mock_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=response
+    )
+    client = TalkClient(mocker.AsyncMock(), "testuser")
+
+    await client.create_conversation(room_type=1, invite="bob")
+
+    body = mock_request.call_args.kwargs["json"]
+    assert body == {"roomType": 1, "invite": "bob"}
+    assert "roomName" not in body
+
+
+async def test_create_group_conversation_sends_room_name(mocker):
+    """The group path is unchanged: the name is still sent."""
+    response = mocker.Mock()
+    response.json.return_value = {
+        "ocs": {
+            "meta": {"statuscode": 200},
+            "data": {
+                "id": 8,
+                "token": "def456",
+                "type": 2,
+                "name": "Team",
+                "displayName": "Team",
+            },
+        }
+    }
+    mock_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=response
+    )
+    client = TalkClient(mocker.AsyncMock(), "testuser")
+
+    await client.create_conversation(room_type=2, room_name="Team")
+
+    assert mock_request.call_args.kwargs["json"] == {
+        "roomType": 2,
+        "roomName": "Team",
+    }

@@ -142,17 +142,26 @@ class TalkClient(BaseNextcloudClient):
         self,
         *,
         room_type: TalkRoomType = 2,
-        room_name: str,
+        room_name: str | None = None,
         invite: str | None = None,
     ) -> TalkConversation:
         """Create a new conversation.
 
         Args:
             room_type: 1=one-to-one, 2=group, 3=public. Defaults to 2.
-            room_name: Display name (required for group/public rooms).
-            invite: Optional user/group ID to invite at creation time.
+            room_name: Display name. Required by spreed for group and public
+                rooms; a one-to-one room is identified by its other
+                participant, and is created without one.
+            invite: User/group ID to invite at creation time. For a one-to-one
+                room this is the other participant, and is what defines the
+                room.
         """
-        body: dict[str, Any] = {"roomType": room_type, "roomName": room_name}
+        body: dict[str, Any] = {"roomType": room_type}
+        # Omitted rather than sent empty for a one-to-one room: spreed names
+        # those after the other participant, and a blank roomName is not the
+        # same request as no roomName.
+        if room_name is not None:
+            body["roomName"] = room_name
         if invite is not None:
             body["invite"] = invite
         response = await self._make_request(
