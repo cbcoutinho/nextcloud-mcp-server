@@ -170,7 +170,13 @@ class TalkClient(BaseNextcloudClient):
         return TalkConversation(**response.json()["ocs"]["data"])
 
     async def delete_conversation(self, token: str) -> None:
-        """Delete a conversation. Used by integration test cleanup."""
+        """Delete a conversation. Used by integration test cleanup.
+
+        Does not apply to one-to-one rooms: spreed answers those with 400
+        (observed on Nextcloud 32/33/34). A participant *leaves* a one-to-one
+        conversation instead, after which it becomes a "former one-to-one"
+        room -- the type 5 the conversation model documents.
+        """
         _validate_token(token)
         await self._make_request(
             "DELETE", f"{self._ROOM_BASE}/{token}", headers=self._talk_headers()

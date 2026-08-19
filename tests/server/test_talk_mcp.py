@@ -341,29 +341,30 @@ async def test_talk_create_one_to_one_conversation_without_a_name(
     """
     await nc_client.users.create_user(**test_user)
     other = test_user["userid"]
-    token = None
-    try:
-        result = await nc_mcp_client.call_tool(
-            "talk_create_conversation", {"room_type": 1, "invite": other}
-        )
-        assert result.isError is False, result.content[0].text
 
-        conversation = json.loads(result.content[0].text)["conversation"]
-        token = conversation["token"]
-        assert conversation["room_type"] == 1
+    result = await nc_mcp_client.call_tool(
+        "talk_create_conversation", {"room_type": 1, "invite": other}
+    )
+    assert result.isError is False, result.content[0].text
 
-        # The other user is really in it -- a one-to-one room that did not
-        # actually pair the two would still have returned a token.
-        participants = await nc_mcp_client.call_tool(
-            "talk_list_participants", {"token": token}
-        )
-        actor_ids = {
-            p["actorId"] for p in json.loads(participants.content[0].text)["results"]
-        }
-        assert other in actor_ids
-    finally:
-        if token:
-            await nc_client.talk.delete_conversation(token)
+    conversation = json.loads(result.content[0].text)["conversation"]
+    assert conversation["room_type"] == 1
+
+    # The other user is really in it -- a one-to-one room that did not actually
+    # pair the two would still have returned a token.
+    participants = await nc_mcp_client.call_tool(
+        "talk_list_participants", {"token": conversation["token"]}
+    )
+    actor_ids = {
+        p["actorId"] for p in json.loads(participants.content[0].text)["results"]
+    }
+    assert other in actor_ids
+
+    # No room cleanup here on purpose: spreed answers DELETE on a one-to-one
+    # room with 400 (reproduced on nc32/33/34). Those rooms are left, not
+    # deleted -- which is why the conversation model carries a "former
+    # one-to-one" type. The `test_user` fixture removes the other account,
+    # which is what actually undoes the pairing.
 
 
 async def test_talk_create_one_to_one_requires_an_invite(
