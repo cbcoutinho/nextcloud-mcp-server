@@ -348,7 +348,11 @@ async def test_talk_create_one_to_one_conversation_without_a_name(
     assert result.isError is False, result.content[0].text
 
     conversation = json.loads(result.content[0].text)["conversation"]
-    assert conversation["room_type"] == 1
+    # The wire key is "type", not the model's "room_type": that field carries
+    # alias="type" and responses serialise by alias. Asserting the room kind --
+    # rather than only that a token came back -- is what separates a real
+    # one-to-one room from a group room that happens to contain the invitee.
+    assert conversation["type"] == 1
 
     # The other user is really in it -- a one-to-one room that did not actually
     # pair the two would still have returned a token.
