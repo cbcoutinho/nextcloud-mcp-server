@@ -1732,7 +1732,7 @@ class Settings:
         # universe, and refusing to boot over a model name we cannot validate
         # would be worse than saying so.
         if self.search_rerank_enabled and self.search_rerank_url:
-            _prefix = self.search_rerank_model.partition("/")[0]
+            _prefix, _, _bare = self.search_rerank_model.partition("/")
             if _prefix in GATEWAY_MODEL_NAMESPACES:
                 logger.warning(
                     "SEARCH_RERANK_MODEL=%r carries the embedding gateway's %r "
@@ -1741,7 +1741,7 @@ class Settings:
                     "(%r) or reranking will silently degrade to retrieval order.",
                     self.search_rerank_model,
                     f"{_prefix}/",
-                    self.search_rerank_model.partition("/")[2],
+                    _bare,
                 )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
