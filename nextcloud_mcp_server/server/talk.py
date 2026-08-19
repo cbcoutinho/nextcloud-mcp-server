@@ -346,7 +346,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             conversation_token=token,
             message_id=message_id,
             reactions=reactions,
-            total=len(reactions),
+            distinct_emoji=len(reactions),
         )
 
     @mcp.tool(
@@ -383,7 +383,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             conversation_token=token,
             message_id=message_id,
             reactions=reactions,
-            total=len(reactions),
+            distinct_emoji=len(reactions),
         )
 
     @mcp.tool(
@@ -421,5 +421,5 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             conversation_token=token,
             message_id=message_id,
             reactions=reactions,
-            total=len(reactions),
+            distinct_emoji=len(reactions),
         )

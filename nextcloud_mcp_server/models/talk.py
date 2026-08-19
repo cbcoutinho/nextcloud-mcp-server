@@ -228,8 +228,12 @@ class ReactionsResponse(BaseResponse):
         default_factory=dict,
         description="Emoji -> the actors who reacted with it",
     )
-    total: int = Field(
-        default=0, description="Number of distinct emoji on this message"
+    distinct_emoji: int = Field(
+        default=0,
+        description=(
+            "Number of distinct emoji on this message -- not the total number "
+            "of reactions, which is the sum of the actor lists."
+        ),
     )
 
     @field_validator("reactions", mode="before")

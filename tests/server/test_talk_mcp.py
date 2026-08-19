@@ -243,7 +243,7 @@ async def test_talk_reaction_round_trip(
     assert reacted.isError is False, reacted.content[0].text
     react_payload = json.loads(reacted.content[0].text)
     assert emoji in react_payload["reactions"]
-    assert react_payload["total"] == 1
+    assert react_payload["distinct_emoji"] == 1
     assert [a["actorId"] for a in react_payload["reactions"][emoji]] == ["admin"]
 
     # Reacting again with the same emoji leaves one reaction, not two -- this
@@ -386,3 +386,49 @@ async def test_talk_create_group_room_still_requires_a_name(
 
     assert result.isError is True
     assert "room_name is required" in result.content[0].text
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"message_id": 0, "reaction": "\N{PARTY POPPER}"}, "message id"),
+        ({"message_id": 1, "reaction": "   "}, "reaction must not be empty"),
+        ({"message_id": 1, "reaction": "\N{PARTY POPPER}"}, None),
+    ],
+    ids=["bad-message-id", "blank-reaction", "control-valid-args"],
+)
+async def test_client_validation_surfaces_through_mcp(
+    nc_mcp_client: ClientSession,
+    temporary_conversation: dict,
+    arguments: dict,
+    expected: str | None,
+):
+    """Client-layer ValueErrors must reach the caller as a readable tool error.
+
+    The blank-name and blank-participant paths raise `ToolError` at the tool
+    layer and were already covered. These three validators raise plain
+    `ValueError` in the client instead, and nothing asserted what that looks
+    like after FastMCP has translated it -- a readable `isError` result or an
+    opaque internal failure. The control case is included so the assertion is
+    about the *rejections* rather than about every call failing.
+    """
+    token = temporary_conversation["token"]
+
+    if expected is None:
+        # Give the control case a message that really exists to react to.
+        send = await nc_mcp_client.call_tool(
+            "talk_send_message", {"token": token, "message": "seam control"}
+        )
+        arguments = {
+            **arguments,
+            "message_id": json.loads(send.content[0].text)["message"]["id"],
+        }
+
+    result = await nc_mcp_client.call_tool("talk_react", {"token": token, **arguments})
+
+    if expected is None:
+        assert result.isError is False, result.content[0].text
+        return
+
+    assert result.isError is True
+    assert expected in result.content[0].text.lower()
