@@ -38,8 +38,6 @@ from typing import Any, NamedTuple
 #: ``dict(...)`` copy, since an in-place edit of a module-level dict shared by
 #: nine clients would be a cross-client bug.
 #:
-#: Two sets of headers stay separate on purpose:
-#:
 #: What this constant owns is the *pairing* -- ``OCS-APIRequest`` together with
 #: ``Accept: application/json`` -- and ``tests/unit/test_ocs_headers_are_shared``
 #: fails if any client outside this module spells that pairing itself. Header

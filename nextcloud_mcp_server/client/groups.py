@@ -16,6 +16,12 @@ class GroupsClient(BaseNextcloudClient):
 
     # Own copy: the module-level dict is shared by every OCS client, so passing
     # it straight through would make any future in-place edit a cross-client bug.
+    #
+    # It is still ONE object per class, not per instance or per call. Nothing
+    # mutates it today, and httpx does not touch the dict it is handed. But a
+    # future `additional_headers` parameter reaching for
+    # `self._OCS_HEADERS.update(...)` would leak into every instance and every
+    # later call -- build `{**self._OCS_HEADERS, ...}` instead.
     _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
 
     @retry_on_429
