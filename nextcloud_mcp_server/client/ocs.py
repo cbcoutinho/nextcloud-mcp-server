@@ -26,6 +26,8 @@ and each raises a different type that its callers already catch --
 three caller contracts at once.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 #: Headers Nextcloud's CSRF check requires on every OCS request. Omitting
@@ -34,9 +36,15 @@ from typing import Any, NamedTuple
 #:
 #: Used by every client that calls an ``/ocs/v2.php`` route: sharing,
 #: collectives, mail, deck, groups, tables, users, talk, and the two
-#: capability lookups on ``NextcloudClient`` itself. Each takes its own
-#: ``dict(...)`` copy, since an in-place edit of a module-level dict shared by
-#: nine clients would be a cross-client bug.
+#: capability lookups on ``NextcloudClient`` itself.
+#:
+#: Read-only on purpose. Nine clients share this one object, so an in-place
+#: edit here would be a cross-client bug; ``MappingProxyType`` makes that a
+#: ``TypeError`` at the point of the mistake rather than a comment asking
+#: nicely. Every consumer already takes a ``dict(...)`` or ``{**...}`` copy,
+#: which is now belt-and-braces rather than the only line of defence -- and if
+#: those copies are ever unified into one idiom, this is what makes dropping
+#: them safe.
 #:
 #: What this constant owns is the *pairing* -- ``OCS-APIRequest`` together with
 #: ``Accept: application/json`` -- and ``tests/unit/test_ocs_headers_are_shared``
@@ -49,10 +57,12 @@ from typing import Any, NamedTuple
 #:   attachment bytes, which are likewise not JSON.
 #: * ``DeckClient._get_deck_headers`` serves Deck's own REST API rather than an
 #:   ``/ocs/v2.php`` route, and sends ``Content-Type`` rather than ``Accept``.
-OCS_REQUEST_HEADERS: dict[str, str] = {
-    "OCS-APIRequest": "true",
-    "Accept": "application/json",
-}
+OCS_REQUEST_HEADERS: Mapping[str, str] = MappingProxyType(
+    {
+        "OCS-APIRequest": "true",
+        "Accept": "application/json",
+    }
+)
 
 #: Success codes: ``100`` from OCS v1, ``200`` from v2.
 OCS_SUCCESS_STATUS_CODES = frozenset({100, 200})

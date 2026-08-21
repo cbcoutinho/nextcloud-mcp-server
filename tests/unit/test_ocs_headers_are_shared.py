@@ -105,3 +105,17 @@ def test_every_ocs_client_imports_the_constant():
         if path.name in expected and "OCS_REQUEST_HEADERS" not in path.read_text()
     }
     assert not missing, f"OCS clients not using the shared header: {sorted(missing)}"
+
+
+def test_the_constant_cannot_be_mutated():
+    """Nine clients share this one object; an in-place edit must not be possible.
+
+    The per-client ``dict(...)`` copies exist because of that sharing. Making
+    the source read-only turns the mistake those copies guard against into a
+    ``TypeError`` at the point it is made, rather than a cross-client bug
+    discovered later in whichever client happened to run next.
+    """
+    from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
+
+    with pytest.raises(TypeError):
+        OCS_REQUEST_HEADERS["Accept"] = "text/xml"  # ty: ignore[unsupported-operation]
