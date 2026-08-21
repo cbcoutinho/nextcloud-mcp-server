@@ -10,9 +10,22 @@ which caught exceptions are transient; everything else propagates immediately.
 exponential curve, which is what the startup probes want — without it, every
 replica in a deployment retries a briefly-unreachable dependency in lockstep.
 
+That failure mode is not hypothetical, and it is not confined to startup:
+``retry_on_429``'s lock branch was first written with a fixed schedule and CI
+caught two callers — a note write and the vector-sync scanner — retrying at
+four identical timestamps and re-colliding every time. If a new retry loop can
+ever have two instances of it running against the same resource, it wants
+jitter.
+
 Not every retry loop in this codebase belongs here, and the ones that stayed
 put did so for a reason:
 
+- ``BaseNextcloudClient.retry_on_429`` — the transport-level policy for
+  Nextcloud's two "not now" answers, 429 and 423. It keeps a separate budget
+  and backoff shape per status (flat 5s for rate limiting, short jittered
+  doubling for a file lock) and re-raises the original error for one and a
+  ``RuntimeError`` for the other. Two policies in one decorator is not what
+  ``should_retry`` models.
 - ``BaseNextcloudClient._stream_request`` — a partially-consumed stream cannot
   be replayed, and it meters every attempt on the API-call histogram.
 - ``CalendarClient._wait_for_calendar`` — a poll-until-a-condition-holds loop.
