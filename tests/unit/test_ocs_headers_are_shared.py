@@ -27,11 +27,27 @@ import nextcloud_mcp_server as root_pkg
 pytestmark = pytest.mark.unit
 
 #: The module that defines the constant is the one place allowed to spell it.
-DEFINING_MODULE = "ocs.py"
+DEFINING_MODULE = "client/ocs.py"
 
 #: The keys whose co-occurrence in one dict literal makes it a copy of
 #: ``OCS_REQUEST_HEADERS``.
 OWNED_PAIRING = {"OCS-APIRequest", "Accept"}
+
+
+def _package_root() -> Path:
+    return Path(root_pkg.__file__).parent
+
+
+def _rel(path: Path) -> str:
+    """Package-relative POSIX path, e.g. ``client/sharing.py``.
+
+    Bare filenames are not identifiers here: the package holds a ``deck.py``, a
+    ``talk.py`` and a ``sharing.py`` under each of ``client/``, ``models/`` and
+    ``server/``, plus an ``__init__.py`` in every subpackage. Matching on
+    ``path.name`` silently conflated all of them the moment this scan grew
+    beyond ``client/``.
+    """
+    return path.relative_to(_package_root()).as_posix()
 
 
 def _package_sources() -> list[Path]:
@@ -43,7 +59,7 @@ def _package_sources() -> list[Path]:
     that only watches the place the problem was already fixed is a guard that
     reports success.
     """
-    return sorted(Path(root_pkg.__file__).parent.rglob("*.py"))
+    return sorted(_package_root().rglob("*.py"))
 
 
 def _copied_pairings(path: Path) -> list[int]:
@@ -63,9 +79,14 @@ def test_scan_reaches_beyond_the_client_package():
     Named modules from three different packages, so narrowing the scan back to
     ``client/`` fails here rather than silently shrinking what is protected.
     """
-    names = {p.name for p in _package_sources()}
-    assert {"ocs.py", "sharing.py", "deck.py", "webdav.py"} <= names
-    assert {"apps.py", "storage.py"} <= names
+    found = {_rel(p) for p in _package_sources()}
+    assert {
+        "client/ocs.py",
+        "client/sharing.py",
+        "client/deck.py",
+        "client/webdav.py",
+    } <= found
+    assert {"api/apps.py", "auth/storage.py"} <= found
 
 
 def test_the_constant_is_still_the_pairing_being_guarded():
@@ -87,9 +108,9 @@ def test_no_client_retypes_the_ocs_header_pairing():
     pairing, including modules that build a one-off ``httpx.AsyncClient``.
     """
     offenders = [
-        f"{path.name}:{lineno}"
+        f"{_rel(path)}:{lineno}"
         for path in _package_sources()
-        if path.name != DEFINING_MODULE
+        if _rel(path) != DEFINING_MODULE
         for lineno in _copied_pairings(path)
     ]
     assert not offenders, (
@@ -106,20 +127,25 @@ def test_every_ocs_client_imports_the_constant():
     exists to prevent.
     """
     expected = {
-        "sharing.py",
-        "collectives.py",
-        "mail.py",
-        "deck.py",
-        "groups.py",
-        "tables.py",
-        "users.py",
-        "talk.py",
-        "__init__.py",
+        "client/sharing.py",
+        "client/collectives.py",
+        "client/mail.py",
+        "client/deck.py",
+        "client/groups.py",
+        "client/tables.py",
+        "client/users.py",
+        "client/talk.py",
+        "client/__init__.py",
+        "api/apps.py",
+        "auth/storage.py",
     }
+    present = {_rel(p) for p in _package_sources()}
+    assert expected <= present, f"expected modules are gone: {expected - present}"
     missing = {
-        path.name
+        rel
         for path in _package_sources()
-        if path.name in expected and "OCS_REQUEST_HEADERS" not in path.read_text()
+        if (rel := _rel(path)) in expected
+        and "OCS_REQUEST_HEADERS" not in path.read_text()
     }
     assert not missing, f"OCS clients not using the shared header: {sorted(missing)}"
 
