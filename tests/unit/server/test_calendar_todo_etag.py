@@ -143,19 +143,31 @@ async def test_stale_etag_becomes_a_readable_tool_error(
     assert "todo-1" in message
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "extra_kwargs"),
+    [
+        ("nc_calendar_update_todo", {"summary": "new title"}),
+        ("nc_calendar_complete_todo", {}),
+    ],
+)
 async def test_stale_etag_without_a_server_message_still_explains_itself(
-    calendar_tools, stub_client, mocker
+    calendar_tools, stub_client, mocker, tool_name, extra_kwargs
 ):
-    """Sabre does not always send ``s:message``; the advice must not vanish."""
+    """Sabre does not always send ``s:message``; the advice must not vanish.
+
+    Parametrized to match its "with a message" sibling. The message-building
+    helper is shared, but each tool wires it up at its own call site -- so an
+    asymmetric pair here is how a per-tool gap survives unnoticed.
+    """
     stub_client.calendar.update_todo.side_effect = _precondition_failed(None)
 
     with pytest.raises(ToolError) as exc_info:
-        await calendar_tools.get_tool("nc_calendar_update_todo").fn(
+        await calendar_tools.get_tool(tool_name).fn(
             calendar_name="Personal",
             todo_uid="todo-1",
             ctx=mocker.MagicMock(),
-            summary="new title",
             etag='"stale"',
+            **extra_kwargs,
         )
 
     message = str(exc_info.value)

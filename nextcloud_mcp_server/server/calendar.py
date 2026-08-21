@@ -1205,7 +1205,13 @@ def configure_calendar_tools(mcp: FastMCP):
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
-    async def nc_calendar_update_todo(
+    # NOSONAR(python:S107) -- 14 parameters, one over Sonar's limit. On an MCP
+    # tool the parameter list IS the published input schema: the rule's usual
+    # remedy, bundling them into one object, would nest every optional field a
+    # level deeper for every caller and every generated client. The sibling
+    # nc_calendar_update_event carries ~22 for the same reason and only escapes
+    # the rule by being older than the new-code period.
+    async def nc_calendar_update_todo(  # NOSONAR(python:S107)
         calendar_name: str,
         todo_uid: str,
         ctx: Context,

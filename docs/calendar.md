@@ -138,6 +138,44 @@ await nc_calendar_complete_todo(
 Not idempotent: a second call without an explicit `completed` restamps the
 timestamp.
 
+## Guarding a todo update against a concurrent change
+
+`nc_calendar_update_todo` and `nc_calendar_complete_todo` both take an optional
+`etag`. Pass the one you read the todo with and the write is refused if
+anything changed in between, so a read-modify-write cycle cannot silently
+discard someone else's edit.
+
+```python
+todos = await nc_calendar_list_todos(calendar_name="Personal")
+todo = next(t for t in todos["results"] if t["uid"] == "abc-123")
+
+result = await nc_calendar_update_todo(
+    calendar_name="Personal",
+    todo_uid="abc-123",
+    summary="Revised title",
+    etag=todo["etag"],
+)
+
+# The write returns the next ETag, so a follow-up update stays guarded
+# without re-reading.
+await nc_calendar_update_todo(
+    calendar_name="Personal",
+    todo_uid="abc-123",
+    priority=1,
+    etag=result["etag"],
+)
+```
+
+If the todo moved on, the call fails with a message naming the recovery —
+re-read it, re-apply your change on the current copy, and retry. Omitting
+`etag` still guards the instant inside the call itself, but not the window
+since your read.
+
+On `nc_calendar_complete_todo` the `etag` is rarely wanted: marking a task done
+is usually the intended outcome whatever else changed. It is offered so that a
+caller who *does* want a guarded completion is not pushed back onto
+`nc_calendar_update_todo` and its three-property footgun.
+
 ## Recurring todos
 
 CalDAV does not expand VTODO recurrences: a `calendar-query` returns only the
