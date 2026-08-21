@@ -1518,8 +1518,22 @@ from nextcloud_mcp_server.capabilities import require_capability
 async def deck_assign_dependent_card(ctx: Context, ...): ...
 ```
 
+Where the app publishes a feature flag, gate on that instead — it states what
+the tool needs, checked against what the instance says about itself rather than
+against a version floor someone has to look up and keep correct:
+
+```python
+@mcp.tool()
+@require_capability("spreed", feature="reactions")
+async def talk_react(ctx: Context, ...): ...
+```
+
 `app` is the OCS capability key (the app id for most apps — Talk's is `spreed`),
-and `min_version` is compared against the `version` the app advertises. Whole-app
+`min_version` is compared against the `version` the app advertises, and
+`feature` must appear in its advertised `features` list. Both may be given
+together, in which case both must hold. Each check is independently fail-open:
+an app that advertises no `version`, or no readable `features`, is not gated on
+that condition. Whole-app
 presence gates are applied automatically from `APP_CAPABILITY_KEY` in
 `nextcloud_mcp_server/server/__init__.py`; only add an app there after confirming
 it publishes a capability block, because a missing key is what closes the gate.
