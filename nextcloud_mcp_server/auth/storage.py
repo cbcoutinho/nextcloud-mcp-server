@@ -50,6 +50,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 from nextcloud_mcp_server.config import (
     cfg,
     get_database_url,
@@ -2055,10 +2056,7 @@ class RefreshTokenStorage:
                 ) as client:
                     response = await client.get(
                         "/ocs/v2.php/cloud/user",
-                        headers={
-                            "OCS-APIRequest": "true",
-                            "Accept": "application/json",
-                        },
+                        headers=dict(OCS_REQUEST_HEADERS),
                     )
 
                 if response.status_code in (401, 403):

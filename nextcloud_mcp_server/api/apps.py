@@ -26,6 +26,7 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
+from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 
 from ..http import nextcloud_httpx_client
 
@@ -72,7 +73,7 @@ async def get_installed_apps(request: Request) -> JSONResponse:
             response = await client.get(
                 "/ocs/v2.php/cloud/capabilities",
                 params={"format": "json"},
-                headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+                headers=dict(OCS_REQUEST_HEADERS),
             )
 
             if response.status_code != 200:

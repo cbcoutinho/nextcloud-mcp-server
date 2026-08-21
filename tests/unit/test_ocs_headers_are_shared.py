@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-import nextcloud_mcp_server.client as client_pkg
+import nextcloud_mcp_server as root_pkg
 
 pytestmark = pytest.mark.unit
 
@@ -34,8 +34,16 @@ DEFINING_MODULE = "ocs.py"
 OWNED_PAIRING = {"OCS-APIRequest", "Accept"}
 
 
-def _client_sources() -> list[Path]:
-    return sorted(Path(client_pkg.__file__).parent.rglob("*.py"))
+def _package_sources() -> list[Path]:
+    """Every module in the distribution, not just ``client/``.
+
+    Scoping this to the client package is what let two call sites outside it
+    keep retyping the pairing -- ``api/apps.py`` and ``auth/storage.py`` both
+    build their own ``httpx.AsyncClient`` for an ``/ocs/v2.php`` route. A guard
+    that only watches the place the problem was already fixed is a guard that
+    reports success.
+    """
+    return sorted(Path(root_pkg.__file__).parent.rglob("*.py"))
 
 
 def _copied_pairings(path: Path) -> list[int]:
@@ -49,10 +57,15 @@ def _copied_pairings(path: Path) -> list[int]:
     ]
 
 
-def test_scan_finds_the_client_package():
-    """Guard the guard: a bad glob would make the scan below vacuously pass."""
-    names = {p.name for p in _client_sources()}
+def test_scan_reaches_beyond_the_client_package():
+    """Guard the guard: a bad glob would make the scan below vacuously pass.
+
+    Named modules from three different packages, so narrowing the scan back to
+    ``client/`` fails here rather than silently shrinking what is protected.
+    """
+    names = {p.name for p in _package_sources()}
     assert {"ocs.py", "sharing.py", "deck.py", "webdav.py"} <= names
+    assert {"apps.py", "storage.py"} <= names
 
 
 def test_the_constant_is_still_the_pairing_being_guarded():
@@ -68,10 +81,14 @@ def test_the_constant_is_still_the_pairing_being_guarded():
 
 
 def test_no_client_retypes_the_ocs_header_pairing():
-    """Every JSON OCS call site must reach the header through the constant."""
+    """Every JSON OCS call site must reach the header through the constant.
+
+    Not only the app clients: anything talking to ``/ocs/v2.php`` needs the
+    pairing, including modules that build a one-off ``httpx.AsyncClient``.
+    """
     offenders = [
         f"{path.name}:{lineno}"
-        for path in _client_sources()
+        for path in _package_sources()
         if path.name != DEFINING_MODULE
         for lineno in _copied_pairings(path)
     ]
@@ -101,7 +118,7 @@ def test_every_ocs_client_imports_the_constant():
     }
     missing = {
         path.name
-        for path in _client_sources()
+        for path in _package_sources()
         if path.name in expected and "OCS_REQUEST_HEADERS" not in path.read_text()
     }
     assert not missing, f"OCS clients not using the shared header: {sorted(missing)}"

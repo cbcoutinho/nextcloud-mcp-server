@@ -59,6 +59,9 @@ from typing import Any, NamedTuple
 #:   that has no use for the pairing.)
 #: * ``DeckClient._get_deck_headers`` serves Deck's own REST API rather than an
 #:   ``/ocs/v2.php`` route, and sends ``Content-Type`` rather than ``Accept``.
+#: * ``api/passwords.py`` asks for JSON with the ``format=json`` query
+#:   parameter, which OCS honours in place of the header. Also correct -- do
+#:   not "fix" it by adding the pairing.
 OCS_REQUEST_HEADERS: Mapping[str, str] = MappingProxyType(
     {
         "OCS-APIRequest": "true",
