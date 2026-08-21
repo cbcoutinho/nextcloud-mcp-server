@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from httpx import HTTPStatusError, RequestError
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 from nextcloud_mcp_server.models.deck import (
     DeckACL,
     DeckAttachment,
@@ -54,10 +55,24 @@ class DeckClient(BaseNextcloudClient):
 
     app_name = "deck"
 
+    # Own copy -- see the note in GroupsClient. Used by the /ocs/v2.php
+    # endpoints below (config, comments, sessions), NOT by the Deck REST API;
+    # see _get_deck_headers for why that one differs.
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
+
     def _get_deck_headers(
         self, additional_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
-        """Get standard headers required for Deck API calls."""
+        """Get standard headers required for Deck's own REST API.
+
+        Deliberately NOT ``_OCS_HEADERS``. These calls go to
+        ``/index.php/apps/deck/api/v1.0/...`` -- Deck's app REST API, not an
+        ``/ocs/v2.php`` route -- and they send ``Content-Type`` where the OCS
+        constant sends ``Accept``. That difference is left alone on purpose:
+        the endpoints work as-is, and swapping the header would be a
+        behaviour change riding along in a de-duplication pass. If it is ever
+        revisited, it is a change to Deck's REST calls only.
+        """
         headers = {"OCS-APIRequest": "true", "Content-Type": "application/json"}
         if additional_headers:
             headers.update(additional_headers)
@@ -748,7 +763,7 @@ class DeckClient(BaseNextcloudClient):
 
     # OCS API Endpoints (Config, Comments, Sessions)
     async def get_config(self) -> DeckConfig:
-        headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
+        headers = self._OCS_HEADERS
         response = await self._make_request(
             "GET", "/ocs/v2.php/apps/deck/api/v1.0/config", headers=headers
         )
@@ -765,7 +780,7 @@ class DeckClient(BaseNextcloudClient):
             "POST",
             path,
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         return response.json()["ocs"]["data"]
 
@@ -777,7 +792,7 @@ class DeckClient(BaseNextcloudClient):
             "GET",
             f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments",
             params=params,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         return [DeckComment(**comment) for comment in response.json()["ocs"]["data"]]
 
@@ -791,7 +806,7 @@ class DeckClient(BaseNextcloudClient):
             "POST",
             f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments",
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         return DeckComment(**response.json()["ocs"]["data"])
 
@@ -803,7 +818,7 @@ class DeckClient(BaseNextcloudClient):
             "PUT",
             f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments/{comment_id}",
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         return DeckComment(**response.json()["ocs"]["data"])
 
@@ -811,7 +826,7 @@ class DeckClient(BaseNextcloudClient):
         await self._make_request(
             "DELETE",
             f"/ocs/v2.php/apps/deck/api/v1.0/cards/{card_id}/comments/{comment_id}",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
 
     async def create_session(self, board_id: int) -> DeckSession:
@@ -820,7 +835,7 @@ class DeckClient(BaseNextcloudClient):
             "PUT",
             "/ocs/v2.php/apps/deck/api/v1.0/session/create",
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         return DeckSession(**response.json()["ocs"]["data"])
 
@@ -830,7 +845,7 @@ class DeckClient(BaseNextcloudClient):
             "POST",
             "/ocs/v2.php/apps/deck/api/v1.0/session/sync",
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
 
     async def close_session(self, board_id: int, token: str) -> None:
@@ -839,5 +854,5 @@ class DeckClient(BaseNextcloudClient):
             "POST",
             "/ocs/v2.php/apps/deck/api/v1.0/session/close",
             json=json_data,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )

@@ -32,10 +32,25 @@ from typing import Any, NamedTuple
 #: ``OCS-APIRequest`` yields ``meta.statuscode: 997``, not a 4xx, which is why
 #: it is easy to misdiagnose.
 #:
-#: Used by the three clients this module serves (sharing, collectives, mail).
-#: The same literal still appears inline elsewhere -- deck, groups, tables,
-#: users, and the DAV calls in webdav that send it for unrelated reasons --
-#: which is a wider sweep than this module's scope.
+#: Used by every client that calls an ``/ocs/v2.php`` route: sharing,
+#: collectives, mail, deck, groups, tables, users, talk, and the two
+#: capability lookups on ``NextcloudClient`` itself. Each takes its own
+#: ``dict(...)`` copy, since an in-place edit of a module-level dict shared by
+#: nine clients would be a cross-client bug.
+#:
+#: Two sets of headers stay separate on purpose:
+#:
+#: What this constant owns is the *pairing* -- ``OCS-APIRequest`` together with
+#: ``Accept: application/json`` -- and ``tests/unit/test_ocs_headers_are_shared``
+#: fails if any client outside this module spells that pairing itself. Header
+#: dicts sending ``OCS-APIRequest`` alone are a different set and stay inline:
+#:
+#: * ``webdav`` sends it on DAV verbs, which Sabre answers in XML, so this
+#:   constant's ``Accept`` would be a lie.
+#: * ``MailClient.get_attachment`` (and Deck's equivalent) downloads binary
+#:   attachment bytes, which are likewise not JSON.
+#: * ``DeckClient._get_deck_headers`` serves Deck's own REST API rather than an
+#:   ``/ocs/v2.php`` route, and sends ``Content-Type`` rather than ``Accept``.
 OCS_REQUEST_HEADERS: dict[str, str] = {
     "OCS-APIRequest": "true",
     "Accept": "application/json",

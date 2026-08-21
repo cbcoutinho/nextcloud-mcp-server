@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 from nextcloud_mcp_server.models.users import UserDetails
 
 
@@ -13,7 +14,7 @@ class UsersClient(BaseNextcloudClient):
         self, additional_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
         """Get standard headers required for User API calls."""
-        headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
+        headers = dict(OCS_REQUEST_HEADERS)
         if additional_headers:
             headers.update(additional_headers)
         return headers

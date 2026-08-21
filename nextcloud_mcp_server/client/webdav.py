@@ -21,6 +21,17 @@ from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
 
+# The ``{"OCS-APIRequest": "true"}`` headers throughout this module are
+# deliberately NOT ``ocs.OCS_REQUEST_HEADERS``. These are DAV requests
+# (PROPFIND / PUT / MKCOL / REPORT / MOVE / COPY), not OCS ones: they send the
+# header only to identify themselves as API traffic to Nextcloud's CSRF check,
+# and Sabre answers them in XML. The OCS constant also carries
+# ``Accept: application/json``, which would be a lie here. Most of these sites
+# additionally carry request-specific ``Depth`` / ``Content-Type`` values, so
+# there is nothing shared left to hoist -- keep writing them inline. The guard
+# in ``tests/unit/test_ocs_headers_are_shared`` only rejects the OCS+JSON
+# pairing, so these stay legal by construction rather than by exemption.
+
 
 class OversizeDownload(Exception):
     """A streamed download exceeded its byte budget and was aborted.

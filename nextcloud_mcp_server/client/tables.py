@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .base import BaseNextcloudClient
+from .ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -13,12 +14,15 @@ class TablesClient(BaseNextcloudClient):
 
     app_name = "tables"
 
+    # Own copy -- see the note in GroupsClient.
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
+
     async def list_tables(self) -> List[Dict[str, Any]]:
         """List all tables available to the user."""
         response = await self._make_request(
             "GET",
             "/ocs/v2.php/apps/tables/api/2/tables",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         result = response.json()
         return result["ocs"]["data"]
@@ -59,7 +63,7 @@ class TablesClient(BaseNextcloudClient):
         response = await self._make_request(
             "POST",
             f"/ocs/v2.php/apps/tables/api/2/tables/{table_id}/rows",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
             json={"data": api_data},
         )
         result = response.json()
