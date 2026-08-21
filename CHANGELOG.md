@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.180.0 (2026-08-21)
+
+### Feat
+
+- **talk**: gate the reaction tools on spreed's advertised feature flag
+- **talk**: add conversation, participant and reaction tools
+
+### Fix
+
+- **test**: assert the wire key for room type, not the model field name
+- **test**: stop deleting a one-to-one room spreed refuses to delete
+- **talk**: let a one-to-one room be created without a name
+
+### Refactor
+
+- **talk**: rename the reaction count, cover the ValueError seam
+
 ## v0.179.0 (2026-08-19)
 
 ### Feat
