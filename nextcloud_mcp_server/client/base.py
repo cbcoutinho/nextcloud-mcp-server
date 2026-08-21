@@ -36,23 +36,56 @@ STREAMING_REQUEST_EXTENSION = "nextcloud_mcp_streaming"
 logger = logging.getLogger(__name__)
 
 
+#: Attempts allowed for a rate-limited (429) call, and the fixed wait between
+#: them. 429 means "slow down", so the wait is long and flat.
+MAX_RETRIES = 5
+RATE_LIMIT_BACKOFF_SECONDS = 5
+
+#: Retries allowed for a lock-contended (423) call, and the first backoff.
+#:
+#: 423 is a different failure from 429 and wants a different policy. Nextcloud
+#: raises ``OCP\Lock\LockedException`` when it cannot upgrade a shared lock to
+#: an exclusive one -- observed in CI as a note create failing on
+#: ``mkdir`` of its category folder with "2 shared locks" held by a concurrent
+#: reader. That contention clears in milliseconds, so the waits are short and
+#: doubling (0.5s, 1s, 2s: at most ~3.5s added) rather than 5s flat.
+#:
+#: The budget is deliberately small and the original 423 is re-raised once it
+#: is spent: a lock held by a long upload or an open editing session is a real
+#: refusal, and this must never turn one into an unbounded wait.
+LOCK_MAX_RETRIES = 3
+LOCK_BACKOFF_SECONDS = 0.5
+
+
 def retry_on_429(func):
-    """This decorator handles the 429 response from REST APIs
+    """Retry the two Nextcloud responses that mean "not now" rather than "no".
 
     The `func` is assumed to be a method that is similar to `httpx.Client.get`,
-    and returns an `httpx.Response` object. In the case of `Too Many Requests` HTTP
-    response, the function will wait for a couple of seconds and retry the request.
-    """
+    and returns an `httpx.Response` object.
 
-    MAX_RETRIES = 5
+    * **429 Too Many Requests** -- the server is rate limiting. Waits
+      ``RATE_LIMIT_BACKOFF_SECONDS`` and retries, up to ``MAX_RETRIES``
+      attempts, then raises ``RuntimeError``.
+    * **423 Locked** -- another request holds a lock on the path. Retries
+      ``LOCK_MAX_RETRIES`` times with a short doubling backoff, then re-raises
+      the original ``HTTPStatusError`` so a genuinely locked resource still
+      surfaces as 423 rather than as a retry-exhausted error.
+
+    The two budgets are counted separately: a lock wait is not a rate-limit
+    attempt, and spending one on the other would make either failure arrive
+    early.
+
+    (The name predates the 423 handling and is kept because every client
+    imports it.)
+    """
 
     @wraps(func)
     async def wrapper(*args, **kwargs):
         retries = 0
+        lock_retries = 0
 
-        while retries < MAX_RETRIES:
+        while True:
             try:
-                # Make GET API call
                 retries += 1
                 response = await func(*args, **kwargs)
                 break
@@ -68,7 +101,36 @@ def retry_on_429(func):
                     # Record retry metric (extract app name from args if available)
                     if len(args) > 0 and hasattr(args[0], "app_name"):
                         record_nextcloud_api_retry(app=args[0].app_name, reason="429")
-                    await anyio.sleep(5)
+                    await anyio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                    # Sleep first, then give up: preserves the original
+                    # accounting, where the last attempt also waited.
+                    if retries >= MAX_RETRIES:
+                        logger.warning("All API call retries failed")
+                        raise RuntimeError(
+                            f"Maximum number of retries ({MAX_RETRIES}) exceeded "
+                            "without success"
+                        ) from e
+                elif e.response.status_code == codes.LOCKED:
+                    if lock_retries >= LOCK_MAX_RETRIES:
+                        logger.warning(
+                            "423 Locked persisted after %s retries: %s",
+                            lock_retries,
+                            e,
+                        )
+                        raise
+                    lock_retries += 1
+                    # A lock wait is not a rate-limit attempt.
+                    retries -= 1
+                    logger.warning(
+                        "423 Locked, retrying in %ss (attempt %s of %s): %s",
+                        LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1),
+                        lock_retries,
+                        LOCK_MAX_RETRIES,
+                        e,
+                    )
+                    if len(args) > 0 and hasattr(args[0], "app_name"):
+                        record_nextcloud_api_retry(app=args[0].app_name, reason="423")
+                    await anyio.sleep(LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1))
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
                     # Log as debug instead of warning
@@ -95,13 +157,6 @@ def retry_on_429(func):
                     retries,
                 )
                 raise
-
-        # If for loop ends without break statement
-        else:
-            logger.warning("All API call retries failed")
-            raise RuntimeError(
-                f"Maximum number of retries ({MAX_RETRIES}) exceeded without success"
-            )
 
         return response
 

@@ -1401,7 +1401,7 @@ def record_nextcloud_api_retry(app: str, reason: str) -> None:
 
     Args:
         app: Nextcloud app name
-        reason: Retry reason (429, timeout, connection_error)
+        reason: Retry reason (429, 423, timeout, connection_error)
     """
     nextcloud_api_retries_total.labels(app=app, reason=reason).inc()
 
