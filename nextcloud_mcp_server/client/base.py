@@ -121,16 +121,20 @@ def retry_on_429(func):
                     lock_retries += 1
                     # A lock wait is not a rate-limit attempt.
                     retries -= 1
+                    # One expression, used by both the log line and the sleep:
+                    # computing it twice invites the two drifting apart, and a
+                    # log that misreports the wait is worse than no log.
+                    delay = LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1)
                     logger.warning(
                         "423 Locked, retrying in %ss (attempt %s of %s): %s",
-                        LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1),
+                        delay,
                         lock_retries,
                         LOCK_MAX_RETRIES,
                         e,
                     )
                     if len(args) > 0 and hasattr(args[0], "app_name"):
                         record_nextcloud_api_retry(app=args[0].app_name, reason="423")
-                    await anyio.sleep(LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1))
+                    await anyio.sleep(delay)
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
                     # Log as debug instead of warning
