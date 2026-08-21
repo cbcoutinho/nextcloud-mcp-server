@@ -73,12 +73,44 @@ async def test_lock_backoff_is_short_and_doubling(no_sleep):
     """423 waits sub-second and doubles, unlike 429's flat 5s.
 
     A lock upgrade clears in milliseconds; waiting 5s for it would turn a
-    recoverable blip into a visible stall on every contended write.
+    recoverable blip into a visible stall on every contended write. Asserted as
+    bounds rather than exact values because the wait is jittered -- see
+    ``test_lock_backoff_is_jittered`` for why that matters.
     """
     calls: list[int] = []
 
     assert await _failing_then([423, 423, 423], calls)() == "ok"
-    assert [c.args[0] for c in no_sleep.call_args_list] == [0.5, 1.0, 2.0]
+    waits = [c.args[0] for c in no_sleep.call_args_list]
+    assert len(waits) == 3
+    # Equal jitter: each wait sits in [ceiling/2, ceiling] for a doubling
+    # ceiling of 0.5, 1.0, 2.0.
+    for wait, ceiling in zip(waits, [0.5, 1.0, 2.0], strict=True):
+        assert ceiling / 2 <= wait <= ceiling
+    # Still monotonically backing off despite the randomness.
+    assert waits[0] < waits[2]
+
+
+def test_lock_backoff_is_jittered():
+    """Two callers must not retry in lockstep. This is the whole fix.
+
+    The 423 this policy exists for is a mutual shared->exclusive upgrade: a
+    note create and a concurrent note LIST both calling ``mkdir`` on the same
+    Notes folder, each holding a shared lock and each wanting to upgrade.
+    Both callers are this client (the vector-sync scanner reads the same
+    user's notes), so with a fixed schedule they back off by the same amount
+    and retry at the same instant.
+
+    That is exactly what CI showed: the two requests failed at four identical
+    timestamps in a row, the deterministic backoff turning a race into a
+    lockstep collision that could never resolve. Randomising the wait is what
+    lets one of them win.
+    """
+    from nextcloud_mcp_server.client.base import _lock_backoff
+
+    draws = {_lock_backoff(2) for _ in range(50)}
+
+    assert len(draws) > 1, "backoff is deterministic; two callers will re-collide"
+    assert all(0.5 <= d <= 1.0 for d in draws), draws
 
 
 async def test_a_persistent_lock_still_surfaces_as_423(no_sleep):

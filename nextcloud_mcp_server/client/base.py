@@ -1,6 +1,7 @@
 """Base client for Nextcloud operations with shared authentication."""
 
 import logging
+import random
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC
@@ -41,20 +42,42 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 5
 RATE_LIMIT_BACKOFF_SECONDS = 5
 
-#: Retries allowed for a lock-contended (423) call, and the first backoff.
+#: Retries allowed for a lock-contended (423) call, and the base backoff.
 #:
 #: 423 is a different failure from 429 and wants a different policy. Nextcloud
 #: raises ``OCP\Lock\LockedException`` when it cannot upgrade a shared lock to
-#: an exclusive one -- observed in CI as a note create failing on
-#: ``mkdir`` of its category folder with "2 shared locks" held by a concurrent
-#: reader. That contention clears in milliseconds, so the waits are short and
-#: doubling (0.5s, 1s, 2s: at most ~3.5s added) rather than 5s flat.
+#: an exclusive one. Observed in CI as a note create and a concurrent note
+#: LIST both calling ``mkdir`` on the same Notes folder: each holds a shared
+#: lock on the path and each wants to upgrade, so neither can.
+#:
+#: **The jitter is the load-bearing part, not the doubling.** With a fixed
+#: schedule both callers -- they are both this client, since the vector-sync
+#: scanner reads the same user's notes -- back off by the same amount and
+#: retry at the same instant, so they re-collide on every attempt. That is not
+#: a hypothesis: a CI run showed the two requests failing at four identical
+#: timestamps in a row before the budget ran out. Randomising the wait
+#: desynchronises them so one acquires the exclusive lock and the other
+#: follows.
 #:
 #: The budget is deliberately small and the original 423 is re-raised once it
 #: is spent: a lock held by a long upload or an open editing session is a real
 #: refusal, and this must never turn one into an unbounded wait.
 LOCK_MAX_RETRIES = 3
 LOCK_BACKOFF_SECONDS = 0.5
+
+
+def _lock_backoff(attempt: int) -> float:
+    """Jittered backoff for the *attempt*-th (1-based) lock retry.
+
+    Equal jitter: half the doubling schedule is fixed, half is random, so the
+    wait stays in ``[base * 2**(n-1) / 2, base * 2**(n-1)]``. Full jitter
+    (uniform from zero) would break lockstep too, but lets a retry fire almost
+    immediately, which is the opposite of what a contended lock needs.
+    """
+    ceiling = LOCK_BACKOFF_SECONDS * 2 ** (attempt - 1)
+    # Not a security decision -- this only decides how long to wait before
+    # retrying a file lock, and predictability costs nothing here.
+    return ceiling / 2 + random.uniform(0, ceiling / 2)  # NOSONAR(python:S2245)
 
 
 def retry_on_429(func):
@@ -67,9 +90,10 @@ def retry_on_429(func):
       ``RATE_LIMIT_BACKOFF_SECONDS`` and retries, up to ``MAX_RETRIES``
       attempts, then raises ``RuntimeError``.
     * **423 Locked** -- another request holds a lock on the path. Retries
-      ``LOCK_MAX_RETRIES`` times with a short doubling backoff, then re-raises
-      the original ``HTTPStatusError`` so a genuinely locked resource still
-      surfaces as 423 rather than as a retry-exhausted error.
+      ``LOCK_MAX_RETRIES`` times with a short *jittered* backoff (see
+      :func:`_lock_backoff`), then re-raises the original ``HTTPStatusError``
+      so a genuinely locked resource still surfaces as 423 rather than as a
+      retry-exhausted error.
 
     The two budgets are counted separately: a lock wait is not a rate-limit
     attempt, and spending one on the other would make either failure arrive
@@ -121,12 +145,12 @@ def retry_on_429(func):
                     lock_retries += 1
                     # A lock wait is not a rate-limit attempt.
                     retries -= 1
-                    # One expression, used by both the log line and the sleep:
-                    # computing it twice invites the two drifting apart, and a
-                    # log that misreports the wait is worse than no log.
-                    delay = LOCK_BACKOFF_SECONDS * 2 ** (lock_retries - 1)
+                    # One value, used by both the log line and the sleep. It
+                    # is random, so recomputing it for the log would print a
+                    # wait that never happened.
+                    delay = _lock_backoff(lock_retries)
                     logger.warning(
-                        "423 Locked, retrying in %ss (attempt %s of %s): %s",
+                        "423 Locked, retrying in %.2fs (attempt %s of %s): %s",
                         delay,
                         lock_retries,
                         LOCK_MAX_RETRIES,
