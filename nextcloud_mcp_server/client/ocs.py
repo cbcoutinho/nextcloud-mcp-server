@@ -53,8 +53,10 @@ from typing import Any, NamedTuple
 #:
 #: * ``webdav`` sends it on DAV verbs, which Sabre answers in XML, so this
 #:   constant's ``Accept`` would be a lie.
-#: * ``MailClient.get_attachment`` (and Deck's equivalent) downloads binary
-#:   attachment bytes, which are likewise not JSON.
+#: * ``MailClient.get_attachment`` downloads binary attachment bytes, which
+#:   are likewise not JSON. (Deck's attachment download sends no headers at
+#:   all, so it is not a third spelling of this pattern -- just another route
+#:   that has no use for the pairing.)
 #: * ``DeckClient._get_deck_headers`` serves Deck's own REST API rather than an
 #:   ``/ocs/v2.php`` route, and sends ``Content-Type`` rather than ``Accept``.
 OCS_REQUEST_HEADERS: Mapping[str, str] = MappingProxyType(
