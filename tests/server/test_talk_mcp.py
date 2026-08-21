@@ -354,15 +354,19 @@ async def test_talk_create_one_to_one_conversation_without_a_name(
     # one-to-one room from a group room that happens to contain the invitee.
     assert conversation["type"] == 1
 
-    # The other user is really in it -- a one-to-one room that did not actually
-    # pair the two would still have returned a token.
-    participants = await nc_mcp_client.call_tool(
-        "talk_list_participants", {"token": conversation["token"]}
-    )
-    actor_ids = {
-        p["actorId"] for p in json.loads(participants.content[0].text)["results"]
-    }
-    assert other in actor_ids
+    # The room really pairs the two. Read from `name` rather than the
+    # participant list: on the create path spreed adds ONLY the actor --
+    # RoomService::createOneToOneConversation calls addUsers() with the actor
+    # alone, and the invitee is filled in later by ensureOneToOneRoomIsFilled,
+    # which runs from the chat / call / room-GET controllers. So a freshly
+    # created one-to-one room legitimately lists one participant.
+    #
+    # The pairing is in the room's stored name, which spreed sets to
+    # json_encode(sort([actor, target])) and RoomFormatter then renders, for a
+    # type-1 room, as whichever of the two is NOT the reader -- i.e. the
+    # invitee. That is written synchronously at creation, so it is the field
+    # that actually distinguishes a real pairing from a token.
+    assert conversation["name"] == other
 
     # No room cleanup here on purpose: spreed answers DELETE on a one-to-one
     # room with 400 (reproduced on nc32/33/34). Those rooms are left, not
