@@ -615,3 +615,76 @@ async def test_mcp_complete_todo_accepts_explicit_timestamp(
         json.loads(complete_result.content[0].text)["completed"]
         == "2026-01-01T09:00:00+00:00"
     )
+
+
+async def test_stale_etag_refuses_the_write_end_to_end(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """A contended read-modify-write cycle must lose, not silently overwrite.
+
+    The unit tests pin the tool's plumbing against a mocked client; only this
+    exercises the part that is really in question -- that Nextcloud's own
+    If-Match evaluation refuses the second write. A mock can be made to raise
+    412 whether or not the header ever reaches Sabre.
+
+    The second update stands in for a concurrent client: it is a real write
+    that moves the ETag on, after which the first caller's copy is stale
+    exactly as it would be in a race.
+    """
+    calendar_name = temporary_calendar
+    todo_uid = None
+
+    try:
+        create_result = await nc_mcp_client.call_tool(
+            "nc_calendar_create_todo",
+            {"calendar_name": calendar_name, "summary": "ETag contention"},
+        )
+        assert create_result.isError is False
+        todo_uid = json.loads(create_result.content[0].text)["uid"]
+
+        # Read the ETag the way a caller would.
+        listed = await nc_mcp_client.call_tool(
+            "nc_calendar_list_todos", {"calendar_name": calendar_name}
+        )
+        todo = next(
+            t
+            for t in json.loads(listed.content[0].text)["results"]
+            if t["uid"] == todo_uid
+        )
+        first_etag = todo["etag"]
+        assert first_etag, "list_todos returned no ETag to guard with"
+
+        # Matching ETag: accepted, and hands back the next one.
+        accepted = await nc_mcp_client.call_tool(
+            "nc_calendar_update_todo",
+            {
+                "calendar_name": calendar_name,
+                "todo_uid": todo_uid,
+                "summary": "First writer wins",
+                "etag": first_etag,
+            },
+        )
+        assert accepted.isError is False, accepted.content[0].text
+        second_etag = json.loads(accepted.content[0].text)["etag"]
+        assert second_etag and second_etag != first_etag
+
+        # The original ETag is now stale: the write must be refused, readably.
+        refused = await nc_mcp_client.call_tool(
+            "nc_calendar_update_todo",
+            {
+                "calendar_name": calendar_name,
+                "todo_uid": todo_uid,
+                "summary": "Second writer must not clobber",
+                "etag": first_etag,
+            },
+        )
+        assert refused.isError is True
+        assert "nc_calendar_list_todos" in refused.content[0].text
+
+        # ...and the refusal really did leave the stored copy alone.
+        todos = await nc_client.calendar.list_todos(calendar_name)
+        stored = next(t for t in todos if t["uid"] == todo_uid)
+        assert stored["summary"] == "First writer wins"
+    finally:
+        if todo_uid:
+            await nc_client.calendar.delete_todo(calendar_name, todo_uid)
