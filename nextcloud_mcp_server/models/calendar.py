@@ -421,10 +421,24 @@ class CreateTodoResponse(BaseResponse):
 
 
 class UpdateTodoResponse(BaseResponse):
-    """Response model for todo updates."""
+    """Response model for todo updates.
 
-    todo: Todo = Field(description="The updated todo")
+    Carries identifiers and the post-write ETag rather than the updated
+    ``Todo``: the CalDAV write returns exactly this much, and rebuilding a full
+    todo would cost an extra read on every update. ``etag`` is the value to
+    pass back into the next update to keep a read-modify-write cycle guarded.
+    """
+
+    uid: str = Field(description="UID of the updated todo")
     calendar_name: str = Field(description="Name of the calendar the todo belongs to")
+    href: str = Field(default="", description="CalDAV href of the todo")
+    etag: str = Field(
+        default="",
+        description=(
+            "ETag after the write. Pass it as `etag` on the next update to "
+            "detect a concurrent change; empty if the server sent none."
+        ),
+    )
 
 
 class CompleteTodoResponse(BaseResponse):
@@ -440,6 +454,13 @@ class CompleteTodoResponse(BaseResponse):
     )
     completed: str = Field(description="ISO-8601 COMPLETED timestamp that was written")
     href: str = Field(default="", description="CalDAV href of the todo")
+    etag: str = Field(
+        default="",
+        description=(
+            "ETag after the write. Pass it as `etag` on the next update to "
+            "detect a concurrent change; empty if the server sent none."
+        ),
+    )
 
 
 class DeleteTodoResponse(StatusResponse):
