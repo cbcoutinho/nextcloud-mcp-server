@@ -171,6 +171,12 @@ re-read it, re-apply your change on the current copy, and retry. Omitting
 `etag` still guards the instant inside the call itself, but not the window
 since your read.
 
+One caveat on chaining: `etag` comes back empty if the server sent no `ETag`
+header on the write. Passing an empty value is the same as passing none, so a
+chain built on it degrades to unguarded silently rather than failing. If a
+write is worth guarding, check the returned `etag` is non-empty before
+chaining it, and re-read with `nc_calendar_list_todos` if it is not.
+
 On `nc_calendar_complete_todo` the `etag` is rarely wanted: marking a task done
 is usually the intended outcome whatever else changed. It is offered so that a
 caller who *does* want a guarded completion is not pushed back onto
