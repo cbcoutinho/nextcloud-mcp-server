@@ -75,9 +75,13 @@ def _lock_backoff(attempt: int) -> float:
     immediately, which is the opposite of what a contended lock needs.
     """
     ceiling = LOCK_BACKOFF_SECONDS * 2 ** (attempt - 1)
-    # Not a security decision -- this only decides how long to wait before
-    # retrying a file lock, and predictability costs nothing here.
-    return ceiling / 2 + random.uniform(0, ceiling / 2)  # NOSONAR(python:S2245)
+    # The marker below silences python:S2245 (pseudorandom generator). Not a
+    # security decision: this only chooses how long to wait before retrying a
+    # file lock, and predictability costs nothing here.
+    #
+    # Bare, not parenthesised -- a rule id in parentheses makes Sonar reject
+    # the comment as malformed (python:S7632) and suppress nothing.
+    return ceiling / 2 + random.uniform(0, ceiling / 2)  # NOSONAR
 
 
 def retry_on_429(func):
