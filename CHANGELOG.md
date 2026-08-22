@@ -5,6 +5,41 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.181.0 (2026-08-22)
+
+### BREAKING CHANGE
+
+- nc_calendar_update_todo returns UpdateTodoResponse instead of
+a raw dict. The response gains the BaseResponse envelope (success, timestamp)
+plus calendar_name, and drops status_code -- a failed update raises rather
+than reporting a status. nc_calendar_complete_todo's response gains an etag
+field, which is additive.
+
+### Feat
+
+- **calendar**: make ETag concurrency reachable from the todo tools
+
+### Fix
+
+- **calendar**: stop logging a lost ETag race as a server error
+- **test**: read the todo list under `todos`, the key the model actually uses
+- **calendar**: put the suppression on the line Sonar anchors S107 to
+- **calendar**: use a valid suppression comment, so S107 is actually silenced
+- **calendar**: silence S107 with a reason, close the test asymmetry, document etag
+- **test**: identify modules by package-relative path, not bare filename
+- **ocs**: guard the whole package, not just the client that was already fixed
+- **client**: use a valid suppression comment on the jitter helper
+- **client**: jitter the lock backoff so two callers stop colliding
+- **client**: retry a transient 423 Locked, with its own short budget
+- **test**: assert the one-to-one pairing spreed actually records
+
+### Refactor
+
+- **ocs**: make the shared header constant read-only
+- **client**: put every OCS client on the shared header constant
+- **sharing**: route the OCS calls through _make_request
+- **client**: compute the lock backoff once
+
 ## v0.180.0 (2026-08-21)
 
 ### Feat
