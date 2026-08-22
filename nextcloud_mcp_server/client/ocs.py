@@ -26,20 +26,48 @@ and each raises a different type that its callers already catch --
 three caller contracts at once.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 #: Headers Nextcloud's CSRF check requires on every OCS request. Omitting
 #: ``OCS-APIRequest`` yields ``meta.statuscode: 997``, not a 4xx, which is why
 #: it is easy to misdiagnose.
 #:
-#: Used by the three clients this module serves (sharing, collectives, mail).
-#: The same literal still appears inline elsewhere -- deck, groups, tables,
-#: users, and the DAV calls in webdav that send it for unrelated reasons --
-#: which is a wider sweep than this module's scope.
-OCS_REQUEST_HEADERS: dict[str, str] = {
-    "OCS-APIRequest": "true",
-    "Accept": "application/json",
-}
+#: Used by every client that calls an ``/ocs/v2.php`` route: sharing,
+#: collectives, mail, deck, groups, tables, users, talk, and the two
+#: capability lookups on ``NextcloudClient`` itself.
+#:
+#: Read-only on purpose. Nine clients share this one object, so an in-place
+#: edit here would be a cross-client bug; ``MappingProxyType`` makes that a
+#: ``TypeError`` at the point of the mistake rather than a comment asking
+#: nicely. Every consumer already takes a ``dict(...)`` or ``{**...}`` copy,
+#: which is now belt-and-braces rather than the only line of defence -- and if
+#: those copies are ever unified into one idiom, this is what makes dropping
+#: them safe.
+#:
+#: What this constant owns is the *pairing* -- ``OCS-APIRequest`` together with
+#: ``Accept: application/json`` -- and ``tests/unit/test_ocs_headers_are_shared``
+#: fails if any client outside this module spells that pairing itself. Header
+#: dicts sending ``OCS-APIRequest`` alone are a different set and stay inline:
+#:
+#: * ``webdav`` sends it on DAV verbs, which Sabre answers in XML, so this
+#:   constant's ``Accept`` would be a lie.
+#: * ``MailClient.get_attachment`` downloads binary attachment bytes, which
+#:   are likewise not JSON. (Deck's attachment download sends no headers at
+#:   all, so it is not a third spelling of this pattern -- just another route
+#:   that has no use for the pairing.)
+#: * ``DeckClient._get_deck_headers`` serves Deck's own REST API rather than an
+#:   ``/ocs/v2.php`` route, and sends ``Content-Type`` rather than ``Accept``.
+#: * ``api/passwords.py`` asks for JSON with the ``format=json`` query
+#:   parameter, which OCS honours in place of the header. Also correct -- do
+#:   not "fix" it by adding the pairing.
+OCS_REQUEST_HEADERS: Mapping[str, str] = MappingProxyType(
+    {
+        "OCS-APIRequest": "true",
+        "Accept": "application/json",
+    }
+)
 
 #: Success codes: ``100`` from OCS v1, ``200`` from v2.
 OCS_SUCCESS_STATUS_CODES = frozenset({100, 200})

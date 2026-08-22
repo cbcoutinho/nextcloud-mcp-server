@@ -21,7 +21,7 @@ from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
 from ..config import get_nextcloud_ssl_verify
-from .dav_errors import dav_error_from_response
+from .dav_errors import DavPreconditionFailed, dav_error_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -1301,6 +1301,15 @@ class CalendarClient:
                 "etag": new_etag,
                 "status_code": 200,
             }
+        except DavPreconditionFailed:
+            # Listed before the catch-all because it is not a failure of this
+            # call: it is the If-Match guard doing its job when another writer
+            # got there first. The tool layer already logs it at debug and
+            # translates it into an actionable error, so logging it as an error
+            # here would make every contended write look like a server fault --
+            # in exactly the concurrent-write scenario someone would be reading
+            # these logs to understand.
+            raise
         except Exception as e:
             logger.error("Error updating todo %s: %s", todo_uid, e)
             raise

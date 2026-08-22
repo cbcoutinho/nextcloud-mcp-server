@@ -1,6 +1,7 @@
 """Base client for Nextcloud operations with shared authentication."""
 
 import logging
+import random
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC
@@ -36,23 +37,83 @@ STREAMING_REQUEST_EXTENSION = "nextcloud_mcp_streaming"
 logger = logging.getLogger(__name__)
 
 
+#: Attempts allowed for a rate-limited (429) call, and the fixed wait between
+#: them. 429 means "slow down", so the wait is long and flat.
+MAX_RETRIES = 5
+RATE_LIMIT_BACKOFF_SECONDS = 5
+
+#: Retries allowed for a lock-contended (423) call, and the base backoff.
+#:
+#: 423 is a different failure from 429 and wants a different policy. Nextcloud
+#: raises ``OCP\Lock\LockedException`` when it cannot upgrade a shared lock to
+#: an exclusive one. Observed in CI as a note create and a concurrent note
+#: LIST both calling ``mkdir`` on the same Notes folder: each holds a shared
+#: lock on the path and each wants to upgrade, so neither can.
+#:
+#: **The jitter is the load-bearing part, not the doubling.** With a fixed
+#: schedule both callers -- they are both this client, since the vector-sync
+#: scanner reads the same user's notes -- back off by the same amount and
+#: retry at the same instant, so they re-collide on every attempt. That is not
+#: a hypothesis: a CI run showed the two requests failing at four identical
+#: timestamps in a row before the budget ran out. Randomising the wait
+#: desynchronises them so one acquires the exclusive lock and the other
+#: follows.
+#:
+#: The budget is deliberately small and the original 423 is re-raised once it
+#: is spent: a lock held by a long upload or an open editing session is a real
+#: refusal, and this must never turn one into an unbounded wait.
+LOCK_MAX_RETRIES = 3
+LOCK_BACKOFF_SECONDS = 0.5
+
+
+def _lock_backoff(attempt: int) -> float:
+    """Jittered backoff for the *attempt*-th (1-based) lock retry.
+
+    Equal jitter: half the doubling schedule is fixed, half is random, so the
+    wait stays in ``[base * 2**(n-1) / 2, base * 2**(n-1)]``. Full jitter
+    (uniform from zero) would break lockstep too, but lets a retry fire almost
+    immediately, which is the opposite of what a contended lock needs.
+    """
+    ceiling = LOCK_BACKOFF_SECONDS * 2 ** (attempt - 1)
+    # The marker below silences python:S2245 (pseudorandom generator). Not a
+    # security decision: this only chooses how long to wait before retrying a
+    # file lock, and predictability costs nothing here.
+    #
+    # Bare, not parenthesised -- a rule id in parentheses makes Sonar reject
+    # the comment as malformed (python:S7632) and suppress nothing.
+    return ceiling / 2 + random.uniform(0, ceiling / 2)  # NOSONAR
+
+
 def retry_on_429(func):
-    """This decorator handles the 429 response from REST APIs
+    """Retry the two Nextcloud responses that mean "not now" rather than "no".
 
     The `func` is assumed to be a method that is similar to `httpx.Client.get`,
-    and returns an `httpx.Response` object. In the case of `Too Many Requests` HTTP
-    response, the function will wait for a couple of seconds and retry the request.
-    """
+    and returns an `httpx.Response` object.
 
-    MAX_RETRIES = 5
+    * **429 Too Many Requests** -- the server is rate limiting. Waits
+      ``RATE_LIMIT_BACKOFF_SECONDS`` and retries, up to ``MAX_RETRIES``
+      attempts, then raises ``RuntimeError``.
+    * **423 Locked** -- another request holds a lock on the path. Retries
+      ``LOCK_MAX_RETRIES`` times with a short *jittered* backoff (see
+      :func:`_lock_backoff`), then re-raises the original ``HTTPStatusError``
+      so a genuinely locked resource still surfaces as 423 rather than as a
+      retry-exhausted error.
+
+    The two budgets are counted separately: a lock wait is not a rate-limit
+    attempt, and spending one on the other would make either failure arrive
+    early.
+
+    (The name predates the 423 handling and is kept because every client
+    imports it.)
+    """
 
     @wraps(func)
     async def wrapper(*args, **kwargs):
         retries = 0
+        lock_retries = 0
 
-        while retries < MAX_RETRIES:
+        while True:
             try:
-                # Make GET API call
                 retries += 1
                 response = await func(*args, **kwargs)
                 break
@@ -68,7 +129,40 @@ def retry_on_429(func):
                     # Record retry metric (extract app name from args if available)
                     if len(args) > 0 and hasattr(args[0], "app_name"):
                         record_nextcloud_api_retry(app=args[0].app_name, reason="429")
-                    await anyio.sleep(5)
+                    await anyio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                    # Sleep first, then give up: preserves the original
+                    # accounting, where the last attempt also waited.
+                    if retries >= MAX_RETRIES:
+                        logger.warning("All API call retries failed")
+                        raise RuntimeError(
+                            f"Maximum number of retries ({MAX_RETRIES}) exceeded "
+                            "without success"
+                        ) from e
+                elif e.response.status_code == codes.LOCKED:
+                    if lock_retries >= LOCK_MAX_RETRIES:
+                        logger.warning(
+                            "423 Locked persisted after %s retries: %s",
+                            lock_retries,
+                            e,
+                        )
+                        raise
+                    lock_retries += 1
+                    # A lock wait is not a rate-limit attempt.
+                    retries -= 1
+                    # One value, used by both the log line and the sleep. It
+                    # is random, so recomputing it for the log would print a
+                    # wait that never happened.
+                    delay = _lock_backoff(lock_retries)
+                    logger.warning(
+                        "423 Locked, retrying in %.2fs (attempt %s of %s): %s",
+                        delay,
+                        lock_retries,
+                        LOCK_MAX_RETRIES,
+                        e,
+                    )
+                    if len(args) > 0 and hasattr(args[0], "app_name"):
+                        record_nextcloud_api_retry(app=args[0].app_name, reason="423")
+                    await anyio.sleep(delay)
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
                     # Log as debug instead of warning
@@ -95,13 +189,6 @@ def retry_on_429(func):
                     retries,
                 )
                 raise
-
-        # If for loop ends without break statement
-        else:
-            logger.warning("All API call retries failed")
-            raise RuntimeError(
-                f"Maximum number of retries ({MAX_RETRIES}) exceeded without success"
-            )
 
         return response
 

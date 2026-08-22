@@ -4,6 +4,7 @@ import logging
 from typing import List
 
 from .base import BaseNextcloudClient, retry_on_429
+from .ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,16 @@ class GroupsClient(BaseNextcloudClient):
     """Client for Nextcloud Groups API operations."""
 
     app_name = "groups"
+
+    # Own copy: the module-level dict is shared by every OCS client, so passing
+    # it straight through would make any future in-place edit a cross-client bug.
+    #
+    # It is still ONE object per class, not per instance or per call. Nothing
+    # mutates it today, and httpx does not touch the dict it is handed. But a
+    # future `additional_headers` parameter reaching for
+    # `self._OCS_HEADERS.update(...)` would leak into every instance and every
+    # later call -- build `{**self._OCS_HEADERS, ...}` instead.
+    _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
 
     @retry_on_429
     async def search_groups(
@@ -42,7 +53,7 @@ class GroupsClient(BaseNextcloudClient):
         response = await self._client.get(
             "/ocs/v2.php/cloud/groups",
             params=params,
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -64,7 +75,7 @@ class GroupsClient(BaseNextcloudClient):
         response = await self._client.post(
             "/ocs/v2.php/cloud/groups",
             data={"groupid": groupid},
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         logger.info("Created group: %s", groupid)
@@ -82,7 +93,7 @@ class GroupsClient(BaseNextcloudClient):
         """
         response = await self._client.delete(
             f"/ocs/v2.php/cloud/groups/{groupid}",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         logger.info("Deleted group: %s", groupid)
@@ -100,7 +111,7 @@ class GroupsClient(BaseNextcloudClient):
         """
         response = await self._client.get(
             f"/ocs/v2.php/cloud/groups/{groupid}",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -121,7 +132,7 @@ class GroupsClient(BaseNextcloudClient):
         """
         response = await self._client.get(
             f"/ocs/v2.php/cloud/groups/{groupid}/subadmins",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         data = response.json()
@@ -147,7 +158,7 @@ class GroupsClient(BaseNextcloudClient):
         response = await self._client.put(
             f"/ocs/v2.php/cloud/groups/{groupid}",
             data={"key": "displayname", "value": displayname},
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=self._OCS_HEADERS,
         )
         response.raise_for_status()
         logger.info("Updated group %s displayname to: %s", groupid, displayname)

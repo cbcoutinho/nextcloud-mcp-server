@@ -5,7 +5,7 @@ from typing import Any
 
 from nextcloud_mcp_server.models.sharing import ShareType
 
-from .base import BaseNextcloudClient, retry_on_429
+from .base import BaseNextcloudClient
 from .ocs import OCS_REQUEST_HEADERS, describe_ocs_failure, parse_ocs_envelope
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,17 @@ def _ocs_data(payload: Any) -> Any:
 
 
 class SharingClient(BaseNextcloudClient):
-    """Client for Nextcloud OCS Sharing API operations."""
+    """Client for Nextcloud OCS Sharing API operations.
+
+    Requests go through :meth:`BaseNextcloudClient._make_request`, matching
+    every other app client: that is what feeds the tracing spans and the
+    ``mcp_nextcloud_api_requests_total`` metric, and it raises for status on
+    the caller's behalf. It is also already decorated with ``@retry_on_429``,
+    which is why these methods no longer carry their own copy: a second,
+    outer copy is dead weight. It cannot extend the budget -- the inner loop
+    signals exhaustion with ``RuntimeError``, which ``retry_on_429`` does not
+    catch -- so it would only read as protection that is not there.
+    """
 
     app_name = "sharing"
 
@@ -98,7 +108,6 @@ class SharingClient(BaseNextcloudClient):
     # future in-place edit a cross-client bug.
     _OCS_HEADERS: dict[str, str] = dict(OCS_REQUEST_HEADERS)
 
-    @retry_on_429
     async def create_share(
         self,
         path: str,
@@ -153,12 +162,12 @@ class SharingClient(BaseNextcloudClient):
         if share_with and share_with.strip():
             payload["shareWith"] = share_with.strip()
 
-        response = await self._client.post(
+        response = await self._make_request(
+            "POST",
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             headers=self._OCS_HEADERS,
             data=payload,
         )
-        response.raise_for_status()
         data = response.json()
 
         share_data = _ocs_data(data)
@@ -181,7 +190,6 @@ class SharingClient(BaseNextcloudClient):
         )
         return share_data
 
-    @retry_on_429
     async def create_public_link(
         self,
         path: str,
@@ -217,12 +225,12 @@ class SharingClient(BaseNextcloudClient):
         if expire_date is not None:
             data["expireDate"] = expire_date
 
-        response = await self._client.post(
+        response = await self._make_request(
+            "POST",
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             headers=self._OCS_HEADERS,
             data=data,
         )
-        response.raise_for_status()
         result = response.json()
 
         share_data = _ocs_data(result)
@@ -244,7 +252,6 @@ class SharingClient(BaseNextcloudClient):
         )
         return share_data
 
-    @retry_on_429
     async def delete_share(self, share_id: int) -> None:
         """Delete a share by its ID.
 
@@ -254,18 +261,17 @@ class SharingClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If the request fails
         """
-        response = await self._client.delete(
+        response = await self._make_request(
+            "DELETE",
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
             headers=self._OCS_HEADERS,
         )
-        response.raise_for_status()
         data = response.json()
 
         _ocs_data(data)
 
         logger.info("Deleted share %s", share_id)
 
-    @retry_on_429
     async def get_share(self, share_id: int) -> dict[str, Any]:
         """Get information about a specific share.
 
@@ -278,11 +284,11 @@ class SharingClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If the request fails
         """
-        response = await self._client.get(
+        response = await self._make_request(
+            "GET",
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
             headers=self._OCS_HEADERS,
         )
-        response.raise_for_status()
         data = response.json()
 
         share_data = _ocs_data(data)
@@ -291,7 +297,6 @@ class SharingClient(BaseNextcloudClient):
             return share_data[0]
         return share_data
 
-    @retry_on_429
     async def list_shares(
         self, path: str | None = None, shared_with_me: bool = False
     ) -> list[dict[str, Any]]:
@@ -313,12 +318,12 @@ class SharingClient(BaseNextcloudClient):
         if shared_with_me:
             params["shared_with_me"] = "true"
 
-        response = await self._client.get(
+        response = await self._make_request(
+            "GET",
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             params=params,
             headers=self._OCS_HEADERS,
         )
-        response.raise_for_status()
         data = response.json()
 
         # Handle both single share and list of shares
@@ -327,7 +332,6 @@ class SharingClient(BaseNextcloudClient):
             return [shares_data]
         return shares_data if shares_data else []
 
-    @retry_on_429
     async def update_share(
         self, share_id: int, permissions: int | None = None
     ) -> dict[str, Any]:
@@ -347,12 +351,12 @@ class SharingClient(BaseNextcloudClient):
         if permissions is not None:
             data["permissions"] = permissions
 
-        response = await self._client.put(
+        response = await self._make_request(
+            "PUT",
             f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
             headers=self._OCS_HEADERS,
             data=data,
         )
-        response.raise_for_status()
         result = response.json()
 
         share_data = _ocs_data(result)

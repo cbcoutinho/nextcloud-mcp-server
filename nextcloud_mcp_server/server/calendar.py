@@ -3,9 +3,11 @@ import logging
 from typing import Any, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     Calendar,
@@ -19,10 +21,33 @@ from nextcloud_mcp_server.models.calendar import (
     Reminder,
     Todo,
     UpcomingEventsResponse,
+    UpdateTodoResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _stale_etag_error(uid: str, e: DavPreconditionFailed) -> ToolError:
+    """Turn a 412 into something the caller can act on.
+
+    ``DavPreconditionFailed`` reaches an MCP client as an httpx status error
+    naming a CalDAV URL -- accurate, and useless for deciding what to do. The
+    only recovery is to re-read, re-apply and retry, so the message says that
+    and names the tool that actually returns a current ETag.
+    """
+    detail = e.dav_message or "it was modified after that ETag was read"
+    # debug, not warning: a caller losing a write race is the guard working,
+    # not a fault. It is logged at all because the refusal is otherwise
+    # invisible server-side -- and concurrent-write contention is exactly the
+    # kind of thing you end up reconstructing from logs after the fact.
+    logger.debug("Stale ETag on todo %s: %s", uid, detail)
+    return ToolError(
+        f"Todo {uid} was not updated: {detail}. Another client changed it "
+        "since you read it. Re-read the todo with nc_calendar_list_todos to "
+        "get its current etag, re-apply your changes on top of that copy, and "
+        "retry."
+    )
 
 
 def _reminders_to_dicts(reminders: list[Reminder]) -> list[dict[str, Any]]:
@@ -1185,8 +1210,26 @@ def configure_calendar_tools(mcp: FastMCP):
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
+    # The suppression on the signature below silences python:S107 -- 14
+    # parameters, one over Sonar's limit. On an MCP tool the parameter list IS
+    # the published input schema: the rule's usual remedy, bundling them into
+    # one object, would nest every optional field a level deeper for every
+    # caller and every generated client. The sibling nc_calendar_update_event
+    # carries ~22 for the same reason and only escapes the rule by being older
+    # than the new-code period.
+    #
+    # Two things had to be got right, both established by re-listing the PR's
+    # issues rather than by reasoning:
+    #
+    # 1. Bare, not parenthesised. A rule id in parentheses is not a scoped
+    #    filter -- Sonar rejects the whole comment as malformed (python:S7632)
+    #    and then suppresses nothing, which is what the first attempt did.
+    # 2. On the first PARAMETER line, not the `def` line. Sonar anchors S107 at
+    #    the start of the parameter list, so a marker on the signature line sits
+    #    one line above the issue and does nothing. Nothing else on that line
+    #    trips a rule, so suppressing it wholesale is safe.
     async def nc_calendar_update_todo(
-        calendar_name: str,
+        calendar_name: str,  # NOSONAR
         todo_uid: str,
         ctx: Context,
         summary: Optional[str] = None,
@@ -1199,7 +1242,8 @@ def configure_calendar_tools(mcp: FastMCP):
         completed: Optional[str] = None,
         categories: Optional[str] = None,
         reminders: list[Reminder] | None = None,
-    ):
+        etag: str = "",
+    ) -> UpdateTodoResponse:
         """Update an existing todo/task.
 
         Args:
@@ -1219,9 +1263,17 @@ def configure_calendar_tools(mcp: FastMCP):
             categories: New categories (comma-separated)
             reminders: Replacement alarm list. Omit to keep the stored alarms,
                 or pass ``[]`` to clear them.
+            etag: The ETag you read this todo with (from nc_calendar_list_todos
+                or a previous update). The write is refused if the todo changed
+                since, so your read-modify-write cycle cannot silently discard
+                someone else's edit. Omitting it still guards the instant
+                inside this call, but not the window since your read.
 
         Returns:
-            Dict with todo update result
+            UpdateTodoResponse carrying the identifiers and the new ETag.
+
+        Raises:
+            ToolError: If the todo changed since ``etag`` was read.
         """
         client = await get_client(ctx)
 
@@ -1248,7 +1300,19 @@ def configure_calendar_tools(mcp: FastMCP):
         if reminders is not None:
             todo_data["reminders"] = _reminders_to_dicts(reminders)
 
-        return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
+        try:
+            result = await client.calendar.update_todo(
+                calendar_name, todo_uid, todo_data, etag
+            )
+        except DavPreconditionFailed as e:
+            raise _stale_etag_error(todo_uid, e) from e
+
+        return UpdateTodoResponse(
+            uid=todo_uid,
+            calendar_name=calendar_name,
+            href=result.get("href", ""),
+            etag=result.get("etag", ""),
+        )
 
     @mcp.tool(
         title="Complete Todo Task",
@@ -1266,6 +1330,7 @@ def configure_calendar_tools(mcp: FastMCP):
         todo_uid: str,
         ctx: Context,
         completed: Optional[str] = None,
+        etag: str = "",
     ) -> CompleteTodoResponse:
         """Mark a todo/task complete.
 
@@ -1279,13 +1344,28 @@ def configure_calendar_tools(mcp: FastMCP):
             todo_uid: UID of the todo to complete
             ctx: MCP context
             completed: Completion timestamp (ISO format). Defaults to now (UTC).
+            etag: The ETag you read this todo with. Optional, and usually
+                unnecessary — completing a task is normally the intended
+                outcome whatever else changed. It is offered anyway so that a
+                caller who *does* want a guarded completion is not pushed back
+                onto nc_calendar_update_todo and the three-property footgun
+                this tool exists to spare them.
 
         Returns:
             CompleteTodoResponse carrying the three values actually written.
+
+        Raises:
+            ToolError: If ``etag`` was given and the todo changed since.
         """
         client = await get_client(ctx)
         payload = _completion_payload(completed)
-        result = await client.calendar.update_todo(calendar_name, todo_uid, payload)
+        try:
+            result = await client.calendar.update_todo(
+                calendar_name, todo_uid, payload, etag
+            )
+        except DavPreconditionFailed as e:
+            raise _stale_etag_error(todo_uid, e) from e
+
         return CompleteTodoResponse(
             uid=todo_uid,
             calendar_name=calendar_name,
@@ -1293,6 +1373,7 @@ def configure_calendar_tools(mcp: FastMCP):
             percent_complete=payload["percent_complete"],
             completed=payload["completed"],
             href=result.get("href", ""),
+            etag=result.get("etag", ""),
         )
 
     @mcp.tool(

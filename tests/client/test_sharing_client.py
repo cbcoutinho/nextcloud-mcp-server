@@ -10,7 +10,7 @@ These verify the payload shape sent to Nextcloud. Coverage includes:
 """
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, HTTPStatusError, Request
 
 from nextcloud_mcp_server.client.sharing import SharingClient
 
@@ -45,7 +45,9 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
     ShareAPIController routes shareType=12 to DeckShareProvider, which
     creates the deck-card share row binding the file to the card.
     """
-    sharing_client._client.post.return_value = _ok_share_response(mocker, share_id=99)
+    sharing_client._client.request.return_value = _ok_share_response(
+        mocker, share_id=99
+    )
 
     share = await sharing_client.create_share(
         path="/Notes/My Note.md",
@@ -55,9 +57,12 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
     )
 
     assert share["id"] == 99
-    sharing_client._client.post.assert_called_once()
-    call = sharing_client._client.post.call_args
-    assert call.args[0] == "/ocs/v2.php/apps/files_sharing/api/v1/shares"
+    sharing_client._client.request.assert_called_once()
+    call = sharing_client._client.request.call_args
+    assert call.args[:2] == (
+        "POST",
+        "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+    )
     assert call.kwargs["data"] == {
         "path": "/Notes/My Note.md",
         "shareType": 12,
@@ -72,7 +77,7 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
 async def test_create_public_link_payload(sharing_client, mocker):
     """create_public_link must POST shareType=3 with no shareWith, and pass
     through expireDate when supplied. Public link data carries url + token."""
-    sharing_client._client.post.return_value = _ok_share_response(
+    sharing_client._client.request.return_value = _ok_share_response(
         mocker,
         share_id=7,
         url="https://nc.example.com/s/abc123",
@@ -91,9 +96,12 @@ async def test_create_public_link_payload(sharing_client, mocker):
     assert share["id"] == 7
     assert share["url"] == "https://nc.example.com/s/abc123"
     assert share["token"] == "abc123"
-    sharing_client._client.post.assert_called_once()
-    call = sharing_client._client.post.call_args
-    assert call.args[0] == "/ocs/v2.php/apps/files_sharing/api/v1/shares"
+    sharing_client._client.request.assert_called_once()
+    call = sharing_client._client.request.call_args
+    assert call.args[:2] == (
+        "POST",
+        "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+    )
     assert call.kwargs["data"] == {
         "path": "/Receipts/receipt.jpg",
         "shareType": 3,
@@ -107,13 +115,13 @@ async def test_create_public_link_payload(sharing_client, mocker):
 
 async def test_create_public_link_omits_expire_date_when_none(sharing_client, mocker):
     """When no expiry is given, expireDate must be absent from the payload."""
-    sharing_client._client.post.return_value = _ok_share_response(
+    sharing_client._client.request.return_value = _ok_share_response(
         mocker, share_id=8, url="https://nc.example.com/s/noexpiry"
     )
 
     await sharing_client.create_public_link(path="/doc.pdf")
 
-    call = sharing_client._client.post.call_args
+    call = sharing_client._client.request.call_args
     assert "expireDate" not in call.kwargs["data"]
     assert call.kwargs["data"]["shareType"] == 3
 
@@ -125,7 +133,7 @@ async def test_create_public_link_raises_on_empty_data(sharing_client, mocker):
     response.json.return_value = {
         "ocs": {"meta": {"statuscode": 200, "message": "OK"}, "data": []}
     }
-    sharing_client._client.post.return_value = response
+    sharing_client._client.request.return_value = response
 
     with pytest.raises(RuntimeError, match="Public link creation failed"):
         await sharing_client.create_public_link(path="/missing.jpg")
@@ -144,7 +152,7 @@ async def test_create_public_link_raises_on_ocs_error(sharing_client, mocker):
             "data": [],
         }
     }
-    sharing_client._client.post.return_value = response
+    sharing_client._client.request.return_value = response
 
     with pytest.raises(RuntimeError, match="Wrong path"):
         await sharing_client.create_public_link(path="/nope.jpg")
@@ -163,7 +171,7 @@ async def test_create_share_raises_on_ocs_failure(sharing_client, mocker):
             "data": [],
         }
     }
-    sharing_client._client.post.return_value = response
+    sharing_client._client.request.return_value = response
 
     with pytest.raises(RuntimeError, match="Wrong path"):
         await sharing_client.create_share(
@@ -189,7 +197,7 @@ async def test_create_share_rejects_public_link_with_recipient(sharing_client):
         )
 
     # Refused before the wire: nothing was sent.
-    sharing_client._client.post.assert_not_called()
+    sharing_client._client.request.assert_not_called()
 
 
 @pytest.mark.parametrize("recipient", [None, "", "   "])
@@ -209,19 +217,21 @@ async def test_create_share_requires_recipient_for_user_share(
             share_type=0,
         )
 
-    sharing_client._client.post.assert_not_called()
+    sharing_client._client.request.assert_not_called()
 
 
 async def test_create_share_public_link_omits_share_with(sharing_client, mocker):
     """A recipient-less public link is allowed and sends no shareWith field."""
-    sharing_client._client.post.return_value = _ok_share_response(mocker, share_id=11)
+    sharing_client._client.request.return_value = _ok_share_response(
+        mocker, share_id=11
+    )
 
     await sharing_client.create_share(
         path="/Public/flyer.pdf",
         share_type=3,
     )
 
-    assert sharing_client._client.post.call_args.kwargs["data"] == {
+    assert sharing_client._client.request.call_args.kwargs["data"] == {
         "path": "/Public/flyer.pdf",
         "shareType": 3,
         "permissions": 1,
@@ -236,7 +246,9 @@ async def test_create_share_allows_unknown_share_type_with_recipient(
     Nextcloud may add share types we do not know about; refusing them here
     would break an otherwise-correct caller. Only the recipient rule applies.
     """
-    sharing_client._client.post.return_value = _ok_share_response(mocker, share_id=12)
+    sharing_client._client.request.return_value = _ok_share_response(
+        mocker, share_id=12
+    )
 
     await sharing_client.create_share(
         path="/Documents/report.md",
@@ -244,4 +256,53 @@ async def test_create_share_allows_unknown_share_type_with_recipient(
         share_type=99,
     )
 
-    assert sharing_client._client.post.call_args.kwargs["data"]["shareType"] == 99
+    assert sharing_client._client.request.call_args.kwargs["data"]["shareType"] == 99
+
+
+async def test_sharing_calls_are_metered_like_every_other_client(
+    sharing_client, mocker
+):
+    """A sharing call must reach the shared API-call metric.
+
+    Before this client routed through ``_make_request`` it issued
+    ``self._client.post(...)`` directly, so its six endpoints were the only app
+    calls in the codebase that produced no ``mcp_nextcloud_api_requests_total``
+    sample and no ``trace_nextcloud_api_call`` span -- invisible in exactly the
+    dashboards that exist to spot a failing Nextcloud.
+    """
+    record = mocker.patch("nextcloud_mcp_server.client.base.record_nextcloud_api_call")
+    sharing_client._client.request.return_value = _ok_share_response(mocker)
+
+    await sharing_client.list_shares()
+
+    record.assert_called_once()
+    assert record.call_args.kwargs["app"] == "sharing"
+    assert record.call_args.kwargs["method"] == "GET"
+
+
+async def test_rate_limit_retry_budget_survives_the_migration(sharing_client, mocker):
+    """A 429 must still cost 5 attempts, now that the retry lives one layer down.
+
+    These methods each carried their own ``@retry_on_429`` before routing
+    through ``_make_request``; the decorator on ``_make_request`` is now the
+    only one. That is a behaviour-preserving swap rather than a fix: nesting
+    the two could never have multiplied the budget, because the inner loop
+    reports exhaustion as ``RuntimeError`` and ``retry_on_429`` only catches
+    ``HTTPStatusError``. What this pins is that dropping the per-method copy
+    did not leave the calls with no retry at all. The mocked sleep keeps it
+    fast.
+    """
+    sleep = mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep")
+
+    response = mocker.Mock()
+    response.status_code = 429
+    response.raise_for_status.side_effect = lambda: (_ for _ in ()).throw(
+        HTTPStatusError("429", request=Request("GET", "http://x"), response=response)
+    )
+    sharing_client._client.request.return_value = response
+
+    with pytest.raises(RuntimeError, match="Maximum number of retries"):
+        await sharing_client.list_shares()
+
+    assert sharing_client._client.request.call_count == 5
+    assert sleep.call_count == 5

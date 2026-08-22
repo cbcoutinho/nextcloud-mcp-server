@@ -23,6 +23,7 @@ from .groups import GroupsClient
 from .mail import MailClient
 from .news import NewsClient
 from .notes import NotesClient
+from .ocs import OCS_REQUEST_HEADERS
 from .sharing import SharingClient
 from .tables import TablesClient
 from .talk import TalkClient
@@ -222,7 +223,7 @@ class NextcloudClient:
     async def capabilities(self):
         response = await self._client.get(
             "/ocs/v2.php/cloud/capabilities",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=dict(OCS_REQUEST_HEADERS),
         )
         response.raise_for_status()
 
@@ -239,7 +240,7 @@ class NextcloudClient:
         """
         response = await self._client.get(
             "/ocs/v2.php/core/navigation/apps",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers=dict(OCS_REQUEST_HEADERS),
         )
         response.raise_for_status()
         data = response.json()
