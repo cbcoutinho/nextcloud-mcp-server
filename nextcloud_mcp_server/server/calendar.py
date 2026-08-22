@@ -37,6 +37,11 @@ def _stale_etag_error(uid: str, e: DavPreconditionFailed) -> ToolError:
     and names the tool that actually returns a current ETag.
     """
     detail = e.dav_message or "it was modified after that ETag was read"
+    # debug, not warning: a caller losing a write race is the guard working,
+    # not a fault. It is logged at all because the refusal is otherwise
+    # invisible server-side -- and concurrent-write contention is exactly the
+    # kind of thing you end up reconstructing from logs after the fact.
+    logger.debug("Stale ETag on todo %s: %s", uid, detail)
     return ToolError(
         f"Todo {uid} was not updated: {detail}. Another client changed it "
         "since you read it. Re-read the todo with nc_calendar_list_todos to "
@@ -1213,12 +1218,18 @@ def configure_calendar_tools(mcp: FastMCP):
     # carries ~22 for the same reason and only escapes the rule by being older
     # than the new-code period.
     #
-    # Bare, because a parenthesised rule id is NOT a scoped filter -- Sonar
-    # rejects it as malformed (python:S7632) and then suppresses nothing, which
-    # is exactly what the first attempt at this did. Nothing else on the
-    # signature line trips a rule, so suppressing the whole line is safe.
-    async def nc_calendar_update_todo(  # NOSONAR
-        calendar_name: str,
+    # Two things had to be got right, both established by re-listing the PR's
+    # issues rather than by reasoning:
+    #
+    # 1. Bare, not parenthesised. A rule id in parentheses is not a scoped
+    #    filter -- Sonar rejects the whole comment as malformed (python:S7632)
+    #    and then suppresses nothing, which is what the first attempt did.
+    # 2. On the first PARAMETER line, not the `def` line. Sonar anchors S107 at
+    #    the start of the parameter list, so a marker on the signature line sits
+    #    one line above the issue and does nothing. Nothing else on that line
+    #    trips a rule, so suppressing it wholesale is safe.
+    async def nc_calendar_update_todo(
+        calendar_name: str,  # NOSONAR
         todo_uid: str,
         ctx: Context,
         summary: Optional[str] = None,
