@@ -1546,6 +1546,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info("✅ Configuration validated successfully for %s mode", mode.value)
     logger.debug("Mode details:\\n%s", get_mode_summary(mode))
 
+    if mode == AuthMode.SINGLE_USER_BASIC:
+        # The /app browser UI has no credential to check in this mode: the
+        # server holds one identity and every request already acts as it, so
+        # anyone who can reach the port gets the admin UI (webhook presets,
+        # vector-viz search over the indexed corpus, revoke). That is the
+        # deployment model for a personal instance, not a bug — but it is only
+        # safe while the port is not reachable by anyone else, and that
+        # assumption was previously undocumented.
+        logger.warning(
+            "⚠️  single_user_basic: the /app browser UI is UNAUTHENTICATED — "
+            "anyone who can reach this port gets admin access to it. Bind to "
+            "loopback or put an authenticating proxy in front; do not expose "
+            "this port to a network you do not control."
+        )
+
     # Derive helper variables for backward compatibility with existing code.
     # `oauth_enabled` is True for the LOGIN_FLOW (formerly OAUTH_SINGLE_AUDIENCE)
     # multi-user OAuth mode — in this mode the MCP server is an OIDC relying
@@ -2973,7 +2988,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     browser_app = Starlette(routes=browser_routes)
     browser_app.add_middleware(
         AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
-        backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
+        backend=SessionAuthBackend(
+            oauth_enabled=oauth_enabled,
+            multi_user_basic=mode == AuthMode.MULTI_USER_BASIC,
+        ),
     )
 
     # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
