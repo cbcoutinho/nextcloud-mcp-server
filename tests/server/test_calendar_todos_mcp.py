@@ -646,9 +646,13 @@ async def test_stale_etag_refuses_the_write_end_to_end(
         listed = await nc_mcp_client.call_tool(
             "nc_calendar_list_todos", {"calendar_name": calendar_name}
         )
+        # ``todos``, not ``results``: ListTodosResponse names its list field
+        # after the resource. Several other list responses in this codebase do
+        # use ``results``, which is exactly why this is worth pinning in a
+        # comment rather than rediscovering.
         todo = next(
             t
-            for t in json.loads(listed.content[0].text)["results"]
+            for t in json.loads(listed.content[0].text)["todos"]
             if t["uid"] == todo_uid
         )
         first_etag = todo["etag"]

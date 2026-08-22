@@ -147,7 +147,7 @@ discard someone else's edit.
 
 ```python
 todos = await nc_calendar_list_todos(calendar_name="Personal")
-todo = next(t for t in todos["results"] if t["uid"] == "abc-123")
+todo = next(t for t in todos["todos"] if t["uid"] == "abc-123")
 
 result = await nc_calendar_update_todo(
     calendar_name="Personal",
