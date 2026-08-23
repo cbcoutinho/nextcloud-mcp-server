@@ -1201,9 +1201,7 @@ def test_updating_only_the_due_date_inherits_the_stored_value_type():
         "uid-todo-update",
     )
 
-    merged = client._merge_ical_todo_properties(
-        stored, {"due": "2026-09-30"}, "uid-todo-update"
-    )
+    merged = client._merge_ical_todo_properties(stored, {"due": "2026-09-30"})
 
     parsed = client._parse_ical_todo(merged)
     assert parsed["due"] == "2026-09-30"
@@ -1224,9 +1222,7 @@ def test_making_only_one_half_of_a_whole_day_pair_timed_is_rejected():
     )
 
     with pytest.raises(ValueError, match="dtstart and due"):
-        client._merge_ical_todo_properties(
-            stored, {"dtstart": "2026-08-08T09:00:00Z"}, "uid-todo-half-flip"
-        )
+        client._merge_ical_todo_properties(stored, {"dtstart": "2026-08-08T09:00:00Z"})
 
 
 def test_making_a_whole_day_todo_timed_works_when_both_sides_are_given():
@@ -1238,9 +1234,7 @@ def test_making_a_whole_day_todo_timed_works_when_both_sides_are_given():
     )
 
     merged = client._merge_ical_todo_properties(
-        stored,
-        {"dtstart": "2026-08-08T09:00:00Z", "due": "2026-08-08T17:00:00Z"},
-        "uid-todo-full-flip",
+        stored, {"dtstart": "2026-08-08T09:00:00Z", "due": "2026-08-08T17:00:00Z"}
     )
 
     parsed = client._parse_ical_todo(merged)
@@ -1257,9 +1251,25 @@ def test_an_unparseable_date_does_not_silently_rebuild_the_todo():
     )
 
     with pytest.raises(ValueError):
-        client._merge_ical_todo_properties(
-            stored, {"due": "not-a-date"}, "uid-todo-bad-date"
-        )
+        client._merge_ical_todo_properties(stored, {"due": "not-a-date"})
+
+
+def test_a_non_value_error_does_not_silently_rebuild_the_todo():
+    """Only ValueError used to propagate; everything else rebuilt from the update dict.
+
+    A malformed reminder raises AttributeError, which the catch-all answered by
+    returning ``_create_ical_todo(todo_data, ...)`` — a todo carrying nothing but the
+    fields of this one failed call, with the stored summary, categories and due date
+    dropped and success reported.
+    """
+    client = _pure_client()
+    stored = client._create_ical_todo(
+        {"summary": "Keep me", "categories": "home", "due": "2026-08-08"},
+        "uid-todo-bad-reminder",
+    )
+
+    with pytest.raises(AttributeError):
+        client._merge_ical_todo_properties(stored, {"reminders": ["not-a-mapping"]})
 
 
 def test_unrelated_todo_update_survives_a_stored_mismatch():
@@ -1269,9 +1279,7 @@ def test_unrelated_todo_update_survives_a_stored_mismatch():
         {"summary": "Legacy", "due": "2026-08-08"}, "uid-todo-untouched"
     ).replace("DTSTAMP", "DTSTART;VALUE=DATE-TIME:20260801T090000Z\r\nDTSTAMP", 1)
 
-    merged = client._merge_ical_todo_properties(
-        stored, {"summary": "Renamed"}, "uid-todo-untouched"
-    )
+    merged = client._merge_ical_todo_properties(stored, {"summary": "Renamed"})
 
     parsed = client._parse_ical_todo(merged)
     assert parsed["summary"] == "Renamed"
@@ -1285,8 +1293,6 @@ def test_updating_a_timed_todo_with_a_bare_date_keeps_it_timed():
         {"summary": "Review PR", "dtstart": "2026-08-08T09:00:00Z"}, "uid-todo-timed-up"
     )
 
-    merged = client._merge_ical_todo_properties(
-        stored, {"due": "2026-08-09"}, "uid-todo-timed-up"
-    )
+    merged = client._merge_ical_todo_properties(stored, {"due": "2026-08-09"})
 
     assert client._parse_ical_todo(merged)["due"] == "2026-08-09T00:00:00+00:00"
