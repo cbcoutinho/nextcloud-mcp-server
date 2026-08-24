@@ -507,7 +507,7 @@ services:
   # provisioned by the post-installation hook can connect without seeding users.
   # SMTP 3025 / IMAP 3143 are the plaintext ports (ssl-mode "none").
   greenmail:
-    image: docker.io/greenmail/standalone:2.1.12@sha256:9f32971b4f25d32b4de6fa2e297423768441c65e4541f6aecd7631c890a229a7
+    image: docker.io/greenmail/standalone:2.1.13@sha256:3df66b7edd01c8a301343ca5e3601d8674760d4708655573560c24745e624fb2
     restart: always
     environment:
       - GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled -Dgreenmail.verbose
