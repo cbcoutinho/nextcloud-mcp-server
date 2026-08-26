@@ -55,12 +55,12 @@
     },
     {
       "customType": "regex",
-      "description": "Unified pact CLI installer URL pinned in the pact workflows",
+      "description": "Unified pact CLI version pinned in .github/scripts/install-pact-cli.sh (note: PACT_INSTALLER_SHA256 next to it must be bumped by hand)",
       "managerFilePatterns": [
-        "/^\\.github/workflows/.+\\.ya?ml$/"
+        "/^\\.github/scripts/install-pact-cli\\.sh$/"
       ],
       "matchStrings": [
-        "https://github\\.com/pact-foundation/pact-cli/releases/download/(?<currentValue>v[^/]+)/pact-installer\\.sh"
+        "PACT_CLI_VERSION=\"(?<currentValue>v[^\"]+)\""
       ],
       "depNameTemplate": "pact-foundation/pact-cli",
       "datasourceTemplate": "github-releases"
