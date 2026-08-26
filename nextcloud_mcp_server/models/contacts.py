@@ -65,7 +65,20 @@ class Contact(BaseModel):
     addresses: List[ContactField] = Field(default_factory=list, description="Addresses")
     urls: List[ContactField] = Field(default_factory=list, description="URLs")
     note: Optional[str] = Field(None, description="Notes")
-    photo: Optional[str] = Field(None, description="Photo URL or base64 data")
+    photo: Optional[str] = Field(
+        None,
+        description=(
+            "Photo URL or base64 data. Omitted from list and search responses "
+            "unless include_photos is set -- see has_photo."
+        ),
+    )
+    has_photo: bool = Field(
+        False,
+        description=(
+            "Whether the contact has a photo, even when the data itself was "
+            "left out of this response."
+        ),
+    )
     birthday: Optional[str] = Field(None, description="Birthday (ISO date format)")
     categories: List[str] = Field(
         default_factory=list, description="Contact categories"

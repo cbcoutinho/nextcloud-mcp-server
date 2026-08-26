@@ -172,13 +172,29 @@ def _split_name_parts(raw_n: list | None) -> tuple[str | None, str | None]:
     return (family or None), (given or None)
 
 
-def _raw_contact_to_model(raw: dict) -> Contact:
+def _page(items: list, limit: int | None, offset: int) -> list:
+    """Slice one page out of a contact list.
+
+    Both bounds are defensive: a negative offset starts at the beginning, a
+    negative limit yields nothing rather than slicing from the end.
+    """
+    start = max(0, offset)
+    if limit is None:
+        return items[start:]
+    return items[start : start + max(0, limit)]
+
+
+def _raw_contact_to_model(raw: dict, *, include_photo: bool = False) -> Contact:
     """Convert a raw contact dict from the contacts client to a Contact model.
 
     Maps fullname, name parts, nickname, birthday, email, tel, address, org,
     title, note, url, categories, photo and X-* extension fields. Email/tel
     values may be plain strings, dicts with ``value``/``type`` keys, or lists of
     either – see :func:`_parse_vcard_fields`.
+
+    ``include_photo`` controls whether the inline PHOTO payload is carried
+    over. vCards commonly embed photos as base64, which dwarfs every other
+    field, so the default is to drop the bytes and keep ``has_photo``.
     """
     contact_info = raw.get("contact", {})
 
@@ -188,6 +204,7 @@ def _raw_contact_to_model(raw: dict) -> Contact:
     categories = _parse_categories(contact_info.get("categories"))
     custom_fields = _build_custom_fields(contact_info)
     family_name, given_name = _split_name_parts(contact_info.get("n"))
+    raw_photo = contact_info.get("photo")
 
     return Contact(
         uid=raw["vcard_id"],
@@ -199,7 +216,8 @@ def _raw_contact_to_model(raw: dict) -> Contact:
         organization=contact_info.get("org"),
         title=contact_info.get("title"),
         note=contact_info.get("note"),
-        photo=contact_info.get("photo"),
+        photo=raw_photo if include_photo else None,
+        has_photo=bool(raw_photo),
         birthday=contact_info["birthday"].isoformat()
         if isinstance(contact_info.get("birthday"), date)
         else contact_info.get("birthday"),
@@ -245,7 +263,12 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts.read")
     @instrument_tool
     async def nc_contacts_list_contacts(
-        ctx: Context, *, addressbook: str
+        ctx: Context,
+        *,
+        addressbook: str,
+        include_photos: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> ListContactsResponse:
         """List all contacts in the specified addressbook.
 
@@ -253,12 +276,26 @@ def configure_contacts_tools(mcp: FastMCP):
             addressbook: The URI slug of the addressbook (e.g. "contacts"),
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
+            include_photos: Include the inline base64 PHOTO payload. Off by
+                default: embedded photos dominate vCard size and can push the
+                response past what the transport delivers. ``has_photo`` still
+                says which contacts have one.
+            limit: Maximum number of contacts to return. None returns all.
+            offset: Number of contacts to skip, for paging through a large
+                addressbook together with ``limit``.
         """
         client = await get_client(ctx)
         contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
-        contacts = [_raw_contact_to_model(c) for c in contacts_data]
+        total = len(contacts_data)
+
+        page = _page(contacts_data, limit, offset)
+        contacts = [
+            _raw_contact_to_model(c, include_photo=include_photos) for c in page
+        ]
+        # total_count reports the addressbook size, not the page size, so a
+        # caller can tell whether more contacts remain.
         return ListContactsResponse(
-            contacts=contacts, addressbook=addressbook, total_count=len(contacts)
+            contacts=contacts, addressbook=addressbook, total_count=total
         )
 
     @mcp.tool(
@@ -268,7 +305,11 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts.read")
     @instrument_tool
     async def nc_contacts_search_contacts(
-        ctx: Context, *, query: str, addressbook: str | None = None
+        ctx: Context,
+        *,
+        query: str,
+        addressbook: str | None = None,
+        include_photos: bool = False,
     ) -> ListContactsResponse:
         """Search contacts by free-text query across name, nickname, email, and phone.
 
@@ -284,6 +325,8 @@ def configure_contacts_tools(mcp: FastMCP):
                 An empty query returns no results — use list_contacts for that.
             addressbook: Optional URI slug of a specific addressbook to search.
                 When omitted, every addressbook for the user is searched.
+            include_photos: Include the inline base64 PHOTO payload. Off by
+                default -- see nc_contacts_list_contacts.
 
         Returns:
             ListContactsResponse with matching contacts. The ``addressbook``
@@ -312,7 +355,7 @@ def configure_contacts_tools(mcp: FastMCP):
         for ab_slug in address_books:
             raw_contacts = await client.contacts.list_contacts(addressbook=ab_slug)
             for raw in raw_contacts:
-                contact = _raw_contact_to_model(raw)
+                contact = _raw_contact_to_model(raw, include_photo=include_photos)
                 hay_parts: list[str] = []
                 if contact.fn:
                     hay_parts.append(contact.fn.lower())
