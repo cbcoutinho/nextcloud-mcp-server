@@ -344,7 +344,32 @@ def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
         return {"If-None-Match": "*"}
     if if_match == "*":
         return {"If-Match": "*"}
-    return {"If-Match": f'"{if_match}"'}
+    return {"If-Match": f'"{_normalise_etag(if_match)}"'}
+
+
+def _normalise_etag(etag: str) -> str:
+    """Strip transport artefacts an intermediary added to the etag.
+
+    Apache's ``mod_deflate`` appends ``-gzip`` to the ETag of every compressed
+    response unless ``DeflateAlterETag NoChange`` is configured; ``AddSuffix``
+    is the default, and that directive did not exist before Apache 2.4.15, so
+    plenty of deployments never set it. The etag a caller reads back is then
+    not the etag the origin stored, and handing it straight to ``If-Match``
+    makes Nextcloud reject the write as a concurrent edit -- so *every*
+    overwrite of an existing file fails behind such a proxy, with an error
+    that reads like a real conflict.
+
+    Also drops the ``W/`` weak-validator prefix and surrounding quotes so an
+    etag can be passed through verbatim from a read response.
+    """
+    cleaned = (etag or "").strip()
+    if cleaned.startswith("W/"):
+        cleaned = cleaned[2:]
+    cleaned = cleaned.strip('"')
+    for suffix in ("-gzip", "-br", "-deflate"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
 
 
 def _write_conflict_result(
