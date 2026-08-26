@@ -1153,3 +1153,72 @@ def configure_webdav_tools(mcp: FastMCP):
             comment_id=comment_id,
             message=message,
         )
+
+    # -- Trash bin and file versions ----------------------------------------
+
+    @mcp.tool(
+        title="List Trash",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_trash(ctx: Context) -> dict:
+        """List deleted files in the user's trash bin.
+
+        Returns each entry with the id needed to restore it, the location it
+        was deleted from, and when it was deleted.
+        """
+        client = await get_client(ctx)
+        items = await client.webdav.list_trash()
+        return {"items": items, "total_count": len(items)}
+
+    @mcp.tool(
+        title="Restore From Trash",
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_restore_from_trash(entry_id: str, ctx: Context) -> dict:
+        """Restore a deleted file from the trash bin to its original location.
+
+        Args:
+            entry_id: The id from nc_webdav_list_trash (not the file name).
+        """
+        client = await get_client(ctx)
+        return await client.webdav.restore_from_trash(entry_id)
+
+    @mcp.tool(
+        title="List File Versions",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_versions(path: str, ctx: Context) -> dict:
+        """List stored previous versions of a file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        return await client.webdav.list_versions(path)
+
+    @mcp.tool(
+        title="Restore File Version",
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_restore_version(
+        path: str, version_id: str, ctx: Context
+    ) -> dict:
+        """Roll a file back to an earlier version.
+
+        The current content is not lost: Nextcloud stores it as a version in
+        turn, so the rollback itself can be undone.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            version_id: The version_id from nc_webdav_list_versions.
+        """
+        client = await get_client(ctx)
+        return await client.webdav.restore_version(path, version_id)
