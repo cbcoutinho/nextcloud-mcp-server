@@ -11,7 +11,12 @@ from urllib.parse import urlparse
 
 import pytest
 
-from nextcloud_mcp_server.links import _URL_BUILDERS, attach_urls, with_links
+from nextcloud_mcp_server.links import (
+    _URL_BUILDERS,
+    attach_urls,
+    file_url,
+    with_links,
+)
 from nextcloud_mcp_server.models.deck import (
     BoardOverviewResponse,
     CardOperationResponse,
@@ -88,6 +93,21 @@ def test_file_without_a_fileid_gets_no_link():
     """PROPFIND does not always return one, and /f/ needs it."""
     info = FileInfo(name="a.txt", path="/a.txt", is_directory=False, file_id=None)
     assert _attach(info).url is None
+
+
+def test_file_url_builder_is_callable_outside_the_walk():
+    """Two callers reach it directly: the semantic search tool (whose file
+    results carry the fileid as their doc_id) and nc_webdav_read_file."""
+    assert file_url(BASE, 99) == f"{BASE}/index.php/f/99"
+    # doc_id arrives as a str on the search path.
+    assert file_url(BASE, "99") == f"{BASE}/index.php/f/99"
+
+
+@pytest.mark.parametrize(
+    "base, file_id", [(None, 99), ("", 99), (BASE, None)], ids=["none", "empty", "noid"]
+)
+def test_file_url_builder_omits_the_link_when_it_would_be_broken(base, file_id):
+    assert file_url(base, file_id) is None
 
 
 def test_stack_links_to_its_board():

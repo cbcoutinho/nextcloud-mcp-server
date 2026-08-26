@@ -106,6 +106,18 @@ class SemanticSearchResult(BaseModel):
             "when this chunk carries no character offsets."
         ),
     )
+    file_url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens the underlying file itself in Nextcloud, for "
+            "results whose `doc_type` is `file`. Complements `url`, which "
+            "opens the matched passage in Astrolabe's chunk viewer: offer this "
+            "one when the user wants the document rather than the quotation. "
+            "None for every other doc_type (a note or deck card is not a file "
+            "— follow `url`), and when the server has no browser-reachable "
+            "Nextcloud base URL configured."
+        ),
+    )
     # Context expansion fields (optional, populated when include_context=True)
     has_context_expansion: bool = Field(
         default=False, description="Whether context expansion was performed"

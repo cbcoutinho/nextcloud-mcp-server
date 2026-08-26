@@ -18,6 +18,7 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.links import file_url
 from nextcloud_mcp_server.models.semantic import (
     SemanticSearchResponse,
     SemanticSearchResult,
@@ -734,6 +735,17 @@ def configure_semantic_tools(mcp: FastMCP):
                             total_chunks=metadata.get("total_chunks"),
                             extra=link_extra,
                         ),
+                        # For doc_type="file" the doc_id IS the Nextcloud
+                        # fileid (vector/scanner.py indexes it as such), so the
+                        # /f/ link needs no extra lookup. Guarded on doc_type
+                        # because no other indexed type's id is a fileid — a
+                        # note id fed to /f/ would open an unrelated file or
+                        # 404.
+                        file_url=(
+                            file_url(browser_base, narrowed_id)
+                            if r.doc_type == "file"
+                            else None
+                        ),
                     )
                 )
 
@@ -819,6 +831,7 @@ def configure_semantic_tools(mcp: FastMCP):
                                     page_number=result.page_number,
                                     page_end=result.page_end,
                                     url=result.url,
+                                    file_url=result.file_url,
                                     # Context expansion fields
                                     has_context_expansion=True,
                                     marked_text=chunk_context.marked_text,

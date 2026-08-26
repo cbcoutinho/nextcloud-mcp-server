@@ -57,12 +57,26 @@ def _note_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
     return base + _NOTE_PATH.format(note_id=item.id)
 
 
-def _file_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
-    # file_id is optional — PROPFIND does not always return one — and Nextcloud's
-    # /f/ route needs it. Omit the link rather than emit one that 404s.
-    if item.file_id is None:
+def file_url(base: str | None, file_id: int | str | None) -> str | None:
+    """Link that opens a file in Nextcloud's Files UI, or None.
+
+    Public because two callers reach it outside the response walk: the semantic
+    search tool, whose file results carry the fileid as their ``doc_id``, and
+    ``nc_webdav_read_file``, which resolves one per read. Both would otherwise
+    re-spell ``_FILE_PATH``.
+
+    Returns None when there is no browser-reachable base URL, and when the id is
+    missing — PROPFIND does not always return one, and Nextcloud's /f/ route
+    needs it, so an id-less link would 404. Absent beats broken: a caller cannot
+    tell a dead link from a live one, whereas None is unambiguous.
+    """
+    if not base or file_id is None:
         return None
-    return base + _FILE_PATH.format(file_id=item.file_id)
+    return base + _FILE_PATH.format(file_id=file_id)
+
+
+def _file_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+    return file_url(base, item.file_id)
 
 
 def _board_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
