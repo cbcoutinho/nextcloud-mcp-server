@@ -2730,7 +2730,11 @@ class WebDAVClient(BaseNextcloudClient):
                 continue
             name_elem = response_elem.find(".//{http://owncloud.org/ns}display-name")
             id_elem = response_elem.find(".//{http://owncloud.org/ns}id")
-            if name_elem is None or id_elem is None or not id_elem.text:
+            # An entry without a usable id or name cannot be acted on, and an
+            # empty display name would also make the sort key ambiguous.
+            if id_elem is None or not id_elem.text:
+                continue
+            if name_elem is None or not (name_elem.text or "").strip():
                 continue
             assignable = response_elem.find(
                 ".//{http://owncloud.org/ns}user-assignable"
@@ -2777,7 +2781,7 @@ class WebDAVClient(BaseNextcloudClient):
             "path": path,
             "file_id": file_id,
             "tags": [
-                {"id": i, "name": names.get(i, f"(unbekannt: {i})")}
+                {"id": i, "name": names.get(i, f"(unknown tag {i})")}
                 for i in sorted(set(ids))
             ],
         }

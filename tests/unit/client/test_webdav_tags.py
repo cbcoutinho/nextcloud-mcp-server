@@ -65,6 +65,21 @@ class TestTagParsing:
         )
         assert _parse(_multistatus(broken)) == []
 
+    def test_entry_without_display_name_is_dropped(self):
+        broken = (
+            "<d:response><d:href>/remote.php/dav/systemtags/9</d:href>"
+            "<d:propstat><d:prop><oc:id>9</oc:id>"
+            "</d:prop></d:propstat></d:response>"
+        )
+        assert _parse(_multistatus(broken)) == []
+
+    def test_entry_with_empty_display_name_is_dropped(self):
+        """An empty name would be kept and make the sort key ambiguous."""
+        assert _parse(_multistatus(_tag("9", ""))) == []
+
+    def test_entry_with_whitespace_display_name_is_dropped(self):
+        assert _parse(_multistatus(_tag("9", "   "))) == []
+
 
 class TestPropfindBody:
     def test_requests_the_tag_properties(self):
