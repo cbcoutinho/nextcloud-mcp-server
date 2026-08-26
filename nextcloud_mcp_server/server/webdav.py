@@ -9,11 +9,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.links import with_links
+from nextcloud_mcp_server.links import file_url, with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
     CreateFileCommentResponse,
@@ -56,6 +57,20 @@ _WEBDAV_CONFLICT_STATUSES = frozenset({404, 409, 412})
 #: content is absent. A constant rather than a setting: the useful bound is the
 #: client's context, not anything an operator knows better.
 RAW_CONTENT_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _stamp_url(response: ReadFileResponse, url: str | None) -> ReadFileResponse:
+    """Attach the Files-app link to a response, in place.
+
+    Stamped after the fact rather than passed into every ``ReadFileResponse(...)``
+    in this module: the read path builds one at five separate sites, and a
+    constructor argument that one of them forgets reverts silently to None (the
+    failure mode ``test_semantic_result_field_parity.py`` exists to catch in the
+    semantic tool). Every return goes through here instead, so a sixth site
+    added later is linked by construction rather than by remembering to.
+    """
+    response.url = url
+    return response
 
 
 async def _raw_response(
@@ -292,6 +307,9 @@ def configure_webdav_tools(mcp: FastMCP):
               ``if_match`` when writing this same path later, so a manual edit
               made elsewhere in the meantime (e.g. in the Nextcloud web UI) is
               detected as a conflict instead of silently overwritten.
+            - ``url``: a link that opens the file in Nextcloud. Offer it when
+              reporting on the file, and especially when ``parse_notes`` says
+              the extraction degraded.
         """
         client = await get_client(ctx)
 
@@ -299,6 +317,28 @@ def configure_webdav_tools(mcp: FastMCP):
         excluded = await get_excluded_file_paths(client.webdav)
         if is_path_excluded(path, excluded):
             raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        # Nextcloud's /f/ route needs the fileid, and a WebDAV GET does not
+        # return one -- only a PUT sends OC-FileId -- so it costs a Depth-0
+        # PROPFIND. Negligible beside the download-and-parse that follows, and
+        # skipped entirely when no browser-reachable base URL is configured,
+        # since there would be nothing to build a link from. Resolved once here
+        # rather than at each of the five sites that build the response.
+        #
+        # Fail-open on purpose: the link is a convenience, the content is the
+        # tool's job. A PROPFIND that 403s, times out or returns unparseable XML
+        # must cost the caller its link, never its read -- so the lookup is
+        # caught broadly (get_fileid raises HTTPStatusError, RequestError or
+        # ParseError depending on how it goes wrong) and logged rather than
+        # propagated. The read that follows surfaces any real access problem
+        # with a far better error than this lookup could.
+        browser_base = astrolabe_browser_base()
+        url = None
+        if browser_base:
+            try:
+                url = file_url(browser_base, await client.webdav.get_fileid(path))
+            except Exception as e:
+                logger.debug("No file link for %r: fileid lookup failed: %s", path, e)
 
         # Imported lazily so server startup never loads the document-parsing
         # stack (document_processors -> pymupdf -> _isolation). That stack is an
@@ -377,17 +417,22 @@ def configure_webdav_tools(mcp: FastMCP):
                             f"instead."
                         )
                         logger.warning("Parsing document %r timed out: %s", path, e)
-                        return await _raw_response(source, path, "failed", [note])
+                        return _stamp_url(
+                            await _raw_response(source, path, "failed", [note]), url
+                        )
                     except Exception as e:
                         logger.warning("Failed to parse document %r: %s", path, e)
-                        return await _raw_response(
-                            source,
-                            path,
-                            "failed",
-                            [
-                                f"Parsing failed ({type(e).__name__}: {e}); the raw "
-                                f"file is returned instead."
-                            ],
+                        return _stamp_url(
+                            await _raw_response(
+                                source,
+                                path,
+                                "failed",
+                                [
+                                    f"Parsing failed ({type(e).__name__}: {e}); the "
+                                    f"raw file is returned instead."
+                                ],
+                            ),
+                            url,
                         )
 
                     summary = document_parser.summarize_parse(
@@ -398,34 +443,40 @@ def configure_webdav_tools(mcp: FastMCP):
                     if summary.status == "failed":
                         # An unsuccessful parse is never reported as content: hand
                         # back the raw file with the reason attached.
-                        return await _raw_response(
-                            source,
-                            path,
-                            "failed",
-                            summary.notes,
+                        return _stamp_url(
+                            await _raw_response(
+                                source,
+                                path,
+                                "failed",
+                                summary.notes,
+                                parse_tier=summary.tier,
+                                parse_processor=summary.processor,
+                                parsing_metadata=result.metadata,
+                            ),
+                            url,
+                        )
+                    return _stamp_url(
+                        ReadFileResponse(
+                            path=path,
+                            content=result.text,
+                            content_type=content_type,
+                            size=source.size,
+                            parsed=True,
+                            parse_status="parsed",
                             parse_tier=summary.tier,
                             parse_processor=summary.processor,
+                            content_format=summary.content_format,
+                            parse_notes=summary.notes,
                             parsing_metadata=result.metadata,
-                        )
-                    return ReadFileResponse(
-                        path=path,
-                        content=result.text,
-                        content_type=content_type,
-                        size=source.size,
-                        parsed=True,
-                        parse_status="parsed",
-                        parse_tier=summary.tier,
-                        parse_processor=summary.processor,
-                        content_format=summary.content_format,
-                        parse_notes=summary.notes,
-                        parsing_metadata=result.metadata,
-                        etag=etag,
+                            etag=etag,
+                        ),
+                        url,
                     )
 
                 status: ParseStatus = (
                     "skipped" if parse_document == "raw" else "not_applicable"
                 )
-                return await _raw_response(source, path, status, [])
+                return _stamp_url(await _raw_response(source, path, status, []), url)
         except OversizeDownload as e:
             # The transfer was aborted mid-flight, so there is no file left to
             # describe -- not even its content type. Say that plainly rather than

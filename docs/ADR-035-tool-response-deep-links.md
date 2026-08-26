@@ -75,6 +75,28 @@ annotations stay truthful, the advertised `outputSchema` is unchanged, and the
 verbatim. (An earlier `_meta` design required returning `CallToolResult` and
 would have needed a carve-out there.)
 
+### 3. Two links where a result is both a passage and a file
+
+`SemanticSearchResult` keeps `url` pointing at the Astrolabe **chunk viewer**
+(the passage that matched) and adds `file_url` pointing at the **file itself**
+(`/index.php/f/{fileid}`), for `doc_type="file"` only. They answer different
+questions — "show me the quote in context" vs "open the document" — and
+overloading one field would have forced every caller to guess which it got.
+
+`file_url` costs nothing to build: for files the indexed `doc_id` **is** the
+Nextcloud fileid (`vector/scanner.py`), so no lookup is involved. It is `None`
+for every other `doc_type`, because no other indexed id is a fileid and feeding
+a note id to `/f/` opens an unrelated file.
+
+`ReadFileResponse` gains a plain `url` for the same reason — an agent that has
+just read a degraded parse should be able to offer the original. That one is
+**not** free: a WebDAV `GET` returns no `OC-FileId` header (only `PUT` does), so
+`nc_webdav_read_file` resolves the id with a Depth-0 PROPFIND
+(`WebDAVClient.get_fileid`), skipped entirely when no browser base URL is
+configured. It is stamped onto the response after the read rather than passed
+into all five `ReadFileResponse(...)` sites, so a site that is added later
+cannot silently return `None`.
+
 ## Consequences
 
 - Adding an app means one registry entry plus one `url` field. A unit test

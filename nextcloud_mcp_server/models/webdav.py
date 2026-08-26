@@ -120,6 +120,17 @@ class ReadFileResponse(BaseResponse):
     )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens this file in Nextcloud. Offer it alongside the "
+            "content so the user can open the original -- particularly when "
+            "`parse_notes` says the extraction was degraded and what you have "
+            "is not the whole document. None when the server has no "
+            "browser-reachable Nextcloud base URL configured, or when the file "
+            "has no resolvable fileid."
+        ),
+    )
 
 
 class WriteFileResponse(StatusResponse):

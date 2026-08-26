@@ -141,3 +141,39 @@ async def test_text_file_is_untouched_by_the_parse_argument(
     assert result["parse_status"] == "not_applicable"
     assert result["parsed"] is False
     assert result["parse_notes"] == []
+
+
+async def test_read_returns_a_link_that_opens_the_file(
+    nc_client: NextcloudClient, nc_mcp_client: ClientSession, text_layer_pdf: str
+):
+    """The response carries a Files link, so a caller can offer the original.
+
+    Pinned end-to-end because the fileid it needs is NOT in the read itself: a
+    WebDAV GET returns no ``OC-FileId`` (only a PUT does), so the tool resolves
+    it with a separate PROPFIND. A unit test on the URL builder cannot show that
+    lookup actually happens, or that it happens on the parsed path too.
+    """
+    result = await _read(nc_mcp_client, text_layer_pdf)
+
+    file_id = await nc_client.webdav.get_fileid(text_layer_pdf)
+    assert file_id, "fixture file has no fileid; the assertion below is vacuous"
+    assert result["url"], (
+        "no file link on the read; the mcp service resolves "
+        "nextcloud_browser_url from NEXTCLOUD_PUBLIC_ISSUER_URL, so an empty "
+        "url means the builder was not reached"
+    )
+    assert result["url"].endswith(f"/index.php/f/{file_id}")
+
+
+async def test_raw_read_is_linked_too(
+    nc_client: NextcloudClient, nc_mcp_client: ClientSession, text_layer_pdf: str
+):
+    """The raw path builds its response at a different site than the parsed one.
+
+    Five sites build a ``ReadFileResponse``; the link is stamped once, after the
+    fact, precisely so a second one cannot silently return None.
+    """
+    result = await _read(nc_mcp_client, text_layer_pdf, parse_document="raw")
+
+    file_id = await nc_client.webdav.get_fileid(text_layer_pdf)
+    assert result["url"].endswith(f"/index.php/f/{file_id}")
