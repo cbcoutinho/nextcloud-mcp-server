@@ -2733,11 +2733,18 @@ class WebDAVClient(BaseNextcloudClient):
     def _read_props(
         response_elem: "ET.Element", props: tuple[tuple[str, str], ...]
     ) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        for key, qualified in props:
-            found = response_elem.find(f".//{qualified}")
-            out[key] = found.text if found is not None else None
-        return out
+        """Read the requested properties out of a multistatus response.
+
+        Only the ``200 OK`` propstat block is consulted. A response carries one
+        block per status, and the 404 one lists the properties the server does
+        *not* have -- folding those in would fabricate values for them.
+        """
+        # _dav_props_ok keys by local name; the tables here carry the fully
+        # qualified name, so strip the namespace before the lookup.
+        available = _dav_props_ok(response_elem)
+        return {
+            key: available.get(qualified.rpartition("}")[2]) for key, qualified in props
+        }
 
     async def list_trash(self) -> List[Dict[str, Any]]:
         """List the files currently in the trash bin."""

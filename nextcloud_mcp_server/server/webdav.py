@@ -27,7 +27,15 @@ from nextcloud_mcp_server.models import (
     SearchFilesResponse,
     WriteFileResponse,
 )
-from nextcloud_mcp_server.models.webdav import ParseStatus
+from nextcloud_mcp_server.models.webdav import (
+    FileVersion,
+    ListTrashResponse,
+    ListVersionsResponse,
+    ParseStatus,
+    RestoreFromTrashResponse,
+    RestoreVersionResponse,
+    TrashEntry,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
@@ -1154,38 +1162,80 @@ def configure_webdav_tools(mcp: FastMCP):
             message=message,
         )
 
-    # -- Trash bin and file versions ----------------------------------------
-
     @mcp.tool(
         title="List Trash",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("files.read")
     @instrument_tool
-    async def nc_webdav_list_trash(ctx: Context) -> dict:
+    async def nc_webdav_list_trash(ctx: Context) -> ListTrashResponse:
         """List deleted files in the user's trash bin.
 
-        Returns each entry with the id needed to restore it, the location it
-        was deleted from, and when it was deleted.
+        Each entry carries the id needed to restore it, the location it was
+        deleted from, and when it was deleted.
         """
         client = await get_client(ctx)
         items = await client.webdav.list_trash()
-        return {"items": items, "total_count": len(items)}
+
+        # An excluded file stays excluded after deletion: the original
+        # location would otherwise leak through the trash listing.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if excluded:
+            items = [
+                item
+                for item in items
+                if not is_path_excluded(item.get("original_location") or "", excluded)
+            ]
+
+        entries = [
+            TrashEntry(
+                id=item["id"],
+                name=item.get("trashbin_filename"),
+                original_location=item.get("original_location"),
+                deleted_at=item.get("deleted_at"),
+                size=item.get("size"),
+                href=item.get("href"),
+            )
+            for item in items
+        ]
+        return ListTrashResponse(items=entries, total_count=len(entries))
 
     @mcp.tool(
         title="Restore From Trash",
-        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(
+            destructiveHint=False,  # Puts a file back; nothing is overwritten
+            idempotentHint=False,  # The entry is gone from the trash afterwards
+            openWorldHint=True,
+        ),
     )
     @require_scopes("files.write")
     @instrument_tool
-    async def nc_webdav_restore_from_trash(entry_id: str, ctx: Context) -> dict:
+    async def nc_webdav_restore_from_trash(
+        entry_id: str, ctx: Context
+    ) -> RestoreFromTrashResponse:
         """Restore a deleted file from the trash bin to its original location.
 
         Args:
             entry_id: The id from nc_webdav_list_trash (not the file name).
         """
         client = await get_client(ctx)
-        return await client.webdav.restore_from_trash(entry_id)
+
+        # Resolve the entry first so an excluded original location cannot be
+        # restored -- and so a bad id fails as a refusal, not a DAV error.
+        entries = await client.webdav.list_trash()
+        match = next((e for e in entries if e.get("id") == entry_id), None)
+        if match is None:
+            raise ToolError(f"No trash entry with id {entry_id!r}")
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        original = match.get("original_location") or ""
+        if is_path_excluded(original, excluded):
+            raise ToolError(
+                f"Access denied: {original!r} is tagged with an excluded tag"
+            )
+
+        await client.webdav.restore_from_trash(entry_id)
+        return RestoreFromTrashResponse(entry_id=entry_id)
 
     @mcp.tool(
         title="List File Versions",
@@ -1193,24 +1243,47 @@ def configure_webdav_tools(mcp: FastMCP):
     )
     @require_scopes("files.read")
     @instrument_tool
-    async def nc_webdav_list_versions(path: str, ctx: Context) -> dict:
+    async def nc_webdav_list_versions(path: str, ctx: Context) -> ListVersionsResponse:
         """List stored previous versions of a file.
 
         Args:
             path: Path to the file, relative to the user's files root.
         """
         client = await get_client(ctx)
-        return await client.webdav.list_versions(path)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        data = await client.webdav.list_versions(path)
+        versions = [
+            FileVersion(
+                version_id=v["version_id"],
+                size=v.get("size"),
+                modified=v.get("modified"),
+                label=v.get("label"),
+            )
+            for v in data.get("versions", [])
+        ]
+        return ListVersionsResponse(
+            path=data["path"],
+            file_id=str(data["file_id"]),
+            versions=versions,
+            total_count=len(versions),
+        )
 
     @mcp.tool(
         title="Restore File Version",
-        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(
+            destructiveHint=False,  # The current content is kept as a version
+            idempotentHint=True,  # Restoring the same version twice is a no-op
+            openWorldHint=True,
+        ),
     )
     @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_restore_version(
         path: str, version_id: str, ctx: Context
-    ) -> dict:
+    ) -> RestoreVersionResponse:
         """Roll a file back to an earlier version.
 
         The current content is not lost: Nextcloud stores it as a version in
@@ -1221,4 +1294,9 @@ def configure_webdav_tools(mcp: FastMCP):
             version_id: The version_id from nc_webdav_list_versions.
         """
         client = await get_client(ctx)
-        return await client.webdav.restore_version(path, version_id)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        await client.webdav.restore_version(path, version_id)
+        return RestoreVersionResponse(path=path, restored_version=version_id)
