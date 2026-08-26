@@ -184,7 +184,7 @@ def _page(items: list, limit: int | None, offset: int) -> list:
     return items[start : start + max(0, limit)]
 
 
-def _raw_contact_to_model(raw: dict, *, include_photo: bool = False) -> Contact:
+def _raw_contact_to_model(raw: dict, *, include_photo: bool = True) -> Contact:
     """Convert a raw contact dict from the contacts client to a Contact model.
 
     Maps fullname, name parts, nickname, birthday, email, tel, address, org,
@@ -193,8 +193,10 @@ def _raw_contact_to_model(raw: dict, *, include_photo: bool = False) -> Contact:
     either – see :func:`_parse_vcard_fields`.
 
     ``include_photo`` controls whether the inline PHOTO payload is carried
-    over. vCards commonly embed photos as base64, which dwarfs every other
-    field, so the default is to drop the bytes and keep ``has_photo``.
+    over. It defaults to True so single-contact mappings keep their previous
+    shape; only the list and search tools opt out, because vCards embed photos
+    as base64 and that dwarfs every other field when many contacts are
+    returned at once. ``has_photo`` is reported either way.
     """
     contact_info = raw.get("contact", {})
 
@@ -204,7 +206,9 @@ def _raw_contact_to_model(raw: dict, *, include_photo: bool = False) -> Contact:
     categories = _parse_categories(contact_info.get("categories"))
     custom_fields = _build_custom_fields(contact_info)
     family_name, given_name = _split_name_parts(contact_info.get("n"))
-    raw_photo = contact_info.get("photo")
+    # An empty PHOTO is no photo: normalising here keeps photo and has_photo
+    # consistent instead of reporting "" alongside has_photo=False.
+    raw_photo = contact_info.get("photo") or None
 
     return Contact(
         uid=raw["vcard_id"],
