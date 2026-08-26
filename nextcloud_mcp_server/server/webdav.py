@@ -1153,3 +1153,113 @@ def configure_webdav_tools(mcp: FastMCP):
             comment_id=comment_id,
             message=message,
         )
+
+    # -- File tags -----------------------------------------------------------
+    #
+    # These work with tag *names* rather than ids: an id is unguessable for a
+    # language model, a name is not.
+
+    @mcp.tool(
+        title="List Tags",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_tags(ctx: Context) -> dict:
+        """List all system tags available for tagging files."""
+        client = await get_client(ctx)
+        tags = await client.webdav.list_tags()
+        return {"tags": tags, "total_count": len(tags)}
+
+    @mcp.tool(
+        title="Get File Tags",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_get_file_tags(path: str, ctx: Context) -> dict:
+        """List the tags assigned to one file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        return await client.webdav.get_file_tags(path)
+
+    @mcp.tool(
+        title="Find Files By Tag",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_find_by_tag_name(tag: str, ctx: Context) -> dict:
+        """Find all files carrying a given tag.
+
+        Args:
+            tag: Tag name, case-sensitive.
+        """
+        client = await get_client(ctx)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            return {
+                "tag": tag,
+                "files": [],
+                "total_count": 0,
+                "message": f"No tag named {tag!r} exists.",
+            }
+        files = await client.webdav.get_files_by_tag(found["id"])
+        return {
+            "tag": tag,
+            "tag_id": found["id"],
+            "files": files,
+            "total_count": len(files),
+        }
+
+    @mcp.tool(
+        title="Tag File",
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_tag_file(path: str, tag: str, ctx: Context) -> dict:
+        """Attach a tag to a file, creating the tag if it does not exist yet.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await client.webdav.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+        resolved = await client.webdav.get_or_create_tag(tag)
+        await client.webdav.assign_tag_to_file(int(file_id), resolved["id"])
+        return {"path": path, "tag": tag, "tag_id": resolved["id"], "assigned": True}
+
+    @mcp.tool(
+        title="Untag File",
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_untag_file(path: str, tag: str, ctx: Context) -> dict:
+        """Remove a tag from a file. The tag itself keeps existing.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await client.webdav.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            return {
+                "path": path,
+                "tag": tag,
+                "removed": False,
+                "message": f"No tag named {tag!r} exists.",
+            }
+        await client.webdav.remove_tag_from_file(int(file_id), found["id"])
+        return {"path": path, "tag": tag, "tag_id": found["id"], "removed": True}
