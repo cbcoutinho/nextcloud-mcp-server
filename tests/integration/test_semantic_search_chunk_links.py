@@ -10,10 +10,13 @@ row carries a link Astrolabe would open.
 
 import json
 import uuid
+from io import BytesIO
 from urllib.parse import parse_qs, urlparse
 
 import anyio
 import pytest
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 from nextcloud_mcp_server.config import get_settings
 from tests.integration._search_helpers import document_is_searchable
@@ -134,6 +137,28 @@ async def test_context_expansion_preserves_the_chunk_link(nc_mcp_client, nc_clie
         await nc_client.notes.delete_note(note_id=note["id"])
 
 
+def _pdf_containing(term: str) -> bytes:
+    """A one-page born-digital PDF whose text layer contains ``term``.
+
+    Ordinary prose around the term on purpose: a page holding one short unspaced
+    token reads as a poor text layer to the tier-0 classifier and escalates off
+    the fast tier, which would make this a test of parse heuristics rather than
+    of the link.
+    """
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.drawString(72, 750, f"Quarterly report mentioning {term}")
+    pdf.drawString(
+        72,
+        730,
+        "This document exists so an integration test can index a real file and "
+        "check the links on its search results.",
+    )
+    pdf.drawString(72, 710, f"The term to search for is {term}.")
+    pdf.save()
+    return buffer.getvalue()
+
+
 async def _file_is_searchable(mcp_client, term: str, file_id: int) -> bool:
     """True once ``file_id`` is retrievable as a file result.
 
@@ -170,12 +195,13 @@ async def test_file_results_also_carry_a_link_to_the_file(nc_mcp_client, nc_clie
 
     unique_term = f"zorblat{uuid.uuid4().hex[:12]}"
     test_dir = f"chunk_link_file_{uuid.uuid4().hex[:8]}"
-    path = f"{test_dir}/report.txt"
+    path = f"{test_dir}/report.pdf"
     await nc_client.webdav.create_directory(test_dir)
+    # A PDF, not a text file: tagged-file discovery filters on
+    # mime_type_filter="application/pdf" (vector/scanner.py), so a .txt is never
+    # discovered no matter how it is tagged — this test could only ever skip.
     await nc_client.webdav.write_file(
-        path,
-        f"This file exists to be found by the term {unique_term}.".encode(),
-        content_type="text/plain",
+        path, _pdf_containing(unique_term), content_type="application/pdf"
     )
     file_id = int((await nc_client.webdav.get_file_info(path))["id"])
     # File indexing is tag-gated; without the tag the scanner never sees it.
