@@ -372,7 +372,13 @@ async def test_placeholder_only_and_real_only_and_neither(monkeypatch):
 
 @pytest.mark.unit
 async def test_lookup_failure_still_fails_open(monkeypatch):
-    """Unchanged contract: a Qdrant error reads as None ("never seen")."""
+    """Unchanged contract: a Qdrant error reads as None ("never seen").
+
+    Worth pinning now that the two scrolls run under an anyio task group: a child
+    failure surfaces as an ExceptionGroup, not the raw error. That is still an
+    Exception (3.11+), so the fail-open handler catches it — but silently, which
+    is exactly the kind of thing that stops being true after a refactor.
+    """
     fake_qdrant = AsyncMock()
     fake_qdrant.scroll.side_effect = RuntimeError("qdrant down")
 

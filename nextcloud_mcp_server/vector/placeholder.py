@@ -21,6 +21,7 @@ import logging
 import time
 import uuid
 
+import anyio
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
@@ -223,8 +224,23 @@ async def query_document_metadata(
                 return None
             return dict(points[0].payload) if points[0].payload is not None else None
 
-        real = await _first(False)
-        placeholder = await _first(True)
+        # Concurrent, not sequential: the two lookups are independent, and this
+        # runs once per document per scan across every doc type — serializing
+        # them would double this check's wall-clock latency on a hot path for no
+        # reason. anyio task group per CLAUDE.md (never asyncio.gather). A
+        # failure in either child surfaces as an ExceptionGroup, which is an
+        # Exception, so the fail-open handler below still catches it.
+        found: dict[bool, dict | None] = {}
+
+        async def _load(is_placeholder: bool) -> None:
+            found[is_placeholder] = await _first(is_placeholder)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_load, False)
+            tg.start_soon(_load, True)
+
+        real = found[False]
+        placeholder = found[True]
 
         if placeholder is None:
             return real
