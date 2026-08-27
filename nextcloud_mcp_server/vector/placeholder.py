@@ -156,12 +156,36 @@ async def query_document_metadata(
     doc_type: str,
     user_id: str,
 ) -> dict | None:
-    """Query Qdrant for existing document entry (placeholder or real).
+    """Query Qdrant for this user's existing entry for a document.
 
-    Returns the payload of the first matching point, which could be:
-    - A placeholder (is_placeholder: True)
-    - A real indexed document (is_placeholder: False or missing)
-    - None if document not in Qdrant
+    Returns:
+    - the real indexed document's payload (``is_placeholder: False``), or
+    - the placeholder's payload (``is_placeholder: True``) when it represents
+      NEWER content than what is indexed (or nothing is indexed yet), or
+    - ``None`` when the document is not in Qdrant at all.
+
+    Placeholder and chunk points have different deterministic ids
+    (``…:placeholder`` vs ``…:chunk:<i>``), so they COEXIST — while a document is
+    being re-indexed, and afterwards if a scan wrote a placeholder that no
+    subsequent index cleared. This used to be one unfiltered
+    ``scroll(..., limit=1)``, which has no ordering: which of the two came back
+    was decided by point-id order, i.e. a per-document coin flip.
+
+    That was load-bearing. The scanner checks ``is_placeholder`` BEFORE it
+    compares ``index_mode``/``modified_at`` (``vector/scanner.py``), so a
+    fully-indexed, unchanged document whose leftover placeholder happened to sort
+    first was read as "still queued", went stale after
+    ``vector_sync_scan_interval * 5``, and was re-queued — every cycle, forever.
+    For OCR-tier documents that is a full re-OCR on the burst GPU each time.
+
+    Resolved explicitly instead of by luck, and NOT simply "prefer the real
+    point": while a genuinely newer version is in flight, the placeholder is the
+    authoritative state, and returning the stale indexed point instead would make
+    the scanner re-queue an already-queued document on every pass. So the
+    placeholder wins only when it is strictly newer; at equal or older
+    ``modified_at`` it is stale bookkeeping and the index answers. Leftovers are
+    cleared by the next successful index or dedup claim, so nothing is written
+    from this read path.
 
     Args:
         doc_id: Document ID
@@ -175,26 +199,43 @@ async def query_document_metadata(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
 
-        # Query for any entry matching doc_id, doc_type, user_id
-        scroll_result = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
-                ]
-            ),
-            limit=1,
-            with_payload=True,
-            with_vectors=False,
-        )
+        async def _first(is_placeholder: bool) -> dict | None:
+            points, _ = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                        FieldCondition(
+                            key="doc_type", match=MatchValue(value=doc_type)
+                        ),
+                        FieldCondition(
+                            key="is_placeholder",
+                            match=MatchValue(value=is_placeholder),
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not points:
+                return None
+            return dict(points[0].payload) if points[0].payload is not None else None
 
-        if scroll_result[0]:
-            point = scroll_result[0][0]
-            return dict(point.payload) if point.payload is not None else None
+        real = await _first(False)
+        placeholder = await _first(True)
 
-        return None
+        if placeholder is None:
+            return real
+        if real is None:
+            return placeholder
+        # Both exist: the placeholder only speaks for content newer than what is
+        # indexed. Equal modified_at means the index already covers the queued
+        # version -- the leftover-placeholder case that drove the re-queue loop.
+        if placeholder.get("modified_at", 0) > real.get("modified_at", 0):
+            return placeholder
+        return real
 
     except Exception as e:
         logger.warning(
