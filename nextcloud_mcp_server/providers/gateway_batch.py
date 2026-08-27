@@ -33,12 +33,20 @@ from .gateway import GatewayTokenProvider
 
 logger = logging.getLogger(__name__)
 
-# Connect timeout for the (cheap) submit/poll calls. These are control-plane-ish
-# requests — a submit returns immediately with a job id and a poll is a status
-# read — so they get a short, fixed timeout, NOT the document-OCR read timeout
-# (which sizes a synchronous transcription).
+# Connect timeout for the submit/poll calls. Neither waits on OCR itself, so
+# neither gets the document-OCR read timeout (which sizes a synchronous
+# transcription).
 _BATCH_CONNECT_TIMEOUT_SECONDS = 5.0
+# A poll IS control-plane-ish: a small status read that returns immediately.
 _BATCH_REQUEST_TIMEOUT_SECONDS = 30.0
+# A submit is NOT: it uploads the whole document, base64-inflated by 4/3, and the
+# gateway stages those bytes to object storage before it answers. 30s is a
+# multi-MB-PDF-sized cliff, and losing the race is worse than a slow call — the
+# gateway has already created the job, so a client-side timeout strands it: the
+# caller never learns the job_id, `insert_pending` never runs, and the retry
+# submits a SECOND job for the same document, paying for the OCR twice (Deck
+# #1084: 16 of 339 submissions in one 12h window). Size it for the upload.
+_BATCH_SUBMIT_TIMEOUT_SECONDS = 180.0
 
 # Gateway-normalised batch lifecycle (OcrBatchStatus on the gateway side).
 _PENDING = "pending"
@@ -146,7 +154,7 @@ class GatewayBatchOcrClient:
         }
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(
-                _BATCH_REQUEST_TIMEOUT_SECONDS, connect=_BATCH_CONNECT_TIMEOUT_SECONDS
+                _BATCH_SUBMIT_TIMEOUT_SECONDS, connect=_BATCH_CONNECT_TIMEOUT_SECONDS
             )
         ) as client:
             resp = await client.post(

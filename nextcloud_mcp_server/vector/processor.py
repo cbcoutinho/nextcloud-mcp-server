@@ -12,7 +12,13 @@ import anyio
 import httpx
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from qdrant_client.models import PointStruct
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    Range,
+)
 
 if TYPE_CHECKING:
     # Type-only: the document stack is heavy (pymupdf/_isolation) and must stay
@@ -315,6 +321,54 @@ def resolve_page_end(chunk: ChunkWithPosition) -> int | None:
     citation range (single-page chunks report ``page_end == page_number``).
     """
     return chunk.page_end if chunk.page_end is not None else chunk.page_number
+
+
+async def prune_stale_chunks(
+    qdrant_client: Any,
+    *,
+    collection_name: str,
+    doc_id: str,
+    doc_type: str,
+    kept_chunks: int,
+) -> None:
+    """Drop chunk points left behind by a LONGER previous index of this document.
+
+    Chunk point IDs are ``uuid5("<doc_type>:<doc_id>:chunk:<i>")`` — deterministic
+    in the chunk INDEX but blind to the chunk COUNT — so re-indexing a document
+    that now yields fewer chunks overwrites ``0..kept_chunks-1`` in place and
+    strands every higher-index point from the previous run.
+
+    Stranded points keep the OLD payload (``etag``, ``index_mode``,
+    ``embedding_identity``), and both "is this already indexed?" reads take
+    whatever a single UNORDERED ``scroll(..., limit=1)`` hands back:
+    :func:`~nextcloud_mcp_server.vector.sharing_state.find_indexed_content`
+    (etag + embedding_identity) and
+    :func:`~nextcloud_mcp_server.vector.placeholder.query_document_metadata`
+    (index_mode). Handed an orphan, they report "not indexed" / "index mode
+    changed", the scanner re-queues the document, and the re-index strands the
+    same orphans again — an ingest loop that never converges. For OCR-tier
+    documents that re-burns the batch GPU on every scan cycle (Deck #1084, and
+    the unclosed tail of #509).
+
+    Called AFTER the upsert rather than clearing the document first, so the
+    document stays continuously searchable and ``acl_principals`` on the
+    surviving points is preserved.
+
+    ``kept_chunks == 0`` is a no-op on purpose: a zero-point "success" (the
+    silent short-embedding path) must never be allowed to wipe a good index.
+    """
+    if kept_chunks <= 0:
+        return
+    await qdrant_client.delete(
+        collection_name=collection_name,
+        points_selector=Filter(
+            must=[
+                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                FieldCondition(key="chunk_index", range=Range(gte=kept_chunks)),
+            ]
+        ),
+    )
 
 
 def should_use_page_aware(
@@ -2361,6 +2415,14 @@ async def _index_document_inner(
                     (len(points) + BATCH_SIZE - 1) // BATCH_SIZE,
                 )
 
+    await prune_stale_chunks(
+        qdrant_client,
+        collection_name=settings.get_collection_name(),
+        doc_id=doc_task.doc_id,
+        doc_type=doc_task.doc_type,
+        kept_chunks=len(points),
+    )
+
     # A successful (re-)index supersedes any prior failure record: clear the
     # marker (e.g. the file was fixed/replaced, or a new escalation tier finally
     # parsed it) so it isn't left behind. Only files are ever dead-lettered, and
@@ -2382,16 +2444,22 @@ async def _index_document_inner(
     if doc_task.doc_type == "file" and doc_task.etag:
         await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
+    # Report what was actually UPSERTED, not how many chunks were produced. The
+    # point loop zips ``chunks`` with ``sparse_embeddings`` and zip truncates
+    # silently, so a short/empty embedding batch used to report a clean success
+    # for a document that landed fewer points than it had chunks -- exactly the
+    # "silent zero-points bug" named at the top of this module. len(points) makes
+    # that visible in the log instead of only in the index.
     logger.info(
         "Indexed %s_%s for %s (%s chunks)",
         doc_task.doc_type,
         doc_task.doc_id,
         doc_task.user_id,
-        len(chunks),
+        len(points),
         extra={
             "doc_id": doc_task.doc_id,
             "doc_type": doc_task.doc_type,
-            "chunks": len(chunks),
+            "chunks": len(points),
             "status": "success",
         },
     )
