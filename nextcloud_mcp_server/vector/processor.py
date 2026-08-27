@@ -378,7 +378,14 @@ async def prune_stale_chunks(
                 ]
             ),
         )
+        record_qdrant_operation("delete", "success")
     except Exception as e:  # noqa: BLE001 — never fail a successful index
+        # Metered, not just logged: swallowing the error is what keeps a
+        # successful index successful, but it also means sustained prune
+        # failures would otherwise show up only as scattered log lines — and a
+        # silent-but-wrong path is precisely what let the loop this function
+        # closes run undetected for months.
+        record_qdrant_operation("delete", "error")
         logger.warning(
             "Failed to prune stale chunks above %s for %s_%s: %s; next index retries",
             kept_chunks,
