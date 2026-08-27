@@ -267,10 +267,10 @@ class TrashEntry(BaseModel):
     original_location: Optional[str] = Field(
         None, description="Path the entry was deleted from"
     )
-    deleted_at: Optional[str] = Field(
+    deleted_at: Optional[int] = Field(
         None, description="Deletion time as a Unix timestamp"
     )
-    size: Optional[str] = Field(None, description="Size in bytes")
+    size: Optional[int] = Field(None, description="Size in bytes")
     href: Optional[str] = Field(None, description="Full DAV path of the entry")
 
 
@@ -291,7 +291,7 @@ class FileVersion(BaseModel):
     """One stored version of a file."""
 
     version_id: str = Field(description="Version id, needed to restore it")
-    size: Optional[str] = Field(None, description="Size in bytes")
+    size: Optional[int] = Field(None, description="Size in bytes")
     modified: Optional[str] = Field(None, description="Last-modified of this version")
     label: Optional[str] = Field(None, description="Version label, when set")
 

@@ -57,3 +57,22 @@ class TestReadProps:
             ),
         )
         assert props == {"size": "42", "label": None}
+
+
+class TestAsInt:
+    """DAV numbers arrive as text and may be absent or malformed."""
+
+    def test_parses_a_number(self):
+        from nextcloud_mcp_server.server.webdav import _as_int
+
+        assert _as_int("4096") == 4096
+
+    def test_none_stays_none(self):
+        from nextcloud_mcp_server.server.webdav import _as_int
+
+        assert _as_int(None) is None
+
+    def test_garbage_costs_the_field_not_the_row(self):
+        from nextcloud_mcp_server.server.webdav import _as_int
+
+        assert _as_int("not a number") is None

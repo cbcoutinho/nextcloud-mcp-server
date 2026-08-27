@@ -1,7 +1,7 @@
 import base64
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import anyio
 from anyio.to_thread import run_sync
@@ -170,6 +170,14 @@ async def _raw_response(
         parsing_metadata=parsing_metadata,
         etag=etag,
     )
+
+
+def _as_int(raw: Any) -> Optional[int]:
+    """DAV numbers arrive as text; a non-numeric one costs that field, not the row."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
@@ -1192,8 +1200,8 @@ def configure_webdav_tools(mcp: FastMCP):
                 id=item["id"],
                 name=item.get("trashbin_filename"),
                 original_location=item.get("original_location"),
-                deleted_at=item.get("deleted_at"),
-                size=item.get("size"),
+                deleted_at=_as_int(item.get("deleted_at")),
+                size=_as_int(item.get("size")),
                 href=item.get("href"),
             )
             for item in items
@@ -1250,15 +1258,16 @@ def configure_webdav_tools(mcp: FastMCP):
             path: Path to the file, relative to the user's files root.
         """
         client = await get_client(ctx)
-        excluded = await get_excluded_file_paths(client.webdav)
-        if is_path_excluded(path, excluded):
-            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+        # Resolving through the shared helper applies the excluded-tag guard
+        # and turns a missing file into a refusal rather than a ValueError
+        # surfacing from the client layer.
+        await _resolve_commented_file(client, path)
 
         data = await client.webdav.list_versions(path)
         versions = [
             FileVersion(
                 version_id=v["version_id"],
-                size=v.get("size"),
+                size=_as_int(v.get("size")),
                 modified=v.get("modified"),
                 label=v.get("label"),
             )
@@ -1275,7 +1284,9 @@ def configure_webdav_tools(mcp: FastMCP):
         title="Restore File Version",
         annotations=ToolAnnotations(
             destructiveHint=False,  # The current content is kept as a version
-            idempotentHint=True,  # Restoring the same version twice is a no-op
+            # Not idempotent: each restore stores the then-current content as
+            # a further version, so repeating it keeps adding side effects.
+            idempotentHint=False,
             openWorldHint=True,
         ),
     )
@@ -1294,9 +1305,7 @@ def configure_webdav_tools(mcp: FastMCP):
             version_id: The version_id from nc_webdav_list_versions.
         """
         client = await get_client(ctx)
-        excluded = await get_excluded_file_paths(client.webdav)
-        if is_path_excluded(path, excluded):
-            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+        await _resolve_commented_file(client, path)
 
         await client.webdav.restore_version(path, version_id)
         return RestoreVersionResponse(path=path, restored_version=version_id)
