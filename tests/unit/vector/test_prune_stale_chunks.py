@@ -81,6 +81,28 @@ async def test_zero_chunks_never_deletes():
     client.delete.assert_not_awaited()
 
 
+async def test_delete_failure_never_fails_the_index():
+    """A transient Qdrant blip must not propagate out of a successful index.
+
+    The caller sits inside process_document's retry loop, so raising here would
+    re-download/re-parse/re-embed on every attempt and, once they're exhausted,
+    dead-letter a file that is sitting correctly in the index — the very
+    "re-processing forever" class this function exists to close. Orphans are
+    harmless until a read happens to pick one, and the next prune clears them.
+    """
+    client = SimpleNamespace(delete=AsyncMock(side_effect=RuntimeError("qdrant down")))
+
+    await prune_stale_chunks(
+        client,
+        collection_name="tenant-x",
+        doc_id="1001",
+        doc_type="file",
+        kept_chunks=3,
+    )
+
+    client.delete.assert_awaited_once()
+
+
 async def test_single_chunk_document_still_prunes():
     """The common OCR shape: a doc that used to chunk long and now yields one."""
     client = _client()

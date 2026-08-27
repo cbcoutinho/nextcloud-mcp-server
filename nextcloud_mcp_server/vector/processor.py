@@ -356,19 +356,36 @@ async def prune_stale_chunks(
 
     ``kept_chunks == 0`` is a no-op on purpose: a zero-point "success" (the
     silent short-embedding path) must never be allowed to wipe a good index.
+
+    Never raises. The caller runs inside ``process_document``'s retry loop, so
+    propagating a transient delete failure out of an ALREADY-SUCCESSFUL index
+    would re-download/re-parse/re-embed the document on every attempt and, once
+    the attempts are exhausted, dead-letter a file that is sitting correctly in
+    the index — the exact "re-processing forever" class this function exists to
+    close. Orphans are harmless until the next read happens to pick one, and the
+    next scan's prune clears them, so logging and moving on self-heals.
     """
     if kept_chunks <= 0:
         return
-    await qdrant_client.delete(
-        collection_name=collection_name,
-        points_selector=Filter(
-            must=[
-                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
-                FieldCondition(key="chunk_index", range=Range(gte=kept_chunks)),
-            ]
-        ),
-    )
+    try:
+        await qdrant_client.delete(
+            collection_name=collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                    FieldCondition(key="chunk_index", range=Range(gte=kept_chunks)),
+                ]
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 — never fail a successful index
+        logger.warning(
+            "Failed to prune stale chunks above %s for %s_%s: %s; next index retries",
+            kept_chunks,
+            doc_type,
+            doc_id,
+            e,
+        )
 
 
 def should_use_page_aware(
