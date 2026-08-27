@@ -357,13 +357,27 @@ async def prune_stale_chunks(
     ``kept_chunks == 0`` is a no-op on purpose: a zero-point "success" (the
     silent short-embedding path) must never be allowed to wipe a good index.
 
-    Never raises. The caller runs inside ``process_document``'s retry loop, so
-    propagating a transient delete failure out of an ALREADY-SUCCESSFUL index
-    would re-download/re-parse/re-embed the document on every attempt and, once
-    the attempts are exhausted, dead-letter a file that is sitting correctly in
-    the index — the exact "re-processing forever" class this function exists to
-    close. Orphans are harmless until the next read happens to pick one, and the
-    next scan's prune clears them, so logging and moving on self-heals.
+    Never raises — deliberately UNLIKE its sibling
+    :func:`~nextcloud_mcp_server.vector.placeholder.delete_placeholder_point`,
+    which logs and re-raises (its caller does the swallowing). The difference is
+    the position in the write path: this runs AFTER the upsert, inside
+    ``process_document``'s retry loop, so propagating a transient delete failure
+    out of an ALREADY-SUCCESSFUL index would re-download/re-parse/re-embed the
+    document on every attempt and, once they are exhausted, dead-letter a file
+    that is sitting correctly in the index — the exact "re-processing forever"
+    class this function exists to close. Orphans are harmless until a read
+    happens to pick one, and the next scan's prune clears them, so logging and
+    moving on self-heals.
+
+    Known ordering hazard (pre-existing, self-healing): the filter scopes on
+    ``doc_id``/``doc_type``/``chunk_index`` with no etag or version check. If two
+    tasks for the same document are in flight on different content and the STALE
+    one lands last, it overwrites ``0..kept_chunks-1`` with old content and then
+    prunes above it, dropping chunks the fresher, larger write had produced. The
+    cross-worker dedup guard only covers the same-etag case, so the interleaving
+    predates this function — but pruning changes its failure mode from "harmless
+    stale orphan" to "silently drops fresher data", until the next scan
+    reconciles.
     """
     if kept_chunks <= 0:
         return
