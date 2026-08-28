@@ -534,7 +534,7 @@ services:
   # backends can't produce. Bootstrapped fresh on every `up` (no data volume),
   # so the custom LDIF is always applied.
   openldap:
-    image: docker.io/vegardit/openldap:2.6.10@sha256:8161e8fa74c518697776fff27b403cc4c273aede07b6d87f473a45201050d0de
+    image: docker.io/vegardit/openldap:2.6.10@sha256:6c5595fa4d1c5dbe0b607458d8fe1ec1fa102653cac37ed9f1ce3e76a65593b8
     environment:
       - LDAP_INIT_ORG_DN=dc=example,dc=org
       - LDAP_INIT_ORG_NAME=Example Org
