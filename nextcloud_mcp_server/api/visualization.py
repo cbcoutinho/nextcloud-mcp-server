@@ -891,6 +891,27 @@ async def vector_search(request: Request) -> JSONResponse:
             )
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        # Result granularity. Absent here until now, which made
+        # granularity="document" — one row per document rather than per chunk —
+        # unreachable from the Astrolabe search page, the only surface that
+        # calls this endpoint. That is the shape "which files mention X" needs,
+        # and the shape ADR-034's relevance curves were FITTED at, so the app
+        # page could not request the retrieval shape its own relevance numbers
+        # were calibrated on. Validated exactly as /api/v1/search does: an
+        # unrecognized value is rejected rather than silently downgraded to
+        # chunk, so a caller that asked for document granularity is never
+        # quietly served something else.
+        granularity = body.get("granularity", GRANULARITY_CHUNK)
+        if granularity not in VALID_GRANULARITIES:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Invalid granularity {granularity!r}. "
+                        f"Must be one of {sorted(VALID_GRANULARITIES)}"
+                    )
+                },
+                status_code=400,
+            )
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
         # Optional cross-encoder rerank, same flag and same gating as
@@ -957,6 +978,21 @@ async def vector_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
+        # Grouped retrieval needs a sparse leg to group on, so document
+        # granularity is unsupported for dense-only search. Same 422 shape and
+        # same position (after the algorithm resolves) as /api/v1/search, so a
+        # client sees one error contract across both endpoints.
+        if granularity == GRANULARITY_DOCUMENT and algorithm == "semantic":
+            return JSONResponse(
+                {
+                    "error": "granularity_unsupported_for_algorithm",
+                    "granularity": granularity,
+                    "algorithm": algorithm,
+                    "supported_algorithms": ["bm25", "hybrid"],
+                },
+                status_code=422,
+            )
+
         # Capability gate after the query and algorithm checks, matching
         # /api/v1/search so an unsupported algorithm still wins over an
         # unconfigured reranker on both endpoints.
@@ -966,15 +1002,22 @@ async def vector_search(request: Request) -> JSONResponse:
 
         rerank_outcome = RERANK_SKIPPED
         # Reranking can only reorder what retrieval supplied, so it needs a
-        # deeper candidate pool than the caller's limit. This endpoint always
-        # searches chunks (grouped=False) and has no offset, so the floor is
-        # simply `limit` — which is also what it retrieves when rerank is off,
-        # leaving that path byte-identical to before. NB with several
+        # deeper candidate pool than the caller's limit. This endpoint has no
+        # offset, so the floor is simply `limit` — which is also what it
+        # retrieves when rerank is off, leaving that path byte-identical to
+        # before. `grouped` now tracks the requested granularity: the grouped
+        # prefetch is bounded by MAX_DOCUMENT_PREFETCH, so asking for more
+        # groups than it can fill makes Qdrant widen its grouping search and
+        # reorder the head before the reranker sees it. NB with several
         # `doc_types` this depth is fetched PER TYPE before the merge, so
         # retrieval cost scales with len(doc_types) — the same shape as
         # unified_search's own doc_types loop.
         retrieval_limit = (
-            effective_pool_size(settings, floor=limit, grouped=False)
+            effective_pool_size(
+                settings,
+                floor=limit,
+                grouped=granularity == GRANULARITY_DOCUMENT,
+            )
             if rerank
             else limit
         )
@@ -999,6 +1042,7 @@ async def vector_search(request: Request) -> JSONResponse:
                                 doc_type=doc_type,
                                 accessible_owners=owners,
                                 shared_root_ids=roots,
+                                granularity=granularity,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
                                 path_prefixes=path_prefixes,
@@ -1015,6 +1059,7 @@ async def vector_search(request: Request) -> JSONResponse:
                     limit=retrieval_limit,
                     accessible_owners=owners,
                     shared_root_ids=roots,
+                    granularity=granularity,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     path_prefixes=path_prefixes,
@@ -1143,7 +1188,7 @@ async def vector_search(request: Request) -> JSONResponse:
         record_search_request(
             surface="http_viz",
             algorithm=_search_algorithm_label(algorithm, fusion),
-            granularity=GRANULARITY_CHUNK,
+            granularity=granularity,
             reranked=_reranked_label(rerank, rerank_outcome),
             status="success",
             results_returned=len(formatted_results),
@@ -1171,7 +1216,7 @@ async def vector_search(request: Request) -> JSONResponse:
         record_search_request(
             surface="http_viz",
             algorithm=_search_algorithm_label(algorithm, fusion),
-            granularity=GRANULARITY_CHUNK,
+            granularity=granularity,
             reranked="false",
             status="error",
         )
