@@ -5,6 +5,22 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.183.0 (2026-08-28)
+
+### Feat
+
+- **vector**: meter the stale-chunk prune delete (#1399 review r2)
+
+### Fix
+
+- **vector**: resolve placeholder-vs-index by rule, not by scroll order
+- **vector**: never fail a successful index on a prune error (#1399 review)
+- **vector**: prune stale chunk points so re-indexing converges
+
+### Perf
+
+- **vector**: run the placeholder/index lookups concurrently (#1399 review r4)
+
 ## v0.182.0 (2026-08-26)
 
 ### Feat
