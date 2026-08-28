@@ -249,3 +249,49 @@ async def test_poll_raises_on_http_error(monkeypatch):
 )
 def test_parse_retry_after(raw, expected):
     assert gbc._parse_retry_after(raw) == expected
+
+
+def _capture_timeouts(monkeypatch, handler) -> list[httpx.Timeout]:
+    """Like ``_patch_transport`` but records the ``timeout`` each AsyncClient is
+    constructed with, so the submit/poll split can be asserted."""
+    timeouts: list[httpx.Timeout] = []
+    real = httpx.AsyncClient
+
+    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        timeouts.append(kwargs["timeout"])
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    return timeouts
+
+
+async def test_submit_and_poll_use_separate_read_timeouts(monkeypatch):
+    """Submit must NOT share the poll's control-plane read timeout.
+
+    A poll is a small status read; a submit uploads the whole base64-inflated
+    document and the gateway stages it to object storage before answering. Losing
+    that race strands the job gateway-side: the caller never learns the job_id,
+    ``insert_pending`` never runs, and the retry submits a SECOND job for the same
+    document. Collapsing these two constants back together would silently restore
+    that duplicate-GPU-work bug, so pin them apart.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"job_id": "surya/j", "status": "pending"})
+        return httpx.Response(202, json={"status": "pending"})
+
+    timeouts = _capture_timeouts(monkeypatch, handler)
+    client = gbc.GatewayBatchOcrClient("https://gw", "surya/surya-ocr-2")
+
+    await client.submit(b"%PDF-1.7", "application/pdf", custom_id="doc-1")
+    await client.poll("surya/j")
+
+    submit_timeout, poll_timeout = timeouts
+    assert submit_timeout.read == gbc._BATCH_SUBMIT_TIMEOUT_SECONDS
+    assert poll_timeout.read == gbc._BATCH_REQUEST_TIMEOUT_SECONDS
+    assert submit_timeout.read > poll_timeout.read
+    # The connect timeout stays short and shared -- neither call waits on OCR.
+    assert submit_timeout.connect == poll_timeout.connect
+    assert submit_timeout.connect == gbc._BATCH_CONNECT_TIMEOUT_SECONDS

@@ -250,3 +250,150 @@ async def test_write_placeholder_payload_includes_instance_id(monkeypatch):
     # Dense slot is always sized from the embedding provider (dim=4 here) — the
     # keyword/simple-dimension branch is gone (per-document index mode).
     assert len(upserted_point.vector["dense"]) == 4
+
+
+# --- query_document_metadata: placeholder vs real must not be a coin flip ---
+#
+# Placeholder and chunk points have different deterministic ids, so they coexist.
+# The lookup used to be one unfiltered scroll(limit=1) with no ordering, so which
+# one answered "is this indexed?" was decided by point-id order. The scanner tests
+# `is_placeholder` BEFORE `index_mode`/`modified_at`, so an indexed, unchanged
+# document whose leftover placeholder sorted first read as "still queued", went
+# stale, and was re-queued every cycle — a full re-OCR each time on the OCR tier.
+
+
+def _payload(*, is_placeholder: bool, modified_at: int) -> dict:
+    return {
+        "is_placeholder": is_placeholder,
+        "modified_at": modified_at,
+        "doc_id": "d-1",
+    }
+
+
+def _patch_lookup(monkeypatch, *, real: dict | None, placeholder: dict | None):
+    """Serve each scroll from its ``is_placeholder`` filter value, so the test
+    pins the resolution logic rather than any incidental call order."""
+    fake_qdrant = AsyncMock()
+
+    async def scroll(**kwargs):
+        wanted = next(
+            c.match.value
+            for c in kwargs["scroll_filter"].must
+            if c.key == "is_placeholder"
+        )
+        found = placeholder if wanted else real
+        return ([SimpleNamespace(id="p", payload=found)] if found else [], None)
+
+    fake_qdrant.scroll.side_effect = scroll
+
+    async def fake_get_qdrant_client():
+        return fake_qdrant
+
+    monkeypatch.setattr(placeholder_module, "get_qdrant_client", fake_get_qdrant_client)
+    monkeypatch.setattr(
+        placeholder_module,
+        "get_settings",
+        lambda: SimpleNamespace(get_collection_name=lambda: "c"),
+    )
+    return fake_qdrant
+
+
+@pytest.mark.unit
+async def test_leftover_placeholder_does_not_mask_the_index(monkeypatch):
+    """THE regression: same modified_at ⇒ the index answers, not the leftover.
+
+    A placeholder no newer than the indexed content is stale bookkeeping. If it
+    answered here the scanner would take its `is_placeholder` branch and re-queue
+    a document that is already correctly indexed — forever.
+    """
+    _patch_lookup(
+        monkeypatch,
+        real=_payload(is_placeholder=False, modified_at=1700),
+        placeholder=_payload(is_placeholder=True, modified_at=1700),
+    )
+
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+
+    assert got["is_placeholder"] is False
+
+
+@pytest.mark.unit
+async def test_in_flight_newer_version_still_wins(monkeypatch):
+    """A genuinely newer queued version must keep suppressing re-enqueues.
+
+    This is why the fix is not simply "always prefer the real point": while a
+    newer version is in flight, returning the stale indexed point would make the
+    scanner re-queue an already-queued document on every pass.
+    """
+    _patch_lookup(
+        monkeypatch,
+        real=_payload(is_placeholder=False, modified_at=1700),
+        placeholder=_payload(is_placeholder=True, modified_at=1800),
+    )
+
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+
+    assert got["is_placeholder"] is True
+
+
+@pytest.mark.unit
+async def test_placeholder_only_and_real_only_and_neither(monkeypatch):
+    """The three single-sided cases keep their pre-existing answers."""
+    _patch_lookup(
+        monkeypatch,
+        real=None,
+        placeholder=_payload(is_placeholder=True, modified_at=1700),
+    )
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+    assert got["is_placeholder"] is True  # queued, never indexed
+
+    _patch_lookup(
+        monkeypatch,
+        real=_payload(is_placeholder=False, modified_at=1700),
+        placeholder=None,
+    )
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+    assert got["is_placeholder"] is False  # indexed, nothing queued
+
+    _patch_lookup(monkeypatch, real=None, placeholder=None)
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+    assert got is None  # never seen
+
+
+@pytest.mark.unit
+async def test_lookup_failure_still_fails_open(monkeypatch):
+    """Unchanged contract: a Qdrant error reads as None ("never seen").
+
+    Worth pinning now that the two scrolls run under an anyio task group: a child
+    failure surfaces as an ExceptionGroup, not the raw error. That is still an
+    Exception (3.11+), so the fail-open handler catches it — but silently, which
+    is exactly the kind of thing that stops being true after a refactor.
+    """
+    fake_qdrant = AsyncMock()
+    fake_qdrant.scroll.side_effect = RuntimeError("qdrant down")
+
+    async def fake_get_qdrant_client():
+        return fake_qdrant
+
+    monkeypatch.setattr(placeholder_module, "get_qdrant_client", fake_get_qdrant_client)
+    monkeypatch.setattr(
+        placeholder_module,
+        "get_settings",
+        lambda: SimpleNamespace(get_collection_name=lambda: "c"),
+    )
+
+    got = await placeholder_module.query_document_metadata(
+        doc_id="d-1", doc_type="file", user_id="alice"
+    )
+
+    assert got is None
