@@ -167,7 +167,7 @@ This project is licensed under the AGPL-3.0 License. See [LICENSE](./LICENSE) fo
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=cbcoutinho/nextcloud-mcp-server&type=Date)](https://www.star-history.com/#cbcoutinho/nextcloud-mcp-server&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=cbcoutinho/nextcloud-mcp-server&type=Date)](https://star-history.dera.page/#cbcoutinho/nextcloud-mcp-server&Date)
 
 ## References
 
