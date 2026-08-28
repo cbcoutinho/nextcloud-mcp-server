@@ -2615,16 +2615,13 @@ class CalendarClient:
 
         except ValueError:
             # A rejected update — a pairing conflict, or a date string that
-            # won't parse — is the caller's to fix. The fallback below rebuilds
-            # the todo from the *partial* update dict, so swallowing this would
-            # answer "invalid input" by silently dropping every stored property
-            # the caller didn't happen to pass, and reporting success.
+            # won't parse — is the caller's to fix. Rebuilding the todo from
+            # the *partial* update dict would answer "invalid input" by silently
+            # dropping every stored property the caller didn't happen to pass,
+            # and reporting success.
             # ``_merge_ical_properties`` dropped its identical fallback for
             # VEVENT for exactly that reason.
             raise
-        except Exception as e:
-            logger.error("Error merging iCal todo properties: %s", e)
-            return self._create_ical_todo(todo_data, todo_uid)
 
     # ============= Helper Methods - Filtering =============
 
