@@ -1286,7 +1286,6 @@ class CalendarClient:
             updated_ical = self._merge_ical_todo_properties(
                 todo.data,  # type: ignore[arg-type]
                 todo_data,
-                todo_uid,
             )
             logger.debug("Merged iCal data length: %s", len(updated_ical))
 
@@ -2509,122 +2508,118 @@ class CalendarClient:
             return None
 
     def _merge_ical_todo_properties(
-        self, raw_ical: str, todo_data: dict[str, Any], todo_uid: str
+        self, raw_ical: str, todo_data: dict[str, Any]
     ) -> str:
-        """Merge new todo data into existing raw iCal while preserving all properties."""
-        try:
-            logger.debug(
-                "Merging todo properties for %s: %s", todo_uid, list(todo_data.keys())
-            )
-            cal = Calendar.from_ical(raw_ical)
+        """Merge new todo data into existing raw iCal while preserving all properties.
 
-            for component in cal.walk():
-                if component.name == "VTODO":
-                    # Update only provided properties
-                    if "summary" in todo_data:
-                        component["SUMMARY"] = todo_data["summary"]
-                    if "description" in todo_data:
-                        component["DESCRIPTION"] = todo_data["description"]
-                    if "status" in todo_data:
-                        status_value = todo_data["status"].upper()
-                        component["STATUS"] = status_value
-                        logger.debug("Set STATUS to %s", status_value)
-                    if "priority" in todo_data:
-                        component["PRIORITY"] = todo_data["priority"]
-                    if "percent_complete" in todo_data:
-                        percent_value = todo_data["percent_complete"]
-                        component["PERCENT-COMPLETE"] = percent_value
-                        logger.debug("Set PERCENT-COMPLETE to %s", percent_value)
+        The todo's own ``UID`` is carried through from ``raw_ical`` like any other
+        preserved property, so no ``todo_uid`` argument is needed. (One used to be
+        required solely by the removed rebuild fallback.)
 
-                    # Due / start dates, paired the same way as
-                    # _create_ical_todo — except a side that isn't being
-                    # updated votes with the value type already stored.
-                    supplied = {
-                        prop: todo_data[prop]
-                        for prop in ("due", "dtstart")
-                        if todo_data.get(prop)
-                    }
-                    date_only = all(
-                        self._is_date_only(v) for v in supplied.values()
-                    ) and all(
-                        self._stored_is_all_day(component, prop.upper()) is not False
-                        for prop in ("due", "dtstart")
-                        if prop not in supplied
+        Raises on any merge failure rather than substituting a synthesised todo.
+        This previously caught every exception and fell back to
+        ``_create_ical_todo(todo_data, ...)``, which rebuilds the todo from the
+        *partial update dict* — destroying summary, due date, dtstart, completed
+        timestamp, categories, RRULE, alarms and every custom property the caller
+        did not happen to pass, while reporting success.
+        """
+        logger.debug("Merging todo properties: %s", list(todo_data.keys()))
+        cal = Calendar.from_ical(raw_ical)
+
+        for component in cal.walk():
+            if component.name == "VTODO":
+                # Update only provided properties
+                if "summary" in todo_data:
+                    component["SUMMARY"] = todo_data["summary"]
+                if "description" in todo_data:
+                    component["DESCRIPTION"] = todo_data["description"]
+                if "status" in todo_data:
+                    status_value = todo_data["status"].upper()
+                    component["STATUS"] = status_value
+                    logger.debug("Set STATUS to %s", status_value)
+                if "priority" in todo_data:
+                    component["PRIORITY"] = todo_data["priority"]
+                if "percent_complete" in todo_data:
+                    percent_value = todo_data["percent_complete"]
+                    component["PERCENT-COMPLETE"] = percent_value
+                    logger.debug("Set PERCENT-COMPLETE to %s", percent_value)
+
+                # Due / start dates, paired the same way as
+                # _create_ical_todo — except a side that isn't being
+                # updated votes with the value type already stored.
+                supplied = {
+                    prop: todo_data[prop]
+                    for prop in ("due", "dtstart")
+                    if todo_data.get(prop)
+                }
+                date_only = all(
+                    self._is_date_only(v) for v in supplied.values()
+                ) and all(
+                    self._stored_is_all_day(component, prop.upper()) is not False
+                    for prop in ("due", "dtstart")
+                    if prop not in supplied
+                )
+
+                # A partial update cannot flip one half of the pair on its
+                # own: writing the supplied side as a DATE-TIME while the
+                # side left out stays a stored DATE is exactly the mismatch
+                # §3.8.2.3 forbids, and there is no defensible time of day
+                # to invent for the property the caller didn't mention.
+                # _validate_all_day_flip rejects the same flip for VEVENT.
+                stranded = [
+                    prop
+                    for prop in ("due", "dtstart")
+                    if supplied
+                    and not date_only
+                    and prop not in supplied
+                    and self._stored_is_all_day(component, prop.upper())
+                ]
+                if stranded:
+                    raise ValueError(
+                        "changing a whole-day todo to a timed one requires "
+                        f"passing {' and '.join(sorted(supplied.keys() | set(stranded)))} "
+                        "together, so DUE and DTSTART cannot end up with "
+                        "mismatched value types"
                     )
 
-                    # A partial update cannot flip one half of the pair on its
-                    # own: writing the supplied side as a DATE-TIME while the
-                    # side left out stays a stored DATE is exactly the mismatch
-                    # §3.8.2.3 forbids, and there is no defensible time of day
-                    # to invent for the property the caller didn't mention.
-                    # _validate_all_day_flip rejects the same flip for VEVENT.
-                    stranded = [
-                        prop
-                        for prop in ("due", "dtstart")
-                        if supplied
-                        and not date_only
-                        and prop not in supplied
-                        and self._stored_is_all_day(component, prop.upper())
-                    ]
-                    if stranded:
-                        raise ValueError(
-                            "changing a whole-day todo to a timed one requires "
-                            f"passing {' and '.join(sorted(supplied.keys() | set(stranded)))} "
-                            "together, so DUE and DTSTART cannot end up with "
-                            "mismatched value types"
-                        )
+                for prop, value in supplied.items():
+                    parsed = self._parse_todo_date(value, date_only=date_only)
+                    component[prop.upper()] = vDDDTypes(parsed)
+                    logger.debug("Set %s to %s", prop.upper(), parsed)
 
-                    for prop, value in supplied.items():
-                        parsed = self._parse_todo_date(value, date_only=date_only)
-                        component[prop.upper()] = vDDDTypes(parsed)
-                        logger.debug("Set %s to %s", prop.upper(), parsed)
+                # Handle completed date
+                if "completed" in todo_data:
+                    completed_str = todo_data["completed"]
+                    if completed_str:
+                        completed_dt = self._ensure_timezone_aware(completed_str)
+                        component["COMPLETED"] = vDDDTypes(completed_dt)
+                        logger.debug("Set COMPLETED to %s", completed_dt)
 
-                    # Handle completed date
-                    if "completed" in todo_data:
-                        completed_str = todo_data["completed"]
-                        if completed_str:
-                            completed_dt = self._ensure_timezone_aware(completed_str)
-                            component["COMPLETED"] = vDDDTypes(completed_dt)
-                            logger.debug("Set COMPLETED to %s", completed_dt)
+                # Handle categories
+                if "categories" in todo_data:
+                    categories_str = todo_data["categories"]
+                    if categories_str:
+                        component["CATEGORIES"] = [
+                            c.strip() for c in categories_str.split(",")
+                        ]
+                        logger.debug("Set CATEGORIES to %s", categories_str)
 
-                    # Handle categories
-                    if "categories" in todo_data:
-                        categories_str = todo_data["categories"]
-                        if categories_str:
-                            component["CATEGORIES"] = [
-                                c.strip() for c in categories_str.split(",")
-                            ]
-                            logger.debug("Set CATEGORIES to %s", categories_str)
+                # Handle reminders (VALARM)
+                self._apply_reminders(
+                    component,
+                    todo_data,
+                    todo_data.get("summary") or str(component.get("summary", "")),
+                    _TODO_REMINDER_DESCRIPTION,
+                )
 
-                    # Handle reminders (VALARM)
-                    self._apply_reminders(
-                        component,
-                        todo_data,
-                        todo_data.get("summary") or str(component.get("summary", "")),
-                        _TODO_REMINDER_DESCRIPTION,
-                    )
+                # Update timestamps
+                now = dt.datetime.now(dt.UTC)
+                component["LAST-MODIFIED"] = vDDDTypes(now)
+                component["DTSTAMP"] = vDDDTypes(now)
 
-                    # Update timestamps
-                    now = dt.datetime.now(dt.UTC)
-                    component["LAST-MODIFIED"] = vDDDTypes(now)
-                    component["DTSTAMP"] = vDDDTypes(now)
+                break
 
-                    break
-
-            return cal.to_ical().decode("utf-8")
-
-        except ValueError:
-            # A rejected update — a pairing conflict, or a date string that
-            # won't parse — is the caller's to fix. The fallback below rebuilds
-            # the todo from the *partial* update dict, so swallowing this would
-            # answer "invalid input" by silently dropping every stored property
-            # the caller didn't happen to pass, and reporting success.
-            # ``_merge_ical_properties`` dropped its identical fallback for
-            # VEVENT for exactly that reason.
-            raise
-        except Exception as e:
-            logger.error("Error merging iCal todo properties: %s", e)
-            return self._create_ical_todo(todo_data, todo_uid)
+        return cal.to_ical().decode("utf-8")
 
     # ============= Helper Methods - Filtering =============
 
