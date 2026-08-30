@@ -101,6 +101,15 @@ class Calendar(BaseModel):
         None,
         description="Source URL of an external/subscribed read-only calendar",
     )
+    transparent: bool = Field(
+        default=False,
+        description=(
+            "Whether the calendar is transparent for free/busy purposes "
+            "(CalDAV schedule-calendar-transp, RFC 4791 5.2.9). Nextcloud "
+            "surfaces this as 'never show me as busy'. Events in such a "
+            "calendar should be ignored when computing availability."
+        ),
+    )
 
 
 class CalendarEventSummary(BaseModel):
@@ -136,6 +145,14 @@ class CalendarEventSummary(BaseModel):
     location: Optional[str] = Field(None, description="Event location")
     description: Optional[str] = Field(None, description="Event description")
     categories: List[str] = Field(default_factory=list, description="Event categories")
+    transp: Optional[str] = Field(
+        None,
+        description=(
+            "Free/busy transparency of this event (RFC 5545 3.8.2.7 TRANSP): "
+            "'OPAQUE' consumes time, 'TRANSPARENT' does not. Nextcloud shows "
+            "this as 'Busy'/'Free' on the event."
+        ),
+    )
     status: Optional[str] = Field(
         None, description="Event status (CONFIRMED, TENTATIVE, CANCELLED)"
     )

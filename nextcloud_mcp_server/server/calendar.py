@@ -103,6 +103,7 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
         description=event.get("description") or None,
         categories=categories,
         status=event.get("status"),
+        transp=event.get("transp"),
         calendar_name=event.get("calendar_name"),
         calendar_display_name=event.get("calendar_display_name")
         or event.get("calendar_name"),

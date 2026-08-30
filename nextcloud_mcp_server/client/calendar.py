@@ -55,6 +55,18 @@ _TODO_REMINDER_DESCRIPTION = "Todo reminder"
 _VALARM_ACTIONS = frozenset({"DISPLAY", "EMAIL", "AUDIO"})
 
 
+def _calendar_is_transparent(response_elem: Any, ns: dict[str, str]) -> bool:
+    """Read CalDAV ``schedule-calendar-transp`` from a PROPFIND response.
+
+    Nextcloud exposes its per-calendar "never show me as busy" switch through
+    this property (RFC 4791 5.2.9). The value is an *element*, not text:
+    ``<c:schedule-calendar-transp><c:transparent/></c:schedule-calendar-transp>``.
+    A missing property means opaque, i.e. the calendar consumes time.
+    """
+    elem = response_elem.find(".//c:schedule-calendar-transp", ns)
+    return elem is not None and elem.find("./c:transparent", ns) is not None
+
+
 def _rrule_to_string(rrule: Any) -> str:
     """Render an icalendar ``vRecur`` as an RFC 5545 RRULE value.
 
@@ -510,6 +522,7 @@ class CalendarClient:
         <cs:calendar-color/>
         <ical:calendar-color/>
         <cs:source/>
+        <c:schedule-calendar-transp/>
     </d:prop>
 </d:propfind>"""
 
@@ -599,6 +612,8 @@ class CalendarClient:
                 elif source_elem.text and source_elem.text.strip():
                     source = source_elem.text.strip()
 
+            transparent = _calendar_is_transparent(response_elem, ns)
+
             result.append(
                 {
                     "name": calendar_name,
@@ -608,6 +623,7 @@ class CalendarClient:
                     "href": calendar_url,
                     "read_only": is_subscribed,
                     "source": source,
+                    "transparent": transparent,
                 }
             )
 
@@ -1836,6 +1852,11 @@ class CalendarClient:
             "description": str(component.get("description", "")),
             "location": str(component.get("location", "")),
             "status": str(component.get("status", "CONFIRMED")),
+            # TRANSP marks whether this event consumes time (RFC 5545
+            # 3.8.2.7). Nextcloud surfaces it as Busy/Free on the event.
+            # Without it a caller cannot tell that e.g. birthdays are
+            # explicitly non-blocking. Absent means OPAQUE.
+            "transp": str(component.get("transp", "OPAQUE")).upper(),
             "priority": int(component.get("priority", 5)),
             "privacy": str(component.get("class", "PUBLIC")),
             "url": str(component.get("url", "")),
