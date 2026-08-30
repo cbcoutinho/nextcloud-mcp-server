@@ -1318,11 +1318,21 @@ async def test_write_file_etag_is_none_when_absent(mocker):
         ("abc", "abc"),
         ('""', ""),
         (None, None),
-        # Documented wart: strip only removes characters from the *ends*, so
-        # the leading "W" protects the opening quote and a weak validator comes
-        # out as W/"abc — usable as neither an etag nor an If-Match value.
-        # Pinned so the behaviour is a known quantity rather than a surprise.
-        ('W/"abc"', 'W/"abc'),
+        # Weak validators used to come out as W/"abc — strip only removes
+        # characters from the ends, and the leading W protected the opening
+        # quote. The prefix is dropped first now, so the result is usable.
+        ('W/"abc"', "abc"),
+        # Apache's mod_deflate appends -gzip to the ETag of every compressed
+        # response (DeflateAlterETag AddSuffix, the default). Left in place it
+        # breaks every conditional overwrite behind such a proxy.
+        ('"abc-gzip"', "abc"),
+        ("abc-br", "abc"),
+        ("abc-deflate", "abc"),
+        ('W/"abc-gzip"', "abc"),
+        # Only a trailing suffix counts: a name that merely contains one
+        # survives untouched.
+        ("gzip-abc", "gzip-abc"),
+        ("   abc   ", "abc"),
     ],
 )
 def test_normalize_etag(raw, expected):

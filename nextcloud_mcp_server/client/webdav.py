@@ -186,15 +186,32 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     representation cannot drift between the value we hand out and the value
     ``_write_precondition_header`` expects to re-quote.
 
-    Known wart, unchanged from the ad-hoc ``.strip('"')`` calls this replaces: a
-    weak validator (``W/"abc"``) comes out as ``W/"abc`` — ``strip`` only removes
-    characters from the *ends*, and the leading ``W`` protects the opening quote.
-    The result is usable as neither an etag nor an ``If-Match`` value (RFC 9110
-    requires strong comparison there anyway). Nextcloud does not emit weak etags
-    for files, so this has never bitten; named and pinned by a test rather than
-    left to be rediscovered.
+    Two shapes need repairing beyond the quotes:
+
+    *Weak validators.* ``W/"abc"`` used to come out as ``W/"abc`` because
+    ``strip`` only removes characters from the *ends* and the leading ``W``
+    protected the opening quote — usable as neither an etag nor an ``If-Match``
+    value (RFC 9110 requires strong comparison there anyway). The prefix is now
+    removed first.
+
+    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` to the
+    ETag of every compressed response unless ``DeflateAlterETag NoChange`` is
+    set; ``AddSuffix`` is the default and the directive did not exist before
+    Apache 2.4.15, so many deployments never set it. The etag a caller reads
+    back is then not the etag the origin stored, and handing it to ``If-Match``
+    makes Nextcloud reject the write — so every overwrite of an existing file
+    fails behind such a proxy, with an error that reads like a real conflict.
     """
-    return raw.strip('"') if raw is not None else None
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("W/"):
+        cleaned = cleaned[2:]
+    cleaned = cleaned.strip('"')
+    for suffix in ("-gzip", "-br", "-deflate"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
 
 
 #: Collection holding one file's comments, addressed by file id.
@@ -344,7 +361,7 @@ def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
         return {"If-None-Match": "*"}
     if if_match == "*":
         return {"If-Match": "*"}
-    return {"If-Match": f'"{if_match}"'}
+    return {"If-Match": f'"{_normalize_etag(if_match)}"'}
 
 
 def _write_conflict_result(
