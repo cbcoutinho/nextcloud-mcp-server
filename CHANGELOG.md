@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.184.1 (2026-08-30)
+
+### Fix
+
+- **webdav**: normalise etags mangled by a compressing proxy
+
+### Refactor
+
+- **webdav**: fold suffix handling into the existing etag normalizer
+
 ## v0.184.0 (2026-08-30)
 
 ### Feat
