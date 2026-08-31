@@ -154,7 +154,7 @@ def configure_sharing_tools(mcp: FastMCP):
             # redirect, which is the failure this whole message path exists to
             # avoid.
             raise ToolError(str(e)) from e
-        return json.dumps(share_data, indent=2)
+        return json.dumps(share_data)
 
     @mcp.tool(
         title="Create Public Download Link",
@@ -240,9 +240,7 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         await client.sharing.delete_share(share_id)
-        return json.dumps(
-            {"success": True, "message": f"Share {share_id} deleted"}, indent=2
-        )
+        return json.dumps({"success": True, "message": f"Share {share_id} deleted"})
 
     @mcp.tool(
         title="Get Share Details",
@@ -264,7 +262,7 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         share_data = await client.sharing.get_share(share_id)
-        return json.dumps(share_data, indent=2)
+        return json.dumps(share_data)
 
     @mcp.tool(
         title="List Shares",
@@ -289,7 +287,7 @@ def configure_sharing_tools(mcp: FastMCP):
         shares = await client.sharing.list_shares(
             path=path, shared_with_me=shared_with_me
         )
-        return json.dumps(shares, indent=2)
+        return json.dumps(shares)
 
     @mcp.tool(
         title="Update Share",
@@ -320,4 +318,4 @@ def configure_sharing_tools(mcp: FastMCP):
         share_data = await client.sharing.update_share(
             share_id=share_id, permissions=permissions
         )
-        return json.dumps(share_data, indent=2)
+        return json.dumps(share_data)

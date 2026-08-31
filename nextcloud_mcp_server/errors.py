@@ -24,6 +24,7 @@ from nextcloud_mcp_server.capabilities import (
     enforce_capability,
     filter_by_capability,
 )
+from nextcloud_mcp_server.serialization import compact_tool_result
 
 #: ``summary``/``hint`` per status. 429 is rare -- ``retry_on_429`` in
 #: ``client/base.py`` absorbs it -- but ``_stream_request`` re-raises it once
@@ -188,8 +189,9 @@ def friendly_tool_error(exc: BaseException | None, tool_name: str) -> str | None
 
 
 class NextcloudFastMCP(FastMCP):
-    """FastMCP that rewrites raw HTTP failures into LLM-friendly messages and
-    hides tools this Nextcloud instance cannot serve.
+    """FastMCP that rewrites raw HTTP failures into LLM-friendly messages,
+    hides tools this Nextcloud instance cannot serve, and strips the SDK's
+    ``indent=2`` from tool results (GH #1395).
 
     Subclass rather than patch: ``FastMCP._setup_handlers`` binds
     ``self.call_tool``/``self.list_tools`` during ``__init__``, so a later
@@ -205,7 +207,7 @@ class NextcloudFastMCP(FastMCP):
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         await enforce_capability(self, name)
         try:
-            return await super().call_tool(name, arguments)
+            return compact_tool_result(await super().call_tool(name, arguments))
         except ToolError as e:
             message = friendly_tool_error(e.__cause__, name)
             if message is None:
