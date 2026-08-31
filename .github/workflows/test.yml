@@ -59,12 +59,25 @@ jobs:
     name: package-smoke (${{ matrix.os }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up the uv environment
-        uses: ./.github/actions/uv-env
+      # Deliberately NOT ./.github/actions/uv-env: that syncs the dev group,
+      # which carries pyroscope-io -- a Rust extension with no Windows wheel,
+      # kept out of the default dependencies for exactly that reason (see
+      # pyproject.toml). This job needs the built wheel and nothing else, and
+      # syncing the dev group here fails the Windows runner outright with
+      # "pyroscope-io==1.1.0 ... marked as --no-build but has no binary
+      # distribution".
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Build the wheel
+        shell: bash
+        run: uv build --wheel --out-dir dist
       # Installs the built wheel (not the source tree) into a throwaway
       # environment: --no-build cannot install this project from source, and
-      # the wheel is the artifact users actually get. bash on both runners so
-      # the glob expands on Windows too.
+      # the wheel is the artifact users actually get. Its runtime dependencies
+      # all publish wheels, which is what keeps --no-build viable here. bash on
+      # both runners so the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
         shell: bash
         run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help

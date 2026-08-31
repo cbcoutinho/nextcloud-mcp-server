@@ -175,8 +175,10 @@ dev = [
     "pact-python>=3.4.0",
     # Linux-only dev/CI: exercise the profiling configured-path tests. The
     # unit-test job runs on ubuntu, so the pyroscope-io Rust wheel resolves;
-    # package-smoke (which hits Windows) uses `--with .` and never sees the dev
-    # group, so this doesn't reintroduce the Windows build failure.
+    # package-smoke (which hits Windows) installs only the built wheel and
+    # never syncs this group, so this doesn't reintroduce the Windows build
+    # failure. That job must therefore stay off .github/actions/uv-env, which
+    # syncs the dev group -- a comment on the job says so.
     "pyroscope-io>=0.8.0",
 ]
 

@@ -23,7 +23,12 @@ runs:
         # nextcloud-mcp-server @ editable+. can't be installed because it is
         # marked as --no-build but has no binary distribution". Hence the split:
         # dependencies come from wheels only, and the one build we do run is of
-        # our own source, whose build backend is not a supply-chain risk.
+        # our own source -- with build-backend = "uv_build", which ships inside
+        # the uv binary, so no third-party code is fetched or executed for it.
+        #
+        # NOTE: `uv sync` installs the dev group, which carries pyroscope-io --
+        # no Windows wheel. Any job on a Windows runner must skip this action
+        # and build the wheel directly (see package-smoke).
         uv sync --frozen --no-build --no-install-project
         uv build --wheel --out-dir dist
         uv pip install --no-deps --no-build dist/*.whl
