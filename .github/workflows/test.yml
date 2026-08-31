@@ -215,7 +215,7 @@ jobs:
         run: |
           cd third_party/oidc
           composer install --no-dev --optimize-autoloader
-          npm ci
+          npm ci --ignore-scripts
           npm run build
 
       # Generate an ephemeral Fernet key per CI run. docker-compose.yml
@@ -406,7 +406,7 @@ jobs:
         run: |
           cd third_party/oidc
           composer install --no-dev --optimize-autoloader
-          npm ci
+          npm ci --ignore-scripts
           npm run build
 
       # docker-compose.yml requires TOKEN_ENCRYPTION_KEY; generate an ephemeral
