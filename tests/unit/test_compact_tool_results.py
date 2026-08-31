@@ -7,7 +7,11 @@ from mcp.types import ImageContent, TextContent
 
 from nextcloud_mcp_server.errors import NextcloudFastMCP
 from nextcloud_mcp_server.models.base import BaseResponse
-from nextcloud_mcp_server.serialization import compact_json_text, compact_tool_result
+from nextcloud_mcp_server.serialization import (
+    compact_json_dumps,
+    compact_json_text,
+    compact_tool_result,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -27,6 +31,16 @@ def test_indented_json_object_is_compacted():
 def test_non_ascii_survives_unescaped():
     # \uXXXX escaping would cost more tokens than the indentation removed.
     assert compact_json_text('{\n  "n": "Björn"\n}') == '{"n":"Björn"}'
+
+
+def test_compact_dumps_spends_nothing_on_presentation():
+    """The half-applied version of this cost a review round: separators without
+    ensure_ascii=False still pays the \\uXXXX tax on any non-ASCII field."""
+    text = compact_json_dumps({"owner": "Björn", "path": "/a b", "n": 1})
+
+    assert text == '{"owner":"Björn","path":"/a b","n":1}'
+    assert "\\u" not in text
+    assert ", " not in text
 
 
 def test_prose_and_compact_json_are_left_alone():

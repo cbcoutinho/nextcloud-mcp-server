@@ -18,11 +18,20 @@ from typing import Any
 
 from mcp.types import ContentBlock, TextContent
 
-#: ``json.dumps`` separators with no filler whitespace. The default
-#: ``(", ", ": ")`` spends two tokens per field on nothing; a tool building its
-#: own JSON string should pass these, since the compaction below cannot reach a
-#: single-line string a tool returned itself.
-COMPACT_SEPARATORS = (",", ":")
+
+def compact_json_dumps(data: Any) -> str:
+    """Serialise ``data`` as JSON with nothing spent on presentation.
+
+    Both settings matter and are easy to half-apply, which is why they live
+    together here rather than as arguments at each call site: the default
+    separators ``(", ", ": ")`` spend two tokens per field on filler, and the
+    default ``ensure_ascii=True`` re-escapes non-ASCII to ``\\uXXXX``, which
+    costs *more* than the whitespace this saves.
+
+    Use it for JSON a tool builds itself -- ``compact_tool_result`` cannot
+    reach a single-line string a tool already returned.
+    """
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
 def compact_json_text(text: str) -> str:
@@ -30,8 +39,6 @@ def compact_json_text(text: str) -> str:
 
     Only text that opens the way ``indent=2`` output does is even parsed, so a
     tool returning prose or already-compact JSON is left untouched.
-    ``ensure_ascii=False`` matters: escaping non-ASCII back to ``\\uXXXX`` would
-    spend more tokens than the indentation this removes.
     """
     if not text.startswith(("{\n", "[\n")):
         return text
@@ -39,7 +46,7 @@ def compact_json_text(text: str) -> str:
         data = json.loads(text)
     except ValueError:
         return text
-    return json.dumps(data, separators=COMPACT_SEPARATORS, ensure_ascii=False)
+    return compact_json_dumps(data)
 
 
 def _compact_block(block: ContentBlock) -> ContentBlock:
