@@ -204,7 +204,7 @@ jobs:
         run: |
           cd third_party/astrolabe
           composer install --no-dev --optimize-autoloader
-          npm ci
+          npm ci --ignore-scripts
           npm run build
 
       # TEMPORARY -- drop once H2CK/oidc#696 ships and the app-store install
@@ -248,7 +248,7 @@ jobs:
 
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run playwright install chromium --with-deps
+        run: uv run --frozen playwright install chromium --with-deps
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud
@@ -347,7 +347,7 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v \
+          uv run --frozen pytest -v \
             --log-cli-level=WARN \
             -m '${{ matrix.markers }}' \
             -o "addopts=-p no:asyncio" \
@@ -504,7 +504,7 @@ jobs:
           DOCUMENT_OCR_ENABLED: "true"
           DOCUMENT_OCR_PROVIDER: "docling"
         run: |
-          uv run pytest -v \
+          uv run --frozen pytest -v \
             --log-cli-level=WARN \
             -m docling \
             -o "addopts=-p no:asyncio" \
