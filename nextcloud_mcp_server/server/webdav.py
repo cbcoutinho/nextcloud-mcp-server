@@ -1260,10 +1260,11 @@ def configure_webdav_tools(mcp: FastMCP):
         client = await get_client(ctx)
         # Resolving through the shared helper applies the excluded-tag guard
         # and turns a missing file into a refusal rather than a ValueError
-        # surfacing from the client layer.
-        await _resolve_commented_file(client, path)
+        # surfacing from the client layer. Passing the id through spares
+        # list_versions a second get_fileid round-trip for the same path.
+        file_id = await _resolve_commented_file(client, path)
 
-        data = await client.webdav.list_versions(path)
+        data = await client.webdav.list_versions(path, file_id=file_id)
         versions = [
             FileVersion(
                 version_id=v["version_id"],
@@ -1305,7 +1306,9 @@ def configure_webdav_tools(mcp: FastMCP):
             version_id: The version_id from nc_webdav_list_versions.
         """
         client = await get_client(ctx)
-        await _resolve_commented_file(client, path)
+        # See nc_webdav_list_versions: passing the id through spares
+        # restore_version a second get_fileid round-trip.
+        file_id = await _resolve_commented_file(client, path)
 
-        await client.webdav.restore_version(path, version_id)
+        await client.webdav.restore_version(path, version_id, file_id=file_id)
         return RestoreVersionResponse(path=path, restored_version=version_id)

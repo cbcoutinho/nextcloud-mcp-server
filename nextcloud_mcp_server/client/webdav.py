@@ -2753,7 +2753,11 @@ class WebDAVClient(BaseNextcloudClient):
             "PROPFIND",
             f"{self._trashbin_base()}/trash",
             content=self._propfind_body(self._TRASH_PROPS),
-            headers={"Depth": "1", "Content-Type": "application/xml"},
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+                "OCS-APIRequest": "true",
+            },
         )
 
         root = ET.fromstring(response.content)
@@ -2785,14 +2789,26 @@ class WebDAVClient(BaseNextcloudClient):
         await self._make_request(
             "MOVE",
             source,
-            headers={"Destination": self._resolve_url(destination)},
+            headers={
+                "Destination": self._resolve_url(destination),
+                "OCS-APIRequest": "true",
+            },
         )
         return {"restored": entry_id}
 
-    async def list_versions(self, path: str) -> Dict[str, Any]:
-        """List the stored previous versions of a file."""
+    async def list_versions(
+        self, path: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        """List the stored previous versions of a file.
+
+        ``file_id`` lets a caller that already resolved the path (e.g. the
+        MCP tool layer, which does so for the excluded-tag guard) skip a
+        second ``get_fileid`` round-trip. Resolved internally when omitted,
+        so the method still works standalone.
+        """
         await self._ensure_principal_id()
-        file_id = await self.get_fileid(path)
+        if file_id is None:
+            file_id = await self.get_fileid(path)
         if not file_id:
             raise ValueError(f"No file id for path: {path}")
 
@@ -2800,7 +2816,11 @@ class WebDAVClient(BaseNextcloudClient):
             "PROPFIND",
             f"{self._versions_base()}/versions/{file_id}",
             content=self._propfind_body(self._VERSION_PROPS),
-            headers={"Depth": "1", "Content-Type": "application/xml"},
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+                "OCS-APIRequest": "true",
+            },
         )
 
         root = ET.fromstring(response.content)
@@ -2818,14 +2838,19 @@ class WebDAVClient(BaseNextcloudClient):
             versions.append(entry)
         return {"path": path, "file_id": file_id, "versions": versions}
 
-    async def restore_version(self, path: str, version_id: str) -> Dict[str, Any]:
+    async def restore_version(
+        self, path: str, version_id: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
         """Roll a file back to an earlier version.
 
         The current content is not lost: Nextcloud stores it as a version in
         turn, so the rollback itself can be undone.
+
+        ``file_id``: see :meth:`list_versions`.
         """
         await self._ensure_principal_id()
-        file_id = await self.get_fileid(path)
+        if file_id is None:
+            file_id = await self.get_fileid(path)
         if not file_id:
             raise ValueError(f"No file id for path: {path}")
 
@@ -2834,6 +2859,9 @@ class WebDAVClient(BaseNextcloudClient):
         await self._make_request(
             "MOVE",
             source,
-            headers={"Destination": self._resolve_url(destination)},
+            headers={
+                "Destination": self._resolve_url(destination),
+                "OCS-APIRequest": "true",
+            },
         )
         return {"path": path, "restored_version": version_id}
