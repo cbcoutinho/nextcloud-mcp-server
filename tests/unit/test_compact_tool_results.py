@@ -54,9 +54,17 @@ def test_non_text_blocks_pass_through_untouched():
 
 
 def test_unrecognised_result_shapes_pass_through():
-    """A shape neither SDK returns today must survive an SDK change untouched."""
+    """A shape neither SDK returns today must survive an SDK change untouched.
+
+    A tuple that is not the ``(unstructured, structured)`` pair is the shape
+    most likely to appear if the SDK grows a third element, so it is worth
+    naming alongside the arbitrary object.
+    """
     sentinel = {"some": "future shape"}
     assert compact_tool_result(sentinel) is sentinel
+
+    triple = ([TextContent(type="text", text='{\n  "a": 1\n}')], {"a": 1}, "extra")
+    assert compact_tool_result(triple) is triple
 
 
 def test_structured_half_of_the_pair_is_preserved():
