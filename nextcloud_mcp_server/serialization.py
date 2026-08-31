@@ -18,6 +18,12 @@ from typing import Any
 
 from mcp.types import ContentBlock, TextContent
 
+#: ``json.dumps`` separators with no filler whitespace. The default
+#: ``(", ", ": ")`` spends two tokens per field on nothing; a tool building its
+#: own JSON string should pass these, since the compaction below cannot reach a
+#: single-line string a tool returned itself.
+COMPACT_SEPARATORS = (",", ":")
+
 
 def compact_json_text(text: str) -> str:
     """Strip pretty-printing from ``text`` if it is an indented JSON document.
@@ -33,7 +39,7 @@ def compact_json_text(text: str) -> str:
         data = json.loads(text)
     except ValueError:
         return text
-    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(data, separators=COMPACT_SEPARATORS, ensure_ascii=False)
 
 
 def _compact_block(block: ContentBlock) -> ContentBlock:
