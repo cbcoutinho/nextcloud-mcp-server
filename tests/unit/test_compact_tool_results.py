@@ -39,6 +39,12 @@ def test_non_text_blocks_pass_through_untouched():
     assert compact_tool_result([image]) == [image]
 
 
+def test_unrecognised_result_shapes_pass_through():
+    """A shape neither SDK returns today must survive an SDK change untouched."""
+    sentinel = {"some": "future shape"}
+    assert compact_tool_result(sentinel) is sentinel
+
+
 def test_structured_half_of_the_pair_is_preserved():
     unstructured = [TextContent(type="text", text='{\n  "a": 1\n}')]
     structured = {"a": 1}
