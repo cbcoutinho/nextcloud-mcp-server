@@ -1202,6 +1202,7 @@ def configure_webdav_tools(mcp: FastMCP):
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
     @require_scopes("files.read")
+    @with_links
     @instrument_tool
     async def nc_webdav_find_by_tag_name(tag: str, ctx: Context) -> FilesByTagResponse:
         """Find all files carrying a given tag.
