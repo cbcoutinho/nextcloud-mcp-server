@@ -17,33 +17,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
       - name: Check format
-        run: uv run --frozen ruff format --diff
+        run: uv run --no-build --no-sync ruff format --diff
       - name: Linting
-        run: uv run --frozen ruff check
+        run: uv run --no-build --no-sync ruff check
       - name: Type check
-        run: uv run --frozen ty check -- nextcloud_mcp_server
+        run: uv run --no-build --no-sync ty check -- nextcloud_mcp_server
       # Fails if a module is imported at runtime but not declared in
       # [project.dependencies] (#1285). Config in pyproject.toml [tool.deptry].
       - name: Check for undeclared dependencies
-        run: uv run --frozen deptry .
+        run: uv run --no-build --no-sync deptry .
 
   unit-test:
     runs-on: ubuntu-latest
     needs: [linting]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
       # -n auto fans the (fully mocked) unit tests across the runner's cores.
       # -q instead of -v: with xdist, per-test progress lines are interleaved
       # noise, and failures still print in full.
       - name: Run unit tests
-        run: uv run --frozen pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
+        run: uv run --no-build --no-sync pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
 
   # Cross-platform install smoke test. Installs the package (and its full
   # dependency closure) into an isolated environment and runs the CLI
@@ -61,12 +59,15 @@ jobs:
     name: package-smoke (${{ matrix.os }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
+      # Installs the built wheel (not the source tree) into a throwaway
+      # environment: --no-build cannot install this project from source, and
+      # the wheel is the artifact users actually get. bash on both runners so
+      # the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
-        run: uv run --isolated --no-project --with . nextcloud-mcp-server --help
+        shell: bash
+        run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help
 
   integration-test:
     runs-on: ubuntu-latest
@@ -243,12 +244,12 @@ jobs:
           # Inherited from $GITHUB_ENV via the previous step.
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run --frozen playwright install chromium --with-deps
+        run: uv run --no-build --no-sync playwright install chromium --with-deps
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud
@@ -347,7 +348,7 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run --frozen pytest -v \
+          uv run --no-build --no-sync pytest -v \
             --log-cli-level=WARN \
             -m '${{ matrix.markers }}' \
             -o "addopts=-p no:asyncio" \
@@ -437,8 +438,8 @@ jobs:
           DOCUMENT_OCR_PROVIDER: "docling"
           DOCUMENT_OCR_TIMEOUT_SECONDS: "300"
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       - name: Wait for Nextcloud
         run: |
@@ -504,7 +505,7 @@ jobs:
           DOCUMENT_OCR_ENABLED: "true"
           DOCUMENT_OCR_PROVIDER: "docling"
         run: |
-          uv run --frozen pytest -v \
+          uv run --no-build --no-sync pytest -v \
             --log-cli-level=WARN \
             -m docling \
             -o "addopts=-p no:asyncio" \

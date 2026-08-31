@@ -36,11 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       - name: Generate consumer pacts
-        run: uv run --frozen pytest -v -m contract tests/contract/
+        run: uv run --no-build --no-sync pytest -v -m contract tests/contract/
 
       # Only publish from non-fork builds that have the broker secrets.
       - name: Join tailnet
@@ -126,8 +126,8 @@ jobs:
           npm ci --ignore-scripts
           npm run build
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       # Stand up the MCP server. NOTE: single-user only exposes the *public*
       # management endpoints (/api/v1/status, /api/v1/vector-sync/status) — see
@@ -186,9 +186,9 @@ jobs:
         # the gate is preserved; publishing the same provider version twice is
         # idempotent in the broker.
         run: |
-          uv run --frozen pytest -v -m contract tests/contract/test_mcp_provider_verification.py && exit 0
+          uv run --no-build --no-sync pytest -v -m contract tests/contract/test_mcp_provider_verification.py && exit 0
           echo "::warning title=Retrying provider verification::First attempt failed; retrying once to rule out a transient broker/tailnet error."
-          uv run --frozen pytest -v -m contract tests/contract/test_mcp_provider_verification.py
+          uv run --no-build --no-sync pytest -v -m contract tests/contract/test_mcp_provider_verification.py
 
   can-i-deploy:
     name: can-i-deploy
