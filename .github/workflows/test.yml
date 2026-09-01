@@ -200,34 +200,26 @@ jobs:
         with:
           submodules: 'true'
 
-      # Unconditional (was: non-single-user only) because the OIDC app is built
-      # in every mode while the dev mount is in place -- see docker-compose.yml.
       - name: Set up PHP 8.4
+        if: matrix.mode != 'single-user'
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: 8.4
           coverage: none
 
       - name: Set up Node.js
+        if: matrix.mode != 'single-user'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
+      # Astrolabe is the only app built from its submodule here; oidc is
+      # installed from the app store by app-hooks/post-installation, so it
+      # needs no build step and no mount in docker-compose.yml.
       - name: Build Astrolabe app
         if: matrix.mode != 'single-user'
         run: |
           cd third_party/astrolabe
-          composer install --no-dev --optimize-autoloader
-          npm ci --ignore-scripts
-          npm run build
-
-      # TEMPORARY -- drop once H2CK/oidc#696 ships and the app-store install
-      # works on Nextcloud 32 again (see the mount comment in
-      # docker-compose.yml). A git checkout has no vendor/ or built js/, so the
-      # mounted app has to be built here.
-      - name: Build OIDC app
-        run: |
-          cd third_party/oidc
           composer install --no-dev --optimize-autoloader
           npm ci --ignore-scripts
           npm run build
@@ -398,30 +390,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [linting]
     steps:
-      # submodules + the OIDC build are TEMPORARY: this job only needs them
-      # because docker-compose.yml mounts third_party/oidc while H2CK/oidc#696
-      # is unreleased. Drop both when that mount goes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: 'true'
-
-      - name: Set up PHP 8.4
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: 8.4
-          coverage: none
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-
-      - name: Build OIDC app
-        run: |
-          cd third_party/oidc
-          composer install --no-dev --optimize-autoloader
-          npm ci --ignore-scripts
-          npm run build
 
       # docker-compose.yml requires TOKEN_ENCRYPTION_KEY; generate an ephemeral
       # one (the CI tokens.db is destroyed with the job). See the integration job.
