@@ -1,6 +1,5 @@
 """MCP tools for Nextcloud file/folder sharing operations."""
 
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +12,7 @@ from nextcloud_mcp_server.client.sharing import PublicLinkRecipientError
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.serialization import compact_json_dumps
 
 
 def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, str]:
@@ -154,7 +154,7 @@ def configure_sharing_tools(mcp: FastMCP):
             # redirect, which is the failure this whole message path exists to
             # avoid.
             raise ToolError(str(e)) from e
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)
 
     @mcp.tool(
         title="Create Public Download Link",
@@ -240,8 +240,8 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         await client.sharing.delete_share(share_id)
-        return json.dumps(
-            {"success": True, "message": f"Share {share_id} deleted"}, indent=2
+        return compact_json_dumps(
+            {"success": True, "message": f"Share {share_id} deleted"}
         )
 
     @mcp.tool(
@@ -264,7 +264,7 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         share_data = await client.sharing.get_share(share_id)
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)
 
     @mcp.tool(
         title="List Shares",
@@ -289,7 +289,7 @@ def configure_sharing_tools(mcp: FastMCP):
         shares = await client.sharing.list_shares(
             path=path, shared_with_me=shared_with_me
         )
-        return json.dumps(shares, indent=2)
+        return compact_json_dumps(shares)
 
     @mcp.tool(
         title="Update Share",
@@ -320,4 +320,4 @@ def configure_sharing_tools(mcp: FastMCP):
         share_data = await client.sharing.update_share(
             share_id=share_id, permissions=permissions
         )
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)

@@ -17,33 +17,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
       - name: Check format
-        run: uv run --frozen ruff format --diff
+        run: uv run --no-build --no-sync ruff format --diff
       - name: Linting
-        run: uv run --frozen ruff check
+        run: uv run --no-build --no-sync ruff check
       - name: Type check
-        run: uv run --frozen ty check -- nextcloud_mcp_server
+        run: uv run --no-build --no-sync ty check -- nextcloud_mcp_server
       # Fails if a module is imported at runtime but not declared in
       # [project.dependencies] (#1285). Config in pyproject.toml [tool.deptry].
       - name: Check for undeclared dependencies
-        run: uv run --frozen deptry .
+        run: uv run --no-build --no-sync deptry .
 
   unit-test:
     runs-on: ubuntu-latest
     needs: [linting]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
       # -n auto fans the (fully mocked) unit tests across the runner's cores.
       # -q instead of -v: with xdist, per-test progress lines are interleaved
       # noise, and failures still print in full.
       - name: Run unit tests
-        run: uv run --frozen pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
+        run: uv run --no-build --no-sync pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
 
   # Cross-platform install smoke test. Installs the package (and its full
   # dependency closure) into an isolated environment and runs the CLI
@@ -61,12 +59,28 @@ jobs:
     name: package-smoke (${{ matrix.os }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Deliberately NOT ./.github/actions/uv-env: that syncs the dev group,
+      # which carries pyroscope-io -- a Rust extension with no Windows wheel,
+      # kept out of the default dependencies for exactly that reason (see
+      # pyproject.toml). This job needs the built wheel and nothing else, and
+      # syncing the dev group here fails the Windows runner outright with
+      # "pyroscope-io==1.1.0 ... marked as --no-build but has no binary
+      # distribution".
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
+      - name: Build the wheel
+        shell: bash
+        run: uv build --wheel --out-dir dist
+      # Installs the built wheel (not the source tree) into a throwaway
+      # environment: --no-build cannot install this project from source, and
+      # the wheel is the artifact users actually get. Its runtime dependencies
+      # all publish wheels, which is what keeps --no-build viable here. bash on
+      # both runners so the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
-        run: uv run --isolated --no-project --with . nextcloud-mcp-server --help
+        shell: bash
+        run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help
 
   integration-test:
     runs-on: ubuntu-latest
@@ -186,17 +200,15 @@ jobs:
         with:
           submodules: 'true'
 
+      # Unconditional (was: non-single-user only) because the OIDC app is built
+      # in every mode while the dev mount is in place -- see docker-compose.yml.
       - name: Set up PHP 8.4
-        if: matrix.mode != 'single-user'
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: 8.4
           coverage: none
 
-      # OIDC app installed from app store (dev mount removed from docker-compose.yml)
-
       - name: Set up Node.js
-        if: matrix.mode != 'single-user'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -206,17 +218,19 @@ jobs:
         run: |
           cd third_party/astrolabe
           composer install --no-dev --optimize-autoloader
-          npm ci
+          npm ci --ignore-scripts
           npm run build
 
-      # OIDC app is now installed from the Nextcloud app store via app-hook
-      # (third_party/oidc fork no longer mounted — upstream v1.16.3 fixes PR #631)
-      # - name: Build OIDC app
-      #   run: |
-      #     cd third_party/oidc
-      #     composer install --no-dev --optimize-autoloader
-      #     npm ci
-      #     npm run build
+      # TEMPORARY -- drop once H2CK/oidc#696 ships and the app-store install
+      # works on Nextcloud 32 again (see the mount comment in
+      # docker-compose.yml). A git checkout has no vendor/ or built js/, so the
+      # mounted app has to be built here.
+      - name: Build OIDC app
+        run: |
+          cd third_party/oidc
+          composer install --no-dev --optimize-autoloader
+          npm ci --ignore-scripts
+          npm run build
 
       # Generate an ephemeral Fernet key per CI run. docker-compose.yml
       # requires TOKEN_ENCRYPTION_KEY (PR #758 finding 5 removed the
@@ -243,12 +257,12 @@ jobs:
           # Inherited from $GITHUB_ENV via the previous step.
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run playwright install chromium --with-deps
+        run: uv run --no-build --no-sync playwright install chromium --with-deps
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud
@@ -347,7 +361,7 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v \
+          uv run --no-build --no-sync pytest -v \
             --log-cli-level=WARN \
             -m '${{ matrix.markers }}' \
             -o "addopts=-p no:asyncio" \
@@ -384,7 +398,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: [linting]
     steps:
+      # submodules + the OIDC build are TEMPORARY: this job only needs them
+      # because docker-compose.yml mounts third_party/oidc while H2CK/oidc#696
+      # is unreleased. Drop both when that mount goes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: 'true'
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: 8.4
+          coverage: none
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Build OIDC app
+        run: |
+          cd third_party/oidc
+          composer install --no-dev --optimize-autoloader
+          npm ci --ignore-scripts
+          npm run build
 
       # docker-compose.yml requires TOKEN_ENCRYPTION_KEY; generate an ephemeral
       # one (the CI tokens.db is destroyed with the job). See the integration job.
@@ -414,8 +451,8 @@ jobs:
           DOCUMENT_OCR_PROVIDER: "docling"
           DOCUMENT_OCR_TIMEOUT_SECONDS: "300"
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
 
       - name: Wait for Nextcloud
         run: |
@@ -481,7 +518,7 @@ jobs:
           DOCUMENT_OCR_ENABLED: "true"
           DOCUMENT_OCR_PROVIDER: "docling"
         run: |
-          uv run pytest -v \
+          uv run --no-build --no-sync pytest -v \
             --log-cli-level=WARN \
             -m docling \
             -o "addopts=-p no:asyncio" \

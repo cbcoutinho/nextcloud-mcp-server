@@ -37,7 +37,18 @@ services:
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
       #- ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      #- ./third_party/oidc:/opt/apps/oidc:ro
+      # TEMPORARY -- remove this mount (and re-comment it) once H2CK/oidc#696 is
+      # merged and released to the app store. oidc 2.1.0 cannot be enabled on
+      # Nextcloud 32 at all: its Version0022 migration adds `tex_enabled` as
+      # BOOLEAN NOT NULL, which NC32 rejects outright (NC33 softened that check
+      # in nextcloud/server#55156), so `occ app:enable oidc` aborts the app
+      # container's entrypoint and every nc32 lane dies before a test runs.
+      # See H2CK/oidc#695. Until the fix ships, the submodule is pinned to
+      # 2.1.0 + that one-line fix and mounted here instead of installing from
+      # the app store. Reverting means: re-comment this line, drop the
+      # "Build OIDC app" steps in .github/workflows/{test,pact}.yml, and drop
+      # `submodules` from the checkouts that only exist to feed this mount.
+      - ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
