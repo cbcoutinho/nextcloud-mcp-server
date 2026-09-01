@@ -207,14 +207,15 @@ jobs:
           php-version: 8.4
           coverage: none
 
-      # OIDC app installed from app store (dev mount removed from docker-compose.yml)
-
       - name: Set up Node.js
         if: matrix.mode != 'single-user'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
+      # Astrolabe is the only app built from its submodule here; oidc is
+      # installed from the app store by app-hooks/post-installation, so it
+      # needs no build step and no mount in docker-compose.yml.
       - name: Build Astrolabe app
         if: matrix.mode != 'single-user'
         run: |
