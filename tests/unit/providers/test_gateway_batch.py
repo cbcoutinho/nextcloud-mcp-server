@@ -341,6 +341,24 @@ async def test_poll_429_is_pending_and_honours_retry_after(monkeypatch):
     assert result.retry_after == 90
 
 
+async def test_poll_token_provider_failure_still_raises(monkeypatch):
+    """The token provider talks to the OIDC issuer, not the gateway, and raises the
+    same httpx types the PENDING remap catches. An M2M outage must surface as an auth
+    fault — not as "the gateway says the job is still running" on every document."""
+
+    class _BrokenTok:
+        async def get_token(self) -> str:
+            raise httpx.ConnectError("token endpoint unreachable")
+
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json={}))
+    client = gbc.GatewayBatchOcrClient(
+        "https://gw", "m", token_provider=cast(Any, _BrokenTok())
+    )
+
+    with pytest.raises(httpx.ConnectError):
+        await client.poll("mistral/job-1")
+
+
 async def test_poll_non_404_4xx_still_raises(monkeypatch):
     """A client-side fault is a real error and must keep propagating; 404 (unknown
     job) and 429 (poll slower) have their own handling."""

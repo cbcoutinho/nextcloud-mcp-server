@@ -179,9 +179,10 @@ class GatewayBatchOcrClient:
         """Poll a batch job. Maps a terminal job's single-document result into
         :class:`BatchPollResult`. A ``404`` (the gateway has no record of this job —
         row purged/orphaned) raises :class:`OcrBatchJobNotFound` so the caller can
-        re-submit. A transport error or a 5xx yields a PENDING result (the job was
-        accepted; "no answer" is not "no job" — Deck #1192); any other non-2xx
-        propagates as a hard failure.
+        re-submit. A transport error, a 5xx, or a 429 yields a PENDING result (the
+        job was accepted; "no answer" is not "no job" — Deck #1192); any other
+        non-2xx propagates as a hard failure, as does a token-provider failure
+        (a different service — its errors must not read as job state).
 
         ``job_id`` is the gateway's namespaced id (``<provider>/<batch_job_id>``),
         so it embeds a ``/`` and the request path is multi-segment
@@ -189,6 +190,13 @@ class GatewayBatchOcrClient:
         path-capture parameter (``GET /v1/ocr/batch/{job_id:path}``) so the slash
         is captured whole — a plain single-segment ``{job_id}`` would 404 here.
         """
+        # Fetched OUTSIDE the try: the token provider talks to the OIDC token
+        # endpoint — a different service from the gateway — and raises the very same
+        # httpx types the except below remaps to PENDING. Left inside, an M2M issuer
+        # outage would read as "the gateway says the job is still running" and every
+        # in-flight document would poll forever behind a WARNING instead of surfacing
+        # the auth fault. Only the poll request itself is eligible for the remap.
+        headers = await self._headers()
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(
@@ -197,7 +205,7 @@ class GatewayBatchOcrClient:
                 )
             ) as client:
                 resp = await client.get(
-                    f"{self._base}/ocr/batch/{job_id}", headers=await self._headers()
+                    f"{self._base}/ocr/batch/{job_id}", headers=headers
                 )
                 if resp.status_code == 404:
                     # The gateway has no record of this job (a store-backed provider
