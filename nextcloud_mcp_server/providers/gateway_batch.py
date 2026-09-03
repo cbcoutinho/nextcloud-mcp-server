@@ -179,7 +179,9 @@ class GatewayBatchOcrClient:
         """Poll a batch job. Maps a terminal job's single-document result into
         :class:`BatchPollResult`. A ``404`` (the gateway has no record of this job —
         row purged/orphaned) raises :class:`OcrBatchJobNotFound` so the caller can
-        re-submit; any other non-2xx / transport error propagates as a hard failure.
+        re-submit. A transport error or a 5xx yields a PENDING result (the job was
+        accepted; "no answer" is not "no job" — Deck #1192); any other non-2xx
+        propagates as a hard failure.
 
         ``job_id`` is the gateway's namespaced id (``<provider>/<batch_job_id>``),
         so it embeds a ``/`` and the request path is multi-segment
@@ -187,22 +189,48 @@ class GatewayBatchOcrClient:
         path-capture parameter (``GET /v1/ocr/batch/{job_id:path}``) so the slash
         is captured whole — a plain single-segment ``{job_id}`` would 404 here.
         """
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                _BATCH_REQUEST_TIMEOUT_SECONDS, connect=_BATCH_CONNECT_TIMEOUT_SECONDS
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    _BATCH_REQUEST_TIMEOUT_SECONDS,
+                    connect=_BATCH_CONNECT_TIMEOUT_SECONDS,
+                )
+            ) as client:
+                resp = await client.get(
+                    f"{self._base}/ocr/batch/{job_id}", headers=await self._headers()
+                )
+                if resp.status_code == 404:
+                    # The gateway has no record of this job (a store-backed provider
+                    # 404s an unknown id). Raise a typed error so the caller re-submits
+                    # instead of treating it as a generic failure and re-polling the
+                    # dead id forever.
+                    raise OcrBatchJobNotFound(job_id)
+                resp.raise_for_status()
+                body = resp.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            # No usable answer (read/connect timeout, or a gateway 5xx — e.g. its
+            # upstream provider leg failing). Indistinguishable from "still working":
+            # the job WAS accepted, so the gateway owns its lifecycle (Deck #523) and
+            # PENDING is the only safe reading.
+            #
+            # Deck #1192: this used to propagate, where TieredEscalationStrategy
+            # counted it as a transient infra error against ``max_transient_attempts``
+            # and, once that was spent, TERMINALLY DROPPED a document the gateway may
+            # still have been OCRing — silent data loss (~200 docs / 10 min at peak).
+            # A non-404 4xx is a real client-side fault and still propagates.
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < 500
+            ):
+                raise
+            logger.warning(
+                "batch OCR poll got no answer for job %s (%s: %s); treating as "
+                "pending and re-polling",
+                job_id,
+                type(exc).__name__,
+                exc,
             )
-        ) as client:
-            resp = await client.get(
-                f"{self._base}/ocr/batch/{job_id}", headers=await self._headers()
-            )
-            if resp.status_code == 404:
-                # The gateway has no record of this job (a store-backed provider
-                # 404s an unknown id). Raise a typed error so the caller re-submits
-                # instead of treating it as a generic failure and re-polling the
-                # dead id forever.
-                raise OcrBatchJobNotFound(job_id)
-            resp.raise_for_status()
-            body = resp.json()
+            return BatchPollResult(status=_PENDING, pages=[])
         status = body.get("status")
         if status is None:
             # A well-formed gateway response always carries status. A 2xx without

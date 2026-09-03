@@ -295,3 +295,44 @@ async def test_submit_and_poll_use_separate_read_timeouts(monkeypatch):
     # The connect timeout stays short and shared -- neither call waits on OCR.
     assert submit_timeout.connect == poll_timeout.connect
     assert submit_timeout.connect == gbc._BATCH_CONNECT_TIMEOUT_SECONDS
+
+
+# --- Deck #1192: a poll that gets no answer must not terminalise the document ---
+
+
+async def test_poll_read_timeout_is_pending(monkeypatch):
+    """A ReadTimeout on the poll reads as PENDING, not as a hard failure.
+
+    Propagating it burned TieredEscalationStrategy's transient-attempt budget and
+    then DROPPED the document, while the gateway may still have been OCRing it.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("", request=request)
+
+    _patch_transport(monkeypatch, handler)
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+    assert result.retry_after is None
+
+
+async def test_poll_5xx_is_pending(monkeypatch):
+    """A gateway 5xx (e.g. its upstream provider leg failing) is likewise "no
+    answer yet", not a terminal job state."""
+    _patch_transport(
+        monkeypatch, lambda r: httpx.Response(502, json={"detail": "poll failed"})
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+
+
+async def test_poll_non_404_4xx_still_raises(monkeypatch):
+    """A client-side fault is a real error and must keep propagating; only 404
+    (unknown job) has its own typed signal."""
+    _patch_transport(monkeypatch, lambda r: httpx.Response(403, json={}))
+    client = gbc.GatewayBatchOcrClient("https://gw", "m")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.poll("mistral/job-1")
