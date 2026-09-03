@@ -217,12 +217,24 @@ class GatewayBatchOcrClient:
             # counted it as a transient infra error against ``max_transient_attempts``
             # and, once that was spent, TERMINALLY DROPPED a document the gateway may
             # still have been OCRing — silent data loss (~200 docs / 10 min at peak).
-            # A non-404 4xx is a real client-side fault and still propagates.
+            #
+            # 429 joins the 5xx/transport set: "poll slower" is a statement about US,
+            # never about the job, so hard-failing it would reintroduce that exact
+            # drop for a gateway that rate-limits polls under load. Any OTHER 4xx is a
+            # real client-side fault and still propagates.
             if (
                 isinstance(exc, httpx.HTTPStatusError)
                 and exc.response.status_code < 500
+                and exc.response.status_code != httpx.codes.TOO_MANY_REQUESTS
             ):
                 raise
+            # A 429 (or any error response) may carry Retry-After; honour it so a
+            # rate-limited poll backs off as asked instead of at our own interval.
+            retry_after = (
+                _parse_retry_after(exc.response.headers.get("Retry-After"))
+                if isinstance(exc, httpx.HTTPStatusError)
+                else None
+            )
             logger.warning(
                 "batch OCR poll got no answer for job %s (%s: %s); treating as "
                 "pending and re-polling",
@@ -230,7 +242,7 @@ class GatewayBatchOcrClient:
                 type(exc).__name__,
                 exc,
             )
-            return BatchPollResult(status=_PENDING, pages=[])
+            return BatchPollResult(status=_PENDING, pages=[], retry_after=retry_after)
         status = body.get("status")
         if status is None:
             # A well-formed gateway response always carries status. A 2xx without

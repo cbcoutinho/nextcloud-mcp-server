@@ -328,9 +328,22 @@ async def test_poll_5xx_is_pending(monkeypatch):
     assert result.is_pending
 
 
+async def test_poll_429_is_pending_and_honours_retry_after(monkeypatch):
+    """ "Poll slower" is a statement about us, never about the job. Hard-failing it
+    would reintroduce the drop for a gateway that rate-limits polls under load."""
+    _patch_transport(
+        monkeypatch,
+        lambda r: httpx.Response(429, json={}, headers={"Retry-After": "90"}),
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+    assert result.retry_after == 90
+
+
 async def test_poll_non_404_4xx_still_raises(monkeypatch):
-    """A client-side fault is a real error and must keep propagating; only 404
-    (unknown job) has its own typed signal."""
+    """A client-side fault is a real error and must keep propagating; 404 (unknown
+    job) and 429 (poll slower) have their own handling."""
     _patch_transport(monkeypatch, lambda r: httpx.Response(403, json={}))
     client = gbc.GatewayBatchOcrClient("https://gw", "m")
 
