@@ -168,7 +168,7 @@ dev = [
     # suppressing on the bump; each still-needed one now carries a matching
     # `# ty: ignore[<ty-code>]` alongside, and the newly-surfaced diagnostics were
     # fixed. Upper bound is renovate-managed (one minor at a time).
-    "ty>=0.0.75,<0.0.76",
+    "ty>=0.0.78,<0.0.79",
     "pytest-otel>=2.0.1",
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
