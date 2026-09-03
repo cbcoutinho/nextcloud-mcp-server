@@ -745,7 +745,7 @@ async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
     # NOT re-poll the dead id forever (which flapped the burst GPU).
     from nextcloud_mcp_server.providers.gateway_batch import OcrBatchJobNotFound
 
-    preset = SimpleNamespace(job_id="surya/dead", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/dead", submitted_at=1000)
     client = _FakeBatchClient()
 
     async def _poll_404(job_id):
@@ -760,7 +760,7 @@ async def test_batch_poll_404_drops_row_and_resubmits(monkeypatch):
         b"%PDF", "application/pdf", options=dict(_IDENTITY)
     )
 
-    assert client.polled == ["surya/dead"]
+    assert client.polled == ["mistral/dead"]
     # tracking row dropped -> store.get is None next cycle -> fresh submit
     assert ("u1", "d1", "file", "v1") in store.deleted
     # returned the pending sentinel (re-poll → resubmit); did NOT resubmit inline
@@ -975,7 +975,7 @@ async def test_poll_pending_no_job_falls_through(monkeypatch):
 async def test_poll_pending_defers_without_download(monkeypatch):
     """A still-pending job within its deadline -> return the poll interval so the
     caller defers WITHOUT re-downloading the file (the win: polled by job_id only)."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
     got = await ocr.poll_pending_batch_ocr(
@@ -987,13 +987,13 @@ async def test_poll_pending_defers_without_download(monkeypatch):
         ),
     )
     assert got == 120
-    assert client.polled == ["surya/j"]  # polled by job_id; never submitted/fetched
+    assert client.polled == ["mistral/j"]  # polled by job_id; never submitted/fetched
 
 
 async def test_poll_pending_terminal_falls_through(monkeypatch):
     """A terminal (succeeded) job -> None so the caller re-polls + indexes via the
     pipeline (whose post-parse quality gate needs the real bytes)."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="succeeded", pages=[(0, "hello", None)])
     )
@@ -1010,7 +1010,7 @@ async def test_poll_pending_terminal_falls_through(monkeypatch):
 async def test_poll_pending_polls_forever_no_deadline(monkeypatch):
     """Deck #523: past the old deadline still re-defers (a positive retry_in), never
     None — the gateway owns the lifecycle, so the worker polls forever."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
     got = await ocr.poll_pending_batch_ocr(
@@ -1025,7 +1025,7 @@ async def test_poll_pending_polls_forever_no_deadline(monkeypatch):
 async def test_poll_pending_honours_retry_after(monkeypatch):
     """The gateway's Retry-After sets the poll cadence (anti-storm) when it's above
     the configured floor — passed through, not clamped (Deck #523)."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="pending", pages=[], retry_after=200)
     )
@@ -1044,7 +1044,7 @@ async def test_poll_pending_honours_retry_after(monkeypatch):
 async def test_poll_pending_floors_retry_after(monkeypatch):
     """A Retry-After BELOW the poll interval is raised to the floor so a tiny value
     can't busy-loop the gateway (Deck #523)."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="pending", pages=[], retry_after=5)
     )
@@ -1063,7 +1063,7 @@ async def test_poll_pending_floors_retry_after(monkeypatch):
 async def test_poll_pending_caps_retry_after(monkeypatch):
     """An absurd Retry-After (e.g. a malformed header with an extra zero) is capped
     so one document can't stall for an absurd duration — still no give-up (Deck #523)."""
-    preset = SimpleNamespace(job_id="surya/j", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="pending", pages=[], retry_after=999_999)
     )
@@ -1087,7 +1087,7 @@ async def test_poll_pending_job_gone_falls_through(monkeypatch):
         async def poll(self, job_id):
             raise OcrBatchJobNotFound(job_id)
 
-    preset = SimpleNamespace(job_id="surya/gone", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/gone", submitted_at=1000)
     _wire_batch(monkeypatch, client=_NotFoundClient(), store=_FakeStore(preset=preset))
     got = await ocr.poll_pending_batch_ocr(
         user_id="u1",
@@ -1096,3 +1096,71 @@ async def test_poll_pending_job_gone_falls_through(monkeypatch):
         settings=_settings(document_ocr_mode="batch"),
     )
     assert got is None
+
+
+# --- Deck #1192: a tracked job outliving a provider switch ---------------------
+
+
+def test_job_is_stale_for_model_compares_provider_segment():
+    assert ocr._job_is_stale_for_model("mistral/j", "surya/surya-ocr-2") is True
+    assert ocr._job_is_stale_for_model("surya/j", "surya/surya-ocr-2") is False
+    # Same provider, different model: not stale — the in-flight job is still
+    # pollable and its output still usable.
+    assert ocr._job_is_stale_for_model("mistral/j", "mistral/other") is False
+
+
+def test_job_is_stale_for_model_fails_open_without_a_prefix():
+    """An unattributable id must never read as stale: a false positive re-submits,
+    and re-pays for, the OCR on every poll."""
+    assert ocr._job_is_stale_for_model("bare-job-id", "surya/surya-ocr-2") is False
+    assert ocr._job_is_stale_for_model("surya/j", "bare-model") is False
+
+
+async def test_poll_pending_stale_provider_falls_through(monkeypatch):
+    """A job submitted under the OLD provider is not polled: fall through so the
+    normal path re-submits under the configured model."""
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
+    client = _FakeBatchClient()
+    _wire_batch(monkeypatch, client=client, store=_FakeStore(preset=preset))
+
+    got = await ocr.poll_pending_batch_ocr(
+        user_id="u1",
+        doc_id="d1",
+        etag="v1",
+        settings=_settings(
+            document_ocr_mode="batch", document_ocr_model="surya/surya-ocr-2"
+        ),
+    )
+
+    assert got is None
+    assert client.polled == []  # never talked to the old provider's job
+
+
+async def test_batch_stale_provider_drops_row_and_resubmits(monkeypatch):
+    """Deck #1192: batch_ocr_jobs is keyed on content (etag), not on config, so a
+    row survives a DOCUMENT_OCR_MODEL switch and keeps polling the old provider for
+    as long as the content is unchanged. The row must be dropped and re-submitted."""
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
+    client = _FakeBatchClient(submit_job="surya/fresh")
+    store = _FakeStore(preset=preset)
+    _wire_batch(
+        monkeypatch,
+        client=client,
+        store=store,
+        settings=_settings(
+            document_ocr_mode="batch",
+            document_ocr_provider="gateway",
+            embedding_gateway_url="https://gw",
+            document_ocr_model="surya/surya-ocr-2",
+        ),
+    )
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert client.polled == []  # the stale job is never polled
+    assert ("u1", "d1", "file", "v1") in store.deleted
+    assert len(client.submitted) == 1  # re-submitted under the configured model
+    assert store.rows[("u1", "d1", "file", "v1")].job_id == "surya/fresh"
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True

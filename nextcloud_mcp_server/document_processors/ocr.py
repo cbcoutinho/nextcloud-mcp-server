@@ -469,6 +469,27 @@ def _reset_poll_batch_client() -> None:
     _poll_batch_client_lock = None
 
 
+def _job_is_stale_for_model(job_id: str, model: str) -> bool:
+    """Whether a tracked batch job was submitted under a provider we no longer use.
+
+    ``batch_ocr_jobs`` is keyed on ``(user_id, doc_id, doc_type, etag)`` — the
+    document's *content* version. Nothing in that key covers the *configuration*
+    version, so re-pointing ``DOCUMENT_OCR_MODEL`` at another provider leaves
+    every in-flight row intact, and the next poll of unchanged content (same
+    etag) replays the OLD provider's job id forever. Deck #1192: a tenant moved
+    from ``mistral/*`` to ``surya/surya-ocr-2`` and its re-index kept polling
+    ``/v1/ocr/batch/mistral/<job>`` — an OCR leg that config said it had left.
+
+    Both ids are namespaced ``<provider>/<rest>`` (the submit pact pins the job id
+    to ``[^/]+/.+``), so the provider segment is the comparison. Fails OPEN — an
+    id without a prefix is not attributable to a provider, and a false "stale"
+    re-submits, and re-pays for, OCR on every single poll.
+    """
+    if "/" not in job_id or "/" not in model:
+        return False
+    return job_id.split("/", 1)[0] != model.split("/", 1)[0]
+
+
 async def poll_pending_batch_ocr(
     *, user_id: str, doc_id: str, etag: str, settings: Settings
 ) -> int | None:
@@ -494,6 +515,11 @@ async def poll_pending_batch_ocr(
     store = await BatchOcrJobStore.shared()
     job = await store.get(user_id=user_id, doc_id=doc_id, doc_type="file", etag=etag)
     if job is None:
+        return None
+    if _job_is_stale_for_model(job.job_id, settings.document_ocr_model):
+        # Submitted under a provider this instance no longer uses. Don't poll it:
+        # fall through so the normal path drops the row and re-submits under the
+        # configured model (which needs the file bytes anyway).
         return None
     client = await _get_poll_batch_client(settings)
     if client is None:
@@ -831,6 +857,24 @@ class OcrProcessor(DocumentProcessor):
         job = await store.get(
             user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
         )
+        if job is not None and _job_is_stale_for_model(
+            job.job_id, getattr(settings, self._model_setting)
+        ):
+            # The tracked job belongs to a provider we no longer use (Deck #1192).
+            # Polling it keeps talking to the old OCR leg for as long as the content
+            # is unchanged. Drop the row and fall into the submit branch below, which
+            # re-submits under the configured model.
+            logger.warning(
+                "batch OCR job %s was submitted under a different provider than the "
+                "configured model %s; re-submitting %s",
+                job.job_id,
+                getattr(settings, self._model_setting),
+                filename or doc_id,
+            )
+            await store.delete(
+                user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+            )
+            job = None
         if job is None:
             # New submission. Drop any superseded-version rows for this doc first
             # (a re-edited file changes etag) — a no-op on the very first submit,
