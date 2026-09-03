@@ -225,13 +225,11 @@ async def test_poll_succeeded_no_results_is_failed(monkeypatch):
     assert result.is_failed
 
 
-async def test_poll_raises_on_http_error(monkeypatch):
-    _patch_transport(
-        monkeypatch, lambda r: httpx.Response(503, json={"detail": "down"})
-    )
-    client = gbc.GatewayBatchOcrClient("https://gw", "m")
-    with pytest.raises(httpx.HTTPStatusError):
-        await client.poll("mistral/j")
+# Retired with Deck #1192: this asserted a 5xx poll RAISES. That contract is what
+# fed TieredEscalationStrategy's attempt budget and ultimately dropped documents,
+# so a 5xx now reads as PENDING — see test_poll_5xx_is_pending below, which covers
+# 503 alongside 502. A non-404/429 4xx still raises
+# (test_poll_non_404_4xx_still_raises).
 
 
 @pytest.mark.parametrize(
@@ -317,11 +315,13 @@ async def test_poll_read_timeout_is_pending(monkeypatch):
     assert result.retry_after is None
 
 
-async def test_poll_5xx_is_pending(monkeypatch):
+@pytest.mark.parametrize("status", [500, 502, 503])
+async def test_poll_5xx_is_pending(monkeypatch, status):
     """A gateway 5xx (e.g. its upstream provider leg failing) is likewise "no
-    answer yet", not a terminal job state."""
+    answer yet", not a terminal job state. This replaces the retired
+    test_poll_raises_on_http_error, which pinned the opposite for 503."""
     _patch_transport(
-        monkeypatch, lambda r: httpx.Response(502, json={"detail": "poll failed"})
+        monkeypatch, lambda r: httpx.Response(status, json={"detail": "poll failed"})
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
 
