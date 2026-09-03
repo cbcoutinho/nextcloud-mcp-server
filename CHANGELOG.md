@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.184.3 (2026-09-03)
+
+### Fix
+
+- **ocr**: compare batch-job provider prefixes case-insensitively
+- **ocr**: re-submit a batch job whose provider no longer matches the model
+- **ocr**: keep token-provider failures out of the batch-poll PENDING remap
+- **ocr**: treat a 429 on a batch poll as pending, honouring Retry-After
+- **ocr**: a batch poll with no answer is pending, not a dropped document
+
+### Refactor
+
+- **ocr**: extract the tracked-job lookup out of _process_batch
+
 ## v0.184.2 (2026-09-01)
 
 ### Perf
