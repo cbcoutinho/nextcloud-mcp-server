@@ -41,10 +41,12 @@ from nextcloud_mcp_server.config import Settings, get_settings
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 if TYPE_CHECKING:
-    # Annotation-only import (the runtime import is lazy, inside
-    # build_gateway_batch_client, to avoid a document_processors -> providers
-    # cycle at load).
+    # Annotation-only imports (the runtime imports are lazy — inside
+    # build_gateway_batch_client, and inside the batch methods — to avoid a
+    # document_processors -> providers cycle and to keep the vector/DB stack off
+    # this module's load path).
     from ..providers.gateway_batch import GatewayBatchOcrClient
+    from ..vector.batch_ocr_store import BatchOcrJob, BatchOcrJobStore
 
 logger = logging.getLogger(__name__)
 
@@ -483,12 +485,15 @@ def _job_is_stale_for_model(job_id: str, model: str) -> bool:
     Both ids are namespaced ``<provider>/<rest>`` (the submit pact pins the job id
     to ``[^/]+/.+``), so the provider segment is the comparison, case-insensitively
     (``Mistral`` and ``mistral`` are one provider, not a config change). Fails OPEN
-    — an id without a prefix is not attributable to a provider, and a false "stale"
-    re-submits, and re-pays for, OCR on every single poll.
+    — an id carrying no usable provider segment (absent, or empty as in ``/rest``)
+    is not attributable to a provider, and a false "stale" re-submits, and re-pays
+    for, OCR on every single poll.
     """
-    if "/" not in job_id or "/" not in model:
+    job_provider = job_id.split("/", 1)[0].lower() if "/" in job_id else ""
+    model_provider = model.split("/", 1)[0].lower() if "/" in model else ""
+    if not job_provider or not model_provider:
         return False
-    return job_id.split("/", 1)[0].lower() != model.split("/", 1)[0].lower()
+    return job_provider != model_provider
 
 
 async def poll_pending_batch_ocr(
@@ -799,6 +804,42 @@ class OcrProcessor(DocumentProcessor):
                     self._batch_client_resolved = True
         return self._batch_client
 
+    async def _live_tracked_job(
+        self,
+        store: "BatchOcrJobStore",
+        *,
+        user_id: str,
+        doc_id: str,
+        doc_type: str,
+        etag: str,
+        settings: Settings,
+        label: str,
+    ) -> "BatchOcrJob | None":
+        """The in-flight batch job for this document+version, or ``None`` to submit.
+
+        ``None`` also covers a tracked job whose provider we no longer use (Deck
+        #1192): its row is dropped here so the caller's submit branch re-submits
+        under the configured model instead of polling the old OCR leg for as long
+        as the content is unchanged.
+        """
+        job = await store.get(
+            user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+        )
+        if job is None:
+            return None
+        model = getattr(settings, self._model_setting)
+        if not _job_is_stale_for_model(job.job_id, model):
+            return job
+        logger.warning(
+            "batch OCR job %s was submitted under a different provider than the "
+            "configured model %s; re-submitting %s",
+            job.job_id,
+            model,
+            label,
+        )
+        await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)
+        return None
+
     async def _process_batch(
         self,
         content: bytes,
@@ -855,27 +896,15 @@ class OcrProcessor(DocumentProcessor):
         mime = content_type.split(";")[0].strip().lower()
         poll_seconds = settings.document_ocr_batch_poll_seconds
 
-        job = await store.get(
-            user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+        job = await self._live_tracked_job(
+            store,
+            user_id=user_id,
+            doc_id=doc_id,
+            doc_type=doc_type,
+            etag=etag,
+            settings=settings,
+            label=filename or doc_id,
         )
-        if job is not None and _job_is_stale_for_model(
-            job.job_id, getattr(settings, self._model_setting)
-        ):
-            # The tracked job belongs to a provider we no longer use (Deck #1192).
-            # Polling it keeps talking to the old OCR leg for as long as the content
-            # is unchanged. Drop the row and fall into the submit branch below, which
-            # re-submits under the configured model.
-            logger.warning(
-                "batch OCR job %s was submitted under a different provider than the "
-                "configured model %s; re-submitting %s",
-                job.job_id,
-                getattr(settings, self._model_setting),
-                filename or doc_id,
-            )
-            await store.delete(
-                user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
-            )
-            job = None
         if job is None:
             # New submission. Drop any superseded-version rows for this doc first
             # (a re-edited file changes etag) — a no-op on the very first submit,

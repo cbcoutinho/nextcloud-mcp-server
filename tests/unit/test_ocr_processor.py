@@ -1117,6 +1117,10 @@ def test_job_is_stale_for_model_fails_open_without_a_prefix():
     and re-pays for, the OCR on every poll."""
     assert ocr._job_is_stale_for_model("bare-job-id", "surya/surya-ocr-2") is False
     assert ocr._job_is_stale_for_model("surya/j", "bare-model") is False
+    # An EMPTY provider segment is unattributable too, not "a provider that
+    # differs from every real one".
+    assert ocr._job_is_stale_for_model("/rest", "surya/surya-ocr-2") is False
+    assert ocr._job_is_stale_for_model("surya/j", "/surya-ocr-2") is False
 
 
 async def test_poll_pending_stale_provider_falls_through(monkeypatch):
