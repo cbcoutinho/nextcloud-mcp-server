@@ -1107,6 +1107,9 @@ def test_job_is_stale_for_model_compares_provider_segment():
     # Same provider, different model: not stale — the in-flight job is still
     # pollable and its output still usable.
     assert ocr._job_is_stale_for_model("mistral/j", "mistral/other") is False
+    # Case is not a config change — comparing case-sensitively would read a
+    # casing difference as a provider switch and re-pay for the OCR.
+    assert ocr._job_is_stale_for_model("Mistral/j", "mistral/other") is False
 
 
 def test_job_is_stale_for_model_fails_open_without_a_prefix():

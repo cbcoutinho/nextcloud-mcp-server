@@ -481,13 +481,14 @@ def _job_is_stale_for_model(job_id: str, model: str) -> bool:
     ``/v1/ocr/batch/mistral/<job>`` — an OCR leg that config said it had left.
 
     Both ids are namespaced ``<provider>/<rest>`` (the submit pact pins the job id
-    to ``[^/]+/.+``), so the provider segment is the comparison. Fails OPEN — an
-    id without a prefix is not attributable to a provider, and a false "stale"
+    to ``[^/]+/.+``), so the provider segment is the comparison, case-insensitively
+    (``Mistral`` and ``mistral`` are one provider, not a config change). Fails OPEN
+    — an id without a prefix is not attributable to a provider, and a false "stale"
     re-submits, and re-pays for, OCR on every single poll.
     """
     if "/" not in job_id or "/" not in model:
         return False
-    return job_id.split("/", 1)[0] != model.split("/", 1)[0]
+    return job_id.split("/", 1)[0].lower() != model.split("/", 1)[0].lower()
 
 
 async def poll_pending_batch_ocr(
