@@ -225,13 +225,11 @@ async def test_poll_succeeded_no_results_is_failed(monkeypatch):
     assert result.is_failed
 
 
-async def test_poll_raises_on_http_error(monkeypatch):
-    _patch_transport(
-        monkeypatch, lambda r: httpx.Response(503, json={"detail": "down"})
-    )
-    client = gbc.GatewayBatchOcrClient("https://gw", "m")
-    with pytest.raises(httpx.HTTPStatusError):
-        await client.poll("mistral/j")
+# Retired with Deck #1192: this asserted a 5xx poll RAISES. That contract is what
+# fed TieredEscalationStrategy's attempt budget and ultimately dropped documents,
+# so a 5xx now reads as PENDING — see test_poll_5xx_is_pending below, which covers
+# 503 alongside 502. A non-404/429 4xx still raises
+# (test_poll_non_404_4xx_still_raises).
 
 
 @pytest.mark.parametrize(
@@ -295,3 +293,77 @@ async def test_submit_and_poll_use_separate_read_timeouts(monkeypatch):
     # The connect timeout stays short and shared -- neither call waits on OCR.
     assert submit_timeout.connect == poll_timeout.connect
     assert submit_timeout.connect == gbc._BATCH_CONNECT_TIMEOUT_SECONDS
+
+
+# --- Deck #1192: a poll that gets no answer must not terminalise the document ---
+
+
+async def test_poll_read_timeout_is_pending(monkeypatch):
+    """A ReadTimeout on the poll reads as PENDING, not as a hard failure.
+
+    Propagating it burned TieredEscalationStrategy's transient-attempt budget and
+    then DROPPED the document, while the gateway may still have been OCRing it.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("", request=request)
+
+    _patch_transport(monkeypatch, handler)
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+    assert result.retry_after is None
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+async def test_poll_5xx_is_pending(monkeypatch, status):
+    """A gateway 5xx (e.g. its upstream provider leg failing) is likewise "no
+    answer yet", not a terminal job state. This replaces the retired
+    test_poll_raises_on_http_error, which pinned the opposite for 503."""
+    _patch_transport(
+        monkeypatch, lambda r: httpx.Response(status, json={"detail": "poll failed"})
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+
+
+async def test_poll_429_is_pending_and_honours_retry_after(monkeypatch):
+    """ "Poll slower" is a statement about us, never about the job. Hard-failing it
+    would reintroduce the drop for a gateway that rate-limits polls under load."""
+    _patch_transport(
+        monkeypatch,
+        lambda r: httpx.Response(429, json={}, headers={"Retry-After": "90"}),
+    )
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
+
+    assert result.is_pending
+    assert result.retry_after == 90
+
+
+async def test_poll_token_provider_failure_still_raises(monkeypatch):
+    """The token provider talks to the OIDC issuer, not the gateway, and raises the
+    same httpx types the PENDING remap catches. An M2M outage must surface as an auth
+    fault — not as "the gateway says the job is still running" on every document."""
+
+    class _BrokenTok:
+        async def get_token(self) -> str:
+            raise httpx.ConnectError("token endpoint unreachable")
+
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json={}))
+    client = gbc.GatewayBatchOcrClient(
+        "https://gw", "m", token_provider=cast(Any, _BrokenTok())
+    )
+
+    with pytest.raises(httpx.ConnectError):
+        await client.poll("mistral/job-1")
+
+
+async def test_poll_non_404_4xx_still_raises(monkeypatch):
+    """A client-side fault is a real error and must keep propagating; 404 (unknown
+    job) and 429 (poll slower) have their own handling."""
+    _patch_transport(monkeypatch, lambda r: httpx.Response(403, json={}))
+    client = gbc.GatewayBatchOcrClient("https://gw", "m")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.poll("mistral/job-1")
