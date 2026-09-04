@@ -9,7 +9,7 @@ tools during the migration period.
 
 import logging
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth.elicitation import present_login_url
@@ -32,7 +32,7 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def register_auth_tools(mcp: FastMCP) -> None:
+def register_auth_tools(mcp: MCPServer) -> None:
     """Register Login Flow v2 auth tools with the MCP server."""
 
     @mcp.tool(
@@ -44,8 +44,8 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "You will be given a URL to open in your browser to log in."
         ),
         annotations=ToolAnnotations(
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")
@@ -218,9 +218,9 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "Recommended polling interval: 5 seconds."
         ),
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            idempotentHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")
@@ -386,8 +386,8 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "The current app password remains valid until the new one is obtained."
         ),
         annotations=ToolAnnotations(
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")

@@ -142,7 +142,7 @@ async def test_chunk_context_endpoint_uses_app_password(
             client_name="Alice Chunk Context Test",
         ) as mcp_client:
             initial_sync = await mcp_client.call_tool("nc_get_vector_sync_status", {})
-            if initial_sync.isError:
+            if initial_sync.is_error:
                 pytest.skip("Vector sync not enabled on mcp-multi-user-basic")
             initial_count = json.loads(initial_sync.content[0].text).get(
                 "indexed_count", 0
@@ -165,7 +165,7 @@ async def test_chunk_context_endpoint_uses_app_password(
                     "category": "Test",
                 },
             )
-            assert not note_response.isError, f"Create note failed: {note_response}"
+            assert not note_response.is_error, f"Create note failed: {note_response}"
             note_id = json.loads(note_response.content[0].text).get("id")
             assert note_id is not None
 

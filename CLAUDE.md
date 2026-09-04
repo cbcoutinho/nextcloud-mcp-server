@@ -79,7 +79,7 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 
 ### Error Handling
 - **Use custom decorators**: `@retry_on_429` for rate limiting (see base_client.py)
-- **Standard exceptions**: `HTTPStatusError` from httpx, `McpError` for MCP-specific errors
+- **Standard exceptions**: `HTTPStatusError` from httpx, `MCPError` for MCP-specific errors
 - **Logging patterns**:
   - `logger.debug()` for expected 404s and normal operations
   - `logger.warning()` for retries and non-critical issues
@@ -109,7 +109,7 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **Pydantic responses**: All MCP tools return Pydantic models inheriting from `BaseResponse`
 - **Decorators**: `@require_scopes`, `@require_provisioning` for access control
 - **Context pattern**: `await get_client(ctx)` to access authenticated NextcloudClient (async!)
-- **FastMCP decorators**: `@mcp.tool()`, `@mcp.resource()`
+- **MCPServer decorators**: `@mcp.tool()`, `@mcp.resource()`
 - **Token acquisition**: `get_client()` resolves credentials per deployment mode (see Deployment Modes below)
 
 ### Version-dependent API surface: gate, don't try/except
@@ -125,7 +125,7 @@ from nextcloud_mcp_server.capabilities import require_capability
 async def deck_assign_dependent_card(ctx: Context, ...) -> DeckCardResponse: ...
 ```
 
-`NextcloudFastMCP` then hides the tool from `tools/list` and refuses
+`NextcloudMCPServer` then hides the tool from `tools/list` and refuses
 `tools/call` with the reason, per user, from the OCS capabilities the instance
 advertises (`capabilities.<app>.version`). Notes/Tables/Deck/Cookbook/Talk are
 additionally gated on the app being installed at all, via `APP_CAPABILITY_KEY`
@@ -153,8 +153,8 @@ from mcp.types import ToolAnnotations
 @mcp.tool(
     title="Human Readable Name",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=True,  # Nextcloud is external to MCP server
+        read_only_hint=True,
+        open_world_hint=True,  # Nextcloud is external to MCP server
     ),
 )
 
@@ -162,8 +162,8 @@ from mcp.types import ToolAnnotations
 @mcp.tool(
     title="Create Resource",
     annotations=ToolAnnotations(
-        idempotentHint=False,  # Creates new resources each time
-        openWorldHint=True,
+        idempotent_hint=False,  # Creates new resources each time
+        open_world_hint=True,
     ),
 )
 
@@ -171,8 +171,8 @@ from mcp.types import ToolAnnotations
 @mcp.tool(
     title="Update Resource",
     annotations=ToolAnnotations(
-        idempotentHint=False,  # ETag changes = different inputs
-        openWorldHint=True,
+        idempotent_hint=False,  # ETag changes = different inputs
+        open_world_hint=True,
     ),
 )
 
@@ -180,9 +180,9 @@ from mcp.types import ToolAnnotations
 @mcp.tool(
     title="Delete Resource",
     annotations=ToolAnnotations(
-        destructiveHint=True,   # Permanently deletes data
-        idempotentHint=True,    # Same end state if called repeatedly
-        openWorldHint=True,
+        destructive_hint=True,   # Permanently deletes data
+        idempotent_hint=True,    # Same end state if called repeatedly
+        open_world_hint=True,
     ),
 )
 
@@ -190,8 +190,8 @@ from mcp.types import ToolAnnotations
 @mcp.tool(
     title="Write File",
     annotations=ToolAnnotations(
-        idempotentHint=True,  # Same content = same end state
-        openWorldHint=True,
+        idempotent_hint=True,  # Same content = same end state
+        open_world_hint=True,
     ),
 )
 ```
@@ -199,7 +199,7 @@ from mcp.types import ToolAnnotations
 **Key Principles**:
 - **Idempotency**: Same inputs → same result. ETags change after updates, making them non-idempotent
 - **Destructive**: Operations that permanently delete/overwrite data
-- **Open World**: All Nextcloud tools access external service (openWorldHint=True)
+- **Open World**: All Nextcloud tools access external service (open_world_hint=True)
 - **Titles**: Use human-readable names, not snake_case function names
 
 **See**: `docs/ADR-017-mcp-tool-annotations.md` for detailed rationale and examples
@@ -407,7 +407,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 - `docs/ADR-004-progressive-consent.md` - Progressive consent implementation
 
 **Core Components**:
-- `nextcloud_mcp_server/app.py` - FastMCP server entry point
+- `nextcloud_mcp_server/app.py` - MCPServer entry point
 - `nextcloud_mcp_server/client/` - HTTP clients (Notes, Calendar, Contacts, Tables, WebDAV)
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
@@ -486,7 +486,7 @@ window (keep it, log on use, remove a version later), not a merge-order note.
 
 **Every MCP tool MUST return a Pydantic model that inherits from `BaseResponse`
 (`nextcloud_mcp_server/models/base.py`) — never a raw `dict`, `list`, or
-`List[Dict]`.** Raw `list`/`List[Dict]` returns are mangled by FastMCP into dicts
+`List[Dict]`.** Raw `list`/`List[Dict]` returns are mangled by MCPServer into dicts
 with numeric string keys; raw `dict` returns silently bypass the typed schema and
 the `success`/`timestamp` envelope every other tool provides, so clients can't rely
 on a consistent contract. This applies to **all** tools — list/search *and*

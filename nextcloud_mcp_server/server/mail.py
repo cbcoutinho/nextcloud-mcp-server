@@ -7,9 +7,9 @@ from contextlib import contextmanager
 from typing import Annotated
 
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def _mail_errors(action: str) -> Iterator[None]:
-    """Map client transport errors onto ``McpError`` with a consistent message.
+    """Map client transport errors onto ``MCPError`` with a consistent message.
 
     Args:
         action: Present-participle description used in the message, e.g.
@@ -47,14 +47,10 @@ def _mail_errors(action: str) -> Iterator[None]:
     try:
         yield
     except RequestError as e:
-        raise McpError(
-            ErrorData(code=-1, message=f"Network error {action}: {str(e)}")
-        ) from e
+        raise MCPError(code=-1, message=f"Network error {action}: {str(e)}") from e
     except HTTPStatusError as e:
-        raise McpError(
-            ErrorData(
-                code=-1, message=f"Failed {action}: HTTP {e.response.status_code}"
-            )
+        raise MCPError(
+            code=-1, message=f"Failed {action}: HTTP {e.response.status_code}"
         ) from e
 
 
@@ -89,12 +85,12 @@ def _cap_attachment_content(content: str | None) -> str | None:
     return content
 
 
-def configure_mail_tools(mcp: FastMCP):
+def configure_mail_tools(mcp: MCPServer):
     """Configure Mail app MCP tools (read, send, flags, tags, move, delete)."""
 
     @mcp.tool(
         title="List Mail Accounts",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -106,20 +102,16 @@ def configure_mail_tools(mcp: FastMCP):
             accounts = [MailAccount(**a) for a in accounts_data]
             return ListAccountsResponse(results=accounts, total_count=len(accounts))
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing accounts: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error listing accounts: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list accounts: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list accounts: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="List Mail Mailboxes",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -141,20 +133,18 @@ def configure_mail_tools(mcp: FastMCP):
             mailboxes = [MailMailbox(**m) for m in mailboxes_data]
             return ListMailboxesResponse(results=mailboxes, total_count=len(mailboxes))
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing mailboxes: {str(e)}")
+            raise MCPError(
+                code=-1, message=f"Network error listing mailboxes: {str(e)}"
             )
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list mailboxes: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list mailboxes: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="List Mail Messages",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -218,20 +208,16 @@ def configure_mail_tools(mcp: FastMCP):
                 has_more=len(messages) == effective_limit,
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing messages: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error listing messages: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list messages: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list messages: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get Mail Message",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -255,36 +241,27 @@ def configure_mail_tools(mcp: FastMCP):
             # MailMessage(**{}) raise an uncaught ValidationError; treat it as
             # not-found instead.
             if not message_data:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Message {message_id} not found")
-                )
+                raise MCPError(code=-1, message=f"Message {message_id} not found")
             message = MailMessage(**message_data)
             return GetMessageResponse(message=message)
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error getting message {message_id}: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error getting message {message_id}: {str(e)}",
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Message {message_id} not found")
-                )
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get message {message_id}: "
-                    f"{e.response.status_code}",
-                )
+                raise MCPError(code=-1, message=f"Message {message_id} not found")
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get message {message_id}: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Send Mail Message",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Stages a new outbox entry each call (ADR-017)
-            openWorldHint=True,
+            idempotent_hint=False,  # Stages a new outbox entry each call (ADR-017)
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.send")
@@ -341,25 +318,19 @@ def configure_mail_tools(mcp: FastMCP):
                 success=True, message="Message sent successfully"
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error sending message: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error sending message: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to send message: {e.response.status_code} "
-                    f"{e.response.text[:500]}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to send message: {e.response.status_code} "
+                f"{e.response.text[:500]}",
             )
         except json.JSONDecodeError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
 
     @mcp.tool(
         title="Get Mail Attachment",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -388,24 +359,20 @@ def configure_mail_tools(mcp: FastMCP):
                 content=_cap_attachment_content(data.get("content")),
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error getting attachment: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error getting attachment: {str(e)}"
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message="Attachment not found"))
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get attachment: {e.response.status_code}",
-                )
+                raise MCPError(code=-1, message="Attachment not found")
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get attachment: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get Mail Message Source",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("mail.read")
     @instrument_tool
@@ -434,8 +401,8 @@ def configure_mail_tools(mcp: FastMCP):
         title="Set Mail Message Flags",
         annotations=ToolAnnotations(
             # Same inputs -> same end state (a flag set twice stays set).
-            idempotentHint=True,
-            openWorldHint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")
@@ -478,12 +445,10 @@ def configure_mail_tools(mcp: FastMCP):
             if value is not None
         }
         if not flags:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message="No flags given; pass at least one of seen, flagged, "
-                    "answered, junk",
-                )
+            raise MCPError(
+                code=-1,
+                message="No flags given; pass at least one of seen, flagged, "
+                "answered, junk",
             )
 
         client = await get_client(ctx)
@@ -500,8 +465,8 @@ def configure_mail_tools(mcp: FastMCP):
         annotations=ToolAnnotations(
             # Create-or-get: the Mail app returns the existing tag for a name
             # that already resolves to the same IMAP label.
-            idempotentHint=True,
-            openWorldHint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")
@@ -536,8 +501,8 @@ def configure_mail_tools(mcp: FastMCP):
     @mcp.tool(
         title="Tag Mail Message",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # Re-tagging a tagged message is a no-op
-            openWorldHint=True,
+            idempotent_hint=True,  # Re-tagging a tagged message is a no-op
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")
@@ -568,8 +533,8 @@ def configure_mail_tools(mcp: FastMCP):
     @mcp.tool(
         title="Untag Mail Message",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # Removing an absent tag leaves the same state
-            openWorldHint=True,
+            idempotent_hint=True,  # Removing an absent tag leaves the same state
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")
@@ -603,8 +568,8 @@ def configure_mail_tools(mcp: FastMCP):
             # with the same message_id is rejected (the Mail app answers 403)
             # rather than being a harmless no-op. Verified against a live Mail
             # app -- see test_move_message_between_mailboxes.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")
@@ -637,13 +602,13 @@ def configure_mail_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Mail Message",
         annotations=ToolAnnotations(
-            destructiveHint=True,  # Removes the message from its mailbox
+            destructive_hint=True,  # Removes the message from its mailbox
             # NOT idempotent, unlike most deletes. Trashing is a move, so it
             # invalidates the id: a retry is rejected (403) instead of being a
             # no-op, and if the message was already in trash the first call
             # expunges it permanently. Verified against a live Mail app.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("mail.write")

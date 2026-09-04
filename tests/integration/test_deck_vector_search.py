@@ -20,7 +20,7 @@ async def test_deck_card_semantic_search(nc_mcp_client, nc_client, mocker):
     """
     # Skip if vector sync is not enabled
     settings_response = await nc_mcp_client.call_tool("nc_get_vector_sync_status", {})
-    if settings_response.isError:
+    if settings_response.is_error:
         pytest.skip("Vector sync not enabled")
 
     # Create a test board
@@ -82,8 +82,8 @@ async def test_deck_card_semantic_search(nc_mcp_client, nc_client, mocker):
             )
 
             # If vector sync is working, we should find the card
-            if not search_result.isError:
-                data = search_result.structuredContent
+            if not search_result.is_error:
+                data = search_result.structured_content
                 results = data.get("results", [])
 
                 # Check if our card is in the results
@@ -119,7 +119,7 @@ async def test_deck_card_appears_in_cross_app_search(nc_mcp_client, nc_client):
     """
     # Skip if vector sync is not enabled
     settings_response = await nc_mcp_client.call_tool("nc_get_vector_sync_status", {})
-    if settings_response.isError:
+    if settings_response.is_error:
         pytest.skip("Vector sync not enabled")
 
     # Create a test board with a distinctive card
@@ -151,8 +151,8 @@ async def test_deck_card_appears_in_cross_app_search(nc_mcp_client, nc_client):
                 },
             )
 
-            if not search_result.isError:
-                data = search_result.structuredContent
+            if not search_result.is_error:
+                data = search_result.structured_content
                 results = data.get("results", [])
 
                 # Check if deck_card appears in cross-app results

@@ -1,7 +1,7 @@
 """Compact JSON in tool results (GH #1395).
 
-FastMCP serialises every non-string tool return with ``indent=2``
-(``mcp.server.fastmcp.utilities.func_metadata._convert_to_content``), and this
+MCPServer serialises every non-string tool return with ``indent=2``
+(``mcp.server.mcpserver.utilities.func_metadata._convert_to_content``), and this
 SDK exposes no serializer hook to override it -- neither does the v2
 ``mcpserver`` package, so migrating does not fix it either. The consumer is a
 language model with a bounded context window, and that indentation costs
@@ -16,7 +16,7 @@ versions return, so this cannot fail quietly.
 import json
 from typing import Any
 
-from mcp.types import ContentBlock, TextContent
+from mcp.types import CallToolResult, ContentBlock, TextContent
 
 
 def compact_json_dumps(data: Any) -> str:
@@ -57,13 +57,17 @@ def _compact_block(block: ContentBlock) -> ContentBlock:
 
 
 def compact_tool_result(result: Any) -> Any:
-    """Compact the JSON in a ``FastMCP.call_tool`` result.
+    """Compact the JSON in a ``MCPServer.call_tool`` result.
 
-    The SDK returns either a list of content blocks or, when the tool declares
-    an output schema, an ``(unstructured, structured)`` pair. Only the
-    unstructured half is rewritten -- the structured half is a dict the SDK
-    serialises itself, without indentation.
+    mcp 2.x returns a ``CallToolResult``; only its ``content`` is rewritten --
+    ``structured_content`` is a dict the SDK serialises itself, without
+    indentation. The 1.x shapes (a bare block list, or an
+    ``(unstructured, structured)`` pair) are still handled because
+    ``ToolManager``-level callers and tests pass them directly.
     """
+    if isinstance(result, CallToolResult):
+        content = [_compact_block(block) for block in result.content]
+        return result.model_copy(update={"content": content})
     if isinstance(result, tuple) and len(result) == 2:
         unstructured, structured = result
         return compact_tool_result(unstructured), structured

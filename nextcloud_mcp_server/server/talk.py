@@ -3,8 +3,8 @@
 import logging
 import uuid
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -37,21 +37,21 @@ def _validate_message_text(message: str) -> None:
     # Reject both empty strings and whitespace-only strings — spreed
     # would happily post the latter as a visually-blank message.
     if not message or not message.strip():
-        raise ValueError("Message text must not be empty or whitespace-only")
+        raise ToolError("Message text must not be empty or whitespace-only")
     if len(message) > _MESSAGE_MAX_LENGTH:
-        raise ValueError(
+        raise ToolError(
             f"Message too long: {len(message)} characters (max {_MESSAGE_MAX_LENGTH})"
         )
 
 
-def configure_talk_tools(mcp: FastMCP) -> None:
+def configure_talk_tools(mcp: MCPServer) -> None:
     """Configure Nextcloud Talk (spreed) MCP tools."""
 
     # Read tools
 
     @mcp.tool(
         title="List Talk Conversations",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.read")
     @instrument_tool
@@ -77,7 +77,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="Get Talk Conversation",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.read")
     @instrument_tool
@@ -95,7 +95,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="Get Talk Messages",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.read")
     @instrument_tool
@@ -141,7 +141,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="List Talk Conversation Participants",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.read")
     @instrument_tool
@@ -168,7 +168,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="Send Talk Message",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("talk.write")
     @instrument_tool
@@ -205,7 +205,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="Mark Talk Conversation as Read",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.write")
     @instrument_tool
@@ -233,7 +233,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="Create Talk Conversation",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("talk.write")
     @instrument_tool
@@ -283,8 +283,8 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(
             # Adding someone already in the room succeeds as a no-op (verified
             # against Talk 22.0.17), so repeating the call leaves the same state.
-            idempotentHint=True,
-            openWorldHint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("talk.write")
@@ -320,7 +320,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         title="List Talk Message Reactions",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("talk.read")
     @require_capability("spreed", feature="reactions")
@@ -354,8 +354,8 @@ def configure_talk_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(
             # Reactions are a set: reacting twice with the same emoji leaves the
             # same state (spreed answers 201 then 200).
-            idempotentHint=True,
-            openWorldHint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("talk.write")
@@ -389,11 +389,11 @@ def configure_talk_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         title="Remove Talk Message Reaction",
         annotations=ToolAnnotations(
-            destructiveHint=True,
+            destructive_hint=True,
             # Same end state when repeated, though the server reports the second
             # removal as a 404 rather than a no-op.
-            idempotentHint=True,
-            openWorldHint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("talk.write")

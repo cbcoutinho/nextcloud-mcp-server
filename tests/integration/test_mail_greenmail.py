@@ -513,18 +513,18 @@ async def test_delete_message_removes_it_from_the_inbox(
     assert message_id not in [m["databaseId"] for m in remaining]
 
     # Trashing is a move, so it invalidates the id the same way: a retry is
-    # rejected rather than being a no-op. This is what idempotentHint=False on
+    # rejected rather than being a no-op. This is what idempotent_hint=False on
     # nc_mail_delete_message records.
     retry = await nc_mcp_client.call_tool(
         "nc_mail_delete_message", {"message_id": message_id}
     )
-    assert retry.isError, "expected the stale message id to be rejected on retry"
+    assert retry.is_error, "expected the stale message id to be rejected on retry"
 
 
 async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_account):
     """Move a message out of INBOX and confirm it lands in the destination.
 
-    Also pins the move's *non*-idempotency, which is what ``idempotentHint=False``
+    Also pins the move's *non*-idempotency, which is what ``idempotent_hint=False``
     on the tool records: the move invalidates the source id (the message is
     re-cached in the destination under a new one), so repeating the call with
     the same id fails instead of being a harmless no-op. An agent that reads the
@@ -587,4 +587,4 @@ async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_ac
         "nc_mail_move_message",
         {"message_id": message_id, "destination_mailbox_id": destination["databaseId"]},
     )
-    assert retry.isError, "expected the stale message id to be rejected on retry"
+    assert retry.is_error, "expected the stale message id to be rejected on retry"

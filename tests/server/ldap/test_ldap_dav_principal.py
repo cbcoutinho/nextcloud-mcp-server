@@ -43,7 +43,7 @@ async def test_webdav_round_trip_resolves_ldap_principal(
     mkdir_result = await nc_mcp_ldap_alice_client.call_tool(
         "nc_webdav_create_directory", {"path": dir_path}
     )
-    assert mkdir_result.isError is False, (
+    assert mkdir_result.is_error is False, (
         "create_directory failed — DAV path built from the LDAP loginName "
         "'alice' instead of the discovered canonical UID (GH #980 not fixed?): "
         f"{mkdir_result.content}"
@@ -54,19 +54,19 @@ async def test_webdav_round_trip_resolves_ldap_principal(
             "nc_webdav_write_file",
             {"path": file_path, "content": content},
         )
-        assert write_result.isError is False
+        assert write_result.is_error is False
 
         read_result = await nc_mcp_ldap_alice_client.call_tool(
             "nc_webdav_read_file", {"path": file_path}
         )
-        assert read_result.isError is False
+        assert read_result.is_error is False
         read_data = json.loads(read_result.content[0].text)
         assert content in read_data.get("content", "")
 
         list_result = await nc_mcp_ldap_alice_client.call_tool(
             "nc_webdav_list_directory", {"path": dir_path}
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
         list_data = json.loads(list_result.content[0].text)
         names = [f.get("name", "") for f in list_data.get("files", [])]
         assert "ldap_principal.txt" in names

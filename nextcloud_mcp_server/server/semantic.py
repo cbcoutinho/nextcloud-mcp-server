@@ -1,14 +1,13 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import anyio
 from httpx import RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
 from mcp.types import (
-    ErrorData,
     ToolAnnotations,
 )
 from pydantic import Field
@@ -84,21 +83,21 @@ def _consent_narrowed_doc_types(
     return [dt for dt in doc_types if dt in allowed]
 
 
-def configure_semantic_tools(mcp: FastMCP):
+def configure_semantic_tools(mcp: MCPServer):
     """Configure semantic search tools for MCP server."""
 
     @mcp.tool(
         title="Semantic Search",
         annotations=ToolAnnotations(
-            readOnlyHint=True,  # Search doesn't modify data
-            openWorldHint=True,  # Queries external Nextcloud service
+            read_only_hint=True,  # Search doesn't modify data
+            open_world_hint=True,  # Queries external Nextcloud service
         ),
     )
     @require_scopes("semantic.read")
     @instrument_tool
     async def nc_semantic_search(  # NOSONAR(S107)
         # S107 (too many parameters) is suppressed deliberately: for an MCP tool
-        # the parameter list IS the wire schema that FastMCP publishes to
+        # the parameter list IS the wire schema that MCPServer publishes to
         # clients. Grouping these into a settings object to satisfy the rule
         # would change the tool's advertised interface and break every caller,
         # so the smell is inherent to the surface rather than to this function.
@@ -322,16 +321,14 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # Check that vector sync is enabled — search queries the Qdrant index.
         if not settings.vector_sync_enabled:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message="Cross-app search requires VECTOR_SYNC_ENABLED=true",
-                )
+            raise MCPError(
+                code=-1,
+                message="Cross-app search requires VECTOR_SYNC_ENABLED=true",
             )
 
         # Normalize the RFC 3339 / Unix-seconds date bounds to int Unix seconds
         # for the numeric ``modified_at`` Range filter (ADR-027). A bad format
-        # surfaces as a clean McpError rather than a 500.
+        # surfaces as a clean MCPError rather than a 500.
         try:
             modified_after_ts = parse_modified_timestamp(
                 modified_after, param_name="modified_after"
@@ -340,27 +337,25 @@ def configure_semantic_tools(mcp: FastMCP):
                 modified_before, param_name="modified_before"
             )
         except ValueError as exc:
-            raise McpError(ErrorData(code=-1, message=str(exc))) from exc
+            raise MCPError(code=-1, message=str(exc)) from exc
 
         # Cross-field invariant: a per-parameter pydantic ``Field`` constraint
-        # (validated by FastMCP from the signature) bounds each date on its own
+        # (validated by MCPServer from the signature) bounds each date on its own
         # but cannot express the relationship between them. Guard it here so an
-        # inverted range surfaces a clean McpError rather than silently
+        # inverted range surfaces a clean MCPError rather than silently
         # returning zero results (ADR-027).
         if (
             modified_after_ts is not None
             and modified_before_ts is not None
             and modified_after_ts > modified_before_ts
         ):
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=(
-                        "modified_after must be <= modified_before "
-                        f"(got modified_after={modified_after!r}, "
-                        f"modified_before={modified_before!r})"
-                    ),
-                )
+            raise MCPError(
+                code=-1,
+                message=(
+                    "modified_after must be <= modified_before "
+                    f"(got modified_after={modified_after!r}, "
+                    f"modified_before={modified_before!r})"
+                ),
             )
 
         # Capability gate. Rejecting is deliberate: silently returning
@@ -370,16 +365,14 @@ def configure_semantic_tools(mcp: FastMCP):
         # probe. (A reranker that is configured but momentarily unavailable is
         # a different case — that degrades, and the response says so.)
         if rerank and not rerank_available(settings):
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=(
-                        "Reranking is not configured on this server. Set "
-                        "SEARCH_RERANK_ENABLED=true (requires "
-                        "EMBEDDING_GATEWAY_URL), or omit rerank to use "
-                        "retrieval ordering."
-                    ),
-                )
+            raise MCPError(
+                code=-1,
+                message=(
+                    "Reranking is not configured on this server. Set "
+                    "SEARCH_RERANK_ENABLED=true (requires "
+                    "EMBEDDING_GATEWAY_URL), or omit rerank to use "
+                    "retrieval ordering."
+                ),
             )
 
         # Merge the legacy single path_prefix and the path_prefixes list into one
@@ -455,7 +448,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
 
         # Search-metric state, recorded in the ``finally`` below so every exit —
-        # success, McpError, or an unexpected raise — lands exactly one
+        # success, MCPError, or an unexpected raise — lands exactly one
         # ``astrolabe_search_requests_total`` sample. Defaults describe the
         # failure case; the success path overwrites them.
         metric_status = "error"
@@ -614,9 +607,8 @@ def configure_semantic_tools(mcp: FastMCP):
             # AttributeError surfaces during the first search rather than
             # silently degrading to inline eviction for the life of the
             # process.
-            eviction_task_group = (
-                ctx.request_context.lifespan_context.eviction_task_group
-            )
+            lifespan_ctx: Any = ctx.request_context.lifespan_context
+            eviction_task_group = lifespan_ctx.eviction_task_group
             verification_start = anyio.current_time()
             verified_results, dropped_count = await verify_search_results(
                 client,
@@ -926,27 +918,21 @@ def configure_semantic_tools(mcp: FastMCP):
         except ValueError as e:
             error_msg = str(e)
             if "No embedding provider configured" in error_msg:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Embedding service not configured. Set OLLAMA_BASE_URL environment variable.",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Embedding service not configured. Set OLLAMA_BASE_URL environment variable.",
                 )
-            raise McpError(
-                ErrorData(code=-1, message=f"Configuration error: {error_msg}")
-            )
+            raise MCPError(code=-1, message=f"Configuration error: {error_msg}")
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error during search: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error during search: {str(e)}")
         except Exception as e:
             # Genuinely-unexpected bucket (after the ValueError / RequestError
-            # cases above). We convert it to a client-facing McpError, which
-            # FastMCP returns as a structured protocol error without logging a
+            # cases above). We convert it to a client-facing MCPError, which
+            # MCPServer returns as a structured protocol error without logging a
             # server-side traceback — so, like the sampling catch-all below, keep
             # the stack here (logger.exception) for triage.
             logger.exception("Search error: %s", e)
-            raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
+            raise MCPError(code=-1, message=f"Search failed: {str(e)}")
         finally:
             # One sample per search, on every exit path. Paired with the
             # identical call in api/visualization.py so the MCP and HTTP
@@ -964,8 +950,8 @@ def configure_semantic_tools(mcp: FastMCP):
     @mcp.tool(
         title="Check Indexing Status",
         annotations=ToolAnnotations(
-            readOnlyHint=True,  # Only checks status
-            openWorldHint=True,
+            read_only_hint=True,  # Only checks status
+            open_world_hint=True,
         ),
     )
     @require_scopes("semantic.read")
@@ -1009,7 +995,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 get_ingest_pending,
             )
 
-            lifespan_ctx = ctx.request_context.lifespan_context
+            lifespan_ctx: Any = ctx.request_context.lifespan_context
             pending = await get_ingest_pending(
                 task_producer=lifespan_ctx.task_producer,
                 document_receive_stream=lifespan_ctx.document_receive_stream,
@@ -1062,9 +1048,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error("Error getting vector sync status: %s", e)
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to retrieve vector sync status: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to retrieve vector sync status: {str(e)}",
             )

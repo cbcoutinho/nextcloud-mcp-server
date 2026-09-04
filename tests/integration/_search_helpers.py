@@ -31,7 +31,7 @@ async def document_is_searchable(
     except Exception as e:  # transient transport/availability blip — keep polling
         logger.debug("Semantic search poll failed: %s", e)
         return False
-    if search.isError:
+    if search.is_error:
         logger.debug("Semantic search poll error: %s", search)
         return False
 

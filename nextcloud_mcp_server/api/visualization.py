@@ -315,7 +315,7 @@ async def _search_with_acl(
             )
             # Verify-on-read (ADR-019): drop documents the caller can no longer
             # access (e.g. a revoked share). Eviction runs inline — this
-            # Starlette route has no FastMCP lifespan task group.
+            # Starlette route has no MCPServer lifespan task group.
             verify_start = anyio.current_time()
             results, dropped = await verify_search_results(nc_client, results)
             record_search_stage("http", "verify", anyio.current_time() - verify_start)

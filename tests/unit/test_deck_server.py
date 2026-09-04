@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.models.deck import (
     DeckACL,
@@ -200,13 +201,13 @@ def test_validate_positive_length_accepts_positive():
 
 def test_validate_positive_length_rejects_zero():
     """Zero would wipe descriptions to a single ellipsis — reject at the boundary."""
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ToolError, match="must be positive"):
         _validate_positive_length(0)
 
 
 def test_validate_positive_length_rejects_negative():
     """Negative values produce surprising slice semantics — reject at the boundary."""
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ToolError, match="must be positive"):
         _validate_positive_length(-10)
 
 

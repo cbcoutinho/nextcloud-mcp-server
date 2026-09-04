@@ -16,6 +16,7 @@ authenticated client):
 from datetime import datetime, timezone
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.server.sharing import (
     _build_link_response,
@@ -55,7 +56,7 @@ def test_compute_link_expiry_rejects_non_positive(minutes):
     (non-expiring) public link."""
     now = datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ToolError, match="positive"):
         _compute_link_expiry(minutes, now)
 
 

@@ -3,12 +3,11 @@
 import httpx
 import pytest
 from httpx import HTTPStatusError
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.client.collectives import OCSError
-from nextcloud_mcp_server.errors import NextcloudFastMCP, friendly_tool_error
+from nextcloud_mcp_server.errors import NextcloudMCPServer, friendly_tool_error
 from nextcloud_mcp_server.server.collectives import _raise_collectives_error
 
 pytestmark = pytest.mark.unit
@@ -189,7 +188,7 @@ def test_request_error_reports_unreachable_server():
 @pytest.mark.parametrize(
     "exc",
     [
-        McpError(ErrorData(code=-1, message="Note 5 not found")),
+        MCPError(code=-1, message="Note 5 not found"),
         ValueError("bad argument"),
         None,
     ],
@@ -203,7 +202,7 @@ def test_collectives_lets_http_errors_reach_the_boundary():
     """Regression guard: re-wrapping in str(e) would shadow the new message.
 
     ``OCSError`` carries a real server message and still becomes an
-    ``McpError``; a transport-level error must arrive at the tool boundary
+    ``MCPError``; a transport-level error must arrive at the tool boundary
     intact so ``friendly_tool_error`` can render it.
     """
     http_error = _http_error(404)
@@ -211,14 +210,14 @@ def test_collectives_lets_http_errors_reach_the_boundary():
         _raise_collectives_error(http_error)
     assert raised.value is http_error
 
-    with pytest.raises(McpError) as wrapped:
+    with pytest.raises(MCPError) as wrapped:
         _raise_collectives_error(OCSError(403, "Not permitted"))
     assert "Not permitted" in str(wrapped.value)
 
 
 async def test_boundary_rewrites_http_errors_but_not_tailored_ones():
-    """The FastMCP override is what actually reaches the client."""
-    mcp = NextcloudFastMCP("test")
+    """The MCPServer override is what actually reaches the client."""
+    mcp = NextcloudMCPServer("test")
 
     @mcp.tool()
     async def leaky_tool() -> str:
@@ -226,7 +225,7 @@ async def test_boundary_rewrites_http_errors_but_not_tailored_ones():
 
     @mcp.tool()
     async def tailored_tool() -> str:
-        raise McpError(ErrorData(code=-1, message="Note 5 not found"))
+        raise MCPError(code=-1, message="Note 5 not found")
 
     with pytest.raises(ToolError) as leaky:
         await mcp.call_tool("leaky_tool", {})

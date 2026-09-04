@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Literal
 
 import anyio
 from anyio.to_thread import run_sync
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
@@ -192,13 +192,13 @@ async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
         ) from None
 
 
-def configure_webdav_tools(mcp: FastMCP):
+def configure_webdav_tools(mcp: MCPServer):
     # WebDAV file system tools
     @mcp.tool(
         title="List Files and Directories",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -257,8 +257,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Read File",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -494,8 +494,8 @@ def configure_webdav_tools(mcp: FastMCP):
             # succeeds once then returns 412 ("already exists") on repeat, and
             # an if_match overwrite is invalidated by its own success (the etag
             # changes) -- mirroring nc_notes_update_note's etag-guarded update.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -597,8 +597,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Create Directory",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # Creating existing dir returns 405 = same end state
-            openWorldHint=True,
+            idempotent_hint=True,  # Creating existing dir returns 405 = same end state
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -630,9 +630,9 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete File or Directory",
         annotations=ToolAnnotations(
-            destructiveHint=True,  # Permanently deletes data
-            idempotentHint=True,  # Deleting deleted resource = same end state
-            openWorldHint=True,
+            destructive_hint=True,  # Permanently deletes data
+            idempotent_hint=True,  # Deleting deleted resource = same end state
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -661,8 +661,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Move or Rename File",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Moving changes source and dest
-            openWorldHint=True,
+            idempotent_hint=False,  # Moving changes source and dest
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -732,8 +732,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Copy File or Directory",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Creates new resource each time
-            openWorldHint=True,
+            idempotent_hint=False,  # Creates new resource each time
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -803,8 +803,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Search Files",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -922,8 +922,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Find Files by Name",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -966,8 +966,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Find Files by Type",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1010,8 +1010,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="List Favorite Files",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1051,8 +1051,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="List File Comments",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1078,9 +1078,9 @@ def configure_webdav_tools(mcp: FastMCP):
             ListFileCommentsResponse with the comments, newest first.
         """
         if limit <= 0:
-            raise ValueError(f"limit must be positive, got {limit}")
+            raise ToolError(f"limit must be positive, got {limit}")
         if offset < 0:
-            raise ValueError(f"offset must not be negative, got {offset}")
+            raise ToolError(f"offset must not be negative, got {offset}")
 
         client = await get_client(ctx)
         file_id = await _resolve_commented_file(client, path)
@@ -1100,8 +1100,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Comment on File",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Each call adds another comment
-            openWorldHint=True,
+            idempotent_hint=False,  # Each call adds another comment
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -1131,10 +1131,10 @@ def configure_webdav_tools(mcp: FastMCP):
             CreateFileCommentResponse with the new comment's ID.
         """
         if is_blank_comment(message):
-            raise ValueError("Comment message must not be empty or whitespace-only")
+            raise ToolError("Comment message must not be empty or whitespace-only")
         length = measured_length(message)
         if length > COMMENT_MAX_LENGTH:
-            raise ValueError(
+            raise ToolError(
                 f"Comment message is {length} characters; Nextcloud's limit is "
                 f"{COMMENT_MAX_LENGTH} (measured after trimming whitespace, "
                 f"counting Unicode code points). It is "

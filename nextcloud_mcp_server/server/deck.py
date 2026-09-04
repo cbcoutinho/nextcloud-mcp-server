@@ -3,9 +3,10 @@ from typing import Final, Literal, cast
 
 import anyio
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability
@@ -43,6 +44,7 @@ from nextcloud_mcp_server.models.deck import (
     StackOverview,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
     is_blank_comment,
@@ -72,7 +74,7 @@ def _validate_positive_length(
     the parameter the caller actually passed.
     """
     if value is not None and value <= 0:
-        raise ValueError(f"{name} must be positive, got {value}")
+        raise ToolError(f"{name} must be positive, got {value}")
 
 
 # Nextcloud's core comment cap (see COMMENT_MAX_LENGTH). Deck adds no check of
@@ -101,7 +103,7 @@ def _validate_comment_message_not_blank(message: str) -> None:
     :func:`is_blank_comment` for why neither trim charlist alone is enough.
     """
     if is_blank_comment(message):
-        raise ValueError("Comment message must not be empty or whitespace-only")
+        raise ToolError("Comment message must not be empty or whitespace-only")
 
 
 def _validate_comment_message(message: str) -> None:
@@ -110,7 +112,7 @@ def _validate_comment_message(message: str) -> None:
 
     length = measured_length(message)
     if length > _COMMENT_MAX_LENGTH:
-        raise ValueError(_too_long_message(message, length))
+        raise ToolError(_too_long_message(message, length))
 
 
 def _min_parts_for(length: int) -> int:
@@ -234,7 +236,7 @@ def _comment_http_error(
     card_id: int,
     comment_id: int | None = None,
     message: str | None = None,
-) -> McpError:
+) -> MCPError:
     """Translate a Deck comment API failure into something an agent can act on.
 
     Args:
@@ -301,7 +303,7 @@ def _comment_http_error(
         )
 
     logger.warning("Deck comment error (%s while %s): %s", status, phrase, reason)
-    return McpError(ErrorData(code=-32603, message=reason))
+    return MCPError(code=-32603, message=reason)
 
 
 def _partial_split_error(
@@ -311,7 +313,7 @@ def _partial_split_error(
     posted: list[DeckComment],
     failed_part: int,
     total_parts: int,
-) -> McpError:
+) -> MCPError:
     """Report a split that died partway through.
 
     No rollback is attempted, deliberately. Deleting the parts already posted
@@ -361,7 +363,7 @@ def _partial_split_error(
         total_parts,
         posted_ids,
     )
-    return McpError(ErrorData(code=-32603, message=message))
+    return MCPError(code=-32603, message=message)
 
 
 async def _post_split_comment(
@@ -377,11 +379,11 @@ async def _post_split_comment(
     # Cheap bound first, so an enormous paste is rejected without running the
     # splitter over it.
     if _min_parts_for(length) > _MAX_SPLIT_PARTS:
-        raise ValueError(_too_long_to_split_message(length, None))
+        raise ToolError(_too_long_to_split_message(length, None))
 
     parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
     if len(parts) > _MAX_SPLIT_PARTS:
-        raise ValueError(_too_long_to_split_message(length, len(parts)))
+        raise ToolError(_too_long_to_split_message(length, len(parts)))
 
     posted: list[DeckComment] = []
     for index, part in enumerate(parts, 1):
@@ -685,59 +687,61 @@ async def _resolve_note_attach_path(client, note_id: int) -> str:
     )
 
 
-def configure_deck_tools(mcp: FastMCP):
+def configure_deck_tools(mcp: MCPServer):
     """Configure Nextcloud Deck tools and resources for the MCP server."""
 
     # Resources
     @mcp.resource("nc://Deck/boards")
     async def deck_boards_resource():
-        """List all Nextcloud Deck boards"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning("This message is deprecated, use the deck_get_board instead")
+        """List all Nextcloud Deck boards.
+
+        DEPRECATED: use the ``deck_get_boards`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         boards = await client.deck.get_boards()
         return [board.model_dump() for board in boards]
 
     @mcp.resource("nc://Deck/boards/{board_id}")
     async def deck_board_resource(board_id: int):
-        """Get details of a specific Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_board tool instead"
-        )
+        """Get details of a specific Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_board`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
         return board.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks")
     async def deck_stacks_resource(board_id: int):
-        """List all stacks in a Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_stacks tool instead"
-        )
+        """List all stacks in a Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_stacks`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
         return [stack.model_dump() for stack in stacks]
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
     async def deck_stack_resource(board_id: int, stack_id: int):
-        """Get details of a specific Nextcloud Deck stack"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_stack tool instead"
-        )
+        """Get details of a specific Nextcloud Deck stack.
+
+        DEPRECATED: use the ``deck_get_stack`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         return stack.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
     async def deck_cards_resource(board_id: int, stack_id: int):
-        """List all cards in a Nextcloud Deck stack"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_cards tool instead"
-        )
+        """List all cards in a Nextcloud Deck stack.
+
+        DEPRECATED: use the ``deck_get_cards`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         if stack.cards:
@@ -746,33 +750,33 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
     async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
-        """Get details of a specific Nextcloud Deck card"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_card tool instead"
-        )
+        """Get details of a specific Nextcloud Deck card.
+
+        DEPRECATED: use the ``deck_get_card`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         card = await client.deck.get_card(board_id, stack_id, card_id)
         return card.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels")
     async def deck_labels_resource(board_id: int):
-        """List all labels in a Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_labels tool instead"
-        )
+        """List all labels in a Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_labels`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
         return [label.model_dump() for label in (board.labels or [])]
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
     async def deck_label_resource(board_id: int, label_id: int):
-        """Get details of a specific Nextcloud Deck label"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_label tool instead"
-        )
+        """Get details of a specific Nextcloud Deck label.
+
+        DEPRECATED: use the ``deck_get_label`` tool instead.
+        """
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         label = await client.deck.get_label(board_id, label_id)
         return label.model_dump()
@@ -781,7 +785,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Boards",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -794,7 +798,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Deck Board",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -829,7 +833,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Stacks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -920,7 +924,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Deck Stack",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -1008,7 +1012,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Archived Deck Stacks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -1074,7 +1078,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Cards",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -1153,7 +1157,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Deck Board Overview",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -1251,7 +1255,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Deck Card",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @with_links
@@ -1266,7 +1270,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Labels",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @instrument_tool
@@ -1279,7 +1283,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Deck Label",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @instrument_tool
@@ -1293,7 +1297,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Deck Board",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -1314,7 +1318,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Deck Stack",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -1334,7 +1338,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Deck Stack",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -1365,7 +1369,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Deck Stack",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -1391,7 +1395,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Card Tools
     @mcp.tool(
         title="Create Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1429,7 +1433,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1488,7 +1492,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Deck Card",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -1519,7 +1523,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Archive Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1546,7 +1550,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Unarchive Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1573,7 +1577,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Reorder Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1614,7 +1618,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Move Deck Card to Another Board",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1677,7 +1681,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Label Tools
     @mcp.tool(
         title="Create Deck Label",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -1697,7 +1701,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Deck Label",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -1728,7 +1732,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Deck Label",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -1754,7 +1758,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Card-Label Assignment Tools
     @mcp.tool(
         title="Assign Label to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1782,7 +1786,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Remove Label from Deck Card",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1811,7 +1815,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Card-User Assignment Tools
     @mcp.tool(
         title="Assign User to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @with_links
@@ -1840,7 +1844,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Unassign User from Deck Card",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -1870,7 +1874,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Card Dependency Tools
     @mcp.tool(
         title="Add Dependent Card to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @require_capability("deck", min_version="1.18.0")
@@ -1911,7 +1915,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Remove Dependent Card from Deck Card",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -1952,7 +1956,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Card Comments",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @instrument_tool
@@ -1990,11 +1994,9 @@ def configure_deck_tools(mcp: FastMCP):
         except HTTPStatusError as e:
             raise _comment_http_error(e, operation="list", card_id=card_id) from e
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(f"Network error listing comments on card {card_id}: {e}"),
-                )
+            raise MCPError(
+                code=-32603,
+                message=(f"Network error listing comments on card {card_id}: {e}"),
             ) from e
         shaped = _shape_comments(
             comments,
@@ -2006,7 +2008,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Deck Card Comment",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -2073,13 +2075,11 @@ def configure_deck_tools(mcp: FastMCP):
             except HTTPStatusError as e:
                 raise _comment_http_error(e, operation="create", card_id=card_id) from e
             except RequestError as e:
-                raise McpError(
-                    ErrorData(
-                        code=-32603,
-                        message=(
-                            f"Network error creating a comment on card {card_id}: {e}"
-                        ),
-                    )
+                raise MCPError(
+                    code=-32603,
+                    message=(
+                        f"Network error creating a comment on card {card_id}: {e}"
+                    ),
                 ) from e
             return CardCommentResponse(comment=comment)
 
@@ -2088,7 +2088,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Deck Card Comment",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write")
     @instrument_tool
@@ -2124,21 +2124,19 @@ def configure_deck_tools(mcp: FastMCP):
                 message=message,
             ) from e
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(
-                        f"Network error updating comment {comment_id} on card "
-                        f"{card_id}: {e}"
-                    ),
-                )
+            raise MCPError(
+                code=-32603,
+                message=(
+                    f"Network error updating comment {comment_id} on card "
+                    f"{card_id}: {e}"
+                ),
             ) from e
         return CardCommentResponse(comment=comment)
 
     @mcp.tool(
         title="Delete Deck Card Comment",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")
@@ -2162,14 +2160,12 @@ def configure_deck_tools(mcp: FastMCP):
                 e, operation="delete", card_id=card_id, comment_id=comment_id
             ) from e
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(
-                        f"Network error deleting comment {comment_id} on card "
-                        f"{card_id}: {e}"
-                    ),
-                )
+            raise MCPError(
+                code=-32603,
+                message=(
+                    f"Network error deleting comment {comment_id} on card "
+                    f"{card_id}: {e}"
+                ),
             ) from e
         return CardCommentOperationResponse(
             success=True,
@@ -2180,7 +2176,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Attach File to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write", "files.read")
     @instrument_tool
@@ -2206,7 +2202,7 @@ def configure_deck_tools(mcp: FastMCP):
                 with "/", e.g. "/Documents/spec.pdf" or "/Notes/My Note.md")
         """
         if not path.startswith("/"):
-            raise ValueError(
+            raise ToolError(
                 f"path must start with '/', got: {path!r} "
                 "(paths are relative to the user's Files root)"
             )
@@ -2225,7 +2221,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Attach Note to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("deck.write", "files.read", "notes.read")
     @instrument_tool
@@ -2265,7 +2261,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Deck Card Attachments",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("deck.read")
     @instrument_tool
@@ -2290,7 +2286,7 @@ def configure_deck_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Deck Card Attachment",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("deck.write")

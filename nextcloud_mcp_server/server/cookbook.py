@@ -1,9 +1,9 @@
 import logging
 
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -25,15 +25,16 @@ from nextcloud_mcp_server.models.cookbook import (
     Version,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.request_context import current_context
 
 logger = logging.getLogger(__name__)
 
 
-def configure_cookbook_tools(mcp: FastMCP):
+def configure_cookbook_tools(mcp: MCPServer):
     @mcp.resource("cookbook://version")
     async def cookbook_get_version():
         """Get the Cookbook app and API version"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         version_data = await client.cookbook.get_version()
         return Version(**version_data)
@@ -41,7 +42,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     @mcp.resource("cookbook://config")
     async def cookbook_get_config():
         """Get the Cookbook app configuration"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         config_data = await client.cookbook.get_config()
         return CookbookConfig(**config_data)
@@ -49,31 +50,25 @@ def configure_cookbook_tools(mcp: FastMCP):
     @mcp.resource("nc://Cookbook/{recipe_id}")
     async def nc_cookbook_get_recipe_resource(recipe_id: int):
         """Get a recipe by ID using resource URI"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         try:
             recipe_data = await client.cookbook.get_recipe(recipe_id)
             return Recipe(**recipe_data)
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Recipe {recipe_id} not found")
-                )
+                raise MCPError(code=-1, message=f"Recipe {recipe_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Access denied to recipe {recipe_id}")
-                )
+                raise MCPError(code=-1, message=f"Access denied to recipe {recipe_id}")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to retrieve recipe {recipe_id}: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to retrieve recipe {recipe_id}: {e.response.reason_phrase}",
                 )
 
     @mcp.tool(
         title="Import Recipe from URL",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("cookbook.write")
     @instrument_tool
@@ -96,45 +91,35 @@ def configure_cookbook_tools(mcp: FastMCP):
                 str(e)
                 or f"{type(e).__name__}: {getattr(e, '__cause__', 'unknown cause')}"
             )
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error importing recipe from {url}: {error_detail}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error importing recipe from {url}: {error_detail}",
             )
         except HTTPStatusError as e:
             if e.response.status_code == 400:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Invalid URL or missing 'url' field: {url}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Invalid URL or missing 'url' field: {url}",
                 )
             elif e.response.status_code == 409:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="A recipe with this name already exists. Import aborted.",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="A recipe with this name already exists. Import aborted.",
                 )
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to import recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to import recipes",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to import recipe from {url}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to import recipe from {url}: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="List Recipes",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -147,23 +132,19 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ListRecipesResponse(recipes=recipes, total_count=len(recipes))
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to list recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to list recipes",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to list recipes: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to list recipes: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Get Recipe",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -175,24 +156,18 @@ def configure_cookbook_tools(mcp: FastMCP):
             return Recipe(**recipe_data)
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Recipe {recipe_id} not found")
-                )
+                raise MCPError(code=-1, message=f"Recipe {recipe_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Access denied to recipe {recipe_id}")
-                )
+                raise MCPError(code=-1, message=f"Access denied to recipe {recipe_id}")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to retrieve recipe {recipe_id}: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to retrieve recipe {recipe_id}: {e.response.reason_phrase}",
                 )
 
     @mcp.tool(
         title="Create Recipe",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("cookbook.write")
     @instrument_tool
@@ -245,37 +220,29 @@ def configure_cookbook_tools(mcp: FastMCP):
             return CreateRecipeResponse(id=recipe_id)
         except HTTPStatusError as e:
             if e.response.status_code == 409:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"A recipe with name '{name}' already exists",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"A recipe with name '{name}' already exists",
                 )
             elif e.response.status_code == 422:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Recipe name is required and cannot be empty",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Recipe name is required and cannot be empty",
                 )
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to create recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to create recipes",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to create recipe: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to create recipe: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Update Recipe",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("cookbook.write")
     @instrument_tool
@@ -304,15 +271,11 @@ def configure_cookbook_tools(mcp: FastMCP):
             current_recipe = await client.cookbook.get_recipe(recipe_id)
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Recipe {recipe_id} not found")
-                )
+                raise MCPError(code=-1, message=f"Recipe {recipe_id} not found")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to fetch recipe {recipe_id}: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to fetch recipe {recipe_id}: {e.response.reason_phrase}",
                 )
 
         # Update only specified fields
@@ -345,31 +308,25 @@ def configure_cookbook_tools(mcp: FastMCP):
             return UpdateRecipeResponse(id=updated_id)
         except HTTPStatusError as e:
             if e.response.status_code == 422:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Recipe name is required and cannot be empty",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Recipe name is required and cannot be empty",
                 )
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied: insufficient permissions to update recipe {recipe_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied: insufficient permissions to update recipe {recipe_id}",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to update recipe {recipe_id}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to update recipe {recipe_id}: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Delete Recipe",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("cookbook.write")
@@ -389,27 +346,21 @@ def configure_cookbook_tools(mcp: FastMCP):
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Recipe {recipe_id} not found")
-                )
+                raise MCPError(code=-1, message=f"Recipe {recipe_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied: insufficient permissions to delete recipe {recipe_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied: insufficient permissions to delete recipe {recipe_id}",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to delete recipe {recipe_id}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to delete recipe {recipe_id}: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Search Recipes",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -426,30 +377,24 @@ def configure_cookbook_tools(mcp: FastMCP):
             )
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to search recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to search recipes",
                 )
             elif e.response.status_code == 500:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Search failed: server error",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Search failed: server error",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Search failed: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Search failed: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="List Recipe Categories",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -464,23 +409,19 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ListCategoriesResponse(categories=categories)
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to list categories",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to list categories",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to list categories: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to list categories: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Get Recipes in Category",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -497,30 +438,24 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ListRecipesResponse(recipes=recipes, total_count=len(recipes))
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to access recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to access recipes",
                 )
             elif e.response.status_code == 500:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Could not find category '{category}'",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Could not find category '{category}'",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to get recipes in category: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to get recipes in category: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="List Recipe Keywords",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -533,23 +468,19 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ListKeywordsResponse(keywords=keywords)
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to list keywords",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to list keywords",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to list keywords: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to list keywords: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Get Recipes with Keywords",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("cookbook.read")
     @instrument_tool
@@ -564,30 +495,24 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ListRecipesResponse(recipes=recipes, total_count=len(recipes))
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to access recipes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to access recipes",
                 )
             elif e.response.status_code == 500:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Failed to get recipes with keywords: server error",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Failed to get recipes with keywords: server error",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to get recipes with keywords: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to get recipes with keywords: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Set Cookbook Configuration",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("cookbook.write")
     @instrument_tool
@@ -618,23 +543,19 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ReindexResponse(status_code=200, message=str(result))
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to set configuration",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to set configuration",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to set configuration: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to set configuration: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Reindex Recipes",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("cookbook.write")
     @instrument_tool
@@ -648,16 +569,12 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ReindexResponse(status_code=200, message=message)
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to reindex",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to reindex",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to reindex: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to reindex: server error ({e.response.status_code})",
                 )

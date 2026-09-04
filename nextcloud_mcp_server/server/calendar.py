@@ -2,8 +2,8 @@ import datetime as dt
 import logging
 from typing import Any, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -110,11 +110,11 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
     )
 
 
-def configure_calendar_tools(mcp: FastMCP):
+def configure_calendar_tools(mcp: MCPServer):
     # Calendar tools
     @mcp.tool(
         title="List Calendars",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -128,7 +128,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Calendar Event",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -246,7 +246,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Calendar Events",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -289,7 +289,7 @@ def configure_calendar_tools(mcp: FastMCP):
         # to invent a throwaway value. It stays required otherwise — falling back
         # to a default calendar would silently search the wrong one.
         if not search_all_calendars and not calendar_name.strip():
-            raise ValueError(
+            raise ToolError(
                 "calendar_name is required when search_all_calendars is False"
             )
 
@@ -376,7 +376,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Calendar Event",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -392,7 +392,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Calendar Event",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -496,7 +496,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Calendar Event",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("calendar.write")
@@ -525,7 +525,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Meeting",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -595,7 +595,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Upcoming Events",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -658,7 +658,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Find Availability",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -742,7 +742,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Bulk Calendar Operations",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -798,7 +798,7 @@ def configure_calendar_tools(mcp: FastMCP):
         client = await get_client(ctx)
 
         if operation not in ["update", "delete", "move"]:
-            raise ValueError("Operation must be 'update', 'delete', or 'move'")
+            raise ToolError("Operation must be 'update', 'delete', or 'move'")
 
         # Convert date strings to datetime objects
         start_datetime = None
@@ -922,7 +922,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 update_data["reminder_minutes"] = new_reminder_minutes
 
             if not update_data:
-                raise ValueError("No update data provided for update operation")
+                raise ToolError("No update data provided for update operation")
 
             return await client.calendar.bulk_update_events(
                 filter_criteria, update_data
@@ -930,7 +930,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif operation == "move":
             if not target_calendar:
-                raise ValueError("target_calendar is required for move operation")
+                raise ToolError("target_calendar is required for move operation")
 
             # Find matching events
             if calendar_name:
@@ -1030,7 +1030,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Manage Calendar",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -1064,7 +1064,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif action == "create":
             if not calendar_name:
-                raise ValueError("calendar_name is required for create action")
+                raise ToolError("calendar_name is required for create action")
 
             return await client.calendar.create_calendar(
                 calendar_name=calendar_name,
@@ -1075,13 +1075,13 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif action == "delete":
             if not calendar_name:
-                raise ValueError("calendar_name is required for delete action")
+                raise ToolError("calendar_name is required for delete action")
 
             return await client.calendar.delete_calendar(calendar_name)
 
         elif action == "update":
             if not calendar_name:
-                raise ValueError("calendar_name is required for update action")
+                raise ToolError("calendar_name is required for update action")
 
             # Note: Calendar property updates require additional CalDAV PROPPATCH implementation
             # For now, return an informative message
@@ -1097,13 +1097,13 @@ def configure_calendar_tools(mcp: FastMCP):
             }
 
         else:
-            raise ValueError("Action must be 'create', 'delete', 'update', or 'list'")
+            raise ToolError("Action must be 'create', 'delete', 'update', or 'list'")
 
     # ============= Todo/Task Tools =============
 
     @mcp.tool(
         title="List Todo Tasks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("todo.read", "calendar.read")
     @instrument_tool
@@ -1152,7 +1152,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Todo Task",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
@@ -1207,7 +1207,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Todo Task",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
@@ -1320,8 +1320,8 @@ def configure_calendar_tools(mcp: FastMCP):
         annotations=ToolAnnotations(
             # Not idempotent: a second call with completed=None restamps COMPLETED
             # with a fresh timestamp, so the same inputs produce a different card.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("todo.write", "calendar.read")
@@ -1380,7 +1380,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Todo Task",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("todo.write", "calendar.read")
@@ -1417,7 +1417,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Search Todo Tasks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("todo.read", "calendar.read")
     @instrument_tool

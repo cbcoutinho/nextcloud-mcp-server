@@ -3,8 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -36,7 +36,7 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
             creates short-lived links, never a permanent (non-expiring) one.
     """
     if expires_in_minutes <= 0:
-        raise ValueError("expires_in_minutes must be a positive number of minutes")
+        raise ToolError("expires_in_minutes must be a positive number of minutes")
     target = now + timedelta(minutes=expires_in_minutes)
     expire_date = (target.date() + timedelta(days=1)).isoformat()
     # Match BaseResponse.serialize_timestamp: only collapse a *trailing* UTC
@@ -79,16 +79,16 @@ def _build_link_response(
     )
 
 
-def configure_sharing_tools(mcp: FastMCP):
+def configure_sharing_tools(mcp: MCPServer):
     """Configure sharing-related MCP tools.
 
     Args:
-        mcp: FastMCP server instance
+        mcp: MCPServer server instance
     """
 
     @mcp.tool(
         title="Create Share",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -158,7 +158,7 @@ def configure_sharing_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Public Download Link",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -222,7 +222,7 @@ def configure_sharing_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Share",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("sharing.write")
@@ -246,7 +246,7 @@ def configure_sharing_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Share Details",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -268,7 +268,7 @@ def configure_sharing_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Shares",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -293,7 +293,7 @@ def configure_sharing_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Share",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool

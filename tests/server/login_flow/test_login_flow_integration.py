@@ -94,7 +94,7 @@ class TestLoginFlowNotes:
             "nc_notes_create_note",
             {"title": title, "content": content, "category": category},
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"Create failed: {create_result.content[0].text}"
         )
         note = json.loads(create_result.content[0].text)
@@ -107,7 +107,7 @@ class TestLoginFlowNotes:
             read_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_notes_get_note", {"note_id": note_id}
             )
-            assert read_result.isError is False
+            assert read_result.is_error is False
             read_data = json.loads(read_result.content[0].text)
             assert read_data["title"] == title
             assert read_data["content"] == content
@@ -124,7 +124,7 @@ class TestLoginFlowNotes:
                     "etag": etag,
                 },
             )
-            assert update_result.isError is False, (
+            assert update_result.is_error is False, (
                 f"Update failed: {update_result.content[0].text}"
             )
             updated = json.loads(update_result.content[0].text)
@@ -137,13 +137,13 @@ class TestLoginFlowNotes:
                 "nc_notes_append_content",
                 {"note_id": note_id, "content": "\n\nAppended text"},
             )
-            assert append_result.isError is False
+            assert append_result.is_error is False
 
             # Search
             search_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_notes_search_notes", {"query": suffix}
             )
-            assert search_result.isError is False
+            assert search_result.is_error is False
             search_data = json.loads(search_result.content[0].text)
             assert search_data["total_found"] >= 1
 
@@ -171,7 +171,7 @@ class TestLoginFlowCalendarEvents:
         cal_result = await nc_mcp_login_flow_client.call_tool(
             "nc_calendar_list_calendars", {}
         )
-        assert cal_result.isError is False
+        assert cal_result.is_error is False
         cal_data = json.loads(cal_result.content[0].text)
         calendars = cal_data.get("calendars", [])
         assert len(calendars) > 0
@@ -192,7 +192,7 @@ class TestLoginFlowCalendarEvents:
                 "description": f"Test event for login flow {suffix}",
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"Create event failed: {create_result.content[0].text}"
         )
         event_data = json.loads(create_result.content[0].text)
@@ -205,7 +205,7 @@ class TestLoginFlowCalendarEvents:
                 "nc_calendar_get_event",
                 {"calendar_name": calendar_name, "event_uid": event_uid},
             )
-            assert get_result.isError is False
+            assert get_result.is_error is False
 
         finally:
             # Delete event
@@ -245,7 +245,7 @@ class TestLoginFlowCalendarTodos:
                 "description": f"Test todo {suffix}",
             },
         )
-        if create_result.isError:
+        if create_result.is_error:
             error_text = create_result.content[0].text
             if "AuthorizationError" in error_text:
                 pytest.skip(
@@ -262,7 +262,7 @@ class TestLoginFlowCalendarTodos:
                 "nc_calendar_list_todos",
                 {"calendar_name": calendar_name},
             )
-            assert list_result.isError is False
+            assert list_result.is_error is False
 
             # Update todo
             update_result = await nc_mcp_login_flow_client.call_tool(
@@ -273,7 +273,7 @@ class TestLoginFlowCalendarTodos:
                     "percent_complete": 50,
                 },
             )
-            assert update_result.isError is False
+            assert update_result.is_error is False
 
         finally:
             await nc_mcp_login_flow_client.call_tool(
@@ -302,14 +302,14 @@ class TestLoginFlowContacts:
         ab_result = await nc_mcp_login_flow_client.call_tool(
             "nc_contacts_list_addressbooks", {}
         )
-        assert ab_result.isError is False
+        assert ab_result.is_error is False
 
         # Create a temporary address book for isolation
         create_ab_result = await nc_mcp_login_flow_client.call_tool(
             "nc_contacts_create_addressbook",
             {"name": ab_name, "display_name": f"Login Flow Test {suffix}"},
         )
-        assert create_ab_result.isError is False, (
+        assert create_ab_result.is_error is False, (
             f"Create addressbook failed: {create_ab_result.content[0].text}"
         )
         logger.info("Created address book: %s", ab_name)
@@ -327,7 +327,7 @@ class TestLoginFlowContacts:
                     },
                 },
             )
-            assert create_result.isError is False, (
+            assert create_result.is_error is False, (
                 f"Create contact failed: {create_result.content[0].text}"
             )
             logger.info("Created contact: %s", contact_uid)
@@ -339,7 +339,7 @@ class TestLoginFlowContacts:
                 "nc_contacts_list_contacts",
                 {"addressbook": ab_name},
             )
-            if list_result.isError:
+            if list_result.is_error:
                 error_text = list_result.content[0].text
                 if "ContactField" in error_text:
                     logger.warning(
@@ -390,7 +390,7 @@ class TestLoginFlowFiles:
         mkdir_result = await nc_mcp_login_flow_client.call_tool(
             "nc_webdav_create_directory", {"path": dir_path}
         )
-        assert mkdir_result.isError is False, (
+        assert mkdir_result.is_error is False, (
             f"Create dir failed: {mkdir_result.content[0].text}"
         )
         logger.info("Created directory: %s", dir_path)
@@ -401,13 +401,13 @@ class TestLoginFlowFiles:
                 "nc_webdav_write_file",
                 {"path": file_path, "content": file_content},
             )
-            assert write_result.isError is False
+            assert write_result.is_error is False
 
             # Read file
             read_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_webdav_read_file", {"path": file_path}
             )
-            assert read_result.isError is False
+            assert read_result.is_error is False
             read_data = json.loads(read_result.content[0].text)
             assert file_content in read_data.get("content", "")
 
@@ -415,7 +415,7 @@ class TestLoginFlowFiles:
             list_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_webdav_list_directory", {"path": dir_path}
             )
-            assert list_result.isError is False
+            assert list_result.is_error is False
             list_data = json.loads(list_result.content[0].text)
             files = list_data.get("files", [])
             file_names = [f.get("name", "") for f in files]
@@ -426,7 +426,7 @@ class TestLoginFlowFiles:
                 "nc_webdav_find_by_name",
                 {"pattern": "test_file.txt", "scope": dir_path},
             )
-            assert search_result.isError is False
+            assert search_result.is_error is False
 
         finally:
             # Clean up: delete file then directory
@@ -462,7 +462,7 @@ class TestLoginFlowDeck:
             create_result = await nc_mcp_login_flow_client.call_tool(
                 "deck_create_board", {"title": board_title, "color": "0076D1"}
             )
-            assert create_result.isError is False, (
+            assert create_result.is_error is False, (
                 f"Create board failed: {create_result.content[0].text}"
             )
             board_data = json.loads(create_result.content[0].text)
@@ -473,7 +473,7 @@ class TestLoginFlowDeck:
             list_result = await nc_mcp_login_flow_client.call_tool(
                 "deck_get_boards", {}
             )
-            assert list_result.isError is False
+            assert list_result.is_error is False
             boards_data = json.loads(list_result.content[0].text)
             boards = boards_data.get("boards", [])
             board_ids = [b.get("id") for b in boards]
@@ -483,7 +483,7 @@ class TestLoginFlowDeck:
             detail_result = await nc_mcp_login_flow_client.call_tool(
                 "deck_get_board", {"board_id": board_id}
             )
-            assert detail_result.isError is False
+            assert detail_result.is_error is False
         finally:
             # Clean up board via Deck REST API (no MCP delete_board tool exists)
             if board_id is not None:
@@ -521,7 +521,7 @@ class TestLoginFlowTables:
     async def test_tables_list(self, nc_mcp_login_flow_client: ClientSession):
         """List tables (may be empty but should not error)."""
         result = await nc_mcp_login_flow_client.call_tool("nc_tables_list_tables", {})
-        assert result.isError is False, f"List tables failed: {result.content[0].text}"
+        assert result.is_error is False, f"List tables failed: {result.content[0].text}"
         data = json.loads(result.content[0].text)
         logger.info("Tables: %s", data)
 
@@ -542,13 +542,13 @@ class TestLoginFlowCookbook:
         list_result = await nc_mcp_login_flow_client.call_tool(
             "nc_cookbook_list_recipes", {}
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
 
         # List categories
         cat_result = await nc_mcp_login_flow_client.call_tool(
             "nc_cookbook_list_categories", {}
         )
-        assert cat_result.isError is False
+        assert cat_result.is_error is False
 
     async def test_cookbook_create_and_delete(
         self, nc_mcp_login_flow_client: ClientSession
@@ -566,7 +566,7 @@ class TestLoginFlowCookbook:
                 "keywords": "test,login-flow",  # keywords is a string, not list
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"Create recipe failed: {create_result.content[0].text}"
         )
         recipe_data = json.loads(create_result.content[0].text)
@@ -578,7 +578,7 @@ class TestLoginFlowCookbook:
             get_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_cookbook_get_recipe", {"recipe_id": recipe_id}
             )
-            if get_result.isError:
+            if get_result.is_error:
                 error_text = get_result.content[0].text
                 if "recipeYield" in error_text:
                     logger.warning(
@@ -658,7 +658,7 @@ class TestLoginFlowConnectivity:
     async def test_list_resources(self, nc_mcp_login_flow_client: ClientSession):
         """Verify resource templates are available."""
         templates = await nc_mcp_login_flow_client.list_resource_templates()
-        logger.info("Resource templates: %s", len(templates.resourceTemplates))
+        logger.info("Resource templates: %s", len(templates.resource_templates))
 
 
 # ---------------------------------------------------------------------------

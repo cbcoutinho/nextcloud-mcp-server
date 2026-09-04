@@ -82,7 +82,7 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
     mkdir_result = await nc_mcp_keycloak_email_client.call_tool(
         "nc_webdav_create_directory", {"path": dir_path}
     )
-    assert mkdir_result.isError is False, (
+    assert mkdir_result.is_error is False, (
         "create_directory failed — Keycloak Login Flow v2 WebDAV path is broken"
     )
 
@@ -91,19 +91,19 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
             "nc_webdav_write_file",
             {"path": file_path, "content": content},
         )
-        assert write_result.isError is False
+        assert write_result.is_error is False
 
         read_result = await nc_mcp_keycloak_email_client.call_tool(
             "nc_webdav_read_file", {"path": file_path}
         )
-        assert read_result.isError is False
+        assert read_result.is_error is False
         read_data = json.loads(read_result.content[0].text)
         assert content in read_data.get("content", "")
 
         list_result = await nc_mcp_keycloak_email_client.call_tool(
             "nc_webdav_list_directory", {"path": dir_path}
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
         list_data = json.loads(list_result.content[0].text)
         names = [f.get("name", "") for f in list_data.get("files", [])]
         assert "keycloak_login_flow.txt" in names

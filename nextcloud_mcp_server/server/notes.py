@@ -1,9 +1,9 @@
 import logging
 
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -19,17 +19,18 @@ from nextcloud_mcp_server.models.notes import (
     UpdateNoteResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.request_context import current_context
 
 logger = logging.getLogger(__name__)
 
 
-def configure_notes_tools(mcp: FastMCP):
+def configure_notes_tools(mcp: MCPServer):
     @mcp.resource("notes://settings")
     async def notes_get_settings():
         """Get the Notes App settings"""
-        ctx: Context = (
-            mcp.get_context()
-        )  # https://github.com/modelcontextprotocol/python-sdk/issues/244
+        # Static resources get no Context from the SDK:
+        # https://github.com/modelcontextprotocol/python-sdk/issues/244
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         settings_data = await client.notes.get_settings()
         return NotesSettings(**settings_data)
@@ -37,7 +38,7 @@ def configure_notes_tools(mcp: FastMCP):
     @mcp.resource("nc://Notes/{note_id}/attachments/{attachment_filename}")
     async def nc_notes_get_attachment_resource(note_id: int, attachment_filename: str):
         """Get a specific attachment from a note"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         # Assuming a method get_note_attachment exists in the client
         # This method should return the raw content and determine the mime type
@@ -59,38 +60,32 @@ def configure_notes_tools(mcp: FastMCP):
     async def nc_get_note_resource(note_id: int):
         """Get user note using note id"""
 
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_client(ctx)
         try:
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error retrieving note {note_id}: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error retrieving note {note_id}: {str(e)}",
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
+                raise MCPError(code=-1, message=f"Note {note_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Access denied to note {note_id}")
-                )
+                raise MCPError(code=-1, message=f"Access denied to note {note_id}")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to retrieve note {note_id}: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to retrieve note {note_id}: {e.response.reason_phrase}",
                 )
 
     @mcp.tool(
         title="Create Note",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Multiple calls create multiple notes
-            openWorldHint=True,
+            idempotent_hint=False,  # Multiple calls create multiple notes
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.write")
@@ -112,39 +107,31 @@ def configure_notes_tools(mcp: FastMCP):
                 id=note.id, title=note.title, category=note.category, etag=note.etag
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error creating note: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error creating note: {str(e)}")
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to create notes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to create notes",
                 )
             elif e.response.status_code == 413:
-                raise McpError(ErrorData(code=-1, message="Note content too large"))
+                raise MCPError(code=-1, message="Note content too large")
             elif e.response.status_code == 409:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"A note with title '{title}' already exists in this category",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"A note with title '{title}' already exists in this category",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to create note: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to create note: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Update Note",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Requires etag which changes = not idempotent
-            openWorldHint=True,
+            idempotent_hint=False,  # Requires etag which changes = not idempotent
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.write")
@@ -179,45 +166,35 @@ def configure_notes_tools(mcp: FastMCP):
                 id=note.id, title=note.title, category=note.category, etag=note.etag
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error updating note {note_id}: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error updating note {note_id}: {str(e)}"
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
+                raise MCPError(code=-1, message=f"Note {note_id} not found")
             elif e.response.status_code == 412:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Note {note_id} has been modified by someone else. Please refresh and try again.",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Note {note_id} has been modified by someone else. Please refresh and try again.",
                 )
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied: insufficient permissions to update note {note_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied: insufficient permissions to update note {note_id}",
                 )
             elif e.response.status_code == 413:
-                raise McpError(
-                    ErrorData(code=-1, message="Updated note content is too large")
-                )
+                raise MCPError(code=-1, message="Updated note content is too large")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to update note {note_id}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to update note {note_id}: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Append to Note",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Each call adds content = not idempotent
-            openWorldHint=True,
+            idempotent_hint=False,  # Each call adds content = not idempotent
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.write")
@@ -240,42 +217,34 @@ def configure_notes_tools(mcp: FastMCP):
                 id=note.id, title=note.title, category=note.category, etag=note.etag
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error appending to note {note_id}: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error appending to note {note_id}: {str(e)}",
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
+                raise MCPError(code=-1, message=f"Note {note_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied: insufficient permissions to modify note {note_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied: insufficient permissions to modify note {note_id}",
                 )
             elif e.response.status_code == 413:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Content to append would make the note too large",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Content to append would make the note too large",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to append content to note {note_id}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to append content to note {note_id}: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Search Notes",
         annotations=ToolAnnotations(
-            readOnlyHint=True,  # Search doesn't modify data
-            openWorldHint=True,
+            read_only_hint=True,  # Search doesn't modify data
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.read")
@@ -302,34 +271,26 @@ def configure_notes_tools(mcp: FastMCP):
                 results=results, query=query, total_found=len(results)
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error searching notes: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error searching notes: {str(e)}")
         except HTTPStatusError as e:
             if e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message="Access denied: insufficient permissions to search notes",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message="Access denied: insufficient permissions to search notes",
                 )
             elif e.response.status_code == 400:
-                raise McpError(
-                    ErrorData(code=-1, message="Invalid search query format")
-                )
+                raise MCPError(code=-1, message="Invalid search query format")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Search failed: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Search failed: server error ({e.response.status_code})",
                 )
 
     @mcp.tool(
         title="Get Note",
         annotations=ToolAnnotations(
-            readOnlyHint=True,  # Read operation only
-            openWorldHint=True,
+            read_only_hint=True,  # Read operation only
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.read")
@@ -342,31 +303,25 @@ def configure_notes_tools(mcp: FastMCP):
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error getting note {note_id}: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error getting note {note_id}: {str(e)}"
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
+                raise MCPError(code=-1, message=f"Note {note_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Access denied to note {note_id}")
-                )
+                raise MCPError(code=-1, message=f"Access denied to note {note_id}")
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to retrieve note {note_id}: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to retrieve note {note_id}: {e.response.reason_phrase}",
                 )
 
     @mcp.tool(
         title="Get Note Attachment",
         annotations=ToolAnnotations(
-            readOnlyHint=True,  # Read operation only
-            openWorldHint=True,
+            read_only_hint=True,  # Read operation only
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.read")
@@ -386,41 +341,33 @@ def configure_notes_tools(mcp: FastMCP):
                 "data": content,
             }
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error getting attachment {attachment_filename} for note {note_id}: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error getting attachment {attachment_filename} for note {note_id}: {str(e)}",
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Attachment {attachment_filename} not found for note {note_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Attachment {attachment_filename} not found for note {note_id}",
                 )
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied to attachment {attachment_filename} for note {note_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied to attachment {attachment_filename} for note {note_id}",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to retrieve attachment: {e.response.reason_phrase}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to retrieve attachment: {e.response.reason_phrase}",
                 )
 
     @mcp.tool(
         title="Delete Note",
         annotations=ToolAnnotations(
-            destructiveHint=True,  # Permanently deletes data
-            idempotentHint=True,  # Deleting deleted note = same end state
-            openWorldHint=True,
+            destructive_hint=True,  # Permanently deletes data
+            idempotent_hint=True,  # Deleting deleted note = same end state
+            open_world_hint=True,
         ),
     )
     @require_scopes("notes.write")
@@ -437,25 +384,19 @@ def configure_notes_tools(mcp: FastMCP):
                 deleted_id=note_id,
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error deleting note {note_id}: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error deleting note {note_id}: {str(e)}"
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
+                raise MCPError(code=-1, message=f"Note {note_id} not found")
             elif e.response.status_code == 403:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Access denied: insufficient permissions to delete note {note_id}",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Access denied: insufficient permissions to delete note {note_id}",
                 )
             else:
-                raise McpError(
-                    ErrorData(
-                        code=-1,
-                        message=f"Failed to delete note {note_id}: server error ({e.response.status_code})",
-                    )
+                raise MCPError(
+                    code=-1,
+                    message=f"Failed to delete note {note_id}: server error ({e.response.status_code})",
                 )

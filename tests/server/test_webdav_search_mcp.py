@@ -220,7 +220,7 @@ async def test_nc_webdav_search_files_unfiltered(
         arguments={"scope": search_test_files},
     )
 
-    assert not result.isError, f"unfiltered search failed: {result.content[0].text}"
+    assert not result.is_error, f"unfiltered search failed: {result.content[0].text}"
 
     files = normalize_search_response(json.loads(result.content[0].text))
     logger.info("Unfiltered search returned %s files", len(files))

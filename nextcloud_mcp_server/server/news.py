@@ -3,9 +3,9 @@
 import logging
 
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.news import NewsItemType
@@ -27,12 +27,12 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def configure_news_tools(mcp: FastMCP):
+def configure_news_tools(mcp: MCPServer):
     """Configure News app MCP tools."""
 
     @mcp.tool(
         title="List News Folders",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -44,20 +44,16 @@ def configure_news_tools(mcp: FastMCP):
             folders = [NewsFolder(**f) for f in folders_data]
             return ListFoldersResponse(results=folders, total_count=len(folders))
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing folders: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error listing folders: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list folders: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list folders: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="List News Feeds",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -77,20 +73,16 @@ def configure_news_tools(mcp: FastMCP):
                 total_count=len(feeds),
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing feeds: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error listing feeds: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list feeds: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list feeds: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="List News Items",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -151,20 +143,16 @@ def configure_news_tools(mcp: FastMCP):
                 oldest_id=oldest_id,
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error listing items: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error listing items: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to list items: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to list items: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get News Item",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -183,26 +171,22 @@ def configure_news_tools(mcp: FastMCP):
             item = NewsItem(**item_data)
             return GetItemResponse(item=item)
         except ValueError as e:
-            raise McpError(ErrorData(code=-1, message=str(e)))
+            raise MCPError(code=-1, message=str(e))
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error getting item {item_id}: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error getting item {item_id}: {str(e)}"
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise McpError(ErrorData(code=-1, message=f"Item {item_id} not found"))
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get item {item_id}: {e.response.status_code}",
-                )
+                raise MCPError(code=-1, message=f"Item {item_id} not found")
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get item {item_id}: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get Starred News Items",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -240,22 +224,18 @@ def configure_news_tools(mcp: FastMCP):
                 oldest_id=oldest_id,
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error getting starred items: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error getting starred items: {str(e)}"
             )
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get starred items: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get starred items: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get Unread News Items",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -293,22 +273,18 @@ def configure_news_tools(mcp: FastMCP):
                 oldest_id=oldest_id,
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1, message=f"Network error getting unread items: {str(e)}"
-                )
+            raise MCPError(
+                code=-1, message=f"Network error getting unread items: {str(e)}"
             )
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get unread items: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get unread items: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get News Feed Health",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -337,25 +313,21 @@ def configure_news_tools(mcp: FastMCP):
                         error_count=feed.update_error_count,
                         last_error=feed.last_update_error,
                     )
-            raise McpError(ErrorData(code=-1, message=f"Feed {feed_id} not found"))
+            raise MCPError(code=-1, message=f"Feed {feed_id} not found")
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Network error getting feed health: {str(e)}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Network error getting feed health: {str(e)}",
             )
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get feed health: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get feed health: {e.response.status_code}",
             )
 
     @mcp.tool(
         title="Get News App Status",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("news.read")
     @instrument_tool
@@ -372,13 +344,9 @@ def configure_news_tools(mcp: FastMCP):
                 warnings=status_data.get("warnings", {}),
             )
         except RequestError as e:
-            raise McpError(
-                ErrorData(code=-1, message=f"Network error getting status: {str(e)}")
-            )
+            raise MCPError(code=-1, message=f"Network error getting status: {str(e)}")
         except HTTPStatusError as e:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=f"Failed to get status: {e.response.status_code}",
-                )
+            raise MCPError(
+                code=-1,
+                message=f"Failed to get status: {e.response.status_code}",
             )

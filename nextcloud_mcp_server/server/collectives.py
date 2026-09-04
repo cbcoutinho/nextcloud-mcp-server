@@ -4,9 +4,9 @@ import logging
 from typing import NoReturn
 
 from httpx import HTTPStatusError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.collectives import OCSError
@@ -37,24 +37,24 @@ def _raise_collectives_error(e: OCSError | HTTPStatusError) -> NoReturn:
     """Raise the client-facing form of a collectives failure.
 
     An OCS envelope carries a real server message, so it becomes an
-    ``McpError``. A transport-level ``HTTPStatusError`` is re-raised untouched:
-    ``NextcloudFastMCP`` renders it into an LLM-friendly message at the tool
+    ``MCPError``. A transport-level ``HTTPStatusError`` is re-raised untouched:
+    ``NextcloudMCPServer`` renders it into an LLM-friendly message at the tool
     boundary (GH #1208), and wrapping it in ``str(e)`` here would shadow that
     with httpx's internal-URL text.
     """
     if isinstance(e, OCSError):
-        raise McpError(ErrorData(code=-32603, message=e.message)) from e
+        raise MCPError(code=-32603, message=e.message) from e
     raise e
 
 
-def configure_collectives_tools(mcp: FastMCP):
+def configure_collectives_tools(mcp: MCPServer):
     """Configure Nextcloud Collectives tools for the MCP server."""
 
     # --- Read Tools ---
 
     @mcp.tool(
         title="List Collectives",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -72,7 +72,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Collective Pages",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -96,7 +96,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Collective Page",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -144,7 +144,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Search Collective Pages",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -172,7 +172,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Collective Tags",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -194,7 +194,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Trashed Collective Pages",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -218,7 +218,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Trashed Collectives",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.read")
     @instrument_tool
@@ -244,7 +244,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Collective",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -269,7 +269,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Set Collective Emoji",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -289,7 +289,7 @@ def configure_collectives_tools(mcp: FastMCP):
         try:
             raw = await client.collectives.update_collective(collective_id, emoji)
         except ValueError as e:
-            raise McpError(ErrorData(code=-32603, message=str(e))) from e
+            raise MCPError(code=-32603, message=str(e)) from e
         except (OCSError, HTTPStatusError) as e:
             _raise_collectives_error(e)
         collective = Collective(**raw)
@@ -301,7 +301,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Trash Collective",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -329,7 +329,7 @@ def configure_collectives_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Collective",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=False, openWorldHint=True
+            destructive_hint=True, idempotent_hint=False, open_world_hint=True
         ),
     )
     @require_scopes("collectives.write")
@@ -359,7 +359,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Restore Collective",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -385,7 +385,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Collective Page",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -418,7 +418,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Move Collective Page",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -459,7 +459,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Trash Collective Page",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -490,7 +490,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Restore Collective Page",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -518,7 +518,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Set Collective Page Emoji",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -550,7 +550,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Collective Tag",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -574,7 +574,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Assign Tag to Collective Page",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
@@ -602,7 +602,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Remove Tag from Collective Page",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("collectives.write")
     @instrument_tool
