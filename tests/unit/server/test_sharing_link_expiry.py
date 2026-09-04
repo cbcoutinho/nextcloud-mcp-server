@@ -95,6 +95,11 @@ def test_build_link_response_strips_trailing_slash():
 @pytest.mark.parametrize("share_data", [{"id": 1, "url": ""}, {"id": 1}])
 def test_build_link_response_raises_on_missing_url(share_data):
     """A payload without a usable url is a hard error, not a silent empty
-    response — OCS always returns one for shareType=3."""
-    with pytest.raises(RuntimeError, match="no url"):
+    response — OCS always returns one for shareType=3.
+
+    ToolError specifically, not a bare exception: mcp 2.x replaces an
+    unanticipated exception's message with "Error executing tool <name>", so a
+    RuntimeError here would tell the model the call failed and nothing else.
+    """
+    with pytest.raises(ToolError, match="no url"):
         _build_link_response("/f.png", share_data, "2026-06-02T12:30:00Z")
