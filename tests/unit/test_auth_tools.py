@@ -485,3 +485,128 @@ async def test_check_status_completion_wakes_user_manager(mocker):
     assert response.status == "provisioned"
     storage.store_app_password_with_scopes.assert_awaited_once()
     notify.assert_called_once()
+
+
+async def test_check_status_polls_pending_flow_while_still_provisioned(mocker):
+    """A scope update must complete even though the old app password is still stored.
+
+    nc_auth_update_scopes deliberately leaves the previous password in place
+    while the new Login Flow runs. Reporting that stored grant before polling
+    stranded the update forever: the user approved files.write, but every
+    nc_auth_check_status kept answering "provisioned, scopes=[files.read]"
+    and the new password was never stored (GH #1431).
+    """
+    check_status = _capture_registered_tools()["nc_auth_check_status"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(
+        return_value={
+            "scopes": ["files.read"],
+            "app_password": "old",
+            "username": "alice",
+        }
+    )
+    storage.get_login_flow_session = AsyncMock(
+        return_value={
+            "poll_endpoint": "https://nc/login/v2/poll",
+            "poll_token": "tok",
+            "requested_scopes": ["files.read", "files.write"],
+        }
+    )
+    storage.store_app_password_with_scopes = AsyncMock()
+    storage.delete_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="https://nc", nextcloud_public_issuer_url=None
+        ),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    mocker.patch("nextcloud_mcp_server.server.auth_tools.invalidate_scope_cache")
+
+    flow_client = AsyncMock()
+    flow_client.poll = AsyncMock(
+        return_value=LoginFlowPollResult(
+            status="completed",
+            login_name="alice",
+            app_password=secrets.token_urlsafe(24),
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    mocker.patch("nextcloud_mcp_server.app.notify_user_provisioned")
+
+    response = await check_status(MagicMock())
+
+    assert response.status == "provisioned"
+    assert response.scopes == ["files.read", "files.write"]
+    assert storage.store_app_password_with_scopes.await_args.kwargs["scopes"] == [
+        "files.read",
+        "files.write",
+    ]
+
+
+async def test_check_status_expired_flow_keeps_previous_grant(mocker):
+    """An expired scope-update flow must not report a provisioned user as unprovisioned."""
+    check_status = _capture_registered_tools()["nc_auth_check_status"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(
+        return_value={
+            "scopes": ["files.read"],
+            "app_password": "old",
+            "username": "alice",
+        }
+    )
+    storage.get_login_flow_session = AsyncMock(
+        return_value={
+            "poll_endpoint": "https://nc/login/v2/poll",
+            "poll_token": "tok",
+            "requested_scopes": ["files.read", "files.write"],
+        }
+    )
+    storage.delete_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="https://nc", nextcloud_public_issuer_url=None
+        ),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+
+    flow_client = AsyncMock()
+    flow_client.poll = AsyncMock(return_value=LoginFlowPollResult(status="expired"))
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+
+    response = await check_status(MagicMock())
+
+    assert response.status == "provisioned"
+    assert response.scopes == ["files.read"]
+    storage.delete_login_flow_session.assert_awaited_once()
