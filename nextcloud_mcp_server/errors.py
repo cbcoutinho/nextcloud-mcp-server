@@ -252,6 +252,13 @@ class NextcloudMCPServer(MCPServer):
         context: Context[Any, Any] | None = None,
     ) -> CallToolResult | InputRequiredResult:
         await enforce_capability(self, name)
+        # The three clauses below are ordered by the SDK's hierarchy, and the
+        # order is load-bearing: ``UnexpectedToolError`` subclasses ``ToolError``
+        # (both under ``MCPServerError``), so the specific one must come first or
+        # every crash would take the "message is already good" path and ship the
+        # SDK's contentless text. ``MCPError`` is a separate tree entirely
+        # (``Exception`` directly), so it neither shadows nor is shadowed by the
+        # other two and its position is free.
         try:
             return compact_tool_result(
                 await super().call_tool(name, arguments, context)
