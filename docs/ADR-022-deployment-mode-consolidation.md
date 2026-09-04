@@ -434,43 +434,65 @@ After the user completes authentication in their browser:
 
 ### Re-Authentication for Scope Updates
 
-Users may need to update their authorized scopes after initial provisioning. The system supports **re-authentication** with scope merging.
+Users may need to update their authorized scopes after initial provisioning. The system supports **re-authentication** to widen or narrow the stored grant.
 
 #### Re-auth Scenarios
 
 | Scenario | Trigger | User Action Required |
 |----------|---------|----------------------|
 | **Initial provisioning** | User has no app password | Complete Login Flow v2 |
-| **Scope expansion** | Tool requires scope user hasn't authorized | Re-authenticate to add scopes |
-| **Scope reduction** | User wants to revoke specific scopes | Revoke and re-provision with fewer scopes |
+| **Scope expansion** | Tool requires a scope the stored grant does not carry | `nc_auth_update_scopes(add_scopes=[...])`, then complete Login Flow v2 |
+| **Scope reduction** | User wants to drop specific scopes | `nc_auth_update_scopes(remove_scopes=[...])`, then complete Login Flow v2 |
+| **Return to an unrestricted grant** | Stored allow-list has gone stale (see the 0.167.0 addendum) | Re-run `nc_auth_provision_access` |
 | **Token rotation** | Admin policy or user preference | Re-authenticate (new app password issued) |
 
-#### Scope Merging Behavior
+#### Scope Update Behavior
 
-When a user re-authenticates to add scopes:
+Both directions go through the same tool and the same Login Flow v2 re-run:
 
-1. **Existing scopes are preserved**: New scopes are merged with existing scopes
-2. **Old app password is revoked**: Nextcloud revokes the previous app password
-3. **New app password issued**: User authenticates via Login Flow v2
-4. **Merged scopes stored**: Both old and new scopes associated with new password
+1. **The new set is computed from the stored one**: `add_scopes` is unioned in,
+   `remove_scopes` subtracted. A NULL (unrestricted) grant is first materialised
+   as the full supported vocabulary, which is what makes narrowing possible at
+   all — and what makes that snapshot go stale later (0.167.0 addendum).
+2. **An unchanged set short-circuits**: the tool returns `unchanged` without
+   starting a flow. Adding to a NULL grant always lands here, because a NULL
+   grant already places no restriction; the denial in that case is on the OAuth
+   token, which this tool cannot widen.
+3. **New app password issued**: the user completes Login Flow v2.
+4. **New scopes stored**: `store_app_password_with_scopes()` upserts the new
+   password and the new list together, when `nc_auth_check_status` observes the
+   completed flow.
 
 ```
-Initial:    [notes:read]
-Request:    [calendar:read, calendar:write]
-Result:     [notes:read, calendar:read, calendar:write]
+Stored:     [notes.read]
+add_scopes: [calendar.read, calendar.write]
+Result:     [calendar.read, calendar.write, notes.read]
 ```
 
-**Note**: Scope reduction requires explicit revocation. Users cannot "downgrade" scopes without fully revoking and re-provisioning.
+**The previous app password stays valid until the new one lands.** Two
+corrections to what an earlier draft of this section claimed:
 
-**Implementation divergence — the old app password is *not* deleted up front.**
-The sketch below revokes the previous password before starting the new flow;
-the shipped `nc_auth_update_scopes` deliberately leaves it in place so the user
-keeps working while re-authenticating, and lets the upsert in
-`store_app_password_with_scopes()` replace it atomically when the flow
-completes. That makes the ordering inside `nc_auth_check_status` load-bearing:
-a pending flow session must be polled *before* the stored password is reported,
-or the update never lands. GH #1431 was exactly this — one half of the pair was
-changed and the other was not.
+- Nothing revokes the old password. Login Flow v2 *issues* a password; it does
+  not retire the previous one, and the server never calls Nextcloud's
+  app-password deletion API. The old credential remains usable in Nextcloud
+  until the user removes it under Settings → Security. Only the server's own
+  stored copy is replaced, by the upsert in step 4. The same is true of
+  *revocation*: `revoke_nextcloud_access` and
+  `DELETE /api/v1/users/{user_id}/app-password` both drop this server's stored
+  copy and nothing else — they end this server's access, not the credential's
+  validity. Retiring the credential itself is the user's action in Nextcloud,
+  which is what §"User Revocation" below refers to.
+- Scope reduction does **not** require revoking and re-provisioning.
+  `remove_scopes` has shipped; re-provisioning is the escape hatch for
+  returning to an *unrestricted* grant, not the mechanism for narrowing one.
+
+Keeping the old password alive is deliberate — the user keeps working while
+re-authenticating — but it makes the ordering inside `nc_auth_check_status`
+load-bearing: a pending flow session must be polled *before* the stored password
+is reported, or the update never lands. GH #1431 was exactly this. The sketch
+below still shows the original delete-then-create shape, where reporting the
+stored password first was harmless; treat the note above as authoritative where
+the two disagree.
 
 #### Re-auth Tool Implementation
 
