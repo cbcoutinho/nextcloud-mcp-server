@@ -255,3 +255,46 @@ class SearchFilesResponse(BaseResponse):
     filters_applied: Optional[dict] = Field(
         None, description="Filters that were applied to the search"
     )
+
+
+class SystemTag(BaseModel):
+    """A system tag defined on the instance."""
+
+    id: int = Field(description="Tag id")
+    name: str = Field(description="Tag display name")
+    assignable: bool = Field(
+        default=True, description="Whether users may assign this tag"
+    )
+
+
+class ListTagsResponse(BaseResponse):
+    """Every system tag on the instance."""
+
+    tags: List[SystemTag] = Field(default_factory=list, description="Tags, by name")
+    total_count: int = Field(description="Number of tags")
+
+
+class FileTagsResponse(BaseResponse):
+    """Tags assigned to one file."""
+
+    path: str = Field(description="Path the tags belong to")
+    file_id: str = Field(description="Nextcloud file id")
+    tags: List[SystemTag] = Field(default_factory=list, description="Assigned tags")
+
+
+class FilesByTagResponse(BaseResponse):
+    """Files carrying a given tag."""
+
+    tag: str = Field(description="Tag name that was searched for")
+    tag_id: Optional[int] = Field(None, description="Tag id, when the tag exists")
+    files: List[FileInfo] = Field(default_factory=list, description="Matching files")
+    total_count: int = Field(description="Number of matching files")
+
+
+class TagFileResponse(BaseResponse):
+    """Outcome of attaching or detaching a tag."""
+
+    path: str = Field(description="Path that was tagged or untagged")
+    tag: str = Field(description="Tag name")
+    tag_id: int = Field(description="Tag id")
+    assigned: bool = Field(description="True after tagging, False after untagging")

@@ -2701,3 +2701,104 @@ class WebDAVClient(BaseNextcloudClient):
 
         response.raise_for_status()
         return True
+
+    # -- File tags (systemtags) ---------------------------------------------
+    #
+    # The client already covered tags (create/assign/remove/search); only two
+    # read paths were missing: list every tag, and list the tags of one file.
+
+    _TAG_PROPFIND = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:id/>
+    <oc:display-name/>
+    <oc:user-visible/>
+    <oc:user-assignable/>
+  </d:prop>
+</d:propfind>"""
+
+    async def list_tags(self) -> List[Dict[str, Any]]:
+        """Every system tag defined on this instance."""
+        response = await self._make_request(
+            "PROPFIND",
+            "/remote.php/dav/systemtags/",
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        return self._tags_from_multistatus(ET.fromstring(response.content))
+
+    @staticmethod
+    def _tags_from_multistatus(root: Any) -> List[Dict[str, Any]]:
+        """Extract tags from a systemtags PROPFIND response.
+
+        The collection itself comes back as a response element and is skipped.
+        An entry without an id or display name cannot be used for anything, so
+        it is dropped rather than surfaced with placeholder values.
+        """
+        tags: List[Dict[str, Any]] = []
+        for response_elem in root.findall("{DAV:}response"):
+            href = response_elem.find("{DAV:}href")
+            if href is None or href.text == "/remote.php/dav/systemtags/":
+                continue
+            name_elem = response_elem.find(".//{http://owncloud.org/ns}display-name")
+            id_elem = response_elem.find(".//{http://owncloud.org/ns}id")
+            # An entry without a usable id or name cannot be acted on, and an
+            # empty display name would also make the sort key ambiguous.
+            if id_elem is None or not id_elem.text:
+                continue
+            if name_elem is None or not (name_elem.text or "").strip():
+                continue
+            assignable = response_elem.find(
+                ".//{http://owncloud.org/ns}user-assignable"
+            )
+            tags.append(
+                {
+                    "id": int(id_elem.text),
+                    "name": name_elem.text or "",
+                    "assignable": (assignable is None or assignable.text != "false"),
+                }
+            )
+        return sorted(tags, key=lambda t: t["name"].lower())
+
+    async def get_file_tags(self, path: str) -> Dict[str, Any]:
+        """The tags assigned to one file.
+
+        Nextcloud only reports tag *ids* on the file, so the names are looked
+        up from the full list. That is one extra call, but ids alone are of
+        little use to the caller -- and unguessable for a language model.
+        """
+        file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        response = await self._make_request(
+            "PROPFIND",
+            f"/remote.php/dav/systemtags-relations/files/{file_id}",
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        root = ET.fromstring(response.content)
+        ids: List[int] = []
+        for id_elem in root.findall(".//{http://owncloud.org/ns}id"):
+            if id_elem.text and id_elem.text.isdigit():
+                ids.append(int(id_elem.text))
+
+        names = {t["id"]: t["name"] for t in await self.list_tags()}
+        return {
+            "path": path,
+            "file_id": file_id,
+            "tags": [
+                {"id": i, "name": names.get(i, f"(unknown tag {i})")}
+                for i in sorted(set(ids))
+            ],
+        }

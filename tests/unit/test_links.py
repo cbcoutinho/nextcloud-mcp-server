@@ -33,7 +33,11 @@ from nextcloud_mcp_server.models.notes import (
     NoteSearchResult,
     SearchNotesResponse,
 )
-from nextcloud_mcp_server.models.webdav import DirectoryListing, FileInfo
+from nextcloud_mcp_server.models.webdav import (
+    DirectoryListing,
+    FileInfo,
+    FilesByTagResponse,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -194,6 +198,23 @@ def test_directory_listing_links_each_entry_that_can_be_linked():
     _attach(listing)
     assert listing.files[0].url == f"{BASE}/index.php/f/1"
     assert listing.files[1].url is None
+
+
+def test_files_by_tag_links_each_entry_that_can_be_linked():
+    """nc_webdav_find_by_tag_name's results link the same way a directory listing's do -
+    both hold plain FileInfo entries, so one registry entry covers both tools."""
+    found = FilesByTagResponse(
+        tag="invoice",
+        tag_id=7,
+        files=[
+            FileInfo(name="a", path="/a", is_directory=False, file_id=1),
+            FileInfo(name="b", path="/b", is_directory=False, file_id=None),
+        ],
+        total_count=2,
+    )
+    _attach(found)
+    assert found.files[0].url == f"{BASE}/index.php/f/1"
+    assert found.files[1].url is None
 
 
 # --- absent or unusable configuration ---------------------------------------

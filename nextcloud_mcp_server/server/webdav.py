@@ -27,7 +27,14 @@ from nextcloud_mcp_server.models import (
     SearchFilesResponse,
     WriteFileResponse,
 )
-from nextcloud_mcp_server.models.webdav import ParseStatus
+from nextcloud_mcp_server.models.webdav import (
+    FilesByTagResponse,
+    FileTagsResponse,
+    ListTagsResponse,
+    ParseStatus,
+    SystemTag,
+    TagFileResponse,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
@@ -164,11 +171,11 @@ async def _raw_response(
     )
 
 
-async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
-    """Resolve ``path`` to the file ID the comments collection is keyed by.
+async def _resolve_file_id(client: "NextcloudClient", path: str) -> int:
+    """Resolve ``path`` to the numeric file ID the DAV collections are keyed by.
 
-    Shared by both comment tools so the excluded-tag guard and the
-    does-it-exist check cannot drift between reading and writing comments.
+    Shared by the comment and tag tools so the excluded-tag guard and the
+    does-it-exist check cannot drift between them.
 
     Raises:
         ToolError: If the path is excluded by tag, resolves to nothing, or
@@ -1083,7 +1090,7 @@ def configure_webdav_tools(mcp: FastMCP):
             raise ValueError(f"offset must not be negative, got {offset}")
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comments = await client.webdav.list_comments(
             file_id, limit=limit, offset=offset
@@ -1144,7 +1151,7 @@ def configure_webdav_tools(mcp: FastMCP):
             )
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comment_id = await client.webdav.create_comment(file_id, message)
         return CreateFileCommentResponse(
@@ -1153,3 +1160,124 @@ def configure_webdav_tools(mcp: FastMCP):
             comment_id=comment_id,
             message=message,
         )
+
+    @mcp.tool(
+        title="List Tags",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_tags(ctx: Context) -> ListTagsResponse:
+        """List all system tags available for tagging files."""
+        client = await get_client(ctx)
+        tags = [SystemTag(**t) for t in await client.webdav.list_tags()]
+        return ListTagsResponse(tags=tags, total_count=len(tags))
+
+    @mcp.tool(
+        title="Get File Tags",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_get_file_tags(path: str, ctx: Context) -> FileTagsResponse:
+        """List the tags assigned to one file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        # Resolving through the shared helper applies the excluded-tag guard,
+        # so an excluded path cannot be probed for existence via its tags.
+        await _resolve_file_id(client, path)
+
+        data = await client.webdav.get_file_tags(path)
+        return FileTagsResponse(
+            path=data["path"],
+            file_id=str(data["file_id"]),
+            tags=[SystemTag(id=t["id"], name=t["name"]) for t in data["tags"]],
+        )
+
+    @mcp.tool(
+        title="Find Files By Tag",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("files.read")
+    @with_links
+    @instrument_tool
+    async def nc_webdav_find_by_tag_name(tag: str, ctx: Context) -> FilesByTagResponse:
+        """Find all files carrying a given tag.
+
+        Args:
+            tag: Tag name, case-sensitive.
+        """
+        client = await get_client(ctx)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            return FilesByTagResponse(tag=tag, files=[], total_count=0)
+
+        files = await client.webdav.get_files_by_tag(found["id"])
+
+        # A tag can be attached to an excluded file; the listing must not
+        # surface it any more than a directory listing would.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if excluded:
+            files = [
+                f for f in files if not is_path_excluded(f.get("path", ""), excluded)
+            ]
+
+        return FilesByTagResponse(
+            tag=tag,
+            tag_id=found["id"],
+            files=[FileInfo(**f) for f in files],
+            total_count=len(files),
+        )
+
+    @mcp.tool(
+        title="Tag File",
+        annotations=ToolAnnotations(
+            destructiveHint=False,
+            idempotentHint=True,  # Same tag twice = same end state
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_tag_file(path: str, tag: str, ctx: Context) -> TagFileResponse:
+        """Attach a tag to a file, creating the tag if it does not exist yet.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        resolved = await client.webdav.get_or_create_tag(tag)
+        await client.webdav.assign_tag_to_file(file_id, resolved["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=resolved["id"], assigned=True)
+
+    @mcp.tool(
+        title="Untag File",
+        annotations=ToolAnnotations(
+            destructiveHint=False,  # The tag itself survives
+            idempotentHint=True,  # Removing an absent tag = same end state
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_untag_file(
+        path: str, tag: str, ctx: Context
+    ) -> TagFileResponse:
+        """Remove a tag from a file. The tag itself keeps existing.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            raise ToolError(f"No tag named {tag!r} exists")
+        await client.webdav.remove_tag_from_file(file_id, found["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=found["id"], assigned=False)
