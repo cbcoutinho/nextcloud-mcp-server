@@ -112,6 +112,40 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **MCPServer decorators**: `@mcp.tool()`, `@mcp.resource()`
 - **Token acquisition**: `get_client()` resolves credentials per deployment mode (see Deployment Modes below)
 
+#### Getting a `Context` where the SDK does not inject one
+
+**Declare `ctx: Context` as a parameter.** That is the only supported route in
+mcp 2.x, and it works for `@mcp.tool()` handlers and *template* resources
+(`@mcp.resource("nc://Notes/{note_id}")`).
+
+It does **not** work for two places, and both fail *silently* rather than
+raising, so reaching for the wrong thing here is expensive:
+
+- a **static** `@mcp.resource("nc://capabilities")` — the SDK refuses to
+  register one whose function declares a `Context` parameter;
+- `MCPServer.list_tools()`, which capability gating overrides and which takes no
+  context.
+
+For those, and only those, use
+`nextcloud_mcp_server.request_context.current_context(mcp)`. It reads a
+contextvar that `NextcloudMCPServer` publishes from a middleware for the
+duration of every inbound message.
+
+```python
+from nextcloud_mcp_server.request_context import current_context
+
+@mcp.resource("nc://capabilities")          # static: no ctx parameter allowed
+async def nc_get_capabilities():
+    client = await get_client(current_context(mcp))
+    return await client.capabilities()
+```
+
+`mcp.get_context()` and `mcp.server.lowlevel.server.request_ctx` were both
+**removed in mcp 2.x** — don't reach for either. `current_context()` raises
+`LookupError` outside a request served through the middleware (a direct
+`mcp.call_tool()` in a unit test), which is why the capability-gating callers
+fail open.
+
 ### Version-dependent API surface: gate, don't try/except
 
 When a tool wraps an endpoint that **does not exist on every supported version**
