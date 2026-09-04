@@ -138,7 +138,7 @@ async def test_calendar_missing_calendar_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
+        hasattr(response, "structured_content")
         and response.structured_content
         and "result" in response.structured_content
     ):
@@ -161,7 +161,7 @@ async def test_webdav_read_missing_file_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
+        hasattr(response, "structured_content")
         and response.structured_content
         and "result" in response.structured_content
     ):
@@ -184,7 +184,7 @@ async def test_tables_missing_table_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
+        hasattr(response, "structured_content")
         and response.structured_content
         and "result" in response.structured_content
     ):

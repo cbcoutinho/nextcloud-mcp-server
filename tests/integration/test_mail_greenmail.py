@@ -43,7 +43,7 @@ def _tool_payload(result) -> dict:
     content block; ``isError`` results raise so the test fails loudly with the
     server-side error (which, for a CSRF rejection, is the evidence we want).
     """
-    if getattr(result, "isError", False):
+    if getattr(result, "is_error", False):
         text = result.content[0].text if result.content else "<no content>"
         raise AssertionError(f"MCP tool returned an error: {text}")
     return json.loads(result.content[0].text)
