@@ -243,18 +243,11 @@ def register_auth_tools(mcp: FastMCP) -> None:
 
         storage = await get_shared_storage()
 
-        # Check for existing app password
-        existing = await storage.get_app_password_with_scopes(user_id)
-        if existing:
-            return ProvisionStatusResponse(
-                status="provisioned",
-                message=f"Nextcloud access is provisioned for {existing.get('username') or user_id}.",
-                user_id=user_id,
-                scopes=existing["scopes"],
-                username=existing.get("username"),
-            )
-
-        # Check for pending login flow session
+        # A pending login flow is polled *before* the stored app password is
+        # reported. nc_auth_update_scopes deliberately leaves the old password
+        # in place while the new flow runs, so short-circuiting on it would
+        # report the old scopes forever and never store the re-provisioned
+        # grant — the scope update could never complete (GH #1431).
         try:
             session = await storage.get_login_flow_session(user_id)
         except Exception as e:
@@ -266,6 +259,15 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 success=False,
             )
         if not session:
+            existing = await storage.get_app_password_with_scopes(user_id)
+            if existing:
+                return ProvisionStatusResponse(
+                    status="provisioned",
+                    message=f"Nextcloud access is provisioned for {existing.get('username') or user_id}.",
+                    user_id=user_id,
+                    scopes=existing["scopes"],
+                    username=existing.get("username"),
+                )
             return ProvisionStatusResponse(
                 status="not_initiated",
                 message=(
@@ -341,6 +343,21 @@ def register_auth_tools(mcp: FastMCP) -> None:
         if poll_result.status == "expired":
             # Clean up expired session
             await storage.delete_login_flow_session(user_id)
+            # An expired *scope update* leaves the previous grant intact — say
+            # so, rather than telling a provisioned user they have no access.
+            existing = await storage.get_app_password_with_scopes(user_id)
+            if existing:
+                return ProvisionStatusResponse(
+                    status="provisioned",
+                    message=(
+                        "Login flow expired; your previous access as "
+                        f"{existing.get('username') or user_id} is still valid. "
+                        "Call nc_auth_update_scopes again to retry the change."
+                    ),
+                    user_id=user_id,
+                    scopes=existing["scopes"],
+                    username=existing.get("username"),
+                )
             return ProvisionStatusResponse(
                 status="not_initiated",
                 message=(
