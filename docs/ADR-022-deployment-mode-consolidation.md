@@ -267,18 +267,20 @@ async def nc_auth_check_status(ctx: Context) -> ProvisionStatusResponse:
     """
     user_id = extract_user_from_mcp_token(ctx)
 
-    # Check for existing app password
-    existing = await storage.get_app_password_with_scopes(user_id)
-    if existing:
-        return ProvisionStatusResponse(
-            status="provisioned",
-            message="Access already provisioned.",
-            scopes=existing["scopes"],
-        )
-
-    # Get pending login flow session
+    # A pending login flow is polled BEFORE the stored app password is
+    # reported. nc_auth_update_scopes keeps the old password valid until the
+    # new one arrives (see "Re-auth Tool Implementation" below), so reporting
+    # it first would short-circuit every poll and the scope update could never
+    # complete (GH #1431).
     session = await storage.get_login_flow_session(user_id)
     if not session:
+        existing = await storage.get_app_password_with_scopes(user_id)
+        if existing:
+            return ProvisionStatusResponse(
+                status="provisioned",
+                message="Access already provisioned.",
+                scopes=existing["scopes"],
+            )
         return ProvisionStatusResponse(
             status="not_initiated",
             message="No provisioning in progress. Call nc_auth_provision_access first.",
@@ -459,6 +461,16 @@ Result:     [notes:read, calendar:read, calendar:write]
 ```
 
 **Note**: Scope reduction requires explicit revocation. Users cannot "downgrade" scopes without fully revoking and re-provisioning.
+
+**Implementation divergence — the old app password is *not* deleted up front.**
+The sketch below revokes the previous password before starting the new flow;
+the shipped `nc_auth_update_scopes` deliberately leaves it in place so the user
+keeps working while re-authenticating, and lets the upsert in
+`store_app_password_with_scopes()` replace it atomically when the flow
+completes. That makes the ordering inside `nc_auth_check_status` load-bearing:
+a pending flow session must be polled *before* the stored password is reported,
+or the update never lands. GH #1431 was exactly this — one half of the pair was
+changed and the other was not.
 
 #### Re-auth Tool Implementation
 
