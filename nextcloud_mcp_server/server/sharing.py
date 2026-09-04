@@ -32,7 +32,7 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
         A tuple of ``(expireDate as YYYY-MM-DD, expires_at as RFC3339 'Z')``.
 
     Raises:
-        ValueError: If ``expires_in_minutes`` is not positive — this tool only
+        ToolError: If ``expires_in_minutes`` is not positive — this tool only
             creates short-lived links, never a permanent (non-expiring) one.
     """
     if expires_in_minutes <= 0:
@@ -57,13 +57,16 @@ def _build_link_response(
         expires_at: Advisory RFC3339 expiry computed by ``_compute_link_expiry``.
 
     Raises:
-        RuntimeError: If the payload carries no ``url``. OCS always returns one
+        ToolError: If the payload carries no ``url``. OCS always returns one
             for ``shareType=3``; its absence means the response shape changed,
             and a hard error beats handing the caller unusable empty URLs.
+            ``ToolError`` rather than a bare exception because mcp 2.x replaces
+            an unanticipated exception's message with "Error executing tool
+            <name>" -- the model would be told the call failed but not why.
     """
     url = share_data.get("url", "")
     if not url:
-        raise RuntimeError(
+        raise ToolError(
             f"Public link share {share_data.get('id')} for {path} returned no "
             "url — unexpected OCS response shape"
         )
@@ -205,7 +208,8 @@ def configure_sharing_tools(mcp: MCPServer):
             advisory expiry.
 
         Raises:
-            ValueError: If ``expires_in_minutes`` is not positive.
+            ToolError: If ``expires_in_minutes`` is not positive, or if the OCS
+                response carries no share url.
         """
         expire_date, expires_at = _compute_link_expiry(
             expires_in_minutes, datetime.now(timezone.utc)

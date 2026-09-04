@@ -927,10 +927,12 @@ def configure_semantic_tools(mcp: MCPServer):
             raise MCPError(code=-1, message=f"Network error during search: {str(e)}")
         except Exception as e:
             # Genuinely-unexpected bucket (after the ValueError / RequestError
-            # cases above). We convert it to a client-facing MCPError, which
-            # MCPServer returns as a structured protocol error without logging a
-            # server-side traceback — so, like the sampling catch-all below, keep
-            # the stack here (logger.exception) for triage.
+            # cases above). We convert it to an MCPError so the reason survives:
+            # NextcloudMCPServer.call_tool maps that back to ToolError, which the
+            # SDK delivers as is_error=True content the model can read. Raised
+            # bare, mcp 2.x would replace the message with "Error executing tool
+            # <name>". Neither path logs a server-side traceback, so — like the
+            # sampling catch-all below — keep the stack here for triage.
             logger.exception("Search error: %s", e)
             raise MCPError(code=-1, message=f"Search failed: {str(e)}")
         finally:
