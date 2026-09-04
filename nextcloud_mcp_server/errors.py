@@ -20,7 +20,7 @@ from urllib.parse import unquote
 from httpx import URL, HTTPStatusError, RequestError, Response, ResponseNotRead
 from mcp.server.context import CallNext, ServerRequestContext
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, InputRequiredResult
 from mcp.types import Tool as MCPTool
@@ -197,6 +197,20 @@ def friendly_tool_error(exc: BaseException | None, tool_name: str) -> str | None
     return None
 
 
+def _cause_message(exc: BaseException, tool_name: str) -> str:
+    """The message mcp 2.x withheld, or its own text if there is no cause.
+
+    Deliberately unfiltered: this restores the mcp 1.x contract that whatever a
+    tool raised reaches the model. The alternative -- the SDK's bare "Error
+    executing tool <name>" -- tells it nothing it can act on.
+    """
+    cause = exc.__cause__
+    if cause is None:
+        return str(exc)
+    text = str(cause).strip() or cause.__class__.__name__
+    return f"{tool_name} failed: {text}"
+
+
 class NextcloudMCPServer(MCPServer):
     """MCPServer that rewrites raw HTTP failures into LLM-friendly messages,
     hides tools this Nextcloud instance cannot serve, and strips the SDK's
@@ -242,11 +256,26 @@ class NextcloudMCPServer(MCPServer):
             return compact_tool_result(
                 await super().call_tool(name, arguments, context)
             )
-        except ToolError as e:
-            message = friendly_tool_error(e.__cause__, name)
-            if message is None:
-                raise
-            raise ToolError(message) from e.__cause__
+        except UnexpectedToolError as e:
+            # mcp 2.x replaces an unanticipated exception's message with a bare
+            # "Error executing tool <name>", withholding the original. 1.x
+            # shipped ``str(e)``, and a great deal of this server's behaviour
+            # rides on that: scope denials ("Missing required scopes:
+            # notes.write"), provisioning prompts, and every ``raise`` in a tool
+            # body that is not a ToolError. Withheld, the model is told the call
+            # failed and nothing about what to do next.
+            #
+            # So restore the message here rather than converting exception types
+            # one by one -- ``ScopeAuthorizationError`` and friends are raised
+            # from the auth layer and are also caught on HTTP routes, where
+            # ToolError would be the wrong type. This is the single place that
+            # sees every escaping exception.
+            raise ToolError(
+                friendly_tool_error(e.__cause__, name) or _cause_message(e, name)
+            ) from e.__cause__
+        except ToolError:
+            # Anticipated: the message is the tool author's and already good.
+            raise
         except MCPError as e:
             # mcp 2.x passes MCPError out of a tool as a top-level JSON-RPC
             # error; 1.x turned it into ``is_error=True`` content the model

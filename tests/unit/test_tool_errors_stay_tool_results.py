@@ -72,3 +72,53 @@ async def test_nextcloud_404_lands_in_the_result_with_a_usable_message():
     assert "notes/5.md" in text, text
     # The bare SDK message, with nothing actionable in it, must not be what ships.
     assert text.strip() != "Error executing tool raises_nextcloud_404", text
+
+
+async def test_arbitrary_exception_keeps_its_message():
+    """The class CI caught: a plain Exception subclass raised in a tool body.
+
+    ``ScopeAuthorizationError`` and its subclasses derive from ``Exception``,
+    not ``ToolError`` — they are also raised on HTTP routes, where ``ToolError``
+    would be the wrong type. Under mcp 2.x that made them
+    ``UnexpectedToolError``, and the model was told "Error executing tool
+    nc_notes_create_note" with no mention of the missing scope. Four login-flow
+    integration tests caught it; this pins it at the unit tier so it fails in
+    seconds instead of in a Playwright lane.
+    """
+
+    class ScopeDenied(Exception):
+        pass
+
+    mcp = NextcloudMCPServer("arbitrary-exception-test")
+
+    @mcp.tool()
+    async def denied() -> str:
+        raise ScopeDenied("Missing required scopes: notes.write")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("denied", {})
+
+    assert result.is_error is True
+    text = str(result.content)
+    assert "notes.write" in text, (
+        f"the reason the call was refused must reach the model, got: {text}"
+    )
+
+
+async def test_exception_with_no_message_still_names_its_type():
+    """``str(exc)`` is empty for a bare raise; "failed: " alone says nothing."""
+
+    class Bang(Exception):
+        pass
+
+    mcp = NextcloudMCPServer("empty-message-test")
+
+    @mcp.tool()
+    async def boom() -> str:
+        raise Bang
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("boom", {})
+
+    assert result.is_error is True
+    assert "Bang" in str(result.content), result.content
