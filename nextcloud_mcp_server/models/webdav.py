@@ -255,3 +255,60 @@ class SearchFilesResponse(BaseResponse):
     filters_applied: Optional[dict] = Field(
         None, description="Filters that were applied to the search"
     )
+
+
+class TrashEntry(BaseModel):
+    """One item in the trash bin."""
+
+    id: str = Field(description="Trashbin entry id, needed to restore it")
+    name: Optional[str] = Field(
+        None, description="File name the entry had before deletion"
+    )
+    original_location: Optional[str] = Field(
+        None, description="Path the entry was deleted from"
+    )
+    deleted_at: Optional[int] = Field(
+        None, description="Deletion time as a Unix timestamp"
+    )
+    size: Optional[int] = Field(None, description="Size in bytes")
+    href: Optional[str] = Field(None, description="Full DAV path of the entry")
+
+
+class ListTrashResponse(BaseResponse):
+    """Deleted files currently held in the trash bin."""
+
+    items: List[TrashEntry] = Field(default_factory=list, description="Trashed items")
+    total_count: int = Field(description="Number of trashed items")
+
+
+class RestoreFromTrashResponse(BaseResponse):
+    """Outcome of restoring a trashed entry."""
+
+    entry_id: str = Field(description="Trashbin entry id that was restored")
+
+
+class FileVersion(BaseModel):
+    """One stored version of a file."""
+
+    version_id: str = Field(description="Version id, needed to restore it")
+    size: Optional[int] = Field(None, description="Size in bytes")
+    modified: Optional[str] = Field(None, description="Last-modified of this version")
+    label: Optional[str] = Field(None, description="Version label, when set")
+
+
+class ListVersionsResponse(BaseResponse):
+    """Stored previous versions of a file."""
+
+    path: str = Field(description="Path the versions belong to")
+    file_id: str = Field(description="Nextcloud file id")
+    versions: List[FileVersion] = Field(
+        default_factory=list, description="Stored versions, newest first"
+    )
+    total_count: int = Field(description="Number of stored versions")
+
+
+class RestoreVersionResponse(BaseResponse):
+    """Outcome of rolling a file back to an earlier version."""
+
+    path: str = Field(description="Path that was rolled back")
+    restored_version: str = Field(description="Version id that is now current")

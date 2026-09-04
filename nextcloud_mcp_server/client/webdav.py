@@ -2701,3 +2701,184 @@ class WebDAVClient(BaseNextcloudClient):
 
         response.raise_for_status()
         return True
+
+    # -- Trash bin and file versions ----------------------------------------
+    #
+    # Nextcloud serves both from dedicated DAV endpoints rather than the files
+    # endpoint:
+    #   /remote.php/dav/trashbin/<principal>/trash
+    #   /remote.php/dav/versions/<principal>/versions/<fileid>
+    # Restoring is a MOVE into a "restore" collection in both cases -- that is
+    # the interface Nextcloud provides, not a workaround.
+
+    _TRASH_PROPS = (
+        ("trashbin_filename", "{http://nextcloud.org/ns}trashbin-filename"),
+        ("original_location", "{http://nextcloud.org/ns}trashbin-original-location"),
+        ("deleted_at", "{http://nextcloud.org/ns}trashbin-deletion-time"),
+        ("size", "{DAV:}getcontentlength"),
+    )
+
+    _VERSION_PROPS = (
+        ("size", "{DAV:}getcontentlength"),
+        ("modified", "{DAV:}getlastmodified"),
+        ("label", "{http://nextcloud.org/ns}version-label"),
+    )
+
+    def _trashbin_base(self) -> str:
+        return f"/remote.php/dav/trashbin/{self._principal_or_username()}"
+
+    def _versions_base(self) -> str:
+        return f"/remote.php/dav/versions/{self._principal_or_username()}"
+
+    @staticmethod
+    def _propfind_body(props: tuple[tuple[str, str], ...]) -> str:
+        lines = []
+        for _, qualified in props:
+            namespace, _, local = qualified.partition("}")
+            namespace = namespace.lstrip("{")
+            prefix = "d" if namespace == "DAV:" else "nc"
+            lines.append(f"<{prefix}:{local} />")
+        inner = "".join(lines)
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">'
+            f"<d:prop>{inner}</d:prop>"
+            "</d:propfind>"
+        )
+
+    @staticmethod
+    def _read_props(
+        response_elem: "ET.Element", props: tuple[tuple[str, str], ...]
+    ) -> Dict[str, Any]:
+        """Read the requested properties out of a multistatus response.
+
+        Only the ``200 OK`` propstat block is consulted. A response carries one
+        block per status, and the 404 one lists the properties the server does
+        *not* have -- folding those in would fabricate values for them.
+        """
+        # _dav_props_ok keys by local name; the tables here carry the fully
+        # qualified name, so strip the namespace before the lookup.
+        available = _dav_props_ok(response_elem)
+        return {
+            key: available.get(qualified.rpartition("}")[2]) for key, qualified in props
+        }
+
+    async def list_trash(self) -> List[Dict[str, Any]]:
+        """List the files currently in the trash bin."""
+        await self._ensure_principal_id()
+        response = await self._make_request(
+            "PROPFIND",
+            f"{self._trashbin_base()}/trash",
+            content=self._propfind_body(self._TRASH_PROPS),
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+                "OCS-APIRequest": "true",
+            },
+        )
+
+        root = ET.fromstring(response.content)
+        items: List[Dict[str, Any]] = []
+        for response_elem in root.findall(".//{DAV:}response"):
+            href_elem = response_elem.find("{DAV:}href")
+            if href_elem is None or not href_elem.text:
+                continue
+            href = href_elem.text
+            entry_id = unquote(href.rstrip("/").split("/")[-1])
+            # The 'trash' collection itself is not an entry.
+            if not entry_id or entry_id == "trash":
+                continue
+            entry = self._read_props(response_elem, self._TRASH_PROPS)
+            entry["id"] = entry_id
+            entry["href"] = href
+            items.append(entry)
+        return items
+
+    async def restore_from_trash(self, entry_id: str) -> Dict[str, Any]:
+        """Restore a trashed entry to the location it was deleted from."""
+        await self._ensure_principal_id()
+        source = f"{self._trashbin_base()}/trash/{quote(entry_id)}"
+        destination = f"{self._trashbin_base()}/restore/{quote(entry_id)}"
+        # No Overwrite header: "restore" is a virtual collection, and with
+        # "Overwrite: F" Sabre reports HTTP 412 "destination node already
+        # exists" even when nothing sits at the original location. Nextcloud's
+        # own web UI does not send the header either.
+        await self._make_request(
+            "MOVE",
+            source,
+            headers={
+                "Destination": self._resolve_url(destination),
+                "OCS-APIRequest": "true",
+            },
+        )
+        return {"restored": entry_id}
+
+    async def list_versions(
+        self, path: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        """List the stored previous versions of a file.
+
+        ``file_id`` lets a caller that already resolved the path (e.g. the
+        MCP tool layer, which does so for the excluded-tag guard) skip a
+        second ``get_fileid`` round-trip. Resolved internally when omitted,
+        so the method still works standalone.
+        """
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        response = await self._make_request(
+            "PROPFIND",
+            f"{self._versions_base()}/versions/{file_id}",
+            content=self._propfind_body(self._VERSION_PROPS),
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+                "OCS-APIRequest": "true",
+            },
+        )
+
+        root = ET.fromstring(response.content)
+        versions: List[Dict[str, Any]] = []
+        for response_elem in root.findall(".//{DAV:}response"):
+            href_elem = response_elem.find("{DAV:}href")
+            if href_elem is None or not href_elem.text:
+                continue
+            version_id = unquote(href_elem.text.rstrip("/").split("/")[-1])
+            # The collection itself is named after the file id.
+            if not version_id or version_id == str(file_id):
+                continue
+            entry = self._read_props(response_elem, self._VERSION_PROPS)
+            entry["version_id"] = version_id
+            versions.append(entry)
+        return {"path": path, "file_id": file_id, "versions": versions}
+
+    async def restore_version(
+        self, path: str, version_id: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        """Roll a file back to an earlier version.
+
+        The current content is not lost: Nextcloud stores it as a version in
+        turn, so the rollback itself can be undone.
+
+        ``file_id``: see :meth:`list_versions`.
+        """
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        source = f"{self._versions_base()}/versions/{file_id}/{quote(version_id)}"
+        destination = f"{self._versions_base()}/restore/target"
+        await self._make_request(
+            "MOVE",
+            source,
+            headers={
+                "Destination": self._resolve_url(destination),
+                "OCS-APIRequest": "true",
+            },
+        )
+        return {"path": path, "restored_version": version_id}
