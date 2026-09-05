@@ -5,6 +5,32 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.185.0 (2026-09-05)
+
+### BREAKING CHANGE
+
+- requires mcp>=2.1,<3 (protocol 2026-07-28). Server-initiated
+elicitation no longer reaches 2026-era clients — progressive consent degrades to
+message_only, with the login URL carried in the returned message. Deployments
+pinning mcp<2 must stay on the previous release.
+
+### Feat
+
+- **mcp**: migrate to python-sdk v2 (protocol 2026-07-28)
+
+### Fix
+
+- **errors**: restore the tool-failure message mcp 2.x withholds
+- **sharing**: a bare RuntimeError loses its message under mcp 2.x
+
+### Refactor
+
+- **semantic**: restore a dropped TODO and tighten the extracted signatures
+- **semantic**: type the two parameters the extraction left bare
+- **server**: decompose semantic.py and cookbook.py
+- **server**: lift deck tool registration to module level
+- **server**: lift notes + mail tool registration to module level
+
 ## v0.184.5 (2026-09-04)
 
 ### Fix
