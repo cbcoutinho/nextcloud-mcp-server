@@ -99,3 +99,16 @@ transport_security=TransportSecuritySettings(
 - Commit: `d3a1841` - "Auto-enable DNS rebinding protection for localhost servers"
 - Issue #373 (original report of k8s breakage)
 - PR #382 (MCP 1.23.x upgrade)
+
+## Update: mcp 2.x
+
+The mechanism is unchanged — the auto-enablement condition still fires on
+`host in ("127.0.0.1", "localhost", "::1")` with no explicit
+`transport_security` — but the parameter **moved off the `MCPServer`
+constructor onto the app factory**. `app.py` now passes it to
+`mcp.streamable_http_app(transport_security=...)`; passing it in the
+constructor raises `TypeError`.
+
+`streamable_http_app()` still defaults to `host="127.0.0.1"`, so a mounted app
+that omits `transport_security` has the protection **on** — the same k8s/Docker
+breakage this document describes. Keep passing it explicitly.

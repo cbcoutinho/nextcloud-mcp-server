@@ -7,8 +7,8 @@ from typing import Any, Callable
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.utilities.context_injection import find_context_parameter
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
 
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
@@ -105,12 +105,12 @@ def require_scopes(*required_scopes: str):
         # Get function name for logging (works for any callable)
         func_name = getattr(func, "__name__", repr(func))
 
-        # Find which parameter receives the Context (FastMCP injects it by name)
+        # Find which parameter receives the Context (MCPServer injects it by name)
         context_param_name = find_context_parameter(func)
 
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Extract context from kwargs (where FastMCP injected it)
+            # Extract context from kwargs (where MCPServer injected it)
             ctx: Context | None = (
                 kwargs.get(context_param_name) if context_param_name else None
             )
@@ -402,7 +402,7 @@ def get_access_token_scopes(ctx: Context | None = None) -> set[str]:
     (``notes.read``) so they match tool ``@require_scopes`` decorators.
 
     Args:
-        ctx: FastMCP context object (unused, kept for compatibility)
+        ctx: MCPServer context object (unused, kept for compatibility)
 
     Returns:
         Set of scope strings, empty set if no token or no scopes
@@ -428,7 +428,7 @@ def check_scopes(ctx: Context, *required_scopes: str) -> tuple[bool, set[str]]:
     Utility function for manual scope checking without decorator.
 
     Args:
-        ctx: FastMCP context object
+        ctx: MCPServer context object
         *required_scopes: Variable number of required scope strings
 
     Returns:
@@ -559,16 +559,16 @@ def discover_all_scopes(mcp) -> list[str]:
     for available scopes based on the actual tool implementations.
 
     Args:
-        mcp: FastMCP instance with registered tools
+        mcp: MCPServer instance with registered tools
 
     Returns:
         Sorted list of unique scope strings, including base OIDC scopes
 
     Example:
         ```python
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
 
-        mcp = FastMCP("My Server")
+        mcp = MCPServer("My Server")
 
         @mcp.tool()
         @require_scopes("notes.read")
@@ -610,7 +610,7 @@ def discover_all_scopes(mcp) -> list[str]:
     try:
         tools = mcp._tool_manager.list_tools()
     except AttributeError:
-        logger.warning("FastMCP instance does not have _tool_manager attribute")
+        logger.warning("MCPServer instance does not have _tool_manager attribute")
         return sorted(all_scopes)
 
     # Extract scopes from each tool

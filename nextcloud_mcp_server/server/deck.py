@@ -3,9 +3,10 @@ from typing import Final, Literal, cast
 
 import anyio
 from httpx import HTTPStatusError, RequestError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability
@@ -43,6 +44,7 @@ from nextcloud_mcp_server.models.deck import (
     StackOverview,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
     is_blank_comment,
@@ -72,7 +74,7 @@ def _validate_positive_length(
     the parameter the caller actually passed.
     """
     if value is not None and value <= 0:
-        raise ValueError(f"{name} must be positive, got {value}")
+        raise ToolError(f"{name} must be positive, got {value}")
 
 
 # Nextcloud's core comment cap (see COMMENT_MAX_LENGTH). Deck adds no check of
@@ -101,7 +103,7 @@ def _validate_comment_message_not_blank(message: str) -> None:
     :func:`is_blank_comment` for why neither trim charlist alone is enough.
     """
     if is_blank_comment(message):
-        raise ValueError("Comment message must not be empty or whitespace-only")
+        raise ToolError("Comment message must not be empty or whitespace-only")
 
 
 def _validate_comment_message(message: str) -> None:
@@ -110,7 +112,7 @@ def _validate_comment_message(message: str) -> None:
 
     length = measured_length(message)
     if length > _COMMENT_MAX_LENGTH:
-        raise ValueError(_too_long_message(message, length))
+        raise ToolError(_too_long_message(message, length))
 
 
 def _min_parts_for(length: int) -> int:
@@ -234,7 +236,7 @@ def _comment_http_error(
     card_id: int,
     comment_id: int | None = None,
     message: str | None = None,
-) -> McpError:
+) -> MCPError:
     """Translate a Deck comment API failure into something an agent can act on.
 
     Args:
@@ -301,7 +303,7 @@ def _comment_http_error(
         )
 
     logger.warning("Deck comment error (%s while %s): %s", status, phrase, reason)
-    return McpError(ErrorData(code=-32603, message=reason))
+    return MCPError(code=-32603, message=reason)
 
 
 def _partial_split_error(
@@ -311,7 +313,7 @@ def _partial_split_error(
     posted: list[DeckComment],
     failed_part: int,
     total_parts: int,
-) -> McpError:
+) -> MCPError:
     """Report a split that died partway through.
 
     No rollback is attempted, deliberately. Deleting the parts already posted
@@ -361,7 +363,7 @@ def _partial_split_error(
         total_parts,
         posted_ids,
     )
-    return McpError(ErrorData(code=-32603, message=message))
+    return MCPError(code=-32603, message=message)
 
 
 async def _post_split_comment(
@@ -377,11 +379,11 @@ async def _post_split_comment(
     # Cheap bound first, so an enormous paste is rejected without running the
     # splitter over it.
     if _min_parts_for(length) > _MAX_SPLIT_PARTS:
-        raise ValueError(_too_long_to_split_message(length, None))
+        raise ToolError(_too_long_to_split_message(length, None))
 
     parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
     if len(parts) > _MAX_SPLIT_PARTS:
-        raise ValueError(_too_long_to_split_message(length, len(parts)))
+        raise ToolError(_too_long_to_split_message(length, len(parts)))
 
     posted: list[DeckComment] = []
     for index, part in enumerate(parts, 1):
@@ -685,317 +687,120 @@ async def _resolve_note_attach_path(client, note_id: int) -> str:
     )
 
 
-def configure_deck_tools(mcp: FastMCP):
-    """Configure Nextcloud Deck tools and resources for the MCP server."""
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_boards(ctx: Context) -> ListBoardsResponse:
+    """Get all Nextcloud Deck boards"""
+    client = await get_client(ctx)
+    boards = await client.deck.get_boards()
+    return ListBoardsResponse(boards=boards, total=len(boards))
 
-    # Resources
-    @mcp.resource("nc://Deck/boards")
-    async def deck_boards_resource():
-        """List all Nextcloud Deck boards"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning("This message is deprecated, use the deck_get_board instead")
-        client = await get_client(ctx)
-        boards = await client.deck.get_boards()
-        return [board.model_dump() for board in boards]
 
-    @mcp.resource("nc://Deck/boards/{board_id}")
-    async def deck_board_resource(board_id: int):
-        """Get details of a specific Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_board tool instead"
-        )
-        client = await get_client(ctx)
-        board = await client.deck.get_board(board_id)
-        return board.model_dump()
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_board(
+    ctx: Context,
+    board_id: int,
+    include_acl: bool = True,
+    include_users: bool = True,
+    include_labels: bool = True,
+) -> DeckBoard:
+    """Get details of a specific Nextcloud Deck board.
 
-    @mcp.resource("nc://Deck/boards/{board_id}/stacks")
-    async def deck_stacks_resource(board_id: int):
-        """List all stacks in a Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_stacks tool instead"
-        )
-        client = await get_client(ctx)
-        stacks = await client.deck.get_stacks(board_id)
-        return [stack.model_dump() for stack in stacks]
-
-    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
-    async def deck_stack_resource(board_id: int, stack_id: int):
-        """Get details of a specific Nextcloud Deck stack"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_stack tool instead"
-        )
-        client = await get_client(ctx)
-        stack = await client.deck.get_stack(board_id, stack_id)
-        return stack.model_dump()
-
-    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
-    async def deck_cards_resource(board_id: int, stack_id: int):
-        """List all cards in a Nextcloud Deck stack"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_cards tool instead"
-        )
-        client = await get_client(ctx)
-        stack = await client.deck.get_stack(board_id, stack_id)
-        if stack.cards:
-            return [card.model_dump() for card in stack.cards]
-        return []
-
-    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
-    async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
-        """Get details of a specific Nextcloud Deck card"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_card tool instead"
-        )
-        client = await get_client(ctx)
-        card = await client.deck.get_card(board_id, stack_id, card_id)
-        return card.model_dump()
-
-    @mcp.resource("nc://Deck/boards/{board_id}/labels")
-    async def deck_labels_resource(board_id: int):
-        """List all labels in a Nextcloud Deck board"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_labels tool instead"
-        )
-        client = await get_client(ctx)
-        board = await client.deck.get_board(board_id)
-        return [label.model_dump() for label in (board.labels or [])]
-
-    @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
-    async def deck_label_resource(board_id: int, label_id: int):
-        """Get details of a specific Nextcloud Deck label"""
-        ctx: Context = mcp.get_context()
-        await ctx.warning(
-            "This resource is deprecated, use the deck_get_label tool instead"
-        )
-        client = await get_client(ctx)
-        label = await client.deck.get_label(board_id, label_id)
-        return label.model_dump()
-
-    # Read Tools (converted from resources)
-
-    @mcp.tool(
-        title="List Deck Boards",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    Args:
+        board_id: The ID of the board
+        include_acl: Include the board's ACL entries (default True). Set
+            False to reduce response size when ACLs are not needed.
+        include_users: Include the board's user list (default True). Set
+            False to reduce response size when users are not needed.
+        include_labels: Include the board's label definitions (default
+            True). Set False to reduce response size. Labels can still be
+            retrieved via deck_get_labels.
+    """
+    client = await get_client(ctx)
+    board = await client.deck.get_board(board_id)
+    return _apply_board_filters(
+        board,
+        include_acl=include_acl,
+        include_users=include_users,
+        include_labels=include_labels,
     )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_boards(ctx: Context) -> ListBoardsResponse:
-        """Get all Nextcloud Deck boards"""
-        client = await get_client(ctx)
-        boards = await client.deck.get_boards()
-        return ListBoardsResponse(boards=boards, total=len(boards))
 
-    @mcp.tool(
-        title="Get Deck Board",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_board(
-        ctx: Context,
-        board_id: int,
-        include_acl: bool = True,
-        include_users: bool = True,
-        include_labels: bool = True,
-    ) -> DeckBoard:
-        """Get details of a specific Nextcloud Deck board.
 
-        Args:
-            board_id: The ID of the board
-            include_acl: Include the board's ACL entries (default True). Set
-                False to reduce response size when ACLs are not needed.
-            include_users: Include the board's user list (default True). Set
-                False to reduce response size when users are not needed.
-            include_labels: Include the board's label definitions (default
-                True). Set False to reduce response size. Labels can still be
-                retrieved via deck_get_labels.
-        """
-        client = await get_client(ctx)
-        board = await client.deck.get_board(board_id)
-        return _apply_board_filters(
-            board,
-            include_acl=include_acl,
-            include_users=include_users,
-            include_labels=include_labels,
-        )
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_stacks(
+    ctx: Context,
+    board_id: int,
+    include_cards: bool = True,
+    detail: DetailLevel = "summary",
+    status: CardStatus = "open",
+    label: str | None = None,
+    assigned_to: str | None = None,
+    description_max_length: int | None = None,
+    description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+) -> ListStacksResponse:
+    """Get all stacks in a Nextcloud Deck board.
 
-    @mcp.tool(
-        title="List Deck Stacks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_stacks(
-        ctx: Context,
-        board_id: int,
-        include_cards: bool = True,
-        detail: DetailLevel = "summary",
-        status: CardStatus = "open",
-        label: str | None = None,
-        assigned_to: str | None = None,
-        description_max_length: int | None = None,
-        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
-    ) -> ListStacksResponse:
-        """Get all stacks in a Nextcloud Deck board.
+    Cards are returned as compact summaries by default to keep the
+    response small on large boards. Filtering/projection happen
+    client-side after the API returns the full board, so they reduce the
+    tokens the caller sees but not network bandwidth.
 
-        Cards are returned as compact summaries by default to keep the
-        response small on large boards. Filtering/projection happen
-        client-side after the API returns the full board, so they reduce the
-        tokens the caller sees but not network bandwidth.
+    Args:
+        board_id: The ID of the board
+        include_cards: Include cards inside each stack (default True). Set
+            False for a lightweight stack listing. Fetch cards separately
+            via deck_get_cards.
+        detail: "summary" (default) returns compact card rows. "full"
+            returns the complete card objects (the old behavior).
+        status: Which cards to include — "open" (default), "done",
+            "archived", or "all". The first three partition the board
+            (a card that is both done and archived counts as "archived").
+            "archived"/"all" include archived cards, which the active
+            listing endpoint omits — this costs one extra API call.
+        label: If set, only cards carrying a label with this exact title.
+        assigned_to: If set, only cards assigned to this user UID.
+        description_max_length: In detail="full", truncate each card's
+            description to this many characters.
+        description_preview_length: In detail="summary", length of the
+            description preview carried on each card (default 140).
+    """
+    _validate_positive_length(description_max_length)
+    _validate_positive_length(description_preview_length, "description_preview_length")
+    client = await get_client(ctx)
 
-        Args:
-            board_id: The ID of the board
-            include_cards: Include cards inside each stack (default True). Set
-                False for a lightweight stack listing. Fetch cards separately
-                via deck_get_cards.
-            detail: "summary" (default) returns compact card rows. "full"
-                returns the complete card objects (the old behavior).
-            status: Which cards to include — "open" (default), "done",
-                "archived", or "all". The first three partition the board
-                (a card that is both done and archived counts as "archived").
-                "archived"/"all" include archived cards, which the active
-                listing endpoint omits — this costs one extra API call.
-            label: If set, only cards carrying a label with this exact title.
-            assigned_to: If set, only cards assigned to this user UID.
-            description_max_length: In detail="full", truncate each card's
-                description to this many characters.
-            description_preview_length: In detail="summary", length of the
-                description preview carried on each card (default 140).
-        """
-        _validate_positive_length(description_max_length)
-        _validate_positive_length(
-            description_preview_length, "description_preview_length"
-        )
-        client = await get_client(ctx)
+    # Fetch active stacks and (when archived cards are in scope) the
+    # archived endpoint concurrently, then merge archived cards onto each
+    # stack by id before filtering. The active endpoint omits archived
+    # cards, so without this merge status="archived"/"all" would drop them.
+    stacks_holder: list[list[DeckStack]] = []
+    archived_by_stack: dict[int, list[DeckCard]] = {}
+    merge_archived = include_cards and status in _ARCHIVED_STATUSES
 
-        # Fetch active stacks and (when archived cards are in scope) the
-        # archived endpoint concurrently, then merge archived cards onto each
-        # stack by id before filtering. The active endpoint omits archived
-        # cards, so without this merge status="archived"/"all" would drop them.
-        stacks_holder: list[list[DeckStack]] = []
-        archived_by_stack: dict[int, list[DeckCard]] = {}
-        merge_archived = include_cards and status in _ARCHIVED_STATUSES
+    async def _get_active() -> None:
+        stacks_holder.append(await client.deck.get_stacks(board_id))
 
-        async def _get_active() -> None:
-            stacks_holder.append(await client.deck.get_stacks(board_id))
+    async def _get_archived() -> None:
+        archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
 
-        async def _get_archived() -> None:
-            archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(_get_active)
-            if merge_archived:
-                tg.start_soon(_get_archived)
-
-        stacks = stacks_holder[0]
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_get_active)
         if merge_archived:
-            for stack in stacks:
-                extra = archived_by_stack.get(stack.id)
-                if extra:
-                    _append_archived_cards(stack, extra)
+            tg.start_soon(_get_archived)
 
-        stacks = [
-            _apply_stack_filters(
-                stack,
-                include_cards=include_cards,
-                detail=detail,
-                status=status,
-                label=label,
-                assigned_to=assigned_to,
-                description_max_length=description_max_length,
-                description_preview_length=description_preview_length,
-            )
-            for stack in stacks
-        ]
-        return ListStacksResponse(stacks=stacks, total=len(stacks))
-
-    @mcp.tool(
-        title="Get Deck Stack",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_stack(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        include_cards: bool = True,
-        detail: DetailLevel = "summary",
-        status: CardStatus = "open",
-        label: str | None = None,
-        assigned_to: str | None = None,
-        description_max_length: int | None = None,
-        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
-    ) -> DeckStack:
-        """Get details of a specific Nextcloud Deck stack.
-
-        Cards are returned as compact summaries by default. See
-        deck_get_stacks for the shared parameter semantics.
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            include_cards: Include cards in the stack (default True).
-            detail: "summary" (default) or "full".
-            status: "open" (default), "done", "archived", or "all"
-                (non-overlapping, a done+archived card counts as "archived").
-                "archived"/"all" include archived cards, which the active
-                listing endpoint omits — this costs one extra API call.
-            label: If set, only cards carrying a label with this exact title.
-            assigned_to: If set, only cards assigned to this user UID.
-            description_max_length: In detail="full", truncate descriptions.
-            description_preview_length: In detail="summary", preview length.
-        """
-        _validate_positive_length(description_max_length)
-        _validate_positive_length(
-            description_preview_length, "description_preview_length"
-        )
-        client = await get_client(ctx)
-        if status == "archived" and include_cards:
-            # Archived-only: the /stacks/archived endpoint already returns the
-            # stack (metadata + archived cards) in one call, so skip the active
-            # fetch whose open cards would all be filtered out anyway.
-            archived = await client.deck.get_archived_stacks(board_id)
-            stack = next((s for s in archived if s.id == stack_id), None)
-            if stack is None:
-                # findAllArchived returns every stack, so this is defensive;
-                # fall back to the active endpoint for the stack metadata.
-                stack = await client.deck.get_stack(board_id, stack_id)
-        else:
-            # Active stack always needed (for metadata + open cards); fetch the
-            # archived cards concurrently when status="all" needs both sets.
-            stack_holder: list[DeckStack] = []
-            archived_by_stack: dict[int, list[DeckCard]] = {}
-            merge_archived = include_cards and status == "all"
-
-            async def _get_active() -> None:
-                stack_holder.append(await client.deck.get_stack(board_id, stack_id))
-
-            async def _get_archived() -> None:
-                archived_by_stack.update(
-                    await _archived_cards_by_stack(client, board_id)
-                )
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(_get_active)
-                if merge_archived:
-                    tg.start_soon(_get_archived)
-
-            stack = stack_holder[0]
-            extra = archived_by_stack.get(stack_id)
+    stacks = stacks_holder[0]
+    if merge_archived:
+        for stack in stacks:
+            extra = archived_by_stack.get(stack.id)
             if extra:
                 _append_archived_cards(stack, extra)
-        return _apply_stack_filters(
+
+    stacks = [
+        _apply_stack_filters(
             stack,
             include_cards=include_cards,
             detail=detail,
@@ -1005,1321 +810,1566 @@ def configure_deck_tools(mcp: FastMCP):
             description_max_length=description_max_length,
             description_preview_length=description_preview_length,
         )
+        for stack in stacks
+    ]
+    return ListStacksResponse(stacks=stacks, total=len(stacks))
 
-    @mcp.tool(
-        title="List Archived Deck Stacks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_archived_stacks(
-        ctx: Context,
-        board_id: int,
-        detail: DetailLevel = "summary",
-        label: str | None = None,
-        assigned_to: str | None = None,
-        description_max_length: int | None = None,
-        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
-    ) -> ListStacksResponse:
-        """List archived stacks (with their archived cards) for a Nextcloud
-        Deck board.
 
-        This is the archived-only shortcut: it returns *only* archived cards
-        in a single call. The active list tools (deck_get_cards,
-        deck_get_stacks, deck_get_board_overview) also include archived cards
-        when called with status="archived"/"all". Use this tool when you want
-        archived cards exclusively and don't need the open ones. Typical use:
-        auditing completed work archived off the active board (e.g. cards moved
-        through a "Done" stack and then archived via deck_archive_card). The
-        shape mirrors deck_get_stacks.
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_stack(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    include_cards: bool = True,
+    detail: DetailLevel = "summary",
+    status: CardStatus = "open",
+    label: str | None = None,
+    assigned_to: str | None = None,
+    description_max_length: int | None = None,
+    description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+) -> DeckStack:
+    """Get details of a specific Nextcloud Deck stack.
 
-        Cards are always included on the returned stacks (an archived stack
-        without its cards would have no audit value) and returned as compact
-        summaries by default. There is no ``status`` filter — every card here
-        is archived by definition — but ``label``/``assigned_to`` narrow the
-        set just like the active-stack tools.
+    Cards are returned as compact summaries by default. See
+    deck_get_stacks for the shared parameter semantics.
 
-        Args:
-            board_id: The ID of the board
-            detail: "summary" (default) or "full".
-            label: If set, only cards carrying a label with this exact title.
-            assigned_to: If set, only cards assigned to this user UID.
-            description_max_length: In detail="full", truncate descriptions.
-            description_preview_length: In detail="summary", preview length.
-        """
-        _validate_positive_length(description_max_length)
-        _validate_positive_length(
-            description_preview_length, "description_preview_length"
-        )
-        client = await get_client(ctx)
-        stacks = await client.deck.get_archived_stacks(board_id)
-        # All cards in archived stacks are themselves archived; status="all"
-        # keeps them (an "open"/"done" filter would drop the whole point).
-        # label/assigned_to still apply for targeted audits.
-        stacks = [
-            _apply_stack_filters(
-                stack,
-                include_cards=True,
-                detail=detail,
-                status="all",
-                label=label,
-                assigned_to=assigned_to,
-                description_max_length=description_max_length,
-                description_preview_length=description_preview_length,
-            )
-            for stack in stacks
-        ]
-        return ListStacksResponse(stacks=stacks, total=len(stacks))
-
-    @mcp.tool(
-        title="List Deck Cards",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_cards(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        detail: DetailLevel = "summary",
-        status: CardStatus = "open",
-        label: str | None = None,
-        assigned_to: str | None = None,
-        description_max_length: int | None = None,
-        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
-    ) -> ListCardsResponse:
-        """Get all cards in a Nextcloud Deck stack.
-
-        Cards are returned as compact summaries by default. Filtering and
-        projection are applied client-side after the API returns the full
-        stack, so they reduce the tokens the caller sees but not network
-        bandwidth — network-wise this tool is equivalent to
-        deck_get_stack(include_cards=True).
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            detail: "summary" (default) returns compact card rows. "full"
-                returns the complete card objects.
-            status: "open" (default), "done", "archived", or "all". The first
-                three partition the board (a done+archived card counts as
-                "archived"). "archived"/"all" include archived cards, which the
-                active listing endpoint omits — this costs one extra API call.
-            label: If set, only cards carrying a label with this exact title.
-            assigned_to: If set, only cards assigned to this user UID.
-            description_max_length: In detail="full", truncate descriptions.
-            description_preview_length: In detail="summary", preview length.
-        """
-        _validate_positive_length(description_max_length)
-        _validate_positive_length(
-            description_preview_length, "description_preview_length"
-        )
-        client = await get_client(ctx)
-
-        # Archived cards are excluded by the active stack endpoint, so for
-        # statuses that can include them we also fetch /stacks/archived and
-        # merge. "open"/"done" need only the active stack (no extra call).
-        active_cards: list[DeckCard] = []
-        archived_cards: list[DeckCard] = []
-        need_active = status != "archived"
-        need_archived = status in _ARCHIVED_STATUSES
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        include_cards: Include cards in the stack (default True).
+        detail: "summary" (default) or "full".
+        status: "open" (default), "done", "archived", or "all"
+            (non-overlapping, a done+archived card counts as "archived").
+            "archived"/"all" include archived cards, which the active
+            listing endpoint omits — this costs one extra API call.
+        label: If set, only cards carrying a label with this exact title.
+        assigned_to: If set, only cards assigned to this user UID.
+        description_max_length: In detail="full", truncate descriptions.
+        description_preview_length: In detail="summary", preview length.
+    """
+    _validate_positive_length(description_max_length)
+    _validate_positive_length(description_preview_length, "description_preview_length")
+    client = await get_client(ctx)
+    if status == "archived" and include_cards:
+        # Archived-only: the /stacks/archived endpoint already returns the
+        # stack (metadata + archived cards) in one call, so skip the active
+        # fetch whose open cards would all be filtered out anyway.
+        archived = await client.deck.get_archived_stacks(board_id)
+        stack = next((s for s in archived if s.id == stack_id), None)
+        if stack is None:
+            # findAllArchived returns every stack, so this is defensive;
+            # fall back to the active endpoint for the stack metadata.
+            stack = await client.deck.get_stack(board_id, stack_id)
+    else:
+        # Active stack always needed (for metadata + open cards); fetch the
+        # archived cards concurrently when status="all" needs both sets.
+        stack_holder: list[DeckStack] = []
+        archived_by_stack: dict[int, list[DeckCard]] = {}
+        merge_archived = include_cards and status == "all"
 
         async def _get_active() -> None:
-            stack = await client.deck.get_stack(board_id, stack_id)
-            active_cards.extend(cast(list[DeckCard], stack.cards or []))
-
-        async def _get_archived() -> None:
-            by_stack = await _archived_cards_by_stack(client, board_id)
-            archived_cards.extend(by_stack.get(stack_id, []))
-
-        async with anyio.create_task_group() as tg:
-            if need_active:
-                tg.start_soon(_get_active)
-            if need_archived:
-                tg.start_soon(_get_archived)
-
-        cards = _shape_cards(
-            active_cards + archived_cards,
-            detail=detail,
-            status=status,
-            label=label,
-            assigned_to=assigned_to,
-            description_max_length=description_max_length,
-            description_preview_length=description_preview_length,
-        )
-        return ListCardsResponse(cards=cards, total=len(cards))
-
-    @mcp.tool(
-        title="Get Deck Board Overview",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_board_overview(
-        ctx: Context,
-        board_id: int,
-        status: CardStatus = "open",
-        label: str | None = None,
-        assigned_to: str | None = None,
-        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
-    ) -> BoardOverviewResponse:
-        """Get a compact, whole-board snapshot in a single call.
-
-        Returns the board title, its label legend, and every stack with its
-        cards projected to compact summary rows. Prefer it for "show me the
-        board" / "what's in progress" style requests on large boards — it is
-        the token-efficient way to view board *state*. It intentionally omits
-        the board-management fields (ACL, user list, full label objects) that
-        deck_get_board exposes. Reach for deck_get_board when you need those.
-
-        Args:
-            board_id: The ID of the board
-            status: Which cards to include — "open" (default), "done",
-                "archived", or "all". The first three partition the board
-                (a card that is both done and archived counts as "archived").
-                "archived"/"all" include archived cards, which the active
-                listing endpoint omits — this costs one extra API call.
-            label: If set, only cards carrying a label with this exact title.
-            assigned_to: If set, only cards assigned to this user UID.
-            description_preview_length: Length of the description preview
-                carried on each card summary (default 140).
-        """
-        _validate_positive_length(
-            description_preview_length, "description_preview_length"
-        )
-        client = await get_client(ctx)
-
-        board_holder: list[DeckBoard] = []
-        stacks_holder: list[list[DeckStack]] = []
-        archived_by_stack: dict[int, list[DeckCard]] = {}
-        merge_archived = status in _ARCHIVED_STATUSES
-
-        async def _get_board() -> None:
-            board_holder.append(await client.deck.get_board(board_id))
-
-        async def _get_stacks() -> None:
-            stacks_holder.append(await client.deck.get_stacks(board_id))
+            stack_holder.append(await client.deck.get_stack(board_id, stack_id))
 
         async def _get_archived() -> None:
             archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
 
         async with anyio.create_task_group() as tg:
-            tg.start_soon(_get_board)
-            tg.start_soon(_get_stacks)
+            tg.start_soon(_get_active)
             if merge_archived:
                 tg.start_soon(_get_archived)
 
-        board = board_holder[0]
-        stacks = stacks_holder[0]
-
-        stack_overviews: list[StackOverview] = []
-        total_cards = 0
-        for stack in stacks:
-            cards = cast(list[DeckCard], stack.cards or [])
-            if merge_archived:
-                cards = cards + archived_by_stack.get(stack.id, [])
-            summaries = [
-                _summarize_card(c, description_preview_length)
-                for c in _filter_cards(
-                    cards,
-                    status=status,
-                    label=label,
-                    assigned_to=assigned_to,
-                )
-            ]
-            total_cards += len(summaries)
-            stack_overviews.append(
-                StackOverview(
-                    id=stack.id,
-                    title=stack.title,
-                    order=stack.order,
-                    card_count=len(summaries),
-                    cards=summaries,
-                )
-            )
-
-        return BoardOverviewResponse(
-            board_id=board.id,
-            title=board.title,
-            labels=[lbl.title for lbl in (board.labels or [])],
-            stacks=stack_overviews,
-            total_cards=total_cards,
-        )
-
-    @mcp.tool(
-        title="Get Deck Card",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        stack = stack_holder[0]
+        extra = archived_by_stack.get(stack_id)
+        if extra:
+            _append_archived_cards(stack, extra)
+    return _apply_stack_filters(
+        stack,
+        include_cards=include_cards,
+        detail=detail,
+        status=status,
+        label=label,
+        assigned_to=assigned_to,
+        description_max_length=description_max_length,
+        description_preview_length=description_preview_length,
     )
-    @require_scopes("deck.read")
-    @with_links
-    @instrument_tool
-    async def deck_get_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int
-    ) -> DeckCard:
-        """Get details of a specific Nextcloud Deck card"""
-        client = await get_client(ctx)
-        card = await client.deck.get_card(board_id, stack_id, card_id)
-        return card
 
-    @mcp.tool(
-        title="List Deck Labels",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @instrument_tool
-    async def deck_get_labels(ctx: Context, board_id: int) -> ListLabelsResponse:
-        """Get all labels in a Nextcloud Deck board"""
-        client = await get_client(ctx)
-        board = await client.deck.get_board(board_id)
-        labels = board.labels or []
-        return ListLabelsResponse(labels=labels, total=len(labels))
 
-    @mcp.tool(
-        title="Get Deck Label",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @instrument_tool
-    async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
-        """Get details of a specific Nextcloud Deck label"""
-        client = await get_client(ctx)
-        label = await client.deck.get_label(board_id, label_id)
-        return label
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_archived_stacks(
+    ctx: Context,
+    board_id: int,
+    detail: DetailLevel = "summary",
+    label: str | None = None,
+    assigned_to: str | None = None,
+    description_max_length: int | None = None,
+    description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+) -> ListStacksResponse:
+    """List archived stacks (with their archived cards) for a Nextcloud
+    Deck board.
 
-    # Create/Update/Delete Tools
+    This is the archived-only shortcut: it returns *only* archived cards
+    in a single call. The active list tools (deck_get_cards,
+    deck_get_stacks, deck_get_board_overview) also include archived cards
+    when called with status="archived"/"all". Use this tool when you want
+    archived cards exclusively and don't need the open ones. Typical use:
+    auditing completed work archived off the active board (e.g. cards moved
+    through a "Done" stack and then archived via deck_archive_card). The
+    shape mirrors deck_get_stacks.
 
-    @mcp.tool(
-        title="Create Deck Board",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_create_board(
-        ctx: Context, title: str, color: str
-    ) -> CreateBoardResponse:
-        """Create a new Nextcloud Deck board
+    Cards are always included on the returned stacks (an archived stack
+    without its cards would have no audit value) and returned as compact
+    summaries by default. There is no ``status`` filter — every card here
+    is archived by definition — but ``label``/``assigned_to`` narrow the
+    set just like the active-stack tools.
 
-        Args:
-            title: The title of the new board
-            color: The hexadecimal color of the new board (e.g. FF0000)
-        """
-        client = await get_client(ctx)
-        board = await client.deck.create_board(title, color)
-        return CreateBoardResponse(id=board.id, title=board.title, color=board.color)
-
-    # Stack Tools
-
-    @mcp.tool(
-        title="Create Deck Stack",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_create_stack(
-        ctx: Context, board_id: int, title: str, order: int
-    ) -> CreateStackResponse:
-        """Create a new stack in a Nextcloud Deck board
-
-        Args:
-            board_id: The ID of the board
-            title: The title of the new stack
-            order: Order for sorting the stacks
-        """
-        client = await get_client(ctx)
-        stack = await client.deck.create_stack(board_id, title, order)
-        return CreateStackResponse(id=stack.id, title=stack.title, order=stack.order)
-
-    @mcp.tool(
-        title="Update Deck Stack",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_update_stack(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        title: str | None = None,
-        order: int | None = None,
-    ) -> StackOperationResponse:
-        """Update a Nextcloud Deck stack
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            title: New title for the stack
-            order: New order for the stack
-        """
-        client = await get_client(ctx)
-        await client.deck.update_stack(board_id, stack_id, title, order)
-        return StackOperationResponse(
-            success=True,
-            message="Stack updated successfully",
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Delete Deck Stack",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_delete_stack(
-        ctx: Context, board_id: int, stack_id: int
-    ) -> StackOperationResponse:
-        """Delete a Nextcloud Deck stack
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-        """
-        client = await get_client(ctx)
-        await client.deck.delete_stack(board_id, stack_id)
-        return StackOperationResponse(
-            success=True,
-            message="Stack deleted successfully",
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    # Card Tools
-    @mcp.tool(
-        title="Create Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_create_card(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        title: str,
-        type: str = "plain",
-        order: int = 999,
-        description: str | None = None,
-        duedate: str | None = None,
-    ) -> CreateCardResponse:
-        """Create a new card in a Nextcloud Deck stack
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            title: The title of the new card
-            type: Type of the card (default: plain)
-            order: Order for sorting the cards
-            description: Description of the card
-            duedate: Due date of the card (ISO-8601 format)
-        """
-        client = await get_client(ctx)
-        card = await client.deck.create_card(
-            board_id, stack_id, title, type, order, description, duedate
-        )
-        return CreateCardResponse(
-            id=card.id,
-            title=card.title,
-            stackId=card.stackId,
-        )
-
-    @mcp.tool(
-        title="Update Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_update_card(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        card_id: int,
-        title: str | None = None,
-        description: str | None = None,
-        type: str | None = None,
-        owner: str | None = None,
-        order: int | None = None,
-        duedate: str | None = None,
-        archived: bool | None = None,
-        done: str | None = None,
-    ) -> CardOperationResponse:
-        """Update a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            title: New title for the card
-            description: New description for the card
-            type: New type for the card
-            owner: New owner for the card
-            order: New order for the card
-            duedate: New due date for the card (ISO-8601 format)
-            archived: Whether the card should be archived
-            done: Completion date for the card (ISO-8601 format)
-        """
-        client = await get_client(ctx)
-        await client.deck.update_card(
-            board_id,
-            stack_id,
-            card_id,
-            title,
-            description,
-            type,
-            owner,
-            order,
-            duedate,
-            archived,
-            done,
-        )
-        return CardOperationResponse(
-            success=True,
-            message="Card updated successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Delete Deck Card",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    # No @with_links here, deliberately: the card is gone by the time this
-    # returns, so a link to it would 404. Every other CardOperationResponse tool
-    # leaves the card in place and does carry one. Asserted by
-    # tests/unit/test_links_tool_coverage.py.
-    @instrument_tool
-    async def deck_delete_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int
-    ) -> CardOperationResponse:
-        """Delete a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-        """
-        client = await get_client(ctx)
-        await client.deck.delete_card(board_id, stack_id, card_id)
-        return CardOperationResponse(
-            success=True,
-            message="Card deleted successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Archive Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_archive_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int
-    ) -> CardOperationResponse:
-        """Archive a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-        """
-        client = await get_client(ctx)
-        await client.deck.archive_card(board_id, stack_id, card_id)
-        return CardOperationResponse(
-            success=True,
-            message="Card archived successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Unarchive Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_unarchive_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int
-    ) -> CardOperationResponse:
-        """Unarchive a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-        """
-        client = await get_client(ctx)
-        await client.deck.unarchive_card(board_id, stack_id, card_id)
-        return CardOperationResponse(
-            success=True,
-            message="Card unarchived successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Reorder Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_reorder_card(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        card_id: int,
-        order: int,
-        target_stack_id: int,
-    ) -> CardOperationResponse:
-        """Reorder a Nextcloud Deck card within a board.
-
-        Moves a card to a new position, optionally into a different stack on
-        the SAME board. To move a card to a stack on a DIFFERENT board, use
-        deck_move_card_to_board instead — reordering across boards is rejected
-        because it would orphan the card's board-scoped labels.
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the current stack
-            card_id: The ID of the card
-            order: New position in the target stack
-            target_stack_id: The ID of the target stack (must be on board_id)
-        """
-        client = await get_client(ctx)
-        await client.deck.reorder_card(
-            board_id, stack_id, card_id, order, target_stack_id
-        )
-        return CardOperationResponse(
-            success=True,
-            message="Card reordered successfully",
-            card_id=card_id,
-            stack_id=target_stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Move Deck Card to Another Board",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_move_card_to_board(
-        ctx: Context,
-        source_board_id: int,
-        source_stack_id: int,
-        card_id: int,
-        target_board_id: int,
-        target_stack_id: int,
-        order: int = 0,
-    ) -> CardOperationResponse:
-        """Move a Nextcloud Deck card to a stack on a different board.
-
-        The card keeps its identity (same id, comments, attachments), along
-        with its archived state, due date and user assignments (an assignee
-        without access to the target board stays assigned but cannot act on the
-        card). Deck remaps the card's board-scoped labels to the destination
-        board by title — reusing a same-titled label there, or cloning it when
-        you have board-manage permission. Use deck_reorder_card for moves
-        within a single board.
-
-        Two caveats from Deck's move route: the card's owner is reassigned to
-        the user performing the move (the original owner is not preserved), and
-        a card marked done keeps its done state but its done timestamp is reset
-        to the time of the move.
-
-        target_stack_id must be a stack on target_board_id. The move is
-        rejected otherwise.
-
-        Args:
-            source_board_id: The ID of the board the card currently lives on
-            source_stack_id: The ID of the stack the card currently lives in
-            card_id: The ID of the card to move
-            target_board_id: The ID of the destination board
-            target_stack_id: The ID of the destination stack (must be on target_board_id)
-            order: Position within the destination stack (default 0 = top)
-        """
-        client = await get_client(ctx)
-        moved = await client.deck.move_card_to_board(
-            source_board_id,
-            source_stack_id,
-            card_id,
-            target_board_id,
-            target_stack_id,
-            order,
-        )
-        # Surface the post-move labels so callers can confirm the remap without
-        # a follow-up get_card (label remapping is this tool's whole point).
-        return CardOperationResponse(
-            success=True,
-            message="Card moved to board successfully",
-            card_id=card_id,
-            stack_id=target_stack_id,
-            board_id=target_board_id,
-            labels=[label.title for label in (moved.labels or [])],
-        )
-
-    # Label Tools
-    @mcp.tool(
-        title="Create Deck Label",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_create_label(
-        ctx: Context, board_id: int, title: str, color: str
-    ) -> CreateLabelResponse:
-        """Create a new label in a Nextcloud Deck board
-
-        Args:
-            board_id: The ID of the board
-            title: The title of the new label
-            color: The color of the new label (hex format without #)
-        """
-        client = await get_client(ctx)
-        label = await client.deck.create_label(board_id, title, color)
-        return CreateLabelResponse(id=label.id, title=label.title, color=label.color)
-
-    @mcp.tool(
-        title="Update Deck Label",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_update_label(
-        ctx: Context,
-        board_id: int,
-        label_id: int,
-        title: str | None = None,
-        color: str | None = None,
-    ) -> LabelOperationResponse:
-        """Update a Nextcloud Deck label
-
-        Args:
-            board_id: The ID of the board
-            label_id: The ID of the label
-            title: New title for the label
-            color: New color for the label (hex format without #)
-        """
-        client = await get_client(ctx)
-        await client.deck.update_label(board_id, label_id, title, color)
-        return LabelOperationResponse(
-            success=True,
-            message="Label updated successfully",
-            label_id=label_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Delete Deck Label",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_delete_label(
-        ctx: Context, board_id: int, label_id: int
-    ) -> LabelOperationResponse:
-        """Delete a Nextcloud Deck label
-
-        Args:
-            board_id: The ID of the board
-            label_id: The ID of the label
-        """
-        client = await get_client(ctx)
-        await client.deck.delete_label(board_id, label_id)
-        return LabelOperationResponse(
-            success=True,
-            message="Label deleted successfully",
-            label_id=label_id,
-            board_id=board_id,
-        )
-
-    # Card-Label Assignment Tools
-    @mcp.tool(
-        title="Assign Label to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_assign_label_to_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
-    ) -> CardOperationResponse:
-        """Assign a label to a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            label_id: The ID of the label to assign
-        """
-        client = await get_client(ctx)
-        await client.deck.assign_label_to_card(board_id, stack_id, card_id, label_id)
-        return CardOperationResponse(
-            success=True,
-            message="Label assigned to card successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Remove Label from Deck Card",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_remove_label_from_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
-    ) -> CardOperationResponse:
-        """Remove a label from a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            label_id: The ID of the label to remove
-        """
-        client = await get_client(ctx)
-        await client.deck.remove_label_from_card(board_id, stack_id, card_id, label_id)
-        return CardOperationResponse(
-            success=True,
-            message="Label removed from card successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    # Card-User Assignment Tools
-    @mcp.tool(
-        title="Assign User to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_assign_user_to_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
-    ) -> CardOperationResponse:
-        """Assign a user to a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            user_id: The user ID to assign
-        """
-        client = await get_client(ctx)
-        await client.deck.assign_user_to_card(board_id, stack_id, card_id, user_id)
-        return CardOperationResponse(
-            success=True,
-            message="User assigned to card successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Unassign User from Deck Card",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    @with_links
-    @instrument_tool
-    async def deck_unassign_user_from_card(
-        ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
-    ) -> CardOperationResponse:
-        """Unassign a user from a Nextcloud Deck card
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            user_id: The user ID to unassign
-        """
-        client = await get_client(ctx)
-        await client.deck.unassign_user_from_card(board_id, stack_id, card_id, user_id)
-        return CardOperationResponse(
-            success=True,
-            message="User unassigned from card successfully",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    # Card Dependency Tools
-    @mcp.tool(
-        title="Add Dependent Card to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write")
-    @require_capability("deck", min_version="1.18.0")
-    @with_links
-    @instrument_tool
-    async def deck_assign_dependent_card(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        card_id: int,
-        dependent_card_id: int,
-    ) -> CardOperationResponse:
-        """Mark a Nextcloud Deck card as depending on another card.
-
-        Mirrors Deck's "Add dependent card" action. The dependency is
-        directional and stored on ``card_id``: it surfaces in that card's
-        ``dependentCards`` list (visible via deck_get_card). You need read
-        access to the dependent card.
-
-        Args:
-            board_id: The ID of the board containing the depending card
-            stack_id: The ID of the stack containing the depending card
-            card_id: The ID of the card that depends on another card
-            dependent_card_id: The ID of the card that card_id depends on
-        """
-        client = await get_client(ctx)
-        await client.deck.assign_dependent_card(
-            board_id, stack_id, card_id, dependent_card_id
-        )
-        return CardOperationResponse(
-            success=True,
-            message=f"Card {dependent_card_id} added as a dependency of card {card_id}",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    @mcp.tool(
-        title="Remove Dependent Card from Deck Card",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    @require_capability("deck", min_version="1.18.0")
-    @with_links
-    @instrument_tool
-    async def deck_remove_dependent_card(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        card_id: int,
-        dependent_card_id: int,
-    ) -> CardOperationResponse:
-        """Remove a dependency between two Nextcloud Deck cards.
-
-        Removes the dependency of ``card_id`` on ``dependent_card_id`` that was
-        created by deck_assign_dependent_card.
-
-        Args:
-            board_id: The ID of the board containing the depending card
-            stack_id: The ID of the stack containing the depending card
-            card_id: The ID of the card that depends on another card
-            dependent_card_id: The ID of the dependency to remove
-        """
-        client = await get_client(ctx)
-        await client.deck.remove_dependent_card(
-            board_id, stack_id, card_id, dependent_card_id
-        )
-        return CardOperationResponse(
-            success=True,
-            message=f"Card {dependent_card_id} removed as a dependency of card {card_id}",
-            card_id=card_id,
-            stack_id=stack_id,
-            board_id=board_id,
-        )
-
-    # Card Comment Tools
-
-    @mcp.tool(
-        title="List Deck Card Comments",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @instrument_tool
-    async def deck_get_card_comments(
-        ctx: Context,
-        card_id: int,
-        limit: int = 20,
-        offset: int = 0,
-        detail: DetailLevel = "summary",
-        message_max_length: int | None = None,
-        order: Literal["newest", "oldest"] = "newest",
-    ) -> ListCardCommentsResponse:
-        """List comments on a Nextcloud Deck card.
-
-        Returns compact comments by default (dropping mentions, actor type and
-        display name). Ordering and truncation apply within the returned page.
-
-        Args:
-            card_id: The ID of the card
-            limit: Maximum number of comments to return (default 20, max 200)
-            offset: Pagination offset (default 0)
-            detail: "summary" (default) returns compact comments. "full"
-                returns the complete comment objects.
-            message_max_length: If set, truncate each comment message to this
-                many characters.
-            order: "newest" (default) or "oldest" — sort the page by creation
-                time.
-        """
-        _validate_positive_length(message_max_length, "message_max_length")
-        client = await get_client(ctx)
-        try:
-            comments = await client.deck.get_comments(
-                card_id, limit=limit, offset=offset
-            )
-        except HTTPStatusError as e:
-            raise _comment_http_error(e, operation="list", card_id=card_id) from e
-        except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(f"Network error listing comments on card {card_id}: {e}"),
-                )
-            ) from e
-        shaped = _shape_comments(
-            comments,
+    Args:
+        board_id: The ID of the board
+        detail: "summary" (default) or "full".
+        label: If set, only cards carrying a label with this exact title.
+        assigned_to: If set, only cards assigned to this user UID.
+        description_max_length: In detail="full", truncate descriptions.
+        description_preview_length: In detail="summary", preview length.
+    """
+    _validate_positive_length(description_max_length)
+    _validate_positive_length(description_preview_length, "description_preview_length")
+    client = await get_client(ctx)
+    stacks = await client.deck.get_archived_stacks(board_id)
+    # All cards in archived stacks are themselves archived; status="all"
+    # keeps them (an "open"/"done" filter would drop the whole point).
+    # label/assigned_to still apply for targeted audits.
+    stacks = [
+        _apply_stack_filters(
+            stack,
+            include_cards=True,
             detail=detail,
-            message_max_length=message_max_length,
-            order=order,
+            status="all",
+            label=label,
+            assigned_to=assigned_to,
+            description_max_length=description_max_length,
+            description_preview_length=description_preview_length,
         )
-        return ListCardCommentsResponse(results=shaped, count=len(shaped))
+        for stack in stacks
+    ]
+    return ListStacksResponse(stacks=stacks, total=len(stacks))
 
-    @mcp.tool(
-        title="Create Deck Card Comment",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_cards(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    detail: DetailLevel = "summary",
+    status: CardStatus = "open",
+    label: str | None = None,
+    assigned_to: str | None = None,
+    description_max_length: int | None = None,
+    description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+) -> ListCardsResponse:
+    """Get all cards in a Nextcloud Deck stack.
+
+    Cards are returned as compact summaries by default. Filtering and
+    projection are applied client-side after the API returns the full
+    stack, so they reduce the tokens the caller sees but not network
+    bandwidth — network-wise this tool is equivalent to
+    deck_get_stack(include_cards=True).
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        detail: "summary" (default) returns compact card rows. "full"
+            returns the complete card objects.
+        status: "open" (default), "done", "archived", or "all". The first
+            three partition the board (a done+archived card counts as
+            "archived"). "archived"/"all" include archived cards, which the
+            active listing endpoint omits — this costs one extra API call.
+        label: If set, only cards carrying a label with this exact title.
+        assigned_to: If set, only cards assigned to this user UID.
+        description_max_length: In detail="full", truncate descriptions.
+        description_preview_length: In detail="summary", preview length.
+    """
+    _validate_positive_length(description_max_length)
+    _validate_positive_length(description_preview_length, "description_preview_length")
+    client = await get_client(ctx)
+
+    # Archived cards are excluded by the active stack endpoint, so for
+    # statuses that can include them we also fetch /stacks/archived and
+    # merge. "open"/"done" need only the active stack (no extra call).
+    active_cards: list[DeckCard] = []
+    archived_cards: list[DeckCard] = []
+    need_active = status != "archived"
+    need_archived = status in _ARCHIVED_STATUSES
+
+    async def _get_active() -> None:
+        stack = await client.deck.get_stack(board_id, stack_id)
+        active_cards.extend(cast(list[DeckCard], stack.cards or []))
+
+    async def _get_archived() -> None:
+        by_stack = await _archived_cards_by_stack(client, board_id)
+        archived_cards.extend(by_stack.get(stack_id, []))
+
+    async with anyio.create_task_group() as tg:
+        if need_active:
+            tg.start_soon(_get_active)
+        if need_archived:
+            tg.start_soon(_get_archived)
+
+    cards = _shape_cards(
+        active_cards + archived_cards,
+        detail=detail,
+        status=status,
+        label=label,
+        assigned_to=assigned_to,
+        description_max_length=description_max_length,
+        description_preview_length=description_preview_length,
     )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_create_card_comment(
-        ctx: Context,
-        card_id: int,
-        message: str,
-        parent_id: int | None = None,
-        overflow: CommentOverflow = "error",
-    ) -> CardCommentResponse:
-        """Create a comment on a Nextcloud Deck card.
+    return ListCardsResponse(cards=cards, total=len(cards))
 
-        Deck caps a comment at 1000 characters, measured after trimming
-        whitespace and counted in Unicode code points. Markdown and @-mentions
-        are NOT expanded before that check, so what you pass is what is counted.
 
-        Check the length before calling and pick `overflow` accordingly:
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_board_overview(
+    ctx: Context,
+    board_id: int,
+    status: CardStatus = "open",
+    label: str | None = None,
+    assigned_to: str | None = None,
+    description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+) -> BoardOverviewResponse:
+    """Get a compact, whole-board snapshot in a single call.
 
-        - 1000 characters or fewer: call as-is. `overflow` is ignored.
-        - Longer, and the text is meant to be read on the card (activity
-          updates, run summaries, changelogs): pass overflow="split" up front
-          rather than guessing a shorter message. The text is cut at markdown
-          heading, then paragraph, then line, then sentence, then word
-          boundaries -- never mid-word -- each part is prefixed "(i/N)", and
-          parts 2..N are posted as replies to part 1 so the card shows one
-          thread. @-mentions are never split across parts. At most 10 parts.
-          Past that, write the content to a note (nc_notes_create_note) or a
-          file (nc_webdav_write_file), attach it with deck_attach_note /
-          deck_attach_file, and post a short pointer comment instead.
-        - Longer, and you would rather shorten it yourself: leave the default
-          overflow="error". Nothing is posted and the error states the exact
-          overage.
+    Returns the board title, its label legend, and every stack with its
+    cards projected to compact summary rows. Prefer it for "show me the
+    board" / "what's in progress" style requests on large boards — it is
+    the token-efficient way to view board *state*. It intentionally omits
+    the board-management fields (ACL, user list, full label objects) that
+    deck_get_board exposes. Reach for deck_get_board when you need those.
 
-        Splitting is not atomic. If a later part fails, the earlier parts stay
-        posted and the error names their comment ids -- resume from there
-        instead of re-sending the whole message, which would duplicate them.
+    Args:
+        board_id: The ID of the board
+        status: Which cards to include — "open" (default), "done",
+            "archived", or "all". The first three partition the board
+            (a card that is both done and archived counts as "archived").
+            "archived"/"all" include archived cards, which the active
+            listing endpoint omits — this costs one extra API call.
+        label: If set, only cards carrying a label with this exact title.
+        assigned_to: If set, only cards assigned to this user UID.
+        description_preview_length: Length of the description preview
+            carried on each card summary (default 140).
+    """
+    _validate_positive_length(description_preview_length, "description_preview_length")
+    client = await get_client(ctx)
 
-        Supports @-mentions: "@alice", or @"alice smith" for ids with spaces.
+    board_holder: list[DeckBoard] = []
+    stacks_holder: list[list[DeckStack]] = []
+    archived_by_stack: dict[int, list[DeckCard]] = {}
+    merge_archived = status in _ARCHIVED_STATUSES
 
-        Args:
-            card_id: The ID of the card to comment on
-            message: The comment text (max 1000 characters unless
-                overflow="split")
-            parent_id: Optional ID of a parent comment to reply to. When
-                splitting, part 1 replies to this comment and parts 2..N reply
-                to part 1.
-            overflow: What to do when the message exceeds 1000 characters.
-                "error" (the default) posts nothing and explains the overage.
-                "split" posts the message as multiple threaded comments.
+    async def _get_board() -> None:
+        board_holder.append(await client.deck.get_board(board_id))
 
-        Returns:
-            CardCommentResponse. For a single comment, `comment` is it, `parts`
-            is null and `part_count` is 1. When split, `comment` is part 1,
-            `parts` lists every posted part in order (parts[0] is part 1), and
-            `part_count` is how many were posted.
-        """
-        if overflow == "error" or measured_length(message) <= _COMMENT_MAX_LENGTH:
-            _validate_comment_message(message)
-            client = await get_client(ctx)
-            try:
-                comment = await client.deck.create_comment(
-                    card_id, message, parent_id=parent_id
-                )
-            except HTTPStatusError as e:
-                raise _comment_http_error(e, operation="create", card_id=card_id) from e
-            except RequestError as e:
-                raise McpError(
-                    ErrorData(
-                        code=-32603,
-                        message=(
-                            f"Network error creating a comment on card {card_id}: {e}"
-                        ),
-                    )
-                ) from e
-            return CardCommentResponse(comment=comment)
+    async def _get_stacks() -> None:
+        stacks_holder.append(await client.deck.get_stacks(board_id))
 
-        client = await get_client(ctx)
-        return await _post_split_comment(client, card_id, message, parent_id)
+    async def _get_archived() -> None:
+        archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
 
-    @mcp.tool(
-        title="Update Deck Card Comment",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_get_board)
+        tg.start_soon(_get_stacks)
+        if merge_archived:
+            tg.start_soon(_get_archived)
+
+    board = board_holder[0]
+    stacks = stacks_holder[0]
+
+    stack_overviews: list[StackOverview] = []
+    total_cards = 0
+    for stack in stacks:
+        cards = cast(list[DeckCard], stack.cards or [])
+        if merge_archived:
+            cards = cards + archived_by_stack.get(stack.id, [])
+        summaries = [
+            _summarize_card(c, description_preview_length)
+            for c in _filter_cards(
+                cards,
+                status=status,
+                label=label,
+                assigned_to=assigned_to,
+            )
+        ]
+        total_cards += len(summaries)
+        stack_overviews.append(
+            StackOverview(
+                id=stack.id,
+                title=stack.title,
+                order=stack.order,
+                card_count=len(summaries),
+                cards=summaries,
+            )
+        )
+
+    return BoardOverviewResponse(
+        board_id=board.id,
+        title=board.title,
+        labels=[lbl.title for lbl in (board.labels or [])],
+        stacks=stack_overviews,
+        total_cards=total_cards,
     )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_update_card_comment(
-        ctx: Context, card_id: int, comment_id: int, message: str
-    ) -> CardCommentResponse:
-        """Update a Nextcloud Deck card comment.
 
-        The same 1000-character limit applies as for creation (measured after
-        trimming, in Unicode code points), but the message CANNOT be split: an
-        update replaces one comment in place. To add more than fits, post a
-        follow-up comment with deck_create_card_comment instead of growing an
-        existing one past the limit.
 
-        Only the comment's author can update it. The server returns 403
-        otherwise.
+@require_scopes("deck.read")
+@with_links
+@instrument_tool
+async def deck_get_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int
+) -> DeckCard:
+    """Get details of a specific Nextcloud Deck card"""
+    client = await get_client(ctx)
+    card = await client.deck.get_card(board_id, stack_id, card_id)
+    return card
 
-        Args:
-            card_id: The ID of the card the comment belongs to
-            comment_id: The ID of the comment to update
-            message: The new comment text (max 1000 characters)
-        """
+
+@require_scopes("deck.read")
+@instrument_tool
+async def deck_get_labels(ctx: Context, board_id: int) -> ListLabelsResponse:
+    """Get all labels in a Nextcloud Deck board"""
+    client = await get_client(ctx)
+    board = await client.deck.get_board(board_id)
+    labels = board.labels or []
+    return ListLabelsResponse(labels=labels, total=len(labels))
+
+
+@require_scopes("deck.read")
+@instrument_tool
+async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
+    """Get details of a specific Nextcloud Deck label"""
+    client = await get_client(ctx)
+    label = await client.deck.get_label(board_id, label_id)
+    return label
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_create_board(
+    ctx: Context, title: str, color: str
+) -> CreateBoardResponse:
+    """Create a new Nextcloud Deck board
+
+    Args:
+        title: The title of the new board
+        color: The hexadecimal color of the new board (e.g. FF0000)
+    """
+    client = await get_client(ctx)
+    board = await client.deck.create_board(title, color)
+    return CreateBoardResponse(id=board.id, title=board.title, color=board.color)
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_create_stack(
+    ctx: Context, board_id: int, title: str, order: int
+) -> CreateStackResponse:
+    """Create a new stack in a Nextcloud Deck board
+
+    Args:
+        board_id: The ID of the board
+        title: The title of the new stack
+        order: Order for sorting the stacks
+    """
+    client = await get_client(ctx)
+    stack = await client.deck.create_stack(board_id, title, order)
+    return CreateStackResponse(id=stack.id, title=stack.title, order=stack.order)
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_update_stack(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    title: str | None = None,
+    order: int | None = None,
+) -> StackOperationResponse:
+    """Update a Nextcloud Deck stack
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        title: New title for the stack
+        order: New order for the stack
+    """
+    client = await get_client(ctx)
+    await client.deck.update_stack(board_id, stack_id, title, order)
+    return StackOperationResponse(
+        success=True,
+        message="Stack updated successfully",
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_delete_stack(
+    ctx: Context, board_id: int, stack_id: int
+) -> StackOperationResponse:
+    """Delete a Nextcloud Deck stack
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+    """
+    client = await get_client(ctx)
+    await client.deck.delete_stack(board_id, stack_id)
+    return StackOperationResponse(
+        success=True,
+        message="Stack deleted successfully",
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_create_card(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    title: str,
+    type: str = "plain",
+    order: int = 999,
+    description: str | None = None,
+    duedate: str | None = None,
+) -> CreateCardResponse:
+    """Create a new card in a Nextcloud Deck stack
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        title: The title of the new card
+        type: Type of the card (default: plain)
+        order: Order for sorting the cards
+        description: Description of the card
+        duedate: Due date of the card (ISO-8601 format)
+    """
+    client = await get_client(ctx)
+    card = await client.deck.create_card(
+        board_id, stack_id, title, type, order, description, duedate
+    )
+    return CreateCardResponse(
+        id=card.id,
+        title=card.title,
+        stackId=card.stackId,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_update_card(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    card_id: int,
+    title: str | None = None,
+    description: str | None = None,
+    type: str | None = None,
+    owner: str | None = None,
+    order: int | None = None,
+    duedate: str | None = None,
+    archived: bool | None = None,
+    done: str | None = None,
+) -> CardOperationResponse:
+    """Update a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        title: New title for the card
+        description: New description for the card
+        type: New type for the card
+        owner: New owner for the card
+        order: New order for the card
+        duedate: New due date for the card (ISO-8601 format)
+        archived: Whether the card should be archived
+        done: Completion date for the card (ISO-8601 format)
+    """
+    client = await get_client(ctx)
+    await client.deck.update_card(
+        board_id,
+        stack_id,
+        card_id,
+        title,
+        description,
+        type,
+        owner,
+        order,
+        duedate,
+        archived,
+        done,
+    )
+    return CardOperationResponse(
+        success=True,
+        message="Card updated successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+# No @with_links here, deliberately: the card is gone by the time this
+# returns, so a link to it would 404. Every other CardOperationResponse tool
+# leaves the card in place and does carry one. Asserted by
+# tests/unit/test_links_tool_coverage.py.
+@instrument_tool
+async def deck_delete_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int
+) -> CardOperationResponse:
+    """Delete a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+    """
+    client = await get_client(ctx)
+    await client.deck.delete_card(board_id, stack_id, card_id)
+    return CardOperationResponse(
+        success=True,
+        message="Card deleted successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_archive_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int
+) -> CardOperationResponse:
+    """Archive a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+    """
+    client = await get_client(ctx)
+    await client.deck.archive_card(board_id, stack_id, card_id)
+    return CardOperationResponse(
+        success=True,
+        message="Card archived successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_unarchive_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int
+) -> CardOperationResponse:
+    """Unarchive a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+    """
+    client = await get_client(ctx)
+    await client.deck.unarchive_card(board_id, stack_id, card_id)
+    return CardOperationResponse(
+        success=True,
+        message="Card unarchived successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_reorder_card(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    card_id: int,
+    order: int,
+    target_stack_id: int,
+) -> CardOperationResponse:
+    """Reorder a Nextcloud Deck card within a board.
+
+    Moves a card to a new position, optionally into a different stack on
+    the SAME board. To move a card to a stack on a DIFFERENT board, use
+    deck_move_card_to_board instead — reordering across boards is rejected
+    because it would orphan the card's board-scoped labels.
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the current stack
+        card_id: The ID of the card
+        order: New position in the target stack
+        target_stack_id: The ID of the target stack (must be on board_id)
+    """
+    client = await get_client(ctx)
+    await client.deck.reorder_card(board_id, stack_id, card_id, order, target_stack_id)
+    return CardOperationResponse(
+        success=True,
+        message="Card reordered successfully",
+        card_id=card_id,
+        stack_id=target_stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_move_card_to_board(
+    ctx: Context,
+    source_board_id: int,
+    source_stack_id: int,
+    card_id: int,
+    target_board_id: int,
+    target_stack_id: int,
+    order: int = 0,
+) -> CardOperationResponse:
+    """Move a Nextcloud Deck card to a stack on a different board.
+
+    The card keeps its identity (same id, comments, attachments), along
+    with its archived state, due date and user assignments (an assignee
+    without access to the target board stays assigned but cannot act on the
+    card). Deck remaps the card's board-scoped labels to the destination
+    board by title — reusing a same-titled label there, or cloning it when
+    you have board-manage permission. Use deck_reorder_card for moves
+    within a single board.
+
+    Two caveats from Deck's move route: the card's owner is reassigned to
+    the user performing the move (the original owner is not preserved), and
+    a card marked done keeps its done state but its done timestamp is reset
+    to the time of the move.
+
+    target_stack_id must be a stack on target_board_id. The move is
+    rejected otherwise.
+
+    Args:
+        source_board_id: The ID of the board the card currently lives on
+        source_stack_id: The ID of the stack the card currently lives in
+        card_id: The ID of the card to move
+        target_board_id: The ID of the destination board
+        target_stack_id: The ID of the destination stack (must be on target_board_id)
+        order: Position within the destination stack (default 0 = top)
+    """
+    client = await get_client(ctx)
+    moved = await client.deck.move_card_to_board(
+        source_board_id,
+        source_stack_id,
+        card_id,
+        target_board_id,
+        target_stack_id,
+        order,
+    )
+    # Surface the post-move labels so callers can confirm the remap without
+    # a follow-up get_card (label remapping is this tool's whole point).
+    return CardOperationResponse(
+        success=True,
+        message="Card moved to board successfully",
+        card_id=card_id,
+        stack_id=target_stack_id,
+        board_id=target_board_id,
+        labels=[label.title for label in (moved.labels or [])],
+    )
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_create_label(
+    ctx: Context, board_id: int, title: str, color: str
+) -> CreateLabelResponse:
+    """Create a new label in a Nextcloud Deck board
+
+    Args:
+        board_id: The ID of the board
+        title: The title of the new label
+        color: The color of the new label (hex format without #)
+    """
+    client = await get_client(ctx)
+    label = await client.deck.create_label(board_id, title, color)
+    return CreateLabelResponse(id=label.id, title=label.title, color=label.color)
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_update_label(
+    ctx: Context,
+    board_id: int,
+    label_id: int,
+    title: str | None = None,
+    color: str | None = None,
+) -> LabelOperationResponse:
+    """Update a Nextcloud Deck label
+
+    Args:
+        board_id: The ID of the board
+        label_id: The ID of the label
+        title: New title for the label
+        color: New color for the label (hex format without #)
+    """
+    client = await get_client(ctx)
+    await client.deck.update_label(board_id, label_id, title, color)
+    return LabelOperationResponse(
+        success=True,
+        message="Label updated successfully",
+        label_id=label_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_delete_label(
+    ctx: Context, board_id: int, label_id: int
+) -> LabelOperationResponse:
+    """Delete a Nextcloud Deck label
+
+    Args:
+        board_id: The ID of the board
+        label_id: The ID of the label
+    """
+    client = await get_client(ctx)
+    await client.deck.delete_label(board_id, label_id)
+    return LabelOperationResponse(
+        success=True,
+        message="Label deleted successfully",
+        label_id=label_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_assign_label_to_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
+) -> CardOperationResponse:
+    """Assign a label to a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        label_id: The ID of the label to assign
+    """
+    client = await get_client(ctx)
+    await client.deck.assign_label_to_card(board_id, stack_id, card_id, label_id)
+    return CardOperationResponse(
+        success=True,
+        message="Label assigned to card successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_remove_label_from_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
+) -> CardOperationResponse:
+    """Remove a label from a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        label_id: The ID of the label to remove
+    """
+    client = await get_client(ctx)
+    await client.deck.remove_label_from_card(board_id, stack_id, card_id, label_id)
+    return CardOperationResponse(
+        success=True,
+        message="Label removed from card successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_assign_user_to_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
+) -> CardOperationResponse:
+    """Assign a user to a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        user_id: The user ID to assign
+    """
+    client = await get_client(ctx)
+    await client.deck.assign_user_to_card(board_id, stack_id, card_id, user_id)
+    return CardOperationResponse(
+        success=True,
+        message="User assigned to card successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@with_links
+@instrument_tool
+async def deck_unassign_user_from_card(
+    ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
+) -> CardOperationResponse:
+    """Unassign a user from a Nextcloud Deck card
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        user_id: The user ID to unassign
+    """
+    client = await get_client(ctx)
+    await client.deck.unassign_user_from_card(board_id, stack_id, card_id, user_id)
+    return CardOperationResponse(
+        success=True,
+        message="User unassigned from card successfully",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@require_capability("deck", min_version="1.18.0")
+@with_links
+@instrument_tool
+async def deck_assign_dependent_card(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    card_id: int,
+    dependent_card_id: int,
+) -> CardOperationResponse:
+    """Mark a Nextcloud Deck card as depending on another card.
+
+    Mirrors Deck's "Add dependent card" action. The dependency is
+    directional and stored on ``card_id``: it surfaces in that card's
+    ``dependentCards`` list (visible via deck_get_card). You need read
+    access to the dependent card.
+
+    Args:
+        board_id: The ID of the board containing the depending card
+        stack_id: The ID of the stack containing the depending card
+        card_id: The ID of the card that depends on another card
+        dependent_card_id: The ID of the card that card_id depends on
+    """
+    client = await get_client(ctx)
+    await client.deck.assign_dependent_card(
+        board_id, stack_id, card_id, dependent_card_id
+    )
+    return CardOperationResponse(
+        success=True,
+        message=f"Card {dependent_card_id} added as a dependency of card {card_id}",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.write")
+@require_capability("deck", min_version="1.18.0")
+@with_links
+@instrument_tool
+async def deck_remove_dependent_card(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    card_id: int,
+    dependent_card_id: int,
+) -> CardOperationResponse:
+    """Remove a dependency between two Nextcloud Deck cards.
+
+    Removes the dependency of ``card_id`` on ``dependent_card_id`` that was
+    created by deck_assign_dependent_card.
+
+    Args:
+        board_id: The ID of the board containing the depending card
+        stack_id: The ID of the stack containing the depending card
+        card_id: The ID of the card that depends on another card
+        dependent_card_id: The ID of the dependency to remove
+    """
+    client = await get_client(ctx)
+    await client.deck.remove_dependent_card(
+        board_id, stack_id, card_id, dependent_card_id
+    )
+    return CardOperationResponse(
+        success=True,
+        message=f"Card {dependent_card_id} removed as a dependency of card {card_id}",
+        card_id=card_id,
+        stack_id=stack_id,
+        board_id=board_id,
+    )
+
+
+@require_scopes("deck.read")
+@instrument_tool
+async def deck_get_card_comments(
+    ctx: Context,
+    card_id: int,
+    limit: int = 20,
+    offset: int = 0,
+    detail: DetailLevel = "summary",
+    message_max_length: int | None = None,
+    order: Literal["newest", "oldest"] = "newest",
+) -> ListCardCommentsResponse:
+    """List comments on a Nextcloud Deck card.
+
+    Returns compact comments by default (dropping mentions, actor type and
+    display name). Ordering and truncation apply within the returned page.
+
+    Args:
+        card_id: The ID of the card
+        limit: Maximum number of comments to return (default 20, max 200)
+        offset: Pagination offset (default 0)
+        detail: "summary" (default) returns compact comments. "full"
+            returns the complete comment objects.
+        message_max_length: If set, truncate each comment message to this
+            many characters.
+        order: "newest" (default) or "oldest" — sort the page by creation
+            time.
+    """
+    _validate_positive_length(message_max_length, "message_max_length")
+    client = await get_client(ctx)
+    try:
+        comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
+    except HTTPStatusError as e:
+        raise _comment_http_error(e, operation="list", card_id=card_id) from e
+    except RequestError as e:
+        raise MCPError(
+            code=-32603,
+            message=(f"Network error listing comments on card {card_id}: {e}"),
+        ) from e
+    shaped = _shape_comments(
+        comments,
+        detail=detail,
+        message_max_length=message_max_length,
+        order=order,
+    )
+    return ListCardCommentsResponse(results=shaped, count=len(shaped))
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_create_card_comment(
+    ctx: Context,
+    card_id: int,
+    message: str,
+    parent_id: int | None = None,
+    overflow: CommentOverflow = "error",
+) -> CardCommentResponse:
+    """Create a comment on a Nextcloud Deck card.
+
+    Deck caps a comment at 1000 characters, measured after trimming
+    whitespace and counted in Unicode code points. Markdown and @-mentions
+    are NOT expanded before that check, so what you pass is what is counted.
+
+    Check the length before calling and pick `overflow` accordingly:
+
+    - 1000 characters or fewer: call as-is. `overflow` is ignored.
+    - Longer, and the text is meant to be read on the card (activity
+      updates, run summaries, changelogs): pass overflow="split" up front
+      rather than guessing a shorter message. The text is cut at markdown
+      heading, then paragraph, then line, then sentence, then word
+      boundaries -- never mid-word -- each part is prefixed "(i/N)", and
+      parts 2..N are posted as replies to part 1 so the card shows one
+      thread. @-mentions are never split across parts. At most 10 parts.
+      Past that, write the content to a note (nc_notes_create_note) or a
+      file (nc_webdav_write_file), attach it with deck_attach_note /
+      deck_attach_file, and post a short pointer comment instead.
+    - Longer, and you would rather shorten it yourself: leave the default
+      overflow="error". Nothing is posted and the error states the exact
+      overage.
+
+    Splitting is not atomic. If a later part fails, the earlier parts stay
+    posted and the error names their comment ids -- resume from there
+    instead of re-sending the whole message, which would duplicate them.
+
+    Supports @-mentions: "@alice", or @"alice smith" for ids with spaces.
+
+    Args:
+        card_id: The ID of the card to comment on
+        message: The comment text (max 1000 characters unless
+            overflow="split")
+        parent_id: Optional ID of a parent comment to reply to. When
+            splitting, part 1 replies to this comment and parts 2..N reply
+            to part 1.
+        overflow: What to do when the message exceeds 1000 characters.
+            "error" (the default) posts nothing and explains the overage.
+            "split" posts the message as multiple threaded comments.
+
+    Returns:
+        CardCommentResponse. For a single comment, `comment` is it, `parts`
+        is null and `part_count` is 1. When split, `comment` is part 1,
+        `parts` lists every posted part in order (parts[0] is part 1), and
+        `part_count` is how many were posted.
+    """
+    if overflow == "error" or measured_length(message) <= _COMMENT_MAX_LENGTH:
         _validate_comment_message(message)
         client = await get_client(ctx)
         try:
-            comment = await client.deck.update_comment(card_id, comment_id, message)
+            comment = await client.deck.create_comment(
+                card_id, message, parent_id=parent_id
+            )
         except HTTPStatusError as e:
-            raise _comment_http_error(
-                e,
-                operation="update",
-                card_id=card_id,
-                comment_id=comment_id,
-                message=message,
-            ) from e
+            raise _comment_http_error(e, operation="create", card_id=card_id) from e
         except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(
-                        f"Network error updating comment {comment_id} on card "
-                        f"{card_id}: {e}"
-                    ),
-                )
+            raise MCPError(
+                code=-32603,
+                message=(f"Network error creating a comment on card {card_id}: {e}"),
             ) from e
         return CardCommentResponse(comment=comment)
 
-    @mcp.tool(
-        title="Delete Deck Card Comment",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_delete_card_comment(
-        ctx: Context, card_id: int, comment_id: int
-    ) -> CardCommentOperationResponse:
-        """Delete a Nextcloud Deck card comment
+    client = await get_client(ctx)
+    return await _post_split_comment(client, card_id, message, parent_id)
 
-        Only the comment's author can delete it. The server returns 403 otherwise.
 
-        Args:
-            card_id: The ID of the card the comment belongs to
-            comment_id: The ID of the comment to delete
-        """
-        client = await get_client(ctx)
-        try:
-            await client.deck.delete_comment(card_id, comment_id)
-        except HTTPStatusError as e:
-            raise _comment_http_error(
-                e, operation="delete", card_id=card_id, comment_id=comment_id
-            ) from e
-        except RequestError as e:
-            raise McpError(
-                ErrorData(
-                    code=-32603,
-                    message=(
-                        f"Network error deleting comment {comment_id} on card "
-                        f"{card_id}: {e}"
-                    ),
-                )
-            ) from e
-        return CardCommentOperationResponse(
-            success=True,
-            message="Comment deleted successfully",
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_update_card_comment(
+    ctx: Context, card_id: int, comment_id: int, message: str
+) -> CardCommentResponse:
+    """Update a Nextcloud Deck card comment.
+
+    The same 1000-character limit applies as for creation (measured after
+    trimming, in Unicode code points), but the message CANNOT be split: an
+    update replaces one comment in place. To add more than fits, post a
+    follow-up comment with deck_create_card_comment instead of growing an
+    existing one past the limit.
+
+    Only the comment's author can update it. The server returns 403
+    otherwise.
+
+    Args:
+        card_id: The ID of the card the comment belongs to
+        comment_id: The ID of the comment to update
+        message: The new comment text (max 1000 characters)
+    """
+    _validate_comment_message(message)
+    client = await get_client(ctx)
+    try:
+        comment = await client.deck.update_comment(card_id, comment_id, message)
+    except HTTPStatusError as e:
+        raise _comment_http_error(
+            e,
+            operation="update",
             card_id=card_id,
             comment_id=comment_id,
-        )
+            message=message,
+        ) from e
+    except RequestError as e:
+        raise MCPError(
+            code=-32603,
+            message=(
+                f"Network error updating comment {comment_id} on card {card_id}: {e}"
+            ),
+        ) from e
+    return CardCommentResponse(comment=comment)
 
-    @mcp.tool(
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_delete_card_comment(
+    ctx: Context, card_id: int, comment_id: int
+) -> CardCommentOperationResponse:
+    """Delete a Nextcloud Deck card comment
+
+    Only the comment's author can delete it. The server returns 403 otherwise.
+
+    Args:
+        card_id: The ID of the card the comment belongs to
+        comment_id: The ID of the comment to delete
+    """
+    client = await get_client(ctx)
+    try:
+        await client.deck.delete_comment(card_id, comment_id)
+    except HTTPStatusError as e:
+        raise _comment_http_error(
+            e, operation="delete", card_id=card_id, comment_id=comment_id
+        ) from e
+    except RequestError as e:
+        raise MCPError(
+            code=-32603,
+            message=(
+                f"Network error deleting comment {comment_id} on card {card_id}: {e}"
+            ),
+        ) from e
+    return CardCommentOperationResponse(
+        success=True,
+        message="Comment deleted successfully",
+        card_id=card_id,
+        comment_id=comment_id,
+    )
+
+
+@require_scopes("deck.write", "files.read")
+@instrument_tool
+async def deck_attach_file(ctx: Context, card_id: int, path: str) -> AttachFileResponse:
+    """Attach an existing Nextcloud file to a Deck card without copying.
+
+    Creates a share of ``path`` with the card (``shareType=12``,
+    ``shareWith=<card_id>``). The file stays in its original location.
+    Clicking the attachment in the Deck UI opens the file in place.
+
+    Generic over the user's Files: works for any file the caller can
+    read — markdown notes, PDFs, images, spreadsheets, etc. Use
+    :func:`deck_attach_note` if you have a Notes-app note ID and want
+    the path resolved automatically. Calling twice with the same
+    ``path`` creates two distinct shares — caller is responsible for
+    de-duping.
+
+    Args:
+        card_id: The ID of the Deck card to attach to
+        path: Path to the file in the user's Nextcloud Files (must start
+            with "/", e.g. "/Documents/spec.pdf" or "/Notes/My Note.md")
+    """
+    if not path.startswith("/"):
+        raise ToolError(
+            f"path must start with '/', got: {path!r} "
+            "(paths are relative to the user's Files root)"
+        )
+    client = await get_client(ctx)
+    share = await client.sharing.create_share(
+        path=path,
+        share_with=str(card_id),
+        share_type=_SHARE_TYPE_DECK,
+        permissions=1,
+    )
+    return AttachFileResponse(
+        attachment_id=int(share["id"]),
+        card_id=card_id,
+        path=path,
+    )
+
+
+@require_scopes("deck.write", "files.read", "notes.read")
+@instrument_tool
+async def deck_attach_note(
+    ctx: Context, card_id: int, note_id: int
+) -> AttachFileResponse:
+    """Attach a Nextcloud Note to a Deck card without copying.
+
+    Convenience wrapper: looks up the note's filesystem path from the
+    Notes app settings + note metadata, then shares the file with the
+    card (same mechanism as :func:`deck_attach_file`). The note remains
+    editable in the Notes app. The card just shows a clickable link to
+    it.
+
+    Path is reconstructed as ``<notes_folder>/<category>/<title>.md``.
+    If the note's title contains characters that the Notes app sanitises
+    differently (rare), use :func:`deck_attach_file` with the explicit
+    path instead.
+
+    Args:
+        card_id: The ID of the Deck card to attach to
+        note_id: The ID of the Note to attach
+    """
+    client = await get_client(ctx)
+    path = await _resolve_note_attach_path(client, note_id)
+    share = await client.sharing.create_share(
+        path=path,
+        share_with=str(card_id),
+        share_type=_SHARE_TYPE_DECK,
+        permissions=1,
+    )
+    return AttachFileResponse(
+        attachment_id=int(share["id"]),
+        card_id=card_id,
+        path=path,
+    )
+
+
+@require_scopes("deck.read")
+@instrument_tool
+async def deck_list_attachments(
+    ctx: Context, board_id: int, stack_id: int, card_id: int
+) -> ListAttachmentsResponse:
+    """List attachments on a Nextcloud Deck card.
+
+    Returns both shared-file attachments (``type="file"``, created via
+    :func:`deck_attach_file` / :func:`deck_attach_note`) and uploaded
+    binary attachments (``type="deck_file"``).
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+    """
+    client = await get_client(ctx)
+    attachments = await client.deck.get_attachments(board_id, stack_id, card_id)
+    return ListAttachmentsResponse(results=attachments, count=len(attachments))
+
+
+@require_scopes("deck.write")
+@instrument_tool
+async def deck_delete_attachment(
+    ctx: Context,
+    board_id: int,
+    stack_id: int,
+    card_id: int,
+    attachment_id: int,
+) -> AttachmentOperationResponse:
+    """Delete an attachment from a Nextcloud Deck card.
+
+    For ``type="file"`` attachments this removes the share linking the
+    file to the card. The underlying file in the user's Files is left
+    untouched. For ``type="deck_file"`` blobs the binary is deleted from
+    Deck's storage.
+
+    Args:
+        board_id: The ID of the board
+        stack_id: The ID of the stack
+        card_id: The ID of the card
+        attachment_id: The ID of the attachment to delete
+    """
+    client = await get_client(ctx)
+    await client.deck.delete_attachment(board_id, stack_id, card_id, attachment_id)
+    return AttachmentOperationResponse(
+        success=True,
+        message="Attachment deleted successfully",
+        card_id=card_id,
+        attachment_id=attachment_id,
+    )
+
+
+def configure_deck_tools(mcp: MCPServer):
+    """Configure Nextcloud Deck tools and resources for the MCP server."""
+
+    # Resources
+    @mcp.resource("nc://Deck/boards")
+    async def deck_boards_resource():
+        """List all Nextcloud Deck boards.
+
+        DEPRECATED: use the ``deck_get_boards`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        boards = await client.deck.get_boards()
+        return [board.model_dump() for board in boards]
+
+    @mcp.resource("nc://Deck/boards/{board_id}")
+    async def deck_board_resource(board_id: int):
+        """Get details of a specific Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_board`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        board = await client.deck.get_board(board_id)
+        return board.model_dump()
+
+    @mcp.resource("nc://Deck/boards/{board_id}/stacks")
+    async def deck_stacks_resource(board_id: int):
+        """List all stacks in a Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_stacks`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        stacks = await client.deck.get_stacks(board_id)
+        return [stack.model_dump() for stack in stacks]
+
+    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
+    async def deck_stack_resource(board_id: int, stack_id: int):
+        """Get details of a specific Nextcloud Deck stack.
+
+        DEPRECATED: use the ``deck_get_stack`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        stack = await client.deck.get_stack(board_id, stack_id)
+        return stack.model_dump()
+
+    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
+    async def deck_cards_resource(board_id: int, stack_id: int):
+        """List all cards in a Nextcloud Deck stack.
+
+        DEPRECATED: use the ``deck_get_cards`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        stack = await client.deck.get_stack(board_id, stack_id)
+        if stack.cards:
+            return [card.model_dump() for card in stack.cards]
+        return []
+
+    @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
+    async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
+        """Get details of a specific Nextcloud Deck card.
+
+        DEPRECATED: use the ``deck_get_card`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        card = await client.deck.get_card(board_id, stack_id, card_id)
+        return card.model_dump()
+
+    @mcp.resource("nc://Deck/boards/{board_id}/labels")
+    async def deck_labels_resource(board_id: int):
+        """List all labels in a Nextcloud Deck board.
+
+        DEPRECATED: use the ``deck_get_labels`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        board = await client.deck.get_board(board_id)
+        return [label.model_dump() for label in (board.labels or [])]
+
+    @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
+    async def deck_label_resource(board_id: int, label_id: int):
+        """Get details of a specific Nextcloud Deck label.
+
+        DEPRECATED: use the ``deck_get_label`` tool instead.
+        """
+        ctx = current_context(mcp)
+        client = await get_client(ctx)
+        label = await client.deck.get_label(board_id, label_id)
+        return label.model_dump()
+
+    # Read Tools (converted from resources)
+
+    mcp.tool(
+        title="List Deck Boards",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_boards)
+
+    mcp.tool(
+        title="Get Deck Board",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_board)
+
+    mcp.tool(
+        title="List Deck Stacks",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_stacks)
+
+    mcp.tool(
+        title="Get Deck Stack",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_stack)
+
+    mcp.tool(
+        title="List Archived Deck Stacks",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_archived_stacks)
+
+    mcp.tool(
+        title="List Deck Cards",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_cards)
+
+    mcp.tool(
+        title="Get Deck Board Overview",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_board_overview)
+
+    mcp.tool(
+        title="Get Deck Card",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_card)
+
+    mcp.tool(
+        title="List Deck Labels",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_labels)
+
+    mcp.tool(
+        title="Get Deck Label",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_label)
+
+    # Create/Update/Delete Tools
+
+    mcp.tool(
+        title="Create Deck Board",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_create_board)
+
+    # Stack Tools
+
+    mcp.tool(
+        title="Create Deck Stack",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_create_stack)
+
+    mcp.tool(
+        title="Update Deck Stack",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_update_stack)
+
+    mcp.tool(
+        title="Delete Deck Stack",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_delete_stack)
+
+    # Card Tools
+    mcp.tool(
+        title="Create Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_create_card)
+
+    mcp.tool(
+        title="Update Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_update_card)
+
+    mcp.tool(
+        title="Delete Deck Card",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_delete_card)
+
+    mcp.tool(
+        title="Archive Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_archive_card)
+
+    mcp.tool(
+        title="Unarchive Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_unarchive_card)
+
+    mcp.tool(
+        title="Reorder Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_reorder_card)
+
+    mcp.tool(
+        title="Move Deck Card to Another Board",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_move_card_to_board)
+
+    # Label Tools
+    mcp.tool(
+        title="Create Deck Label",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_create_label)
+
+    mcp.tool(
+        title="Update Deck Label",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_update_label)
+
+    mcp.tool(
+        title="Delete Deck Label",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_delete_label)
+
+    # Card-Label Assignment Tools
+    mcp.tool(
+        title="Assign Label to Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_assign_label_to_card)
+
+    mcp.tool(
+        title="Remove Label from Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
+    )(deck_remove_label_from_card)
+
+    # Card-User Assignment Tools
+    mcp.tool(
+        title="Assign User to Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_assign_user_to_card)
+
+    mcp.tool(
+        title="Unassign User from Deck Card",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_unassign_user_from_card)
+
+    # Card Dependency Tools
+    mcp.tool(
+        title="Add Dependent Card to Deck Card",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_assign_dependent_card)
+
+    mcp.tool(
+        title="Remove Dependent Card from Deck Card",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_remove_dependent_card)
+
+    # Card Comment Tools
+
+    mcp.tool(
+        title="List Deck Card Comments",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_get_card_comments)
+
+    mcp.tool(
+        title="Create Deck Card Comment",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_create_card_comment)
+
+    mcp.tool(
+        title="Update Deck Card Comment",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_update_card_comment)
+
+    mcp.tool(
+        title="Delete Deck Card Comment",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )(deck_delete_card_comment)
+
+    mcp.tool(
         title="Attach File to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write", "files.read")
-    @instrument_tool
-    async def deck_attach_file(
-        ctx: Context, card_id: int, path: str
-    ) -> AttachFileResponse:
-        """Attach an existing Nextcloud file to a Deck card without copying.
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_attach_file)
 
-        Creates a share of ``path`` with the card (``shareType=12``,
-        ``shareWith=<card_id>``). The file stays in its original location.
-        Clicking the attachment in the Deck UI opens the file in place.
-
-        Generic over the user's Files: works for any file the caller can
-        read — markdown notes, PDFs, images, spreadsheets, etc. Use
-        :func:`deck_attach_note` if you have a Notes-app note ID and want
-        the path resolved automatically. Calling twice with the same
-        ``path`` creates two distinct shares — caller is responsible for
-        de-duping.
-
-        Args:
-            card_id: The ID of the Deck card to attach to
-            path: Path to the file in the user's Nextcloud Files (must start
-                with "/", e.g. "/Documents/spec.pdf" or "/Notes/My Note.md")
-        """
-        if not path.startswith("/"):
-            raise ValueError(
-                f"path must start with '/', got: {path!r} "
-                "(paths are relative to the user's Files root)"
-            )
-        client = await get_client(ctx)
-        share = await client.sharing.create_share(
-            path=path,
-            share_with=str(card_id),
-            share_type=_SHARE_TYPE_DECK,
-            permissions=1,
-        )
-        return AttachFileResponse(
-            attachment_id=int(share["id"]),
-            card_id=card_id,
-            path=path,
-        )
-
-    @mcp.tool(
+    mcp.tool(
         title="Attach Note to Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
-    )
-    @require_scopes("deck.write", "files.read", "notes.read")
-    @instrument_tool
-    async def deck_attach_note(
-        ctx: Context, card_id: int, note_id: int
-    ) -> AttachFileResponse:
-        """Attach a Nextcloud Note to a Deck card without copying.
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )(deck_attach_note)
 
-        Convenience wrapper: looks up the note's filesystem path from the
-        Notes app settings + note metadata, then shares the file with the
-        card (same mechanism as :func:`deck_attach_file`). The note remains
-        editable in the Notes app. The card just shows a clickable link to
-        it.
-
-        Path is reconstructed as ``<notes_folder>/<category>/<title>.md``.
-        If the note's title contains characters that the Notes app sanitises
-        differently (rare), use :func:`deck_attach_file` with the explicit
-        path instead.
-
-        Args:
-            card_id: The ID of the Deck card to attach to
-            note_id: The ID of the Note to attach
-        """
-        client = await get_client(ctx)
-        path = await _resolve_note_attach_path(client, note_id)
-        share = await client.sharing.create_share(
-            path=path,
-            share_with=str(card_id),
-            share_type=_SHARE_TYPE_DECK,
-            permissions=1,
-        )
-        return AttachFileResponse(
-            attachment_id=int(share["id"]),
-            card_id=card_id,
-            path=path,
-        )
-
-    @mcp.tool(
+    mcp.tool(
         title="List Deck Card Attachments",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("deck.read")
-    @instrument_tool
-    async def deck_list_attachments(
-        ctx: Context, board_id: int, stack_id: int, card_id: int
-    ) -> ListAttachmentsResponse:
-        """List attachments on a Nextcloud Deck card.
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(deck_list_attachments)
 
-        Returns both shared-file attachments (``type="file"``, created via
-        :func:`deck_attach_file` / :func:`deck_attach_note`) and uploaded
-        binary attachments (``type="deck_file"``).
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-        """
-        client = await get_client(ctx)
-        attachments = await client.deck.get_attachments(board_id, stack_id, card_id)
-        return ListAttachmentsResponse(results=attachments, count=len(attachments))
-
-    @mcp.tool(
+    mcp.tool(
         title="Delete Deck Card Attachment",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
-    )
-    @require_scopes("deck.write")
-    @instrument_tool
-    async def deck_delete_attachment(
-        ctx: Context,
-        board_id: int,
-        stack_id: int,
-        card_id: int,
-        attachment_id: int,
-    ) -> AttachmentOperationResponse:
-        """Delete an attachment from a Nextcloud Deck card.
-
-        For ``type="file"`` attachments this removes the share linking the
-        file to the card. The underlying file in the user's Files is left
-        untouched. For ``type="deck_file"`` blobs the binary is deleted from
-        Deck's storage.
-
-        Args:
-            board_id: The ID of the board
-            stack_id: The ID of the stack
-            card_id: The ID of the card
-            attachment_id: The ID of the attachment to delete
-        """
-        client = await get_client(ctx)
-        await client.deck.delete_attachment(board_id, stack_id, card_id, attachment_id)
-        return AttachmentOperationResponse(
-            success=True,
-            message="Attachment deleted successfully",
-            card_id=card_id,
-            attachment_id=attachment_id,
-        )
+    )(deck_delete_attachment)

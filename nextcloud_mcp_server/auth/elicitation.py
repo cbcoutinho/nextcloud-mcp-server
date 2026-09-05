@@ -7,7 +7,8 @@ when the client supports it, or falling back to returning the URL in a message.
 import logging
 from typing import Any
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
+from mcp.shared.exceptions import NoBackChannelError
 from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
@@ -77,11 +78,11 @@ async def _run_elicit(
     ``mcp_elicitation_total`` metric.
 
     Every fallback here is deliberately silent to the caller — the point is to
-    degrade rather than fail — which is exactly why each one is counted. When
-    the MCP SDK moves to protocol 2026-07-28 the back-channel disappears and
-    elicitation starts landing in the generic ``reason="error"`` branch (or a
-    dedicated ``"no_back_channel"`` one, once that exception exists to catch);
-    without these counters that transition is invisible.
+    degrade rather than fail — which is exactly why each one is counted. On
+    protocol 2026-07-28 there is no back-channel and no server-initiated
+    request, so ``ctx.elicit()`` cannot run at all; that lands in
+    ``reason="no_back_channel"``. Watching that counter rise against
+    ``"accepted"`` is how the era transition becomes visible.
     """
     if not hasattr(ctx, "elicit"):
         logger.debug(
@@ -93,6 +94,17 @@ async def _run_elicit(
 
     try:
         result = await ctx.elicit(message=message, schema=schema)
+    except NoBackChannelError:
+        # 2026-07-28 has no server-initiated requests, so ctx.elicit() cannot
+        # reach the client at all (also true of a legacy session against a
+        # stateless_http / json_response server). The login URL still travels in
+        # the returned message, which is the whole point of this fallback.
+        logger.debug(
+            "No back-channel on this connection — message_only fallback (%s)",
+            prompt,
+        )
+        record_elicitation(prompt, "message_only", "no_back_channel")
+        return "message_only", None
     except NotImplementedError:
         logger.debug(
             "Elicitation not supported by client — message_only fallback (%s)",

@@ -5,7 +5,7 @@ already built and fills in each linkable item's ``url`` field in place; nothing
 else about the tool changes, and it still returns the same ``BaseResponse`` model.
 
 The links live in the response body rather than in the result's ``_meta`` because
-``_meta`` is dropped by every MCP client today, whereas FastMCP serialises the
+``_meta`` is dropped by every MCP client today, whereas MCPServer serialises the
 model into both ``content`` and ``structuredContent``. See
 ``docs/ADR-035-tool-response-deep-links.md``.
 

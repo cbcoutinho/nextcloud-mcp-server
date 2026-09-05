@@ -51,7 +51,7 @@ class SessionAuthBackend(AuthenticationBackend):
         """Authenticate the request based on session cookie or BasicAuth mode.
 
         This backend is only applied to browser routes (/user/*) via a separate
-        Starlette app mount. FastMCP routes use their own OAuth Bearer token
+        Starlette app mount. MCPServer routes use their own OAuth Bearer token
         authentication.
 
         Args:

@@ -88,9 +88,9 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
     templates = await nc_mcp_client.list_resource_templates()
     logger.info("\nAvailable resource templates:")
     template_uris = []
-    for template in templates.resourceTemplates:
-        logger.info("  - %s", template.uriTemplate)
-        template_uris.append(template.uriTemplate)
+    for template in templates.resource_templates:
+        logger.info("  - %s", template.uri_template)
+        template_uris.append(template.uri_template)
 
     # Verify expected resource templates
     # Note: Notes attachments are now handled via tools, not resource templates
@@ -150,7 +150,7 @@ async def test_mcp_notes_crud_workflow(
             {"title": test_title, "content": test_content, "category": test_category},
         )
 
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP note creation failed: {create_result.content}"
         )
         created_note = create_result.content[0].text
@@ -199,7 +199,7 @@ async def test_mcp_notes_crud_workflow(
             },
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP note update failed: {update_result.content}"
         )
 
@@ -224,7 +224,7 @@ async def test_mcp_notes_crud_workflow(
             "nc_notes_append_content", {"note_id": note_id, "content": append_content}
         )
 
-        assert append_result.isError is False, (
+        assert append_result.is_error is False, (
             f"MCP note append failed: {append_result.content}"
         )
 
@@ -247,7 +247,7 @@ async def test_mcp_notes_crud_workflow(
             "nc_notes_search_notes", {"query": unique_suffix}
         )
 
-        assert search_result.isError is False, (
+        assert search_result.is_error is False, (
             f"MCP note search failed: {search_result.content}"
         )
         search_notes_text = search_result.content[0].text
@@ -288,7 +288,7 @@ async def test_mcp_notes_crud_workflow(
             "nc_notes_delete_note", {"note_id": note_id}
         )
 
-        assert delete_result.isError is False, (
+        assert delete_result.is_error is False, (
             f"MCP note deletion failed: {delete_result.content}"
         )
 
@@ -332,7 +332,7 @@ async def test_mcp_notes_etag_conflict(
             {"title": test_title, "content": test_content, "category": test_category},
         )
 
-        assert create_result.isError is False
+        assert create_result.is_error is False
         note_data = json.loads(create_result.content[0].text)
         note_id = note_data["id"]
         original_etag = note_data["etag"]
@@ -350,7 +350,7 @@ async def test_mcp_notes_etag_conflict(
             },
         )
 
-        assert first_update_result.isError is False
+        assert first_update_result.is_error is False
         updated_data = json.loads(first_update_result.content[0].text)
         new_etag = updated_data["etag"]
         assert new_etag != original_etag, "ETag should have changed after update"
@@ -369,8 +369,8 @@ async def test_mcp_notes_etag_conflict(
         )
 
         # 4. Verify the update was rejected with a 412 error
-        # With McpError, tools now return proper error responses
-        assert conflict_result.isError is True, "Update with stale ETag should fail"
+        # With MCPError, tools now return proper error responses
+        assert conflict_result.is_error is True, "Update with stale ETag should fail"
         response_content = conflict_result.content[0].text
         assert "modified by someone else" in response_content, (
             f"Expected conflict error message, got: {response_content}"
@@ -406,7 +406,7 @@ async def test_mcp_webdav_workflow(
             "nc_webdav_create_directory", {"path": test_dir}
         )
 
-        assert create_dir_result.isError is False, (
+        assert create_dir_result.is_error is False, (
             f"MCP directory creation failed: {create_dir_result.content}"
         )
 
@@ -426,7 +426,7 @@ async def test_mcp_webdav_workflow(
             },
         )
 
-        assert write_result.isError is False, (
+        assert write_result.is_error is False, (
             f"MCP file write failed: {write_result.content}"
         )
         # WriteFileResponse (BaseResponse) structured fields, not a raw dict.
@@ -452,7 +452,7 @@ async def test_mcp_webdav_workflow(
             "nc_webdav_read_file", {"path": test_file_path}
         )
 
-        assert read_result.isError is False, (
+        assert read_result.is_error is False, (
             f"MCP file read failed: {read_result.content}"
         )
         read_data = json.loads(read_result.content[0].text)
@@ -476,7 +476,7 @@ async def test_mcp_webdav_workflow(
             "nc_webdav_list_directory", {"path": test_dir}
         )
 
-        assert list_result.isError is False, (
+        assert list_result.is_error is False, (
             f"MCP directory listing failed: {list_result.content}"
         )
         listing_text = list_result.content[0].text
@@ -582,7 +582,7 @@ async def test_mcp_calendar_workflow(
             "nc_calendar_list_calendars", {}
         )
 
-        assert calendars_result.isError is False, (
+        assert calendars_result.is_error is False, (
             f"MCP calendar listing failed: {calendars_result.content}"
         )
 
@@ -639,7 +639,7 @@ async def test_mcp_calendar_workflow(
             "nc_calendar_create_event", event_data
         )
 
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP event creation failed: {create_result.content}"
         )
 
@@ -662,7 +662,7 @@ async def test_mcp_calendar_workflow(
             {"calendar_name": calendar_name, "event_uid": event_uid},
         )
 
-        assert get_result.isError is False, (
+        assert get_result.is_error is False, (
             f"MCP event get failed: {get_result.content}"
         )
 
@@ -692,7 +692,7 @@ async def test_mcp_calendar_workflow(
             "nc_calendar_list_events", list_events_data
         )
 
-        assert list_result.isError is False, (
+        assert list_result.is_error is False, (
             f"MCP list events failed: {list_result.content}"
         )
 
@@ -735,7 +735,7 @@ async def test_mcp_calendar_workflow(
             "nc_calendar_list_events", all_calendars_data
         )
 
-        assert all_list_result.isError is False, (
+        assert all_list_result.is_error is False, (
             f"MCP list all events failed: {all_list_result.content}"
         )
 
@@ -767,7 +767,7 @@ async def test_mcp_calendar_workflow(
             "nc_calendar_update_event", update_data
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP event update failed: {update_result.content}"
         )
 
@@ -786,7 +786,7 @@ async def test_mcp_calendar_workflow(
             {"calendar_name": calendar_name, "days_ahead": 7, "limit": 10},
         )
 
-        assert upcoming_result.isError is False, (
+        assert upcoming_result.is_error is False, (
             f"MCP upcoming events failed: {upcoming_result.content}"
         )
 
@@ -804,7 +804,7 @@ async def test_mcp_calendar_workflow(
             {"calendar_name": calendar_name, "event_uid": event_uid},
         )
 
-        assert delete_result.isError is False, (
+        assert delete_result.is_error is False, (
             f"MCP event deletion failed: {delete_result.content}"
         )
 

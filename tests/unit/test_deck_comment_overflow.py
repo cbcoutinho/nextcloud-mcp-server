@@ -1,6 +1,6 @@
 """Tool-layer tests for Deck comment length handling.
 
-These register the Deck tools on a fresh ``FastMCP`` and invoke each tool's
+These register the Deck tools on a fresh ``MCPServer`` and invoke each tool's
 underlying function directly, mocking the client. They cover the wiring the
 splitter's own unit tests cannot: how many POSTs happen, what ``parent_id``
 each one carries, what is *not* called on failure, and what the error text
@@ -17,8 +17,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.models.deck import DeckComment
 from nextcloud_mcp_server.server import deck as deck_module
@@ -49,8 +50,8 @@ def basicauth_mode():
 
 @pytest.fixture
 def deck_tools() -> dict:
-    """Register the Deck tools on a fresh FastMCP and return them by name."""
-    mcp = FastMCP(name="test-deck-tools")
+    """Register the Deck tools on a fresh MCPServer and return them by name."""
+    mcp = MCPServer(name="test-deck-tools")
     configure_deck_tools(mcp)
     return {t.name: t for t in mcp._tool_manager.list_tools()}
 
@@ -256,7 +257,7 @@ async def test_message_needing_more_than_the_cap_posts_nothing(
 
     message = long_message(_MAX_SPLIT_PARTS + 4)
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ToolError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message, overflow="split")
 
     assert f"{_MAX_SPLIT_PARTS}-part limit" in str(excinfo.value)
@@ -279,7 +280,7 @@ async def test_error_mode_does_not_promise_a_split_that_would_be_rejected(
     patch_get_client(fake_client)
     message = long_message(_MAX_SPLIT_PARTS + 5)
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ToolError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message)
 
     text = str(excinfo.value)
@@ -288,7 +289,7 @@ async def test_error_mode_does_not_promise_a_split_that_would_be_rejected(
     assert "nc_notes_create_note" in text
 
     # And the split mode rejects the same message, for the same stated reason.
-    with pytest.raises(ValueError, match="will not work either"):
+    with pytest.raises(ToolError, match="will not work either"):
         await create_comment(ctx=ctx, card_id=42, message=message, overflow="split")
     fake_client.deck.create_comment.assert_not_awaited()
 
@@ -305,7 +306,7 @@ async def test_enormous_message_is_rejected_without_running_the_splitter(
     patch_get_client(fake_client)
     spy = mocker.spy(deck_module, "split_message")
 
-    with pytest.raises(ValueError, match="will not work either"):
+    with pytest.raises(ToolError, match="will not work either"):
         await create_comment(
             ctx=ctx, card_id=42, message="word " * 400_000, overflow=overflow
         )
@@ -321,7 +322,7 @@ async def test_500_on_delete_is_not_blamed_on_message_length(
     patch_get_client(fake_client)
     fake_client.deck.delete_comment.side_effect = http_error(500)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await delete_comment(ctx=ctx, card_id=42, comment_id=7)
 
     text = str(excinfo.value)
@@ -343,7 +344,7 @@ async def test_partial_split_failure_reports_posted_ids_and_does_not_roll_back(
 
     message = long_message(3)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message, overflow="split")
 
     message = str(excinfo.value)
@@ -366,7 +367,7 @@ async def test_failure_on_the_first_part_reports_that_nothing_was_posted(
 
     message = long_message(3)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message, overflow="split")
 
     message = str(excinfo.value)
@@ -384,7 +385,7 @@ async def test_error_mode_posts_nothing_and_names_the_remedy(
     patch_get_client(fake_client)
     message = "x" * 3412
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ToolError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message)
 
     text = str(excinfo.value)
@@ -403,7 +404,7 @@ async def test_error_is_the_default_overflow_mode(
 
     message = long_message(3)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await create_comment(ctx=ctx, card_id=42, message=message)
 
     fake_client.deck.create_comment.assert_not_awaited()
@@ -456,7 +457,7 @@ async def test_blank_message_is_rejected_in_both_modes(
 ):
     patch_get_client(fake_client)
 
-    with pytest.raises(ValueError, match="empty or whitespace-only"):
+    with pytest.raises(ToolError, match="empty or whitespace-only"):
         await create_comment(ctx=ctx, card_id=42, message=message, overflow=overflow)
 
     fake_client.deck.create_comment.assert_not_awaited()
@@ -476,7 +477,7 @@ async def test_masked_500_on_update_names_the_length_limit(
     patch_get_client(fake_client)
     fake_client.deck.update_comment.side_effect = http_error(500)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await update_comment(ctx=ctx, card_id=42, comment_id=7, message="still short")
 
     text = str(excinfo.value)
@@ -497,7 +498,7 @@ async def test_403_on_listing_blames_board_access_not_authorship(
     patch_get_client(fake_client)
     fake_client.deck.get_comments.side_effect = http_error(403)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await list_comments(ctx=ctx, card_id=42)
 
     text = str(excinfo.value)
@@ -513,7 +514,7 @@ async def test_403_on_creating_blames_board_write_access_not_authorship(
     patch_get_client(fake_client)
     fake_client.deck.create_comment.side_effect = http_error(403)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message="hello")
 
     text = str(excinfo.value)
@@ -530,7 +531,7 @@ async def test_403_on_update_explains_the_author_restriction(
         403, ocs_message="Only authors are allowed to edit their comment."
     )
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await update_comment(ctx=ctx, card_id=42, comment_id=7, message="edit")
 
     text = str(excinfo.value)
@@ -544,7 +545,7 @@ async def test_403_on_delete_explains_the_author_restriction(
     patch_get_client(fake_client)
     fake_client.deck.delete_comment.side_effect = http_error(403)
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await delete_comment(ctx=ctx, card_id=42, comment_id=7)
 
     text = str(excinfo.value)
@@ -558,7 +559,7 @@ async def test_404_on_listing_comments_is_mapped(
     patch_get_client(fake_client)
     fake_client.deck.get_comments.side_effect = http_error(404)
 
-    with pytest.raises(McpError, match="does not exist, or you lack access"):
+    with pytest.raises(MCPError, match="does not exist, or you lack access"):
         await list_comments(ctx=ctx, card_id=42)
 
 
@@ -571,7 +572,7 @@ async def test_400_from_deck_surfaces_the_server_reason(
         400, ocs_message="Message exceeds allowed character limit of 1000"
     )
 
-    with pytest.raises(McpError) as excinfo:
+    with pytest.raises(MCPError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message="short enough")
 
     text = str(excinfo.value)
@@ -585,5 +586,5 @@ async def test_network_error_is_reported_as_such(
     patch_get_client(fake_client)
     fake_client.deck.create_comment.side_effect = httpx.ConnectError("no route")
 
-    with pytest.raises(McpError, match="Network error creating a comment"):
+    with pytest.raises(MCPError, match="Network error creating a comment"):
         await create_comment(ctx=ctx, card_id=42, message="hello")

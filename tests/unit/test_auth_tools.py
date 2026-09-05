@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.fernet import Fernet
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.auth.login_flow import LoginFlowPollResult
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
@@ -26,7 +26,7 @@ def _capture_registered_tools() -> dict:
 
     ``register_auth_tools`` only uses ``@mcp.tool(...)`` decorators, so a stub
     whose ``tool()`` returns an identity decorator captures the closures without
-    a real FastMCP instance.
+    a real MCPServer instance.
     """
     captured: dict = {}
 
@@ -38,7 +38,7 @@ def _capture_registered_tools() -> dict:
 
             return deco
 
-    register_auth_tools(cast(FastMCP, _StubMCP()))
+    register_auth_tools(cast(MCPServer, _StubMCP()))
     return captured
 
 

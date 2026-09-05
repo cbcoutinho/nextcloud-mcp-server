@@ -186,7 +186,7 @@ async def test_semantic_tool_callable_after_default_provisioning(
     """
     result = await nc_mcp_login_flow_client.call_tool("nc_get_vector_sync_status", {})
 
-    assert not result.isError, (
+    assert not result.is_error, (
         "nc_get_vector_sync_status was denied for a default-provisioned user: "
         f"{_tool_text(result)}"
     )
@@ -220,7 +220,7 @@ async def test_token_scopes_enforced_on_tool_call(
         },
     )
 
-    assert result.isError, (
+    assert result.is_error, (
         "nc_notes_create_note succeeded with a read-only token — the token "
         "layer is not enforcing on the tools/call path"
     )
@@ -270,7 +270,7 @@ async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
                 "category": "testing",
             },
         )
-        assert write_result.isError, (
+        assert write_result.is_error, (
             "nc_notes_create_note succeeded with stored scopes ['notes.read'] — "
             "@require_scopes is not enforcing on the tools/call path"
         )
@@ -282,7 +282,7 @@ async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
         read_result = await session.call_tool(
             "nc_notes_search_notes", {"query": "scope-enforcement-probe"}
         )
-        assert not read_result.isError, (
+        assert not read_result.is_error, (
             "notes.read was granted but the read tool was refused: "
             f"{_tool_text(read_result)}"
         )

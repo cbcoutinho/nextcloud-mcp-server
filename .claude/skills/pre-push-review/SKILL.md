@@ -134,7 +134,7 @@ the review is purely negative.
 | Label | Meaning | Examples |
 |---|---|---|
 | 🔴 **blocking** | Must fix before push. Real bug, security issue, or violates an ADR/CLAUDE.md mandate. | Cache-hit bypass on auth gate; raw `List[Dict]` from MCP tool; missing `await` on async call; HMAC compare with strings instead of bytes. |
-| 🟡 **important** | Should fix. Not a bug today but a footgun that has caused review-rounds before. | Field description mismatches value; unbounded fan-out without semaphore; `int()` cast inside catch-all `except`; missing `openWorldHint=True`. |
+| 🟡 **important** | Should fix. Not a bug today but a footgun that has caused review-rounds before. | Field description mismatches value; unbounded fan-out without semaphore; `int()` cast inside catch-all `except`; missing `open_world_hint=True`. |
 | 🟢 **nit** | Polish. Not blocking, would be nice. | `Optional[X]` when surrounding file uses `X | None`; redundant regex anchors; missing test docstring; pluralization in error messages. |
 | 💡 **suggestion** | Alternative approach to consider. No fix expected. | "Could use `frozenset` here for O(1) lookup"; "Could centralise this rewrite in `_make_request`". |
 | 🎉 **praise** | Notable good pattern. Worth calling out for visibility. | Cache-hit AND cache-miss paths both enforce the gate; CI-guard test for registry exhaustiveness; explicit `*` keyword-only separator. |
@@ -184,7 +184,7 @@ PRs #733, #734, #735, #736, #737, #741, #745, #746, #747, #750.
 - **D1** — Public response models narrow, internal types may widen: if `SearchResult.id: int | str` for forward-compat, `SemanticSearchResult.id: int` and convert at the boundary with an explicit cast that fails loudly. (#750-r3)
 - **D2** — Field descriptions match the value: a field described as "unique documents" must hold a unique-document count, not a chunk count. Watch for `len(results)` assigned to a field whose docstring implies dedup. (#750-r1, #735)
 - **D3** — Symmetry between related fields: `verified_count` and `dropped_count` should count at the same granularity. (#750-r6)
-- **D4** — MCP tool annotations (ADR-017): tools that hit Nextcloud have `openWorldHint=True`. Read-only ops have `readOnlyHint=True`. Destructive ops have `destructiveHint=True` + `idempotentHint=True`. Create ops have `idempotentHint=False`. Update ops have `idempotentHint=False` (etag changes mean different inputs). (#741)
+- **D4** — MCP tool annotations (ADR-017): tools that hit Nextcloud have `open_world_hint=True`. Read-only ops have `read_only_hint=True`. Destructive ops have `destructive_hint=True` + `idempotent_hint=True`. Create ops have `idempotent_hint=False`. Update ops have `idempotent_hint=False` (etag changes mean different inputs). (#741)
 - **D5** — Keyword-only separators: use `*` in signatures with multiple optional params of the same/related types, e.g. `def __init__(self, *, password=None, token=None)` to prevent positional misuse. (#734)
 - **D6** — Defaults match documented constraints: if the docstring says "max 1000 characters", add `Field(max_length=1000)` — don't rely on the server returning 400. (#737)
 - **D7** — Create/update tools return `*Response` wrappers, not raw models: any new `@mcp.tool` returning a raw `BaseModel` (not `BaseResponse` subclass) is a finding. (#737, CLAUDE.md MCP Response Patterns)
@@ -229,7 +229,7 @@ PRs #733, #734, #735, #736, #737, #741, #745, #746, #747, #750.
 
 ### I. MCP response patterns (CLAUDE.md)
 
-- **I1** — No raw `List[Dict]` from MCP tools: tools return Pydantic models inheriting from `BaseResponse`. FastMCP mangles raw lists into dicts with numeric string keys. **🔴 blocking when violated.**
+- **I1** — No raw `List[Dict]` from MCP tools: tools return Pydantic models inheriting from `BaseResponse`. MCPServer mangles raw lists into dicts with numeric string keys. **🔴 blocking when violated.**
 - **I2** — Co-author trailer in commits: each AI-assisted commit ends with `Co-Authored-By: Claude ...`. Missing trailer on AI-touched commits is a 🟢 note.
 
 ### J. Security & input validation

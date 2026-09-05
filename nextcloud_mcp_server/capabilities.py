@@ -32,11 +32,12 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from packaging.version import InvalidVersion, Version
 
 from nextcloud_mcp_server.config import cfg_bool
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.request_context import current_context
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +300,7 @@ def _tool_gate(mcp: Any, name: str) -> tuple[str, str | None, str | None] | None
 
 async def _gate_client(mcp: Any) -> tuple[_CapabilitiesClientProtocol, str]:
     """An authenticated client (+ user id) for the request being served."""
-    client = await get_client(mcp.get_context())
+    client = await get_client(current_context(mcp))
     return client, client.username
 
 

@@ -39,7 +39,7 @@ async def test_mcp_todo_complete_workflow(
                 "categories": "testing,mcp",
             },
         )
-        assert create_result.isError is False
+        assert create_result.is_error is False
 
         # Extract UID from the result
         result_data = create_result.content[0].text
@@ -62,7 +62,7 @@ async def test_mcp_todo_complete_workflow(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name},
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
 
         list_data = json.loads(list_result.content[0].text)
         assert "todos" in list_data
@@ -81,7 +81,7 @@ async def test_mcp_todo_complete_workflow(
                 "percent_complete": 50,
             },
         )
-        assert update_result.isError is False
+        assert update_result.is_error is False
 
         # 5. Verify update via client
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -97,7 +97,7 @@ async def test_mcp_todo_complete_workflow(
             "nc_calendar_delete_todo",
             {"calendar_name": calendar_name, "todo_uid": todo_uid},
         )
-        assert delete_result.isError is False
+        assert delete_result.is_error is False
 
         # 7. Verify deletion via client
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -156,7 +156,7 @@ async def test_mcp_list_todos_with_filters(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name, "status": "NEEDS-ACTION"},
         )
-        assert result.isError is False
+        assert result.is_error is False
 
         data = json.loads(result.content[0].text)
         needs_action_todos = [t for t in data["todos"] if t["uid"] in created_uids]
@@ -168,7 +168,7 @@ async def test_mcp_list_todos_with_filters(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name, "min_priority": 1},
         )
-        assert result.isError is False
+        assert result.is_error is False
         data = json.loads(result.content[0].text)
         high_priority_todos = [t for t in data["todos"] if t["uid"] in created_uids]
         assert len(high_priority_todos) >= 1  # At least the priority 1 todo
@@ -179,7 +179,7 @@ async def test_mcp_list_todos_with_filters(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name, "categories": "work"},
         )
-        assert result.isError is False
+        assert result.is_error is False
         data = json.loads(result.content[0].text)
         work_todos = [t for t in data["todos"] if t["uid"] in created_uids]
         assert len(work_todos) >= 2  # Two todos with "work" category
@@ -190,7 +190,7 @@ async def test_mcp_list_todos_with_filters(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name, "summary_contains": "Priority"},
         )
-        assert result.isError is False
+        assert result.is_error is False
         data = json.loads(result.content[0].text)
         priority_todos = [t for t in data["todos"] if t["uid"] in created_uids]
         assert len(priority_todos) == 2  # Two have "Priority" in summary (High, Low)
@@ -251,7 +251,7 @@ async def test_mcp_search_todos_across_calendars(
             "nc_calendar_search_todos",
             {},
         )
-        assert search_result.isError is False
+        assert search_result.is_error is False
 
         data = json.loads(search_result.content[0].text)
         assert "todos" in data
@@ -275,7 +275,7 @@ async def test_mcp_search_todos_across_calendars(
             "nc_calendar_search_todos",
             {"status": "IN-PROCESS"},
         )
-        assert search_result.isError is False
+        assert search_result.is_error is False
         data = json.loads(search_result.content[0].text)
         in_process_todos = [
             t for t in data["todos"] if t["uid"] in [uid for _, uid in created_uids]
@@ -320,7 +320,7 @@ async def test_mcp_todo_status_transitions(
                 "percent_complete": 25,
             },
         )
-        assert update_result.isError is False
+        assert update_result.is_error is False
 
         todos = await nc_client.calendar.list_todos(calendar_name)
         todo = next(t for t in todos if t["uid"] == todo_uid)
@@ -340,7 +340,7 @@ async def test_mcp_todo_status_transitions(
                 "completed": completed_time,
             },
         )
-        assert update_result.isError is False
+        assert update_result.is_error is False
 
         todos = await nc_client.calendar.list_todos(calendar_name)
         todo = next(t for t in todos if t["uid"] == todo_uid)
@@ -384,7 +384,7 @@ async def test_mcp_todo_with_dates(
                 "due": due_date,
             },
         )
-        assert create_result.isError is False
+        assert create_result.is_error is False
 
         result_data = json.loads(create_result.content[0].text)
         todo_uid = result_data["uid"]
@@ -426,7 +426,7 @@ async def test_mcp_todo_categories(
                 "categories": "work,meeting,important,quarterly",
             },
         )
-        assert create_result.isError is False
+        assert create_result.is_error is False
 
         result_data = json.loads(create_result.content[0].text)
         todo_uid = result_data["uid"]
@@ -451,7 +451,7 @@ async def test_mcp_todo_categories(
                 "categories": "updated,new-category",
             },
         )
-        assert update_result.isError is False
+        assert update_result.is_error is False
 
         # Verify updated categories
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -511,7 +511,7 @@ async def test_mcp_todo_href_mismatch(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name},
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
 
         list_data = json.loads(list_result.content[0].text)
         our_todo = next((t for t in list_data["todos"] if t["uid"] == todo_uid), None)
@@ -529,7 +529,7 @@ async def test_mcp_todo_href_mismatch(
             "nc_calendar_delete_todo",
             {"calendar_name": calendar_name, "todo_uid": todo_uid},
         )
-        assert delete_result.isError is False
+        assert delete_result.is_error is False
 
         # Verify it's really gone
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -567,14 +567,14 @@ async def test_mcp_complete_todo_sets_all_three_properties(
             "percent_complete": 25,
         },
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     todo_uid = json.loads(create_result.content[0].text)["uid"]
 
     complete_result = await nc_mcp_client.call_tool(
         "nc_calendar_complete_todo",
         {"calendar_name": calendar_name, "todo_uid": todo_uid},
     )
-    assert complete_result.isError is False
+    assert complete_result.is_error is False
     payload = json.loads(complete_result.content[0].text)
     assert payload["success"] is True
     assert payload["status"] == "COMPLETED"
@@ -599,7 +599,7 @@ async def test_mcp_complete_todo_accepts_explicit_timestamp(
         "nc_calendar_create_todo",
         {"calendar_name": calendar_name, "summary": f"Backdated {unique}"},
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     todo_uid = json.loads(create_result.content[0].text)["uid"]
 
     complete_result = await nc_mcp_client.call_tool(
@@ -610,7 +610,7 @@ async def test_mcp_complete_todo_accepts_explicit_timestamp(
             "completed": "2026-01-01T09:00:00+00:00",
         },
     )
-    assert complete_result.isError is False
+    assert complete_result.is_error is False
     assert (
         json.loads(complete_result.content[0].text)["completed"]
         == "2026-01-01T09:00:00+00:00"
@@ -639,7 +639,7 @@ async def test_stale_etag_refuses_the_write_end_to_end(
             "nc_calendar_create_todo",
             {"calendar_name": calendar_name, "summary": "ETag contention"},
         )
-        assert create_result.isError is False
+        assert create_result.is_error is False
         todo_uid = json.loads(create_result.content[0].text)["uid"]
 
         # Read the ETag the way a caller would.
@@ -668,7 +668,7 @@ async def test_stale_etag_refuses_the_write_end_to_end(
                 "etag": first_etag,
             },
         )
-        assert accepted.isError is False, accepted.content[0].text
+        assert accepted.is_error is False, accepted.content[0].text
         second_etag = json.loads(accepted.content[0].text)["etag"]
         assert second_etag and second_etag != first_etag
 
@@ -682,7 +682,7 @@ async def test_stale_etag_refuses_the_write_end_to_end(
                 "etag": first_etag,
             },
         )
-        assert refused.isError is True
+        assert refused.is_error is True
         assert "nc_calendar_list_todos" in refused.content[0].text
 
         # ...and the refusal really did leave the stored copy alone.

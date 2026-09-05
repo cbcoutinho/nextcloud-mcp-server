@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.capabilities import stamp_required_capability
 
@@ -22,7 +22,7 @@ from .webdav import configure_webdav_tools
 # Used by app.py (HTTP), stdio.py (stdio), and cli.py (--enable-app choices).
 # Semantic search is excluded here because it is a cross-app feature gated
 # by VECTOR_SYNC_ENABLED, not an individual Nextcloud app.
-AVAILABLE_APPS: dict[str, Callable[[FastMCP], None]] = {
+AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "notes": configure_notes_tools,
     "tables": configure_tables_tools,
     "webdav": configure_webdav_tools,
@@ -60,7 +60,7 @@ APP_CAPABILITY_KEY: dict[str, str] = {
 }
 
 
-def configure_app_tools(mcp: FastMCP, app_name: str) -> None:
+def configure_app_tools(mcp: MCPServer, app_name: str) -> None:
     """Register one app's tools, gated on the app being installed for the user.
 
     Used by both transports (app.py, stdio.py) so their tool sets cannot drift.

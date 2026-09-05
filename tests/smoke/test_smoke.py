@@ -42,7 +42,7 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
             "category": "test",
         },
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     data = json.loads(create_result.content[0].text)
     note_id = data["id"]
 
@@ -52,7 +52,7 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
             "nc_notes_get_note",
             arguments={"note_id": note_id},
         )
-        assert get_result.isError is False
+        assert get_result.is_error is False
 
         # Update, using the etag from the read rather than the one the create
         # returned. They are usually equal, but the Notes app can settle a
@@ -71,7 +71,7 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
                 "etag": current["etag"],
             },
         )
-        assert update_result.isError is False
+        assert update_result.is_error is False
 
     finally:
         # Delete
@@ -79,7 +79,7 @@ async def test_notes_crud_smoke(nc_mcp_client, nc_client):
             "nc_notes_delete_note",
             arguments={"note_id": note_id},
         )
-        assert delete_result.isError is False
+        assert delete_result.is_error is False
 
 
 async def test_calendar_basic_smoke(nc_mcp_client):
@@ -89,7 +89,7 @@ async def test_calendar_basic_smoke(nc_mcp_client):
         "nc_calendar_list_calendars",
         arguments={},
     )
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert "calendars" in data
@@ -103,7 +103,7 @@ async def test_webdav_basic_smoke(nc_mcp_client):
         "nc_webdav_list_directory",
         arguments={"path": "/"},
     )
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert "files" in data

@@ -16,8 +16,9 @@ from mcp import types
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server.context import ServerRequestContext
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.observability.metrics import (
     _sanitize_tool_args,
@@ -33,26 +34,42 @@ LOGGER = "nextcloud_mcp_server.observability.metrics"
 
 
 def _wrap(inner, registered=("nc_semantic_search",)):
-    """Wrap ``inner``, with ``registered`` standing in for the tool registry."""
+    """Drive the middleware with ``inner`` as the rest of the chain.
+
+    ``registered`` stands in for the tool registry. mcp 2.x has no
+    ``request_handlers`` dict to patch, so the instrumentation is a middleware
+    and the test calls it the way the dispatcher would.
+    """
     mcp = SimpleNamespace(
-        _mcp_server=SimpleNamespace(request_handlers={types.CallToolRequest: inner}),
+        middleware=[],
         _tool_manager=SimpleNamespace(
             get_tool=lambda name: object() if name in registered else None
         ),
     )
     instrument_call_tool_outcomes(mcp)
-    return mcp._mcp_server.request_handlers[types.CallToolRequest]
+    (middleware,) = mcp.middleware
+
+    async def call(ctx):
+        return await middleware(ctx, inner)
+
+    return call
 
 
-def _request(name: str = "nc_semantic_search", **arguments) -> types.CallToolRequest:
-    return types.CallToolRequest(
+def _request(name: str = "nc_semantic_search", **arguments) -> ServerRequestContext:
+    return ServerRequestContext(
+        # client_params=None is the "before initialize" shape; it makes
+        # record_client_session bow out without touching a real ServerSession.
+        session=SimpleNamespace(client_params=None),
+        lifespan_context=None,
+        protocol_version=types.LATEST_PROTOCOL_VERSION,
         method="tools/call",
-        params=types.CallToolRequestParams(name=name, arguments=arguments),
+        params={"name": name, "arguments": arguments},
+        request_id=1,
     )
 
 
-async def _ok(_req):
-    return types.ServerResult(types.CallToolResult(content=[], isError=False))
+async def _ok(_ctx):
+    return types.CallToolResult(content=[], is_error=False)
 
 
 def _line(caplog):
@@ -78,8 +95,8 @@ class TestToolCallLine:
         assert not hasattr(record, "mcp_tool_requested")
 
     async def test_tool_error_logs_at_warning(self, caplog):
-        async def inner(_req):
-            return types.ServerResult(types.CallToolResult(content=[], isError=True))
+        async def inner(_ctx):
+            return types.CallToolResult(content=[], is_error=True)
 
         with caplog.at_level(logging.INFO, logger=LOGGER):
             await _wrap(inner)(_request())
@@ -89,14 +106,14 @@ class TestToolCallLine:
         assert record.levelno == logging.WARNING
 
     async def test_protocol_error_logs_and_still_raises(self, caplog):
-        async def inner(_req):
-            raise McpError(types.ErrorData(code=types.INTERNAL_ERROR, message="boom"))
+        async def inner(_ctx):
+            raise MCPError(code=types.INTERNAL_ERROR, message="boom")
 
         handler = _wrap(inner)
         request = _request()
 
         with caplog.at_level(logging.INFO, logger=LOGGER):
-            with pytest.raises(McpError):
+            with pytest.raises(MCPError):
                 await handler(request)
 
         record = _line(caplog)
@@ -161,7 +178,7 @@ def test_every_tool_function_is_named_after_the_tool_it_registers():
     ``provision_nextcloud_access`` — which silently split every dashboard that
     joined them. A mismatch is invisible at runtime, so it needs a test.
     """
-    mcp = FastMCP(name="test-tool-names")
+    mcp = MCPServer(name="test-tool-names")
     for app_name in AVAILABLE_APPS:
         configure_app_tools(mcp, app_name)
     register_auth_tools(mcp)

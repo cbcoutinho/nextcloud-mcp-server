@@ -27,7 +27,7 @@ async def test_deck_stack_mcp_tools(
         {"board_id": board_id, "title": stack_title, "order": stack_order},
     )
 
-    assert create_result.isError is False, (
+    assert create_result.is_error is False, (
         f"MCP stack creation failed: {create_result.content}"
     )
     created_stack_response = json.loads(create_result.content[0].text)
@@ -62,7 +62,7 @@ async def test_deck_stack_mcp_tools(
             },
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP stack update failed: {update_result.content}"
         )
         logger.info("Stack updated via MCP tool successfully")
@@ -130,7 +130,7 @@ async def test_deck_card_mcp_tools(
         },
     )
 
-    assert create_result.isError is False, (
+    assert create_result.is_error is False, (
         f"MCP card creation failed: {create_result.content}"
     )
     created_card_response = json.loads(create_result.content[0].text)
@@ -170,7 +170,7 @@ async def test_deck_card_mcp_tools(
             },
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP card update failed: {update_result.content}"
         )
         logger.info("Card updated via MCP tool successfully")
@@ -188,7 +188,7 @@ async def test_deck_card_mcp_tools(
             {"board_id": board_id, "stack_id": stack_id, "card_id": card_id},
         )
 
-        assert archive_result.isError is False, (
+        assert archive_result.is_error is False, (
             f"MCP card archive failed: {archive_result.content}"
         )
         logger.info("Card archived via MCP tool successfully")
@@ -199,7 +199,7 @@ async def test_deck_card_mcp_tools(
             {"board_id": board_id, "stack_id": stack_id, "card_id": card_id},
         )
 
-        assert unarchive_result.isError is False, (
+        assert unarchive_result.is_error is False, (
             f"MCP card unarchive failed: {unarchive_result.content}"
         )
         logger.info("Card unarchived via MCP tool successfully")
@@ -217,7 +217,7 @@ async def test_deck_card_mcp_tools(
             },
         )
 
-        assert reorder_result.isError is False, (
+        assert reorder_result.is_error is False, (
             f"MCP card reorder failed: {reorder_result.content}"
         )
         logger.info("Card reordered via MCP tool successfully")
@@ -253,7 +253,7 @@ async def test_deck_label_mcp_tools(
         {"board_id": board_id, "title": label_title, "color": label_color},
     )
 
-    assert create_result.isError is False, (
+    assert create_result.is_error is False, (
         f"MCP label creation failed: {create_result.content}"
     )
     created_label_response = json.loads(create_result.content[0].text)
@@ -288,7 +288,7 @@ async def test_deck_label_mcp_tools(
             },
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP label update failed: {update_result.content}"
         )
         logger.info("Label updated via MCP tool successfully")
@@ -345,7 +345,7 @@ async def test_deck_card_label_assignment_mcp_tools(
             },
         )
 
-        assert assign_result.isError is False, (
+        assert assign_result.is_error is False, (
             f"MCP label assignment failed: {assign_result.content}"
         )
         logger.info("Label assigned to card via MCP tool successfully")
@@ -369,7 +369,7 @@ async def test_deck_card_label_assignment_mcp_tools(
             },
         )
 
-        assert remove_result.isError is False, (
+        assert remove_result.is_error is False, (
             f"MCP label removal failed: {remove_result.content}"
         )
         logger.info("Label removed from card via MCP tool successfully")
@@ -416,7 +416,7 @@ async def test_deck_card_user_assignment_mcp_tools(
         },
     )
 
-    assert assign_result.isError is False, (
+    assert assign_result.is_error is False, (
         f"MCP user assignment failed: {assign_result.content}"
     )
     logger.info("User assigned to card via MCP tool successfully")
@@ -447,7 +447,7 @@ async def test_deck_card_user_assignment_mcp_tools(
         },
     )
 
-    assert unassign_result.isError is False, (
+    assert unassign_result.is_error is False, (
         f"MCP user unassignment failed: {unassign_result.content}"
     )
     logger.info("User unassigned from card via MCP tool successfully")
@@ -479,7 +479,7 @@ async def test_deck_mcp_tools_error_handling(nc_mcp_client: ClientSession):
         "deck_create_stack",
         {"board_id": non_existent_id, "title": "Should Fail", "order": 1},
     )
-    assert stack_result.isError is True, (
+    assert stack_result.is_error is True, (
         "Expected error for stack creation on non-existent board"
     )
 
@@ -493,7 +493,7 @@ async def test_deck_mcp_tools_error_handling(nc_mcp_client: ClientSession):
             "type": "plain",
         },
     )
-    assert card_result.isError is True, (
+    assert card_result.is_error is True, (
         "Expected error for card creation with non-existent IDs"
     )
 
@@ -502,7 +502,7 @@ async def test_deck_mcp_tools_error_handling(nc_mcp_client: ClientSession):
         "deck_create_label",
         {"board_id": non_existent_id, "title": "Should Fail", "color": "FF0000"},
     )
-    assert label_result.isError is True, (
+    assert label_result.is_error is True, (
         "Expected error for label creation on non-existent board"
     )
 
@@ -513,7 +513,7 @@ async def test_deck_mcp_tools_error_handling(nc_mcp_client: ClientSession):
 async def test_deck_mcp_resource_templates(nc_mcp_client: ClientSession):
     """Test deck MCP resource templates are properly registered."""
     templates = await nc_mcp_client.list_resource_templates()
-    template_uris = [template.uriTemplate for template in templates.resourceTemplates]
+    template_uris = [template.uri_template for template in templates.resource_templates]
 
     expected_templates = [
         "nc://Deck/boards/{board_id}/stacks/{stack_id}",

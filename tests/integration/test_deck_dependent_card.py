@@ -121,17 +121,17 @@ async def test_assign_and_remove_dependent_card_via_mcp(
             "deck_get_card",
             {"board_id": board_id, "stack_id": stack_id, "card_id": card_id},
         )
-        assert result.isError is False, f"get_card failed: {result.content}"
+        assert result.is_error is False, f"get_card failed: {result.content}"
         return json.loads(result.content[0].text).get("dependentCards") or []
 
     # Assign via MCP
     assign_result = await nc_mcp_client.call_tool("deck_assign_dependent_card", args)
-    assert assign_result.isError is False, f"assign failed: {assign_result.content}"
+    assert assign_result.is_error is False, f"assign failed: {assign_result.content}"
     assert json.loads(assign_result.content[0].text)["success"] is True
     assert await get_dependent_cards() == [dependency.id]
 
     # Remove via MCP
     remove_result = await nc_mcp_client.call_tool("deck_remove_dependent_card", args)
-    assert remove_result.isError is False, f"remove failed: {remove_result.content}"
+    assert remove_result.is_error is False, f"remove failed: {remove_result.content}"
     assert json.loads(remove_result.content[0].text)["success"] is True
     assert await get_dependent_cards() == []

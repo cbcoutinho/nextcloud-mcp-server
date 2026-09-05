@@ -3,9 +3,9 @@
 import json
 
 import pytest
-from mcp.types import ImageContent, TextContent
+from mcp.types import CallToolResult, ImageContent, TextContent
 
-from nextcloud_mcp_server.errors import NextcloudFastMCP
+from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.models.base import BaseResponse
 from nextcloud_mcp_server.serialization import (
     compact_json_dumps,
@@ -18,7 +18,12 @@ pytestmark = pytest.mark.unit
 
 def _text(result) -> str:
     """The unstructured text of a call_tool result, whichever shape it has."""
-    blocks = result[0] if isinstance(result, tuple) else result
+    if isinstance(result, CallToolResult):
+        blocks = result.content
+    elif isinstance(result, tuple):
+        blocks = result[0]
+    else:
+        blocks = result
     return blocks[0].text
 
 
@@ -78,13 +83,13 @@ def test_structured_half_of_the_pair_is_preserved():
 
 
 async def test_call_tool_returns_unindented_json():
-    """The end-to-end path: FastMCP's own indent=2 must not reach the client."""
+    """The end-to-end path: MCPServer's own indent=2 must not reach the client."""
 
     class Item(BaseResponse):
         name: str
         tags: list[str]
 
-    mcp = NextcloudFastMCP("test")
+    mcp = NextcloudMCPServer("test")
 
     @mcp.tool()
     async def get_item() -> Item:

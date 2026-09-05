@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 from httpx import Request, Response
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def calendar_tools():
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_calendar_tools(mcp)
     return mcp._tool_manager
 

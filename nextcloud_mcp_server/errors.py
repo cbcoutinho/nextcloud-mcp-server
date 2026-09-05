@@ -1,28 +1,37 @@
 """LLM-friendly rendering of tool failures (GH #1208).
 
-The MCP SDK funnels every tool exception through
-``ToolError(f"Error executing tool {name}: {e}")`` and returns that string
-verbatim as the error content, so an unhandled ``httpx`` error reaches the model
-as an internal URL plus an MDN link and no hint about what to do next. Rewriting
-that one string at the tool boundary fixes every tool at once -- see
-:class:`NextcloudFastMCP`.
+The MCP SDK funnels every unanticipated tool exception into a ``ToolError`` and
+returns its message as the error content. On mcp 1.x that message was
+``f"Error executing tool {name}: {e}"``, so an unhandled ``httpx`` error reached
+the model as an internal URL plus an MDN link and no hint about what to do next.
+mcp 2.x withholds the original entirely -- ``UnexpectedToolError`` says only
+``Error executing tool {name}`` -- which is less misleading and even less
+actionable.
+
+Either way the original is on ``__cause__``, so rewriting that one message at
+the tool boundary fixes every tool at once -- see :class:`NextcloudMCPServer`.
 """
 
 import json
 import re
-from collections.abc import Sequence
 from typing import Any
 from urllib.parse import unquote
 
 from httpx import URL, HTTPStatusError, RequestError, Response, ResponseNotRead
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.types import ContentBlock
+from mcp.server.context import CallNext, ServerRequestContext
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+from mcp.shared.exceptions import MCPError
+from mcp.types import CallToolResult, InputRequiredResult
 from mcp.types import Tool as MCPTool
 
 from nextcloud_mcp_server.capabilities import (
     enforce_capability,
     filter_by_capability,
+)
+from nextcloud_mcp_server.request_context import (
+    reset_request_context,
+    set_request_context,
 )
 from nextcloud_mcp_server.serialization import compact_tool_result
 
@@ -164,7 +173,7 @@ def friendly_tool_error(exc: BaseException | None, tool_name: str) -> str | None
     """Render ``exc`` for an LLM, or ``None`` if it is better left alone.
 
     ``None`` means "no improvement to offer" -- the caller re-raises unchanged,
-    so tools that already build a tailored ``McpError`` keep their own wording.
+    so tools that already build a tailored ``MCPError`` keep their own wording.
     """
     if isinstance(exc, HTTPStatusError):
         status = exc.response.status_code
@@ -188,28 +197,97 @@ def friendly_tool_error(exc: BaseException | None, tool_name: str) -> str | None
     return None
 
 
-class NextcloudFastMCP(FastMCP):
-    """FastMCP that rewrites raw HTTP failures into LLM-friendly messages,
+def _cause_message(exc: BaseException, tool_name: str) -> str:
+    """The message mcp 2.x withheld, or its own text if there is no cause.
+
+    Deliberately unfiltered: this restores the mcp 1.x contract that whatever a
+    tool raised reaches the model. The alternative -- the SDK's bare "Error
+    executing tool <name>" -- tells it nothing it can act on.
+    """
+    cause = exc.__cause__
+    if cause is None:
+        return str(exc)
+    text = str(cause).strip() or cause.__class__.__name__
+    return f"{tool_name} failed: {text}"
+
+
+class NextcloudMCPServer(MCPServer):
+    """MCPServer that rewrites raw HTTP failures into LLM-friendly messages,
     hides tools this Nextcloud instance cannot serve, and strips the SDK's
     ``indent=2`` from tool results (GH #1395).
 
-    Subclass rather than patch: ``FastMCP._setup_handlers`` binds
+    Subclass rather than patch: ``MCPServer._setup_handlers`` binds
     ``self.call_tool``/``self.list_tools`` during ``__init__``, so a later
     reassignment is ignored.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.middleware.append(self._publish_request_context)
+
+    async def _publish_request_context(
+        self, ctx: ServerRequestContext, call_next: CallNext
+    ) -> Any:
+        """Republish ``ctx`` for the handlers mcp 2.x cannot inject it into.
+
+        ``list_tools()`` (capability gating) and static ``@mcp.resource()``
+        functions get no ``Context`` from the SDK and have no contextvar to read
+        since 2.x dropped ``request_ctx``; a middleware is where 2.x puts
+        per-message interception. See ``nextcloud_mcp_server.request_context``.
+        """
+        token = set_request_context(ctx)
+        try:
+            return await call_next(ctx)
+        finally:
+            reset_request_context(token)
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
         return await filter_by_capability(self, tools)
 
     async def call_tool(
-        self, name: str, arguments: dict[str, Any]
-    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context[Any, Any] | None = None,
+    ) -> CallToolResult | InputRequiredResult:
         await enforce_capability(self, name)
+        # The three clauses below are ordered by the SDK's hierarchy, and the
+        # order is load-bearing: ``UnexpectedToolError`` subclasses ``ToolError``
+        # (both under ``MCPServerError``), so the specific one must come first or
+        # every crash would take the "message is already good" path and ship the
+        # SDK's contentless text. ``MCPError`` is a separate tree entirely
+        # (``Exception`` directly), so it neither shadows nor is shadowed by the
+        # other two and its position is free.
         try:
-            return compact_tool_result(await super().call_tool(name, arguments))
-        except ToolError as e:
-            message = friendly_tool_error(e.__cause__, name)
-            if message is None:
-                raise
-            raise ToolError(message) from e.__cause__
+            return compact_tool_result(
+                await super().call_tool(name, arguments, context)
+            )
+        except UnexpectedToolError as e:
+            # mcp 2.x replaces an unanticipated exception's message with a bare
+            # "Error executing tool <name>", withholding the original. 1.x
+            # shipped ``str(e)``, and a great deal of this server's behaviour
+            # rides on that: scope denials ("Missing required scopes:
+            # notes.write"), provisioning prompts, and every ``raise`` in a tool
+            # body that is not a ToolError. Withheld, the model is told the call
+            # failed and nothing about what to do next.
+            #
+            # So restore the message here rather than converting exception types
+            # one by one -- ``ScopeAuthorizationError`` and friends are raised
+            # from the auth layer and are also caught on HTTP routes, where
+            # ToolError would be the wrong type. This is the single place that
+            # sees every escaping exception.
+            raise ToolError(
+                friendly_tool_error(e.__cause__, name) or _cause_message(e, name)
+            ) from e.__cause__
+        except ToolError:
+            # Anticipated: the message is the tool author's and already good.
+            raise
+        except MCPError as e:
+            # mcp 2.x passes MCPError out of a tool as a top-level JSON-RPC
+            # error; 1.x turned it into ``is_error=True`` content the model
+            # reads and reacts to. Every one of our raise sites is that second
+            # kind ("Note 5 not found", "Nextcloud access not provisioned"),
+            # which in 2.x is what ToolError means -- so map it back rather
+            # than silently change the wire contract for ~140 messages.
+            raise ToolError(e.message) from e

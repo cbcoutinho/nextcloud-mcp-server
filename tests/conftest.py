@@ -15,11 +15,12 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import anyio
 import httpx
+import httpx2
 import pytest
 from httpx import HTTPStatusError
 from mcp import ClientSession
-from mcp.client.session import RequestContext
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.context import ClientRequestContext
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import ElicitRequestParams, ElicitResult, ErrorData
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -176,9 +177,9 @@ async def create_mcp_client_session(
         token: Optional OAuth access token for Bearer authentication
         client_name: Client name for logging (e.g., "OAuth MCP (Playwright)")
         elicitation_callback: Optional callback for handling elicitation requests.
-            Should match signature: async def callback(context: RequestContext, params: ElicitRequestParams) -> ElicitResult | ErrorData
+            Should match signature: async def callback(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult | ErrorData
         sampling_callback: Optional callback for handling sampling (LLM generation) requests.
-            Should match signature: async def callback(context: RequestContext, params: CreateMessageRequestParams) -> CreateMessageResult | ErrorData
+            Should match signature: async def callback(context: ClientRequestContext, params: CreateMessageRequestParams) -> CreateMessageResult | ErrorData
         headers: Optional custom headers (e.g., for BasicAuth). If both headers and token are provided,
             custom headers take precedence.
 
@@ -198,21 +199,28 @@ async def create_mcp_client_session(
         headers = {"Authorization": f"Bearer {token}"} if token else None
 
     # Use native async with - Python ensures LIFO cleanup
-    # Cleanup order will be: ClientSession.__aexit__ -> streamablehttp_client.__aexit__
-    async with streamablehttp_client(url, headers=headers) as (
-        read_stream,
-        write_stream,
-        _,
-    ):
-        async with ClientSession(
+    # Cleanup order will be: ClientSession.__aexit__ -> http_client.__aexit__
+    http_client = httpx2.AsyncClient(
+        headers=headers,
+        # mcp 1.x's streamablehttp_client defaulted to these; a bare
+        # httpx2.AsyncClient falls back to a flat 5s, too short for the GET stream.
+        timeout=httpx2.Timeout(30, read=300),
+        follow_redirects=True,
+    )
+    async with http_client:
+        async with streamable_http_client(url, http_client=http_client) as (
             read_stream,
             write_stream,
-            elicitation_callback=elicitation_callback,
-            sampling_callback=sampling_callback,
-        ) as session:
-            await session.initialize()
-            logger.info("%s client session initialized successfully", client_name)
-            yield session
+        ):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                elicitation_callback=elicitation_callback,
+                sampling_callback=sampling_callback,
+            ) as session:
+                await session.initialize()
+                logger.info("%s client session initialized successfully", client_name)
+                yield session
 
     # Cleanup happens automatically in LIFO order - no exception suppression needed
     logger.debug("%s client session cleaned up successfully", client_name)
@@ -373,7 +381,7 @@ async def nc_mcp_oauth_client_with_elicitation(
     elicitation_triggered = {"count": 0}
 
     async def elicitation_callback(
-        context: RequestContext[ClientSession, Any],
+        context: ClientRequestContext,
         params: ElicitRequestParams,
     ) -> ElicitResult | ErrorData:
         """Handle elicitation by completing OAuth flow with Playwright."""

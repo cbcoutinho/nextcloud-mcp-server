@@ -5,7 +5,7 @@ verified access token had no ``sub`` claim. In a multi-tenant deployment
 that would let a malformed IdP token bucket every request under a single
 sentinel user, risking cross-tenant data exposure. The fix is to keep the
 no-token fallback (BasicAuth mode legitimately calls this without an
-OAuth identity) but raise ``McpError`` whenever an access token is
+OAuth identity) but raise ``MCPError`` whenever an access token is
 present and ``resource`` is empty.
 """
 
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from mcp.server.auth.provider import AccessToken
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.auth.token_utils import extract_user_id_from_token
 
@@ -59,7 +59,7 @@ async def test_returns_default_user_when_no_access_token():
 
 
 async def test_raises_when_token_present_but_resource_empty():
-    """Token present but ``resource`` empty → fail closed with McpError.
+    """Token present but ``resource`` empty → fail closed with MCPError.
 
     Pins the PR #758 follow-up review fix: a malformed IdP token must
     not silently funnel users into a shared ``"default_user"`` SQLite
@@ -69,7 +69,7 @@ async def test_raises_when_token_present_but_resource_empty():
         "nextcloud_mcp_server.auth.token_utils.get_access_token",
         return_value=_token(""),
     ):
-        with pytest.raises(McpError, match="Cannot determine user identity"):
+        with pytest.raises(MCPError, match="Cannot determine user identity"):
             await extract_user_id_from_token(MagicMock())
 
 
@@ -79,5 +79,5 @@ async def test_raises_when_resource_is_none():
         "nextcloud_mcp_server.auth.token_utils.get_access_token",
         return_value=_token(None),
     ):
-        with pytest.raises(McpError, match="Cannot determine user identity"):
+        with pytest.raises(MCPError, match="Cannot determine user identity"):
             await extract_user_id_from_token(MagicMock())

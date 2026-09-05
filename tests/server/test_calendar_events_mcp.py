@@ -34,7 +34,7 @@ async def test_mcp_update_event_extended_fields(
                 "description": "Base event for MCP extended-field update test",
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP event creation failed: {create_result.content}"
         )
 
@@ -54,7 +54,7 @@ async def test_mcp_update_event_extended_fields(
                 "reminder_minutes": 15,
             },
         )
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP event update failed: {update_result.content}"
         )
 
@@ -98,7 +98,7 @@ async def test_mcp_update_event_extended_fields(
                 "reminder_minutes": 0,
             },
         )
-        assert clear_result.isError is False, (
+        assert clear_result.is_error is False, (
             f"MCP event clear failed: {clear_result.content}"
         )
 
@@ -152,7 +152,7 @@ async def test_mcp_create_event_writes_previously_ignored_fields(
                 "reminder_email": True,
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP event creation failed: {create_result.content}"
         )
         event_uid = json.loads(create_result.content[0].text)["uid"]
@@ -205,7 +205,7 @@ async def test_mcp_update_event_shorthand_reminder_fields_are_independent(
                 "reminder_email": True,
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP event creation failed: {create_result.content}"
         )
         event_uid = json.loads(create_result.content[0].text)["uid"]
@@ -219,7 +219,7 @@ async def test_mcp_update_event_shorthand_reminder_fields_are_independent(
                 "reminder_minutes": 45,
             },
         )
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP event update failed: {update_result.content}"
         )
 
@@ -269,7 +269,7 @@ async def test_mcp_update_event_ordered_reminders(
                 ],
             },
         )
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP event creation failed: {create_result.content}"
         )
         event_uid = json.loads(create_result.content[0].text)["uid"]
@@ -291,7 +291,7 @@ async def test_mcp_update_event_ordered_reminders(
                 "location": "Room 2",
             },
         )
-        assert touch_result.isError is False, (
+        assert touch_result.is_error is False, (
             f"MCP event update failed: {touch_result.content}"
         )
         touched, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
@@ -308,7 +308,7 @@ async def test_mcp_update_event_ordered_reminders(
                 "reminders": [],
             },
         )
-        assert clear_result.isError is False, (
+        assert clear_result.is_error is False, (
             f"MCP reminder clear failed: {clear_result.content}"
         )
         cleared, _ = await nc_client.calendar.get_event(calendar_name, event_uid)

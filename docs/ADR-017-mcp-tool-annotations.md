@@ -33,10 +33,10 @@ from mcp.types import ToolAnnotations
 
 ToolAnnotations(
     title="Alternative Title",  # Decorator title takes precedence
-    readOnlyHint=True,         # Tool doesn't modify data
-    destructiveHint=True,       # Tool may delete/overwrite data
-    idempotentHint=True,        # Repeated calls with same args are safe
-    openWorldHint=True          # Interacts with external entities
+    read_only_hint=True,         # Tool doesn't modify data
+    destructive_hint=True,       # Tool may delete/overwrite data
+    idempotent_hint=True,        # Repeated calls with same args are safe
+    open_world_hint=True          # Interacts with external entities
 )
 ```
 
@@ -100,8 +100,8 @@ Add annotations based on corrected categorization:
 @mcp.tool(
     title="Search Notes",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=True  # Nextcloud is external to MCP server
+        read_only_hint=True,
+        open_world_hint=True  # Nextcloud is external to MCP server
     )
 )
 
@@ -109,9 +109,9 @@ Add annotations based on corrected categorization:
 @mcp.tool(
     title="Delete Note",
     annotations=ToolAnnotations(
-        destructiveHint=True,
-        idempotentHint=True,  # Deleting deleted item = same end state
-        openWorldHint=True
+        destructive_hint=True,
+        idempotent_hint=True,  # Deleting deleted item = same end state
+        open_world_hint=True
     )
 )
 
@@ -119,8 +119,8 @@ Add annotations based on corrected categorization:
 @mcp.tool(
     title="Create Note",
     annotations=ToolAnnotations(
-        idempotentHint=False,
-        openWorldHint=True
+        idempotent_hint=False,
+        open_world_hint=True
     )
 )
 
@@ -128,8 +128,8 @@ Add annotations based on corrected categorization:
 @mcp.tool(
     title="Update Note",
     annotations=ToolAnnotations(
-        idempotentHint=False,  # Etag required = different inputs each time
-        openWorldHint=True
+        idempotent_hint=False,  # Etag required = different inputs each time
+        open_world_hint=True
     )
 )
 
@@ -137,8 +137,8 @@ Add annotations based on corrected categorization:
 @mcp.tool(
     title="Append to Note",
     annotations=ToolAnnotations(
-        idempotentHint=False,
-        openWorldHint=True
+        idempotent_hint=False,
+        open_world_hint=True
     )
 )
 ```
@@ -152,7 +152,7 @@ Add Field() descriptions to parameters:
 ```python
 from pydantic import Field
 
-@mcp.tool(title="Create Note", annotations=ToolAnnotations(idempotentHint=False))
+@mcp.tool(title="Create Note", annotations=ToolAnnotations(idempotent_hint=False))
 async def nc_notes_create_note(
     title: str = Field(description="The title of the note"),
     content: str = Field(description="Markdown content of the note"),
@@ -168,7 +168,7 @@ async def nc_notes_create_note(
 
 ### Read-Only Tools (~40 tools)
 **Pattern**: List, search, get operations
-**Annotations**: `readOnlyHint=True`, `openWorldHint=True`
+**Annotations**: `read_only_hint=True`, `open_world_hint=True`
 
 Examples:
 - `nc_notes_search_notes` → "Search Notes"
@@ -180,7 +180,7 @@ Examples:
 
 ### Create Tools (~20 tools)
 **Pattern**: Create new resources
-**Annotations**: `idempotentHint=False`, `openWorldHint=True`
+**Annotations**: `idempotent_hint=False`, `open_world_hint=True`
 
 Examples:
 - `nc_notes_create_note` → "Create Note"
@@ -191,7 +191,7 @@ Examples:
 
 ### Update Tools (~25 tools)
 **Pattern**: Modify existing resources with etag
-**Annotations**: `idempotentHint=False` (etag changes), `openWorldHint=True`
+**Annotations**: `idempotent_hint=False` (etag changes), `open_world_hint=True`
 
 Examples:
 - `nc_notes_update_note` → "Update Note"
@@ -203,7 +203,7 @@ Examples:
 
 ### Append/Accumulate Tools (~5 tools)
 **Pattern**: Add content without replacing
-**Annotations**: `idempotentHint=False`, `openWorldHint=True`
+**Annotations**: `idempotent_hint=False`, `open_world_hint=True`
 
 Examples:
 - `nc_notes_append_content` → "Append to Note"
@@ -212,7 +212,7 @@ Examples:
 
 ### Delete Tools (~10 tools)
 **Pattern**: Remove resources
-**Annotations**: `destructiveHint=True`, `idempotentHint=True`, `openWorldHint=True`
+**Annotations**: `destructive_hint=True`, `idempotent_hint=True`, `open_world_hint=True`
 
 Examples:
 - `nc_notes_delete_note` → "Delete Note"
@@ -230,9 +230,9 @@ Examples:
 @mcp.tool(
     title="Grant Server Access to Nextcloud",
     annotations=ToolAnnotations(
-        readOnlyHint=False,
-        idempotentHint=False,  # Creates new OAuth session each time
-        openWorldHint=True
+        read_only_hint=False,
+        idempotent_hint=False,  # Creates new OAuth session each time
+        open_world_hint=True
     )
 )
 async def provision_nextcloud_access(ctx: Context):
@@ -243,8 +243,8 @@ async def provision_nextcloud_access(ctx: Context):
 @mcp.tool(
     title="Semantic Search",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=False  # Searches only indexed Nextcloud data
+        read_only_hint=True,
+        open_world_hint=False  # Searches only indexed Nextcloud data
     )
 )
 async def nc_semantic_search(query: str, ctx: Context):
@@ -310,7 +310,7 @@ Less frequently used:
 
 ### For MCP Clients
 - **Caching**: Cache results from read-only tools
-- **Safety prompts**: Warn before destructiveHint=true
+- **Safety prompts**: Warn before destructive_hint=true
 - **Retry logic**: Safely retry idempotent operations
 - **UI organization**: Group by behavior (reads vs writes vs deletes)
 - **Performance**: Optimize based on hints
@@ -355,9 +355,9 @@ from pydantic import Field
 @mcp.tool(
     title="Delete Note",
     annotations=ToolAnnotations(
-        destructiveHint=True,   # Deletes data permanently
-        idempotentHint=True,    # Same end state (note doesn't exist)
-        openWorldHint=True      # Nextcloud is external
+        destructive_hint=True,   # Deletes data permanently
+        idempotent_hint=True,    # Same end state (note doesn't exist)
+        open_world_hint=True      # Nextcloud is external
     )
 )
 @require_scopes("notes:write")
@@ -377,8 +377,8 @@ async def nc_notes_delete_note(
 @mcp.tool(
     title="Update Note",
     annotations=ToolAnnotations(
-        idempotentHint=False,   # NOT idempotent: etag changes each update
-        openWorldHint=True
+        idempotent_hint=False,   # NOT idempotent: etag changes each update
+        open_world_hint=True
     )
 )
 @require_scopes("notes:write")
@@ -418,8 +418,8 @@ async def nc_notes_update_note(
 @mcp.tool(
     title="Search Notes",
     annotations=ToolAnnotations(
-        readOnlyHint=True,    # Doesn't modify data
-        openWorldHint=True    # Queries Nextcloud
+        read_only_hint=True,    # Doesn't modify data
+        open_world_hint=True    # Queries Nextcloud
     )
 )
 @require_scopes("notes:read")
@@ -450,18 +450,18 @@ def test_notes_tools_have_annotations():
     # Check create tool
     create_tool = tools["nc_notes_create_note"]
     assert create_tool.title == "Create Note"
-    assert create_tool.annotations.idempotentHint is False
+    assert create_tool.annotations.idempotent_hint is False
 
     # Check delete tool
     delete_tool = tools["nc_notes_delete_note"]
     assert delete_tool.title == "Delete Note"
-    assert delete_tool.annotations.destructiveHint is True
-    assert delete_tool.annotations.idempotentHint is True
+    assert delete_tool.annotations.destructive_hint is True
+    assert delete_tool.annotations.idempotent_hint is True
 
     # Check read-only tool
     search_tool = tools["nc_notes_search_notes"]
     assert search_tool.title == "Search Notes"
-    assert search_tool.annotations.readOnlyHint is True
+    assert search_tool.annotations.read_only_hint is True
 ```
 
 ### Integration Tests
@@ -476,14 +476,14 @@ def test_notes_tools_have_annotations():
 ## Resolved Questions
 
 1. **WebDAV write_file idempotency** (Resolved: 2025-12-11)
-   - **Decision**: Mark as `idempotentHint=True`
+   - **Decision**: Mark as `idempotent_hint=True`
    - **Rationale**: Uses HTTP PUT without version control. Writing same content to same path repeatedly produces identical end state, which is the definition of idempotency in HTTP semantics.
 
-2. **Semantic search openWorldHint** (Resolved: 2025-12-11)
-   - **Decision**: Mark as `openWorldHint=True`
+2. **Semantic search open_world_hint** (Resolved: 2025-12-11)
+   - **Decision**: Mark as `open_world_hint=True`
    - **Rationale**: For consistency with other Nextcloud tools. While the data being searched is "indexed/internal", Nextcloud itself is external to the MCP server. The fact that data is indexed is an implementation detail, not a fundamental difference from other Nextcloud queries.
 
-3. **Read-only with side effects**: Should tools that log analytics still be readOnlyHint=true?
+3. **Read-only with side effects**: Should tools that log analytics still be read_only_hint=true?
    - **Decision**: Yes. Logging/analytics are non-visible side effects that don't change user-observable state. Read-only refers to data modifications that affect the user's content.
 
 ## Future Considerations
@@ -495,7 +495,7 @@ def test_notes_tools_have_annotations():
 
 - MCP Python SDK: `/home/chris/Software/python-sdk/`
 - ToolAnnotations spec: `src/mcp/types.py:1247`
-- FastMCP decorator: `src/mcp/server/fastmcp/server.py:444`
+- MCPServer decorator: `src/mcp/server/fastmcp/server.py:444`
 - Examples: `examples/fastmcp/parameter_descriptions.py`, `examples/fastmcp/icons_demo.py`
 
 ## Decision Timeline

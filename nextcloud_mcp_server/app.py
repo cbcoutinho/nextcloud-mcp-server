@@ -18,7 +18,7 @@ import httpx
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from pydantic import AnyHttpUrl
@@ -96,7 +96,7 @@ from nextcloud_mcp_server.config_validators import (
     validate_configuration,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
-from nextcloud_mcp_server.errors import NextcloudFastMCP
+from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
@@ -111,6 +111,7 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
+from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
@@ -373,7 +374,7 @@ class VectorSyncState:
     Module-level state for vector sync background tasks.
 
     This singleton bridges the Starlette server lifespan (where background tasks run)
-    and FastMCP session lifespans (where MCP tools need access to the streams).
+    and MCPServer session lifespans (where MCP tools need access to the streams).
     """
 
     document_send_stream: MemoryObjectSendStream | None = None
@@ -428,7 +429,7 @@ def _wire_vector_sync_state(
 
     Both lifespan paths (single-user and multi-user) previously duplicated these
     writes three times each: ``app.state``, the module singleton
-    ``_vector_sync_state`` (read by FastMCP session lifespans), and the mounted
+    ``_vector_sync_state`` (read by MCPServer session lifespans), and the mounted
     ``/app`` browser sub-app. ``document_send_stream``/``document_receive_stream``
     come from the transport — ``None`` in postgres mode (no in-process stream) —
     and ``task_producer`` is the transport's producer in both modes (Deck #183,
@@ -748,7 +749,7 @@ class AppContext:
     def eviction_task_group(self) -> TaskGroup | None:
         # Read dynamically from the module-level singleton instead of
         # snapshotting at lifespan-yield time. Snapshotting is order-sensitive:
-        # if the FastMCP server lifespan ever runs before the Starlette
+        # if the MCPServer server lifespan ever runs before the Starlette
         # lifespan assigns the task group, every session for the life of the
         # process would see ``None`` and fall back to inline eviction.
         return _vector_sync_state.eviction_task_group
@@ -931,9 +932,9 @@ async def load_oauth_client_credentials(
 
 
 @asynccontextmanager
-async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan_basic(server: MCPServer) -> AsyncIterator[AppContext]:
     """
-    Manage application lifecycle for BasicAuth mode (FastMCP session lifespan).
+    Manage application lifecycle for BasicAuth mode (MCPServer session lifespan).
 
     For single-user mode: Creates a single Nextcloud client with basic authentication
     that is shared across all requests within a session.
@@ -941,7 +942,9 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     For multi-user mode: No shared client - clients created per-request by BasicAuthMiddleware.
 
     Note: Background tasks (scanner, processor) are started at server level
-    in starlette_lifespan, not here. This lifespan runs per-session.
+    in starlette_lifespan, not here. mcp 2.x enters this lifespan once, when the
+    Streamable HTTP session manager starts, and shares the result across every
+    session and request (1.x entered it per session).
     """
     settings = get_settings()
     is_multi_user = settings.enable_multi_user_basic_auth
@@ -1079,7 +1082,7 @@ async def setup_oauth_config():
     - NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET: Static credentials (optional, uses DCR if not provided)
     - NEXTCLOUD_OIDC_SCOPES: Requested OAuth scopes
 
-    This is done synchronously before FastMCP initialization because FastMCP
+    This is done synchronously before MCPServer initialization because MCPServer
     requires token_verifier at construction time.
 
     Returns:
@@ -1472,6 +1475,31 @@ def _csv_setting(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+#: Room for the JSON-RPC envelope around a maximum-size `nc_webdav_write_file`
+#: argument: method, id, path, content_type, and the quoting of the base64 blob.
+_REQUEST_ENVELOPE_SLACK = 1024 * 1024
+
+
+def _max_request_body_size() -> int:
+    """The Streamable HTTP POST body limit, derived from ``WEBDAV_WRITE_MAX_MB``.
+
+    mcp 2.x caps POST bodies at 4 MiB and answers 413 *before* parsing the JSON,
+    so the default would reject a `nc_webdav_write_file` call well below the
+    ``WEBDAV_WRITE_MAX_MB`` (50 MB) this server advertises -- with a transport
+    error instead of that tool's explanatory ``ToolError``. Sizing the transport
+    limit off the same setting keeps the one number operators tune in charge,
+    and keeps the size refusal where it can explain itself.
+
+    base64 inflates by 4/3, and the tool decodes the argument rather than
+    streaming it, so the wire form is what has to fit.
+    """
+    max_mb = get_settings().webdav_write_max_mb or 0.0
+    return max(
+        4 * 1024 * 1024,  # never below the SDK default
+        int(max_mb * 1024 * 1024 * 4 / 3) + _REQUEST_ENVELOPE_SLACK,
+    )
+
+
 def _build_transport_security() -> TransportSecuritySettings:
     """Assemble TransportSecuritySettings from configuration.
 
@@ -1728,7 +1756,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Create lifespan function with captured OAuth context (closure)
         @asynccontextmanager
-        async def oauth_lifespan(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
+        async def oauth_lifespan(server: MCPServer) -> AsyncIterator[OAuthAppContext]:
             """
             Lifespan context for OAuth mode - captures OAuth configuration from outer scope.
             """
@@ -1760,7 +1788,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             finally:
                 logger.info("Shutting down MCP server")
                 # NOTE: refresh_token_storage is deliberately NOT closed here.
-                # This lifespan is per MCP *session*, but the storage was built
+                # mcp 2.x enters this lifespan once, at session-manager startup,
+                # rather than per MCP session -- but the reasoning below is what
+                # keeps that safe either way, so it stays: the storage was built
                 # once at startup (setup_oauth_config) and is handed to the
                 # process-lifetime background tasks — user_manager_task and
                 # credential_cleanup_task both hold this very object
@@ -1783,26 +1813,24 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         logger.warning("Error closing OAuth client: %s", e)
                 logger.info("MCP server shutdown complete")
 
-        mcp = NextcloudFastMCP(
+        mcp = NextcloudMCPServer(
             "Nextcloud MCP",
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
-            transport_security=_build_transport_security(),
         )
     else:
         # BasicAuth modes (single-user or multi-user)
         logger.info("Configuring MCP server for %s mode", mode.value)
-        mcp = NextcloudFastMCP(
+        mcp = NextcloudMCPServer(
             "Nextcloud MCP",
             lifespan=app_lifespan_basic,
-            transport_security=_build_transport_security(),
         )
 
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_nextcloud_client(ctx)
         return await client.capabilities()
 
@@ -1899,12 +1927,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Client-fleet observability: records the calling client's identity,
     # capabilities and negotiated protocol version, plus whether the SDK
-    # delivered each tool call as CallToolResult(isError=True) or as a JSON-RPC
+    # delivered each tool call as CallToolResult(is_error=True) or as a JSON-RPC
     # error. Deliberately outside the `if oauth_enabled` block above — unlike
     # the tool filter, this must work in every deployment mode.
     instrument_call_tool_outcomes(mcp)
 
-    mcp_app = mcp.streamable_http_app()
+    # mcp 2.x moved transport configuration off the MCPServer constructor onto
+    # the app factory. Passing transport_security explicitly also suppresses the
+    # SDK's host="127.0.0.1" auto-enable, which would break k8s/Docker service
+    # DNS names (docs/MCP-1.23-DNS-REBINDING-FIX.md).
+    mcp_app = mcp.streamable_http_app(
+        transport_security=_build_transport_security(),
+        max_request_body_size=_max_request_body_size(),
+    )
 
     async def _login_flow_cleanup_loop() -> None:
         """Periodically clean up expired Login Flow v2 sessions and proxy codes."""
@@ -2198,7 +2233,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # get_app(transport=...) HTTP-transport parameter.
             ingest_transport = await build_transport(settings)
 
-            # Publish to app.state (ADR-007), the module singleton (FastMCP
+            # Publish to app.state (ADR-007), the module singleton (MCPServer
             # session lifespans), and the /app browser sub-app in one place.
             _wire_vector_sync_state(
                 app, ingest_transport, shutdown_event, scanner_wake_event
@@ -2413,7 +2448,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # get_app(transport=...) HTTP-transport parameter.
                 ingest_transport = await build_transport(settings)
 
-                # Publish to app.state (ADR-007), the module singleton (FastMCP
+                # Publish to app.state (ADR-007), the module singleton (MCPServer
                 # session lifespans), and the /app browser sub-app in one place.
                 _wire_vector_sync_state(
                     app, ingest_transport, shutdown_event, scanner_wake_event
@@ -2936,7 +2971,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Add user info routes (available in both BasicAuth and OAuth modes)
     # Create a separate Starlette app for browser routes that need session auth
-    # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
+    # This prevents SessionAuthBackend from interfering with MCPServer's OAuth
     browser_routes = [
         Route("/", user_info_html, methods=["GET"]),  # /app → user info with all tabs
         Route(
@@ -2997,12 +3032,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
         )
 
-    # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
+    # Mount MCPServer at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))
 
     app = Starlette(routes=routes, lifespan=starlette_lifespan)
     logger.info(
-        "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
+        "Routes: /user/* with SessionAuth, /mcp with MCPServer OAuth Bearer tokens"
     )
 
     # Store supported scopes on app.state for AS metadata endpoint (ADR-023)

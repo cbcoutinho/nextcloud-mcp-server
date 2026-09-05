@@ -10,9 +10,8 @@ import logging
 from typing import Callable
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.fastmcp import Context
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.server.mcpserver import Context
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 
@@ -49,11 +48,9 @@ def require_provisioning(func: Callable) -> Callable:
             ctx = kwargs.get("ctx")
 
         if not ctx:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message="Context not found - cannot verify provisioning",
-                )
+            raise MCPError(
+                code=-1,
+                message="Context not found - cannot verify provisioning",
             )
 
         # Check if we're in BasicAuth mode - if so, skip provisioning check
@@ -73,11 +70,9 @@ def require_provisioning(func: Callable) -> Callable:
             logger.debug("Checking provisioning for user: %s", user_id)
 
         if not user_id:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message="Cannot determine user identity for provisioning check",
-                )
+            raise MCPError(
+                code=-1,
+                message="Cannot determine user identity for provisioning check",
             )
 
         # Check provisioning status — share the process-wide singleton
@@ -91,16 +86,14 @@ def require_provisioning(func: Callable) -> Callable:
             logger.info(
                 "User %s attempted to use Nextcloud tool without provisioning", user_id
             )
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message=(
-                        "Nextcloud access not provisioned. "
-                        "Please run the 'provision_nextcloud_access' tool first to authorize "
-                        "the MCP server to access Nextcloud on your behalf. "
-                        "This is a one-time setup required for security."
-                    ),
-                )
+            raise MCPError(
+                code=-1,
+                message=(
+                    "Nextcloud access not provisioned. "
+                    "Please run the 'provision_nextcloud_access' tool first to authorize "
+                    "the MCP server to access Nextcloud on your behalf. "
+                    "This is a one-time setup required for security."
+                ),
             )
 
         logger.debug(

@@ -3,8 +3,8 @@ from datetime import date
 from typing import Any
 
 from httpx import HTTPStatusError
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -212,11 +212,11 @@ def _raw_contact_to_model(raw: dict) -> Contact:
     )
 
 
-def configure_contacts_tools(mcp: FastMCP):
+def configure_contacts_tools(mcp: MCPServer):
     # Contacts tools
     @mcp.tool(
         title="List Address Books",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("contacts.read")
     @instrument_tool
@@ -240,7 +240,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Contacts",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("contacts.read")
     @instrument_tool
@@ -263,7 +263,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Search Contacts",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("contacts.read")
     @instrument_tool
@@ -345,7 +345,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Address Book",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("contacts.write")
     @instrument_tool
@@ -366,7 +366,7 @@ def configure_contacts_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Address Book",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("contacts.write")
@@ -378,7 +378,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Contact",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("contacts.write")
     @instrument_tool
@@ -418,7 +418,7 @@ def configure_contacts_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Contact",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("contacts.write")
@@ -437,7 +437,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Contact",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("contacts.write")
     @instrument_tool

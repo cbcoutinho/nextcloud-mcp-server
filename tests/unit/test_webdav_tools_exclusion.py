@@ -1,6 +1,6 @@
 """Server-layer regression tests for tag-based file exclusion (issue #710).
 
-These tests register the WebDAV tools on a fresh ``FastMCP`` instance and
+These tests register the WebDAV tools on a fresh ``MCPServer`` instance and
 invoke each tool's underlying function directly via the tool registry.
 Their purpose is **not** to re-test the path-matching logic (covered in
 ``test_tag_exclusion.py``) but to catch wiring regressions: that each
@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.models.webdav import WriteFileResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
@@ -51,8 +51,8 @@ def basicauth_mode():
 
 @pytest.fixture
 def webdav_tools() -> dict:
-    """Register the WebDAV tools on a fresh FastMCP and return them by name."""
-    mcp = FastMCP(name="test-webdav-tools")
+    """Register the WebDAV tools on a fresh MCPServer and return them by name."""
+    mcp = MCPServer(name="test-webdav-tools")
     configure_webdav_tools(mcp)
     return {t.name: t for t in mcp._tool_manager.list_tools()}
 
