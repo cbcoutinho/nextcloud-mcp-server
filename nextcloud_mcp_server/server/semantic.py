@@ -1,7 +1,7 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import anyio
 from httpx import RequestError
@@ -60,6 +60,9 @@ from nextcloud_mcp_server.vector.metrics_publisher import (
     estimate_hybrid_vector_bytes,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
+    from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
@@ -316,10 +319,10 @@ async def _expand_results_with_context(
     results: list[SemanticSearchResult],
     *,
     include_context: bool,
-    client,
+    client: "NextcloudClient",
     username: str,
     context_chars: int,
-    accessible_owners,
+    accessible_owners: list[str],
 ) -> list[SemanticSearchResult]:
     """Return ``results`` with surrounding document context filled in.
 
