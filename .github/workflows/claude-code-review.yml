@@ -60,7 +60,29 @@ jobs:
             `mcp__github_comment__update_claude_comment`. Do not create a
             separate PR comment — the tracking comment is the sticky review.
 
+            If you cannot finish the review — a tool call is denied, the diff is
+            too large, you run short of turns — say so explicitly in the tracking
+            comment, naming what blocked you. Do NOT leave it showing an unticked
+            "Review in progress" checklist. The `claude-review` check goes green
+            whenever this action completes, so a half-written comment reads as a
+            finished review that found nothing, and the PR looks reviewed when it
+            was not.
+
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://docs.claude.com/en/docs/claude-code/cli-reference for available options
-          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+          #
+          # `Task` is allowed so the reviewer can fan a large diff out into
+          # parallel sub-reviews. Without it a big PR fails *silently*: on #1437
+          # (~3800 lines across 6 files) the reviewer announced "dispatched
+          # parallel sub-reviews", had all 12 of those calls denied, and then
+          # finished with `is_error: false` — leaving a sticky comment that still
+          # read "Review in progress" with an unticked checklist and no findings.
+          # The `claude-review` check went green regardless, so the PR looked
+          # reviewed when nothing had been reviewed. Two runs failed identically.
+          #
+          # Cost note: fan-out means several sub-agents per review. A single
+          # non-fanned-out run on that PR cost ~$1, so budget for a multiple of
+          # that on large diffs; drop `Task` again if that proves too expensive
+          # (accepting that large PRs then need splitting to be reviewable).
+          claude_args: '--allowed-tools "Task,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
 
