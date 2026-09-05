@@ -34,6 +34,7 @@ from nextcloud_mcp_server.search.access_filter import (
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
+from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.bm25_hybrid import (
     GRANULARITY_DOCUMENT,
     BM25HybridSearchAlgorithm,
@@ -120,12 +121,12 @@ def _parse_modified_bounds(
 
 
 async def _retrieve_candidates(
-    search_algo: Any,
+    search_algo: BM25HybridSearchAlgorithm,
     *,
     doc_types: list[str] | None,
     fetch_limit: int,
     **search_kwargs: Any,
-) -> list[Any]:
+) -> list[SearchResult]:
     """The unverified candidate pool for one search.
 
     ``doc_types=None`` is a single cross-app query. A list issues ONE query per
@@ -140,10 +141,16 @@ async def _retrieve_candidates(
     if doc_types is None:
         # ADR-019: the caller over-fetches to absorb ghost-record drops during
         # verify-on-read; the trim to the requested ``limit`` happens after
-        # verification, not here.
+        # verification, not here. When ghost density is high (a large board
+        # share was just revoked, say) that budget can still under-deliver
+        # against the requested limit; the index self-heals via lazy eviction,
+        # so subsequent searches recover. The 2x factor is a deliberate v1
+        # trade-off — raising it costs Nextcloud round-trips on every search.
+        # TODO(ADR-019): expose VERIFICATION_OVERFETCH so operators with
+        # persistent high ghost density can tune this without a code change.
         return list(await search_algo.search(doc_type=None, **search_kwargs))
 
-    all_results: list[Any] = []
+    all_results: list[SearchResult] = []
     for dtype in doc_types:
         all_results.extend(await search_algo.search(doc_type=dtype, **search_kwargs))
 
@@ -172,12 +179,12 @@ def _fetch_limit(
 
 
 async def _rerank_pool(
-    all_results: list[Any],
+    all_results: list[SearchResult],
     query: str,
     *,
     settings: Any,
     verification_budget: int,
-) -> tuple[list[Any], str, str]:
+) -> tuple[list[SearchResult], str, str]:
     """Rerank the merged candidate pool and report how it went.
 
     Returns ``(results, outcome, metric_label)``. SKIPPED — nothing to reorder —
@@ -198,7 +205,7 @@ async def _rerank_pool(
     return all_results[:verification_budget], outcome, metric_reranked
 
 
-def _log_top_results(verified_results: list[Any]) -> None:
+def _log_top_results(verified_results: list[SearchResult]) -> None:
     """Log the top few results, titles included.
 
     Safe only *after* verify-on-read: the caller is confirmed to have access to
@@ -216,7 +223,7 @@ def _log_top_results(verified_results: list[Any]) -> None:
 
 
 def _to_semantic_results(
-    search_results: list[Any],
+    search_results: list[SearchResult],
     *,
     browser_base: str | None,
     fusion: str,
