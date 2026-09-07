@@ -361,6 +361,26 @@ class TestGetSettings:
         os.environ,
         {
             "SEARCH_RERANK_ENABLED": "true",
+            "EMBEDDING_GATEWAY_URL": "https://gw.example",
+            "SEARCH_RERANK_URL": "https://gw.example/v1/rerank",
+        },
+        clear=True,
+    )
+    def test_rerank_url_pointing_at_the_gateway_is_quiet(self, caplog):
+        """Pinning SEARCH_RERANK_URL to the gateway's OWN /v1/rerank is a valid
+        configuration -- the routing prefix is correct there. Warning on it fires
+        on a working setup, which is how operators learn to ignore warnings."""
+        _reload_config()
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
+            settings = get_settings()
+
+        assert settings.search_rerank_model == "local/BAAI/bge-reranker-v2-m3"
+        assert "SEARCH_RERANK_MODEL" not in caplog.text
+
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_RERANK_ENABLED": "true",
             "SEARCH_RERANK_URL": "http://infinity:7997/rerank",
             "SEARCH_RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
         },
