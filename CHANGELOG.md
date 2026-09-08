@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.185.1 (2026-09-08)
+
+### Fix
+
+- **auth**: verify the Login Flow granter is the caller (GHSA-84qv-22q6-x82r)
+
 ## v0.185.0 (2026-09-05)
 
 ### BREAKING CHANGE
