@@ -13,13 +13,21 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth.elicitation import present_login_url
+from nextcloud_mcp_server.auth.grant_ownership import (
+    caller_identities,
+    grant_belongs_to_caller,
+    revoke_app_password,
+)
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
 from nextcloud_mcp_server.auth.scope_authorization import (
     invalidate_scope_cache,
     require_scopes,
 )
 from nextcloud_mcp_server.auth.storage import get_shared_storage
-from nextcloud_mcp_server.auth.token_utils import extract_user_id_from_token
+from nextcloud_mcp_server.auth.token_utils import (
+    current_access_token,
+    extract_user_id_from_token,
+)
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 from nextcloud_mcp_server.models.auth import (
     ALL_SUPPORTED_SCOPES,
@@ -313,6 +321,33 @@ def register_auth_tools(mcp: MCPServer) -> None:
                     message="Login Flow completed but no app password was returned.",
                     success=False,
                 )
+
+            # The login URL handed out by nc_auth_provision_access is
+            # transferable: whoever opens it and clicks "Grant access" produces
+            # this password, not necessarily the caller polling here. Storing it
+            # unchecked hands that caller the granter's Nextcloud credential
+            # (GHSA-84qv-22q6-x82r).
+            identities = await caller_identities(user_id, current_access_token())
+            if not await grant_belongs_to_caller(
+                identities, poll_result.login_name, poll_result.app_password
+            ):
+                if poll_result.login_name:
+                    await revoke_app_password(
+                        poll_result.login_name, poll_result.app_password
+                    )
+                await storage.delete_login_flow_session(user_id)
+                return ProvisionStatusResponse(
+                    status="error",
+                    message=(
+                        "The Nextcloud account that granted access is not the "
+                        "account you are signed in as. Nothing was stored — "
+                        "call nc_auth_provision_access again and complete the "
+                        "login as yourself."
+                    ),
+                    user_id=user_id,
+                    success=False,
+                )
+
             await storage.store_app_password_with_scopes(
                 user_id=user_id,
                 app_password=poll_result.app_password,

@@ -21,6 +21,22 @@ from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 pytestmark = pytest.mark.unit
 
 
+def _grant_completed_by(mocker, uid: str | None):
+    """Say which Nextcloud account the polled Login Flow grant authenticates as.
+
+    Patches the OCS lookup rather than the ownership check itself, so the real
+    caller/granter comparison runs (GHSA-84qv-22q6-x82r).
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.current_access_token",
+        return_value=None,
+    )
+    return mocker.patch(
+        "nextcloud_mcp_server.auth.grant_ownership._ocs_whoami",
+        AsyncMock(return_value=uid),
+    )
+
+
 def _capture_registered_tools() -> dict:
     """Register the auth tools against a stub MCP and return them by name.
 
@@ -465,6 +481,7 @@ async def test_check_status_completion_wakes_user_manager(mocker):
         return_value=False,
     )
     mocker.patch("nextcloud_mcp_server.server.auth_tools.invalidate_scope_cache")
+    _grant_completed_by(mocker, "alice")
 
     flow_client = AsyncMock()
     flow_client.poll = AsyncMock(
@@ -534,6 +551,7 @@ async def test_check_status_polls_pending_flow_while_still_provisioned(mocker):
         return_value=False,
     )
     mocker.patch("nextcloud_mcp_server.server.auth_tools.invalidate_scope_cache")
+    _grant_completed_by(mocker, "alice")
 
     flow_client = AsyncMock()
     flow_client.poll = AsyncMock(
@@ -610,3 +628,72 @@ async def test_check_status_expired_flow_keeps_previous_grant(mocker):
     assert response.status == "provisioned"
     assert response.scopes == ["files.read"]
     storage.delete_login_flow_session.assert_awaited_once()
+
+
+# ── GHSA-84qv-22q6-x82r: cross-user credential theft ──
+
+
+async def test_check_status_refuses_grant_from_another_account(mocker):
+    """A Login Flow completed by a different Nextcloud account is not stored.
+
+    ``nc_auth_provision_access`` hands out a transferable login URL, so an
+    authenticated caller can send it to a victim. Before the fix the victim's
+    app password was stored under the caller's user_id, giving the caller the
+    victim's Nextcloud identity for every later call.
+    """
+    check_status = _capture_registered_tools()["nc_auth_check_status"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="bob"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(return_value=None)
+    storage.get_login_flow_session = AsyncMock(
+        return_value={
+            "poll_endpoint": "https://nc/login/v2/poll",
+            "poll_token": "tok",
+            "requested_scopes": None,
+        }
+    )
+    storage.store_app_password_with_scopes = AsyncMock()
+    storage.delete_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="https://nc", nextcloud_public_issuer_url=None
+        ),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    # The victim granted, not bob.
+    _grant_completed_by(mocker, "admin")
+    revoke = mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.revoke_app_password", AsyncMock()
+    )
+
+    app_password = secrets.token_urlsafe(24)
+    flow_client = AsyncMock()
+    flow_client.poll = AsyncMock(
+        return_value=LoginFlowPollResult(
+            status="completed", login_name="admin", app_password=app_password
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+
+    response = await check_status(MagicMock())
+
+    assert response.status == "error"
+    assert response.success is False
+    storage.store_app_password_with_scopes.assert_not_awaited()
+    storage.delete_login_flow_session.assert_awaited_once()
+    revoke.assert_awaited_once_with("admin", app_password)

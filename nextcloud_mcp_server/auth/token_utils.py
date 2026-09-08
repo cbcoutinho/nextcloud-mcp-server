@@ -290,3 +290,14 @@ async def extract_user_id_from_token(_ctx: Context) -> str:
         )
 
     return user_id
+
+
+def current_access_token() -> str | None:
+    """Raw bearer token of the in-flight request, or ``None`` outside OAuth mode.
+
+    Needed where the IdP has to be asked something about the caller that the
+    verified claims do not carry — see
+    :func:`nextcloud_mcp_server.auth.grant_ownership.caller_identities`.
+    """
+    access_token: AccessToken | None = get_access_token()
+    return access_token.token if access_token else None

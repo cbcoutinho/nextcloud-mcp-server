@@ -241,7 +241,8 @@ Each user goes through provisioning **once**, the first time they connect. Subse
        │                                  ├────────────────────────────────────>│
        │                                  │  ← {loginName, appPassword}         │
        │                                  │                                     │
-       │                                  │  7. Encrypt + store in SQLite       │
+       │                                  │  7. Verify granter == caller, then  │
+       │                                  │     encrypt + store in SQLite       │
        │                                  │                                     │
        │  8. Retry MCP request            │                                     │
        ├─────────────────────────────────>│                                     │
@@ -251,6 +252,24 @@ Each user goes through provisioning **once**, the first time they connect. Subse
        │                                  │  ← response                         │
        │  10. ← result                    │                                     │
 ```
+
+### Step 7: the grant must come from the caller
+
+The login URL is **transferable** — whoever opens it and clicks "Grant access"
+produces the app password, and Nextcloud's Login Flow says nothing about who
+asked for it. Before storing anything, the server therefore checks that the
+account that granted is the OAuth caller who started the flow
+(`nextcloud_mcp_server/auth/grant_ownership.py`, GHSA-84qv-22q6-x82r):
+
+- the **granter** is resolved by authenticating the fresh app password against
+  OCS `/cloud/user`, which maps the Login Flow `loginName` (possibly an email
+  alias, or an LDAP login that differs from the UID) onto a canonical UID;
+- the **caller** is the OAuth `sub`, plus the IdP's `preferred_username` when an
+  external IdP issues opaque UUID subjects.
+
+A grant that does not match — or that cannot be verified at all — is refused:
+nothing is stored, and the app password it produced is revoked. Both the browser
+route and the MCP tools go through this check.
 
 ### Provisioning Endpoints
 
