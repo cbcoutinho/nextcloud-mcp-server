@@ -23,7 +23,15 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from nextcloud_mcp_server.api.management import validate_token_and_get_user
+from nextcloud_mcp_server.api.management import (
+    extract_bearer_token,
+    validate_token_and_get_user,
+)
+from nextcloud_mcp_server.auth.grant_ownership import (
+    caller_identities,
+    grant_belongs_to_caller,
+    revoke_app_password,
+)
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client, rewrite_url_origin
 from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.auth.storage import get_shared_storage
@@ -80,6 +88,9 @@ async def _poll_and_store(provision_id: str) -> None:
     poll_endpoint = session["poll_endpoint"]
     poll_token = session["poll_token"]
     user_id = session.get("user_id")
+    # Resolved at flow start, while the caller's bearer token was in hand
+    # (GHSA-84qv-22q6-x82r).
+    identities: set[str] = session.get("caller_identities") or set()
 
     # Poll every 2 seconds for up to 20 minutes
     max_attempts = 600
@@ -111,6 +122,21 @@ async def _poll_and_store(provision_id: str) -> None:
                     provision_id,
                 )
                 return
+
+            # The Login Flow URL is transferable: whoever opens it and clicks
+            # "Grant access" produces this password, not necessarily the caller
+            # who started the flow. Storing it unchecked hands that caller the
+            # granter's Nextcloud credential (GHSA-84qv-22q6-x82r).
+            if not await grant_belongs_to_caller(
+                identities, result.login_name, result.app_password
+            ):
+                if result.login_name:
+                    await revoke_app_password(result.login_name, result.app_password)
+                session = _provision_sessions.get(provision_id)
+                if session:
+                    session["status"] = "error"
+                return
+
             await storage.store_app_password_with_scopes(
                 user_id=effective_user_id,
                 app_password=result.app_password,
@@ -229,9 +255,15 @@ async def provision_page(
             status_code=502,
         )
 
+    # Resolve who the caller is *now*, while their bearer token is in hand — the
+    # background poller runs without a request. The completed grant is checked
+    # against this set before it is stored (GHSA-84qv-22q6-x82r).
+    identities = await caller_identities(user_id, extract_bearer_token(request))
+
     # Create provision session
     provision_id = secrets.token_urlsafe(32)
     _provision_sessions[provision_id] = {
+        "caller_identities": identities,
         "status": "pending",
         "login_url": init_response.login_url,
         "poll_endpoint": init_response.poll_endpoint,
