@@ -286,9 +286,13 @@ class DeckClient(BaseNextcloudClient):
     # Cards
     async def get_card(self, board_id: int, stack_id: int, card_id: int) -> DeckCard:
         headers = self._get_deck_headers()
+        # v1.1 (Deck >= 1.3.0), not v1.0, for the sake of ``attachments``: on
+        # v1.0 CardService::find strips every attachment that is not a legacy
+        # ``deck_file``, so a card whose files were attached from the Files app
+        # comes back with attachmentCount > 0 and an empty attachments array.
         response = await self._make_request(
             "GET",
-            f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}",
+            f"/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}",
             headers=headers,
         )
         return DeckCard(**response.json())
@@ -689,19 +693,30 @@ class DeckClient(BaseNextcloudClient):
     async def get_attachments(
         self, board_id: int, stack_id: int, card_id: int
     ) -> List[DeckAttachment]:
+        # v1.1 for the same reason as get_card: v1.0 returns only deck_file.
         response = await self._make_request(
             "GET",
-            f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments",
+            f"/apps/deck/api/v1.1/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments",
         )
         return [DeckAttachment(**attachment) for attachment in response.json()]
 
     async def get_attachment_file(
-        self, board_id: int, stack_id: int, card_id: int, attachment_id: int
+        self,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+        file_type: str = "deck_file",
     ) -> Any:
+        # Every route that addresses one attachment by id resolves that id
+        # against ``type`` (server-side default deck_file), so a Files-share
+        # attachment is only found with type=file. Applies equally to
+        # update/delete/restore below.
         # This endpoint returns the raw file, so we return the raw response content
         response = await self._make_request(
             "GET",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}",
+            params={"type": file_type},
         )
         return response.content
 
@@ -746,19 +761,32 @@ class DeckClient(BaseNextcloudClient):
         return DeckAttachment(**response.json())
 
     async def delete_attachment(
-        self, board_id: int, stack_id: int, card_id: int, attachment_id: int
+        self,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+        file_type: str = "deck_file",
     ) -> None:
+        # See get_attachment_file on why ``type`` has to be sent.
         await self._make_request(
             "DELETE",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}",
+            params={"type": file_type},
         )
 
     async def restore_attachment(
-        self, board_id: int, stack_id: int, card_id: int, attachment_id: int
+        self,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+        file_type: str = "deck_file",
     ) -> None:
         await self._make_request(
             "PUT",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}/restore",
+            params={"type": file_type},
         )
 
     # OCS API Endpoints (Config, Comments, Sessions)
