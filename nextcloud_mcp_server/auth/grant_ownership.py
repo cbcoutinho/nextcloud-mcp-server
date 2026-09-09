@@ -17,8 +17,8 @@ GHSA-x88r-fhx7-52h6) — and the canonical UIDs it returns are compared:
   Nextcloud can answer this one: with ``user_oidc``'s ``--unique-uid`` (the
   documented external-IdP setup, and what this repo's own Keycloak hook
   configures) the UID is a *hash* of the IdP ``sub``, so no claim in the token
-  equals it. Deployments where Nextcloud is itself the IdP need no lookup —
-  ``sub`` is already the UID, and is always accepted.
+  equals it. The OAuth ``sub`` is accepted alongside whatever the lookup
+  returns, since it is itself the UID when Nextcloud is the IdP.
 
 An IdP-supplied ``preferred_username`` is deliberately *not* accepted as an
 identity: it is a claim the IdP — and on some IdPs the user themselves —
@@ -85,7 +85,9 @@ async def caller_identities(user_id: str, access_token: str | None = None) -> se
     Always contains the OAuth ``sub`` — that *is* the UID when Nextcloud is the
     IdP. With an external IdP it is not, and the UID cannot be derived from the
     token at all (``user_oidc --unique-uid`` hashes the ``sub``), so Nextcloud
-    is asked directly, using the caller's own bearer token.
+    is also asked directly, using the caller's own bearer token. That lookup
+    runs for every token, native IdP included: telling the two deployments apart
+    here would cost more than the one request a completed grant makes.
     """
     identities = {user_id.casefold()}
     if not access_token:
