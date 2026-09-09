@@ -6,7 +6,7 @@ import logging
 import re
 import uuid
 from typing import Any
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
@@ -252,6 +252,18 @@ def _occurrence_is_done(component: Any) -> bool:
         return False
 
 
+def _encode_dav_url(url: str) -> str:
+    """Percent-encode the path of a *decoded* DAV path or absolute URL.
+
+    Same rule as ``WebDAVClient``'s ``_encode_dav_path`` (``quote`` with
+    ``safe="/"``), applied to the path component only so that the scheme of an
+    absolute URL survives. Encode exactly once: the input is decoded, so a
+    literal ``%`` becomes ``%25`` rather than being read as an existing escape.
+    """
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe="/"), "", ""))
+
+
 def _as_utc_datetime(value: dt.date) -> dt.datetime:
     """Normalize a date or datetime to an aware UTC datetime for ordering."""
     if isinstance(value, dt.datetime):
@@ -334,7 +346,7 @@ class CalendarClient:
         if home_url is None:
             return None
 
-        home_url = str(home_url)
+        home_url = unquote(str(home_url))
         if not home_url:
             return None
         if home_url.startswith("/"):
@@ -413,7 +425,7 @@ class CalendarClient:
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
-        return f"{self._calendar_home_url}{calendar_name}/"
+        return _encode_dav_url(f"{self._calendar_home_url}{calendar_name}/")
 
     def _get_calendar(self, calendar_name: str) -> AsyncCalendar:
         """Get an AsyncCalendar object for the given calendar name."""
@@ -576,7 +588,7 @@ class CalendarClient:
 
             calendar_url = href.text
             # Extract calendar name from URL
-            calendar_name = calendar_url.rstrip("/").split("/")[-1]
+            calendar_name = unquote(calendar_url.rstrip("/").split("/")[-1])
 
             # Skip if this is the calendar home itself
             if calendar_url.rstrip("/") == self._calendar_home_url.rstrip("/"):
@@ -870,7 +882,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(href),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(_encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,
