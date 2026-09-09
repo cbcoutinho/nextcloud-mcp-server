@@ -6,17 +6,26 @@ that person to the OAuth caller who started it. Storing the result under the
 caller's identity without checking hands an attacker the victim's Nextcloud
 credential after a single click.
 
-The check compares canonical Nextcloud UIDs, never names:
+Both sides are resolved the same way — by asking Nextcloud who a credential
+authenticates as (OCS ``/cloud/user``, the move ``api/passwords.py`` makes for
+GHSA-x88r-fhx7-52h6) — and the canonical UIDs it returns are compared:
 
-* the **granter** is resolved by authenticating the fresh app password against
-  OCS ``/cloud/user`` — the same move ``api/passwords.py`` makes for
-  GHSA-x88r-fhx7-52h6. This maps the Login Flow ``loginName`` (which may be an
-  email alias, or an LDAP login that differs from the UID — GH #980) onto the
-  account Nextcloud will actually act as.
-* the **caller** is the OAuth ``sub``. When Nextcloud is the IdP that already
-  *is* the UID. With an external IdP (Keycloak) ``sub`` is an opaque UUID, so
-  the IdP's ``preferred_username`` is consulted as well — that is the claim
-  ``user_oidc`` maps onto the Nextcloud account.
+* the **granter** is authenticated with the fresh app password. This maps the
+  Login Flow ``loginName`` (which may be an email alias, or an LDAP login that
+  differs from the UID — GH #980) onto the account Nextcloud will act as.
+* the **caller** is authenticated with their own OAuth bearer token. Only
+  Nextcloud can answer this one: with ``user_oidc``'s ``--unique-uid`` (the
+  documented external-IdP setup, and what this repo's own Keycloak hook
+  configures) the UID is a *hash* of the IdP ``sub``, so no claim in the token
+  equals it. The OAuth ``sub`` is accepted alongside whatever the lookup
+  returns, since it is itself the UID when Nextcloud is the IdP.
+
+An IdP-supplied ``preferred_username`` is deliberately *not* accepted as an
+identity: it is a claim the IdP — and on some IdPs the user themselves —
+controls, so honouring it would let an attacker name the victim's UID as their
+own and walk straight back into the advisory. External-IdP deployments
+therefore need Nextcloud to accept the IdP's bearer tokens
+(``user_oidc --check-bearer=1``), which ADR-002 already requires.
 
 Anything we cannot verify is refused: a grant that fails the check is never
 stored, and the app password it produced is revoked so nobody keeps it.
@@ -33,98 +42,61 @@ logger = logging.getLogger(__name__)
 _OCS_HEADERS = {"OCS-APIRequest": "true"}
 _TIMEOUT = 10.0
 
-# Userinfo endpoint per discovery URL. It does not change while the process
-# runs, and this path is only reached in external-IdP mode.
-_userinfo_endpoints: dict[str, str] = {}
 
-
-def _discovery_url() -> str | None:
-    """OIDC discovery URL, mirroring how ``app.py`` derives it at startup."""
-    settings = get_settings()
-    if settings.oidc_discovery_url:
-        return settings.oidc_discovery_url
-    host = settings.nextcloud_host
-    return f"{host.rstrip('/')}/.well-known/openid-configuration" if host else None
-
-
-async def _userinfo_endpoint() -> str | None:
-    discovery_url = _discovery_url()
-    if not discovery_url:
-        return None
-    if discovery_url in _userinfo_endpoints:
-        return _userinfo_endpoints[discovery_url]
-    try:
-        async with nextcloud_httpx_client(timeout=_TIMEOUT) as client:
-            response = await client.get(discovery_url)
-            response.raise_for_status()
-            endpoint = response.json().get("userinfo_endpoint")
-    except Exception as e:
-        logger.warning("Could not read userinfo_endpoint from %s: %s", discovery_url, e)
-        return None
-    if not isinstance(endpoint, str) or not endpoint:
-        return None
-    _userinfo_endpoints[discovery_url] = endpoint
-    return endpoint
-
-
-async def caller_identities(user_id: str, access_token: str | None = None) -> set[str]:
-    """Casefolded Nextcloud identifiers the OAuth caller may legitimately be.
-
-    Always contains the OAuth ``sub``. In external-IdP deployments ``sub`` is an
-    opaque UUID, so ``preferred_username`` from the IdP's userinfo endpoint is
-    added when an access token is available — that is the claim ``user_oidc``
-    maps onto the Nextcloud account.
-    """
-    identities = {user_id.casefold()}
-    if not access_token:
-        return identities
-
-    endpoint = await _userinfo_endpoint()
-    if not endpoint:
-        return identities
-
-    try:
-        async with nextcloud_httpx_client(timeout=_TIMEOUT) as client:
-            response = await client.get(
-                endpoint, headers={"Authorization": f"Bearer {access_token}"}
-            )
-            response.raise_for_status()
-            claims: Any = response.json()
-    except Exception as e:
-        logger.warning("Could not query IdP userinfo for caller identity: %s", e)
-        return identities
-
-    if isinstance(claims, dict):
-        for claim in ("sub", "preferred_username"):
-            value = claims.get(claim)
-            if isinstance(value, str) and value:
-                identities.add(value.casefold())
-    return identities
-
-
-async def _ocs_whoami(login_name: str, app_password: str) -> str | None:
+async def _ocs_whoami(
+    *,
+    auth: tuple[str, str] | None = None,
+    bearer: str | None = None,
+) -> str | None:
     """Canonical Nextcloud UID a credential authenticates as, else ``None``."""
     host = get_settings().nextcloud_host
     if not host:
         return None
+
+    headers = dict(_OCS_HEADERS)
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+
     try:
         async with nextcloud_httpx_client(timeout=_TIMEOUT) as client:
             response = await client.get(
                 f"{host.rstrip('/')}/ocs/v2.php/cloud/user",
-                auth=(login_name, app_password),
+                auth=auth,
                 params={"format": "json"},
-                headers=_OCS_HEADERS,
+                headers=headers,
             )
             response.raise_for_status()
             payload: Any = response.json()
     except Exception as e:
-        logger.warning("Could not resolve Nextcloud UID for a Login Flow grant: %s", e)
+        logger.warning(
+            "Could not resolve a Nextcloud UID for a Login Flow grant: %s", e
+        )
         return None
 
     ocs = payload.get("ocs") if isinstance(payload, dict) else None
     data = ocs.get("data") if isinstance(ocs, dict) else None
     uid = data.get("id") if isinstance(data, dict) else None
     return uid if isinstance(uid, str) and uid else None
+
+
+async def caller_identities(user_id: str, access_token: str | None = None) -> set[str]:
+    """Casefolded Nextcloud identifiers the OAuth caller may legitimately be.
+
+    Always contains the OAuth ``sub`` — that *is* the UID when Nextcloud is the
+    IdP. With an external IdP it is not, and the UID cannot be derived from the
+    token at all (``user_oidc --unique-uid`` hashes the ``sub``), so Nextcloud
+    is also asked directly, using the caller's own bearer token. That lookup
+    runs for every token, native IdP included: telling the two deployments apart
+    here would cost more than the one request a completed grant makes.
+    """
+    identities = {user_id.casefold()}
+    if not access_token:
+        return identities
+
+    caller_uid = await _ocs_whoami(bearer=access_token)
+    if caller_uid:
+        identities.add(caller_uid.casefold())
+    return identities
 
 
 async def revoke_app_password(login_name: str, app_password: str) -> None:
@@ -161,7 +133,7 @@ async def grant_belongs_to_caller(
         logger.warning("Login Flow v2 grant carried no loginName; refusing to store it")
         return False
 
-    granter_uid = await _ocs_whoami(login_name, app_password)
+    granter_uid = await _ocs_whoami(auth=(login_name, app_password))
     if not granter_uid:
         return False
 

@@ -21,16 +21,12 @@ APP_PASSWORD = secrets.token_urlsafe(24)
 
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
-    """Point the helper at a fixed Nextcloud host and clear the endpoint cache."""
+    """Point the helper at a fixed Nextcloud host."""
 
     class _S:
         nextcloud_host = "https://cloud.example.com"
-        oidc_discovery_url = None
 
     monkeypatch.setattr(go, "get_settings", lambda: _S())
-    go._userinfo_endpoints.clear()
-    yield
-    go._userinfo_endpoints.clear()
 
 
 def _patch_transport(monkeypatch, handler) -> list[httpx.Request]:
@@ -109,41 +105,52 @@ async def test_caller_identities_without_a_token_is_just_the_sub():
     assert await go.caller_identities("Alice") == {"alice"}
 
 
-async def test_caller_identities_adds_preferred_username_from_the_idp(monkeypatch):
-    """External IdP: ``sub`` is a UUID, the Nextcloud account is preferred_username."""
+async def test_caller_identities_adds_the_uid_nextcloud_resolves(monkeypatch):
+    """External IdP: the UID is a hash of the sub, so only Nextcloud knows it."""
+    uid = "9b2d9c7f2c12390ddabe33578c453daaa6a0e3618d606b84e995dcfa6c59145e"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/.well-known/openid-configuration"):
-            return httpx.Response(
-                200, json={"userinfo_endpoint": "https://idp.example.com/userinfo"}
-            )
         assert request.headers["Authorization"] == "Bearer tok"
-        return httpx.Response(200, json={"sub": "uuid-1", "preferred_username": "Bob"})
+        return _ocs_user(uid)
 
     _patch_transport(monkeypatch, handler)
 
-    assert await go.caller_identities("uuid-1", "tok") == {"uuid-1", "bob"}
+    assert await go.caller_identities("uuid-1", "tok") == {"uuid-1", uid}
 
 
 async def test_external_idp_caller_owns_their_grant(monkeypatch):
-    """End to end for the Keycloak shape: UUID sub, Nextcloud UID from the IdP."""
+    """End to end for the Keycloak shape: UUID sub, hashed Nextcloud UID."""
+    uid = "9b2d9c7f2c12390ddabe33578c453daaa6a0e3618d606b84e995dcfa6c59145e"
+    _patch_transport(monkeypatch, lambda _r: _ocs_user(uid))
+
+    identities = await go.caller_identities("6f1c-uuid", "tok")
+    assert await go.grant_belongs_to_caller(identities, uid, APP_PASSWORD) is True
+
+
+async def test_caller_identities_ignores_idp_claims(monkeypatch):
+    """A ``preferred_username`` naming someone else's UID must not be honoured.
+
+    An IdP — or, where it lets users pick their own username, an attacker —
+    could otherwise claim the victim's Nextcloud UID and walk back into the
+    advisory. Only what Nextcloud says the bearer token authenticates as counts.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/.well-known/openid-configuration"):
-            return httpx.Response(
-                200, json={"userinfo_endpoint": "https://idp.example.com/userinfo"}
-            )
-        if request.url.path.endswith("/userinfo"):
-            return httpx.Response(200, json={"preferred_username": "bob"})
-        return _ocs_user("bob")
+        # Nextcloud does not accept this IdP's bearer tokens; the app password
+        # the victim granted authenticates fine.
+        if request.headers.get("Authorization", "").startswith("Bearer "):
+            return httpx.Response(401)
+        return _ocs_user("victim")
 
     _patch_transport(monkeypatch, handler)
 
-    identities = await go.caller_identities("6f1c-uuid", "tok")
-    assert await go.grant_belongs_to_caller(identities, "bob", APP_PASSWORD) is True
+    identities = await go.caller_identities("attacker-uuid", "tok")
+
+    assert identities == {"attacker-uuid"}
+    assert await go.grant_belongs_to_caller(identities, "victim", APP_PASSWORD) is False
 
 
-async def test_caller_identities_survives_an_unreachable_idp(monkeypatch):
+async def test_caller_identities_survives_an_unreachable_nextcloud(monkeypatch):
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")
 

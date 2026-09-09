@@ -261,11 +261,23 @@ asked for it. Before storing anything, the server therefore checks that the
 account that granted is the OAuth caller who started the flow
 (`nextcloud_mcp_server/auth/grant_ownership.py`, GHSA-84qv-22q6-x82r):
 
-- the **granter** is resolved by authenticating the fresh app password against
-  OCS `/cloud/user`, which maps the Login Flow `loginName` (possibly an email
-  alias, or an LDAP login that differs from the UID) onto a canonical UID;
-- the **caller** is the OAuth `sub`, plus the IdP's `preferred_username` when an
-  external IdP issues opaque UUID subjects.
+Both sides are resolved the same way — by asking Nextcloud who a credential
+authenticates as (OCS `/cloud/user`) — and the canonical UIDs are compared:
+
+- the **granter** is authenticated with the fresh app password, which maps the
+  Login Flow `loginName` (possibly an email alias, or an LDAP login that differs
+  from the UID) onto a canonical UID;
+- the **caller** is authenticated with their own OAuth bearer token. The OAuth
+  `sub` is also accepted, since it *is* the UID when Nextcloud is the IdP.
+
+An IdP-supplied `preferred_username` is deliberately not accepted as a caller
+identity: it is a claim the IdP — and on some IdPs the user — controls, so
+honouring it would let an attacker name the victim's UID as their own. External
+IdPs are handled by the bearer lookup instead, which means **Nextcloud must be
+configured to accept the IdP's bearer tokens** (`user_oidc --check-bearer=1`, as
+ADR-002 already requires). Without it the caller's UID cannot be established and
+provisioning fails closed. Note that no token claim can substitute: with
+`user_oidc --unique-uid` the Nextcloud UID is a hash of the IdP `sub`.
 
 A grant that does not match — or that cannot be verified at all — is refused:
 nothing is stored, and the app password it produced is revoked. Both the browser
