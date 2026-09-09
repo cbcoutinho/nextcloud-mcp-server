@@ -71,10 +71,11 @@ KEYCLOAK_CLIENT_ID = "nextcloud-mcp-server"
 # not a real secret. NOSONAR suppresses the hardcoded-credentials hotspot.
 KEYCLOAK_CLIENT_SECRET = "mcp-secret-change-in-production"  # NOSONAR(S2068)
 
-# Keycloak user used only for the OAuth leg (session identity key). It does not
-# have to match the Nextcloud data user — the app password minted by the Login
-# Flow leg is what authenticates DAV requests. Direct Access Grants (ROPC) are
-# enabled for the `nextcloud-mcp-server` client in realm-export.json.
+# Keycloak user for the OAuth leg. Its identity is load-bearing since
+# GHSA-84qv-22q6-x82r: the Nextcloud account it resolves to must be the one that
+# completes the Login Flow leg, or the grant is refused (see
+# `divergent_email_user`, which asserts exactly that). Direct Access Grants
+# (ROPC) are enabled for the `nextcloud-mcp-server` client in realm-export.json.
 KEYCLOAK_OAUTH_USER = "admin"
 KEYCLOAK_OAUTH_PASSWORD = "admin"  # NOSONAR(S2068) - dev-only Keycloak bootstrap creds
 
@@ -177,12 +178,15 @@ async def keycloak_service_oauth_token(anyio_backend) -> str:
     """Obtain a Keycloak access token accepted by the ``mcp-keycloak`` session.
 
     Uses the OAuth 2.0 Resource Owner Password Credentials (direct access)
-    grant against the static ``nextcloud-mcp-server`` client. The OAuth leg's
-    identity is irrelevant to the reproduction — the Login Flow v2 app password
-    is what authenticates DAV requests — so there is no need to drive Keycloak's
-    browser login form here. Direct grant is faster and avoids the flakiness of
-    the auth-code + Playwright flow (whose native ``#username`` login page also
-    breaks when the request carries scopes the client does not know about).
+    grant against the static ``nextcloud-mcp-server`` client. Direct grant is
+    faster than driving Keycloak's browser login form and avoids the flakiness
+    of the auth-code + Playwright flow (whose native ``#username`` login page
+    also breaks when the request carries scopes the client does not know about).
+
+    *Which* user this authenticates as does matter, though — since
+    GHSA-84qv-22q6-x82r the Nextcloud account this token resolves to has to be
+    the one that completes the Login Flow leg, or the grant is refused. That is
+    what ``divergent_email_user`` asserts before anything else runs.
     """
     async with httpx.AsyncClient(timeout=30.0) as http:
         discovery = await http.get(
