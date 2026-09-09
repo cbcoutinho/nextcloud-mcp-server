@@ -701,12 +701,22 @@ class DeckClient(BaseNextcloudClient):
         return [DeckAttachment(**attachment) for attachment in response.json()]
 
     async def get_attachment_file(
-        self, board_id: int, stack_id: int, card_id: int, attachment_id: int
+        self,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+        file_type: str = "deck_file",
     ) -> Any:
+        # Every route that addresses one attachment by id resolves that id
+        # against ``type`` (server-side default deck_file), so a Files-share
+        # attachment is only found with type=file. Applies equally to
+        # update/delete/restore below.
         # This endpoint returns the raw file, so we return the raw response content
         response = await self._make_request(
             "GET",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}",
+            params={"type": file_type},
         )
         return response.content
 
@@ -758,8 +768,7 @@ class DeckClient(BaseNextcloudClient):
         attachment_id: int,
         file_type: str = "deck_file",
     ) -> None:
-        # The v1.0 route resolves the id against ``type`` (default deck_file),
-        # so a Files-share attachment needs type=file or Deck cannot find it.
+        # See get_attachment_file on why ``type`` has to be sent.
         await self._make_request(
             "DELETE",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}",
@@ -767,11 +776,17 @@ class DeckClient(BaseNextcloudClient):
         )
 
     async def restore_attachment(
-        self, board_id: int, stack_id: int, card_id: int, attachment_id: int
+        self,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+        file_type: str = "deck_file",
     ) -> None:
         await self._make_request(
             "PUT",
             f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}/restore",
+            params={"type": file_type},
         )
 
     # OCS API Endpoints (Config, Comments, Sessions)

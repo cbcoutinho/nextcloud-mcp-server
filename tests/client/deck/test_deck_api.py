@@ -398,6 +398,26 @@ async def test_deck_delete_attachment_defaults_to_deck_file(mocker):
     assert DeckClient._make_request.call_args.kwargs["params"] == {"type": "deck_file"}
 
 
+@pytest.mark.parametrize(
+    "method", ["get_attachment_file", "restore_attachment", "delete_attachment"]
+)
+async def test_deck_attachment_routes_address_the_id_by_type(mocker, method):
+    """Every route that addresses one attachment by id resolves it against
+    ``type``, so all of them have to send it — not just delete."""
+    mocker.patch.object(
+        DeckClient,
+        "_make_request",
+        return_value=create_mock_response(json_data={}, content=b""),
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await getattr(client, method)(
+        board_id=123, stack_id=456, card_id=789, attachment_id=1, file_type="file"
+    )
+
+    assert DeckClient._make_request.call_args.kwargs["params"] == {"type": "file"}
+
+
 async def test_deck_assign_dependent_card(mocker):
     """Test that assign_dependent_card POSTs to the right route and parses the card."""
     mock_response = create_mock_deck_card_response(
