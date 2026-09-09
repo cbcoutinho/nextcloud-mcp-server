@@ -106,6 +106,7 @@ async def _nextcloud_uid_for_bearer(token: str) -> str | None:
     ``--unique-uid``, so the UID is a hash of the IdP ``sub``.
     """
     host = os.getenv("NEXTCLOUD_HOST")
+    assert host, "NEXTCLOUD_HOST must be set for the keycloak lane"
     async with httpx.AsyncClient(timeout=30.0) as http:
         response = await http.get(
             f"{host.rstrip('/')}/ocs/v2.php/cloud/user",
