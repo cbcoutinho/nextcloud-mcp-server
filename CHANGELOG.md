@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.185.3 (2026-09-09)
+
+### Fix
+
+- **deck**: send the attachment type on every id-addressed route
+- **deck**: link card attachments and stop hiding Files-share ones
+
 ## v0.185.2 (2026-09-09)
 
 ### Fix
