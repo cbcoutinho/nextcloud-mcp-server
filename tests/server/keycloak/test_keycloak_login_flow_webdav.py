@@ -13,10 +13,13 @@ they are also the regression guard for ``NEXTCLOUD_PUBLIC_URL`` (in external-IdP
 mode the OAuth issuer URL is Keycloak, not Nextcloud; without the dedicated
 public-URL setting the login page 404s on Keycloak).
 
-The fixtures log into Nextcloud Login Flow v2 as a *local* user via its **email**,
-so the app password's stored ``loginName`` is the email while the canonical UID is
-``divprincipal_<suffix>`` (loginName != UID). This exercises the same
-identity-divergence shape as PR #980's client fix. Note: it does not reproduce
+The fixtures log into Nextcloud Login Flow v2 via an **email alias** on the
+account the Keycloak token resolves to, so the app password's stored
+``loginName`` is the email while the canonical UID is the account name
+(loginName != UID). This exercises the same identity-divergence shape as PR
+#980's client fix — and, because the granting account is the OAuth caller's own,
+it is also the end-to-end guard that GHSA-84qv-22q6-x82r's ownership check
+accepts a legitimate external-IdP grant. Note: it does not reproduce
 #980's wrong-path failure on the CI Nextcloud versions — Nextcloud resolves
 ``/remote.php/dav/files/<email>/`` to the user's real home, so the round-trip
 succeeds regardless of the client-side principal-discovery fix. #980's failure
@@ -74,7 +77,9 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
     Login Flow v2 ``login_url`` were rewritten to the Keycloak origin again, the
     session fixture could not provision and this test would never run.
     """
-    suffix = divergent_email_user["uid"].split("_")[-1]
+    # Per-session suffix from the email alias, so a leftover directory from an
+    # earlier run cannot collide (the UID is now the fixed caller account).
+    suffix = divergent_email_user["email"].split("@")[0].split("_")[-1]
     dir_path = f"/KeycloakLoginFlowTest_{suffix}"
     file_path = f"{dir_path}/keycloak_login_flow.txt"
     content = f"webdav round-trip via keycloak service {suffix}"
