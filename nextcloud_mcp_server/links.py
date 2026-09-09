@@ -28,6 +28,7 @@ from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base as brows
 from nextcloud_mcp_server.models.deck import (
     CardOperationResponse,
     CreateCardResponse,
+    DeckAttachment,
     DeckBoard,
     DeckCard,
     DeckCardSummary,
@@ -51,6 +52,7 @@ _NOTE_PATH = "/index.php/apps/notes/note/{note_id}"
 _FILE_PATH = "/index.php/f/{file_id}"
 _BOARD_PATH = "/index.php/apps/deck/board/{board_id}"
 _CARD_PATH = "/index.php/apps/deck/board/{board_id}/card/{card_id}"
+_DECK_FILE_PATH = "/index.php/apps/deck/cards/{card_id}/attachment/{attachment_id}"
 
 
 def _note_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
@@ -95,6 +97,15 @@ def _card_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
     return base + _CARD_PATH.format(board_id=board_id, card_id=item.id)
 
 
+def _attachment_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+    # type="file" attachments are Files shares, so the file itself opens — this
+    # is what Deck's own AttachmentList.vue links to. type="deck_file" ones live
+    # in Deck's private storage and only have its download route.
+    return file_url(base, item.extendedData.fileid) or base + _DECK_FILE_PATH.format(
+        card_id=item.cardId, attachment_id=item.id
+    )
+
+
 def _card_operation_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
     # This one carries both ids itself, so it never needs the walk context.
     return base + _CARD_PATH.format(board_id=item.board_id, card_id=item.card_id)
@@ -118,6 +129,7 @@ _URL_BUILDERS: dict[
     DeckBoard: _board_url,
     DeckStack: _stack_url,
     DeckCard: _card_url,
+    DeckAttachment: _attachment_url,
     DeckCardSummary: _card_url,
     CreateCardResponse: _card_url,
     CardOperationResponse: _card_operation_url,

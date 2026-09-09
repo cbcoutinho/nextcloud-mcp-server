@@ -2011,6 +2011,7 @@ async def deck_attach_note(
 
 
 @require_scopes("deck.read")
+@with_links
 @instrument_tool
 async def deck_list_attachments(
     ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -2019,7 +2020,9 @@ async def deck_list_attachments(
 
     Returns both shared-file attachments (``type="file"``, created via
     :func:`deck_attach_file` / :func:`deck_attach_note`) and uploaded
-    binary attachments (``type="deck_file"``).
+    binary attachments (``type="deck_file"``). Each carries a ``url`` that
+    opens it — the file in Files for ``type="file"``, Deck's download route
+    for ``type="deck_file"``.
 
     Args:
         board_id: The ID of the board
@@ -2039,6 +2042,7 @@ async def deck_delete_attachment(
     stack_id: int,
     card_id: int,
     attachment_id: int,
+    attachment_type: str = "deck_file",
 ) -> AttachmentOperationResponse:
     """Delete an attachment from a Nextcloud Deck card.
 
@@ -2052,9 +2056,15 @@ async def deck_delete_attachment(
         stack_id: The ID of the stack
         card_id: The ID of the card
         attachment_id: The ID of the attachment to delete
+        attachment_type: The attachment's ``type`` as reported by
+            :func:`deck_list_attachments` — ``"file"`` for a Files share,
+            ``"deck_file"`` for a blob uploaded into Deck. Deck resolves the
+            id against this type, so passing the wrong one 404s.
     """
     client = await get_client(ctx)
-    await client.deck.delete_attachment(board_id, stack_id, card_id, attachment_id)
+    await client.deck.delete_attachment(
+        board_id, stack_id, card_id, attachment_id, attachment_type
+    )
     return AttachmentOperationResponse(
         success=True,
         message="Attachment deleted successfully",
