@@ -6,7 +6,7 @@ import logging
 import re
 import uuid
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
@@ -22,6 +22,7 @@ from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-
 
 from ..config import get_nextcloud_ssl_verify
 from .dav_errors import DavPreconditionFailed, dav_error_from_response
+from .webdav import _encode_dav_path
 
 logger = logging.getLogger(__name__)
 
@@ -255,13 +256,25 @@ def _occurrence_is_done(component: Any) -> bool:
 def _encode_dav_url(url: str) -> str:
     """Percent-encode the path of a *decoded* DAV path or absolute URL.
 
-    Same rule as ``WebDAVClient``'s ``_encode_dav_path`` (``quote`` with
-    ``safe="/"``), applied to the path component only so that the scheme of an
-    absolute URL survives. Encode exactly once: the input is decoded, so a
-    literal ``%`` becomes ``%25`` rather than being read as an existing escape.
+    Delegates to ``WebDAVClient``'s ``_encode_dav_path`` so both DAV clients
+    encode by one rule; only the authority is split off first, so an absolute
+    URL's scheme and host survive (``CalendarClient`` stores absolute URLs where
+    ``WebDAVClient`` stores paths).
+
+    The split is deliberately ``partition`` and not ``urlsplit``: everything
+    after the authority is a DAV *path*, in which ``#`` and ``?`` are literal
+    characters rather than delimiters. ``urlsplit`` would read them as a
+    fragment/query and drop them, silently truncating the URL -- the same
+    spurious-404 failure ``_encode_dav_path`` was added to fix (PR #891).
+
+    Encode exactly once: the input is decoded, so a literal ``%`` becomes
+    ``%25`` rather than being read as an existing escape.
     """
-    parts = urlsplit(url)
-    return urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe="/"), "", ""))
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return _encode_dav_path(url)
+    netloc, slash, path = rest.partition("/")
+    return f"{scheme}://{netloc}{slash}{_encode_dav_path(path)}"
 
 
 def _as_utc_datetime(value: dt.date) -> dt.datetime:
@@ -554,7 +567,11 @@ class CalendarClient:
         # expects a list of property *names* and would build its own body
         # (discarding this custom CalendarServer/Apple-namespace markup).
         response = await self._dav_client.propfind(
-            self._calendar_home_url,
+            # ``_calendar_home_url`` is stored decoded (see
+            # ``_calendar_home_url_from_home_set``), so encode it here like
+            # every other URL this client puts on the wire, rather than relying
+            # on the HTTP layer to normalise a space for us.
+            _encode_dav_url(self._calendar_home_url),
             body=propfind_body,
             depth=1,
             headers={"X-NC-CalDAV-Webcal-Caching": "Off"},

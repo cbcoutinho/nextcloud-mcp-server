@@ -256,6 +256,120 @@ async def test_event_objects_from_a_report_re_encode_their_href(mocker):
     )
 
 
+def test_a_calendar_name_containing_a_hash_is_not_truncated():
+    """``#``/``?`` are literal characters in a DAV path, not URL delimiters.
+
+    Splitting the URL before encoding reads them as a fragment/query and drops
+    the rest, which is the spurious-404 failure ``_encode_dav_path`` was added
+    to fix (PR #891).
+    """
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+
+    assert (
+        client._get_calendar_url("My #1 Calendar")
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/My%20%231%20Calendar/"
+    )
+    assert (
+        client._get_calendar_url("Q1?plan")
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/Q1%3Fplan/"
+    )
+
+
+def test_encode_dav_url_preserves_the_authority():
+    """Scheme, host and port must survive; only the path is encoded."""
+    from nextcloud_mcp_server.client.calendar import _encode_dav_url
+
+    assert (
+        _encode_dav_url("https://cloud.example.org:8443/remote.php/dav/calendars/A B/")
+        == "https://cloud.example.org:8443/remote.php/dav/calendars/A%20B/"
+    )
+    # A bare path (what caldav hands back from a parsed href) has no authority.
+    assert (
+        _encode_dav_url("/remote.php/dav/calendars/A B/")
+        == "/remote.php/dav/calendars/A%20B/"
+    )
+    # Decoded input, so a literal '%' encodes to '%25' -- exactly once.
+    assert (
+        _encode_dav_url("/remote.php/dav/calendars/a%b/")
+        == "/remote.php/dav/calendars/a%25b/"
+    )
+
+
+async def test_event_objects_from_a_report_keep_a_hash_in_their_href(mocker):
+    """An event whose UID contains '#' must not have its URL truncated.
+
+    Nextcloud names the object after the client-supplied UID, and caldav
+    decodes the href it parses -- so ``evt%231.ics`` reaches us as ``evt#1.ics``
+    and has to be re-encoded, not split on.
+    """
+    import datetime as dt
+
+    from caldav.response import DAVResponse
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    ics = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:evt#1\r\n"
+        "DTSTART:20260901T090000Z\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    body = f"""<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+ <d:response>
+  <d:href>/remote.php/dav/calendars/alice/personal/evt%231.ics</d:href>
+  <d:propstat><d:prop>
+    <d:getetag>"tag-1"</d:getetag>
+    <c:calendar-data>{ics}</c:calendar-data>
+  </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+</d:multistatus>""".encode()
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    calendar = client._get_calendar("personal")
+    mocker.patch.object(
+        calendar.client,
+        "report",
+        mocker.AsyncMock(return_value=DAVResponse.from_bytes(body)),
+    )
+
+    events = await client._search_events_by_date(
+        calendar,
+        dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+        dt.datetime(2026, 9, 30, tzinfo=dt.UTC),
+    )
+
+    assert len(events) == 1
+    assert (
+        str(events[0].url)
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/personal/evt%231.ics"
+    )
+
+
+async def test_list_calendars_puts_an_encoded_home_url_on_the_wire(mocker):
+    """``_calendar_home_url`` is stored decoded, so the PROPFIND must encode it."""
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "Ada Lovelace")
+    propfind = mocker.patch.object(
+        client._dav_client,
+        "propfind",
+        mocker.AsyncMock(
+            return_value=mocker.Mock(
+                raw='<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>'
+            )
+        ),
+    )
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+
+    await client.list_calendars()
+
+    assert (
+        propfind.call_args.args[0]
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/"
+    )
+
+
 # --- calendar-home-set absolute-path normalization (issue #1007) ---
 
 
