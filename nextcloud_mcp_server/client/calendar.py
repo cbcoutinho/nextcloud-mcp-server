@@ -22,7 +22,7 @@ from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-
 
 from ..config import get_nextcloud_ssl_verify
 from .dav_errors import DavPreconditionFailed, dav_error_from_response
-from .webdav import _encode_dav_path
+from .dav_urls import encode_dav_url
 
 logger = logging.getLogger(__name__)
 
@@ -253,30 +253,6 @@ def _occurrence_is_done(component: Any) -> bool:
         return False
 
 
-def _encode_dav_url(url: str) -> str:
-    """Percent-encode the path of a *decoded* DAV path or absolute URL.
-
-    Delegates to ``WebDAVClient``'s ``_encode_dav_path`` so both DAV clients
-    encode by one rule; only the authority is split off first, so an absolute
-    URL's scheme and host survive (``CalendarClient`` stores absolute URLs where
-    ``WebDAVClient`` stores paths).
-
-    The split is deliberately ``partition`` and not ``urlsplit``: everything
-    after the authority is a DAV *path*, in which ``#`` and ``?`` are literal
-    characters rather than delimiters. ``urlsplit`` would read them as a
-    fragment/query and drop them, silently truncating the URL -- the same
-    spurious-404 failure ``_encode_dav_path`` was added to fix (PR #891).
-
-    Encode exactly once: the input is decoded, so a literal ``%`` becomes
-    ``%25`` rather than being read as an existing escape.
-    """
-    scheme, sep, rest = url.partition("://")
-    if not sep:
-        return _encode_dav_path(url)
-    netloc, slash, path = rest.partition("/")
-    return f"{scheme}://{netloc}{slash}{_encode_dav_path(path)}"
-
-
 def _as_utc_datetime(value: dt.date) -> dt.datetime:
     """Normalize a date or datetime to an aware UTC datetime for ordering."""
     if isinstance(value, dt.datetime):
@@ -438,7 +414,7 @@ class CalendarClient:
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
-        return _encode_dav_url(f"{self._calendar_home_url}{calendar_name}/")
+        return encode_dav_url(f"{self._calendar_home_url}{calendar_name}/")
 
     def _get_calendar(self, calendar_name: str) -> AsyncCalendar:
         """Get an AsyncCalendar object for the given calendar name."""
@@ -571,7 +547,7 @@ class CalendarClient:
             # ``_calendar_home_url_from_home_set``), so encode it here like
             # every other URL this client puts on the wire, rather than relying
             # on the HTTP layer to normalise a space for us.
-            _encode_dav_url(self._calendar_home_url),
+            encode_dav_url(self._calendar_home_url),
             body=propfind_body,
             depth=1,
             headers={"X-NC-CalDAV-Webcal-Caching": "Off"},
@@ -899,7 +875,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(_encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,

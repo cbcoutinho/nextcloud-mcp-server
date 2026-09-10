@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 from xml.sax.saxutils import escape as xml_escape
 
 import anyio
@@ -18,6 +18,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 
 from .base import BaseNextcloudClient
+from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
@@ -134,23 +135,6 @@ WEBDAV_SEARCH_PAGE_SIZE = 500
 # Crossing it is logged as a truncation warning (and surfaced via a metric) so the
 # cap can never again silently hide files.
 WEBDAV_SEARCH_MAX_RESULTS = 50000
-
-
-def _encode_dav_path(path: str) -> str:
-    """Percent-encode a *decoded* DAV path for use in a request URL/header.
-
-    Paths flow through this client already URL-decoded (e.g. ``unquote`` on the
-    ``<d:href>`` of a PROPFIND/REPORT response, or raw user-supplied paths from
-    MCP tools), so characters like ``#``, ``,`` and spaces reach httpx verbatim.
-    An unencoded ``#`` is parsed as a URL fragment and silently truncates the
-    request path → spurious 404 on otherwise-valid files (issue: OHR-Bench
-    ingest, card 309). ``quote`` with ``safe="/"`` encodes the unsafe characters
-    while preserving the path separators; ASCII-only paths are unchanged.
-
-    Encode exactly once: the input is decoded, so a literal ``%`` becomes
-    ``%25`` (correct) rather than being mistaken for an existing escape.
-    """
-    return quote(path, safe="/")
 
 
 def _reject_path_traversal(path: str) -> str:
@@ -428,7 +412,7 @@ class WebDAVClient(BaseNextcloudClient):
     def _webdav_path(self, path: str) -> str:
         """Build the request path for ``path`` under the user's DAV root.
 
-        Percent-encodes the caller-supplied portion (see ``_encode_dav_path``)
+        Percent-encodes the caller-supplied portion (see ``encode_dav_path``)
         so names with ``#``, commas, or spaces don't truncate/404; the base
         ``/remote.php/dav/files/<principal>`` segment is left as-is.
 
@@ -443,7 +427,7 @@ class WebDAVClient(BaseNextcloudClient):
         """
         safe_path = _reject_path_traversal(path)
         return (
-            f"{self._get_webdav_base_path()}/{_encode_dav_path(safe_path.lstrip('/'))}"
+            f"{self._get_webdav_base_path()}/{encode_dav_path(safe_path.lstrip('/'))}"
         )
 
     async def delete_resource(self, path: str) -> Dict[str, Any]:

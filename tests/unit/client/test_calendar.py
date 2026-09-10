@@ -260,7 +260,7 @@ def test_a_calendar_name_containing_a_hash_is_not_truncated():
     """``#``/``?`` are literal characters in a DAV path, not URL delimiters.
 
     Splitting the URL before encoding reads them as a fragment/query and drops
-    the rest, which is the spurious-404 failure ``_encode_dav_path`` was added
+    the rest, which is the spurious-404 failure ``encode_dav_path`` was added
     to fix (PR #891).
     """
     from nextcloud_mcp_server.client.calendar import CalendarClient
@@ -274,26 +274,6 @@ def test_a_calendar_name_containing_a_hash_is_not_truncated():
     assert (
         client._get_calendar_url("Q1?plan")
         == "https://cloud.example.org/remote.php/dav/calendars/alice/Q1%3Fplan/"
-    )
-
-
-def test_encode_dav_url_preserves_the_authority():
-    """Scheme, host and port must survive; only the path is encoded."""
-    from nextcloud_mcp_server.client.calendar import _encode_dav_url
-
-    assert (
-        _encode_dav_url("https://cloud.example.org:8443/remote.php/dav/calendars/A B/")
-        == "https://cloud.example.org:8443/remote.php/dav/calendars/A%20B/"
-    )
-    # A bare path (what caldav hands back from a parsed href) has no authority.
-    assert (
-        _encode_dav_url("/remote.php/dav/calendars/A B/")
-        == "/remote.php/dav/calendars/A%20B/"
-    )
-    # Decoded input, so a literal '%' encodes to '%25' -- exactly once.
-    assert (
-        _encode_dav_url("/remote.php/dav/calendars/a%b/")
-        == "/remote.php/dav/calendars/a%25b/"
     )
 
 
