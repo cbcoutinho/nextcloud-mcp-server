@@ -22,6 +22,7 @@ from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-
 
 from ..config import get_nextcloud_ssl_verify
 from .dav_errors import DavPreconditionFailed, dav_error_from_response
+from .dav_urls import encode_dav_url
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +335,7 @@ class CalendarClient:
         if home_url is None:
             return None
 
-        home_url = str(home_url)
+        home_url = unquote(str(home_url))
         if not home_url:
             return None
         if home_url.startswith("/"):
@@ -413,7 +414,7 @@ class CalendarClient:
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
-        return f"{self._calendar_home_url}{calendar_name}/"
+        return encode_dav_url(f"{self._calendar_home_url}{calendar_name}/")
 
     def _get_calendar(self, calendar_name: str) -> AsyncCalendar:
         """Get an AsyncCalendar object for the given calendar name."""
@@ -542,7 +543,11 @@ class CalendarClient:
         # expects a list of property *names* and would build its own body
         # (discarding this custom CalendarServer/Apple-namespace markup).
         response = await self._dav_client.propfind(
-            self._calendar_home_url,
+            # ``_calendar_home_url`` is stored decoded (see
+            # ``_calendar_home_url_from_home_set``), so encode it here like
+            # every other URL this client puts on the wire, rather than relying
+            # on the HTTP layer to normalise a space for us.
+            encode_dav_url(self._calendar_home_url),
             body=propfind_body,
             depth=1,
             headers={"X-NC-CalDAV-Webcal-Caching": "Off"},
@@ -576,7 +581,7 @@ class CalendarClient:
 
             calendar_url = href.text
             # Extract calendar name from URL
-            calendar_name = calendar_url.rstrip("/").split("/")[-1]
+            calendar_name = unquote(calendar_url.rstrip("/").split("/")[-1])
 
             # Skip if this is the calendar home itself
             if calendar_url.rstrip("/") == self._calendar_home_url.rstrip("/"):
@@ -870,7 +875,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(href),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,
