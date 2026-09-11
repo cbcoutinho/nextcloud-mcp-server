@@ -280,7 +280,7 @@ def _plan_file_deletions(
 
     A mode's discovery is *implausible* this cycle iff it was attempted, returned
     zero files, yet Qdrant still holds indexed points for it — the signature of a
-    flaky/empty tag read (issue: blackbox-demo re-index flap). While a mode's
+    flaky/empty tag read (issue: the observed re-index flap). While a mode's
     consecutive-empty streak is below ``empty_delete_threshold`` its deletions are
     suppressed and its grace timers are left untouched (neither started nor
     advanced), so a transient empty deletes nothing. Once the streak reaches the
@@ -434,7 +434,7 @@ def _indexed_files_scroll_filter(user_id: str) -> Filter:
     the original indexer, once they lost access, re-selected the shared points
     every scan (their discovery is now empty), re-issued a release, and — because
     the release only touches ``acl_principals`` — never shrank the set: a
-    perpetual no-op release loop (blackbox-demo team-folder removal, 2.7k
+    perpetual no-op release loop (observed on a team-folder removal, 2.7k
     releases/hr). Keying on the principal makes a release converge: once a user's
     principal is dropped, the next scan no longer selects the doc.
 
@@ -978,7 +978,7 @@ async def scan_user_documents(
         # Get this user's readable indexed file points from Qdrant (for deletion
         # tracking), keyed on acl_principals (the observed-access set) rather than
         # the immutable user_id indexer stamp — see _indexed_files_scroll_filter
-        # for why (blackbox-demo team-folder-removal release loop). Keying on the
+        # for why (the team-folder-removal release loop). Keying on the
         # principal makes a release converge and also tracks pure claimers, so a
         # reader who lost access releases its own principal on the next scan.
         indexed_by_mode: dict[str, set[str]] = {}

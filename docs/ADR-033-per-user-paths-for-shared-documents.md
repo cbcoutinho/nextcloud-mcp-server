@@ -29,7 +29,8 @@ Reconciled path for file_<id> after rename/move: '/A/doc.pdf' -> '/B/A/doc.pdf'
 Reconciled path for file_<id> after rename/move: '/B/A/doc.pdf' -> '/A/doc.pdf'
 ```
 
-Observed on blackbox-demo, 2026-07-20, service 0.142.0.
+Observed on a multi-user tenant with shared team folders, 2026-07-20, service
+0.142.0.
 
 ### Impact
 
