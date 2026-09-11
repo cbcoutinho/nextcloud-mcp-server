@@ -82,6 +82,9 @@ class _Settings:
         # Guard off by default so existing tiering tests are unaffected; tests
         # that exercise the size guard pass an explicit cap.
         max_pdf_size_mb=0.0,
+        # Matches the real default (config.py). "batch" makes OCR worker-only,
+        # so the inline ladder stops at structured.
+        ocr_mode="sync",
     ):
         self.document_tier1_engine = engine
         self.document_classify_enabled = classify
@@ -95,6 +98,7 @@ class _Settings:
         self.document_ocr_detect_scanned = detect_scanned
         self.document_glyph_corruption_ratio = glyph_corruption_ratio
         self.document_max_pdf_size_mb = max_pdf_size_mb
+        self.document_ocr_mode = ocr_mode
 
 
 def _registry(*procs: tuple[DocumentProcessor, int]) -> ProcessorRegistry:
@@ -283,6 +287,63 @@ async def test_no_ocr_escalation_when_disabled(monkeypatch):
     res = await r.process(b"%PDF-1.7", "application/pdf")
     # Fast tier is terminal when OCR is disabled.
     assert res.processor == "fast"
+
+
+# --- batch OCR is worker-only: the inline ladder must stop at structured -----
+#
+# Batch mode defers its poll across procrastinate retries, which only the
+# external worker path can do. Escalating inline burns a structured re-parse for
+# an OCR call that cannot succeed, and since OCR failure is non-fatal the doc is
+# never dead-lettered -- it is re-parsed on every scan until the Pod OOMs.
+# (Deck #1226.)
+
+
+async def test_no_inline_ocr_escalation_under_batch_mode(monkeypatch):
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_mode="batch")
+    )
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    # OCR is registered and enabled, but batch is worker-only -> never invoked.
+    assert res.processor == "fast"
+    assert res.metadata["ocr_escalation_skipped"] == "batch_worker_only"
+    esc.assert_not_called()
+
+
+async def test_inline_ocr_escalation_still_runs_under_sync_mode(monkeypatch):
+    # The counterpart: under sync, inline requests may escalate to OCR.
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_mode="sync")
+    )
+    monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    assert "ocr_escalation_skipped" not in res.metadata
+
+
+async def test_batch_mode_still_allows_structured_escalation(monkeypatch):
+    # Batch gates only the OCR rung. fast->structured is free and in-cluster, so
+    # it must still happen -- structured becomes the terminal tier, not fast.
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_mode="batch")
+    )
+    monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("structured", "structured", text="clean recovered prose text"), 10),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "structured"
 
 
 # --- glyph-corruption escalation + full-ladder parity ------------------------
