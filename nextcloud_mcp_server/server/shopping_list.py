@@ -182,8 +182,12 @@ def configure_shopping_list_tools(mcp: MCPServer):
         entry adds nothing. Once sending starts the items go one at a time — the
         app has no bulk endpoint — so a failure partway through leaves the
         earlier items on the list, and the error says how many those were.
-        Adding a name the list already carries merges the quantities rather than
-        duplicating the row.
+
+        A name already on the list is added again as a **second row**. The
+        quantity-merging the Shopping List web UI does is client-side, so the
+        API does not do it for you. To top up an existing item instead, read the
+        list with ``nc_shopping_list_get_items`` and use
+        ``nc_shopping_list_update_item``.
         """
         if not items:
             raise MCPError(code=-1, message="No items given to add")

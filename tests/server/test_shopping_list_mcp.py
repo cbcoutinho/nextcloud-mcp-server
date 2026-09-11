@@ -104,6 +104,46 @@ async def test_mcp_shopping_list_recipe_round_trip(
                 logger.warning("Failed to clean up shopping list %s: %s", list_id, e)
 
 
+async def test_mcp_shopping_list_duplicate_name_adds_a_second_row(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """Pin the fact the add_items docstring tells the model.
+
+    The app's quantity-merging lives in its Vue store, which matches an existing
+    item and issues an update — `ItemService::create` behind `POST /items`
+    inserts unconditionally. So the API duplicates, and a tool description
+    promising a merge would send a model down the wrong path.
+    """
+    title = f"MCP Dup Test {uuid.uuid4().hex[:8]}"
+    list_id = None
+
+    try:
+        created = _payload(
+            await nc_mcp_client.call_tool(
+                "nc_shopping_list_create_list", {"title": title}
+            )
+        )
+        list_id = created["list"]["id"]
+
+        for _ in range(2):
+            _payload(
+                await nc_mcp_client.call_tool(
+                    "nc_shopping_list_add_items",
+                    {"list_id": list_id, "items": [{"name": "flour", "quantity": "1"}]},
+                )
+            )
+
+        items = await nc_client.shopping_list.get_items(list_id)
+        assert [item["name"] for item in items] == ["flour", "flour"]
+
+    finally:
+        if list_id is not None:
+            try:
+                await nc_client.shopping_list.delete_list(list_id)
+            except Exception as e:
+                logger.warning("Failed to clean up shopping list %s: %s", list_id, e)
+
+
 async def test_mcp_shopping_list_missing_list_is_a_clean_error(
     nc_mcp_client: ClientSession,
 ):
