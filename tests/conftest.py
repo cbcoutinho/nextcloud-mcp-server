@@ -53,6 +53,7 @@ DEFAULT_FULL_SCOPES = (
     "sharing.read sharing.write "
     "news.read news.write "
     "collectives.read collectives.write "
+    "shopping_list.read shopping_list.write "
     "mail.read mail.write mail.send "
     "talk.read talk.write "
     "semantic.read"
@@ -72,6 +73,7 @@ DEFAULT_READ_SCOPES = (
     "sharing.read "
     "news.read "
     "collectives.read "
+    "shopping_list.read "
     "mail.read "
     "talk.read "
     "semantic.read"
@@ -91,6 +93,7 @@ DEFAULT_WRITE_SCOPES = (
     "sharing.write "
     "news.write "
     "collectives.write "
+    "shopping_list.write "
     "mail.write mail.send "
     "talk.write"
 )

@@ -14,6 +14,7 @@ from .news import configure_news_tools
 from .notes import configure_notes_tools
 from .semantic import configure_semantic_tools
 from .sharing import configure_sharing_tools
+from .shopping_list import configure_shopping_list_tools
 from .tables import configure_tables_tools
 from .talk import configure_talk_tools
 from .webdav import configure_webdav_tools
@@ -35,6 +36,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "news": configure_news_tools,
     "mail": configure_mail_tools,
     "talk": configure_talk_tools,
+    "shopping_list": configure_shopping_list_tools,
 }
 
 # App name → the key it publishes on /ocs/v2.php/cloud/capabilities, for apps
@@ -50,6 +52,8 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
 #     `client_integration`) are deliberately absent: those tools speak
 #     CalDAV/CardDAV and keep working with the web app uninstalled
 #   collectives / news / mail        → publish no capability block at all
+#   shopping_list                    → likewise; gating it would hide working
+#                                      tools on every instance that has it
 #   webdav / sharing                 → core `files`/`files_sharing`, always there
 APP_CAPABILITY_KEY: dict[str, str] = {
     "notes": "notes",
@@ -92,6 +96,7 @@ __all__ = [
     "configure_notes_tools",
     "configure_semantic_tools",
     "configure_sharing_tools",
+    "configure_shopping_list_tools",
     "configure_tables_tools",
     "configure_talk_tools",
     "configure_webdav_tools",
