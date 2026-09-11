@@ -27,6 +27,7 @@ from nextcloud_mcp_server.models.shopping_list import (
     ListShoppingListsResponse,
     ShoppingList,
     ShoppingListItem,
+    ShoppingListItemInput,
     ShoppingListItemResponse,
     ShoppingListResponse,
 )
@@ -167,27 +168,21 @@ def configure_shopping_list_tools(mcp: MCPServer):
     @instrument_tool
     async def nc_shopping_list_add_items(
         list_id: int,
-        items: list[dict[str, Any]],
+        items: list[ShoppingListItemInput],
         ctx: Context,
     ) -> AddShoppingListItemsResponse:
         """Add one or more items to a shopping list.
 
-        Takes a list so a whole recipe's ingredients land in one call. Each entry
-        is an object with:
+        Takes a list so a whole recipe's ingredients land in one call, e.g.
+        ``[{"name": "flour", "quantity": "2", "unit": "cups"},
+        {"name": "eggs", "quantity": "3"}]``. See the ``items`` schema for the
+        fields each entry accepts — only ``name`` is required.
 
-        - ``name`` (required) — the item, e.g. "flour"
-        - ``quantity`` — free text, e.g. "2". The app defaults it to "1"
-        - ``unit`` — free text, e.g. "cups"
-        - ``shopAreaId`` — shop area to file it under. Leave it out and the app
-          picks one from its own keyword mappings, which is usually what you want
-        - ``checked`` — add the item already ticked off (default false)
-
-        e.g. ``[{"name": "flour", "quantity": "2", "unit": "cups"},
-        {"name": "eggs", "quantity": "3"}]``
-
-        Items are added one at a time — the app has no bulk endpoint — so a
-        failure partway through leaves the earlier items on the list. Adding a
-        name the list already carries merges the quantities rather than
+        The whole list is validated before anything is sent, so a malformed
+        entry adds nothing. Once sending starts the items go one at a time — the
+        app has no bulk endpoint — so a failure partway through leaves the
+        earlier items on the list, and the error says how many those were.
+        Adding a name the list already carries merges the quantities rather than
         duplicating the row.
         """
         if not items:
@@ -195,27 +190,18 @@ def configure_shopping_list_tools(mcp: MCPServer):
 
         client = await get_client(ctx)
         added: list[ShoppingListItem] = []
-        for index, item in enumerate(items):
-            name = item.get("name")
-            if not name:
-                raise MCPError(
-                    code=-1,
-                    message=(
-                        f"Item at position {index} has no 'name'. "
-                        f"{len(added)} item(s) were already added to list {list_id}."
-                    ),
-                )
+        for item in items:
             with _shopping_list_errors(
-                f"adding '{name}' to shopping list {list_id} "
+                f"adding '{item.name}' to shopping list {list_id} "
                 f"({len(added)} of {len(items)} item(s) already added)"
             ):
                 data = await client.shopping_list.add_item(
                     list_id,
-                    name=name,
-                    quantity=item.get("quantity"),
-                    unit=item.get("unit"),
-                    shop_area_id=item.get("shopAreaId"),
-                    checked=bool(item.get("checked", False)),
+                    name=item.name,
+                    quantity=item.quantity,
+                    unit=item.unit,
+                    shop_area_id=item.shop_area_id,
+                    checked=item.checked,
                 )
             added.append(ShoppingListItem(**data))
 
@@ -247,15 +233,15 @@ def configure_shopping_list_tools(mcp: MCPServer):
         Use ``nc_shopping_list_check_item`` to tick an item off — this tool does
         not touch the checked state.
         """
-        fields: dict[str, Any] = {}
-        if name is not None:
-            fields["name"] = name
-        if quantity is not None:
-            fields["quantity"] = quantity
-        if unit is not None:
-            fields["unit"] = unit
-        if shop_area_id is not None:
-            fields["shopAreaId"] = shop_area_id
+        # Only the keys present are sent: the app reads request params, so an
+        # absent key leaves that field alone.
+        given: dict[str, Any] = {
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "shopAreaId": shop_area_id,
+        }
+        fields = {key: value for key, value in given.items() if value is not None}
         if not fields:
             raise MCPError(code=-1, message="No fields given to update")
 

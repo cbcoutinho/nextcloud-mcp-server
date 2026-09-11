@@ -2,9 +2,59 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, StatusResponse
+
+
+class ShoppingListItemInput(BaseModel):
+    """One item as an MCP caller supplies it to ``nc_shopping_list_add_items``.
+
+    Separate from :class:`ShoppingListItem`, which is what the app hands back:
+    only ``name`` is required here, and the server-assigned fields (``id``,
+    ``listId``, ``checkedBy``, timestamps) have no place in a request.
+    """
+
+    name: str = Field(min_length=1, description="Item name, e.g. 'flour'")
+    quantity: str | None = Field(
+        None, description="Free-text quantity, e.g. '2'. The app defaults it to '1'"
+    )
+    unit: str | None = Field(None, description="Free-text unit, e.g. 'cups'")
+    shop_area_id: int | None = Field(
+        None,
+        # Both spellings are accepted, and the snake_case one is what the schema
+        # advertises: it matches the sibling tool `nc_shopping_list_update_item`
+        # and every other MCP parameter in this repo. `shopAreaId` stays valid
+        # because that is what the app's own API calls it, so a caller working
+        # from the Shopping List docs is not caught out either way.
+        validation_alias=AliasChoices("shop_area_id", "shopAreaId"),
+        description=(
+            "Shop area to file the item under. Leave it unset and the app picks "
+            "one from its own keyword mappings, which is usually what you want"
+        ),
+    )
+    checked: bool = Field(default=False, description="Add the item already ticked off")
+
+    # `extra="forbid"` turns a misspelled key into a validation error naming the
+    # offending index, rather than an ignored field and an item quietly missing
+    # its quantity.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("quantity", "unit", mode="before")
+    @classmethod
+    def coerce_to_str(cls, v: object) -> object:
+        """Accept a number where the app stores a free-text string.
+
+        ``{"name": "eggs", "quantity": 3}`` is the obvious thing for a model to
+        send, and the app's column is a nullable string either way — rejecting
+        it would be pedantry. Booleans are not numbers for this purpose.
+        """
+        if isinstance(v, bool):
+            msg = "boolean values are not valid for quantity or unit"
+            raise ValueError(msg)
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
 
 
 class ShoppingList(BaseModel):
