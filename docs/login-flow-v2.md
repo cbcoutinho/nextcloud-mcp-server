@@ -320,6 +320,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `cookbook.read` / `cookbook.write` | Cookbook |
 | `todo.read` / `todo.write` | Tasks (VTODO outside Calendar) |
 | `collectives.read` / `collectives.write` | Collectives |
+| `shopping_list.read` / `shopping_list.write` | Shopping List |
 | `news.read` | News (read-only) |
 | `sharing.write` | Share-link / share-permission management |
 | `semantic.read` | Semantic search + RAG (when enabled) |
