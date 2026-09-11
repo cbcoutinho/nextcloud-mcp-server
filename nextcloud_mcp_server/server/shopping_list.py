@@ -229,9 +229,11 @@ def configure_shopping_list_tools(mcp: MCPServer):
     ) -> ShoppingListItemResponse:
         """Update an item's name, quantity, unit or shop area.
 
-        Only the arguments given are changed. Omitted ones keep their value.
-        Use ``nc_shopping_list_check_item`` to tick an item off — this tool does
-        not touch the checked state.
+        Only the arguments given are changed. Omitted ones keep their value,
+        which also means this tool can set a field but not *clear* one back to
+        empty — pass a new value, or delete and re-add the item. Use
+        ``nc_shopping_list_check_item`` to tick an item off — this tool does not
+        touch the checked state.
         """
         # Only the keys present are sent: the app reads request params, so an
         # absent key leaves that field alone.

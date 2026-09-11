@@ -1481,7 +1481,8 @@ account with Talk disabled sees no Talk tools while their colleague does.
 - Only apps that actually publish a capability block are gated: **Notes, Tables,
   Deck, Cookbook and Talk** (`spreed`). Calendar and Contacts tools speak
   CalDAV/CardDAV and keep working with those web apps uninstalled, so they are
-  never gated; Collectives, News and Mail publish nothing to gate on.
+  never gated; Collectives, News, Mail and Shopping List publish nothing to gate
+  on.
 - Version floors follow PEP 440, so a pre-release (`1.18.0-beta.3`) sorts
   *below* the release it precedes and stays gated out.
 
