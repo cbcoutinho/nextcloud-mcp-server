@@ -24,6 +24,8 @@ from nextcloud_mcp_server.vector import processor as proc
 
 pytestmark = pytest.mark.unit
 
+_TRUNCATED = "astrolabe_document_download_truncated_total"
+
 
 def _task(size_bytes: int | None) -> SimpleNamespace:
     return SimpleNamespace(doc_type="file", size_bytes=size_bytes)
@@ -42,15 +44,22 @@ def test_text_doc_types_have_no_source():
     assert proc.empty_download_result(_task(None), None, None) is None
 
 
-def test_empty_download_of_a_measured_file_is_retryable():
+def test_empty_download_of_a_measured_file_is_retryable(metric_sample):
     """The scanner saw bytes, so THIS response is wrong, not the file.
 
     Each tier is a separate procrastinate job and re-downloads the document, so
     an empty body here is transient. Raising re-queues it (bounded by the
     consecutive-failure counter) instead of dead-lettering a healthy document.
     """
+    before = metric_sample(_TRUNCATED, {})
+
     with pytest.raises(httpx.RemoteProtocolError, match="scanner saw 4096 bytes"):
         proc.empty_download_result(_task(4096), _source(0), "/doc.pdf")
+
+    # Counted on the same panel as the Content-Length short read: both are the
+    # server returning fewer bytes than it should have, and a retryable failure
+    # nothing counts is exactly the invisibility this change closes.
+    assert metric_sample(_TRUNCATED, {}) == before + 1
 
 
 def test_genuinely_empty_file_fails_with_a_named_reason():

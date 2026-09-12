@@ -38,6 +38,7 @@ from nextcloud_mcp_server.document_processors.source import (
 )
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
+    document_download_truncated_total,
     estimate_vector_bytes,
     record_chunk_density,
     record_document_chunks,
@@ -496,6 +497,12 @@ def empty_download_result(
         return None
     scanned_size = getattr(doc_task, "size_bytes", None)
     if scanned_size:
+        # Same counter as the Content-Length short-read guard: both are "the
+        # server returned fewer bytes than it should have", and the only
+        # difference is which oracle caught it. Without this the retryable half
+        # of the guard would be the one thing here with no signal at all, which
+        # is the invisibility this whole change exists to end.
+        document_download_truncated_total.inc()
         logger.warning(
             "Empty download for %s: scanner saw %d bytes, got 0; re-queueing",
             file_path,

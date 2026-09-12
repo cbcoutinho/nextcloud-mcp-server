@@ -762,8 +762,10 @@ document_scan_truncated_total = Counter(
 
 document_download_truncated_total = Counter(
     "astrolabe_document_download_truncated_total",
-    "Times a WebDAV GET returned fewer bytes than Content-Length (truncated/"
-    "poisoned connection; raised as a retryable transport error, see #965)",
+    "Times a WebDAV GET returned fewer bytes than it should have -- short of "
+    "Content-Length (truncated/poisoned connection, #965) or empty for a file "
+    "the scanner measured as non-empty (card #1230). Raised as a retryable "
+    "transport error in both cases",
 )
 
 # =============================================================================
@@ -1784,7 +1786,7 @@ def record_document_ingest_size(doc_type: str, size_bytes: int) -> None:
 
 
 def record_document_ingest_rejected(doc_type: str, reason: str) -> None:
-    """Record a document rejected before parsing (currently ``oversize``).
+    """Record a document rejected before parsing (``oversize``, ``empty_document``).
 
     Paired with :func:`record_document_ingest_size` so "what fraction of this
     tenant's corpus is over cap" is a ratio of two metrics rather than an

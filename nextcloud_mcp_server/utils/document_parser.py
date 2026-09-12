@@ -26,6 +26,7 @@ from nextcloud_mcp_server.document_processors import (
     ProcessorError,
     get_registry,
 )
+from nextcloud_mcp_server.document_processors.base import EMPTY_DOCUMENT_REASON
 from nextcloud_mcp_server.document_processors.source import DocumentSource
 from nextcloud_mcp_server.models.webdav import ContentFormat, ParseStatus
 
@@ -122,6 +123,8 @@ def _failure_note(result: ProcessingResult, tier: str | None, settings: Any) -> 
             f"{settings.document_max_pdf_size_mb:g} MB parse cap "
             f"(DOCUMENT_MAX_PDF_SIZE_MB)."
         )
+    if reason == EMPTY_DOCUMENT_REASON:
+        return "The document was not parsed: it has no content (0 bytes)."
     where = f" in the '{tier}' tier" if tier else ""
     return f"Parsing failed ({reason}){where}; no text was extracted."
 
