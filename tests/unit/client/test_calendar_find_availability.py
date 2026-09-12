@@ -161,7 +161,7 @@ async def test_search_is_scoped_to_the_requested_window(mocker):
     )
 
     CalendarClient.search_events_across_calendars.assert_awaited_once_with(
-        start_datetime=start, end_datetime=end, limit=mocker.ANY
+        start_datetime=start, end_datetime=end, limit=mocker.ANY, strict=True
     )
 
 
@@ -308,6 +308,19 @@ class TestRefusals:
         with pytest.raises(ValueError, match="duration_minutes"):
             await client.find_availability(
                 duration, start_datetime=start, end_datetime=end
+            )
+
+    async def test_an_unreadable_calendar_raises(self, mocker):
+        """Skipping it would offer its booked hours as free (review round 1)."""
+        client = _client(mocker)
+        CalendarClient.search_events_across_calendars.side_effect = ValueError(
+            "Could not read 1 calendar(s): work (calendar is on fire)"
+        )
+        start, end = _window()
+
+        with pytest.raises(ValueError, match="Could not read"):
+            await client.find_availability(
+                60, start_datetime=start, end_datetime=end, constraints={"timezone": TZ}
             )
 
     async def test_inverted_range_raises(self, mocker):

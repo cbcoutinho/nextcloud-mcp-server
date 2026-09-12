@@ -1474,3 +1474,67 @@ def test_updating_a_timed_todo_with_a_bare_date_keeps_it_timed():
     )
 
     assert client._parse_ical_todo(merged)["due"] == "2026-08-09T00:00:00+00:00"
+
+
+class TestDurationWithoutDtend:
+    """RFC 5545 3.6.1 lets a VEVENT carry DURATION instead of DTEND.
+
+    Parsed with no end at all, such an event reads as zero-length -- so it
+    consumes no time and blocks nothing in availability, and every tool that
+    reports an end time reports none.
+    """
+
+    ICS = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:dur-1\r\nSUMMARY:Workshop\r\n"
+        "{dtstart}"
+        "{extra}"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+
+    @staticmethod
+    def _parse(ics: str) -> dict:
+        return _pure_client()._extract_vevent_data(_vevent(ics))
+
+    def test_duration_becomes_an_end_datetime(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART:20260210T100000Z\r\n", extra="DURATION:PT90M\r\n"
+            )
+        )
+        assert data["start_datetime"] == "2026-02-10T10:00:00+00:00"
+        assert data["end_datetime"] == "2026-02-10T11:30:00+00:00"
+
+    def test_dtend_still_wins_over_duration(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART:20260210T100000Z\r\n",
+                extra="DTEND:20260210T103000Z\r\nDURATION:PT90M\r\n",
+            )
+        )
+        assert data["end_datetime"] == "2026-02-10T10:30:00+00:00"
+
+    def test_duration_inherits_the_start_timezone(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART;TZID=Europe/Amsterdam:20260210T100000\r\n",
+                extra="DURATION:PT1H\r\n",
+            )
+        )
+        assert data["end_datetime"].startswith("2026-02-10T11:00:00")
+        assert data["end_tz"] == "Europe/Amsterdam"
+
+    def test_all_day_duration_stays_a_date(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART;VALUE=DATE:20260210\r\n", extra="DURATION:P2D\r\n"
+            )
+        )
+        assert data["all_day"] is True
+        assert data["end_datetime"] == "2026-02-12"
+
+    def test_neither_dtend_nor_duration_leaves_no_end(self):
+        data = self._parse(
+            self.ICS.format(dtstart="DTSTART:20260210T100000Z\r\n", extra="")
+        )
+        assert "end_datetime" not in data

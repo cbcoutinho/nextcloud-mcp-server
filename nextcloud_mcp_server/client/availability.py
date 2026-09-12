@@ -215,13 +215,18 @@ def daily_windows(
             continue
 
         if ranges:
-            day_spans = [
-                (
-                    dt.datetime.combine(day, from_time, tzinfo=tz),
-                    dt.datetime.combine(day, to_time, tzinfo=tz),
-                )
-                for from_time, to_time in ranges
-            ]
+            # Merged, because overlapping preferred ranges ("09:00-12:00,
+            # 11:00-14:00") would otherwise yield overlapping windows and hand
+            # the caller the same free time twice.
+            day_spans = merge_spans(
+                [
+                    (
+                        dt.datetime.combine(day, from_time, tzinfo=tz),
+                        dt.datetime.combine(day, to_time, tzinfo=tz),
+                    )
+                    for from_time, to_time in ranges
+                ]
+            )
         else:
             midnight = dt.datetime.combine(day, dt.time(0, 0), tzinfo=tz)
             day_spans = [(midnight, midnight + dt.timedelta(days=1))]

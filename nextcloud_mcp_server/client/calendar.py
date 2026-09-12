@@ -1196,12 +1196,16 @@ class CalendarClient:
         slots: list[list[dict[str, Any]]],
         index: int,
         limit: int = 50,
+        failures: list[str] | None = None,
     ) -> None:
         """One calendar's events, annotated, written into its own slot.
 
         Failure is contained per calendar: a single unreachable or broken
         calendar is logged and skipped, exactly as in the previous serial
-        loop, rather than cancelling the whole task group.
+        loop, rather than cancelling the whole task group. ``failures``, when
+        given, collects what was skipped so a caller that cannot tolerate a
+        partial listing can say so -- an empty slot is indistinguishable from
+        a calendar that really had no events.
         """
         async with limiter:
             try:
@@ -1212,6 +1216,8 @@ class CalendarClient:
                 logger.warning(
                     "Error getting events from calendar %s: %s", calendar["name"], e
                 )
+                if failures is not None:
+                    failures.append(f"{calendar['name']} ({e})")
                 return
 
         # Apply filters if provided
@@ -1237,12 +1243,20 @@ class CalendarClient:
         end_datetime: dt.datetime | None = None,
         filters: dict[str, Any] | None = None,
         limit: int = 50,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
 
         ``limit`` is per calendar, and truncation is silent -- callers that
         need every event in the window (availability, above all) must raise it
         rather than accept a listing that merely looks complete.
+
+        ``strict`` decides what an unreadable calendar means. A listing can
+        reasonably show what it could reach, so the default keeps the
+        skip-and-warn behaviour. Availability cannot: a calendar that failed to
+        load contributes no busy time and therefore reads as free, which is the
+        confidently-wrong answer this whole path exists to avoid. Such a caller
+        passes ``strict=True`` and gets a ``ValueError`` naming the calendars.
 
         The per-calendar REPORTs are fanned out via ``anyio.create_task_group``
         instead of awaited one after another. The serial loop cost one full
@@ -1261,6 +1275,7 @@ class CalendarClient:
         depend on which REPORT happens to finish first.
         """
         await self._ensure_calendar_home()
+        failures: list[str] = []
         try:
             calendars = await self.list_calendars()
             slots: list[list[dict[str, Any]]] = [[] for _ in calendars]
@@ -1278,13 +1293,20 @@ class CalendarClient:
                         slots,
                         index,
                         limit,
+                        failures,
                     )
 
-            return [event for events in slots for event in events]
+            events = [event for events in slots for event in events]
 
         except Exception as e:
             logger.error("Error searching events across calendars: %s", e)
             raise
+
+        if strict and failures:
+            raise ValueError(
+                f"Could not read {len(failures)} calendar(s): {'; '.join(failures)}"
+            )
+        return events
 
     # ============= Todo/Task Operations (NEW) =============
 
@@ -3044,8 +3066,14 @@ class CalendarClient:
         if end <= start:
             raise ValueError("date_range_end must be after date_range_start")
 
+        # strict: a calendar that failed to load contributes no busy time, so a
+        # silent skip would offer its booked hours as free -- the same reason
+        # _attendee_busy_spans raises rather than shrugging off a missing reply.
         events = await self.search_events_across_calendars(
-            start_datetime=start, end_datetime=end, limit=AVAILABILITY_EVENT_LIMIT
+            start_datetime=start,
+            end_datetime=end,
+            limit=AVAILABILITY_EVENT_LIMIT,
+            strict=True,
         )
         busy = busy_spans_from_events(
             events,

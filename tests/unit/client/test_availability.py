@@ -263,6 +263,15 @@ class TestDailyWindows:
         )
         assert windows == [(at("2026-09-14", "08:00"), at("2026-09-14", "09:00"))]
 
+    def test_overlapping_preferred_ranges_do_not_duplicate_a_window(self):
+        windows = daily_windows(
+            self.START,
+            at("2026-09-15", "00:00"),
+            tz=TZ,
+            preferred_times=[(dt.time(9), dt.time(12)), (dt.time(11), dt.time(14))],
+        )
+        assert windows == [(at("2026-09-14", "09:00"), at("2026-09-14", "14:00"))]
+
     def test_windows_are_clipped_to_the_search_range(self):
         windows = daily_windows(
             at("2026-09-14", "10:30"), at("2026-09-14", "12:00"), tz=TZ

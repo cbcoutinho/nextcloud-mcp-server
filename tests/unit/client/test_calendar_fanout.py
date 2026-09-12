@@ -89,6 +89,29 @@ async def test_one_broken_calendar_does_not_sink_the_rest(client, mocker):
     assert len(names) == len(CALENDARS) - 1
 
 
+async def test_strict_refuses_a_partial_listing(client, mocker):
+    """A skipped calendar contributes no events, which availability would read
+    as free time -- so a caller that cannot tolerate that asks for strict."""
+
+    async def events_for(name, *args, **kwargs):
+        if name == "cal2":
+            raise RuntimeError("calendar is on fire")
+        return [{"uid": f"{name}-1"}]
+
+    mocker.patch.object(client, "get_calendar_events", side_effect=events_for)
+
+    with pytest.raises(ValueError, match="cal2"):
+        await client.search_events_across_calendars(strict=True)
+
+
+async def test_strict_returns_normally_when_every_calendar_answers(client, mocker):
+    mocker.patch.object(client, "get_calendar_events", side_effect=_one)
+
+    events = await client.search_events_across_calendars(strict=True)
+
+    assert len(events) == len(CALENDARS)
+
+
 async def test_filters_are_applied_per_calendar(client, mocker):
     mocker.patch.object(client, "get_calendar_events", side_effect=_one)
     applied = mocker.patch.object(
