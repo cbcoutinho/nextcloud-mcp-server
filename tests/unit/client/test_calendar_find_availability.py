@@ -323,6 +323,35 @@ class TestRefusals:
                 60, start_datetime=start, end_datetime=end, constraints={"timezone": TZ}
             )
 
+    async def test_an_unknown_timezone_raises(self, mocker):
+        """Falling back to the server's zone would answer the wrong question."""
+        client = _client(mocker)
+        start, end = _window()
+
+        with pytest.raises(ValueError, match="America/New_Yrok"):
+            await client.find_availability(
+                60,
+                start_datetime=start,
+                end_datetime=end,
+                constraints={"timezone": "America/New_Yrok"},
+            )
+
+    async def test_no_timezone_falls_back_to_the_local_offset(self, mocker):
+        """A naive window is read in the server's zone when none is given."""
+        client = _client(mocker)
+        naive_start = dt.datetime.combine(MONDAY, dt.time(0, 0))
+
+        result = await client.find_availability(
+            60,
+            start_datetime=naive_start,
+            end_datetime=naive_start + dt.timedelta(days=1),
+        )
+
+        local = dt.datetime.now().astimezone().tzinfo
+        assert dt.datetime.fromisoformat(result["range_start"]).utcoffset() == (
+            naive_start.replace(tzinfo=local).utcoffset()
+        )
+
     async def test_inverted_range_raises(self, mocker):
         client = _client(mocker)
         start, end = _window()

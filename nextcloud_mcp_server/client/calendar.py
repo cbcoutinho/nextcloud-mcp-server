@@ -49,6 +49,9 @@ CALENDAR_FANOUT = 8
 # listing into memory.
 AVAILABILITY_EVENT_LIMIT = 1000
 
+# The URI scheme RFC 6638 addresses attendees by.
+_MAILTO = "mailto:"
+
 
 async def _maybe_await(result: Any) -> Any:
     """Await a result if it's a coroutine, otherwise return it directly.
@@ -2969,6 +2972,32 @@ class CalendarClient:
             logger.error("Error in bulk update: %s", e)
             raise
 
+    @staticmethod
+    def _availability_timezone(name: Any) -> dt.tzinfo:
+        """Resolve the zone the windows are built in, refusing a bad name.
+
+        Deliberately not ``_resolve_timezone``, which falls back to floating
+        local time on an unknown name. That is right for storing an event --
+        the time was still given -- but wrong here: business hours and
+        preferred times mean nothing without the zone they are expressed in, so
+        ``timezone="America/New_Yrok"`` would answer confidently in the
+        server's zone and never say it had ignored the request.
+        """
+        text = str(name or "").strip()
+        if not text:
+            # The server's *current* UTC offset, not its IANA zone -- the
+            # stdlib cannot name the latter. A window that crosses a DST change
+            # is therefore built on today's offset, which is the reason to pass
+            # an explicit zone rather than rely on this.
+            return dt.datetime.now().astimezone().tzinfo or dt.UTC
+        try:
+            return ZoneInfo(text)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(
+                f"Unknown timezone {text!r}; expected an IANA name such as "
+                "'Europe/Amsterdam'"
+            ) from e
+
     async def _attendee_busy_spans(
         self,
         attendees: list[str],
@@ -2992,7 +3021,7 @@ class CalendarClient:
         )
 
         recipients = [
-            address if address.lower().startswith("mailto:") else f"mailto:{address}"
+            address if address.lower().startswith(_MAILTO) else f"{_MAILTO}{address}"
             for address in attendees
         ]
         replies = await _maybe_await(principal.freebusy_request(start, end, recipients))
@@ -3000,18 +3029,18 @@ class CalendarClient:
         # Keys come back as the recipient URI the server echoes, whose case and
         # mailto: prefix need not match what we sent.
         by_address = {
-            key.lower().removeprefix("mailto:"): value
+            key.lower().removeprefix(_MAILTO): value
             for key, value in replies.items()
             if key != "errors"
         }
         error_by_address = {
-            key.lower().removeprefix("mailto:"): value
+            key.lower().removeprefix(_MAILTO): value
             for key, value in (replies.get("errors") or {}).items()
         }
 
         spans: list[Span] = []
         for recipient in recipients:
-            address = recipient.lower().removeprefix("mailto:")
+            address = recipient.lower().removeprefix(_MAILTO)
             if address in error_by_address:
                 raise ValueError(
                     f"Free/busy lookup for {address} failed: "
@@ -3042,7 +3071,10 @@ class CalendarClient:
         free spans, longest-possible rather than sliced onto a grid.
 
         ``constraints`` keys: ``business_hours_only``, ``exclude_weekends``,
-        ``preferred_times``, ``include_all_day``, ``timezone``.
+        ``preferred_times``, ``include_all_day``, ``timezone``. An unknown
+        ``timezone`` raises; a malformed entry in ``preferred_times`` is logged
+        and skipped, since one typo in a hint should not fail the query, and
+        overlapping entries are merged.
 
         Returns the slots together with the window they were computed over, so
         the caller can report what was actually searched rather than echoing a
@@ -3052,11 +3084,7 @@ class CalendarClient:
             raise ValueError("duration_minutes must be positive")
 
         constraints = constraints or {}
-        tz = (
-            self._resolve_timezone(str(constraints.get("timezone") or ""))
-            or dt.datetime.now().astimezone().tzinfo
-            or dt.UTC
-        )
+        tz = self._availability_timezone(constraints.get("timezone"))
 
         now = dt.datetime.now(tz)
         start = to_aware(start_datetime, tz) or now

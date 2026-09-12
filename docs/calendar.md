@@ -140,11 +140,24 @@ error rather than being quietly treated as free.
 
 **The window.** `date_range_start` defaults to now and is never allowed into the
 past; `date_range_end` defaults to a week later. The response reports the window
-that was actually searched. `timezone` (an IANA name) is the zone
-`business_hours_only` (09:00-17:00) and `preferred_times` are expressed in, and
-defaults to the server's local zone. `preferred_times`, when given, *replaces*
-business hours rather than narrowing them -- so `preferred_times="19:00-21:00"`
-finds evening slots without also having to unset `business_hours_only`.
+that was actually searched.
+
+`timezone` (an IANA name) is the zone `business_hours_only` (09:00-17:00) and
+`preferred_times` are expressed in. An unknown name is an **error**, not a
+fallback -- business hours in the wrong zone are a confidently wrong answer.
+Omitting it uses the server's current UTC offset, which is why a window that
+crosses a daylight-saving change is better served by naming the zone.
+
+`preferred_times`, when given, *replaces* business hours rather than narrowing
+them -- so `preferred_times="19:00-21:00"` finds evening slots without also
+having to unset `business_hours_only`. Overlapping ranges are merged (so the
+same free time is never returned twice), and a malformed range is logged and
+skipped rather than failing the whole query.
+
+**A calendar that cannot be read is an error too.** If one of your calendars
+fails to load during the search it is not skipped: it would contribute no busy
+time and its booked hours would be offered as free. The same holds for an
+attendee the server will not report free/busy for.
 
 ```python
 availability = await nc_calendar_find_availability(

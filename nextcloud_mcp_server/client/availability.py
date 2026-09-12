@@ -155,21 +155,28 @@ def busy_spans_from_vfreebusy(data: str, tz: dt.tzinfo) -> list[Span]:
         if periods is None:
             continue
         for period in periods if isinstance(periods, list) else [periods]:
-            fbtype = str(period.params.get("FBTYPE", "BUSY")).upper()
-            if fbtype == _FREE_FBTYPE:
-                continue
-            start, end_or_duration = period.dt
-            end = (
-                start + end_or_duration
-                if isinstance(end_or_duration, dt.timedelta)
-                else end_or_duration
-            )
-            start = to_aware(start, tz)
-            end = to_aware(end, tz)
-            if start is None or end is None or end <= start:
-                continue
-            spans.append((start, end))
+            span = _period_to_span(period, tz)
+            if span is not None:
+                spans.append(span)
     return spans
+
+
+def _period_to_span(period: Any, tz: dt.tzinfo) -> Span | None:
+    """One FREEBUSY period as a busy span, or None if it consumes no time."""
+    if str(period.params.get("FBTYPE", "BUSY")).upper() == _FREE_FBTYPE:
+        return None
+
+    start, end_or_duration = period.dt
+    end = (
+        start + end_or_duration
+        if isinstance(end_or_duration, dt.timedelta)
+        else end_or_duration
+    )
+    start = to_aware(start, tz)
+    end = to_aware(end, tz)
+    if start is None or end is None or end <= start:
+        return None
+    return (start, end)
 
 
 def merge_spans(spans: list[Span]) -> list[Span]:
@@ -247,23 +254,28 @@ def free_slots(
 ) -> list[Span]:
     """Subtract busy spans from the candidate windows, keeping what is long enough."""
     busy = merge_spans(busy)
+    return [slot for window in windows for slot in _free_within(window, busy, minimum)]
+
+
+def _free_within(window: Span, busy: list[Span], minimum: dt.timedelta) -> list[Span]:
+    """The gaps of at least ``minimum`` left in one window. ``busy`` is merged."""
+    window_start, window_end = window
     slots: list[Span] = []
+    cursor = window_start
 
-    for window_start, window_end in windows:
-        cursor = window_start
-        for busy_start, busy_end in busy:
-            if busy_end <= cursor:
-                continue
-            if busy_start >= window_end:
-                break
-            if busy_start - cursor >= minimum:
-                slots.append((cursor, busy_start))
-            cursor = max(cursor, busy_end)
-            if cursor >= window_end:
-                break
-        if window_end - cursor >= minimum:
-            slots.append((cursor, window_end))
+    for busy_start, busy_end in busy:
+        if busy_end <= cursor:
+            continue
+        if busy_start >= window_end:
+            break
+        if busy_start - cursor >= minimum:
+            slots.append((cursor, busy_start))
+        cursor = max(cursor, busy_end)
+        if cursor >= window_end:
+            break
 
+    if window_end - cursor >= minimum:
+        slots.append((cursor, window_end))
     return slots
 
 

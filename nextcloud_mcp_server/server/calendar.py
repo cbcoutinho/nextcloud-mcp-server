@@ -703,10 +703,12 @@ def configure_calendar_tools(mcp: MCPServer):
             exclude_weekends: Skip Saturdays and Sundays
             preferred_times: Preferred time ranges as "HH:MM-HH:MM"
                 (comma-separated). When given, these replace business hours
-                rather than narrowing them.
+                rather than narrowing them. Overlapping ranges are merged, and
+                a malformed one is skipped rather than failing the query.
             include_all_day: Treat all-day events as busy
             timezone: IANA timezone the business hours and preferred times are
-                expressed in (defaults to the server's local timezone)
+                expressed in, e.g. "Europe/Amsterdam". Defaults to the server's
+                local zone. An unknown name is an error, not a fallback.
 
         Returns:
             The available slots, plus the window that was actually searched
