@@ -10,11 +10,13 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
+    AvailabilitySlot,
     Calendar,
     CalendarEventSummary,
     CompleteTodoResponse,
     DeleteEventResponse,
     DeleteTodoResponse,
+    FindAvailabilityResponse,
     ListCalendarsResponse,
     ListEventsResponse,
     ListTodosResponse,
@@ -671,41 +673,51 @@ def configure_calendar_tools(mcp: MCPServer):
         business_hours_only: bool = True,
         exclude_weekends: bool = True,
         preferred_times: str = "",  # Comma-separated time ranges like "09:00-12:00,14:00-17:00"
-    ):
+        include_all_day: bool = False,
+        timezone: str = "",  # IANA name, e.g. "Europe/Amsterdam"
+    ) -> FindAvailabilityResponse:
         """Find available time slots for scheduling meetings.
 
-        This tool intelligently analyzes existing calendar events to find free time slots
-        that work for all specified attendees within the given constraints.
+        Analyses the events in your calendars (and, for any attendees given,
+        their free/busy as reported by the server) and returns the gaps that
+        are long enough. Slots are *maximal* free windows: a free morning comes
+        back once as a single long slot, not as a grid of candidate start
+        times, so pick any sub-range of at least duration_minutes from one.
+
+        Not everything on a calendar consumes time. Events marked free
+        (TRANSP:TRANSPARENT), cancelled events, and calendars set to "never
+        show me as busy" are ignored. All-day events are ignored too unless
+        include_all_day is set, because birthdays, name days and subscribed
+        holiday feeds would otherwise blank out whole working days.
 
         Args:
             duration_minutes: Required duration for the meeting in minutes
-            attendees: Comma-separated list of attendee email addresses to check availability for
-            date_range_start: Start date for availability search (YYYY-MM-DD)
-            date_range_end: End date for availability search (YYYY-MM-DD)
-            business_hours_only: Only suggest slots during business hours (9 AM - 5 PM)
-            exclude_weekends: Skip weekends when finding availability
-            preferred_times: Preferred time ranges as "HH:MM-HH:MM" (comma-separated)
+            attendees: Comma-separated attendee email addresses whose free/busy
+                should also be checked (RFC 6638, which requires a server that
+                answers scheduling requests for them)
+            date_range_start: Start date for availability search (YYYY-MM-DD),
+                defaulting to now. Never searches into the past.
+            date_range_end: End date for availability search (YYYY-MM-DD),
+                defaulting to a week after the start
+            business_hours_only: Only suggest slots between 09:00 and 17:00
+            exclude_weekends: Skip Saturdays and Sundays
+            preferred_times: Preferred time ranges as "HH:MM-HH:MM"
+                (comma-separated). When given, these replace business hours
+                rather than narrowing them. Overlapping ranges are merged, and
+                a malformed one is skipped rather than failing the query.
+            include_all_day: Treat all-day events as busy
+            timezone: IANA timezone the business hours and preferred times are
+                expressed in, e.g. "Europe/Amsterdam". Defaults to the server's
+                local zone. An unknown name is an error, not a fallback.
 
         Returns:
-            List of available time slots with start/end times and duration
+            The available slots, plus the window that was actually searched
         """
         client = await get_client(ctx)
 
-        # Parse attendees
-        attendee_list = []
-        if attendees:
-            attendee_list = [
-                email.strip() for email in attendees.split(",") if email.strip()
-            ]
-
-        # Parse preferred times
-        preferred_time_list = []
-        if preferred_times:
-            preferred_time_list = [
-                time_range.strip()
-                for time_range in preferred_times.split(",")
-                if time_range.strip()
-            ]
+        attendee_list = [
+            email.strip() for email in attendees.split(",") if email.strip()
+        ]
 
         # Convert date strings to datetime objects
         start_datetime = None
@@ -714,30 +726,50 @@ def configure_calendar_tools(mcp: MCPServer):
         if date_range_start:
             try:
                 start_datetime = dt.datetime.strptime(date_range_start, "%Y-%m-%d")
-            except ValueError:
-                logger.warning("Invalid date_range_start format: %s", date_range_start)
+            except ValueError as e:
+                raise ToolError(
+                    f"Invalid date_range_start {date_range_start!r}; expected YYYY-MM-DD"
+                ) from e
 
         if date_range_end:
             try:
                 end_datetime = dt.datetime.strptime(date_range_end, "%Y-%m-%d").replace(
                     hour=23, minute=59, second=59
                 )
-            except ValueError:
-                logger.warning("Invalid date_range_end format: %s", date_range_end)
+            except ValueError as e:
+                raise ToolError(
+                    f"Invalid date_range_end {date_range_end!r}; expected YYYY-MM-DD"
+                ) from e
 
-        # Build constraints
         constraints = {
             "business_hours_only": business_hours_only,
             "exclude_weekends": exclude_weekends,
-            "preferred_times": preferred_time_list,
+            "preferred_times": preferred_times,
+            "include_all_day": include_all_day,
+            "timezone": timezone,
         }
 
-        return await client.calendar.find_availability(
-            duration_minutes=duration_minutes,
-            attendees=attendee_list,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            constraints=constraints,
+        try:
+            result = await client.calendar.find_availability(
+                duration_minutes=duration_minutes,
+                attendees=attendee_list,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                constraints=constraints,
+            )
+        except ValueError as e:
+            # Bad range, or an attendee the server would not report on. Either
+            # way the caller must see it: an empty slot list would read as
+            # "fully booked" (issue #1394).
+            raise ToolError(str(e)) from e
+
+        return FindAvailabilityResponse(
+            available_slots=[AvailabilitySlot(**slot) for slot in result["slots"]],
+            duration_requested=duration_minutes,
+            date_range_start=result["range_start"],
+            date_range_end=result["range_end"],
+            attendees_checked=result["attendees_checked"],
+            business_hours_only=business_hours_only,
         )
 
     @mcp.tool(

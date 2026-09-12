@@ -21,6 +21,16 @@ from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
 from ..config import get_nextcloud_ssl_verify
+from .availability import (
+    Span,
+    busy_spans_from_events,
+    busy_spans_from_vfreebusy,
+    daily_windows,
+    free_slots,
+    parse_time_ranges,
+    slot_to_dict,
+    to_aware,
+)
 from .dav_errors import DavPreconditionFailed, dav_error_from_response
 from .dav_urls import encode_dav_url
 
@@ -31,6 +41,16 @@ logger = logging.getLogger(__name__)
 # dozens of calendars would hammer the Nextcloud instance for no gain, since
 # the win is already had after a handful run in parallel.
 CALENDAR_FANOUT = 8
+
+# Per-calendar event cap when computing availability. The default listing cap
+# of 50 is fine for "show me what's on", but availability has to see *every*
+# busy event in the window: a dropped event becomes free time that is not free.
+# Bounded all the same, so one pathological calendar cannot pull an unlimited
+# listing into memory.
+AVAILABILITY_EVENT_LIMIT = 1000
+
+# The URI scheme RFC 6638 addresses attendees by.
+_MAILTO = "mailto:"
 
 
 async def _maybe_await(result: Any) -> Any:
@@ -1178,22 +1198,29 @@ class CalendarClient:
         limiter: anyio.CapacityLimiter,
         slots: list[list[dict[str, Any]]],
         index: int,
+        limit: int = 50,
+        failures: list[str] | None = None,
     ) -> None:
         """One calendar's events, annotated, written into its own slot.
 
         Failure is contained per calendar: a single unreachable or broken
         calendar is logged and skipped, exactly as in the previous serial
-        loop, rather than cancelling the whole task group.
+        loop, rather than cancelling the whole task group. ``failures``, when
+        given, collects what was skipped so a caller that cannot tolerate a
+        partial listing can say so -- an empty slot is indistinguishable from
+        a calendar that really had no events.
         """
         async with limiter:
             try:
                 events = await self.get_calendar_events(
-                    calendar["name"], start_datetime, end_datetime
+                    calendar["name"], start_datetime, end_datetime, limit=limit
                 )
             except Exception as e:
                 logger.warning(
                     "Error getting events from calendar %s: %s", calendar["name"], e
                 )
+                if failures is not None:
+                    failures.append(f"{calendar['name']} ({e})")
                 return
 
         # Apply filters if provided
@@ -1206,6 +1233,10 @@ class CalendarClient:
             event["calendar_display_name"] = calendar.get(
                 "display_name", calendar["name"]
             )
+            # The calendar's own "never show me as busy" switch. Carried per
+            # event because availability works on a flat event list and would
+            # otherwise have to re-resolve which calendar each one came from.
+            event["calendar_transparent"] = calendar.get("transparent", False)
 
         slots[index] = events
 
@@ -1214,8 +1245,21 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         filters: dict[str, Any] | None = None,
+        limit: int = 50,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
+
+        ``limit`` is per calendar, and truncation is silent -- callers that
+        need every event in the window (availability, above all) must raise it
+        rather than accept a listing that merely looks complete.
+
+        ``strict`` decides what an unreadable calendar means. A listing can
+        reasonably show what it could reach, so the default keeps the
+        skip-and-warn behaviour. Availability cannot: a calendar that failed to
+        load contributes no busy time and therefore reads as free, which is the
+        confidently-wrong answer this whole path exists to avoid. Such a caller
+        passes ``strict=True`` and gets a ``ValueError`` naming the calendars.
 
         The per-calendar REPORTs are fanned out via ``anyio.create_task_group``
         instead of awaited one after another. The serial loop cost one full
@@ -1234,6 +1278,7 @@ class CalendarClient:
         depend on which REPORT happens to finish first.
         """
         await self._ensure_calendar_home()
+        failures: list[str] = []
         try:
             calendars = await self.list_calendars()
             slots: list[list[dict[str, Any]]] = [[] for _ in calendars]
@@ -1250,13 +1295,21 @@ class CalendarClient:
                         limiter,
                         slots,
                         index,
+                        limit,
+                        failures,
                     )
 
-            return [event for events in slots for event in events]
+            events = [event for events in slots for event in events]
 
         except Exception as e:
             logger.error("Error searching events across calendars: %s", e)
             raise
+
+        if strict and failures:
+            raise ValueError(
+                f"Could not read {len(failures)} calendar(s): {'; '.join(failures)}"
+            )
+        return events
 
     # ============= Todo/Task Operations (NEW) =============
 
@@ -1971,6 +2024,15 @@ class CalendarClient:
             tzid = dtend.params.get("TZID") if dtend.params else None
             if tzid:
                 event_data["end_tz"] = str(tzid)
+        elif dtstart is not None and component.get("duration") is not None:
+            # RFC 5545 3.6.1 lets an event carry DURATION instead of DTEND.
+            # Without this the event reads as zero-length, so anything working
+            # out how long it lasts -- availability above all -- silently
+            # treats it as not consuming any time.
+            duration = component.get("duration").dt
+            event_data["end_datetime"] = (dtstart.dt + duration).isoformat()
+            if "start_tz" in event_data:
+                event_data["end_tz"] = event_data["start_tz"]
 
         # Handle categories
         categories = component.get("categories")
@@ -2910,6 +2972,88 @@ class CalendarClient:
             logger.error("Error in bulk update: %s", e)
             raise
 
+    @staticmethod
+    def _availability_timezone(name: Any) -> dt.tzinfo:
+        """Resolve the zone the windows are built in, refusing a bad name.
+
+        Deliberately not ``_resolve_timezone``, which falls back to floating
+        local time on an unknown name. That is right for storing an event --
+        the time was still given -- but wrong here: business hours and
+        preferred times mean nothing without the zone they are expressed in, so
+        ``timezone="America/New_Yrok"`` would answer confidently in the
+        server's zone and never say it had ignored the request.
+        """
+        text = str(name or "").strip()
+        if not text:
+            # The server's *current* UTC offset, not its IANA zone -- the
+            # stdlib cannot name the latter. A window that crosses a DST change
+            # is therefore built on today's offset, which is the reason to pass
+            # an explicit zone rather than rely on this.
+            return dt.datetime.now().astimezone().tzinfo or dt.UTC
+        try:
+            return ZoneInfo(text)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(
+                f"Unknown timezone {text!r}; expected an IANA name such as "
+                "'Europe/Amsterdam'"
+            ) from e
+
+    async def _attendee_busy_spans(
+        self,
+        attendees: list[str],
+        start: dt.datetime,
+        end: dt.datetime,
+        tz: dt.tzinfo,
+    ) -> list[Span]:
+        """Busy spans for other people, via the RFC 6638 scheduling outbox.
+
+        The organizer POSTs a VFREEBUSY REQUEST naming the attendees and the
+        server answers with one free/busy reply per recipient. This is the only
+        way to see time on a calendar we cannot read.
+
+        An attendee the server refuses to report on raises rather than being
+        skipped: treating "I could not check Bob" as "Bob is free" is exactly
+        the kind of confident-wrong answer issue #1394 is about.
+        """
+        get_principal = getattr(self._dav_client, "get_principal", None)
+        principal = await _maybe_await(
+            get_principal() if get_principal else self._dav_client.principal()
+        )
+
+        recipients = [
+            address if address.lower().startswith(_MAILTO) else f"{_MAILTO}{address}"
+            for address in attendees
+        ]
+        replies = await _maybe_await(principal.freebusy_request(start, end, recipients))
+
+        # Keys come back as the recipient URI the server echoes, whose case and
+        # mailto: prefix need not match what we sent.
+        by_address = {
+            key.lower().removeprefix(_MAILTO): value
+            for key, value in replies.items()
+            if key != "errors"
+        }
+        error_by_address = {
+            key.lower().removeprefix(_MAILTO): value
+            for key, value in (replies.get("errors") or {}).items()
+        }
+
+        spans: list[Span] = []
+        for recipient in recipients:
+            address = recipient.lower().removeprefix(_MAILTO)
+            if address in error_by_address:
+                raise ValueError(
+                    f"Free/busy lookup for {address} failed: "
+                    f"{error_by_address[address]}"
+                )
+            reply = by_address.get(address)
+            if reply is None or not reply.data:
+                raise ValueError(
+                    f"The server returned no free/busy information for {address}"
+                )
+            spans.extend(busy_spans_from_vfreebusy(reply.data, tz))
+        return spans
+
     async def find_availability(
         self,
         duration_minutes: int,
@@ -2917,11 +3061,79 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         constraints: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Find available time slots for scheduling.
+    ) -> dict[str, Any]:
+        """Find free time slots of at least ``duration_minutes``.
 
-        Note: This is a simplified stub that returns empty list.
-        Full implementation would require complex free/busy analysis.
+        Busy time is every opaque, non-cancelled event in the user's own
+        calendars within the window, plus -- when ``attendees`` are given --
+        each attendee's free/busy as reported by the scheduling outbox. What is
+        left of the candidate windows (``constraints``) is returned as maximal
+        free spans, longest-possible rather than sliced onto a grid.
+
+        ``constraints`` keys: ``business_hours_only``, ``exclude_weekends``,
+        ``preferred_times``, ``include_all_day``, ``timezone``. An unknown
+        ``timezone`` raises; a malformed entry in ``preferred_times`` is logged
+        and skipped, since one typo in a hint should not fail the query, and
+        overlapping entries are merged.
+
+        Returns the slots together with the window they were computed over, so
+        the caller can report what was actually searched rather than echoing a
+        request that may have left the range open.
         """
-        logger.warning("find_availability is not fully implemented with AsyncDavClient")
-        return []
+        if duration_minutes <= 0:
+            raise ValueError("duration_minutes must be positive")
+
+        constraints = constraints or {}
+        tz = self._availability_timezone(constraints.get("timezone"))
+
+        now = dt.datetime.now(tz)
+        start = to_aware(start_datetime, tz) or now
+        # A slot in the past is not availability, whatever the caller asked for.
+        start = max(start, now)
+        end = to_aware(end_datetime, tz) or start + dt.timedelta(days=7)
+        if end <= start:
+            raise ValueError("date_range_end must be after date_range_start")
+
+        # strict: a calendar that failed to load contributes no busy time, so a
+        # silent skip would offer its booked hours as free -- the same reason
+        # _attendee_busy_spans raises rather than shrugging off a missing reply.
+        events = await self.search_events_across_calendars(
+            start_datetime=start,
+            end_datetime=end,
+            limit=AVAILABILITY_EVENT_LIMIT,
+            strict=True,
+        )
+        busy = busy_spans_from_events(
+            events,
+            tz=tz,
+            include_all_day=bool(constraints.get("include_all_day")),
+        )
+
+        attendees = [address for address in (attendees or []) if address.strip()]
+        if attendees:
+            busy.extend(await self._attendee_busy_spans(attendees, start, end, tz))
+
+        windows = daily_windows(
+            start,
+            end,
+            tz=tz,
+            business_hours_only=bool(constraints.get("business_hours_only", True)),
+            exclude_weekends=bool(constraints.get("exclude_weekends", True)),
+            preferred_times=parse_time_ranges(constraints.get("preferred_times")),
+        )
+        slots = free_slots(windows, busy, dt.timedelta(minutes=duration_minutes))
+
+        logger.debug(
+            "Found %d free slot(s) of >=%d min between %s and %s (%d busy span(s))",
+            len(slots),
+            duration_minutes,
+            start,
+            end,
+            len(busy),
+        )
+        return {
+            "slots": [slot_to_dict(slot) for slot in slots],
+            "range_start": start.isoformat(),
+            "range_end": end.isoformat(),
+            "attendees_checked": attendees,
+        }
