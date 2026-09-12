@@ -38,7 +38,12 @@ import httpx
 
 from nextcloud_mcp_server.config import Settings, get_settings
 
-from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .base import (
+    EMPTY_DOCUMENT_REASON,
+    DocumentProcessor,
+    ProcessingResult,
+    ProcessorError,
+)
 
 if TYPE_CHECKING:
     # Annotation-only imports (the runtime imports are lazy — inside
@@ -49,6 +54,9 @@ if TYPE_CHECKING:
     from ..vector.batch_ocr_store import BatchOcrJob, BatchOcrJobStore
 
 logger = logging.getLogger(__name__)
+
+#: Log stand-in for a document handed over as bare bytes, with no filename.
+_UNNAMED = "<bytes>"
 
 # Connect timeout for the OCR backend request. The overall (read) timeout is
 # configurable via DOCUMENT_OCR_TIMEOUT_SECONDS and resolved per call.
@@ -694,6 +702,25 @@ class OcrProcessor(DocumentProcessor):
             Callable[[float, float | None, str | None], Awaitable[None]] | None
         ) = None,
     ) -> ProcessingResult:
+        # An empty payload base64-encodes to "" and the gateway rejects the
+        # submission with 422 "document decodes to empty bytes" -- a permanent
+        # validation failure that dead-letters the document under the generic
+        # "error" reason, invisibly (card #1230). Refuse it locally under its own
+        # name instead, before any gateway round-trip. The ingest path also
+        # guards the download itself (``vector.processor.empty_download_result``);
+        # this is the backstop for every other caller of a processor.
+        if not content:
+            logger.warning(
+                "OCR skipped for %s: document has no bytes", filename or _UNNAMED
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
+                processor=self.name,
+                success=False,
+                error="document is empty",
+            )
+
         settings = get_settings()
 
         # Batch mode (Deck #332): submit to the gateway's async Batch OCR job and
@@ -726,7 +753,7 @@ class OcrProcessor(DocumentProcessor):
         if backend is None:
             logger.warning(
                 "OCR requested for %s but no backend is configured (provider=%s)",
-                filename or "<bytes>",
+                filename or _UNNAMED,
                 settings.document_ocr_provider,
             )
             return ProcessingResult(
@@ -749,7 +776,7 @@ class OcrProcessor(DocumentProcessor):
             # rather than being conflated with provider errors.
             timeout = settings.document_ocr_timeout_seconds
             logger.warning(
-                "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
+                "OCR timed out for %s after %.1fs", filename or _UNNAMED, timeout
             )
             return ProcessingResult(
                 text="",
@@ -759,7 +786,7 @@ class OcrProcessor(DocumentProcessor):
                 error=f"OCR timed out after {timeout:.1f}s",
             )
         except Exception as e:
-            logger.warning("OCR failed for %s: %s", filename or "<bytes>", e)
+            logger.warning("OCR failed for %s: %s", filename or _UNNAMED, e)
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "error"},

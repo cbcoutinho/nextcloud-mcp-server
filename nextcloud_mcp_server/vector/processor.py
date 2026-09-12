@@ -38,6 +38,7 @@ from nextcloud_mcp_server.document_processors.source import (
 )
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
+    document_download_truncated_total,
     estimate_vector_bytes,
     record_chunk_density,
     record_document_chunks,
@@ -464,6 +465,66 @@ def preflight_oversize_result(
     if result is not None:
         record_document_ingest_rejected(doc_task.doc_type, "oversize")
     return result
+
+
+def empty_download_result(
+    doc_task: Any, source: Any, file_path: str | None
+) -> "ProcessingResult | None":
+    """Reject a document that downloaded to zero bytes, before anything parses it.
+
+    Nothing downstream can use an empty document, and the OCR tier does worse
+    than nothing with one: it base64-encodes ``b""`` and the gateway rejects the
+    submission with 422 ``"document decodes to empty bytes"`` — a permanent
+    validation failure, so the document is dead-lettered under the generic
+    ``error`` reason and the loss is invisible (card #1230).
+
+    Which failure it is depends on what the scanner measured. Every tier is a
+    separate procrastinate job, so an escalated tier RE-DOWNLOADS the document;
+    a file the scanner saw as non-empty that comes back empty from *this*
+    request is a bad response, not a bad file, so it is raised as the same
+    short-read error the truncation guard raises (#965) and re-queued by the
+    next scan — bounded by the consecutive-failure counter, so a file that is
+    empty every time still parks eventually.
+
+    A file the scanner measured as empty (or never measured) really is empty:
+    returns the terminal ``empty_document`` failure, which names the cause
+    instead of surfacing as a generic OCR error.
+
+    Returns ``None`` — the overwhelmingly common case — when the download
+    produced bytes.
+    """
+    if source is None or source.size != 0:
+        return None
+    scanned_size = getattr(doc_task, "size_bytes", None)
+    if scanned_size:
+        # Same counter as the Content-Length short-read guard: both are "the
+        # server returned fewer bytes than it should have", and the only
+        # difference is which oracle caught it. Without this the retryable half
+        # of the guard would be the one thing here with no signal at all, which
+        # is the invisibility this whole change exists to end.
+        document_download_truncated_total.inc()
+        logger.warning(
+            "Empty download for %s: scanner saw %d bytes, got 0; re-queueing",
+            file_path,
+            scanned_size,
+        )
+        raise httpx.RemoteProtocolError(
+            f"Empty download for {file_path!r}: scanner saw {scanned_size} bytes, got 0"
+        )
+    from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
+        EMPTY_DOCUMENT_REASON,
+        ProcessingResult,
+    )
+
+    logger.warning("Document %s has no bytes; failing as empty", file_path)
+    record_document_ingest_rejected(doc_task.doc_type, EMPTY_DOCUMENT_REASON)
+    return ProcessingResult(
+        text="",
+        metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
+        processor="empty_guard",
+        success=False,
+        error="document is empty",
+    )
 
 
 def ingested_byte_size(source_size: int | None, content: str) -> int:
@@ -1171,10 +1232,11 @@ async def _index_document_inner(
         qdrant_client: Qdrant client instance
     """
     settings = get_settings()
-    # Set by the pre-flight size gate (files only) when a document is rejected
-    # from its scanned size; substituted for the parse result further down so the
-    # existing terminal/dead-letter handling is reached unchanged.
-    preflight_failure = None
+    # Set (files only) when a document is rejected before anything parses it —
+    # the pre-flight size gate, or an empty download; substituted for the parse
+    # result further down so the existing terminal/dead-letter handling is
+    # reached unchanged.
+    pre_parse_failure = None
     # The document handle for files; None for text doc types (note, deck card,
     # news item, mail message), which carry no binary.
     source: DocumentSource | None = None
@@ -1449,8 +1511,8 @@ async def _index_document_inner(
             # Pre-flight size gate: reject an over-cap document from the size the
             # scanner already captured, so the download is never paid for. Falls
             # through to the post-download guard when the size is unknown.
-            preflight_failure = preflight_oversize_result(doc_task, file_path, settings)
-            if preflight_failure is not None:
+            pre_parse_failure = preflight_oversize_result(doc_task, file_path, settings)
+            if pre_parse_failure is not None:
                 content_bytes, content_type = b"", PDF_MIME_TYPE
             elif settings.document_stream_download_enabled:
                 # Stream to a spool file: resident memory stays at one chunk
@@ -1483,6 +1545,11 @@ async def _index_document_inner(
                 # leaks one file per document, which is the very failure mode the
                 # streaming side's exit-stack scoping exists to prevent.
                 exit_stack.callback(source.cleanup)
+
+            # Downloaded nothing? Stop here, however the bytes were fetched.
+            pre_parse_failure = (
+                empty_download_result(doc_task, source, file_path) or pre_parse_failure
+            )
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1511,6 +1578,9 @@ async def _index_document_inner(
             from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
                 get_registry,
             )
+            from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
+                EMPTY_DOCUMENT_REASON,
+            )
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
                 TIER_LADDER,
                 BatchPending,
@@ -1529,13 +1599,13 @@ async def _index_document_inner(
                 # queue-hop to the next tier). Everything else -- non-PDF files,
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
-                if preflight_failure is not None:
+                if pre_parse_failure is not None:
                     # Rejected from its scanned size before the download, so
                     # there is nothing to parse. Substituting the guard's result
                     # here (rather than returning early) keeps oversize handling
                     # on the single terminal/dead-letter path below, however the
                     # size became known.
-                    result = preflight_failure
+                    result = pre_parse_failure
                 elif tier is not None and _is_pdf(content_type):
                     # Narrowing: the download branch above always sets ``source``
                     # when it did not short-circuit on the pre-flight gate.
@@ -1581,10 +1651,13 @@ async def _index_document_inner(
                     # ``unsupported_type``: the tier ladder is PDF-only, so a mime
                     # type no processor claims cannot be parsed by a higher rung
                     # either -- escalating it would just walk the queues to burn
-                    # the same dispatch failure three times (Deck #1016).
+                    # the same dispatch failure three times (Deck #1016). And for
+                    # ``empty_document``: zero bytes yield no text at any tier
+                    # (card #1230).
                     next_avail = (
                         None
-                        if reason in ("oversize", UNSUPPORTED_TYPE_REASON)
+                        if reason
+                        in ("oversize", UNSUPPORTED_TYPE_REASON, EMPTY_DOCUMENT_REASON)
                         else registry.next_available_tier(failing_tier, settings)
                     )
                     # #399: a hard parse failure (an isolated-worker timeout/OOM on
