@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Log stand-in for a document handed over as bare bytes, with no filename.
+_UNNAMED = "<bytes>"
+
 # Connect timeout for the OCR backend request. The overall (read) timeout is
 # configurable via DOCUMENT_OCR_TIMEOUT_SECONDS and resolved per call.
 _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
@@ -708,7 +711,7 @@ class OcrProcessor(DocumentProcessor):
         # this is the backstop for every other caller of a processor.
         if not content:
             logger.warning(
-                "OCR skipped for %s: document has no bytes", filename or "<bytes>"
+                "OCR skipped for %s: document has no bytes", filename or _UNNAMED
             )
             return ProcessingResult(
                 text="",
@@ -750,7 +753,7 @@ class OcrProcessor(DocumentProcessor):
         if backend is None:
             logger.warning(
                 "OCR requested for %s but no backend is configured (provider=%s)",
-                filename or "<bytes>",
+                filename or _UNNAMED,
                 settings.document_ocr_provider,
             )
             return ProcessingResult(
@@ -773,7 +776,7 @@ class OcrProcessor(DocumentProcessor):
             # rather than being conflated with provider errors.
             timeout = settings.document_ocr_timeout_seconds
             logger.warning(
-                "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
+                "OCR timed out for %s after %.1fs", filename or _UNNAMED, timeout
             )
             return ProcessingResult(
                 text="",
@@ -783,7 +786,7 @@ class OcrProcessor(DocumentProcessor):
                 error=f"OCR timed out after {timeout:.1f}s",
             )
         except Exception as e:
-            logger.warning("OCR failed for %s: %s", filename or "<bytes>", e)
+            logger.warning("OCR failed for %s: %s", filename or _UNNAMED, e)
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "error"},
