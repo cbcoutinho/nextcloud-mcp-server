@@ -523,7 +523,7 @@ def empty_download_result(
         metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
         processor="empty_guard",
         success=False,
-        error="document is empty (0 bytes)",
+        error="document is empty",
     )
 
 

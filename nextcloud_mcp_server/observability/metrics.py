@@ -1788,9 +1788,10 @@ def record_document_ingest_size(doc_type: str, size_bytes: int) -> None:
 def record_document_ingest_rejected(doc_type: str, reason: str) -> None:
     """Record a document rejected before parsing (``oversize``, ``empty_document``).
 
-    Paired with :func:`record_document_ingest_size` so "what fraction of this
-    tenant's corpus is over cap" is a ratio of two metrics rather than an
-    investigation.
+    ``oversize`` is paired with :func:`record_document_ingest_size` so "what
+    fraction of this tenant's corpus is over cap" is a ratio of two metrics
+    rather than an investigation. ``empty_document`` has no such pairing —
+    there is no size to observe, which is the whole reason it was rejected.
     """
     document_ingest_rejected_total.labels(doc_type=doc_type, reason=reason).inc()
 
