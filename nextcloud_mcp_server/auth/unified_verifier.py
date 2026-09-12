@@ -361,13 +361,25 @@ class UnifiedTokenVerifier(TokenVerifier):
                 "(Nextcloud will validate its own audience)"
             )
 
+            # Resolve the raw identity claim to Nextcloud's own account UID
+            # before it becomes AccessToken.resource (#1326): everything
+            # downstream keys storage on that field.
+            raw_username = payload.get("sub") or payload.get("preferred_username")
+            resolved_username = (
+                await self._resolve_canonical_uid(token, raw_username)
+                if raw_username
+                else None
+            )
+
             # Recorded only once the AccessToken actually exists — not at each
             # validation stage, and not merely once the audience check passes.
             # `_create_access_token` still returns None (without raising) for a
             # payload carrying no `sub`/`preferred_username`, so recording any
             # earlier means a token that is about to be refused is counted as
             # accepted. "valid" has to mean the caller got a token.
-            access_token = self._create_access_token(token, payload)
+            access_token = self._create_access_token(
+                token, payload, resolved_username=resolved_username
+            )
             if access_token is None:
                 return self._reject(
                     validation_method,
@@ -478,6 +490,16 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload.get("sub"),
             )
 
+            # Resolve the raw identity claim to Nextcloud's own account UID
+            # before it becomes AccessToken.resource (#1326), same as the
+            # MCP-audience path.
+            raw_username = payload.get("sub") or payload.get("preferred_username")
+            resolved_username = (
+                await self._resolve_canonical_uid(token, raw_username)
+                if raw_username
+                else None
+            )
+
             # Cache and return the token. via_userinfo is derived from how we
             # actually validated — never from a payload claim (see
             # _create_access_token_with_cache_key).
@@ -486,6 +508,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload,
                 cache_key,
                 via_userinfo=(validation_method == "userinfo"),
+                resolved_username=resolved_username,
             )
             # Creation still returns None (without raising) for a payload with
             # no `sub`/`preferred_username`, and a stage passing is not the same
@@ -1016,8 +1039,111 @@ class UnifiedTokenVerifier(TokenVerifier):
         logger.debug("Token validated via userinfo for user: %s", data.get("sub"))
         return data
 
+    async def _resolve_canonical_uid(self, token: str, claimed_uid: str) -> str:
+        """Resolve an OIDC identity claim to the Nextcloud account UID.
+
+        ``user_oidc`` maps an external IdP's ``sub`` to its own account UID;
+        the two are equal only under the non-default
+        ``--mapping-uid=sub --unique-uid=0``. Trusting the raw claim keys
+        every downstream store (Qdrant filters, app-password lookups) on an
+        identity Nextcloud itself does not use, and the failure is silent: a
+        lookup under the wrong key returns zero results, not an error (#1326).
+
+        Mirrors ``_validate_nextcloud_credentials``'s OCS v2 canonical-UID
+        lookup in ``api/passwords.py``, but authenticates with the bearer
+        token itself rather than a login/password pair: this module's own
+        docstring establishes that token reuse against Nextcloud is safe
+        (RFC 8707), and ``context_helper.py`` already reuses this exact
+        token the same way once verification succeeds.
+
+        Falls back to ``claimed_uid`` on any lookup failure, so an OCS
+        outage degrades to the behavior before this method existed rather
+        than rejecting an otherwise-valid token.
+
+        Args:
+            token: The bearer token to present to Nextcloud.
+            claimed_uid: The unverified ``sub``/``preferred_username`` claim.
+
+        Returns:
+            The canonical Nextcloud UID, or ``claimed_uid`` if it could not
+            be resolved.
+        """
+        nextcloud_host = getattr(self.settings, "nextcloud_host", None)
+        if not nextcloud_host:
+            return claimed_uid
+
+        try:
+            async with nextcloud_httpx_client(timeout=10.0) as client:
+                response = await client.get(
+                    f"{nextcloud_host.rstrip('/')}/ocs/v2.php/cloud/user",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "OCS-APIRequest": "true",
+                    },
+                    params={"format": "json"},
+                )
+        except Exception as e:
+            # A dedicated, short-lived client (never self.http_client, which
+            # is shared across every user's verification): Nextcloud sets a
+            # session cookie on every OCS response, including failures, and a
+            # long-lived client would replay user A's session on user B's
+            # lookup. Broad except (not just httpx.RequestError): the
+            # fallback to claimed_uid is safe by construction, so an
+            # unexpected error here (a malformed NEXTCLOUD_HOST, a client
+            # already closed, ...) should degrade the same way a network
+            # error does rather than reject a token JWT/introspection
+            # already validated.
+            logger.warning(
+                "Canonical-UID lookup failed for %s, using claimed value: %s",
+                claimed_uid,
+                e,
+            )
+            return claimed_uid
+
+        if response.status_code != 200:
+            logger.warning(
+                "Canonical-UID lookup returned HTTP %s for %s, using claimed value",
+                response.status_code,
+                claimed_uid,
+            )
+            return claimed_uid
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning(
+                "Canonical-UID lookup returned a non-JSON body for %s, using "
+                "claimed value",
+                claimed_uid,
+            )
+            return claimed_uid
+
+        # Parsed defensively, same shape as _validate_nextcloud_credentials:
+        # a malformed OCS body must degrade, never raise.
+        ocs = payload.get("ocs") if isinstance(payload, dict) else None
+        ocs_data = ocs.get("data") if isinstance(ocs, dict) else None
+        canonical_uid = ocs_data.get("id") if isinstance(ocs_data, dict) else None
+        if not canonical_uid:
+            logger.warning(
+                "Canonical-UID lookup returned no id for %s, using claimed value",
+                claimed_uid,
+            )
+            return claimed_uid
+
+        if canonical_uid != claimed_uid:
+            logger.info(
+                "Resolved OIDC claim %s to canonical Nextcloud UID %s",
+                claimed_uid,
+                canonical_uid,
+            )
+        return canonical_uid
+
     def _create_access_token(
-        self, token: str, payload: dict[str, Any]
+        self,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        resolved_username: str | None = None,
     ) -> AccessToken | None:
         """
         Create AccessToken object from validated token payload.
@@ -1025,13 +1151,18 @@ class UnifiedTokenVerifier(TokenVerifier):
         Args:
             token: The bearer token
             payload: Validated token payload
+            resolved_username: Canonical Nextcloud UID from
+                :meth:`_resolve_canonical_uid`, when the caller already ran
+                that (async) lookup. Falls back to the raw claim when omitted.
 
         Returns:
             AccessToken object or None if required fields missing
         """
         # Use default cache key (hash of token)
         cache_key = hashlib.sha256(token.encode()).hexdigest()
-        return self._create_access_token_with_cache_key(token, payload, cache_key)
+        return self._create_access_token_with_cache_key(
+            token, payload, cache_key, resolved_username=resolved_username
+        )
 
     def _create_access_token_with_cache_key(
         self,
@@ -1040,6 +1171,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         cache_key: str,
         *,
         via_userinfo: bool = False,
+        resolved_username: str | None = None,
     ) -> AccessToken | None:
         """
         Create AccessToken object from validated token payload with custom cache key.
@@ -1052,12 +1184,19 @@ class UnifiedTokenVerifier(TokenVerifier):
                 fallback. Sourced from the caller (how validation happened), never
                 from a payload claim — it gates the allowlist relaxation and the
                 short cache TTL, so it must not be forgeable by the IdP response.
+            resolved_username: Canonical Nextcloud UID from
+                :meth:`_resolve_canonical_uid`, when the caller already ran
+                that (async) lookup. Falls back to the raw claim when omitted,
+                so this stays sync and callers that never resolve (tests,
+                cache reconstruction) are unaffected.
 
         Returns:
             AccessToken object or None if required fields missing
         """
         # Extract username (sub claim, with fallback to preferred_username)
-        username = payload.get("sub") or payload.get("preferred_username")
+        username = (
+            resolved_username or payload.get("sub") or payload.get("preferred_username")
+        )
         if not username:
             # Deliberately silent: every caller routes a None result through
             # _reject(), whose WARNING carries the client_id and reason this
@@ -1105,7 +1244,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             **{
                 k: v
                 for k, v in payload.items()
-                if k not in ("sub", "scope", "_auth_via_userinfo")
+                if k not in ("sub", "scope", "_auth_via_userinfo", "preferred_username")
             },
         }
         if via_userinfo:

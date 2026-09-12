@@ -540,6 +540,283 @@ class TestAccessTokenCreation:
         )
 
 
+class TestCanonicalUidResolution:
+    """Regression tests for #1326.
+
+    An external IdP's `sub` need not equal the Nextcloud UID `user_oidc`
+    assigns it. `_resolve_canonical_uid` looks up the real UID via OCS
+    `/cloud/user`, authenticated with the bearer token itself, through a
+    dedicated short-lived client (never `self.http_client`, which is shared
+    across every user's verification and would replay one user's Nextcloud
+    session cookie onto another's lookup).
+    """
+
+    def _ocs_response(self, uid: str):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "ocs": {"meta": {"statuscode": 200}, "data": {"id": uid}}
+        }
+        return response
+
+    def _mock_ocs_client(self, response=None, *, side_effect=None):
+        """A mocked `nextcloud_httpx_client` context manager, matching the
+        pattern `api/passwords.py`'s own OCS-call tests already use."""
+        mock_get = AsyncMock()
+        if side_effect is not None:
+            mock_get.side_effect = side_effect
+        else:
+            mock_get.return_value = response
+        mock_client = AsyncMock()
+        mock_client.get = mock_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        # Must resolve falsy: a truthy __aexit__ return SUPPRESSES an
+        # exception raised inside the `async with` block (real
+        # httpx.AsyncClient.__aexit__ returns None), so a naive AsyncMock()
+        # here would swallow the network-error/unexpected-error cases before
+        # they ever reach the method's own except clause.
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        return mock_client, mock_get
+
+    async def test_resolves_to_canonical_uid(self, base_settings):
+        verifier = UnifiedTokenVerifier(base_settings)
+        mock_client, mock_get = self._mock_ocs_client(self._ocs_response("alice"))
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid(
+                "bearer-token", "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+            )
+
+        assert result == "alice"
+        mock_get.assert_awaited_once()
+        _, kwargs = mock_get.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer bearer-token"
+
+    async def test_falls_back_to_claimed_uid_on_network_error(self, base_settings):
+        verifier = UnifiedTokenVerifier(base_settings)
+        mock_client, _ = self._mock_ocs_client(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid(
+                "bearer-token", "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+            )
+
+        assert result == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    async def test_falls_back_to_claimed_uid_on_unexpected_error(self, base_settings):
+        """Not just `httpx.RequestError`: any failure from the lookup must
+        degrade to the claimed value, since the fallback is safe by
+        construction and the caller's own `except Exception` would otherwise
+        reject a token JWT/introspection already validated (e.g. a malformed
+        `NEXTCLOUD_HOST` raising `httpx.InvalidURL`, which is not a
+        `RequestError`)."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        mock_client, _ = self._mock_ocs_client(side_effect=httpx.InvalidURL("bad host"))
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid(
+                "bearer-token", "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+            )
+
+        assert result == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    async def test_falls_back_to_claimed_uid_on_non_200(self, base_settings):
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock()
+        response.status_code = 401
+        mock_client, _ = self._mock_ocs_client(response)
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid("bearer-token", "some-sub")
+
+        assert result == "some-sub"
+
+    async def test_falls_back_to_claimed_uid_on_malformed_body(self, base_settings):
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ocs": {"data": []}}  # not a dict
+        mock_client, _ = self._mock_ocs_client(response)
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid("bearer-token", "some-sub")
+
+        assert result == "some-sub"
+
+    async def test_falls_back_to_claimed_uid_on_non_json_body(self, base_settings):
+        verifier = UnifiedTokenVerifier(base_settings)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not JSON")
+        mock_client, _ = self._mock_ocs_client(response)
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid("bearer-token", "some-sub")
+
+        assert result == "some-sub"
+
+    async def test_skips_lookup_without_nextcloud_host(self, base_settings):
+        base_settings.nextcloud_host = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        mock_client, mock_get = self._mock_ocs_client(self._ocs_response("alice"))
+
+        with patch(
+            "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+            return_value=mock_client,
+        ):
+            result = await verifier._resolve_canonical_uid("bearer-token", "some-sub")
+
+        assert result == "some-sub"
+        mock_get.assert_not_awaited()
+
+    async def test_verify_mcp_audience_stores_canonical_uid_not_raw_sub(
+        self, base_settings
+    ):
+        """End-to-end: a token whose `sub` is a Keycloak UUID must resolve to
+        the Nextcloud UID in AccessToken.resource, not the raw claim.
+
+        This reproduces #1326: on `main`, `access_token.resource` here comes
+        back as the raw UUID, and every downstream consumer (Qdrant filters,
+        `api/management.py`'s `user_id`) is keyed on an identity Nextcloud
+        itself does not use.
+        """
+        verifier = UnifiedTokenVerifier(base_settings)
+        raw_sub = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        introspection_response = {
+            "active": True,
+            "sub": raw_sub,
+            "aud": ["test-client-id"],
+            "scope": "openid profile",
+            "exp": int(time.time() + 3600),
+            "client_id": "test-client-id",
+        }
+        mock_client, _ = self._mock_ocs_client(self._ocs_response("alice"))
+
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+                return_value=mock_client,
+            ),
+            patch.object(
+                verifier, "_introspect_token", return_value=introspection_response
+            ),
+        ):
+            result = await verifier._verify_mcp_audience("opaque-token-12345")
+
+        assert result is not None
+        assert result.resource == "alice"
+        assert result.resource != raw_sub
+
+    async def test_canonical_uid_replaces_preferred_username_in_cache_too(
+        self, base_settings
+    ):
+        """The cached entry must not carry the stale raw `preferred_username`
+        claim alongside the resolved `sub`: two identity fields disagreeing
+        about who the token belongs to is a live trap for any future reader
+        that prefers `preferred_username`."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        raw_sub = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        introspection_response = {
+            "active": True,
+            "sub": raw_sub,
+            "preferred_username": raw_sub,
+            "aud": ["test-client-id"],
+            "scope": "openid profile",
+            "exp": int(time.time() + 3600),
+            "client_id": "test-client-id",
+        }
+        mock_client, _ = self._mock_ocs_client(self._ocs_response("alice"))
+
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+                return_value=mock_client,
+            ),
+            patch.object(
+                verifier, "_introspect_token", return_value=introspection_response
+            ),
+        ):
+            await verifier._verify_mcp_audience("opaque-token-12345")
+
+        cache_key = hashlib.sha256(b"opaque-token-12345").hexdigest()
+        cached_payload, _ = verifier._token_cache[cache_key]
+        assert cached_payload["sub"] == "alice"
+        assert "preferred_username" not in cached_payload
+
+    async def test_management_api_path_also_stores_canonical_uid(
+        self, monkeypatch, base_settings
+    ):
+        """The management-API verification path shares the same fix."""
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "test-client-id")
+        from nextcloud_mcp_server.config import _reload_config
+
+        _reload_config()
+        verifier = UnifiedTokenVerifier(base_settings)
+        raw_sub = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        introspection_response = {
+            "active": True,
+            "sub": raw_sub,
+            "client_id": "test-client-id",
+            "scope": "openid profile",
+            "exp": int(time.time() + 3600),
+        }
+        mock_client, mock_get = self._mock_ocs_client(self._ocs_response("alice"))
+
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+                return_value=mock_client,
+            ),
+            patch.object(
+                verifier, "_introspect_token", return_value=introspection_response
+            ),
+        ):
+            result = await verifier.verify_token_for_management_api(
+                "opaque-token-12345"
+            )
+
+        assert result is not None
+        assert result.resource == "alice"
+
+        # A second call must hit the cache, not the OCS endpoint again, and
+        # must still carry the resolved UID (not the raw claim).
+        mock_get.reset_mock()
+        with (
+            patch(
+                "nextcloud_mcp_server.auth.unified_verifier.nextcloud_httpx_client",
+                return_value=mock_client,
+            ),
+            patch.object(
+                verifier, "_introspect_token", return_value=introspection_response
+            ),
+        ):
+            cached_result = await verifier.verify_token_for_management_api(
+                "opaque-token-12345"
+            )
+        assert cached_result.resource == "alice"
+        mock_get.assert_not_awaited()
+
+
 class TestVerifyTokenFlow:
     """Test complete verify_token flow."""
 
