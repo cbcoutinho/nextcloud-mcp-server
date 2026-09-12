@@ -38,7 +38,12 @@ import httpx
 
 from nextcloud_mcp_server.config import Settings, get_settings
 
-from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .base import (
+    EMPTY_DOCUMENT_REASON,
+    DocumentProcessor,
+    ProcessingResult,
+    ProcessorError,
+)
 
 if TYPE_CHECKING:
     # Annotation-only imports (the runtime imports are lazy — inside
@@ -694,6 +699,25 @@ class OcrProcessor(DocumentProcessor):
             Callable[[float, float | None, str | None], Awaitable[None]] | None
         ) = None,
     ) -> ProcessingResult:
+        # An empty payload base64-encodes to "" and the gateway rejects the
+        # submission with 422 "document decodes to empty bytes" -- a permanent
+        # validation failure that dead-letters the document under the generic
+        # "error" reason, invisibly (card #1230). Refuse it locally under its own
+        # name instead, before any gateway round-trip. The ingest path also
+        # guards the download itself (``vector.processor.empty_download_result``);
+        # this is the backstop for every other caller of a processor.
+        if not content:
+            logger.warning(
+                "OCR skipped for %s: document has no bytes", filename or "<bytes>"
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
+                processor=self.name,
+                success=False,
+                error="document is empty",
+            )
+
         settings = get_settings()
 
         # Batch mode (Deck #332): submit to the gateway's async Batch OCR job and
