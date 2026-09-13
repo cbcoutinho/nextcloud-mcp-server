@@ -9,9 +9,43 @@ from typing import Any, Optional
 import anyio
 import httpx
 
+from nextcloud_mcp_server.utils.html import html_to_markdown
+
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 logger = logging.getLogger(__name__)
+
+
+def _element_text(element: dict[str, Any], el_type: str) -> tuple[str, bool]:
+    """One element's contribution, and whether it counted as a rendered table.
+
+    A Table element's ``text`` is its cells flattened into one run of prose,
+    which loses the row/column association a questionnaire or price list depends
+    on. ``text_as_html`` carries the real grid, so it is preferred and rendered
+    as a markdown table.
+
+    Gated on the element type as well as the key: the API only populates
+    ``text_as_html`` for tables today, so this is not a behaviour change -- but
+    if it ever carries HTML on some other element, rendering that as a table
+    would misread it, whereas falling through to ``text`` degrades safely.
+    """
+    plain = element.get("text") or ""
+    if el_type != "Table":
+        return plain, False
+
+    table_html = (element.get("metadata") or {}).get("text_as_html")
+    if not table_html:
+        return plain, False
+
+    table_md = html_to_markdown(table_html)
+    # A pipe, not just a non-empty string: html_to_markdown falls back to a
+    # regex tag-strip if markdownify raises, and that returns flattened prose --
+    # the very thing this branch exists to avoid. Counting it would report
+    # parse_mode="markdown" over exactly the mangled output the caller uses that
+    # flag to rule out.
+    if "|" in table_md:
+        return table_md, True
+    return plain or table_md, False
 
 
 class UnstructuredProcessor(DocumentProcessor):
@@ -187,12 +221,16 @@ class UnstructuredProcessor(DocumentProcessor):
                 # Extract text and metadata
                 texts = []
                 element_types: dict[str, int] = {}
+                tables_as_markdown = 0
 
                 for element in elements:
-                    if "text" in element and element["text"]:
-                        texts.append(element["text"])
-
                     el_type = element.get("type", "unknown")
+                    rendered, is_table = _element_text(element, el_type)
+                    if rendered:
+                        texts.append(rendered)
+                    if is_table:
+                        tables_as_markdown += 1
+
                     element_types[el_type] = element_types.get(el_type, 0) + 1
 
                 parsed_text = "\n\n".join(texts)
@@ -203,8 +241,11 @@ class UnstructuredProcessor(DocumentProcessor):
                     "element_types": element_types,
                     "strategy": strategy,
                     "languages": languages,
-                    # Elements are joined as plain paragraphs, not markdown.
-                    "parse_mode": "text_only",
+                    "tables_as_markdown": tables_as_markdown,
+                    # Non-table elements are joined as plain paragraphs, so the
+                    # output is only markdown once a table has been rendered as
+                    # one. utils/document_parser reads this to label the result.
+                    "parse_mode": "markdown" if tables_as_markdown else "text_only",
                 }
 
                 logger.debug(
