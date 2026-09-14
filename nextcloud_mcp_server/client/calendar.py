@@ -65,6 +65,25 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
+def _event_search_bounds(
+    start: dt.datetime | None, end: dt.datetime | None
+) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """Normalize exact search bounds before REPORT, expansion, or fan-out."""
+    start = (
+        (start if start.tzinfo else start.replace(tzinfo=dt.UTC)).astimezone(dt.UTC)
+        if start is not None
+        else None
+    )
+    end = (
+        (end if end.tzinfo else end.replace(tzinfo=dt.UTC)).astimezone(dt.UTC)
+        if end is not None
+        else None
+    )
+    if start is not None and end is not None and start >= end:
+        raise ValueError("start_datetime must be before end_datetime")
+    return start, end
+
+
 # How far back a recurring todo's unfinished backlog is searched. Bounded so an
 # abandoned daily series cannot turn a single todo into thousands of expansions.
 _PENDING_MAX_LOOKBACK = dt.timedelta(days=366 * 3)
@@ -524,6 +543,14 @@ class CalendarClient:
 
     # ============= Calendar Operations =============
 
+    async def get_calendar_display_name(self, calendar_name: str) -> str:
+        """Read the authoritative DAV displayname with one depth-zero PROPFIND."""
+        await self._ensure_calendar_home()
+        calendar = self._get_calendar(calendar_name)
+        # get_display_name() can reuse the slug seeded by _get_calendar().
+        props = await _maybe_await(calendar.get_properties([dav.DisplayName()]))
+        return props.get(dav.DisplayName.tag) or calendar_name
+
     async def list_calendars(self) -> list[dict[str, Any]]:
         """List all available calendars for the user.
 
@@ -731,7 +758,10 @@ class CalendarClient:
         end_datetime: dt.datetime | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """List events in a calendar within date range."""
+        """List events in [start, end); naive datetime bounds mean UTC."""
+        start_datetime, end_datetime = _event_search_bounds(
+            start_datetime, end_datetime
+        )
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -854,11 +884,9 @@ class CalendarClient:
         is responsible for expanding recurring events client-side so that
         TZID/floating semantics are preserved.
         """
-        # Ensure naive datetimes are treated as UTC for the wire-level filter
-        if start_datetime and start_datetime.tzinfo is None:
-            start_datetime = start_datetime.replace(tzinfo=dt.UTC)
-        if end_datetime and end_datetime.tzinfo is None:
-            end_datetime = end_datetime.replace(tzinfo=dt.UTC)
+        start_datetime, end_datetime = _event_search_bounds(
+            start_datetime, end_datetime
+        )
 
         # Build comp-filter with time-range (mirrors sync Calendar.build_search_xml_query)
         inner_comp_filter = cdav.CompFilter(name="VEVENT")
@@ -1277,6 +1305,10 @@ class CalendarClient:
         the returned order still follows the calendar order and does not
         depend on which REPORT happens to finish first.
         """
+        # Validate before per-calendar failures can be caught and skipped.
+        start_datetime, end_datetime = _event_search_bounds(
+            start_datetime, end_datetime
+        )
         await self._ensure_calendar_home()
         failures: list[str] = []
         try:
