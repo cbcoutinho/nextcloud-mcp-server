@@ -2,9 +2,13 @@
 
 import datetime as dt
 import json
+import logging
 from zoneinfo import ZoneInfo
 
+import anyio
+import httpx
 import pytest
+from caldav.lib.error import PropfindError
 from mcp.client import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -162,6 +166,61 @@ async def test_list_tool_forwards_utc_bounds_and_real_display_name(
     else:
         client.calendar.get_calendar_display_name.assert_awaited_once_with("1")
     client.calendar.list_calendars.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error_type", [httpx.TransportError, PropfindError, ValueError]
+)
+async def test_display_name_failure_preserves_events(
+    listing, mocker, caplog, error_type: type[Exception]
+) -> None:
+    mcp, client, _ = listing
+    client.calendar.get_calendar_display_name.side_effect = error_type(
+        "sensitive DAV error detail"
+    )
+    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.server.calendar")
+    tool = mcp._tool_manager.get_tool("nc_calendar_list_events")
+    result = await tool.fn(ctx=mocker.MagicMock(), calendar_name="1")
+
+    assert result.success is True
+    assert result.total_found == 2
+    assert all(e.uid == "early" and e.summary == "Early" for e in result.events)
+    assert all(
+        e.calendar_name == "1" and e.calendar_display_name == "1" for e in result.events
+    )
+    client.calendar.get_calendar_display_name.assert_awaited_once_with("1")
+    assert "using calendar slug" in caplog.text
+    assert "sensitive DAV error detail" not in caplog.text
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_empty_results_skip_display_name_lookup(
+    listing, mocker, filtered: bool
+) -> None:
+    mcp, client, _ = listing
+    if filtered:
+        client.calendar._apply_event_filters.return_value = []
+    else:
+        client.calendar.get_calendar_events.return_value = []
+    tool = mcp._tool_manager.get_tool("nc_calendar_list_events")
+    result = await tool.fn(
+        ctx=mocker.MagicMock(),
+        calendar_name="1",
+        title_contains="no match" if filtered else None,
+    )
+
+    assert result.events == []
+    assert result.total_found == 0
+    client.calendar.get_calendar_display_name.assert_not_awaited()
+
+
+async def test_display_name_cancellation_propagates(listing, mocker) -> None:
+    mcp, client, _ = listing
+    cancelled = anyio.get_cancelled_exc_class()
+    client.calendar.get_calendar_display_name.side_effect = cancelled()
+    tool = mcp._tool_manager.get_tool("nc_calendar_list_events")
+    with pytest.raises(cancelled):
+        await tool.fn(ctx=mocker.MagicMock(), calendar_name="1")
 
 
 @pytest.mark.parametrize("all_calendars", [False, True])

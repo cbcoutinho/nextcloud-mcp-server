@@ -311,8 +311,9 @@ def configure_calendar_tools(mcp: MCPServer):
     ) -> ListEventsResponse:
         """List events in a calendar (or all calendars) within date range with advanced filtering.
 
-        A non-empty single-calendar listing reads its DAV display name once;
-        cross-calendar listings reuse names from calendar discovery.
+        A non-empty filtered single-calendar listing reads its DAV display name
+        once, falling back to the calendar slug if that optional read fails.
+        Cross-calendar listings reuse names from calendar discovery.
 
         Args:
             ctx: MCP context
@@ -383,19 +384,24 @@ def configure_calendar_tools(mcp: MCPServer):
                 limit=limit,
             )
 
-            # One targeted property read, not a directory listing or a read per event.
-            display_name = (
-                await client.calendar.get_calendar_display_name(calendar_name)
-                if events
-                else calendar_name
-            )
+            if filters:
+                events = client.calendar._apply_event_filters(events, filters)
+
+            display_name = calendar_name
+            if events:
+                try:
+                    display_name = await client.calendar.get_calendar_display_name(
+                        calendar_name
+                    )
+                except Exception:
+                    # Optional metadata must not discard a successful event query.
+                    # DAV errors can contain credentials or response bodies.
+                    logger.warning(
+                        "Calendar display-name lookup failed; using calendar slug"
+                    )
             for event in events:
                 event["calendar_name"] = calendar_name
                 event["calendar_display_name"] = display_name
-
-            # Apply filters if provided
-            if filters:
-                events = client.calendar._apply_event_filters(events, filters)
 
         summaries = [_event_dict_to_summary(e) for e in events]
         return ListEventsResponse(
