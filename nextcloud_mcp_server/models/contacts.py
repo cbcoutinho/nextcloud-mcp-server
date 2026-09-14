@@ -130,6 +130,21 @@ class ListContactsResponse(BaseResponse):
     total_count: int = Field(description="Total number of contacts")
 
 
+class ContactMutationResponse(BaseResponse):
+    """Receipt for a successful contact create or delete, not a contact projection."""
+
+    uid: str = Field(description="Contact ID supplied to the mutation")
+    addressbook: str = Field(description="Address book URI slug")
+    resource_path: str = Field(
+        description="CardDAV resource path targeted by the mutation"
+    )
+    status_code: int = Field(description="HTTP status returned by the mutation")
+    etag: str | None = Field(
+        None,
+        description="ETag from the create response, or None if omitted or deleted",
+    )
+
+
 class CreateContactResponse(BaseResponse):
     """Response model for contact creation."""
 
