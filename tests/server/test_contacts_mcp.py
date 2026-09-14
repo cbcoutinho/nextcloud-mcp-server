@@ -59,6 +59,15 @@ async def test_mcp_contacts_workflow(
             },
         )
         assert create_c_result.is_error is False
+        create_payload = _extract_payload(create_c_result)
+        assert create_payload == create_c_result.structured_content
+        assert create_payload["success"] is True
+        assert create_payload["uid"] == contact_uid
+        assert create_payload["addressbook"] == addressbook_name
+        assert create_payload["resource_path"].endswith(
+            f"/{addressbook_name}/{contact_uid}.vcf"
+        )
+        assert create_payload["status_code"] == 201
 
         # 4. Verify contact creation (and that all fields — #716 — actually persisted)
         contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
@@ -153,6 +162,13 @@ async def test_mcp_contacts_workflow(
             {"addressbook": addressbook_name, "uid": contact_uid},
         )
         assert delete_c_result.is_error is False
+        delete_payload = _extract_payload(delete_c_result)
+        assert delete_payload == delete_c_result.structured_content
+        assert delete_payload["success"] is True
+        assert delete_payload["uid"] == contact_uid
+        assert delete_payload["addressbook"] == addressbook_name
+        assert delete_payload["resource_path"] == create_payload["resource_path"]
+        assert delete_payload["status_code"] == 204
 
         # 6. Verify contact deletion
         contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
