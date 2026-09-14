@@ -65,20 +65,21 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
+def _event_search_bound(value: dt.datetime | None) -> dt.datetime | None:
+    """Normalize one search instant, interpreting naive values as UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.UTC)
+    return value.astimezone(dt.UTC)
+
+
 def _event_search_bounds(
     start: dt.datetime | None, end: dt.datetime | None
 ) -> tuple[dt.datetime | None, dt.datetime | None]:
     """Normalize exact search bounds before REPORT, expansion, or fan-out."""
-    start = (
-        (start if start.tzinfo else start.replace(tzinfo=dt.UTC)).astimezone(dt.UTC)
-        if start is not None
-        else None
-    )
-    end = (
-        (end if end.tzinfo else end.replace(tzinfo=dt.UTC)).astimezone(dt.UTC)
-        if end is not None
-        else None
-    )
+    start = _event_search_bound(start)
+    end = _event_search_bound(end)
     if start is not None and end is not None and start >= end:
         raise ValueError("start_datetime must be before end_datetime")
     return start, end

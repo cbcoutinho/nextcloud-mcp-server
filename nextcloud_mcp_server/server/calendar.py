@@ -31,6 +31,29 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
+def _event_search_bound(name: str, value: str, tz: ZoneInfo) -> dt.datetime | None:
+    """Parse one local date or exact instant into a UTC search boundary."""
+    if not value:
+        return None
+    try:
+        # Explicit offsets win; only date-only end bounds include the whole day.
+        try:
+            date = dt.date.fromisoformat(value)
+        except ValueError:
+            bound = dt.datetime.fromisoformat(value)
+        else:
+            if name == "end_date":
+                date += dt.timedelta(days=1)
+            bound = dt.datetime.combine(date, dt.time())
+        if bound.tzinfo is None:
+            bound = bound.replace(tzinfo=tz)
+        return bound.astimezone(dt.UTC)
+    except (ValueError, OverflowError) as e:
+        raise ToolError(
+            f"Invalid {name} {value!r}; expected YYYY-MM-DD or an ISO datetime"
+        ) from e
+
+
 def _event_search_range(
     start_date: str, end_date: str, timezone: str = "UTC"
 ) -> tuple[dt.datetime | None, dt.datetime | None]:
@@ -42,31 +65,8 @@ def _event_search_range(
             f"Invalid timezone {timezone!r}; expected an IANA timezone"
         ) from e
 
-    bounds = []
-    for name, value in (("start_date", start_date), ("end_date", end_date)):
-        if not value:
-            bounds.append(None)
-            continue
-        try:
-            # Preserve ISO datetime inputs, including their explicit offsets.
-            # Only a date-only end denotes an inclusive calendar day.
-            try:
-                date = dt.date.fromisoformat(value)
-            except ValueError:
-                bound = dt.datetime.fromisoformat(value)
-            else:
-                if name == "end_date":
-                    date += dt.timedelta(days=1)
-                bound = dt.datetime.combine(date, dt.time())
-            if bound.tzinfo is None:
-                bound = bound.replace(tzinfo=tz)
-            bounds.append(bound.astimezone(dt.UTC))
-        except (ValueError, OverflowError) as e:
-            raise ToolError(
-                f"Invalid {name} {value!r}; expected YYYY-MM-DD or an ISO datetime"
-            ) from e
-
-    start, end = bounds
+    start = _event_search_bound("start_date", start_date, tz)
+    end = _event_search_bound("end_date", end_date, tz)
     if start is not None and end is not None and start >= end:
         raise ToolError("start_date must be before the exclusive end of end_date")
     return start, end
