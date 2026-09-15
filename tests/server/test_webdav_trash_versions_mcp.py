@@ -43,7 +43,7 @@ async def test_delete_then_restore_from_trash(
     await nc_client.webdav.delete_resource(throwaway_file)
 
     listing = await nc_mcp_client.call_tool("nc_webdav_list_trash", {})
-    assert listing.isError is False
+    assert listing.is_error is False
     trash = _payload(listing)
     assert trash["success"] is True
     assert trash["total_count"] == len(trash["items"])
@@ -55,7 +55,7 @@ async def test_delete_then_restore_from_trash(
     restored = await nc_mcp_client.call_tool(
         "nc_webdav_restore_from_trash", {"entry_id": entry["id"]}
     )
-    assert restored.isError is False
+    assert restored.is_error is False
     assert _payload(restored)["entry_id"] == entry["id"]
 
     content, _, _ = await nc_client.webdav.read_file(throwaway_file)
@@ -67,7 +67,7 @@ async def test_restore_from_trash_rejects_unknown_id(nc_mcp_client: ClientSessio
     result = await nc_mcp_client.call_tool(
         "nc_webdav_restore_from_trash", {"entry_id": "does-not-exist"}
     )
-    assert result.isError is True
+    assert result.is_error is True
 
 
 async def test_list_and_restore_version(
@@ -84,7 +84,7 @@ async def test_list_and_restore_version(
     listing = await nc_mcp_client.call_tool(
         "nc_webdav_list_versions", {"path": throwaway_file}
     )
-    assert listing.isError is False
+    assert listing.is_error is False
     versions = _payload(listing)
     assert versions["path"] == throwaway_file
     assert versions["total_count"] == len(versions["versions"])
@@ -96,7 +96,7 @@ async def test_list_and_restore_version(
         "nc_webdav_restore_version",
         {"path": throwaway_file, "version_id": target},
     )
-    assert restored.isError is False
+    assert restored.is_error is False
     assert _payload(restored)["restored_version"] == target
 
     content, _, _ = await nc_client.webdav.read_file(throwaway_file)
@@ -108,4 +108,4 @@ async def test_list_versions_refuses_missing_file(nc_mcp_client: ClientSession):
     result = await nc_mcp_client.call_tool(
         "nc_webdav_list_versions", {"path": f"nope_{uuid.uuid4().hex}.txt"}
     )
-    assert result.isError is True
+    assert result.is_error is True
