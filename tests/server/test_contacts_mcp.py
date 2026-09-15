@@ -310,7 +310,7 @@ async def test_mcp_contacts_photo_and_paging_parameters(
         default_result = await nc_mcp_client.call_tool(
             "nc_contacts_list_contacts", {"addressbook": addressbook_name}
         )
-        assert default_result.isError is False
+        assert default_result.is_error is False
         default_payload = _extract_payload(default_result)
         assert default_payload["total_count"] == 3
         assert all(c["photo"] is None for c in default_payload["contacts"])
@@ -321,7 +321,7 @@ async def test_mcp_contacts_photo_and_paging_parameters(
             "nc_contacts_list_contacts",
             {"addressbook": addressbook_name, "include_photos": True},
         )
-        assert with_photos.isError is False
+        assert with_photos.is_error is False
         assert all(c["photo"] for c in _extract_payload(with_photos)["contacts"])
 
         # Paging: total_count stays the addressbook size, not the page size.

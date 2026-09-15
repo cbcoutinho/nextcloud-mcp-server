@@ -41,21 +41,21 @@ async def test_tag_lifecycle(nc_mcp_client: ClientSession, tagged_file: str):
     tagged = await nc_mcp_client.call_tool(
         "nc_webdav_tag_file", {"path": tagged_file, "tag": tag}
     )
-    assert tagged.isError is False
+    assert tagged.is_error is False
     assert _payload(tagged)["assigned"] is True
 
     read_back = await nc_mcp_client.call_tool(
         "nc_webdav_get_file_tags", {"path": tagged_file}
     )
-    assert read_back.isError is False
+    assert read_back.is_error is False
     assert tag in [t["name"] for t in _payload(read_back)["tags"]]
 
     listed = await nc_mcp_client.call_tool("nc_webdav_list_tags", {})
-    assert listed.isError is False
+    assert listed.is_error is False
     assert tag in [t["name"] for t in _payload(listed)["tags"]]
 
     found = await nc_mcp_client.call_tool("nc_webdav_find_by_tag_name", {"tag": tag})
-    assert found.isError is False
+    assert found.is_error is False
     by_tag = _payload(found)
     assert by_tag["total_count"] >= 1
     assert by_tag["tag_id"] is not None
@@ -63,7 +63,7 @@ async def test_tag_lifecycle(nc_mcp_client: ClientSession, tagged_file: str):
     untagged = await nc_mcp_client.call_tool(
         "nc_webdav_untag_file", {"path": tagged_file, "tag": tag}
     )
-    assert untagged.isError is False
+    assert untagged.is_error is False
     assert _payload(untagged)["assigned"] is False
 
     after = await nc_mcp_client.call_tool(
@@ -79,7 +79,7 @@ async def test_tagging_is_idempotent(nc_mcp_client: ClientSession, tagged_file: 
         result = await nc_mcp_client.call_tool(
             "nc_webdav_tag_file", {"path": tagged_file, "tag": tag}
         )
-        assert result.isError is False
+        assert result.is_error is False
 
     read_back = await nc_mcp_client.call_tool(
         "nc_webdav_get_file_tags", {"path": tagged_file}
@@ -93,7 +93,7 @@ async def test_unknown_tag_yields_empty_result(nc_mcp_client: ClientSession):
     result = await nc_mcp_client.call_tool(
         "nc_webdav_find_by_tag_name", {"tag": f"nope-{uuid.uuid4().hex}"}
     )
-    assert result.isError is False
+    assert result.is_error is False
     payload = _payload(result)
     assert payload["total_count"] == 0
     assert payload["tag_id"] is None
@@ -106,7 +106,7 @@ async def test_untagging_an_unknown_tag_is_refused(
         "nc_webdav_untag_file",
         {"path": tagged_file, "tag": f"nope-{uuid.uuid4().hex}"},
     )
-    assert result.isError is True
+    assert result.is_error is True
 
 
 async def test_tagging_a_missing_file_is_refused(nc_mcp_client: ClientSession):
@@ -114,4 +114,4 @@ async def test_tagging_a_missing_file_is_refused(nc_mcp_client: ClientSession):
         "nc_webdav_tag_file",
         {"path": f"nope_{uuid.uuid4().hex}.txt", "tag": "whatever"},
     )
-    assert result.isError is True
+    assert result.is_error is True
