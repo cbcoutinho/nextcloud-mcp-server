@@ -1,7 +1,7 @@
 """Unit tests for the stdio transport module."""
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.config import _reload_config
 from nextcloud_mcp_server.config_validators import AuthMode
@@ -22,10 +22,10 @@ def single_user_env(monkeypatch):
 
 
 @pytest.mark.unit
-def test_get_stdio_mcp_returns_fastmcp(single_user_env):
-    """get_stdio_mcp returns a FastMCP instance with correct env vars."""
+def test_get_stdio_mcp_returns_mcpserver(single_user_env):
+    """get_stdio_mcp returns a MCPServer instance with correct env vars."""
     mcp = get_stdio_mcp()
-    assert isinstance(mcp, FastMCP)
+    assert isinstance(mcp, MCPServer)
 
 
 @pytest.mark.unit
@@ -54,7 +54,7 @@ def test_get_stdio_mcp_rejects_non_single_user_mode(monkeypatch):
 def test_get_stdio_mcp_registers_all_apps_by_default(single_user_env):
     """All app tool groups are registered when no filter is specified."""
     mcp = get_stdio_mcp()
-    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
+    # NOTE: _tool_manager is a MCPServer internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -75,7 +75,7 @@ def test_get_stdio_mcp_registers_all_apps_by_default(single_user_env):
 def test_get_stdio_mcp_respects_enabled_apps(single_user_env):
     """Only specified apps have their tools registered."""
     mcp = get_stdio_mcp(enabled_apps=["notes"])
-    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
+    # NOTE: _tool_manager is a MCPServer internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -89,7 +89,7 @@ def test_get_stdio_mcp_respects_enabled_apps(single_user_env):
 def test_get_stdio_mcp_no_semantic_tools(single_user_env):
     """Semantic search tools are never registered in stdio mode."""
     mcp = get_stdio_mcp()
-    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
+    # NOTE: _tool_manager is a MCPServer internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -101,6 +101,6 @@ def test_get_stdio_mcp_no_semantic_tools(single_user_env):
 def test_get_stdio_mcp_registers_capabilities_resource(single_user_env):
     """The nc://capabilities resource is registered."""
     mcp = get_stdio_mcp()
-    # NOTE: _resource_manager._resources is a FastMCP internal; may break on SDK upgrades
+    # NOTE: _resource_manager._resources is a MCPServer internal; may break on SDK upgrades
     resources = mcp._resource_manager._resources
     assert "nc://capabilities" in resources

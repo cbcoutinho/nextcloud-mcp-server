@@ -241,7 +241,8 @@ Each user goes through provisioning **once**, the first time they connect. Subse
        │                                  ├────────────────────────────────────>│
        │                                  │  ← {loginName, appPassword}         │
        │                                  │                                     │
-       │                                  │  7. Encrypt + store in SQLite       │
+       │                                  │  7. Verify granter == caller, then  │
+       │                                  │     encrypt + store in SQLite       │
        │                                  │                                     │
        │  8. Retry MCP request            │                                     │
        ├─────────────────────────────────>│                                     │
@@ -251,6 +252,36 @@ Each user goes through provisioning **once**, the first time they connect. Subse
        │                                  │  ← response                         │
        │  10. ← result                    │                                     │
 ```
+
+### Step 7: the grant must come from the caller
+
+The login URL is **transferable** — whoever opens it and clicks "Grant access"
+produces the app password, and Nextcloud's Login Flow says nothing about who
+asked for it. Before storing anything, the server therefore checks that the
+account that granted is the OAuth caller who started the flow
+(`nextcloud_mcp_server/auth/grant_ownership.py`, GHSA-84qv-22q6-x82r):
+
+Both sides are resolved the same way — by asking Nextcloud who a credential
+authenticates as (OCS `/cloud/user`) — and the canonical UIDs are compared:
+
+- the **granter** is authenticated with the fresh app password, which maps the
+  Login Flow `loginName` (possibly an email alias, or an LDAP login that differs
+  from the UID) onto a canonical UID;
+- the **caller** is authenticated with their own OAuth bearer token. The OAuth
+  `sub` is also accepted, since it *is* the UID when Nextcloud is the IdP.
+
+An IdP-supplied `preferred_username` is deliberately not accepted as a caller
+identity: it is a claim the IdP — and on some IdPs the user — controls, so
+honouring it would let an attacker name the victim's UID as their own. External
+IdPs are handled by the bearer lookup instead, which means **Nextcloud must be
+configured to accept the IdP's bearer tokens** (`user_oidc --check-bearer=1`, as
+ADR-002 already requires). Without it the caller's UID cannot be established and
+provisioning fails closed. Note that no token claim can substitute: with
+`user_oidc --unique-uid` the Nextcloud UID is a hash of the IdP `sub`.
+
+A grant that does not match — or that cannot be verified at all — is refused:
+nothing is stored, and the app password it produced is revoked. Both the browser
+route and the MCP tools go through this check.
 
 ### Provisioning Endpoints
 
@@ -289,6 +320,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `cookbook.read` / `cookbook.write` | Cookbook |
 | `todo.read` / `todo.write` | Tasks (VTODO outside Calendar) |
 | `collectives.read` / `collectives.write` | Collectives |
+| `shopping_list.read` / `shopping_list.write` | Shopping List |
 | `news.read` | News (read-only) |
 | `sharing.write` | Share-link / share-permission management |
 | `semantic.read` | Semantic search + RAG (when enabled) |

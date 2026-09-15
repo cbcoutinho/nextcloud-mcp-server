@@ -39,7 +39,7 @@ FILE_INDEX_TIMEOUT_SECONDS = 120
 async def test_search_results_carry_an_astrolabe_chunk_link(nc_mcp_client, nc_client):
     """A freshly indexed note comes back with a link that opens its chunk."""
     status = await nc_mcp_client.call_tool("nc_get_vector_sync_status", {})
-    if status.isError:
+    if status.is_error:
         pytest.skip("Vector sync not enabled")
 
     # A nonsense term the seed corpus cannot contain, so the match is ours.
@@ -64,7 +64,7 @@ async def test_search_results_carry_an_astrolabe_chunk_link(nc_mcp_client, nc_cl
         search = await nc_mcp_client.call_tool(
             "nc_semantic_search", {"query": unique_term, "limit": 10}
         )
-        assert not search.isError, search
+        assert not search.is_error, search
         results = json.loads(search.content[0].text)["results"]
 
         ours = [r for r in results if str(r["id"]) == str(note["id"])]
@@ -102,7 +102,7 @@ async def test_context_expansion_preserves_the_chunk_link(nc_mcp_client, nc_clie
     """include_context=True rebuilds each result from scratch, which is exactly
     how rerank_score was once silently dropped. Same corpus, both flavours."""
     status = await nc_mcp_client.call_tool("nc_get_vector_sync_status", {})
-    if status.isError:
+    if status.is_error:
         pytest.skip("Vector sync not enabled")
 
     unique_term = f"zorblat{uuid.uuid4().hex[:12]}"
@@ -127,7 +127,7 @@ async def test_context_expansion_preserves_the_chunk_link(nc_mcp_client, nc_clie
             "nc_semantic_search",
             {"query": unique_term, "limit": 10, "include_context": True},
         )
-        assert not search.isError, search
+        assert not search.is_error, search
         results = json.loads(search.content[0].text)["results"]
 
         ours = [r for r in results if str(r["id"]) == str(note["id"])]
@@ -172,7 +172,7 @@ async def _file_is_searchable(mcp_client, term: str, file_id: int) -> bool:
         )
     except Exception:  # transient blip — keep polling
         return False
-    if search.isError:
+    if search.is_error:
         return False
     try:
         results = json.loads(search.content[0].text).get("results", [])
@@ -190,7 +190,7 @@ async def test_file_results_also_carry_a_link_to_the_file(nc_mcp_client, nc_clie
     still holds on a live index, rather than only in the indexer's source.
     """
     status = await nc_mcp_client.call_tool("nc_get_vector_sync_status", {})
-    if status.isError:
+    if status.is_error:
         pytest.skip("Vector sync not enabled")
 
     unique_term = f"zorblat{uuid.uuid4().hex[:12]}"
@@ -225,7 +225,7 @@ async def test_file_results_also_carry_a_link_to_the_file(nc_mcp_client, nc_clie
             "nc_semantic_search",
             {"query": unique_term, "limit": 50, "doc_types": ["file"]},
         )
-        assert not search.isError, search
+        assert not search.is_error, search
         results = json.loads(search.content[0].text)["results"]
 
         ours = [r for r in results if str(r["id"]) == str(file_id)]

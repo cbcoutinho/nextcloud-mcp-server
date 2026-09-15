@@ -566,6 +566,10 @@ class ProcessorRegistry:
     ) -> ProcessingResult:
         """Pay for OCR when the classifier says a text extractor cannot do better.
 
+        Only under ``document_ocr_mode=sync``. Batch OCR is worker-only, so on this
+        inline path ``batch`` makes ``structured`` the terminal tier (see the gate
+        below); ``sync`` is what grants inline requests access to OCR.
+
         Fires for a scanned / no-text-layer doc (recommended "ocr"), and also for
         an unresolved "structured" recommendation -- a glyph-corrupt doc whose
         structured rung wasn't registered -- so the inline path falls through to
@@ -603,6 +607,21 @@ class ProcessorRegistry:
         result.metadata["ocr_recommended_reason"] = reason
         if not settings.document_ocr_enabled:
             result.metadata["ocr_escalation_skipped"] = "disabled"
+            return result
+
+        # Batch OCR defers its poll across procrastinate retries, which only the
+        # external worker path can do -- the inline/memory pool threads no per-doc
+        # identity through ``options``, so ``_process_batch`` raises there by
+        # construction (see ocr.py ``_batch_identity``). Escalating anyway burns a
+        # full structured re-parse per attempt for an OCR call that CANNOT succeed,
+        # and because OCR failure is non-fatal ("an enhancement, not a gate") the
+        # document is never dead-lettered -- it is simply re-discovered and
+        # re-parsed on the next scan, indefinitely. That loop OOMKilled a tenant's
+        # API Pod (Deck #1226). Under batch, the inline ladder therefore stops at
+        # structured; OCR belongs to the document-processing pipeline alone.
+        # Under sync, both the external processors and inline requests may escalate.
+        if settings.document_ocr_mode == "batch":
+            result.metadata["ocr_escalation_skipped"] = "batch_worker_only"
             return result
 
         # Inline (memory pool) path: no queues to hop, so resolve the OCR tier

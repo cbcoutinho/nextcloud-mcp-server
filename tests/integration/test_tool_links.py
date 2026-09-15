@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 
 def _payload(result) -> dict:
     """Parsed JSON body of an MCP tool result."""
-    assert result.isError is False, f"tool call failed: {result.content}"
+    assert result.is_error is False, f"tool call failed: {result.content}"
     return json.loads(result.content[0].text)
 
 

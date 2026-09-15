@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import anyio
 from anyio.to_thread import run_sync
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
@@ -28,12 +28,17 @@ from nextcloud_mcp_server.models import (
     WriteFileResponse,
 )
 from nextcloud_mcp_server.models.webdav import (
+    FilesByTagResponse,
+    FileTagsResponse,
     FileVersion,
+    ListTagsResponse,
     ListTrashResponse,
     ListVersionsResponse,
     ParseStatus,
     RestoreFromTrashResponse,
     RestoreVersionResponse,
+    SystemTag,
+    TagFileResponse,
     TrashEntry,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -180,11 +185,11 @@ def _as_int(raw: Any) -> Optional[int]:
         return None
 
 
-async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
-    """Resolve ``path`` to the file ID the comments collection is keyed by.
+async def _resolve_file_id(client: "NextcloudClient", path: str) -> int:
+    """Resolve ``path`` to the numeric file ID the DAV collections are keyed by.
 
-    Shared by both comment tools so the excluded-tag guard and the
-    does-it-exist check cannot drift between reading and writing comments.
+    Shared by the comment and tag tools so the excluded-tag guard and the
+    does-it-exist check cannot drift between them.
 
     Raises:
         ToolError: If the path is excluded by tag, resolves to nothing, or
@@ -208,13 +213,13 @@ async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
         ) from None
 
 
-def configure_webdav_tools(mcp: FastMCP):
+def configure_webdav_tools(mcp: MCPServer):
     # WebDAV file system tools
     @mcp.tool(
         title="List Files and Directories",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -273,8 +278,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Read File",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -510,8 +515,8 @@ def configure_webdav_tools(mcp: FastMCP):
             # succeeds once then returns 412 ("already exists") on repeat, and
             # an if_match overwrite is invalidated by its own success (the etag
             # changes) -- mirroring nc_notes_update_note's etag-guarded update.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -613,8 +618,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Create Directory",
         annotations=ToolAnnotations(
-            idempotentHint=True,  # Creating existing dir returns 405 = same end state
-            openWorldHint=True,
+            idempotent_hint=True,  # Creating existing dir returns 405 = same end state
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -646,9 +651,9 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete File or Directory",
         annotations=ToolAnnotations(
-            destructiveHint=True,  # Permanently deletes data
-            idempotentHint=True,  # Deleting deleted resource = same end state
-            openWorldHint=True,
+            destructive_hint=True,  # Permanently deletes data
+            idempotent_hint=True,  # Deleting deleted resource = same end state
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -677,8 +682,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Move or Rename File",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Moving changes source and dest
-            openWorldHint=True,
+            idempotent_hint=False,  # Moving changes source and dest
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -748,8 +753,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Copy File or Directory",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Creates new resource each time
-            openWorldHint=True,
+            idempotent_hint=False,  # Creates new resource each time
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -819,8 +824,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Search Files",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -938,8 +943,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Find Files by Name",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -982,8 +987,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Find Files by Type",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1026,8 +1031,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="List Favorite Files",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1067,8 +1072,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="List File Comments",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.read")
@@ -1094,12 +1099,12 @@ def configure_webdav_tools(mcp: FastMCP):
             ListFileCommentsResponse with the comments, newest first.
         """
         if limit <= 0:
-            raise ValueError(f"limit must be positive, got {limit}")
+            raise ToolError(f"limit must be positive, got {limit}")
         if offset < 0:
-            raise ValueError(f"offset must not be negative, got {offset}")
+            raise ToolError(f"offset must not be negative, got {offset}")
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comments = await client.webdav.list_comments(
             file_id, limit=limit, offset=offset
@@ -1116,8 +1121,8 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Comment on File",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # Each call adds another comment
-            openWorldHint=True,
+            idempotent_hint=False,  # Each call adds another comment
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -1147,10 +1152,10 @@ def configure_webdav_tools(mcp: FastMCP):
             CreateFileCommentResponse with the new comment's ID.
         """
         if is_blank_comment(message):
-            raise ValueError("Comment message must not be empty or whitespace-only")
+            raise ToolError("Comment message must not be empty or whitespace-only")
         length = measured_length(message)
         if length > COMMENT_MAX_LENGTH:
-            raise ValueError(
+            raise ToolError(
                 f"Comment message is {length} characters; Nextcloud's limit is "
                 f"{COMMENT_MAX_LENGTH} (measured after trimming whitespace, "
                 f"counting Unicode code points). It is "
@@ -1160,7 +1165,7 @@ def configure_webdav_tools(mcp: FastMCP):
             )
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comment_id = await client.webdav.create_comment(file_id, message)
         return CreateFileCommentResponse(
@@ -1172,7 +1177,7 @@ def configure_webdav_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Trash",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("files.read")
     @instrument_tool
@@ -1185,8 +1190,11 @@ def configure_webdav_tools(mcp: FastMCP):
         client = await get_client(ctx)
         items = await client.webdav.list_trash()
 
-        # An excluded file stays excluded after deletion: the original
-        # location would otherwise leak through the trash listing.
+        # Hide entries deleted from inside a still-existing excluded folder.
+        # ponytail: a *directly* tagged file drops out of the files-by-tag
+        # REPORT once trashed, and no DAV route exposes tags on trash items
+        # (verified on NC 32), so its name still lists here. Its tag survives
+        # restore, so the read/write guards still cover its content.
         excluded = await get_excluded_file_paths(client.webdav)
         if excluded:
             items = [
@@ -1211,9 +1219,9 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Restore From Trash",
         annotations=ToolAnnotations(
-            destructiveHint=False,  # Puts a file back; nothing is overwritten
-            idempotentHint=False,  # The entry is gone from the trash afterwards
-            openWorldHint=True,
+            destructive_hint=False,  # Puts a file back; nothing is overwritten
+            idempotent_hint=False,  # The entry is gone from the trash afterwards
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -1228,8 +1236,9 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
 
-        # Resolve the entry first so an excluded original location cannot be
-        # restored -- and so a bad id fails as a refusal, not a DAV error.
+        # Resolve the entry first so a bad id fails as a refusal, not a DAV
+        # error, and nothing is restored into an excluded folder (see the
+        # directly-tagged caveat in nc_webdav_list_trash).
         entries = await client.webdav.list_trash()
         match = next((e for e in entries if e.get("id") == entry_id), None)
         if match is None:
@@ -1247,7 +1256,7 @@ def configure_webdav_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List File Versions",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("files.read")
     @instrument_tool
@@ -1262,7 +1271,7 @@ def configure_webdav_tools(mcp: FastMCP):
         # and turns a missing file into a refusal rather than a ValueError
         # surfacing from the client layer. Passing the id through spares
         # list_versions a second get_fileid round-trip for the same path.
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         data = await client.webdav.list_versions(path, file_id=file_id)
         versions = [
@@ -1284,11 +1293,11 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Restore File Version",
         annotations=ToolAnnotations(
-            destructiveHint=False,  # The current content is kept as a version
+            destructive_hint=False,  # The current content is kept as a version
             # Not idempotent: each restore stores the then-current content as
             # a further version, so repeating it keeps adding side effects.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("files.write")
@@ -1308,7 +1317,128 @@ def configure_webdav_tools(mcp: FastMCP):
         client = await get_client(ctx)
         # See nc_webdav_list_versions: passing the id through spares
         # restore_version a second get_fileid round-trip.
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         await client.webdav.restore_version(path, version_id, file_id=file_id)
         return RestoreVersionResponse(path=path, restored_version=version_id)
+
+    @mcp.tool(
+        title="List Tags",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_tags(ctx: Context) -> ListTagsResponse:
+        """List all system tags available for tagging files."""
+        client = await get_client(ctx)
+        tags = [SystemTag(**t) for t in await client.webdav.list_tags()]
+        return ListTagsResponse(tags=tags, total_count=len(tags))
+
+    @mcp.tool(
+        title="Get File Tags",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_get_file_tags(path: str, ctx: Context) -> FileTagsResponse:
+        """List the tags assigned to one file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        # Resolving through the shared helper applies the excluded-tag guard,
+        # so an excluded path cannot be probed for existence via its tags.
+        await _resolve_file_id(client, path)
+
+        data = await client.webdav.get_file_tags(path)
+        return FileTagsResponse(
+            path=data["path"],
+            file_id=str(data["file_id"]),
+            tags=[SystemTag(id=t["id"], name=t["name"]) for t in data["tags"]],
+        )
+
+    @mcp.tool(
+        title="Find Files By Tag",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @with_links
+    @instrument_tool
+    async def nc_webdav_find_by_tag_name(tag: str, ctx: Context) -> FilesByTagResponse:
+        """Find all files carrying a given tag.
+
+        Args:
+            tag: Tag name, case-sensitive.
+        """
+        client = await get_client(ctx)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            return FilesByTagResponse(tag=tag, files=[], total_count=0)
+
+        files = await client.webdav.get_files_by_tag(found["id"])
+
+        # A tag can be attached to an excluded file; the listing must not
+        # surface it any more than a directory listing would.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if excluded:
+            files = [
+                f for f in files if not is_path_excluded(f.get("path", ""), excluded)
+            ]
+
+        return FilesByTagResponse(
+            tag=tag,
+            tag_id=found["id"],
+            files=[FileInfo(**f) for f in files],
+            total_count=len(files),
+        )
+
+    @mcp.tool(
+        title="Tag File",
+        annotations=ToolAnnotations(
+            destructive_hint=False,
+            idempotent_hint=True,  # Same tag twice = same end state
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_tag_file(path: str, tag: str, ctx: Context) -> TagFileResponse:
+        """Attach a tag to a file, creating the tag if it does not exist yet.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        resolved = await client.webdav.get_or_create_tag(tag)
+        await client.webdav.assign_tag_to_file(file_id, resolved["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=resolved["id"], assigned=True)
+
+    @mcp.tool(
+        title="Untag File",
+        annotations=ToolAnnotations(
+            destructive_hint=False,  # The tag itself survives
+            idempotent_hint=True,  # Removing an absent tag = same end state
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_untag_file(
+        path: str, tag: str, ctx: Context
+    ) -> TagFileResponse:
+        """Remove a tag from a file. The tag itself keeps existing.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            raise ToolError(f"No tag named {tag!r} exists")
+        await client.webdav.remove_tag_from_file(file_id, found["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=found["id"], assigned=False)

@@ -53,7 +53,7 @@ async def test_mcp_cookbook_create_and_read_recipe(
             },
         )
 
-        assert create_result.isError is False, (
+        assert create_result.is_error is False, (
             f"MCP recipe creation failed: {create_result.content}"
         )
 
@@ -75,7 +75,7 @@ async def test_mcp_cookbook_create_and_read_recipe(
             "nc_cookbook_get_recipe", {"recipe_id": created_recipe_id}
         )
 
-        assert read_result.isError is False, (
+        assert read_result.is_error is False, (
             f"MCP recipe read failed: {read_result.content}"
         )
 
@@ -131,7 +131,7 @@ async def test_mcp_cookbook_update_recipe(
             },
         )
 
-        assert update_result.isError is False, (
+        assert update_result.is_error is False, (
             f"MCP recipe update failed: {update_result.content}"
         )
 
@@ -182,7 +182,7 @@ async def test_mcp_cookbook_delete_recipe(
             "nc_cookbook_delete_recipe", {"recipe_id": created_recipe_id}
         )
 
-        assert delete_result.isError is False, (
+        assert delete_result.is_error is False, (
             f"MCP recipe deletion failed: {delete_result.content}"
         )
 
@@ -228,7 +228,7 @@ async def test_mcp_cookbook_import_recipe_from_url(
             "nc_cookbook_import_recipe", {"url": test_url}
         )
 
-        assert import_result.isError is False, (
+        assert import_result.is_error is False, (
             f"MCP recipe import failed: {import_result.content}"
         )
 
@@ -292,7 +292,7 @@ async def test_mcp_cookbook_search_recipes(
             "nc_cookbook_search_recipes", {"query": unique_keyword}
         )
 
-        assert search_result.isError is False, (
+        assert search_result.is_error is False, (
             f"MCP recipe search failed: {search_result.content}"
         )
 
@@ -327,7 +327,7 @@ async def test_mcp_cookbook_list_recipes(
     logger.info("Listing all recipes via MCP")
     list_result = await nc_mcp_client.call_tool("nc_cookbook_list_recipes", {})
 
-    assert list_result.isError is False, (
+    assert list_result.is_error is False, (
         f"MCP list recipes failed: {list_result.content}"
     )
 
@@ -368,7 +368,7 @@ async def test_mcp_cookbook_categories_workflow(
             "nc_cookbook_list_categories", {}
         )
 
-        assert categories_result.isError is False, (
+        assert categories_result.is_error is False, (
             f"MCP list categories failed: {categories_result.content}"
         )
 
@@ -384,7 +384,7 @@ async def test_mcp_cookbook_categories_workflow(
             "nc_cookbook_get_recipes_in_category", {"category": unique_category}
         )
 
-        assert category_recipes_result.isError is False, (
+        assert category_recipes_result.is_error is False, (
             f"MCP get recipes in category failed: {category_recipes_result.content}"
         )
 
@@ -443,7 +443,7 @@ async def test_mcp_cookbook_keywords_workflow(
         logger.info("Listing keywords via MCP")
         keywords_result = await nc_mcp_client.call_tool("nc_cookbook_list_keywords", {})
 
-        assert keywords_result.isError is False, (
+        assert keywords_result.is_error is False, (
             f"MCP list keywords failed: {keywords_result.content}"
         )
 
@@ -459,7 +459,7 @@ async def test_mcp_cookbook_keywords_workflow(
             "nc_cookbook_get_recipes_with_keywords", {"keywords": [unique_keyword]}
         )
 
-        assert keyword_recipes_result.isError is False, (
+        assert keyword_recipes_result.is_error is False, (
             f"MCP get recipes with keywords failed: {keyword_recipes_result.content}"
         )
 
@@ -549,7 +549,7 @@ async def test_mcp_cookbook_reindex(
     logger.info("Triggering recipe reindex via MCP")
     reindex_result = await nc_mcp_client.call_tool("nc_cookbook_reindex", {})
 
-    assert reindex_result.isError is False, (
+    assert reindex_result.is_error is False, (
         f"MCP reindex failed: {reindex_result.content}"
     )
 

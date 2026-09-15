@@ -76,7 +76,7 @@ def test_create_note_response_serialization():
 def test_search_notes_response_wraps_results():
     """Test SearchNotesResponse wraps list of results correctly.
 
-    This is critical - FastMCP mangles raw List[Dict] responses,
+    This is critical - MCPServer mangles raw List[Dict] responses,
     so we must wrap them in a response model.
     """
     results = [

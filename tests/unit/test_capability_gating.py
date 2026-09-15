@@ -4,7 +4,7 @@ Covers the three questions the gate has to get right:
 
 * does ``unmet_capability`` close only when it actually knows better (a missing
   app, a too-old version) and stay open on every unknown, and
-* does ``NextcloudFastMCP`` hide exactly the unmet tools from ``tools/list``
+* does ``NextcloudMCPServer`` hide exactly the unmet tools from ``tools/list``
   while refusing them in ``tools/call``, and
 * does an ungated tool set cost zero OCS round-trips.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from packaging.version import InvalidVersion
 
 import nextcloud_mcp_server.capabilities as cap
@@ -26,7 +26,7 @@ from nextcloud_mcp_server.capabilities import (
     unmet_capability,
 )
 from nextcloud_mcp_server.config import _DEFAULTS, _reload_config, set_override
-from nextcloud_mcp_server.errors import NextcloudFastMCP
+from nextcloud_mcp_server.errors import NextcloudMCPServer
 
 pytestmark = pytest.mark.unit
 
@@ -198,13 +198,13 @@ async def test_capabilities_are_fetched_once_per_user():
 
 
 # ---------------------------------------------------------------------------
-# NextcloudFastMCP integration: tools/list + tools/call
+# NextcloudMCPServer integration: tools/list + tools/call
 # ---------------------------------------------------------------------------
 
 
 def _server(payload=None, raises: Exception | None = None) -> tuple:
     """A server with one gated + one ungated tool, and its fake OCS client."""
-    mcp = NextcloudFastMCP("test")
+    mcp = NextcloudMCPServer("test")
 
     @mcp.tool()
     @require_capability("deck", min_version="1.18.0")
@@ -265,7 +265,7 @@ async def test_list_tools_fails_open_when_no_client_is_available(mocker):
 
 
 async def test_list_tools_without_gates_makes_no_ocs_call(mocker):
-    mcp = NextcloudFastMCP("test")
+    mcp = NextcloudMCPServer("test")
 
     @mcp.tool()
     async def nc_notes_create_note() -> str:
@@ -417,11 +417,11 @@ def test_reaction_tools_declare_the_spreed_reactions_gate(tool_name):
     Talk hides these three tools" was inferred across two files rather than
     asserted. A typo in the app key or the flag would have passed both.
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from nextcloud_mcp_server.server.talk import configure_talk_tools
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_talk_tools(mcp)
 
     tool = mcp._tool_manager.get_tool(tool_name)
@@ -435,11 +435,11 @@ def test_non_reaction_talk_tools_are_not_feature_gated():
     Gating the read/send tools on `reactions` would hide working tools on an
     older Talk -- the failure mode the fail-open contract exists to avoid.
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from nextcloud_mcp_server.server.talk import configure_talk_tools
 
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_talk_tools(mcp)
 
     for tool_name in ("talk_list_conversations", "talk_send_message"):

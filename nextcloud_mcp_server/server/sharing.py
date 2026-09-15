@@ -1,11 +1,10 @@
 """MCP tools for Nextcloud file/folder sharing operations."""
 
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -13,6 +12,7 @@ from nextcloud_mcp_server.client.sharing import PublicLinkRecipientError
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import PublicDownloadLinkResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.serialization import compact_json_dumps
 
 
 def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, str]:
@@ -32,11 +32,11 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
         A tuple of ``(expireDate as YYYY-MM-DD, expires_at as RFC3339 'Z')``.
 
     Raises:
-        ValueError: If ``expires_in_minutes`` is not positive — this tool only
+        ToolError: If ``expires_in_minutes`` is not positive — this tool only
             creates short-lived links, never a permanent (non-expiring) one.
     """
     if expires_in_minutes <= 0:
-        raise ValueError("expires_in_minutes must be a positive number of minutes")
+        raise ToolError("expires_in_minutes must be a positive number of minutes")
     target = now + timedelta(minutes=expires_in_minutes)
     expire_date = (target.date() + timedelta(days=1)).isoformat()
     # Match BaseResponse.serialize_timestamp: only collapse a *trailing* UTC
@@ -57,13 +57,16 @@ def _build_link_response(
         expires_at: Advisory RFC3339 expiry computed by ``_compute_link_expiry``.
 
     Raises:
-        RuntimeError: If the payload carries no ``url``. OCS always returns one
+        ToolError: If the payload carries no ``url``. OCS always returns one
             for ``shareType=3``; its absence means the response shape changed,
             and a hard error beats handing the caller unusable empty URLs.
+            ``ToolError`` rather than a bare exception because mcp 2.x replaces
+            an unanticipated exception's message with "Error executing tool
+            <name>" -- the model would be told the call failed but not why.
     """
     url = share_data.get("url", "")
     if not url:
-        raise RuntimeError(
+        raise ToolError(
             f"Public link share {share_data.get('id')} for {path} returned no "
             "url — unexpected OCS response shape"
         )
@@ -79,16 +82,16 @@ def _build_link_response(
     )
 
 
-def configure_sharing_tools(mcp: FastMCP):
+def configure_sharing_tools(mcp: MCPServer):
     """Configure sharing-related MCP tools.
 
     Args:
-        mcp: FastMCP server instance
+        mcp: MCPServer server instance
     """
 
     @mcp.tool(
         title="Create Share",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -154,11 +157,11 @@ def configure_sharing_tools(mcp: FastMCP):
             # redirect, which is the failure this whole message path exists to
             # avoid.
             raise ToolError(str(e)) from e
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)
 
     @mcp.tool(
         title="Create Public Download Link",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -205,7 +208,8 @@ def configure_sharing_tools(mcp: FastMCP):
             advisory expiry.
 
         Raises:
-            ValueError: If ``expires_in_minutes`` is not positive.
+            ToolError: If ``expires_in_minutes`` is not positive, or if the OCS
+                response carries no share url.
         """
         expire_date, expires_at = _compute_link_expiry(
             expires_in_minutes, datetime.now(timezone.utc)
@@ -222,7 +226,7 @@ def configure_sharing_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Share",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("sharing.write")
@@ -240,13 +244,13 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         await client.sharing.delete_share(share_id)
-        return json.dumps(
-            {"success": True, "message": f"Share {share_id} deleted"}, indent=2
+        return compact_json_dumps(
+            {"success": True, "message": f"Share {share_id} deleted"}
         )
 
     @mcp.tool(
         title="Get Share Details",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -264,11 +268,11 @@ def configure_sharing_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         share_data = await client.sharing.get_share(share_id)
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)
 
     @mcp.tool(
         title="List Shares",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -289,11 +293,11 @@ def configure_sharing_tools(mcp: FastMCP):
         shares = await client.sharing.list_shares(
             path=path, shared_with_me=shared_with_me
         )
-        return json.dumps(shares, indent=2)
+        return compact_json_dumps(shares)
 
     @mcp.tool(
         title="Update Share",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("sharing.write")
     @instrument_tool
@@ -320,4 +324,4 @@ def configure_sharing_tools(mcp: FastMCP):
         share_data = await client.sharing.update_share(
             share_id=share_id, permissions=permissions
         )
-        return json.dumps(share_data, indent=2)
+        return compact_json_dumps(share_data)

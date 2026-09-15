@@ -5,7 +5,7 @@ of ``mcp_vector_sync_queue_size`` only runs in the single-user consumer
 (``processor_task``). The multi-user consumer (``oauth_processor_task``) drains
 the same queue but never touched the gauge, so in multi-user deployments the
 gauge read 0 while the live anyio buffer held thousands of pending documents
-(observed on tenant-blackbox-demo: gauge 0 for 24h vs 2214 pending in the status
+(observed on a multi-user tenant: gauge 0 for 24h vs 2214 pending in the status
 endpoint). This task publishes the *same* ``get_ingest_pending()`` figure the
 ``/api/v1/vector-sync/status`` endpoint serves, on a fixed cadence, independent
 of which consumer drains the queue and of the queue backend (anyio buffer depth

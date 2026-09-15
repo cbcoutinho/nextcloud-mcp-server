@@ -12,7 +12,7 @@ import pytest
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from nextcloud_mcp_server.auth.scope_authorization import (
     InsufficientScopeError,

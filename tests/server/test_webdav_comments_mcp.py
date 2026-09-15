@@ -96,5 +96,5 @@ async def test_comment_on_missing_file_is_refused(nc_mcp_client: ClientSession):
         arguments={"path": f"no_such_file_{uuid.uuid4().hex}.txt", "message": "hi"},
     )
 
-    assert result.isError
+    assert result.is_error
     assert "File not found" in result.content[0].text

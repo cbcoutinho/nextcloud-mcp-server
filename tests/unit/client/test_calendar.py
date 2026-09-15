@@ -166,6 +166,190 @@ def test_webcal_caching_header_enabled_on_client(mocker):
     assert headers["X-NC-CalDAV-Webcal-Caching"] == "On"
 
 
+# --- a UID containing a space must not reach caldav unencoded ---
+
+
+def test_calendar_url_is_encoded_for_a_uid_with_a_space():
+    """``DAVObject.__init__`` rejects any URL containing a space."""
+    # Unmocked: the guard under test is caldav's own.
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "Ada Lovelace")
+
+    assert (
+        client._get_calendar_url("personal")
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/personal/"
+    )
+    assert client._get_calendar("personal") is not None
+
+
+def test_home_url_is_normalised_before_storage(mocker):
+    """The client stores one form internally, so it can encode exactly once.
+
+    An internal representation choice, not a constraint on the server: whatever
+    ``calendar-home-set`` returns is decoded on the way in (as
+    ``BaseNextcloudClient._ensure_principal_id`` does) and re-encoded at the
+    point of use. The round trip is lossless.
+    """
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+
+    home_url = client._calendar_home_url_from_home_set(
+        "/remote.php/dav/calendars/Ada%20Lovelace/"
+    )
+
+    assert (
+        home_url == "https://cloud.example.org/remote.php/dav/calendars/Ada Lovelace/"
+    )
+
+    client._calendar_home_url = home_url
+    assert (
+        client._get_calendar_url("personal")
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/personal/"
+    )
+
+
+async def test_event_objects_from_a_report_re_encode_their_href(mocker):
+    """caldav decodes the hrefs it parses, so events built from one need re-encoding."""
+    import datetime as dt
+
+    from caldav.response import DAVResponse
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    ics = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:evt-1\r\n"
+        "DTSTART:20260901T090000Z\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    body = f"""<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+ <d:response>
+  <d:href>/remote.php/dav/calendars/Ada%20Lovelace/personal/evt-1.ics</d:href>
+  <d:propstat><d:prop>
+    <d:getetag>"tag-1"</d:getetag>
+    <c:calendar-data>{ics}</c:calendar-data>
+  </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+</d:multistatus>""".encode()
+
+    client = CalendarClient("https://cloud.example.org", "Ada Lovelace")
+    calendar = client._get_calendar("personal")
+    mocker.patch.object(
+        calendar.client,
+        "report",
+        mocker.AsyncMock(return_value=DAVResponse.from_bytes(body)),
+    )
+
+    events = await client._search_events_by_date(
+        calendar,
+        dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+        dt.datetime(2026, 9, 30, tzinfo=dt.UTC),
+    )
+
+    assert len(events) == 1
+    assert (
+        str(events[0].url)
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/personal/evt-1.ics"
+    )
+
+
+def test_a_calendar_name_containing_a_hash_is_not_truncated():
+    """``#``/``?`` are literal characters in a DAV path, not URL delimiters.
+
+    Splitting the URL before encoding reads them as a fragment/query and drops
+    the rest, which is the spurious-404 failure ``encode_dav_path`` was added
+    to fix (PR #891).
+    """
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+
+    assert (
+        client._get_calendar_url("My #1 Calendar")
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/My%20%231%20Calendar/"
+    )
+    assert (
+        client._get_calendar_url("Q1?plan")
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/Q1%3Fplan/"
+    )
+
+
+async def test_event_objects_from_a_report_keep_a_hash_in_their_href(mocker):
+    """An event whose UID contains '#' must not have its URL truncated.
+
+    Nextcloud names the object after the client-supplied UID, and caldav
+    decodes the href it parses -- so ``evt%231.ics`` reaches us as ``evt#1.ics``
+    and has to be re-encoded, not split on.
+    """
+    import datetime as dt
+
+    from caldav.response import DAVResponse
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    ics = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:evt#1\r\n"
+        "DTSTART:20260901T090000Z\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    body = f"""<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+ <d:response>
+  <d:href>/remote.php/dav/calendars/alice/personal/evt%231.ics</d:href>
+  <d:propstat><d:prop>
+    <d:getetag>"tag-1"</d:getetag>
+    <c:calendar-data>{ics}</c:calendar-data>
+  </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+</d:multistatus>""".encode()
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    calendar = client._get_calendar("personal")
+    mocker.patch.object(
+        calendar.client,
+        "report",
+        mocker.AsyncMock(return_value=DAVResponse.from_bytes(body)),
+    )
+
+    events = await client._search_events_by_date(
+        calendar,
+        dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+        dt.datetime(2026, 9, 30, tzinfo=dt.UTC),
+    )
+
+    assert len(events) == 1
+    assert (
+        str(events[0].url)
+        == "https://cloud.example.org/remote.php/dav/calendars/alice/personal/evt%231.ics"
+    )
+
+
+async def test_list_calendars_puts_an_encoded_home_url_on_the_wire(mocker):
+    """``_calendar_home_url`` is stored decoded, so the PROPFIND must encode it."""
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "Ada Lovelace")
+    propfind = mocker.patch.object(
+        client._dav_client,
+        "propfind",
+        mocker.AsyncMock(
+            return_value=mocker.Mock(
+                raw='<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>'
+            )
+        ),
+    )
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+
+    await client.list_calendars()
+
+    assert (
+        propfind.call_args.args[0]
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada%20Lovelace/"
+    )
+
+
 # --- calendar-home-set absolute-path normalization (issue #1007) ---
 
 
@@ -1290,3 +1474,67 @@ def test_updating_a_timed_todo_with_a_bare_date_keeps_it_timed():
     )
 
     assert client._parse_ical_todo(merged)["due"] == "2026-08-09T00:00:00+00:00"
+
+
+class TestDurationWithoutDtend:
+    """RFC 5545 3.6.1 lets a VEVENT carry DURATION instead of DTEND.
+
+    Parsed with no end at all, such an event reads as zero-length -- so it
+    consumes no time and blocks nothing in availability, and every tool that
+    reports an end time reports none.
+    """
+
+    ICS = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:dur-1\r\nSUMMARY:Workshop\r\n"
+        "{dtstart}"
+        "{extra}"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+
+    @staticmethod
+    def _parse(ics: str) -> dict:
+        return _pure_client()._extract_vevent_data(_vevent(ics))
+
+    def test_duration_becomes_an_end_datetime(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART:20260210T100000Z\r\n", extra="DURATION:PT90M\r\n"
+            )
+        )
+        assert data["start_datetime"] == "2026-02-10T10:00:00+00:00"
+        assert data["end_datetime"] == "2026-02-10T11:30:00+00:00"
+
+    def test_dtend_still_wins_over_duration(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART:20260210T100000Z\r\n",
+                extra="DTEND:20260210T103000Z\r\nDURATION:PT90M\r\n",
+            )
+        )
+        assert data["end_datetime"] == "2026-02-10T10:30:00+00:00"
+
+    def test_duration_inherits_the_start_timezone(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART;TZID=Europe/Amsterdam:20260210T100000\r\n",
+                extra="DURATION:PT1H\r\n",
+            )
+        )
+        assert data["end_datetime"].startswith("2026-02-10T11:00:00")
+        assert data["end_tz"] == "Europe/Amsterdam"
+
+    def test_all_day_duration_stays_a_date(self):
+        data = self._parse(
+            self.ICS.format(
+                dtstart="DTSTART;VALUE=DATE:20260210\r\n", extra="DURATION:P2D\r\n"
+            )
+        )
+        assert data["all_day"] is True
+        assert data["end_datetime"] == "2026-02-12"
+
+    def test_neither_dtend_nor_duration_leaves_no_end(self):
+        data = self._parse(
+            self.ICS.format(dtstart="DTSTART:20260210T100000Z\r\n", extra="")
+        )
+        assert "end_datetime" not in data

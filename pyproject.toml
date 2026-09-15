@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.182.0"
+version = "0.188.0"
 description = "Model Context Protocol (MCP) server for Nextcloud integration - enables AI assistants to interact with Nextcloud data"
 authors = [
     {name = "Chris Coutinho", email = "chris@coutinho.io"}
@@ -10,7 +10,7 @@ license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.11"
 keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude", "webdav", "caldav", "carddav"]
 dependencies = [
-    "mcp[cli] (>=1.29,<1.30)",
+    "mcp[cli] (>=2.1,<3)",
     "httpx (>=0.28.1,<0.29.0)",
     # Imported directly at runtime. Each was previously reachable only because
     # some other dependency happened to pull it in — the accident that broke
@@ -24,7 +24,7 @@ dependencies = [
     "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "packaging>=24.0", # capabilities.py compares advertised app versions
     "pillow (>=10.3.0,<12.0.0)", # Compatible with fastembed
-    "icalendar (>=7.2.0,<7.3.0)",
+    "icalendar (>=7.3.0,<7.4.0)",
     "pythonvcard4>=0.2.0",
     "pydantic>=2.11.4",
     "click>=8.1.8",
@@ -152,6 +152,10 @@ module-root = ""
 [dependency-groups]
 dev = [
     "commitizen>=4.8.2",
+    # Imported directly by tests/conftest.py and tests/load/ to build the
+    # httpx2.AsyncClient that mcp 2.x's streamable_http_client takes; mcp pulls
+    # it in anyway, but the import here is ours.
+    "httpx2>=2.5.0",
     "deptry>=0.20.0",
     "ipython>=9.2.0",
     "playwright>=1.49.1",
@@ -168,15 +172,17 @@ dev = [
     # suppressing on the bump; each still-needed one now carries a matching
     # `# ty: ignore[<ty-code>]` alongside, and the newly-surfaced diagnostics were
     # fixed. Upper bound is renovate-managed (one minor at a time).
-    "ty>=0.0.74,<0.0.75",
+    "ty>=0.0.81,<0.0.82",
     "pytest-otel>=2.0.1",
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",
     "pact-python>=3.4.0",
     # Linux-only dev/CI: exercise the profiling configured-path tests. The
     # unit-test job runs on ubuntu, so the pyroscope-io Rust wheel resolves;
-    # package-smoke (which hits Windows) uses `--with .` and never sees the dev
-    # group, so this doesn't reintroduce the Windows build failure.
+    # package-smoke (which hits Windows) installs only the built wheel and
+    # never syncs this group, so this doesn't reintroduce the Windows build
+    # failure. That job must therefore stay off .github/actions/uv-env, which
+    # syncs the dev group -- a comment on the job says so.
     "pyroscope-io>=0.8.0",
 ]
 

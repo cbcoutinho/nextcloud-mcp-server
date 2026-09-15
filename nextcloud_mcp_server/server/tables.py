@@ -1,6 +1,6 @@
 import logging
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -11,11 +11,11 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def configure_tables_tools(mcp: FastMCP):
+def configure_tables_tools(mcp: MCPServer):
     # Tables tools
     @mcp.tool(
         title="List Tables",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("tables.read")
     @instrument_tool
@@ -28,7 +28,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Table Schema",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("tables.read")
     @instrument_tool
@@ -39,7 +39,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Read Table Rows",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("tables.read")
     @instrument_tool
@@ -55,7 +55,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Insert Table Row",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("tables.write")
     @instrument_tool
@@ -69,7 +69,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Table Row",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("tables.write")
     @instrument_tool
@@ -84,7 +84,7 @@ def configure_tables_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Table Row",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("tables.write")

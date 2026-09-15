@@ -3,7 +3,32 @@
 import pytest
 from mcp import ClientSession
 
+from nextcloud_mcp_server.server import AVAILABLE_APPS
+
 pytestmark = pytest.mark.integration
+
+#: ``nc_<app>_`` for every registered app, longest first so ``nc_notes_`` can
+#: never shadow a longer prefix that starts with it.
+_APP_PREFIXES = tuple(
+    sorted((f"nc_{app}_" for app in AVAILABLE_APPS), key=len, reverse=True)
+)
+
+
+def _operation(tool_name: str) -> str:
+    """The verb part of a tool name, with its ``nc_<app>_`` prefix removed.
+
+    These tests classify a tool by looking for "list"/"get"/"delete"/... in its
+    name, which silently classifies by the *app* name too. Shopping List is the
+    first app whose own name contains one of those words: every
+    ``nc_shopping_list_*`` tool contains ``_list_``, so the raw name marked
+    ``nc_shopping_list_create_list`` as read-only. Matching on the verb alone
+    keeps the heuristic aimed at the operation, and leaves every other app's
+    classification unchanged.
+    """
+    for prefix in _APP_PREFIXES:
+        if tool_name.startswith(prefix):
+            return tool_name[len(prefix) :]
+    return tool_name
 
 
 async def test_all_tools_have_titles(nc_mcp_client: ClientSession):
@@ -40,17 +65,18 @@ async def test_read_only_tools_have_correct_annotations(nc_mcp_client: ClientSes
 
     for tool in tools.tools:
         # Check if tool name suggests it's read-only
-        is_likely_readonly = tool.name.startswith(tuple(read_only_prefixes)) or any(
-            pattern in tool.name for pattern in read_only_patterns
+        operation = _operation(tool.name)
+        is_likely_readonly = operation.startswith(tuple(read_only_prefixes)) or any(
+            pattern in operation for pattern in read_only_patterns
         )
 
         if is_likely_readonly:
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
-            assert tool.annotations.readOnlyHint is True, (
-                f"Read-only tool {tool.name} should have readOnlyHint=True"
+            assert tool.annotations.read_only_hint is True, (
+                f"Read-only tool {tool.name} should have read_only_hint=True"
             )
-            assert tool.annotations.destructiveHint is not True, (
-                f"Read-only tool {tool.name} should not have destructiveHint=True"
+            assert tool.annotations.destructive_hint is not True, (
+                f"Read-only tool {tool.name} should not have destructive_hint=True"
             )
 
 
@@ -64,13 +90,13 @@ async def test_destructive_tools_have_correct_annotations(nc_mcp_client: ClientS
 
     for tool in tools.tools:
         has_destructive_keyword = any(
-            keyword in tool.name.lower() for keyword in destructive_keywords
+            keyword in _operation(tool.name).lower() for keyword in destructive_keywords
         )
 
         if has_destructive_keyword:
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
-            assert tool.annotations.destructiveHint is True, (
-                f"Destructive tool {tool.name} should have destructiveHint=True"
+            assert tool.annotations.destructive_hint is True, (
+                f"Destructive tool {tool.name} should have destructive_hint=True"
             )
 
 
@@ -89,9 +115,12 @@ async def test_delete_operations_are_idempotent(nc_mcp_client: ClientSession):
     non_idempotent_deletes = {"collectives_delete_collective", "nc_mail_delete_message"}
 
     for tool in tools.tools:
-        if "delete" in tool.name.lower() and tool.name not in non_idempotent_deletes:
+        if (
+            "delete" in _operation(tool.name).lower()
+            and tool.name not in non_idempotent_deletes
+        ):
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
-            assert tool.annotations.idempotentHint is True, (
+            assert tool.annotations.idempotent_hint is True, (
                 f"Delete tool {tool.name} should be idempotent (same end state)"
             )
 
@@ -113,9 +142,12 @@ async def test_create_operations_not_idempotent(nc_mcp_client: ClientSession):
     }
 
     for tool in tools.tools:
-        if "create" in tool.name.lower() and tool.name not in idempotent_exceptions:
+        if (
+            "create" in _operation(tool.name).lower()
+            and tool.name not in idempotent_exceptions
+        ):
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
-            assert tool.annotations.idempotentHint is not True, (
+            assert tool.annotations.idempotent_hint is not True, (
                 f"Create tool {tool.name} should not be idempotent (creates new resources)"
             )
 
@@ -124,12 +156,25 @@ async def test_update_operations_not_idempotent(nc_mcp_client: ClientSession):
     """Verify update operations are marked as non-idempotent (due to etag requirements)."""
     tools = await nc_mcp_client.list_tools()
 
+    # Exceptions: updates on a resource carrying no etag or version, where
+    # ADR-017's "HTTP PUT without version control" case applies instead -- the
+    # same fields sent twice leave the same end state, because there is no
+    # version for the first call to have invalidated. The Shopping List app
+    # stores neither on a list or an item.
+    idempotent_exceptions = {
+        "nc_shopping_list_update_list",
+        "nc_shopping_list_update_item",
+    }
+
     for tool in tools.tools:
-        if "update" in tool.name.lower():
+        if (
+            "update" in _operation(tool.name).lower()
+            and tool.name not in idempotent_exceptions
+        ):
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
             # Most updates use etags which change each time, making them non-idempotent
             # Exception: calendar_update_event might be different
-            assert tool.annotations.idempotentHint is not True, (
+            assert tool.annotations.idempotent_hint is not True, (
                 f"Update tool {tool.name} should not be idempotent (etag changes)"
             )
 
@@ -150,13 +195,13 @@ async def test_webdav_write_is_not_idempotent(nc_mcp_client: ClientSession):
     )
     assert write_tool is not None, "nc_webdav_write_file tool not found"
     assert write_tool.annotations is not None, "write_file missing annotations"
-    assert write_tool.annotations.idempotentHint is not True, (
+    assert write_tool.annotations.idempotent_hint is not True, (
         "nc_webdav_write_file should not be idempotent (fail-closed conditional PUT)"
     )
 
 
 async def test_semantic_search_open_world(nc_mcp_client: ClientSession):
-    """Verify semantic search has openWorldHint=True (ADR-017 decision).
+    """Verify semantic search has open_world_hint=True (ADR-017 decision).
 
     Semantic search queries external Nextcloud service, consistent with other tools.
     """
@@ -169,8 +214,8 @@ async def test_semantic_search_open_world(nc_mcp_client: ClientSession):
         assert semantic_tool.annotations is not None, (
             "semantic_search missing annotations"
         )
-        assert semantic_tool.annotations.openWorldHint is True, (
-            "nc_semantic_search should have openWorldHint=True (queries external service)"
+        assert semantic_tool.annotations.open_world_hint is True, (
+            "nc_semantic_search should have open_world_hint=True (queries external service)"
         )
 
 
@@ -201,19 +246,19 @@ async def test_annotation_consistency(nc_mcp_client: ClientSession):
         read_ops = [
             t
             for t in category_tools
-            if any(op in t.name for op in ["list", "search", "get"])
+            if any(op in _operation(t.name) for op in ["list", "search", "get"])
         ]
         for tool in read_ops:
-            assert tool.annotations.readOnlyHint is True, (
+            assert tool.annotations.read_only_hint is True, (
                 f"{tool.name} is a read operation but not marked read-only"
             )
 
         # All delete operations should be destructive and idempotent
-        delete_ops = [t for t in category_tools if "delete" in t.name]
+        delete_ops = [t for t in category_tools if "delete" in _operation(t.name)]
         for tool in delete_ops:
-            assert tool.annotations.destructiveHint is True, (
+            assert tool.annotations.destructive_hint is True, (
                 f"{tool.name} is a delete operation but not marked destructive"
             )
-            assert tool.annotations.idempotentHint is True, (
+            assert tool.annotations.idempotent_hint is True, (
                 f"{tool.name} is a delete operation but not marked idempotent"
             )

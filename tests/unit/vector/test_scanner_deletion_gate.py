@@ -265,7 +265,7 @@ def test_bump_streak_evicts_oldest_when_bounded(monkeypatch):
 # ---------------------------------------------------------------------------
 # Deletion-tracking readback filter: keyed on acl_principals, not user_id, so a
 # removed original-indexer's release converges instead of looping forever
-# (blackbox-demo team-folder removal). Legacy points (no acl set) still tracked
+# (the team-folder removal case). Legacy points (no acl set) still tracked
 # by user_id.
 # ---------------------------------------------------------------------------
 

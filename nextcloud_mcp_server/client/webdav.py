@@ -18,6 +18,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 
 from .base import BaseNextcloudClient
+from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
@@ -136,23 +137,6 @@ WEBDAV_SEARCH_PAGE_SIZE = 500
 WEBDAV_SEARCH_MAX_RESULTS = 50000
 
 
-def _encode_dav_path(path: str) -> str:
-    """Percent-encode a *decoded* DAV path for use in a request URL/header.
-
-    Paths flow through this client already URL-decoded (e.g. ``unquote`` on the
-    ``<d:href>`` of a PROPFIND/REPORT response, or raw user-supplied paths from
-    MCP tools), so characters like ``#``, ``,`` and spaces reach httpx verbatim.
-    An unencoded ``#`` is parsed as a URL fragment and silently truncates the
-    request path → spurious 404 on otherwise-valid files (issue: OHR-Bench
-    ingest, card 309). ``quote`` with ``safe="/"`` encodes the unsafe characters
-    while preserving the path separators; ASCII-only paths are unchanged.
-
-    Encode exactly once: the input is decoded, so a literal ``%`` becomes
-    ``%25`` (correct) rather than being mistaken for an existing escape.
-    """
-    return quote(path, safe="/")
-
-
 def _reject_path_traversal(path: str) -> str:
     """Reject a DAV path that walks out of the user's home, returning it as-is.
 
@@ -186,15 +170,32 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     representation cannot drift between the value we hand out and the value
     ``_write_precondition_header`` expects to re-quote.
 
-    Known wart, unchanged from the ad-hoc ``.strip('"')`` calls this replaces: a
-    weak validator (``W/"abc"``) comes out as ``W/"abc`` — ``strip`` only removes
-    characters from the *ends*, and the leading ``W`` protects the opening quote.
-    The result is usable as neither an etag nor an ``If-Match`` value (RFC 9110
-    requires strong comparison there anyway). Nextcloud does not emit weak etags
-    for files, so this has never bitten; named and pinned by a test rather than
-    left to be rediscovered.
+    Two shapes need repairing beyond the quotes:
+
+    *Weak validators.* ``W/"abc"`` used to come out as ``W/"abc`` because
+    ``strip`` only removes characters from the *ends* and the leading ``W``
+    protected the opening quote — usable as neither an etag nor an ``If-Match``
+    value (RFC 9110 requires strong comparison there anyway). The prefix is now
+    removed first.
+
+    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` to the
+    ETag of every compressed response unless ``DeflateAlterETag NoChange`` is
+    set; ``AddSuffix`` is the default and the directive did not exist before
+    Apache 2.4.15, so many deployments never set it. The etag a caller reads
+    back is then not the etag the origin stored, and handing it to ``If-Match``
+    makes Nextcloud reject the write — so every overwrite of an existing file
+    fails behind such a proxy, with an error that reads like a real conflict.
     """
-    return raw.strip('"') if raw is not None else None
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("W/"):
+        cleaned = cleaned[2:]
+    cleaned = cleaned.strip('"')
+    for suffix in ("-gzip", "-br", "-deflate"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
 
 
 #: Collection holding one file's comments, addressed by file id.
@@ -344,7 +345,7 @@ def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
         return {"If-None-Match": "*"}
     if if_match == "*":
         return {"If-Match": "*"}
-    return {"If-Match": f'"{if_match}"'}
+    return {"If-Match": f'"{_normalize_etag(if_match)}"'}
 
 
 def _write_conflict_result(
@@ -411,7 +412,7 @@ class WebDAVClient(BaseNextcloudClient):
     def _webdav_path(self, path: str) -> str:
         """Build the request path for ``path`` under the user's DAV root.
 
-        Percent-encodes the caller-supplied portion (see ``_encode_dav_path``)
+        Percent-encodes the caller-supplied portion (see ``encode_dav_path``)
         so names with ``#``, commas, or spaces don't truncate/404; the base
         ``/remote.php/dav/files/<principal>`` segment is left as-is.
 
@@ -426,7 +427,7 @@ class WebDAVClient(BaseNextcloudClient):
         """
         safe_path = _reject_path_traversal(path)
         return (
-            f"{self._get_webdav_base_path()}/{_encode_dav_path(safe_path.lstrip('/'))}"
+            f"{self._get_webdav_base_path()}/{encode_dav_path(safe_path.lstrip('/'))}"
         )
 
     async def delete_resource(self, path: str) -> Dict[str, Any]:
@@ -2780,8 +2781,8 @@ class WebDAVClient(BaseNextcloudClient):
     async def restore_from_trash(self, entry_id: str) -> Dict[str, Any]:
         """Restore a trashed entry to the location it was deleted from."""
         await self._ensure_principal_id()
-        source = f"{self._trashbin_base()}/trash/{quote(entry_id)}"
-        destination = f"{self._trashbin_base()}/restore/{quote(entry_id)}"
+        source = f"{self._trashbin_base()}/trash/{quote(entry_id, safe='')}"
+        destination = f"{self._trashbin_base()}/restore/{quote(entry_id, safe='')}"
         # No Overwrite header: "restore" is a virtual collection, and with
         # "Overwrite: F" Sabre reports HTTP 412 "destination node already
         # exists" even when nothing sits at the original location. Nextcloud's
@@ -2854,7 +2855,9 @@ class WebDAVClient(BaseNextcloudClient):
         if not file_id:
             raise ValueError(f"No file id for path: {path}")
 
-        source = f"{self._versions_base()}/versions/{file_id}/{quote(version_id)}"
+        source = (
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}"
+        )
         destination = f"{self._versions_base()}/restore/target"
         await self._make_request(
             "MOVE",
@@ -2865,3 +2868,104 @@ class WebDAVClient(BaseNextcloudClient):
             },
         )
         return {"path": path, "restored_version": version_id}
+
+    # -- File tags (systemtags) ---------------------------------------------
+    #
+    # The client already covered tags (create/assign/remove/search); only two
+    # read paths were missing: list every tag, and list the tags of one file.
+
+    _TAG_PROPFIND = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:id/>
+    <oc:display-name/>
+    <oc:user-visible/>
+    <oc:user-assignable/>
+  </d:prop>
+</d:propfind>"""
+
+    async def list_tags(self) -> List[Dict[str, Any]]:
+        """Every system tag defined on this instance."""
+        response = await self._make_request(
+            "PROPFIND",
+            "/remote.php/dav/systemtags/",
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        return self._tags_from_multistatus(ET.fromstring(response.content))
+
+    @staticmethod
+    def _tags_from_multistatus(root: Any) -> List[Dict[str, Any]]:
+        """Extract tags from a systemtags PROPFIND response.
+
+        The collection itself comes back as a response element and is skipped.
+        An entry without an id or display name cannot be used for anything, so
+        it is dropped rather than surfaced with placeholder values.
+        """
+        tags: List[Dict[str, Any]] = []
+        for response_elem in root.findall("{DAV:}response"):
+            href = response_elem.find("{DAV:}href")
+            if href is None or href.text == "/remote.php/dav/systemtags/":
+                continue
+            name_elem = response_elem.find(".//{http://owncloud.org/ns}display-name")
+            id_elem = response_elem.find(".//{http://owncloud.org/ns}id")
+            # An entry without a usable id or name cannot be acted on, and an
+            # empty display name would also make the sort key ambiguous.
+            if id_elem is None or not id_elem.text:
+                continue
+            if name_elem is None or not (name_elem.text or "").strip():
+                continue
+            assignable = response_elem.find(
+                ".//{http://owncloud.org/ns}user-assignable"
+            )
+            tags.append(
+                {
+                    "id": int(id_elem.text),
+                    "name": name_elem.text or "",
+                    "assignable": (assignable is None or assignable.text != "false"),
+                }
+            )
+        return sorted(tags, key=lambda t: t["name"].lower())
+
+    async def get_file_tags(self, path: str) -> Dict[str, Any]:
+        """The tags assigned to one file.
+
+        Nextcloud only reports tag *ids* on the file, so the names are looked
+        up from the full list. That is one extra call, but ids alone are of
+        little use to the caller -- and unguessable for a language model.
+        """
+        file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        response = await self._make_request(
+            "PROPFIND",
+            f"/remote.php/dav/systemtags-relations/files/{file_id}",
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        root = ET.fromstring(response.content)
+        ids: List[int] = []
+        for id_elem in root.findall(".//{http://owncloud.org/ns}id"):
+            if id_elem.text and id_elem.text.isdigit():
+                ids.append(int(id_elem.text))
+
+        names = {t["id"]: t["name"] for t in await self.list_tags()}
+        return {
+            "path": path,
+            "file_id": file_id,
+            "tags": [
+                {"id": i, "name": names.get(i, f"(unknown tag {i})")}
+                for i in sorted(set(ids))
+            ],
+        }

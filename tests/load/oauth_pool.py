@@ -14,8 +14,9 @@ from urllib.parse import quote
 
 import anyio
 import httpx
+import httpx2
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +166,17 @@ class OAuthUserPool:
         # Create streamable HTTP connection with OAuth token in Authorization header
         # This matches the pattern from tests/conftest.py create_mcp_client_session()
         headers = {"Authorization": f"Bearer {profile.token}"}
-        streamable_context = streamablehttp_client(mcp_url, headers=headers)
+        streamable_context = streamable_http_client(
+            mcp_url,
+            http_client=httpx2.AsyncClient(
+                headers=headers,
+                timeout=httpx2.Timeout(30, read=300),
+                follow_redirects=True,
+            ),
+        )
 
         try:
-            read_stream, write_stream, _ = await streamable_context.__aenter__()
+            read_stream, write_stream = await streamable_context.__aenter__()
 
             session = ClientSession(read_stream, write_stream)
             await session.__aenter__()

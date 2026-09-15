@@ -18,7 +18,7 @@ async def test_missing_note_tool_error(nc_mcp_client: ClientSession):
 
     # Should return error response (not raise exception) for tools
     assert response is not None
-    assert response.isError is True
+    assert response.is_error is True
     assert "Note 999999 not found" in response.content[0].text
 
 
@@ -31,14 +31,14 @@ async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
 
     # Should return error response (not raise exception) for tools
     assert response is not None
-    assert response.isError is True
+    assert response.is_error is True
     assert "Note 999999 not found" in response.content[0].text
 
 
 async def test_missing_file_error_is_llm_friendly(nc_mcp_client: ClientSession):
     """A tool with no bespoke handler still returns actionable text (GH #1208).
 
-    Guards the ``NextcloudFastMCP`` boundary: httpx's raw
+    Guards the ``NextcloudMCPServer`` boundary: httpx's raw
     ``Client error '404 Not Found' for url 'http://app/remote.php/dav/...'``
     plus an MDN link must not reach the model.
     """
@@ -47,7 +47,7 @@ async def test_missing_file_error_is_llm_friendly(nc_mcp_client: ClientSession):
     )
 
     assert response is not None
-    assert response.isError is True
+    assert response.is_error is True
     text = response.content[0].text
     logger.info("Missing file response: %s", text)
 
@@ -67,7 +67,7 @@ async def test_search_with_empty_query(nc_mcp_client: ClientSession):
 
     # Should return successful response with empty or valid results
     assert response is not None
-    assert response.isError is False
+    assert response.is_error is False
 
 
 async def test_tool_missing_required_parameters(nc_mcp_client: ClientSession):
@@ -81,7 +81,7 @@ async def test_tool_missing_required_parameters(nc_mcp_client: ClientSession):
 
     # Should return error response for missing required parameters
     assert response is not None
-    assert response.isError is True
+    assert response.is_error is True
     assert (
         "required" in response.content[0].text.lower()
         or "missing" in response.content[0].text.lower()
@@ -111,7 +111,7 @@ async def test_update_note_with_invalid_etag(nc_mcp_client: ClientSession, nc_cl
 
         # Should return error response (not raise exception) for tools
         assert response is not None
-        assert response.isError is True
+        assert response.is_error is True
         assert "modified by someone else" in response.content[0].text
 
     finally:
@@ -138,13 +138,13 @@ async def test_calendar_missing_calendar_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
-        and response.structuredContent
-        and "result" in response.structuredContent
+        hasattr(response, "structured_content")
+        and response.structured_content
+        and "result" in response.structured_content
     ):
-        assert response.structuredContent["result"]["success"] is False
+        assert response.structured_content["result"]["success"] is False
     else:
-        assert response.isError is True
+        assert response.is_error is True
 
 
 async def test_webdav_read_missing_file_error(nc_mcp_client: ClientSession):
@@ -161,13 +161,13 @@ async def test_webdav_read_missing_file_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
-        and response.structuredContent
-        and "result" in response.structuredContent
+        hasattr(response, "structured_content")
+        and response.structured_content
+        and "result" in response.structured_content
     ):
-        assert response.structuredContent["result"]["success"] is False
+        assert response.structured_content["result"]["success"] is False
     else:
-        assert response.isError is True
+        assert response.is_error is True
 
 
 async def test_tables_missing_table_error(nc_mcp_client: ClientSession):
@@ -184,13 +184,13 @@ async def test_tables_missing_table_error(nc_mcp_client: ClientSession):
     # Note: Some modules may not have improved error handling yet
     # Check if we have structured content with success=false or isError=true
     if (
-        hasattr(response, "structuredContent")
-        and response.structuredContent
-        and "result" in response.structuredContent
+        hasattr(response, "structured_content")
+        and response.structured_content
+        and "result" in response.structured_content
     ):
-        assert response.structuredContent["result"]["success"] is False
+        assert response.structured_content["result"]["success"] is False
     else:
-        assert response.isError is True
+        assert response.is_error is True
 
 
 async def test_calendar_list_events_requires_calendar_name(
@@ -203,7 +203,7 @@ async def test_calendar_list_events_requires_calendar_name(
     """
     response = await nc_mcp_client.call_tool("nc_calendar_list_events", {})
 
-    assert response.isError is True
+    assert response.is_error is True
     assert "calendar_name is required" in str(response.content)
 
 
@@ -215,4 +215,4 @@ async def test_calendar_list_events_calendar_name_not_schema_required(
     tools = await nc_mcp_client.list_tools()
     tool = next(t for t in tools.tools if t.name == "nc_calendar_list_events")
 
-    assert "calendar_name" not in (tool.inputSchema.get("required") or [])
+    assert "calendar_name" not in (tool.input_schema.get("required") or [])

@@ -22,8 +22,9 @@ import pytest
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp import Context
-from mcp.shared.context import RequestContext
+from mcp.server.context import ServerRequestContext
+from mcp.server.mcpserver import Context
+from mcp.types import LATEST_PROTOCOL_VERSION
 
 from nextcloud_mcp_server.auth.scope_authorization import (
     InsufficientScopeError,
@@ -33,17 +34,20 @@ from nextcloud_mcp_server.auth.scope_authorization import (
 )
 
 
-def _make_ctx() -> Context:
-    """A real RequestContext — not a mock shaped like one."""
-    return Context(
-        request_context=RequestContext(
-            request_id="req-test",
-            meta=None,
-            session=None,
-            lifespan_context=None,
-        ),
-        fastmcp=None,
+def _request_context() -> ServerRequestContext:
+    return ServerRequestContext(
+        session=None,
+        lifespan_context=None,
+        protocol_version=LATEST_PROTOCOL_VERSION,
+        method="tools/call",
+        request_id="req-test",
+        meta=None,
     )
+
+
+def _make_ctx() -> Context:
+    """A real ServerRequestContext — not a mock shaped like one."""
+    return Context(request_context=_request_context())
 
 
 @contextmanager
@@ -88,10 +92,7 @@ async def test_request_context_has_no_access_token_attribute():
     If a future refactor reintroduces ``ctx.request_context.access_token`` as
     the token source, this fails and points at why that is wrong.
     """
-    req_ctx = RequestContext(
-        request_id="req-test", meta=None, session=None, lifespan_context=None
-    )
-    assert not hasattr(req_ctx, "access_token")
+    assert not hasattr(_request_context(), "access_token")
 
 
 @pytest.mark.unit

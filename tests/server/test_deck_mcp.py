@@ -31,7 +31,7 @@ async def test_deck_mcp_connectivity(nc_mcp_client: ClientSession):
 
     # List available resource templates
     templates = await nc_mcp_client.list_resource_templates()
-    template_uris = [template.uriTemplate for template in templates.resourceTemplates]
+    template_uris = [template.uri_template for template in templates.resource_templates]
 
     # Verify expected deck resource templates
     expected_deck_templates = [
@@ -76,7 +76,7 @@ async def test_deck_board_crud_workflow_mcp(
         {"title": board_title, "color": board_color},
     )
 
-    assert create_result.isError is False, (
+    assert create_result.is_error is False, (
         f"MCP board creation failed: {create_result.content}"
     )
     created_board_json = create_result.content[0].text
@@ -141,7 +141,7 @@ async def test_deck_board_operations_error_handling_mcp(nc_mcp_client: ClientSes
         {"title": "", "color": "FF0000"},
     )
 
-    assert create_result.isError is True, "Expected error for invalid board creation"
+    assert create_result.is_error is True, "Expected error for invalid board creation"
     logger.info("Invalid board creation correctly failed via MCP tool")
 
     # Test read non-existent board via MCP resource
@@ -168,7 +168,7 @@ async def test_deck_board_creation_validation_mcp(nc_mcp_client: ClientSession):
         {"title": "", "color": "FF0000"},
     )
 
-    assert create_result.isError is True, "Expected error for empty board title"
+    assert create_result.is_error is True, "Expected error for empty board title"
     logger.info("Empty title board creation correctly failed via MCP")
 
 
@@ -184,7 +184,7 @@ async def test_deck_board_creation_success_mcp(
         {"title": f"Valid Board {uuid.uuid4().hex[:8]}", "color": "00FF00"},
     )
 
-    assert create_result.isError is False, "Valid board creation should succeed"
+    assert create_result.is_error is False, "Valid board creation should succeed"
     created_board = json.loads(create_result.content[0].text)
     board_id = created_board["id"]
     logger.info("Valid board created successfully with ID: %s", board_id)
@@ -242,7 +242,7 @@ async def test_deck_card_comment_crud_workflow_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": "Initial comment"},
     )
-    assert create_result.isError is False, (
+    assert create_result.is_error is False, (
         f"Comment creation failed: {create_result.content}"
     )
     create_response = json.loads(create_result.content[0].text)
@@ -258,7 +258,7 @@ async def test_deck_card_comment_crud_workflow_mcp(
     list_result = await nc_mcp_client.call_tool(
         "deck_get_card_comments", {"card_id": card_id}
     )
-    assert list_result.isError is False, f"List comments failed: {list_result.content}"
+    assert list_result.is_error is False, f"List comments failed: {list_result.content}"
     listed = json.loads(list_result.content[0].text)
     assert listed["count"] >= 1
     listed_ids = [c["id"] for c in listed["results"]]
@@ -278,7 +278,7 @@ async def test_deck_card_comment_crud_workflow_mcp(
             "message": "Edited comment",
         },
     )
-    assert update_result.isError is False, (
+    assert update_result.is_error is False, (
         f"Comment update failed: {update_result.content}"
     )
     update_response = json.loads(update_result.content[0].text)
@@ -291,7 +291,7 @@ async def test_deck_card_comment_crud_workflow_mcp(
         "deck_delete_card_comment",
         {"card_id": card_id, "comment_id": comment_id},
     )
-    assert delete_result.isError is False, (
+    assert delete_result.is_error is False, (
         f"Comment delete failed: {delete_result.content}"
     )
     delete_response = json.loads(delete_result.content[0].text)
@@ -320,7 +320,7 @@ async def test_deck_card_comment_reply_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": "Parent message"},
     )
-    assert parent_result.isError is False
+    assert parent_result.is_error is False
     parent = json.loads(parent_result.content[0].text)["comment"]
     parent_id = parent["id"]
 
@@ -333,7 +333,7 @@ async def test_deck_card_comment_reply_mcp(
             "parent_id": parent_id,
         },
     )
-    assert reply_result.isError is False, f"Reply failed: {reply_result.content}"
+    assert reply_result.is_error is False, f"Reply failed: {reply_result.content}"
     reply = json.loads(reply_result.content[0].text)["comment"]
 
     assert reply["message"] == "Reply message"
@@ -354,7 +354,7 @@ async def test_deck_card_comment_message_too_long_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": too_long},
     )
-    assert result.isError is True, "Expected validation error for >1000 char message"
+    assert result.is_error is True, "Expected validation error for >1000 char message"
 
     # The error text is the agent-facing contract: it must name the escape
     # hatch, otherwise the caller falls back to guess-and-shrink retries.
@@ -390,7 +390,7 @@ async def test_deck_card_comment_split_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": message, "overflow": "split"},
     )
-    assert result.isError is False, f"Split comment failed: {result.content}"
+    assert result.is_error is False, f"Split comment failed: {result.content}"
 
     payload = json.loads(result.content[0].text)
     parts = payload["parts"]
@@ -436,7 +436,7 @@ async def test_deck_card_comment_split_under_parent_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": "Root of the thread"},
     )
-    assert root.isError is False
+    assert root.is_error is False
     root_id = json.loads(root.content[0].text)["comment"]["id"]
 
     result = await nc_mcp_client.call_tool(
@@ -448,7 +448,7 @@ async def test_deck_card_comment_split_under_parent_mcp(
             "overflow": "split",
         },
     )
-    assert result.isError is False, f"Nested split failed: {result.content}"
+    assert result.is_error is False, f"Nested split failed: {result.content}"
 
     parts = json.loads(result.content[0].text)["parts"]
     assert len(parts) > 1
@@ -472,7 +472,7 @@ async def test_deck_card_comment_exactly_1000_chars_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": message},
     )
-    assert result.isError is False, f"1000 chars should be legal: {result.content}"
+    assert result.is_error is False, f"1000 chars should be legal: {result.content}"
 
     payload = json.loads(result.content[0].text)
     assert payload["comment"]["message"] == message
@@ -511,7 +511,7 @@ async def test_deck_server_counts_unicode_spaces_php_trim_keeps_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": message},
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert "1001 characters" in result.content[0].text
 
     # 3. Splitting it works, which it could not if we mismeasured the length.
@@ -519,7 +519,7 @@ async def test_deck_server_counts_unicode_spaces_php_trim_keeps_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": message, "overflow": "split"},
     )
-    assert split.isError is False, (
+    assert split.is_error is False, (
         f"Split of the padded message failed: {split.content}"
     )
     assert json.loads(split.content[0].text)["part_count"] == 2
@@ -542,14 +542,14 @@ async def test_deck_card_comment_update_too_long_mcp(
         "deck_create_card_comment",
         {"card_id": card_id, "message": "Short enough to start with"},
     )
-    assert created.isError is False
+    assert created.is_error is False
     comment_id = json.loads(created.content[0].text)["comment"]["id"]
 
     result = await nc_mcp_client.call_tool(
         "deck_update_card_comment",
         {"card_id": card_id, "comment_id": comment_id, "message": "y" * 1001},
     )
-    assert result.isError is True, "Expected client-side rejection of a long update"
+    assert result.is_error is True, "Expected client-side rejection of a long update"
 
     text = result.content[0].text
     assert "1001 characters" in text
@@ -578,7 +578,7 @@ async def test_deck_get_stacks_summary_default_omits_full_card_fields_mcp(
     board_id = board_data["id"]
 
     result = await nc_mcp_client.call_tool("deck_get_stacks", {"board_id": board_id})
-    assert result.isError is False, f"deck_get_stacks failed: {result.content}"
+    assert result.is_error is False, f"deck_get_stacks failed: {result.content}"
     payload = json.loads(result.content[0].text)
 
     cards = [c for stack in payload["stacks"] for c in (stack.get("cards") or [])]
@@ -602,7 +602,7 @@ async def test_deck_get_stacks_detail_full_keeps_card_fields_mcp(
     result = await nc_mcp_client.call_tool(
         "deck_get_stacks", {"board_id": board_id, "detail": "full"}
     )
-    assert result.isError is False, f"deck_get_stacks(full) failed: {result.content}"
+    assert result.is_error is False, f"deck_get_stacks(full) failed: {result.content}"
     payload = json.loads(result.content[0].text)
 
     cards = [c for stack in payload["stacks"] for c in (stack.get("cards") or [])]
@@ -621,7 +621,7 @@ async def test_deck_get_board_overview_mcp(
     result = await nc_mcp_client.call_tool(
         "deck_get_board_overview", {"board_id": board_id}
     )
-    assert result.isError is False, f"board overview failed: {result.content}"
+    assert result.is_error is False, f"board overview failed: {result.content}"
     payload = json.loads(result.content[0].text)
 
     assert payload["board_id"] == board_id
@@ -652,14 +652,14 @@ async def _create_and_archive_card(
             "title": f"Archived Card {uuid.uuid4().hex[:8]}",
         },
     )
-    assert create_result.isError is False, f"create failed: {create_result.content}"
+    assert create_result.is_error is False, f"create failed: {create_result.content}"
     archived_id = json.loads(create_result.content[0].text)["id"]
 
     archive_result = await nc_mcp_client.call_tool(
         "deck_archive_card",
         {"board_id": board_id, "stack_id": stack_id, "card_id": archived_id},
     )
-    assert archive_result.isError is False, f"archive failed: {archive_result.content}"
+    assert archive_result.is_error is False, f"archive failed: {archive_result.content}"
     return archived_id
 
 
@@ -679,7 +679,7 @@ async def test_deck_get_cards_status_includes_archived_mcp(
             "deck_get_cards",
             {"board_id": board_id, "stack_id": stack_id, "status": status},
         )
-        assert result.isError is False, f"deck_get_cards({status}) failed"
+        assert result.is_error is False, f"deck_get_cards({status}) failed"
         return [c["id"] for c in json.loads(result.content[0].text)["cards"]]
 
     open_ids = await card_ids("open")
@@ -712,7 +712,7 @@ async def test_deck_get_stack_status_includes_archived_mcp(
             "deck_get_stack",
             {"board_id": board_id, "stack_id": stack_id, "status": status},
         )
-        assert result.isError is False, f"deck_get_stack({status}) failed"
+        assert result.is_error is False, f"deck_get_stack({status}) failed"
         payload = json.loads(result.content[0].text)
         return [c["id"] for c in (payload.get("cards") or [])]
 
@@ -737,7 +737,7 @@ async def test_deck_get_stacks_and_overview_include_archived_mcp(
         result = await nc_mcp_client.call_tool(
             "deck_get_stacks", {"board_id": board_id, "status": status}
         )
-        assert result.isError is False, f"deck_get_stacks({status}) failed"
+        assert result.is_error is False, f"deck_get_stacks({status}) failed"
         payload = json.loads(result.content[0].text)
         stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
         return [c["id"] for c in (stack.get("cards") or [])]
@@ -746,7 +746,7 @@ async def test_deck_get_stacks_and_overview_include_archived_mcp(
         result = await nc_mcp_client.call_tool(
             "deck_get_board_overview", {"board_id": board_id, "status": status}
         )
-        assert result.isError is False, f"board overview({status}) failed"
+        assert result.is_error is False, f"board overview({status}) failed"
         payload = json.loads(result.content[0].text)
         stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
         assert stack["card_count"] == len(stack["cards"])

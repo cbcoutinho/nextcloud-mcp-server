@@ -15,7 +15,7 @@ import inspect
 import typing
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel
 
 from nextcloud_mcp_server.links import _URL_BUILDERS
@@ -60,7 +60,7 @@ def _linkable_models(annotation: object, seen: set[type] | None = None) -> set[t
 
 def _all_tools() -> dict:
     """Register the three link-carrying tool modules and return them by name."""
-    mcp = FastMCP(name="test-link-coverage")
+    mcp = MCPServer(name="test-link-coverage")
     configure_deck_tools(mcp)
     configure_notes_tools(mcp)
     configure_webdav_tools(mcp)

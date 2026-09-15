@@ -12,7 +12,7 @@
 | `nc_calendar_delete_event` | Delete a calendar event |
 | `nc_calendar_create_meeting` | Quick meeting creation with smart defaults |
 | `nc_calendar_get_upcoming_events` | Get upcoming events in the next N days |
-| `nc_calendar_find_availability` | **New:** Intelligent availability finder - find free time slots for meetings with attendee conflict detection |
+| `nc_calendar_find_availability` | Find free time slots for meetings, from your own calendars plus any attendees' free/busy |
 | `nc_calendar_bulk_operations` | **New:** Bulk update, delete, or move events matching filter criteria |
 | `nc_calendar_manage_calendar` | **New:** Create, delete, and manage calendar properties |
 | `nc_calendar_complete_todo` | **New:** Mark a todo complete, setting `STATUS`, `PERCENT-COMPLETE` and `COMPLETED` together |
@@ -89,7 +89,8 @@ availability = await nc_calendar_find_availability(
     date_range_end="2025-08-04",
     business_hours_only=True,
     exclude_weekends=True,
-    preferred_times="09:00-12:00,14:00-17:00"
+    preferred_times="09:00-12:00,14:00-17:00",
+    timezone="Europe/Amsterdam",
 )
 
 # Bulk update all team meetings to new location
@@ -110,6 +111,70 @@ new_calendar = await nc_calendar_manage_calendar(
     description="Calendar for Project Alpha team",
     color="#FF5722"
 )
+```
+
+## Finding availability
+
+`nc_calendar_find_availability` subtracts busy time from the windows you are
+willing to meet in and returns what is left.
+
+**Slots are maximal free windows, not a grid.** A free morning comes back once
+as a single 09:00-12:00 slot of 180 minutes rather than as five overlapping
+60-minute candidates. Pick any sub-range of at least `duration_minutes` from a
+slot.
+
+**Not everything on a calendar consumes time.** Ignored as busy:
+
+- events marked free (`TRANSP:TRANSPARENT`);
+- events on a calendar set to "never show me as busy"
+  (`schedule-calendar-transp: transparent`, RFC 4791 5.2.9);
+- cancelled events;
+- all-day events, unless you pass `include_all_day=True`. Birthdays, name days
+  and subscribed school-holiday feeds are all-day and opaque, and honouring
+  them would blank out entire working days.
+
+**Attendees are looked up for real.** Each address in `attendees` is resolved
+through an RFC 6638 free/busy request to the scheduling outbox, and their busy
+time is merged with yours. An attendee the server will not report on raises an
+error rather than being quietly treated as free.
+
+**The window.** `date_range_start` defaults to now and is never allowed into the
+past; `date_range_end` defaults to a week later. The response reports the window
+that was actually searched.
+
+`timezone` (an IANA name) is the zone `business_hours_only` (09:00-17:00) and
+`preferred_times` are expressed in. An unknown name is an **error**, not a
+fallback -- business hours in the wrong zone are a confidently wrong answer.
+Omitting it uses the server's current UTC offset, which is why a window that
+crosses a daylight-saving change is better served by naming the zone.
+
+`preferred_times`, when given, *replaces* business hours rather than narrowing
+them -- so `preferred_times="19:00-21:00"` finds evening slots without also
+having to unset `business_hours_only`. Overlapping ranges are merged (so the
+same free time is never returned twice), and a malformed range is logged and
+skipped rather than failing the whole query.
+
+**A calendar that cannot be read is an error too.** If one of your calendars
+fails to load during the search it is not skipped: it would contribute no busy
+time and its booked hours would be offered as free. The same holds for an
+attendee the server will not report free/busy for.
+
+```python
+availability = await nc_calendar_find_availability(
+    duration_minutes=45,
+    date_range_start="2025-07-28",
+    date_range_end="2025-07-30",
+    timezone="Europe/Amsterdam",
+)
+# -> {"available_slots": [{"start": "2025-07-28T09:00:00+02:00",
+#                          "end":   "2025-07-28T11:00:00+02:00",
+#                          "duration_minutes": 120,
+#                          "date":  "2025-07-28"}, ...],
+#     "duration_requested": 45,
+#     "date_range_start": "2025-07-28T09:14:03+02:00",
+#     "date_range_end":   "2025-07-30T23:59:59+02:00",
+#     "attendees_checked": [],
+#     "business_hours_only": true}
 ```
 
 ## Completing a todo

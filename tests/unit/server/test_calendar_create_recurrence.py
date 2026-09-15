@@ -14,7 +14,7 @@ leaves it out. CI's single-user integration lane is what surfaced it.
 from __future__ import annotations
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
 
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def create_event_tool():
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_calendar_tools(mcp)
     return mcp._tool_manager.get_tool("nc_calendar_create_event")
 

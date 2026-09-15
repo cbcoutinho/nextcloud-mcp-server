@@ -6,7 +6,7 @@ ADR-005 compliant implementation for multi-audience token mode.
 import logging
 
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from ..client import NextcloudClient
 

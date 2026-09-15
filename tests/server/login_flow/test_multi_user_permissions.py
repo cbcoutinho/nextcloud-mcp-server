@@ -44,7 +44,7 @@ class TestFilePermissions:
             "nc_webdav_write_file",
             arguments={"path": file_path, "content": file_content},
         )
-        assert not result.isError, f"Alice failed to create file: {result.content}"
+        assert not result.is_error, f"Alice failed to create file: {result.content}"
 
         share_id = None
         try:
@@ -58,7 +58,7 @@ class TestFilePermissions:
                     "permissions": 1,
                 },
             )
-            assert not result.isError, f"Share creation failed: {result.content}"
+            assert not result.is_error, f"Share creation failed: {result.content}"
             share_data = json.loads(result.content[0].text)
             share_id = share_data["id"]
 
@@ -66,7 +66,7 @@ class TestFilePermissions:
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_webdav_read_file", arguments={"path": file_path}
             )
-            assert not result.isError, (
+            assert not result.is_error, (
                 f"Bob could not read shared file: {result.content}"
             )
             response_data = json.loads(result.content[0].text)
@@ -76,7 +76,7 @@ class TestFilePermissions:
             result = await diana_login_flow_mcp_client.call_tool(
                 "nc_webdav_read_file", arguments={"path": file_path}
             )
-            assert result.isError, "Diana should not be able to read unshared file"
+            assert result.is_error, "Diana should not be able to read unshared file"
 
         finally:
             if share_id:
@@ -102,7 +102,7 @@ class TestFilePermissions:
             "nc_webdav_write_file",
             arguments={"path": file_path, "content": file_content},
         )
-        assert not result.isError
+        assert not result.is_error
 
         charlie_share_id = None
         bob_share_id = None
@@ -117,7 +117,7 @@ class TestFilePermissions:
                     "permissions": 3,
                 },
             )
-            assert not result.isError
+            assert not result.is_error
             charlie_share_id = json.loads(result.content[0].text)["id"]
 
             # Share with Bob (read-only, permissions=1)
@@ -130,7 +130,7 @@ class TestFilePermissions:
                     "permissions": 1,
                 },
             )
-            assert not result.isError
+            assert not result.is_error
             bob_share_id = json.loads(result.content[0].text)["id"]
 
             # Charlie can write. Writes are fail-closed, so overwriting the
@@ -144,7 +144,7 @@ class TestFilePermissions:
                     "if_match": "*",
                 },
             )
-            assert not result.isError, (
+            assert not result.is_error, (
                 f"Charlie should be able to write: {result.content}"
             )
 
@@ -159,7 +159,7 @@ class TestFilePermissions:
                     "if_match": "*",
                 },
             )
-            assert result.isError, "Bob should be denied write access (read-only)"
+            assert result.is_error, "Bob should be denied write access (read-only)"
 
         finally:
             for sid in (charlie_share_id, bob_share_id):
@@ -184,13 +184,13 @@ class TestFilePermissions:
         result = await alice_login_flow_mcp_client.call_tool(
             "nc_webdav_create_directory", arguments={"path": folder_path}
         )
-        assert not result.isError
+        assert not result.is_error
 
         result = await alice_login_flow_mcp_client.call_tool(
             "nc_webdav_write_file",
             arguments={"path": file_in_folder, "content": file_content},
         )
-        assert not result.isError
+        assert not result.is_error
 
         share_id = None
         try:
@@ -203,14 +203,16 @@ class TestFilePermissions:
                     "permissions": 1,
                 },
             )
-            assert not result.isError
+            assert not result.is_error
             share_id = json.loads(result.content[0].text)["id"]
 
             # Bob lists the shared folder
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_webdav_list_directory", arguments={"path": folder_path}
             )
-            assert not result.isError, f"Bob should see shared folder: {result.content}"
+            assert not result.is_error, (
+                f"Bob should see shared folder: {result.content}"
+            )
             response_data = json.loads(result.content[0].text)
             file_names = [f["name"] for f in response_data.get("files", [])]
             assert "document.txt" in file_names
@@ -219,7 +221,7 @@ class TestFilePermissions:
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_webdav_read_file", arguments={"path": file_in_folder}
             )
-            assert not result.isError
+            assert not result.is_error
             assert file_content in json.loads(result.content[0].text)["content"]
 
         finally:
@@ -245,20 +247,20 @@ class TestFilePermissions:
             "nc_webdav_write_file",
             arguments={"path": alice_file, "content": "Alice's private file"},
         )
-        assert not result.isError
+        assert not result.is_error
 
         result = await bob_login_flow_mcp_client.call_tool(
             "nc_webdav_write_file",
             arguments={"path": bob_file, "content": "Bob's private file"},
         )
-        assert not result.isError
+        assert not result.is_error
 
         try:
             # Bob lists root — should NOT see Alice's file
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_webdav_list_directory", arguments={"path": "/"}
             )
-            assert not result.isError
+            assert not result.is_error
             bob_visible = [
                 f["name"] for f in json.loads(result.content[0].text).get("files", [])
             ]
@@ -270,7 +272,7 @@ class TestFilePermissions:
             result = await alice_login_flow_mcp_client.call_tool(
                 "nc_webdav_list_directory", arguments={"path": "/"}
             )
-            assert not result.isError
+            assert not result.is_error
             alice_visible = [
                 f["name"] for f in json.loads(result.content[0].text).get("files", [])
             ]
@@ -328,7 +330,7 @@ class TestDeckPermissions:
             result = await bob_login_flow_mcp_client.call_tool(
                 "deck_get_boards", arguments={}
             )
-            assert not result.isError
+            assert not result.is_error
             board_ids = [
                 b["id"] for b in json.loads(result.content[0].text).get("boards", [])
             ]
@@ -338,7 +340,7 @@ class TestDeckPermissions:
             result = await diana_login_flow_mcp_client.call_tool(
                 "deck_get_boards", arguments={}
             )
-            assert not result.isError
+            assert not result.is_error
             board_ids = [
                 b["id"] for b in json.loads(result.content[0].text).get("boards", [])
             ]
@@ -379,7 +381,7 @@ class TestDeckPermissions:
                     "description": "Created by Charlie with edit permission",
                 },
             )
-            assert not result.isError, f"Charlie should create cards: {result.content}"
+            assert not result.is_error, f"Charlie should create cards: {result.content}"
             card_id = json.loads(result.content[0].text).get("id")
             if card_id:
                 await nc_client.deck.delete_card(board_id, stack_id, card_id)
@@ -394,7 +396,7 @@ class TestDeckPermissions:
                     "description": "Bob trying to create a card",
                 },
             )
-            assert result.isError, "Bob should be denied card creation (view-only)"
+            assert result.is_error, "Bob should be denied card creation (view-only)"
 
         finally:
             for acl_id in (charlie_acl_id, bob_acl_id):
@@ -419,7 +421,7 @@ class TestDeckPermissions:
             result = await alice_login_flow_mcp_client.call_tool(
                 "deck_get_boards", arguments={}
             )
-            assert not result.isError
+            assert not result.is_error
             board_ids = [
                 b["id"] for b in json.loads(result.content[0].text).get("boards", [])
             ]
@@ -431,7 +433,7 @@ class TestDeckPermissions:
             result = await bob_login_flow_mcp_client.call_tool(
                 "deck_get_boards", arguments={}
             )
-            assert not result.isError
+            assert not result.is_error
             board_ids = [
                 b["id"] for b in json.loads(result.content[0].text).get("boards", [])
             ]
@@ -471,7 +473,7 @@ class TestNotesPermissions:
                 "category": "PermTest",
             },
         )
-        assert not result.isError
+        assert not result.is_error
         alice_note_id = json.loads(result.content[0].text)["id"]
 
         # Bob creates a note
@@ -483,7 +485,7 @@ class TestNotesPermissions:
                 "category": "PermTest",
             },
         )
-        assert not result.isError
+        assert not result.is_error
         bob_note_id = json.loads(result.content[0].text)["id"]
 
         try:
@@ -491,7 +493,7 @@ class TestNotesPermissions:
             result = await alice_login_flow_mcp_client.call_tool(
                 "nc_notes_search_notes", arguments={"query": "PermTest"}
             )
-            assert not result.isError
+            assert not result.is_error
             alice_visible_ids = [
                 n["id"] for n in json.loads(result.content[0].text).get("results", [])
             ]
@@ -503,7 +505,7 @@ class TestNotesPermissions:
             result = await bob_login_flow_mcp_client.call_tool(
                 "nc_notes_search_notes", arguments={"query": "PermTest"}
             )
-            assert not result.isError
+            assert not result.is_error
             bob_visible_ids = [
                 n["id"] for n in json.loads(result.content[0].text).get("results", [])
             ]

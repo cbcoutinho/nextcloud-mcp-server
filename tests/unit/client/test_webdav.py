@@ -627,15 +627,6 @@ def test_webdav_path_allows_dots_inside_names(path):
 
 
 @pytest.mark.unit
-def test_encode_dav_path_encodes_exactly_once():
-    """Pins the decoded-input precondition: a literal '%' becomes '%25', so an
-    already-encoded path passed in error would double-encode (caught here)."""
-    from nextcloud_mcp_server.client.webdav import _encode_dav_path
-
-    assert _encode_dav_path("already%20encoded.pdf") == "already%2520encoded.pdf"
-
-
-@pytest.mark.unit
 async def test_read_file_encodes_special_chars(mocker):
     """read_file must percent-encode '#', commas, and spaces in the path (card 309).
 
@@ -1318,11 +1309,21 @@ async def test_write_file_etag_is_none_when_absent(mocker):
         ("abc", "abc"),
         ('""', ""),
         (None, None),
-        # Documented wart: strip only removes characters from the *ends*, so
-        # the leading "W" protects the opening quote and a weak validator comes
-        # out as W/"abc — usable as neither an etag nor an If-Match value.
-        # Pinned so the behaviour is a known quantity rather than a surprise.
-        ('W/"abc"', 'W/"abc'),
+        # Weak validators used to come out as W/"abc — strip only removes
+        # characters from the ends, and the leading W protected the opening
+        # quote. The prefix is dropped first now, so the result is usable.
+        ('W/"abc"', "abc"),
+        # Apache's mod_deflate appends -gzip to the ETag of every compressed
+        # response (DeflateAlterETag AddSuffix, the default). Left in place it
+        # breaks every conditional overwrite behind such a proxy.
+        ('"abc-gzip"', "abc"),
+        ("abc-br", "abc"),
+        ("abc-deflate", "abc"),
+        ('W/"abc-gzip"', "abc"),
+        # Only a trailing suffix counts: a name that merely contains one
+        # survives untouched.
+        ("gzip-abc", "gzip-abc"),
+        ("   abc   ", "abc"),
     ],
 )
 def test_normalize_etag(raw, expected):

@@ -13,7 +13,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def search_tool():
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_webdav_tools(mcp)
     return mcp._tool_manager.get_tool("nc_webdav_search_files")
 

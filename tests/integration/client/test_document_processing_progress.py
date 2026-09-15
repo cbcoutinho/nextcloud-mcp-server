@@ -100,10 +100,10 @@ class TestDocumentProcessingProgress:
                 "nc_webdav_read_file", arguments={"path": test_path}
             )
 
-            # Note: FastMCP progress notifications are sent automatically by ctx.report_progress
+            # Note: MCPServer progress notifications are sent automatically by ctx.report_progress
             # We can't easily capture them in this test without mocking the MCP transport layer
             # The important thing is that the code path is exercised without errors
-            assert result.isError is False
+            assert result.is_error is False
 
         finally:
             # Cleanup

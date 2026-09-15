@@ -34,6 +34,14 @@ CARD_URL_DESCRIPTION = (
 )
 
 
+ATTACHMENT_URL_DESCRIPTION = (
+    "Link that opens this attachment. For type='file' attachments that is the "
+    "shared file in Nextcloud's Files UI; for type='deck_file' it is Deck's own "
+    "download route. None when the server has no browser-reachable Nextcloud "
+    "base URL configured."
+)
+
+
 class DeckLabel(BaseModel):
     id: int
     title: str
@@ -109,7 +117,7 @@ class DeckCard(BaseModel):
     labels: Optional[List[DeckLabel]] = None
     assignedUsers: Optional[List[Union[DeckUser, DeckAssignedUser]]] = None
     dependentCards: Optional[List[int]] = None  # IDs of cards this card depends on
-    attachments: Optional[List[Any]] = None  # Define a proper Attachment model later
+    attachments: Optional[List["DeckAttachment"]] = None
     attachmentCount: Optional[int] = None
     deletedAt: Optional[int] = None
     commentsUnread: Optional[int] = None
@@ -208,14 +216,23 @@ class DeckStack(BaseModel):
 
 
 class DeckAttachmentExtendedData(BaseModel):
-    filesize: int
-    mimetype: str
-    info: Dict[str, str]
+    # Every field is optional: Deck leaves extendedData empty when the
+    # underlying file is gone or unreadable (FileService/FilesAppService
+    # extendData bail out), which happens routinely for deleted attachments.
+    filesize: int | None = None
+    mimetype: str | None = None
+    info: Dict[str, str] = Field(default_factory=dict)
     # Populated for type="file" (Files share) attachments via FilesAppService.
     path: str | None = None
     fileid: int | None = None
     hasPreview: bool | None = None
     permissions: int | None = None
+
+    @field_validator("info", mode="before")
+    @classmethod
+    def validate_info(cls, v):
+        # PHP serialises an empty pathinfo() as [], not {}.
+        return v or {}
 
 
 class DeckAttachment(BaseModel):
@@ -227,7 +244,15 @@ class DeckAttachment(BaseModel):
     createdAt: int
     createdBy: str
     deletedAt: int
-    extendedData: DeckAttachmentExtendedData
+    extendedData: DeckAttachmentExtendedData = Field(
+        default_factory=DeckAttachmentExtendedData
+    )
+    url: str | None = Field(default=None, description=ATTACHMENT_URL_DESCRIPTION)
+
+    @field_validator("extendedData", mode="before")
+    @classmethod
+    def validate_extended_data(cls, v):
+        return v or {}
 
 
 class DeckComment(BaseModel):

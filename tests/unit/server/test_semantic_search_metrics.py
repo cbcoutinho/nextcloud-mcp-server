@@ -1,7 +1,7 @@
 """`nc_semantic_search` records exactly one search metric per exit path.
 
 The MCP tool records its request metric in a `finally`, which is what makes the
-guarantee hold for success, `McpError`, and unexpected raises alike. That is a
+guarantee hold for success, `MCPError`, and unexpected raises alike. That is a
 claim about control flow, so it is only worth anything if something exercises
 each path — a `finally` that was accidentally moved inside the `try`, or an
 early `return` added above it, would still pass every other test in the suite.
@@ -13,13 +13,13 @@ two entrypoints are held to the same standard.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 
 pytestmark = pytest.mark.unit
 
 
 def _build_tool():
-    """Register the tools against a stub FastMCP and return `nc_semantic_search`."""
+    """Register the tools against a stub MCPServer and return `nc_semantic_search`."""
     from nextcloud_mcp_server.server.semantic import configure_semantic_tools
 
     captured = {}
@@ -109,7 +109,7 @@ def _run(
 
         try:
             result = anyio.run(_go)
-        except McpError as e:
+        except MCPError as e:
             return spy, e
         return spy, result
 
@@ -128,16 +128,16 @@ def test_unexpected_exception_records_an_error_sample():
     search must not simply vanish from the request counter."""
     spy, err = _run(search_side_effect=RuntimeError("qdrant exploded"))
 
-    assert isinstance(err, McpError)
+    assert isinstance(err, MCPError)
     assert spy.call_count == 1
     assert spy.call_args.kwargs["status"] == "error"
 
 
 def test_mcp_error_path_records_an_error_sample():
-    """A client-facing McpError is still a failed search."""
+    """A client-facing MCPError is still a failed search."""
     spy, err = _run(search_side_effect=ValueError("No embedding provider configured"))
 
-    assert isinstance(err, McpError)
+    assert isinstance(err, MCPError)
     assert spy.call_count == 1
     assert spy.call_args.kwargs["status"] == "error"
 

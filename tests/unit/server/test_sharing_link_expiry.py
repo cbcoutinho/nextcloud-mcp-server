@@ -16,6 +16,7 @@ authenticated client):
 from datetime import datetime, timezone
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.server.sharing import (
     _build_link_response,
@@ -55,7 +56,7 @@ def test_compute_link_expiry_rejects_non_positive(minutes):
     (non-expiring) public link."""
     now = datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ToolError, match="positive"):
         _compute_link_expiry(minutes, now)
 
 
@@ -94,6 +95,11 @@ def test_build_link_response_strips_trailing_slash():
 @pytest.mark.parametrize("share_data", [{"id": 1, "url": ""}, {"id": 1}])
 def test_build_link_response_raises_on_missing_url(share_data):
     """A payload without a usable url is a hard error, not a silent empty
-    response — OCS always returns one for shareType=3."""
-    with pytest.raises(RuntimeError, match="no url"):
+    response — OCS always returns one for shareType=3.
+
+    ToolError specifically, not a bare exception: mcp 2.x replaces an
+    unanticipated exception's message with "Error executing tool <name>", so a
+    RuntimeError here would tell the model the call failed and nothing else.
+    """
+    with pytest.raises(ToolError, match="no url"):
         _build_link_response("/f.png", share_data, "2026-06-02T12:30:00Z")

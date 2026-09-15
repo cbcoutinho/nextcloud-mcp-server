@@ -122,9 +122,17 @@ async def test_login_flow_provision_wakes_user_manager(temp_storage, mocker):
         "poll_endpoint": "https://cloud.example.com/login/v2/poll",
         "poll_token": "secret-token",
         "user_id": "alice",
+        "caller_identities": {"alice"},
         "created_at": time.time(),
         "expires_at": time.time() + 1200,
     }
+
+    # alice completed her own flow — the grant-ownership check resolves the
+    # loginName to her UID via OCS (GHSA-84qv-22q6-x82r).
+    mocker.patch(
+        "nextcloud_mcp_server.auth.grant_ownership._ocs_whoami",
+        AsyncMock(return_value="alice"),
+    )
 
     try:
         shutdown_event = anyio.Event()

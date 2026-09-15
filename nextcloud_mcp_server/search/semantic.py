@@ -104,7 +104,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             List of unverified SearchResult objects ranked by similarity score
 
         Raises:
-            McpError: If vector sync is not enabled or search fails
+            MCPError: If vector sync is not enabled or search fails
         """
         if granularity != GRANULARITY_CHUNK:
             # Declared explicitly rather than swallowed by **kwargs, matching

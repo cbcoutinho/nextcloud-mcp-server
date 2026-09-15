@@ -50,7 +50,7 @@ async def test_talk_send_and_read_workflow(
         "talk_send_message",
         {"token": token, "message": "Hello from MCP integration test"},
     )
-    assert send_result.isError is False, (
+    assert send_result.is_error is False, (
         f"talk_send_message failed: {send_result.content}"
     )
     send_payload = json.loads(send_result.content[0].text)
@@ -70,7 +70,7 @@ async def test_talk_send_and_read_workflow(
     get_result = await nc_mcp_client.call_tool(
         "talk_get_messages", {"token": token, "limit": 10}
     )
-    assert get_result.isError is False, (
+    assert get_result.is_error is False, (
         f"talk_get_messages failed: {get_result.content}"
     )
     get_payload = json.loads(get_result.content[0].text)
@@ -83,7 +83,7 @@ async def test_talk_send_and_read_workflow(
         "talk_mark_as_read",
         {"token": token, "last_read_message": posted_id},
     )
-    assert mark_result.isError is False, (
+    assert mark_result.is_error is False, (
         f"talk_mark_as_read failed: {mark_result.content}"
     )
     mark_payload = json.loads(mark_result.content[0].text)
@@ -99,7 +99,7 @@ async def test_talk_list_conversations_includes_temp_room(
     token = temporary_conversation["token"]
 
     list_result = await nc_mcp_client.call_tool("talk_list_conversations", {})
-    assert list_result.isError is False, (
+    assert list_result.is_error is False, (
         f"talk_list_conversations failed: {list_result.content}"
     )
     payload = json.loads(list_result.content[0].text)
@@ -115,7 +115,7 @@ async def test_talk_get_conversation(
     name = temporary_conversation["name"]
 
     result = await nc_mcp_client.call_tool("talk_get_conversation", {"token": token})
-    assert result.isError is False, f"talk_get_conversation failed: {result.content}"
+    assert result.is_error is False, f"talk_get_conversation failed: {result.content}"
     payload = json.loads(result.content[0].text)
     conversation = payload["conversation"]
     assert conversation["token"] == token
@@ -129,7 +129,7 @@ async def test_talk_list_participants(
     token = temporary_conversation["token"]
 
     result = await nc_mcp_client.call_tool("talk_list_participants", {"token": token})
-    assert result.isError is False, f"talk_list_participants failed: {result.content}"
+    assert result.is_error is False, f"talk_list_participants failed: {result.content}"
     payload = json.loads(result.content[0].text)
     assert payload["conversation_token"] == token
     actor_ids = [p["actorId"] for p in payload["results"]]
@@ -149,7 +149,7 @@ async def test_talk_send_message_validation_blank_text(
     result = await nc_mcp_client.call_tool(
         "talk_send_message", {"token": token, "message": blank_text}
     )
-    assert result.isError is True, (
+    assert result.is_error is True, (
         f"Expected validation error for blank message {blank_text!r}"
     )
 
@@ -164,7 +164,7 @@ async def test_talk_send_message_validation_too_long(
         "talk_send_message",
         {"token": token, "message": "x" * 32001},
     )
-    assert result.isError is True, (
+    assert result.is_error is True, (
         "Expected validation error for message longer than 32000 characters"
     )
 
@@ -184,7 +184,7 @@ async def test_talk_create_conversation_and_add_participant(
         create_result = await nc_mcp_client.call_tool(
             "talk_create_conversation", {"room_name": room_name}
         )
-        assert create_result.isError is False, create_result.content[0].text
+        assert create_result.is_error is False, create_result.content[0].text
 
         payload = json.loads(create_result.content[0].text)
         assert payload["success"] is True
@@ -196,13 +196,13 @@ async def test_talk_create_conversation_and_add_participant(
         fetched = await nc_mcp_client.call_tool(
             "talk_get_conversation", {"token": token}
         )
-        assert fetched.isError is False
+        assert fetched.is_error is False
         assert json.loads(fetched.content[0].text)["conversation"]["token"] == token
 
         add_result = await nc_mcp_client.call_tool(
             "talk_add_participant", {"token": token, "participant": "admin"}
         )
-        assert add_result.isError is False, add_result.content[0].text
+        assert add_result.is_error is False, add_result.content[0].text
         add_payload = json.loads(add_result.content[0].text)
         assert add_payload["success"] is True
         assert add_payload["participant"] == "admin"
@@ -232,7 +232,7 @@ async def test_talk_reaction_round_trip(
     listed = await nc_mcp_client.call_tool(
         "talk_list_reactions", {"token": token, "message_id": message_id}
     )
-    assert listed.isError is False, listed.content[0].text
+    assert listed.is_error is False, listed.content[0].text
     assert json.loads(listed.content[0].text)["reactions"] == {}
 
     # React, and get the updated set back without a follow-up read.
@@ -240,26 +240,26 @@ async def test_talk_reaction_round_trip(
         "talk_react",
         {"token": token, "message_id": message_id, "reaction": emoji},
     )
-    assert reacted.isError is False, reacted.content[0].text
+    assert reacted.is_error is False, reacted.content[0].text
     react_payload = json.loads(reacted.content[0].text)
     assert emoji in react_payload["reactions"]
     assert react_payload["distinct_emoji"] == 1
     assert [a["actorId"] for a in react_payload["reactions"][emoji]] == ["admin"]
 
     # Reacting again with the same emoji leaves one reaction, not two -- this
-    # is the claim talk_react's idempotentHint makes.
+    # is the claim talk_react's idempotent_hint makes.
     again = await nc_mcp_client.call_tool(
         "talk_react",
         {"token": token, "message_id": message_id, "reaction": emoji},
     )
-    assert again.isError is False
+    assert again.is_error is False
     assert len(json.loads(again.content[0].text)["reactions"][emoji]) == 1
 
     removed = await nc_mcp_client.call_tool(
         "talk_remove_reaction",
         {"token": token, "message_id": message_id, "reaction": emoji},
     )
-    assert removed.isError is False, removed.content[0].text
+    assert removed.is_error is False, removed.content[0].text
     assert json.loads(removed.content[0].text)["reactions"] == {}
 
 
@@ -272,7 +272,7 @@ async def test_talk_add_participant_rejects_blank_participant(
         {"token": temporary_conversation["token"], "participant": "   "},
     )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "whitespace" in result.content[0].text.lower()
 
 
@@ -284,7 +284,7 @@ async def test_talk_create_conversation_rejects_blank_name(
         "talk_create_conversation", {"room_name": "  "}
     )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "whitespace" in result.content[0].text.lower()
 
 
@@ -293,7 +293,7 @@ async def test_talk_add_participant_is_idempotent(
 ):
     """Adding the same participant twice is a no-op, not an error or a duplicate.
 
-    This is the claim `talk_add_participant`'s `idempotentHint=True` makes, and
+    This is the claim `talk_add_participant`'s `idempotent_hint=True` makes, and
     it was the one idempotency claim in this PR resting on a manual probe rather
     than a test -- the reaction tools got a re-apply assertion and this did not.
     """
@@ -308,7 +308,7 @@ async def test_talk_add_participant_is_idempotent(
         first = await nc_mcp_client.call_tool(
             "talk_add_participant", {"token": token, "participant": "admin"}
         )
-        assert first.isError is False, first.content[0].text
+        assert first.is_error is False, first.content[0].text
 
         before = await nc_mcp_client.call_tool(
             "talk_list_participants", {"token": token}
@@ -319,7 +319,7 @@ async def test_talk_add_participant_is_idempotent(
         second = await nc_mcp_client.call_tool(
             "talk_add_participant", {"token": token, "participant": "admin"}
         )
-        assert second.isError is False, second.content[0].text
+        assert second.is_error is False, second.content[0].text
 
         after = await nc_mcp_client.call_tool(
             "talk_list_participants", {"token": token}
@@ -345,7 +345,7 @@ async def test_talk_create_one_to_one_conversation_without_a_name(
     result = await nc_mcp_client.call_tool(
         "talk_create_conversation", {"room_type": 1, "invite": other}
     )
-    assert result.isError is False, result.content[0].text
+    assert result.is_error is False, result.content[0].text
 
     conversation = json.loads(result.content[0].text)["conversation"]
     # The wire key is "type", not the model's "room_type": that field carries
@@ -381,7 +381,7 @@ async def test_talk_create_one_to_one_requires_an_invite(
     """Without an invitee there is no second participant, so there is no room."""
     result = await nc_mcp_client.call_tool("talk_create_conversation", {"room_type": 1})
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "invite is required" in result.content[0].text
 
 
@@ -393,7 +393,7 @@ async def test_talk_create_group_room_still_requires_a_name(
         "talk_create_conversation", {"room_type": 2, "invite": "admin"}
     )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "room_name is required" in result.content[0].text
 
 
@@ -417,7 +417,7 @@ async def test_client_validation_surfaces_through_mcp(
     The blank-name and blank-participant paths raise `ToolError` at the tool
     layer and were already covered. These three validators raise plain
     `ValueError` in the client instead, and nothing asserted what that looks
-    like after FastMCP has translated it -- a readable `isError` result or an
+    like after MCPServer has translated it -- a readable `isError` result or an
     opaque internal failure. The control case is included so the assertion is
     about the *rejections* rather than about every call failing.
     """
@@ -436,8 +436,8 @@ async def test_client_validation_surfaces_through_mcp(
     result = await nc_mcp_client.call_tool("talk_react", {"token": token, **arguments})
 
     if expected is None:
-        assert result.isError is False, result.content[0].text
+        assert result.is_error is False, result.content[0].text
         return
 
-    assert result.isError is True
+    assert result.is_error is True
     assert expected in result.content[0].text.lower()

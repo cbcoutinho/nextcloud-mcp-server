@@ -1,7 +1,7 @@
 """Unit tests for scope decorator metadata and classification logic."""
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.auth.scope_authorization import (
     InsufficientScopeError,
@@ -75,7 +75,7 @@ def test_discover_all_scopes_always_includes_offline_access():
     an MCP instance with a single unrelated tool. Guards the metadata exposed at
     /.well-known/oauth-protected-resource and /.well-known/oauth-authorization-server.
     """
-    mcp = FastMCP(name="test-scope-discovery")
+    mcp = MCPServer(name="test-scope-discovery")
 
     @mcp.tool()
     @require_scopes("notes.read")
@@ -92,7 +92,7 @@ def test_discover_all_scopes_always_includes_offline_access():
 @pytest.mark.unit
 def test_discover_all_scopes_offline_access_without_any_tools():
     """The offline_access invariant must not depend on any tool being registered."""
-    mcp = FastMCP(name="empty")
+    mcp = MCPServer(name="empty")
 
     scopes = discover_all_scopes(mcp)
 

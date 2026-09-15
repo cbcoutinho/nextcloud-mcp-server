@@ -732,7 +732,7 @@ async def verify_search_results(
         eviction_task_group: Optional long-lived task group on which to
             spawn fire-and-forget eviction. Pass
             ``ctx.request_context.lifespan_context.eviction_task_group``
-            from FastMCP tools.
+            from MCPServer tools.
 
     Returns:
         Tuple of ``(kept_results, dropped_count)`` where ``kept_results`` is

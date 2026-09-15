@@ -12,7 +12,13 @@ import anyio
 import httpx
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from qdrant_client.models import PointStruct
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    Range,
+)
 
 if TYPE_CHECKING:
     # Type-only: the document stack is heavy (pymupdf/_isolation) and must stay
@@ -32,6 +38,7 @@ from nextcloud_mcp_server.document_processors.source import (
 )
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
+    document_download_truncated_total,
     estimate_vector_bytes,
     record_chunk_density,
     record_document_chunks,
@@ -317,6 +324,92 @@ def resolve_page_end(chunk: ChunkWithPosition) -> int | None:
     return chunk.page_end if chunk.page_end is not None else chunk.page_number
 
 
+async def prune_stale_chunks(
+    qdrant_client: Any,
+    *,
+    collection_name: str,
+    doc_id: str,
+    doc_type: str,
+    kept_chunks: int,
+) -> None:
+    """Drop chunk points left behind by a LONGER previous index of this document.
+
+    Chunk point IDs are ``uuid5("<doc_type>:<doc_id>:chunk:<i>")`` — deterministic
+    in the chunk INDEX but blind to the chunk COUNT — so re-indexing a document
+    that now yields fewer chunks overwrites ``0..kept_chunks-1`` in place and
+    strands every higher-index point from the previous run.
+
+    Stranded points keep the OLD payload (``etag``, ``index_mode``,
+    ``embedding_identity``), and both "is this already indexed?" reads take
+    whatever a single UNORDERED ``scroll(..., limit=1)`` hands back:
+    :func:`~nextcloud_mcp_server.vector.sharing_state.find_indexed_content`
+    (etag + embedding_identity) and
+    :func:`~nextcloud_mcp_server.vector.placeholder.query_document_metadata`
+    (index_mode). Handed an orphan, they report "not indexed" / "index mode
+    changed", the scanner re-queues the document, and the re-index strands the
+    same orphans again — an ingest loop that never converges. For OCR-tier
+    documents that re-burns the batch GPU on every scan cycle (Deck #1084, and
+    the unclosed tail of #509).
+
+    Called AFTER the upsert rather than clearing the document first, so the
+    document stays continuously searchable and ``acl_principals`` on the
+    surviving points is preserved.
+
+    ``kept_chunks == 0`` is a no-op on purpose: a zero-point "success" (the
+    silent short-embedding path) must never be allowed to wipe a good index.
+
+    Never raises — deliberately UNLIKE its sibling
+    :func:`~nextcloud_mcp_server.vector.placeholder.delete_placeholder_point`,
+    which logs and re-raises (its caller does the swallowing). The difference is
+    the position in the write path: this runs AFTER the upsert, inside
+    ``process_document``'s retry loop, so propagating a transient delete failure
+    out of an ALREADY-SUCCESSFUL index would re-download/re-parse/re-embed the
+    document on every attempt and, once they are exhausted, dead-letter a file
+    that is sitting correctly in the index — the exact "re-processing forever"
+    class this function exists to close. Orphans are harmless until a read
+    happens to pick one, and the next scan's prune clears them, so logging and
+    moving on self-heals.
+
+    Known ordering hazard (pre-existing, self-healing): the filter scopes on
+    ``doc_id``/``doc_type``/``chunk_index`` with no etag or version check. If two
+    tasks for the same document are in flight on different content and the STALE
+    one lands last, it overwrites ``0..kept_chunks-1`` with old content and then
+    prunes above it, dropping chunks the fresher, larger write had produced. The
+    cross-worker dedup guard only covers the same-etag case, so the interleaving
+    predates this function — but pruning changes its failure mode from "harmless
+    stale orphan" to "silently drops fresher data", until the next scan
+    reconciles.
+    """
+    if kept_chunks <= 0:
+        return
+    try:
+        await qdrant_client.delete(
+            collection_name=collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                    FieldCondition(key="chunk_index", range=Range(gte=kept_chunks)),
+                ]
+            ),
+        )
+        record_qdrant_operation("delete", "success")
+    except Exception as e:  # noqa: BLE001 — never fail a successful index
+        # Metered, not just logged: swallowing the error is what keeps a
+        # successful index successful, but it also means sustained prune
+        # failures would otherwise show up only as scattered log lines — and a
+        # silent-but-wrong path is precisely what let the loop this function
+        # closes run undetected for months.
+        record_qdrant_operation("delete", "error")
+        logger.warning(
+            "Failed to prune stale chunks above %s for %s_%s: %s; next index retries",
+            kept_chunks,
+            doc_type,
+            doc_id,
+            e,
+        )
+
+
 def should_use_page_aware(
     *, page_aware_enabled: bool, doc_type: str, page_boundaries: Any
 ) -> bool:
@@ -372,6 +465,66 @@ def preflight_oversize_result(
     if result is not None:
         record_document_ingest_rejected(doc_task.doc_type, "oversize")
     return result
+
+
+def empty_download_result(
+    doc_task: Any, source: Any, file_path: str | None
+) -> "ProcessingResult | None":
+    """Reject a document that downloaded to zero bytes, before anything parses it.
+
+    Nothing downstream can use an empty document, and the OCR tier does worse
+    than nothing with one: it base64-encodes ``b""`` and the gateway rejects the
+    submission with 422 ``"document decodes to empty bytes"`` — a permanent
+    validation failure, so the document is dead-lettered under the generic
+    ``error`` reason and the loss is invisible (card #1230).
+
+    Which failure it is depends on what the scanner measured. Every tier is a
+    separate procrastinate job, so an escalated tier RE-DOWNLOADS the document;
+    a file the scanner saw as non-empty that comes back empty from *this*
+    request is a bad response, not a bad file, so it is raised as the same
+    short-read error the truncation guard raises (#965) and re-queued by the
+    next scan — bounded by the consecutive-failure counter, so a file that is
+    empty every time still parks eventually.
+
+    A file the scanner measured as empty (or never measured) really is empty:
+    returns the terminal ``empty_document`` failure, which names the cause
+    instead of surfacing as a generic OCR error.
+
+    Returns ``None`` — the overwhelmingly common case — when the download
+    produced bytes.
+    """
+    if source is None or source.size != 0:
+        return None
+    scanned_size = getattr(doc_task, "size_bytes", None)
+    if scanned_size:
+        # Same counter as the Content-Length short-read guard: both are "the
+        # server returned fewer bytes than it should have", and the only
+        # difference is which oracle caught it. Without this the retryable half
+        # of the guard would be the one thing here with no signal at all, which
+        # is the invisibility this whole change exists to end.
+        document_download_truncated_total.inc()
+        logger.warning(
+            "Empty download for %s: scanner saw %d bytes, got 0; re-queueing",
+            file_path,
+            scanned_size,
+        )
+        raise httpx.RemoteProtocolError(
+            f"Empty download for {file_path!r}: scanner saw {scanned_size} bytes, got 0"
+        )
+    from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
+        EMPTY_DOCUMENT_REASON,
+        ProcessingResult,
+    )
+
+    logger.warning("Document %s has no bytes; failing as empty", file_path)
+    record_document_ingest_rejected(doc_task.doc_type, EMPTY_DOCUMENT_REASON)
+    return ProcessingResult(
+        text="",
+        metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
+        processor="empty_guard",
+        success=False,
+        error="document is empty",
+    )
 
 
 def ingested_byte_size(source_size: int | None, content: str) -> int:
@@ -1079,10 +1232,11 @@ async def _index_document_inner(
         qdrant_client: Qdrant client instance
     """
     settings = get_settings()
-    # Set by the pre-flight size gate (files only) when a document is rejected
-    # from its scanned size; substituted for the parse result further down so the
-    # existing terminal/dead-letter handling is reached unchanged.
-    preflight_failure = None
+    # Set (files only) when a document is rejected before anything parses it —
+    # the pre-flight size gate, or an empty download; substituted for the parse
+    # result further down so the existing terminal/dead-letter handling is
+    # reached unchanged.
+    pre_parse_failure = None
     # The document handle for files; None for text doc types (note, deck card,
     # news item, mail message), which carry no binary.
     source: DocumentSource | None = None
@@ -1357,8 +1511,8 @@ async def _index_document_inner(
             # Pre-flight size gate: reject an over-cap document from the size the
             # scanner already captured, so the download is never paid for. Falls
             # through to the post-download guard when the size is unknown.
-            preflight_failure = preflight_oversize_result(doc_task, file_path, settings)
-            if preflight_failure is not None:
+            pre_parse_failure = preflight_oversize_result(doc_task, file_path, settings)
+            if pre_parse_failure is not None:
                 content_bytes, content_type = b"", PDF_MIME_TYPE
             elif settings.document_stream_download_enabled:
                 # Stream to a spool file: resident memory stays at one chunk
@@ -1391,6 +1545,11 @@ async def _index_document_inner(
                 # leaks one file per document, which is the very failure mode the
                 # streaming side's exit-stack scoping exists to prevent.
                 exit_stack.callback(source.cleanup)
+
+            # Downloaded nothing? Stop here, however the bytes were fetched.
+            pre_parse_failure = (
+                empty_download_result(doc_task, source, file_path) or pre_parse_failure
+            )
         else:
             raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -1419,6 +1578,9 @@ async def _index_document_inner(
             from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
                 get_registry,
             )
+            from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
+                EMPTY_DOCUMENT_REASON,
+            )
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
                 TIER_LADDER,
                 BatchPending,
@@ -1437,13 +1599,13 @@ async def _index_document_inner(
                 # queue-hop to the next tier). Everything else -- non-PDF files,
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
-                if preflight_failure is not None:
+                if pre_parse_failure is not None:
                     # Rejected from its scanned size before the download, so
                     # there is nothing to parse. Substituting the guard's result
                     # here (rather than returning early) keeps oversize handling
                     # on the single terminal/dead-letter path below, however the
                     # size became known.
-                    result = preflight_failure
+                    result = pre_parse_failure
                 elif tier is not None and _is_pdf(content_type):
                     # Narrowing: the download branch above always sets ``source``
                     # when it did not short-circuit on the pre-flight gate.
@@ -1489,10 +1651,13 @@ async def _index_document_inner(
                     # ``unsupported_type``: the tier ladder is PDF-only, so a mime
                     # type no processor claims cannot be parsed by a higher rung
                     # either -- escalating it would just walk the queues to burn
-                    # the same dispatch failure three times (Deck #1016).
+                    # the same dispatch failure three times (Deck #1016). And for
+                    # ``empty_document``: zero bytes yield no text at any tier
+                    # (card #1230).
                     next_avail = (
                         None
-                        if reason in ("oversize", UNSUPPORTED_TYPE_REASON)
+                        if reason
+                        in ("oversize", UNSUPPORTED_TYPE_REASON, EMPTY_DOCUMENT_REASON)
                         else registry.next_available_tier(failing_tier, settings)
                     )
                     # #399: a hard parse failure (an isolated-worker timeout/OOM on
@@ -2361,6 +2526,14 @@ async def _index_document_inner(
                     (len(points) + BATCH_SIZE - 1) // BATCH_SIZE,
                 )
 
+    await prune_stale_chunks(
+        qdrant_client,
+        collection_name=settings.get_collection_name(),
+        doc_id=doc_task.doc_id,
+        doc_type=doc_task.doc_type,
+        kept_chunks=len(points),
+    )
+
     # A successful (re-)index supersedes any prior failure record: clear the
     # marker (e.g. the file was fixed/replaced, or a new escalation tier finally
     # parsed it) so it isn't left behind. Only files are ever dead-lettered, and
@@ -2382,16 +2555,22 @@ async def _index_document_inner(
     if doc_task.doc_type == "file" and doc_task.etag:
         await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
+    # Report what was actually UPSERTED, not how many chunks were produced. The
+    # point loop zips ``chunks`` with ``sparse_embeddings`` and zip truncates
+    # silently, so a short/empty embedding batch used to report a clean success
+    # for a document that landed fewer points than it had chunks -- exactly the
+    # "silent zero-points bug" named at the top of this module. len(points) makes
+    # that visible in the log instead of only in the index.
     logger.info(
         "Indexed %s_%s for %s (%s chunks)",
         doc_task.doc_type,
         doc_task.doc_id,
         doc_task.user_id,
-        len(chunks),
+        len(points),
         extra={
             "doc_id": doc_task.doc_id,
             "doc_type": doc_task.doc_type,
-            "chunks": len(chunks),
+            "chunks": len(points),
             "status": "success",
         },
     )

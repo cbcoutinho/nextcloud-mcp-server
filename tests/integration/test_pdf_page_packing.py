@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 def create_lean_multipage_pdf(n_pages: int = 12) -> bytes:
     """Create a born-digital PDF with many short (lean) pages.
 
-    Mimics the blackbox-demo density regime: one near-empty page each, so the
+    Mimics the observed low-density regime: one near-empty page each, so the
     per-page chunker floor would mint one dense vector per page (Deck #636).
     """
     doc = pymupdf.open()

@@ -1,10 +1,10 @@
 """Helper functions for accessing context in MCP tools."""
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from httpx import BasicAuth
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
@@ -63,7 +63,7 @@ async def get_client(ctx: Context) -> NextcloudClient:
     if settings.enable_multi_user_basic_auth:
         return _get_client_from_basic_auth(ctx)
 
-    lifespan_ctx = ctx.request_context.lifespan_context
+    lifespan_ctx: Any = ctx.request_context.lifespan_context
 
     # Login Flow v2 multi-user mode: app password is REQUIRED for NC API access
     # OAuth token is only used for MCP session identity, not NC API calls

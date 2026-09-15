@@ -20,7 +20,7 @@ async def test_basic_auth_pass_through_notes_search(nc_mcp_basic_auth_client):
 
     # Verify tool executed successfully with pass-through auth
     assert response is not None
-    assert not response.isError, f"Tool returned error: {response.content}"
+    assert not response.is_error, f"Tool returned error: {response.content}"
     # Response should have content with results
     assert len(response.content) > 0
     data = json.loads(response.content[0].text)
@@ -42,7 +42,7 @@ async def test_basic_auth_pass_through_notes_create(nc_mcp_basic_auth_client):
     )
 
     assert response is not None
-    assert not response.isError, f"Tool returned error: {response.content}"
+    assert not response.is_error, f"Tool returned error: {response.content}"
     # Parse response and verify note was created
     data = json.loads(response.content[0].text)
     assert data.get("success") is True or "note_id" in data
@@ -61,7 +61,7 @@ async def test_basic_auth_pass_through_get_note(nc_mcp_basic_auth_client):
             "category": "Test",
         },
     )
-    assert not create_response.isError
+    assert not create_response.is_error
     create_data = json.loads(create_response.content[0].text)
     note_id = create_data.get("id")
 
@@ -71,7 +71,7 @@ async def test_basic_auth_pass_through_get_note(nc_mcp_basic_auth_client):
     )
 
     assert response is not None
-    assert not response.isError, f"Tool returned error: {response.content}"
+    assert not response.is_error, f"Tool returned error: {response.content}"
     data = json.loads(response.content[0].text)
     # Nextcloud may append a number to duplicate titles
     assert data.get("title", "").startswith("BasicAuth Get Test")

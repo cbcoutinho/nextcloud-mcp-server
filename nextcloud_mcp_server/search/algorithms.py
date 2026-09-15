@@ -383,7 +383,7 @@ class SearchAlgorithm(ABC):
             List of SearchResult objects ranked by relevance
 
         Raises:
-            McpError: If search fails or configuration is invalid
+            MCPError: If search fails or configuration is invalid
         """
         pass
 

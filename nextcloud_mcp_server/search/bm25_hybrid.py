@@ -376,7 +376,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             List of unverified SearchResult objects ranked by RRF fusion score
 
         Raises:
-            McpError: If vector sync is not enabled or search fails
+            MCPError: If vector sync is not enabled or search fails
         """
         if granularity not in VALID_GRANULARITIES:
             # Validated here rather than only at the tool boundary so every

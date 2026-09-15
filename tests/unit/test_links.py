@@ -21,6 +21,7 @@ from nextcloud_mcp_server.models.deck import (
     BoardOverviewResponse,
     CardOperationResponse,
     CreateCardResponse,
+    DeckAttachment,
     DeckCard,
     DeckCardSummary,
     DeckStack,
@@ -33,7 +34,11 @@ from nextcloud_mcp_server.models.notes import (
     NoteSearchResult,
     SearchNotesResponse,
 )
-from nextcloud_mcp_server.models.webdav import DirectoryListing, FileInfo
+from nextcloud_mcp_server.models.webdav import (
+    DirectoryListing,
+    FileInfo,
+    FilesByTagResponse,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -116,6 +121,61 @@ def test_stack_links_to_its_board():
     assert _attach(stack).url == f"{BASE}/index.php/apps/deck/board/7"
 
 
+def _attachment(attachment_id: int = 5, **extended) -> DeckAttachment:
+    return DeckAttachment(
+        id=attachment_id,
+        cardId=42,
+        type="file" if extended else "deck_file",
+        data="a.pdf",
+        lastModified=0,
+        createdAt=0,
+        createdBy="alice",
+        deletedAt=0,
+        extendedData=extended,
+    )
+
+
+def test_file_attachment_links_to_the_shared_file():
+    """type="file" is a Files share, so the file itself opens — same link the
+    Deck UI builds in AttachmentList.vue."""
+    assert _attach(_attachment(fileid=99)).url == f"{BASE}/index.php/f/99"
+
+
+def test_deck_file_attachment_links_to_decks_download_route():
+    """type="deck_file" lives in Deck's private storage; there is no /f/ id."""
+    assert (
+        _attach(_attachment()).url
+        == f"{BASE}/index.php/apps/deck/cards/42/attachment/5"
+    )
+
+
+def test_card_attachments_are_linked_through_the_card():
+    card = _card(42)
+    card.attachments = [_attachment(fileid=99)]
+    _attach(card, {"board_id": 7})
+    assert card.attachments[0].url == f"{BASE}/index.php/f/99"
+
+
+def test_attachment_survives_an_empty_extended_data():
+    """Deck leaves extendedData [] when the underlying file is gone."""
+    attachment = DeckAttachment.model_validate(
+        {
+            "id": 5,
+            "cardId": 42,
+            "type": "deck_file",
+            "data": "a.pdf",
+            "lastModified": 0,
+            "createdAt": 0,
+            "createdBy": "alice",
+            "deletedAt": 0,
+            "extendedData": [],
+        }
+    )
+    assert (
+        _attach(attachment).url == f"{BASE}/index.php/apps/deck/cards/42/attachment/5"
+    )
+
+
 def test_card_operation_response_uses_the_ids_it_carries():
     result = _attach(CardOperationResponse(card_id=42, stack_id=3, board_id=7))
     assert result.url == f"{BASE}/index.php/apps/deck/board/7/card/42"
@@ -194,6 +254,23 @@ def test_directory_listing_links_each_entry_that_can_be_linked():
     _attach(listing)
     assert listing.files[0].url == f"{BASE}/index.php/f/1"
     assert listing.files[1].url is None
+
+
+def test_files_by_tag_links_each_entry_that_can_be_linked():
+    """nc_webdav_find_by_tag_name's results link the same way a directory listing's do -
+    both hold plain FileInfo entries, so one registry entry covers both tools."""
+    found = FilesByTagResponse(
+        tag="invoice",
+        tag_id=7,
+        files=[
+            FileInfo(name="a", path="/a", is_directory=False, file_id=1),
+            FileInfo(name="b", path="/b", is_directory=False, file_id=None),
+        ],
+        total_count=2,
+    )
+    _attach(found)
+    assert found.files[0].url == f"{BASE}/index.php/f/1"
+    assert found.files[1].url is None
 
 
 # --- absent or unusable configuration ---------------------------------------

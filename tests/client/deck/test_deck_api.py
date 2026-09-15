@@ -335,6 +335,89 @@ async def test_deck_get_card(mocker):
     assert "/boards/123/stacks/456/cards/789" in mock_make_request.call_args[0][1]
 
 
+async def test_deck_get_card_uses_api_v11_so_attachments_are_not_filtered(mocker):
+    """On v1.0 CardService::find drops every attachment that is not a legacy
+    deck_file, so a card attached from Files reports attachmentCount > 0 with an
+    empty attachments array."""
+    mocker.patch.object(
+        DeckClient,
+        "_make_request",
+        return_value=create_mock_deck_card_response(
+            card_id=789, title="Test Card", stack_id=456
+        ),
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.get_card(board_id=123, stack_id=456, card_id=789)
+
+    assert "/apps/deck/api/v1.1/" in DeckClient._make_request.call_args[0][1]
+
+
+async def test_deck_get_attachments_uses_api_v11(mocker):
+    """Same filter as get_card: v1.0 returns only deck_file attachments."""
+    mocker.patch.object(
+        DeckClient, "_make_request", return_value=create_mock_response(json_data=[])
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    attachments = await client.get_attachments(board_id=123, stack_id=456, card_id=789)
+
+    assert attachments == []
+    assert (
+        "/apps/deck/api/v1.1/boards/123/stacks/456/cards/789/attachments"
+        in DeckClient._make_request.call_args[0][1]
+    )
+
+
+async def test_deck_delete_attachment_passes_the_type_through(mocker):
+    """Deck resolves the attachment id against ``type`` (default deck_file), so
+    a Files-share attachment is only found with type=file."""
+    mocker.patch.object(
+        DeckClient, "_make_request", return_value=create_mock_response(json_data={})
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_attachment(
+        board_id=123, stack_id=456, card_id=789, attachment_id=1, file_type="file"
+    )
+
+    assert DeckClient._make_request.call_args.kwargs["params"] == {"type": "file"}
+
+
+async def test_deck_delete_attachment_defaults_to_deck_file(mocker):
+    """The default preserves the pre-existing behaviour for uploaded blobs."""
+    mocker.patch.object(
+        DeckClient, "_make_request", return_value=create_mock_response(json_data={})
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_attachment(
+        board_id=123, stack_id=456, card_id=789, attachment_id=1
+    )
+
+    assert DeckClient._make_request.call_args.kwargs["params"] == {"type": "deck_file"}
+
+
+@pytest.mark.parametrize(
+    "method", ["get_attachment_file", "restore_attachment", "delete_attachment"]
+)
+async def test_deck_attachment_routes_address_the_id_by_type(mocker, method):
+    """Every route that addresses one attachment by id resolves it against
+    ``type``, so all of them have to send it — not just delete."""
+    mocker.patch.object(
+        DeckClient,
+        "_make_request",
+        return_value=create_mock_response(json_data={}, content=b""),
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await getattr(client, method)(
+        board_id=123, stack_id=456, card_id=789, attachment_id=1, file_type="file"
+    )
+
+    assert DeckClient._make_request.call_args.kwargs["params"] == {"type": "file"}
+
+
 async def test_deck_assign_dependent_card(mocker):
     """Test that assign_dependent_card POSTs to the right route and parses the card."""
     mock_response = create_mock_deck_card_response(

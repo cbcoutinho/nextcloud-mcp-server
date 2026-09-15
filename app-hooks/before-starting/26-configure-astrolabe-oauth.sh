@@ -45,7 +45,7 @@ REDIRECT_URI="${NC_EXTERNAL_URL}/apps/astrolabe/oauth/callback"
 # every tool call (not just for tool visibility) — so a scope omitted here
 # silently removes those tools. mail.* and talk.* were missing for exactly that
 # reason. Keep in sync with models/auth.py, not with a mental list of apps.
-ALLOWED_SCOPES="openid profile email offline_access notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write news.read news.write collectives.read collectives.write mail.read mail.write mail.send talk.read talk.write semantic.read"
+ALLOWED_SCOPES="openid profile email offline_access notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write news.read news.write collectives.read collectives.write shopping_list.read shopping_list.write mail.read mail.write mail.send talk.read talk.write semantic.read"
 
 # Create OAuth client
 CLIENT_JSON=$(php occ oidc:create "Astrolabe" \

@@ -9,6 +9,12 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard
 
 from pydantic import BaseModel
 
+#: ``parse_failed_reason`` for a document whose bytes are empty. Terminal: no
+#: tier can extract text from zero bytes, so escalating it would just walk the
+#: queues to fail three times. Lives here rather than in ``registry`` so
+#: ``ocr`` can use it without importing the registry that imports ``ocr``.
+EMPTY_DOCUMENT_REASON = "empty_document"
+
 
 class ProcessingResult(BaseModel):
     """Standardized result from any document processor."""

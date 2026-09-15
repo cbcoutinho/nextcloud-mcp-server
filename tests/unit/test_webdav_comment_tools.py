@@ -1,6 +1,6 @@
 """Tool-layer tests for the WebDAV file-comment tools (GH #1308).
 
-These register the WebDAV tools on a fresh ``FastMCP`` and invoke each tool's
+These register the WebDAV tools on a fresh ``MCPServer`` and invoke each tool's
 underlying function directly with a mocked client, covering the wiring the
 client-layer tests cannot: that the excluded-tag guard and the message
 validation run *before* anything is posted, and that a missing file is a clear
@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 from nextcloud_mcp_server.utils.message_splitter import COMMENT_MAX_LENGTH
@@ -65,7 +65,7 @@ def no_excluded_tags(mocker):
 
 @pytest.fixture
 def tools() -> dict:
-    mcp = FastMCP(name="test-webdav-comment-tools")
+    mcp = MCPServer(name="test-webdav-comment-tools")
     configure_webdav_tools(mcp)
     return {t.name: t for t in mcp._tool_manager.list_tools()}
 
@@ -117,7 +117,7 @@ async def test_create_comment_at_the_limit_is_accepted(create_comment, fake_clie
     ],
 )
 async def test_create_comment_rejects_blank(create_comment, fake_client, message):
-    with pytest.raises(ValueError, match="must not be empty"):
+    with pytest.raises(ToolError, match="must not be empty"):
         await create_comment("/report.pdf", message, _ctx())
 
     fake_client.webdav.create_comment.assert_not_awaited()
@@ -125,7 +125,7 @@ async def test_create_comment_rejects_blank(create_comment, fake_client, message
 
 async def test_create_comment_rejects_over_length(create_comment, fake_client):
     """The error states the exact overage, so an agent needn't guess how much to cut."""
-    with pytest.raises(ValueError, match="5 characters over"):
+    with pytest.raises(ToolError, match="5 characters over"):
         await create_comment("/report.pdf", "x" * (COMMENT_MAX_LENGTH + 5), _ctx())
 
     fake_client.webdav.create_comment.assert_not_awaited()
@@ -181,7 +181,7 @@ async def test_list_comments_maps_to_models(list_comments, fake_client):
 async def test_list_comments_rejects_bad_paging(
     list_comments, fake_client, limit, offset, match
 ):
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ToolError, match=match):
         await list_comments("/report.pdf", _ctx(), limit=limit, offset=offset)
 
     fake_client.webdav.list_comments.assert_not_awaited()

@@ -7,7 +7,7 @@ status-disclosure operations.
 """
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 
@@ -24,13 +24,13 @@ HARDENED_TOOLS = (
 
 @pytest.fixture
 def registered_tools():
-    """Register the OAuth tools against a fresh FastMCP and return them by name.
+    """Register the OAuth tools against a fresh MCPServer and return them by name.
 
-    Uses FastMCP's `_tool_manager.list_tools()`; flagged as internal and may
+    Uses MCPServer's `_tool_manager.list_tools()`; flagged as internal and may
     break on SDK upgrades, but this is the supported way to inspect a tool's
     JSON input schema in unit tests (see tests/unit/test_stdio.py).
     """
-    mcp = FastMCP("test-oauth-tools")
+    mcp = MCPServer("test-oauth-tools")
     register_oauth_tools(mcp)
     tools = mcp._tool_manager.list_tools()
     return {t.name: t for t in tools}

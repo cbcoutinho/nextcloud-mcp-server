@@ -237,10 +237,14 @@ success, so partial extractions and in-flight batch-OCR polls never inflate them
 - `astrolabe_document_bytes_processed_total` - Source bytes parsed
 - `astrolabe_document_parse_duration_seconds` - Parse latency per document
 - `astrolabe_document_parse_failed_total{reason}` - Hard failures
-  (`timeout` | `oom` | `error` | `oversize` | `unreadable` | `unsupported_type`).
+  (`timeout` | `oom` | `error` | `oversize` | `unreadable` | `unsupported_type` |
+  `empty_document`).
   `unsupported_type` means no registered processor claims the document's mime
   type — a property of what this deployment has enabled, not of the document, so
   it is answered by enabling a processor (or excluding the type), not by a retry.
+  `empty_document` means the document has no bytes: terminal, since no tier can
+  extract text from nothing. A file the scanner measured as non-empty that
+  *downloads* empty is not this — that is a bad response, and it is re-queued.
 
 Corpus shape, recorded before the oversize gate so the over-cap tail is visible:
 

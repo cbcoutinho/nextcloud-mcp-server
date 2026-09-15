@@ -19,8 +19,9 @@ from typing import Any
 
 import anyio
 import click
+import httpx2
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from tests.load.workloads import MixedWorkload, OperationResult, WorkloadOperations
 
@@ -216,11 +217,16 @@ class BenchmarkMetrics:
 async def create_mcp_session(url: str):
     """Create an MCP client session with proper cleanup."""
     logger.info("Creating MCP client session for %s", url)
-    streamable_context = streamablehttp_client(url)
+    streamable_context = streamable_http_client(
+        url,
+        http_client=httpx2.AsyncClient(
+            timeout=httpx2.Timeout(30, read=300), follow_redirects=True
+        ),
+    )
     session_context = None
 
     try:
-        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        read_stream, write_stream = await streamable_context.__aenter__()
         session_context = ClientSession(read_stream, write_stream)
         session = await session_context.__aenter__()
         await session.initialize()

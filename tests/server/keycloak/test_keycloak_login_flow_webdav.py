@@ -13,10 +13,13 @@ they are also the regression guard for ``NEXTCLOUD_PUBLIC_URL`` (in external-IdP
 mode the OAuth issuer URL is Keycloak, not Nextcloud; without the dedicated
 public-URL setting the login page 404s on Keycloak).
 
-The fixtures log into Nextcloud Login Flow v2 as a *local* user via its **email**,
-so the app password's stored ``loginName`` is the email while the canonical UID is
-``divprincipal_<suffix>`` (loginName != UID). This exercises the same
-identity-divergence shape as PR #980's client fix. Note: it does not reproduce
+The fixtures log into Nextcloud Login Flow v2 via an **email alias** on the
+account the Keycloak token resolves to, so the app password's stored
+``loginName`` is the email while the canonical UID is the account name
+(loginName != UID). This exercises the same identity-divergence shape as PR
+#980's client fix — and, because the granting account is the OAuth caller's own,
+it is also the end-to-end guard that GHSA-84qv-22q6-x82r's ownership check
+accepts a legitimate external-IdP grant. Note: it does not reproduce
 #980's wrong-path failure on the CI Nextcloud versions — Nextcloud resolves
 ``/remote.php/dav/files/<email>/`` to the user's real home, so the round-trip
 succeeds regardless of the client-side principal-discovery fix. #980's failure
@@ -74,7 +77,9 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
     Login Flow v2 ``login_url`` were rewritten to the Keycloak origin again, the
     session fixture could not provision and this test would never run.
     """
-    suffix = divergent_email_user["uid"].split("_")[-1]
+    # Per-session suffix from the email alias, so a leftover directory from an
+    # earlier run cannot collide (the UID is now the fixed caller account).
+    suffix = divergent_email_user["email"].split("@")[0].split("_")[-1]
     dir_path = f"/KeycloakLoginFlowTest_{suffix}"
     file_path = f"{dir_path}/keycloak_login_flow.txt"
     content = f"webdav round-trip via keycloak service {suffix}"
@@ -82,7 +87,7 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
     mkdir_result = await nc_mcp_keycloak_email_client.call_tool(
         "nc_webdav_create_directory", {"path": dir_path}
     )
-    assert mkdir_result.isError is False, (
+    assert mkdir_result.is_error is False, (
         "create_directory failed — Keycloak Login Flow v2 WebDAV path is broken"
     )
 
@@ -91,19 +96,19 @@ async def test_webdav_round_trip_via_keycloak_login_flow(
             "nc_webdav_write_file",
             {"path": file_path, "content": content},
         )
-        assert write_result.isError is False
+        assert write_result.is_error is False
 
         read_result = await nc_mcp_keycloak_email_client.call_tool(
             "nc_webdav_read_file", {"path": file_path}
         )
-        assert read_result.isError is False
+        assert read_result.is_error is False
         read_data = json.loads(read_result.content[0].text)
         assert content in read_data.get("content", "")
 
         list_result = await nc_mcp_keycloak_email_client.call_tool(
             "nc_webdav_list_directory", {"path": dir_path}
         )
-        assert list_result.isError is False
+        assert list_result.is_error is False
         list_data = json.loads(list_result.content[0].text)
         names = [f.get("name", "") for f in list_data.get("files", [])]
         assert "keycloak_login_flow.txt" in names

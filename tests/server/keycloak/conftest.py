@@ -9,12 +9,16 @@ issued a real Nextcloud API call. These fixtures fill that gap end-to-end:
 
 * **OAuth leg** — a Keycloak direct-grant (ROPC) obtains an access token that the
   ``mcp-keycloak`` session accepts. This exercises the keycloak service without
-  driving Keycloak's browser login form (its identity is irrelevant here — the
-  Login Flow v2 app password is what authenticates DAV requests).
+  driving Keycloak's browser login form.
 * **Login Flow v2 leg** — the browser completes Nextcloud Login Flow v2 by logging
-  in as a *local* Nextcloud user using its **email address**. Nextcloud keys the
-  resulting app password on the *loginName* (the email), which differs from the
-  user's canonical UID (loginName != UID).
+  in with the **email address** of the account that Keycloak token resolves to.
+  Nextcloud keys the resulting app password on the *loginName* (the email), which
+  differs from the user's canonical UID (loginName != UID).
+
+The two legs must be the *same* Nextcloud account: since GHSA-84qv-22q6-x82r a
+grant completed by anyone other than the OAuth caller is refused and never
+stored. So the divergence comes from an email alias on the caller's own account,
+not from a second user (which is how this lane originally staged it).
 
 Getting these fixtures to provision at all is the regression guard for
 ``NEXTCLOUD_PUBLIC_URL``: in external-IdP mode the OAuth issuer URL is Keycloak,
@@ -35,6 +39,7 @@ unit tests.
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, AsyncGenerator
 
@@ -66,10 +71,11 @@ KEYCLOAK_CLIENT_ID = "nextcloud-mcp-server"
 # not a real secret. NOSONAR suppresses the hardcoded-credentials hotspot.
 KEYCLOAK_CLIENT_SECRET = "mcp-secret-change-in-production"  # NOSONAR(S2068)
 
-# Keycloak user used only for the OAuth leg (session identity key). It does not
-# have to match the Nextcloud data user — the app password minted by the Login
-# Flow leg is what authenticates DAV requests. Direct Access Grants (ROPC) are
-# enabled for the `nextcloud-mcp-server` client in realm-export.json.
+# Keycloak user for the OAuth leg. Its identity is load-bearing since
+# GHSA-84qv-22q6-x82r: the Nextcloud account it resolves to must be the one that
+# completes the Login Flow leg, or the grant is refused (see
+# `divergent_email_user`, which asserts exactly that). Direct Access Grants
+# (ROPC) are enabled for the `nextcloud-mcp-server` client in realm-export.json.
 KEYCLOAK_OAUTH_USER = "admin"
 KEYCLOAK_OAUTH_PASSWORD = "admin"  # NOSONAR(S2068) - dev-only Keycloak bootstrap creds
 
@@ -93,49 +99,78 @@ KEYCLOAK_SUPPORTED_SCOPES = (
 )
 
 
+async def _nextcloud_uid_for_bearer(token: str) -> str | None:
+    """Canonical Nextcloud UID a Keycloak access token authenticates as.
+
+    The same question ``auth/grant_ownership.py`` asks, and the reason it has to
+    ask Nextcloud rather than read a claim: ``user_oidc`` is configured with
+    ``--unique-uid``, so the UID is a hash of the IdP ``sub``.
+    """
+    host = os.getenv("NEXTCLOUD_HOST")
+    assert host, "NEXTCLOUD_HOST must be set for the keycloak lane"
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        response = await http.get(
+            f"{host.rstrip('/')}/ocs/v2.php/cloud/user",
+            headers={"Authorization": f"Bearer {token}", "OCS-APIRequest": "true"},
+            params={"format": "json"},
+        )
+    response.raise_for_status()
+    return response.json()["ocs"]["data"]["id"]
+
+
 @pytest.fixture(scope="session")
 async def divergent_email_user(
-    anyio_backend, nc_client: NextcloudClient
+    anyio_backend,
+    nc_client: NextcloudClient,
+    keycloak_service_oauth_token: str,
 ) -> AsyncGenerator[dict[str, str], Any]:
-    """Create a local Nextcloud user whose loginName (email) differs from its UID.
+    """The OAuth caller's own Nextcloud account, reachable under an email loginName.
 
-    Yields a dict with ``uid``, ``email``, ``password`` and ``display_name``.
-    The user is deleted on teardown. Nextcloud login-by-email is enabled by
-    default, so logging in with the email during Login Flow v2 produces an app
-    password whose stored loginName is the email — not the UID.
+    Yields a dict with ``uid``, ``email`` and ``password``. Nextcloud
+    login-by-email is enabled by default, so logging in with the email during
+    Login Flow v2 produces an app password whose stored loginName is the email —
+    not the UID (loginName != UID, the identity shape this lane exists to
+    exercise).
+
+    The account is the *caller's own*, not a second user: since
+    GHSA-84qv-22q6-x82r a Login Flow v2 grant completed by any account other than
+    the OAuth caller is refused and never stored, so a separate local user — what
+    this fixture used to create — can no longer provision at all. The divergence
+    therefore comes from the email alias alone.
 
     Session-scoped: the ``mcp-keycloak`` app-password store is keyed by the
     Keycloak OAuth identity (a single shared ``admin``), so all tests share one
-    provisioned app password. The divergent user must therefore stay alive for
-    the whole session — a per-test user would be deleted while its app password
-    is still cached server-side, turning the WebDAV reproduction into a spurious
-    401-on-deleted-user instead of the #980 wrong-path failure.
+    provisioned app password and the email alias must stay in place for the whole
+    session. It is restored on teardown.
     """
-    suffix = uuid.uuid4().hex[:8]
-    uid = f"divprincipal_{suffix}"
-    user = {
-        "uid": uid,
-        "email": f"{uid}@example.com",
-        "password": "DivergentPrincipalPass123!",  # NOSONAR(S2068) - ephemeral test user
-        "display_name": f"Divergent Principal {suffix}",
-    }
-
-    logger.info("Creating divergent-principal user uid=%s email=%s", uid, user["email"])
-    await nc_client.users.create_user(
-        userid=uid,
-        password=user["password"],
-        display_name=user["display_name"],
-        email=user["email"],
+    uid = await _nextcloud_uid_for_bearer(keycloak_service_oauth_token)
+    nc_username = os.getenv("NEXTCLOUD_USERNAME")
+    nc_password = os.getenv("NEXTCLOUD_PASSWORD")
+    assert nc_username and nc_password, (
+        "NEXTCLOUD_USERNAME/NEXTCLOUD_PASSWORD must be set for the keycloak lane"
+    )
+    assert uid == nc_username, (
+        f"Keycloak user {KEYCLOAK_OAUTH_USER!r} resolves to Nextcloud UID {uid!r}, "
+        f"but this lane can only complete Login Flow v2 as {nc_username!r} (the "
+        "only account whose password the tests know). Since GHSA-84qv-22q6-x82r "
+        "the grant must come from the caller's own account, so the OAuth leg and "
+        "the browser leg have to be the same user."
     )
 
+    original_email = (await nc_client.users.get_user_details(uid)).email
+    email = f"divprincipal_{uuid.uuid4().hex[:8]}@example.com"
+
+    logger.info("Giving caller uid=%s the email alias %s", uid, email)
+    await nc_client.users.update_user_field(uid, "email", email)
+
     try:
-        yield user
+        yield {"uid": uid, "email": email, "password": nc_password}
     finally:
         try:
-            await nc_client.users.delete_user(uid)
-            logger.info("Deleted divergent-principal user %s", uid)
+            await nc_client.users.update_user_field(uid, "email", original_email or "")
+            logger.info("Restored email of %s", uid)
         except Exception as e:  # noqa: BLE001 - best-effort cleanup
-            logger.warning("Failed to delete divergent-principal user %s: %s", uid, e)
+            logger.warning("Failed to restore email of %s: %s", uid, e)
 
 
 @pytest.fixture(scope="session")
@@ -143,12 +178,15 @@ async def keycloak_service_oauth_token(anyio_backend) -> str:
     """Obtain a Keycloak access token accepted by the ``mcp-keycloak`` session.
 
     Uses the OAuth 2.0 Resource Owner Password Credentials (direct access)
-    grant against the static ``nextcloud-mcp-server`` client. The OAuth leg's
-    identity is irrelevant to the reproduction — the Login Flow v2 app password
-    is what authenticates DAV requests — so there is no need to drive Keycloak's
-    browser login form here. Direct grant is faster and avoids the flakiness of
-    the auth-code + Playwright flow (whose native ``#username`` login page also
-    breaks when the request carries scopes the client does not know about).
+    grant against the static ``nextcloud-mcp-server`` client. Direct grant is
+    faster than driving Keycloak's browser login form and avoids the flakiness
+    of the auth-code + Playwright flow (whose native ``#username`` login page
+    also breaks when the request carries scopes the client does not know about).
+
+    *Which* user this authenticates as does matter, though — since
+    GHSA-84qv-22q6-x82r the Nextcloud account this token resolves to has to be
+    the one that completes the Login Flow leg, or the grant is refused. That is
+    what ``divergent_email_user`` asserts before anything else runs.
     """
     async with httpx.AsyncClient(timeout=30.0) as http:
         discovery = await http.get(
@@ -182,7 +220,7 @@ async def keycloak_service_oauth_token(anyio_backend) -> str:
 async def _complete_login_flow_v2_with_email(
     browser, login_url: str, email: str, password: str
 ) -> None:
-    """Complete Nextcloud Login Flow v2 logging in as a local user via EMAIL.
+    """Complete Nextcloud Login Flow v2 logging in via EMAIL.
 
     Identical to the login_flow helper, but fills the Nextcloud login form's
     user field with the *email* address so the resulting app password's stored
@@ -275,8 +313,8 @@ async def nc_mcp_keycloak_email_client(
 
     1. Connects to mcp-keycloak (8002) with a Keycloak OAuth token.
     2. Calls ``nc_auth_provision_access`` to start Login Flow v2.
-    3. Completes the browser login as the local ``divergent_email_user`` **via
-       its email**, minting an app password whose loginName is the email.
+    3. Completes the browser login as the caller's own account **via its email
+       alias**, minting an app password whose loginName is the email.
     4. Polls ``nc_auth_check_status`` until provisioned, then yields the session.
     """
     email = divergent_email_user["email"]

@@ -24,7 +24,7 @@ async def temporary_collective(nc_mcp_client: ClientSession):
         "collectives_create_collective",
         {"name": name, "emoji": "🧪"},
     )
-    assert result.isError is False, f"Failed to create collective: {result.content}"
+    assert result.is_error is False, f"Failed to create collective: {result.content}"
     data = json.loads(result.content[0].text)
     collective_id = data["id"]
     logger.info("Created temporary collective: %s (ID: %s)", name, collective_id)
@@ -107,7 +107,7 @@ async def test_collectives_list(
 ):
     """Test listing collectives includes the temporary one."""
     result = await nc_mcp_client.call_tool("collectives_get_collectives", {})
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert data["success"] is True
@@ -126,7 +126,7 @@ async def test_collectives_set_collective_emoji(
         "collectives_set_collective_emoji",
         {"collective_id": temporary_collective["id"], "emoji": "📖"},
     )
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert data["success"] is True
@@ -145,14 +145,14 @@ async def test_collectives_clear_collective_emoji(
         "collectives_set_collective_emoji",
         {"collective_id": cid, "emoji": "🔬"},
     )
-    assert set_result.isError is False
+    assert set_result.is_error is False
 
     # Clear the emoji by passing null
     clear_result = await nc_mcp_client.call_tool(
         "collectives_set_collective_emoji",
         {"collective_id": cid, "emoji": None},
     )
-    assert clear_result.isError is False
+    assert clear_result.is_error is False
     data = json.loads(clear_result.content[0].text)
     assert data["collective_id"] == cid
     logger.info("Collective emoji cleared")
@@ -174,7 +174,7 @@ async def test_collectives_page_workflow(
         "collectives_create_page",
         {"collective_id": cid, "parent_id": landing_id, "title": unique_title},
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     create_data = json.loads(create_result.content[0].text)
     page_id = create_data["id"]
     assert create_data["collective_id"] == cid
@@ -186,7 +186,7 @@ async def test_collectives_page_workflow(
         "collectives_get_pages",
         {"collective_id": cid},
     )
-    assert list_result.isError is False
+    assert list_result.is_error is False
     list_data = json.loads(list_result.content[0].text)
     page_ids = [p["id"] for p in list_data["pages"]]
     assert page_id in page_ids
@@ -197,7 +197,7 @@ async def test_collectives_page_workflow(
         "collectives_get_page",
         {"collective_id": cid, "page_id": page_id},
     )
-    assert get_result.isError is False
+    assert get_result.is_error is False
     get_data = json.loads(get_result.content[0].text)
     assert get_data["page"]["id"] == page_id
     assert get_data["page"]["title"] == unique_title
@@ -209,7 +209,7 @@ async def test_collectives_page_workflow(
         "collectives_set_page_emoji",
         {"collective_id": cid, "page_id": page_id, "emoji": "🚀"},
     )
-    assert emoji_result.isError is False
+    assert emoji_result.is_error is False
     logger.info("Page emoji set")
 
     # 5. Trash the page
@@ -217,7 +217,7 @@ async def test_collectives_page_workflow(
         "collectives_trash_page",
         {"collective_id": cid, "page_id": page_id},
     )
-    assert trash_result.isError is False
+    assert trash_result.is_error is False
     logger.info("Page trashed")
 
     # 6. Verify page is in trash
@@ -225,7 +225,7 @@ async def test_collectives_page_workflow(
         "collectives_get_trashed_pages",
         {"collective_id": cid},
     )
-    assert trashed_result.isError is False
+    assert trashed_result.is_error is False
     trashed_data = json.loads(trashed_result.content[0].text)
     trashed_ids = [p["id"] for p in trashed_data["pages"]]
     assert page_id in trashed_ids
@@ -236,7 +236,7 @@ async def test_collectives_page_workflow(
         "collectives_restore_page",
         {"collective_id": cid, "page_id": page_id},
     )
-    assert restore_result.isError is False
+    assert restore_result.is_error is False
     logger.info("Page restored from trash")
 
     # 8. Verify page is back in pages list
@@ -261,7 +261,7 @@ async def test_collectives_get_landing_page_content(
         "collectives_get_page",
         {"collective_id": cid, "page_id": landing_id},
     )
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert data["page"]["fileName"] == "Readme.md"
@@ -288,7 +288,7 @@ async def test_collectives_move_page(
             "title": f"Movable Page {uuid.uuid4().hex[:8]}",
         },
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     page_id = json.loads(create_result.content[0].text)["id"]
 
     # Move (rename) the page
@@ -301,7 +301,7 @@ async def test_collectives_move_page(
             "title": new_title,
         },
     )
-    assert move_result.isError is False
+    assert move_result.is_error is False
 
     data = json.loads(move_result.content[0].text)
     assert data["page_id"] == page_id
@@ -332,7 +332,7 @@ async def test_collectives_tag_workflow(
         "collectives_create_tag",
         {"collective_id": cid, "name": tag_name, "color": "FF5733"},
     )
-    assert create_tag_result.isError is False
+    assert create_tag_result.is_error is False
     tag_data = json.loads(create_tag_result.content[0].text)
     tag_id = tag_data["id"]
     assert tag_data["name"] == tag_name
@@ -344,7 +344,7 @@ async def test_collectives_tag_workflow(
         "collectives_get_tags",
         {"collective_id": cid},
     )
-    assert list_tags_result.isError is False
+    assert list_tags_result.is_error is False
     tags_data = json.loads(list_tags_result.content[0].text)
     tag_ids = [t["id"] for t in tags_data["tags"]]
     assert tag_id in tag_ids
@@ -359,7 +359,7 @@ async def test_collectives_tag_workflow(
             "title": f"Tagged Page {uuid.uuid4().hex[:8]}",
         },
     )
-    assert page_result.isError is False
+    assert page_result.is_error is False
     page_id = json.loads(page_result.content[0].text)["id"]
 
     # 4. Assign tag to page
@@ -367,7 +367,7 @@ async def test_collectives_tag_workflow(
         "collectives_assign_tag",
         {"collective_id": cid, "page_id": page_id, "tag_id": tag_id},
     )
-    assert assign_result.isError is False
+    assert assign_result.is_error is False
     logger.info("Tag %s assigned to page %s", tag_id, page_id)
 
     # 5. Remove tag from page
@@ -375,7 +375,7 @@ async def test_collectives_tag_workflow(
         "collectives_remove_tag",
         {"collective_id": cid, "page_id": page_id, "tag_id": tag_id},
     )
-    assert remove_result.isError is False
+    assert remove_result.is_error is False
     logger.info("Tag %s removed from page %s", tag_id, page_id)
 
     # Cleanup
@@ -399,7 +399,7 @@ async def test_collectives_search(
         "collectives_search_pages",
         {"collective_id": cid, "query": "Welcome"},
     )
-    assert result.isError is False
+    assert result.is_error is False
 
     data = json.loads(result.content[0].text)
     assert data["success"] is True
@@ -422,7 +422,7 @@ async def test_collectives_trash_restore_delete_workflow(
         "collectives_create_collective",
         {"name": name},
     )
-    assert create_result.isError is False
+    assert create_result.is_error is False
     created = json.loads(create_result.content[0].text)
     cid = created["id"]
     logger.info("Created collective %s (ID: %s)", name, cid)
@@ -432,7 +432,7 @@ async def test_collectives_trash_restore_delete_workflow(
         "collectives_trash_collective",
         {"collective_id": cid},
     )
-    assert trash_result.isError is False
+    assert trash_result.is_error is False
     logger.info("Collective moved to trash")
 
     # List trashed collectives — should include ours
@@ -440,7 +440,7 @@ async def test_collectives_trash_restore_delete_workflow(
         "collectives_get_trashed_collectives",
         {},
     )
-    assert list_trash_result.isError is False
+    assert list_trash_result.is_error is False
     trash_data = json.loads(list_trash_result.content[0].text)
     trashed_ids = [c["id"] for c in trash_data["collectives"]]
     assert cid in trashed_ids
@@ -451,7 +451,7 @@ async def test_collectives_trash_restore_delete_workflow(
         "collectives_restore_collective",
         {"collective_id": cid},
     )
-    assert restore_result.isError is False
+    assert restore_result.is_error is False
     restore_data = json.loads(restore_result.content[0].text)
     assert restore_data["collective_id"] == cid
     assert "restored" in restore_data["message"].lower()
@@ -462,13 +462,13 @@ async def test_collectives_trash_restore_delete_workflow(
         "collectives_trash_collective",
         {"collective_id": cid},
     )
-    assert trash_result2.isError is False
+    assert trash_result2.is_error is False
 
     delete_result = await nc_mcp_client.call_tool(
         "collectives_delete_collective",
         {"collective_id": cid},
     )
-    assert delete_result.isError is False
+    assert delete_result.is_error is False
     delete_data = json.loads(delete_result.content[0].text)
     assert "permanently deleted" in delete_data["message"].lower()
     logger.info("Collective permanently deleted")
@@ -483,7 +483,7 @@ async def test_collectives_get_page_not_found(nc_mcp_client: ClientSession):
         "collectives_get_page",
         {"collective_id": 999999, "page_id": 999999},
     )
-    assert result.isError is True
+    assert result.is_error is True
     logger.info("Non-existent page correctly returned error")
 
 
@@ -493,5 +493,5 @@ async def test_collectives_get_pages_not_found(nc_mcp_client: ClientSession):
         "collectives_get_pages",
         {"collective_id": 999999},
     )
-    assert result.isError is True
+    assert result.is_error is True
     logger.info("Non-existent collective correctly returned error")

@@ -7,7 +7,7 @@ upgrade's *silent* behaviour changes visible. Two things are pinned here:
    at which protocol version — deduplicated per session and with every
    client-supplied label clamped.
 2. ``instrument_call_tool_outcomes`` distinguishes a tool error the model can
-   see (``CallToolResult.isError``) from a protocol error it cannot (a JSON-RPC
+   see (``CallToolResult.is_error``) from a protocol error it cannot (a JSON-RPC
    error). On mcp 1.x the latter is 0 by construction, which is precisely what
    makes it a usable regression alarm after the upgrade.
 
@@ -22,8 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 from mcp import types
-from mcp.server.lowlevel.server import request_ctx
-from mcp.shared.exceptions import McpError
+from mcp.server.context import ServerRequestContext
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.observability import metrics as metrics_module
 from nextcloud_mcp_server.observability.metrics import (
@@ -94,10 +94,20 @@ class _FakeSession:
         self.client_params = params
 
 
-def _activate(session: _FakeSession):
-    """Install a request context carrying ``session``, as the SDK does."""
-    return request_ctx.set(
-        SimpleNamespace(request_id=1, meta=None, session=session, lifespan_context=None)
+def _ctx(session: _FakeSession, protocol: str = "2025-06-18") -> ServerRequestContext:
+    """The request context the SDK hands a handler, carrying ``session``.
+
+    ``protocol_version`` is the *negotiated* version and lives on the context in
+    mcp 2.x, not on ``client_params`` — so it is populated even when the params
+    shape is one the metric does not recognise.
+    """
+    return ServerRequestContext(
+        session=session,
+        lifespan_context=None,
+        protocol_version=protocol,
+        method="tools/call",
+        params={"name": "nc_notes_create_note", "arguments": {}},
+        request_id=1,
     )
 
 
@@ -112,7 +122,7 @@ class TestRecordClientSession:
         }
         before = metric_sample(SESSIONS, labels)
 
-        record_client_session()
+        record_client_session(metric_session)
 
         assert metric_sample(SESSIONS, labels) - before == 1
         assert (
@@ -138,9 +148,9 @@ class TestRecordClientSession:
         }
         before = metric_sample(SESSIONS, labels)
 
-        record_client_session()
-        record_client_session()
-        record_client_session()
+        record_client_session(metric_session)
+        record_client_session(metric_session)
+        record_client_session(metric_session)
 
         assert metric_sample(SESSIONS, labels) - before == 1
 
@@ -152,17 +162,13 @@ class TestRecordClientSession:
         }
         before = metric_sample(SESSIONS, labels)
 
-        record_client_session()
-        token = _activate(_FakeSession(_client_params()))
-        try:
-            record_client_session()
-        finally:
-            request_ctx.reset(token)
+        record_client_session(metric_session)
+        record_client_session(_ctx(_FakeSession(_client_params())))
 
         assert metric_sample(SESSIONS, labels) - before == 2
 
     def test_no_request_context_is_a_noop(self, metric_sample):
-        """Outside a request the contextvar is unset — must not raise."""
+        """Outside a request there is no context to pass — must not raise."""
         labels = {
             "client_name": "claude-code",
             "client_version": "2.0",
@@ -170,7 +176,7 @@ class TestRecordClientSession:
         }
         before = metric_sample(SESSIONS, labels)
 
-        record_client_session()
+        record_client_session(None)
 
         assert metric_sample(SESSIONS, labels) == before
 
@@ -183,21 +189,15 @@ class TestRecordClientSession:
         }
         before = metric_sample(SESSIONS, labels)
 
-        token = _activate(_FakeSession(None))
-        try:
-            record_client_session()
-        finally:
-            request_ctx.reset(token)
+        record_client_session(_ctx(_FakeSession(None)))
 
         assert metric_sample(SESSIONS, labels) == before
 
     def test_client_labels_are_clamped(self, metric_sample):
         """clientInfo is peer-supplied; unbounded labels would be a memory DoS."""
-        token = _activate(_FakeSession(_client_params(name="x" * 200, version="1.2.3")))
-        try:
-            record_client_session()
-        finally:
-            request_ctx.reset(token)
+        record_client_session(
+            _ctx(_FakeSession(_client_params(name="x" * 200, version="1.2.3")))
+        )
 
         assert (
             metric_sample(
@@ -217,9 +217,13 @@ class TestRecordClientSession:
         The accessors use ``getattr(..., None)``, which swallows AttributeError
         by design — instrumentation must never fail a tool call. The consequence
         is that if mcp 2.x renames these fields in a way the dual-spelling block
-        does not cover, the metric keeps recording but every label reads
+        does not cover, the metric keeps recording but every client label reads
         "unknown". That is the signal to watch for after the upgrade; it is
         alerted on in docs/observability.md rather than logged.
+
+        ``protocol_version`` is exempt: mcp 2.x carries the negotiated version
+        on the request context, not on ``client_params``, so it survives a
+        params-shape change the client labels do not.
         """
 
         class _UnrecognisedParams:
@@ -228,15 +232,11 @@ class TestRecordClientSession:
         labels = {
             "client_name": "unknown",
             "client_version": "unknown",
-            "protocol_version": "unknown",
+            "protocol_version": "2025-06-18",
         }
         before = metric_sample(SESSIONS, labels)
 
-        token = _activate(_FakeSession(_UnrecognisedParams()))
-        try:
-            record_client_session()
-        finally:
-            request_ctx.reset(token)
+        record_client_session(_ctx(_FakeSession(_UnrecognisedParams())))
 
         assert metric_sample(SESSIONS, labels) - before == 1
 
@@ -286,33 +286,26 @@ class TestSilentFailureDiagnostics:
         with caplog.at_level(
             logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
         ):
-            record_client_session()
+            record_client_session(None)
 
         assert any("no request context" in r.message for r in caplog.records)
 
     def test_missing_client_params_says_so(self, caplog):
-        token = _activate(_FakeSession(None))
-        try:
-            with caplog.at_level(
-                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
-            ):
-                record_client_session()
-        finally:
-            request_ctx.reset(token)
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+        ):
+            record_client_session(_ctx(_FakeSession(None)))
 
         assert any("no client_params" in r.message for r in caplog.records)
 
     def test_warns_once_per_process_not_per_request(self, caplog):
         """These fire on the tool-call hot path — one line, not one per call."""
-        token = _activate(_FakeSession(None))
-        try:
-            with caplog.at_level(
-                logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
-            ):
-                for _ in range(25):
-                    record_client_session()
-        finally:
-            request_ctx.reset(token)
+        ctx = _ctx(_FakeSession(None))
+        with caplog.at_level(
+            logging.WARNING, logger="nextcloud_mcp_server.observability.metrics"
+        ):
+            for _ in range(25):
+                record_client_session(ctx)
 
         assert len([r for r in caplog.records if "no client_params" in r.message]) == 1
 
@@ -322,43 +315,50 @@ class TestCallToolOutcomes:
 
     @staticmethod
     def _wrap(inner, registered=("nc_notes_create_note",)):
-        """Wrap ``inner``, with ``registered`` standing in for the tool registry."""
+        """Drive the middleware with ``inner`` as the rest of the chain.
+
+        ``registered`` stands in for the tool registry. mcp 2.x has no
+        ``request_handlers`` dict to patch, so the instrumentation is a
+        middleware and the test calls it the way the dispatcher would.
+        """
         mcp = SimpleNamespace(
-            _mcp_server=SimpleNamespace(
-                request_handlers={types.CallToolRequest: inner}
-            ),
+            middleware=[],
             _tool_manager=SimpleNamespace(
                 get_tool=lambda name: object() if name in registered else None
             ),
         )
         instrument_call_tool_outcomes(mcp)
-        return mcp._mcp_server.request_handlers[types.CallToolRequest]
+        (middleware,) = mcp.middleware
+
+        async def call(ctx):
+            return await middleware(ctx, inner)
+
+        return call
 
     @staticmethod
-    def _request(name: str = "nc_notes_create_note") -> types.CallToolRequest:
-        return types.CallToolRequest(
-            method="tools/call",
-            params=types.CallToolRequestParams(name=name, arguments={}),
-        )
+    def _request(name: str = "nc_notes_create_note") -> ServerRequestContext:
+        ctx = _ctx(_FakeSession(_client_params()))
+        ctx.params = {"name": name, "arguments": {}}
+        return ctx
 
     async def test_success(self, metric_sample):
         labels = {"tool_name": "nc_notes_create_note", "outcome": "success"}
         before = metric_sample(OUTCOMES, labels)
 
-        async def inner(_req):
-            return types.ServerResult(types.CallToolResult(content=[], isError=False))
+        async def inner(_ctx_):
+            return types.CallToolResult(content=[], is_error=False)
 
         await self._wrap(inner)(self._request())
 
         assert metric_sample(OUTCOMES, labels) - before == 1
 
     async def test_tool_error(self, metric_sample):
-        """isError=True — the model sees the message and can react."""
+        """is_error=True — the model sees the message and can react."""
         labels = {"tool_name": "nc_notes_create_note", "outcome": "tool_error"}
         before = metric_sample(OUTCOMES, labels)
 
-        async def inner(_req):
-            return types.ServerResult(types.CallToolResult(content=[], isError=True))
+        async def inner(_ctx_):
+            return types.CallToolResult(content=[], is_error=True)
 
         await self._wrap(inner)(self._request())
 
@@ -367,20 +367,21 @@ class TestCallToolOutcomes:
     async def test_protocol_error_and_exception_propagates(self, metric_sample):
         """An escaping exception becomes a JSON-RPC error; the model sees nothing.
 
-        This is 0 on mcp 1.x by construction — the SDK converts every exception
-        except UrlElicitationRequiredError into isError=True — so any non-zero
-        reading after the 2.x upgrade is the MCPError semantics flip.
+        On mcp 2.x an MCPError raised in a tool would reach the client as a
+        JSON-RPC error, but NextcloudMCPServer.call_tool maps it back to
+        ToolError, so in production this counter should stay at zero. A
+        non-zero reading means something raised past that boundary.
         """
         labels = {"tool_name": "nc_notes_create_note", "outcome": "protocol_error"}
         before = metric_sample(OUTCOMES, labels)
 
-        async def inner(_req):
-            raise McpError(types.ErrorData(code=types.INTERNAL_ERROR, message="boom"))
+        async def inner(_ctx_):
+            raise MCPError(code=types.INTERNAL_ERROR, message="boom")
 
         handler = self._wrap(inner)
         request = self._request()
 
-        with pytest.raises(McpError):
+        with pytest.raises(MCPError):
             await handler(request)
 
         assert metric_sample(OUTCOMES, labels) - before == 1
@@ -390,7 +391,7 @@ class TestCallToolOutcomes:
         labels = {"tool_name": "nc_notes_create_note", "outcome": "protocol_error"}
         before = metric_sample(OUTCOMES, labels)
 
-        async def inner(_req):
+        async def inner(_ctx_):
             raise KeyboardInterrupt
 
         handler = self._wrap(inner)
@@ -403,13 +404,9 @@ class TestCallToolOutcomes:
 
 
 @pytest.fixture
-def metric_session():
-    """Activate a request context with an initialized client session."""
-    token = _activate(_FakeSession(_client_params()))
-    try:
-        yield
-    finally:
-        request_ctx.reset(token)
+def metric_session() -> ServerRequestContext:
+    """A request context carrying an initialized client session."""
+    return _ctx(_FakeSession(_client_params()))
 
 
 class TestLabelCardinality:
@@ -432,16 +429,11 @@ class TestLabelCardinality:
         unknown_labels = {"tool_name": "unknown", "outcome": "tool_error"}
         before_unknown = metric_sample(OUTCOMES, unknown_labels)
 
-        async def inner(_req):
-            return types.ServerResult(types.CallToolResult(content=[], isError=True))
+        async def inner(_ctx_):
+            return types.CallToolResult(content=[], is_error=True)
 
         handler = TestCallToolOutcomes._wrap(inner)
-        await handler(
-            types.CallToolRequest(
-                method="tools/call",
-                params=types.CallToolRequestParams(name=bogus, arguments={}),
-            )
-        )
+        await handler(TestCallToolOutcomes._request(bogus))
 
         assert metric_sample(OUTCOMES, bogus_labels) == 0
         assert metric_sample(OUTCOMES, unknown_labels) - before_unknown == 1
@@ -461,13 +453,11 @@ class TestLabelCardinality:
 
         # Well past the cap, each session declaring a fresh identity.
         for i in range(_MAX_TRACKED_CLIENTS + 20):
-            token = _activate(
-                _FakeSession(_client_params(name=f"rotating-{i}", version="1.0.0"))
+            record_client_session(
+                _ctx(
+                    _FakeSession(_client_params(name=f"rotating-{i}", version="1.0.0"))
+                )
             )
-            try:
-                record_client_session()
-            finally:
-                request_ctx.reset(token)
 
         assert metric_sample(SESSIONS, overflow_labels) - before >= 20
 

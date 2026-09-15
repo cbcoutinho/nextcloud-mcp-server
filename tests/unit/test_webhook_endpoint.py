@@ -1,7 +1,7 @@
 """Unit tests for the ``/webhooks/nextcloud`` HTTP receiver.
 
 Builds a minimal Starlette app around ``handle_nextcloud_webhook`` so we can
-drive it with ``TestClient`` without standing up the full FastMCP server.
+drive it with ``TestClient`` without standing up the full MCPServer server.
 """
 
 import anyio

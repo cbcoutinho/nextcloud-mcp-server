@@ -1,6 +1,6 @@
 """Server-layer tests for the Mail write tools (GH #1148 and friends).
 
-These register the Mail tools on a fresh ``FastMCP`` and invoke each tool's
+These register the Mail tools on a fresh ``MCPServer`` and invoke each tool's
 underlying function directly, mirroring ``test_webdav_tools_exclusion.py``.
 The point is the wiring the client-layer tests can't see: which flags a tool
 forwards, that a tag name is resolved to the server's own ``imapLabel`` before
@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.models.mail import MailActionResponse, MailTagResponse
@@ -40,8 +40,8 @@ def basicauth_mode():
 
 @pytest.fixture
 def mail_tools() -> dict:
-    """Register the Mail tools on a fresh FastMCP and return them by name."""
-    mcp = FastMCP(name="test-mail-tools")
+    """Register the Mail tools on a fresh MCPServer and return them by name."""
+    mcp = MCPServer(name="test-mail-tools")
     configure_mail_tools(mcp)
     return {t.name: t for t in mcp._tool_manager.list_tools()}
 
@@ -100,7 +100,7 @@ async def test_set_flags_without_any_flag_is_an_error(mail_tools, fake_mail):
     # (python:S5778).
     set_flags = mail_tools["nc_mail_set_flags"].fn
     ctx = _ctx()
-    with pytest.raises(McpError):
+    with pytest.raises(MCPError):
         await set_flags(42, ctx)
 
     fake_mail.set_flags.assert_not_awaited()
@@ -199,7 +199,7 @@ def test_every_tool_scope_is_grantable():
     That exclusion was the hole this test had: ``semantic.read`` shipped
     ungrantable and undetected (GH #1277).
     """
-    mcp = FastMCP(name="test-all-tools")
+    mcp = MCPServer(name="test-all-tools")
     for configure in (*AVAILABLE_APPS.values(), configure_semantic_tools):
         configure(mcp)
 

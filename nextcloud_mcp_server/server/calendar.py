@@ -2,19 +2,21 @@ import datetime as dt
 import logging
 from typing import Any, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
+    AvailabilitySlot,
     Calendar,
     CalendarEventSummary,
     CompleteTodoResponse,
     DeleteEventResponse,
     DeleteTodoResponse,
+    FindAvailabilityResponse,
     ListCalendarsResponse,
     ListEventsResponse,
     ListTodosResponse,
@@ -103,17 +105,18 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
         description=event.get("description") or None,
         categories=categories,
         status=event.get("status"),
+        transp=event.get("transp"),
         calendar_name=event.get("calendar_name"),
         calendar_display_name=event.get("calendar_display_name")
         or event.get("calendar_name"),
     )
 
 
-def configure_calendar_tools(mcp: FastMCP):
+def configure_calendar_tools(mcp: MCPServer):
     # Calendar tools
     @mcp.tool(
         title="List Calendars",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -127,7 +130,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Calendar Event",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -245,7 +248,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="List Calendar Events",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -288,7 +291,7 @@ def configure_calendar_tools(mcp: FastMCP):
         # to invent a throwaway value. It stays required otherwise — falling back
         # to a default calendar would silently search the wrong one.
         if not search_all_calendars and not calendar_name.strip():
-            raise ValueError(
+            raise ToolError(
                 "calendar_name is required when search_all_calendars is False"
             )
 
@@ -375,7 +378,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Calendar Event",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -391,7 +394,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Calendar Event",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -495,7 +498,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Calendar Event",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("calendar.write")
@@ -524,7 +527,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Meeting",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -594,7 +597,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Get Upcoming Events",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -657,7 +660,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Find Availability",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("calendar.read")
     @instrument_tool
@@ -670,41 +673,51 @@ def configure_calendar_tools(mcp: FastMCP):
         business_hours_only: bool = True,
         exclude_weekends: bool = True,
         preferred_times: str = "",  # Comma-separated time ranges like "09:00-12:00,14:00-17:00"
-    ):
+        include_all_day: bool = False,
+        timezone: str = "",  # IANA name, e.g. "Europe/Amsterdam"
+    ) -> FindAvailabilityResponse:
         """Find available time slots for scheduling meetings.
 
-        This tool intelligently analyzes existing calendar events to find free time slots
-        that work for all specified attendees within the given constraints.
+        Analyses the events in your calendars (and, for any attendees given,
+        their free/busy as reported by the server) and returns the gaps that
+        are long enough. Slots are *maximal* free windows: a free morning comes
+        back once as a single long slot, not as a grid of candidate start
+        times, so pick any sub-range of at least duration_minutes from one.
+
+        Not everything on a calendar consumes time. Events marked free
+        (TRANSP:TRANSPARENT), cancelled events, and calendars set to "never
+        show me as busy" are ignored. All-day events are ignored too unless
+        include_all_day is set, because birthdays, name days and subscribed
+        holiday feeds would otherwise blank out whole working days.
 
         Args:
             duration_minutes: Required duration for the meeting in minutes
-            attendees: Comma-separated list of attendee email addresses to check availability for
-            date_range_start: Start date for availability search (YYYY-MM-DD)
-            date_range_end: End date for availability search (YYYY-MM-DD)
-            business_hours_only: Only suggest slots during business hours (9 AM - 5 PM)
-            exclude_weekends: Skip weekends when finding availability
-            preferred_times: Preferred time ranges as "HH:MM-HH:MM" (comma-separated)
+            attendees: Comma-separated attendee email addresses whose free/busy
+                should also be checked (RFC 6638, which requires a server that
+                answers scheduling requests for them)
+            date_range_start: Start date for availability search (YYYY-MM-DD),
+                defaulting to now. Never searches into the past.
+            date_range_end: End date for availability search (YYYY-MM-DD),
+                defaulting to a week after the start
+            business_hours_only: Only suggest slots between 09:00 and 17:00
+            exclude_weekends: Skip Saturdays and Sundays
+            preferred_times: Preferred time ranges as "HH:MM-HH:MM"
+                (comma-separated). When given, these replace business hours
+                rather than narrowing them. Overlapping ranges are merged, and
+                a malformed one is skipped rather than failing the query.
+            include_all_day: Treat all-day events as busy
+            timezone: IANA timezone the business hours and preferred times are
+                expressed in, e.g. "Europe/Amsterdam". Defaults to the server's
+                local zone. An unknown name is an error, not a fallback.
 
         Returns:
-            List of available time slots with start/end times and duration
+            The available slots, plus the window that was actually searched
         """
         client = await get_client(ctx)
 
-        # Parse attendees
-        attendee_list = []
-        if attendees:
-            attendee_list = [
-                email.strip() for email in attendees.split(",") if email.strip()
-            ]
-
-        # Parse preferred times
-        preferred_time_list = []
-        if preferred_times:
-            preferred_time_list = [
-                time_range.strip()
-                for time_range in preferred_times.split(",")
-                if time_range.strip()
-            ]
+        attendee_list = [
+            email.strip() for email in attendees.split(",") if email.strip()
+        ]
 
         # Convert date strings to datetime objects
         start_datetime = None
@@ -713,35 +726,55 @@ def configure_calendar_tools(mcp: FastMCP):
         if date_range_start:
             try:
                 start_datetime = dt.datetime.strptime(date_range_start, "%Y-%m-%d")
-            except ValueError:
-                logger.warning("Invalid date_range_start format: %s", date_range_start)
+            except ValueError as e:
+                raise ToolError(
+                    f"Invalid date_range_start {date_range_start!r}; expected YYYY-MM-DD"
+                ) from e
 
         if date_range_end:
             try:
                 end_datetime = dt.datetime.strptime(date_range_end, "%Y-%m-%d").replace(
                     hour=23, minute=59, second=59
                 )
-            except ValueError:
-                logger.warning("Invalid date_range_end format: %s", date_range_end)
+            except ValueError as e:
+                raise ToolError(
+                    f"Invalid date_range_end {date_range_end!r}; expected YYYY-MM-DD"
+                ) from e
 
-        # Build constraints
         constraints = {
             "business_hours_only": business_hours_only,
             "exclude_weekends": exclude_weekends,
-            "preferred_times": preferred_time_list,
+            "preferred_times": preferred_times,
+            "include_all_day": include_all_day,
+            "timezone": timezone,
         }
 
-        return await client.calendar.find_availability(
-            duration_minutes=duration_minutes,
-            attendees=attendee_list,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            constraints=constraints,
+        try:
+            result = await client.calendar.find_availability(
+                duration_minutes=duration_minutes,
+                attendees=attendee_list,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                constraints=constraints,
+            )
+        except ValueError as e:
+            # Bad range, or an attendee the server would not report on. Either
+            # way the caller must see it: an empty slot list would read as
+            # "fully booked" (issue #1394).
+            raise ToolError(str(e)) from e
+
+        return FindAvailabilityResponse(
+            available_slots=[AvailabilitySlot(**slot) for slot in result["slots"]],
+            duration_requested=duration_minutes,
+            date_range_start=result["range_start"],
+            date_range_end=result["range_end"],
+            attendees_checked=result["attendees_checked"],
+            business_hours_only=business_hours_only,
         )
 
     @mcp.tool(
         title="Bulk Calendar Operations",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -797,7 +830,7 @@ def configure_calendar_tools(mcp: FastMCP):
         client = await get_client(ctx)
 
         if operation not in ["update", "delete", "move"]:
-            raise ValueError("Operation must be 'update', 'delete', or 'move'")
+            raise ToolError("Operation must be 'update', 'delete', or 'move'")
 
         # Convert date strings to datetime objects
         start_datetime = None
@@ -921,7 +954,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 update_data["reminder_minutes"] = new_reminder_minutes
 
             if not update_data:
-                raise ValueError("No update data provided for update operation")
+                raise ToolError("No update data provided for update operation")
 
             return await client.calendar.bulk_update_events(
                 filter_criteria, update_data
@@ -929,7 +962,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif operation == "move":
             if not target_calendar:
-                raise ValueError("target_calendar is required for move operation")
+                raise ToolError("target_calendar is required for move operation")
 
             # Find matching events
             if calendar_name:
@@ -1029,7 +1062,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Manage Calendar",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("calendar.write")
     @instrument_tool
@@ -1063,7 +1096,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif action == "create":
             if not calendar_name:
-                raise ValueError("calendar_name is required for create action")
+                raise ToolError("calendar_name is required for create action")
 
             return await client.calendar.create_calendar(
                 calendar_name=calendar_name,
@@ -1074,13 +1107,13 @@ def configure_calendar_tools(mcp: FastMCP):
 
         elif action == "delete":
             if not calendar_name:
-                raise ValueError("calendar_name is required for delete action")
+                raise ToolError("calendar_name is required for delete action")
 
             return await client.calendar.delete_calendar(calendar_name)
 
         elif action == "update":
             if not calendar_name:
-                raise ValueError("calendar_name is required for update action")
+                raise ToolError("calendar_name is required for update action")
 
             # Note: Calendar property updates require additional CalDAV PROPPATCH implementation
             # For now, return an informative message
@@ -1096,13 +1129,13 @@ def configure_calendar_tools(mcp: FastMCP):
             }
 
         else:
-            raise ValueError("Action must be 'create', 'delete', 'update', or 'list'")
+            raise ToolError("Action must be 'create', 'delete', 'update', or 'list'")
 
     # ============= Todo/Task Tools =============
 
     @mcp.tool(
         title="List Todo Tasks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("todo.read", "calendar.read")
     @instrument_tool
@@ -1151,7 +1184,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Create Todo Task",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
@@ -1206,7 +1239,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Todo Task",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
     )
     @require_scopes("todo.write", "calendar.read")
     @instrument_tool
@@ -1319,8 +1352,8 @@ def configure_calendar_tools(mcp: FastMCP):
         annotations=ToolAnnotations(
             # Not idempotent: a second call with completed=None restamps COMPLETED
             # with a fresh timestamp, so the same inputs produce a different card.
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("todo.write", "calendar.read")
@@ -1379,7 +1412,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Todo Task",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
         ),
     )
     @require_scopes("todo.write", "calendar.read")
@@ -1416,7 +1449,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Search Todo Tasks",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     @require_scopes("todo.read", "calendar.read")
     @instrument_tool

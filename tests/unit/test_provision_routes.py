@@ -256,11 +256,21 @@ def _create_poll_session(provision_id: str) -> dict:
         "poll_endpoint": "https://cloud.example.com/login/v2/poll",
         "poll_token": "secret-token",
         "user_id": "alice",
+        "caller_identities": {"alice"},
         "created_at": time.time(),
         "expires_at": time.time() + 1200,
     }
     _provision_sessions[provision_id] = session
     return session
+
+
+def _granting_account(uid: str | None):
+    """Patch the OCS lookup that resolves who completed the Login Flow."""
+    return patch(
+        "nextcloud_mcp_server.auth.grant_ownership._ocs_whoami",
+        new_callable=AsyncMock,
+        return_value=uid,
+    )
 
 
 async def test_poll_and_store_completed():
@@ -301,6 +311,7 @@ async def test_poll_and_store_completed():
             new_callable=AsyncMock,
             return_value=mock_storage,
         ),
+        _granting_account("alice"),
     ):
         await _poll_and_store(provision_id)
 
@@ -407,3 +418,109 @@ async def test_poll_and_store_session_cleaned_up():
         await _poll_and_store(provision_id)
 
     assert provision_id not in _provision_sessions
+
+
+# ── GHSA-84qv-22q6-x82r: cross-user credential theft ─────────────────────
+
+
+async def test_poll_and_store_refuses_grant_from_another_account():
+    """A grant completed by someone other than the caller is never stored.
+
+    The Login Flow URL is transferable, so an authenticated caller can start a
+    flow and send the link to a victim. Before the fix, the victim's app
+    password was stored under the caller's user_id.
+    """
+    provision_id = "test-poll-cross-user"
+    session = _create_poll_session(provision_id)
+    session["user_id"] = "bob"
+    session["caller_identities"] = {"bob"}
+
+    mock_flow_client = AsyncMock()
+    mock_flow_client.poll.return_value = LoginFlowPollResult(
+        status="completed",
+        server="https://cloud.example.com",
+        login_name="admin",  # the victim granted, not bob
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+    )
+
+    mock_storage = AsyncMock()
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+    mock_revoke = AsyncMock()
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_settings",
+            return_value=mock_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_nextcloud_ssl_verify",
+            return_value=False,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.LoginFlowV2Client",
+            return_value=mock_flow_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+            new_callable=AsyncMock,
+            return_value=mock_storage,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.revoke_app_password",
+            mock_revoke,
+        ),
+        _granting_account("admin"),
+    ):
+        await _poll_and_store(provision_id)
+
+    mock_storage.store_app_password_with_scopes.assert_not_called()
+    assert _provision_sessions[provision_id]["status"] == "error"
+    mock_revoke.assert_awaited_once_with("admin", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+
+
+async def test_poll_and_store_refuses_grant_it_cannot_verify():
+    """An app password that does not authenticate anywhere is not stored."""
+    provision_id = "test-poll-unverifiable"
+    _create_poll_session(provision_id)
+
+    mock_flow_client = AsyncMock()
+    mock_flow_client.poll.return_value = LoginFlowPollResult(
+        status="completed",
+        server="https://cloud.example.com",
+        login_name="alice",
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+    )
+
+    mock_storage = AsyncMock()
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_settings",
+            return_value=mock_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_nextcloud_ssl_verify",
+            return_value=False,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.LoginFlowV2Client",
+            return_value=mock_flow_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+            new_callable=AsyncMock,
+            return_value=mock_storage,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.revoke_app_password",
+            AsyncMock(),
+        ),
+        _granting_account(None),
+    ):
+        await _poll_and_store(provision_id)
+
+    mock_storage.store_app_password_with_scopes.assert_not_called()
+    assert _provision_sessions[provision_id]["status"] == "error"

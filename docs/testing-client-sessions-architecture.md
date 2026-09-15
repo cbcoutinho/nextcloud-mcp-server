@@ -31,7 +31,7 @@ async def create_mcp_client_session(
     """Uses native async context managers for clean LIFO cleanup."""
     headers = {"Authorization": f"Bearer {token}"} if token else None
 
-    async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
+    async with streamable_http_client(url, headers=headers) as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             yield session
@@ -88,7 +88,7 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 
     async def create_and_hold_session():
         """Runs in isolated task - creates session and keeps it alive."""
-        async with streamablehttp_client("http://localhost:8000/mcp") as (read_stream, write_stream, _):
+        async with streamable_http_client("http://localhost:8000/mcp") as (read_stream, write_stream, _):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 session_holder["session"] = session
@@ -141,7 +141,7 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 @pytest.fixture(scope="function")  # Changed from session
 async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
     """Function-scoped fixture with natural LIFO cleanup."""
-    async with streamablehttp_client("http://localhost:8000/mcp") as (read_stream, write_stream, _):
+    async with streamable_http_client("http://localhost:8000/mcp") as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             yield session
@@ -150,11 +150,11 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 @pytest.fixture(scope="function")
 async def multi_mcp_clients() -> AsyncGenerator[tuple[ClientSession, ClientSession], Any]:
     """Multiple clients with guaranteed LIFO cleanup through nesting."""
-    async with streamablehttp_client("http://localhost:8000/mcp") as (read1, write1, _):
+    async with streamable_http_client("http://localhost:8000/mcp") as (read1, write1, _):
         async with ClientSession(read1, write1) as session1:
             await session1.initialize()
 
-            async with streamablehttp_client("http://localhost:8001/mcp") as (read2, write2, _):
+            async with streamable_http_client("http://localhost:8001/mcp") as (read2, write2, _):
                 async with ClientSession(read2, write2) as session2:
                     await session2.initialize()
                     yield session1, session2
@@ -195,7 +195,7 @@ async def multi_mcp_clients() -> AsyncGenerator[tuple[ClientSession, ClientSessi
 # Fixtures work naturally with trio
 @pytest.fixture(scope="session")
 async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
-    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+    async with streamable_http_client("http://localhost:8000/mcp") as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             yield session

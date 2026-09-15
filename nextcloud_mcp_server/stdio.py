@@ -1,6 +1,6 @@
 """Lightweight stdio transport for the Nextcloud MCP server.
 
-Provides a minimal FastMCP instance suitable for ``mcp.run(transport="stdio")``.
+Provides a minimal MCPServer instance suitable for ``mcp.run(transport="stdio")``.
 Only single-user BasicAuth mode is supported.  Background sync, semantic search,
 OAuth, and the observability *plumbing* — the Prometheus HTTP endpoint and the
 OTel tracing setup — are deliberately excluded; the per-tool-call logging and
@@ -14,15 +14,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
-from nextcloud_mcp_server.errors import NextcloudFastMCP
+from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.observability.metrics import instrument_call_tool_outcomes
+from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class StdioContext(BasicAuthLifespanContext):
 
 
 @asynccontextmanager
-async def stdio_lifespan(server: FastMCP) -> AsyncIterator[StdioContext]:
+async def stdio_lifespan(server: MCPServer) -> AsyncIterator[StdioContext]:
     """Create and tear down a single :class:`NextcloudClient`."""
     logger.info("Starting MCP server in stdio mode (single-user BasicAuth)")
     client = NextcloudClient.from_env()
@@ -52,8 +53,8 @@ async def stdio_lifespan(server: FastMCP) -> AsyncIterator[StdioContext]:
         logger.info("stdio session shut down")
 
 
-def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
-    """Return a :class:`FastMCP` instance configured for stdio transport.
+def get_stdio_mcp(enabled_apps: list[str] | None = None) -> MCPServer:
+    """Return a :class:`MCPServer` instance configured for stdio transport.
 
     Parameters
     ----------
@@ -81,16 +82,17 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
             f"and NEXTCLOUD_PASSWORD."
         )
 
-    mcp = NextcloudFastMCP("Nextcloud MCP", lifespan=stdio_lifespan)
+    mcp = NextcloudMCPServer("Nextcloud MCP", lifespan=stdio_lifespan)
 
     # --- capabilities resource (mirrors app.py) ---
-    # NOTE: mcp.get_context() is required here because FastMCP's
-    # FunctionResource (non-template resources) does not support
-    # context parameter injection — only template resources do.
+    # NOTE: current_context() is required here because MCPServer's
+    # FunctionResource (non-template resources) does not support context
+    # parameter injection — only template resources do — and mcp 2.x removed
+    # get_context(). See nextcloud_mcp_server.request_context.
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""
-        ctx: Context = mcp.get_context()
+        ctx = current_context(mcp)
         client = await get_nextcloud_client(ctx)
         return await client.capabilities()
 

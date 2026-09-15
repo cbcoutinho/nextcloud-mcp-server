@@ -11,8 +11,8 @@ would defeat the point.
 from __future__ import annotations
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.client.sharing import validate_share_with
 from nextcloud_mcp_server.server.sharing import configure_sharing_tools
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def share_create_tool():
-    mcp = FastMCP("test")
+    mcp = MCPServer("test")
     configure_sharing_tools(mcp)
     return mcp._tool_manager.get_tool("nc_share_create")
 

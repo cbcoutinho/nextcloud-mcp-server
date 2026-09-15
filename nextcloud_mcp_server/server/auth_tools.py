@@ -9,17 +9,25 @@ tools during the migration period.
 
 import logging
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth.elicitation import present_login_url
+from nextcloud_mcp_server.auth.grant_ownership import (
+    caller_identities,
+    grant_belongs_to_caller,
+    revoke_app_password,
+)
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
 from nextcloud_mcp_server.auth.scope_authorization import (
     invalidate_scope_cache,
     require_scopes,
 )
 from nextcloud_mcp_server.auth.storage import get_shared_storage
-from nextcloud_mcp_server.auth.token_utils import extract_user_id_from_token
+from nextcloud_mcp_server.auth.token_utils import (
+    current_access_token,
+    extract_user_id_from_token,
+)
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 from nextcloud_mcp_server.models.auth import (
     ALL_SUPPORTED_SCOPES,
@@ -32,7 +40,7 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def register_auth_tools(mcp: FastMCP) -> None:
+def register_auth_tools(mcp: MCPServer) -> None:
     """Register Login Flow v2 auth tools with the MCP server."""
 
     @mcp.tool(
@@ -44,8 +52,8 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "You will be given a URL to open in your browser to log in."
         ),
         annotations=ToolAnnotations(
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")
@@ -218,9 +226,9 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "Recommended polling interval: 5 seconds."
         ),
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            idempotentHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")
@@ -243,18 +251,11 @@ def register_auth_tools(mcp: FastMCP) -> None:
 
         storage = await get_shared_storage()
 
-        # Check for existing app password
-        existing = await storage.get_app_password_with_scopes(user_id)
-        if existing:
-            return ProvisionStatusResponse(
-                status="provisioned",
-                message=f"Nextcloud access is provisioned for {existing.get('username') or user_id}.",
-                user_id=user_id,
-                scopes=existing["scopes"],
-                username=existing.get("username"),
-            )
-
-        # Check for pending login flow session
+        # A pending login flow is polled *before* the stored app password is
+        # reported. nc_auth_update_scopes deliberately leaves the old password
+        # in place while the new flow runs, so short-circuiting on it would
+        # report the old scopes forever and never store the re-provisioned
+        # grant — the scope update could never complete (GH #1431).
         try:
             session = await storage.get_login_flow_session(user_id)
         except Exception as e:
@@ -266,6 +267,15 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 success=False,
             )
         if not session:
+            existing = await storage.get_app_password_with_scopes(user_id)
+            if existing:
+                return ProvisionStatusResponse(
+                    status="provisioned",
+                    message=f"Nextcloud access is provisioned for {existing.get('username') or user_id}.",
+                    user_id=user_id,
+                    scopes=existing["scopes"],
+                    username=existing.get("username"),
+                )
             return ProvisionStatusResponse(
                 status="not_initiated",
                 message=(
@@ -311,6 +321,33 @@ def register_auth_tools(mcp: FastMCP) -> None:
                     message="Login Flow completed but no app password was returned.",
                     success=False,
                 )
+
+            # The login URL handed out by nc_auth_provision_access is
+            # transferable: whoever opens it and clicks "Grant access" produces
+            # this password, not necessarily the caller polling here. Storing it
+            # unchecked hands that caller the granter's Nextcloud credential
+            # (GHSA-84qv-22q6-x82r).
+            identities = await caller_identities(user_id, current_access_token())
+            if not await grant_belongs_to_caller(
+                identities, poll_result.login_name, poll_result.app_password
+            ):
+                if poll_result.login_name:
+                    await revoke_app_password(
+                        poll_result.login_name, poll_result.app_password
+                    )
+                await storage.delete_login_flow_session(user_id)
+                return ProvisionStatusResponse(
+                    status="error",
+                    message=(
+                        "The Nextcloud account that granted access is not the "
+                        "account you are signed in as. Nothing was stored — "
+                        "call nc_auth_provision_access again and complete the "
+                        "login as yourself."
+                    ),
+                    user_id=user_id,
+                    success=False,
+                )
+
             await storage.store_app_password_with_scopes(
                 user_id=user_id,
                 app_password=poll_result.app_password,
@@ -341,6 +378,21 @@ def register_auth_tools(mcp: FastMCP) -> None:
         if poll_result.status == "expired":
             # Clean up expired session
             await storage.delete_login_flow_session(user_id)
+            # An expired *scope update* leaves the previous grant intact — say
+            # so, rather than telling a provisioned user they have no access.
+            existing = await storage.get_app_password_with_scopes(user_id)
+            if existing:
+                return ProvisionStatusResponse(
+                    status="provisioned",
+                    message=(
+                        "Login flow expired; your previous access as "
+                        f"{existing.get('username') or user_id} is still valid. "
+                        "Call nc_auth_update_scopes again to retry the change."
+                    ),
+                    user_id=user_id,
+                    scopes=existing["scopes"],
+                    username=existing.get("username"),
+                )
             return ProvisionStatusResponse(
                 status="not_initiated",
                 message=(
@@ -369,8 +421,8 @@ def register_auth_tools(mcp: FastMCP) -> None:
             "The current app password remains valid until the new one is obtained."
         ),
         annotations=ToolAnnotations(
-            idempotentHint=False,
-            openWorldHint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     )
     @require_scopes("openid")

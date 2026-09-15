@@ -106,7 +106,7 @@ def test_parse_modified_timestamp_accepts(value, expected):
     ],
 )
 def test_parse_modified_timestamp_rejects(value, reason):
-    """Bad formats / negatives / bools raise ValueError (→ McpError or HTTP 400)."""
+    """Bad formats / negatives / bools raise ValueError (→ MCPError or HTTP 400)."""
     with pytest.raises(ValueError):
         parse_modified_timestamp(value)
 

@@ -5,6 +5,191 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.188.0 (2026-09-15)
+
+### Feat
+
+- **webdav**: expose file tags
+
+### Fix
+
+- **webdav**: apply @with_links to nc_webdav_find_by_tag_name
+
+### Refactor
+
+- **webdav**: typed responses and exclusion guards for the tag tools
+
+## v0.187.1 (2026-09-12)
+
+### Fix
+
+- **ingest**: count an empty download on the truncation panel
+- **ingest**: refuse empty document payloads instead of dead-lettering them
+
+### Refactor
+
+- **ocr**: name the no-filename log placeholder
+
+## v0.187.0 (2026-09-12)
+
+### Feat
+
+- **calendar**: implement nc_calendar_find_availability
+
+### Fix
+
+- **calendar**: reject an unknown availability timezone
+- **calendar**: refuse availability when a calendar cannot be read
+
+## v0.186.0 (2026-09-11)
+
+### Feat
+
+- **shopping_list**: add Nextcloud Shopping List app support
+
+### Fix
+
+- **shopping_list**: correct the duplicate-name claim in add_items
+- **tests**: classify tool annotations by the verb, not the app name
+
+### Refactor
+
+- **shopping_list**: give add_items a typed item schema
+
+## v0.185.5 (2026-09-11)
+
+### Fix
+
+- **calendar**: encode DAV URLs by one rule, not two
+- **calendar**: percent-encode DAV URLs built from decoded path segments
+
+### Refactor
+
+- **client**: move the DAV encoders into a shared module
+
+## v0.185.4 (2026-09-11)
+
+### Fix
+
+- **processors**: batch OCR is worker-only — stop the inline escalation loop
+
+## v0.185.3 (2026-09-09)
+
+### Fix
+
+- **deck**: send the attachment type on every id-addressed route
+- **deck**: link card attachments and stop hiding Files-share ones
+
+## v0.185.2 (2026-09-09)
+
+### Fix
+
+- **auth**: resolve the Login Flow caller's UID from Nextcloud, not IdP claims
+
+## v0.185.1 (2026-09-08)
+
+### Fix
+
+- **auth**: verify the Login Flow granter is the caller (GHSA-84qv-22q6-x82r)
+
+## v0.185.0 (2026-09-05)
+
+### BREAKING CHANGE
+
+- requires mcp>=2.1,<3 (protocol 2026-07-28). Server-initiated
+elicitation no longer reaches 2026-era clients — progressive consent degrades to
+message_only, with the login URL carried in the returned message. Deployments
+pinning mcp<2 must stay on the previous release.
+
+### Feat
+
+- **mcp**: migrate to python-sdk v2 (protocol 2026-07-28)
+
+### Fix
+
+- **errors**: restore the tool-failure message mcp 2.x withholds
+- **sharing**: a bare RuntimeError loses its message under mcp 2.x
+
+### Refactor
+
+- **semantic**: restore a dropped TODO and tighten the extracted signatures
+- **semantic**: type the two parameters the extraction left bare
+- **server**: decompose semantic.py and cookbook.py
+- **server**: lift deck tool registration to module level
+- **server**: lift notes + mail tool registration to module level
+
+## v0.184.5 (2026-09-04)
+
+### Fix
+
+- **auth**: poll pending login flow before reporting stored scopes
+
+## v0.184.4 (2026-09-04)
+
+### Perf
+
+- **calendar**: query calendars concurrently in cross-calendar search
+
+## v0.184.3 (2026-09-03)
+
+### Fix
+
+- **ocr**: compare batch-job provider prefixes case-insensitively
+- **ocr**: re-submit a batch job whose provider no longer matches the model
+- **ocr**: keep token-provider failures out of the batch-poll PENDING remap
+- **ocr**: treat a 429 on a batch poll as pending, honouring Retry-After
+- **ocr**: a batch poll with no answer is pending, not a dropped document
+
+### Refactor
+
+- **ocr**: extract the tracked-job lookup out of _process_batch
+
+## v0.184.2 (2026-09-01)
+
+### Perf
+
+- **sharing**: bundle both compaction settings in one helper
+- **sharing**: emit compact separators from the raw-JSON share tools
+- **server**: serialise tool results without indentation
+
+## v0.184.1 (2026-08-30)
+
+### Fix
+
+- **webdav**: normalise etags mangled by a compressing proxy
+
+### Refactor
+
+- **webdav**: fold suffix handling into the existing etag normalizer
+
+## v0.184.0 (2026-08-30)
+
+### Feat
+
+- **calendar**: surface free/busy transparency for calendars and events
+
+## v0.183.1 (2026-08-28)
+
+### Fix
+
+- **deps**: update dependency icalendar to >=7.3.0,<7.4.0
+
+## v0.183.0 (2026-08-28)
+
+### Feat
+
+- **vector**: meter the stale-chunk prune delete (#1399 review r2)
+
+### Fix
+
+- **vector**: resolve placeholder-vs-index by rule, not by scroll order
+- **vector**: never fail a successful index on a prune error (#1399 review)
+- **vector**: prune stale chunk points so re-indexing converges
+
+### Perf
+
+- **vector**: run the placeholder/index lookups concurrently (#1399 review r4)
+
 ## v0.182.0 (2026-08-26)
 
 ### Feat

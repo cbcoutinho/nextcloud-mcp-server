@@ -84,7 +84,7 @@ async def wait_for_vector_sync(
 
     while waited < timeout_seconds:
         sync_status = await mcp_client.call_tool("nc_get_vector_sync_status", {})
-        if sync_status.isError:
+        if sync_status.is_error:
             logger.warning("Vector sync status error: %s", sync_status)
             return False, None
 
@@ -193,7 +193,7 @@ async def test_astrolabe_plotly_visualization_with_basic_auth(
                 "nc_get_vector_sync_status", {}
             )
 
-            if initial_sync.isError:
+            if initial_sync.is_error:
                 pytest.skip("Vector sync not enabled on mcp-multi-user-basic")
 
             initial_data = json.loads(initial_sync.content[0].text)
@@ -222,7 +222,7 @@ The visualization should show this document as a point in PCA-reduced space.
                 },
             )
 
-            if note_response.isError:
+            if note_response.is_error:
                 pytest.fail(f"Failed to create test note: {note_response}")
 
             note_data = json.loads(note_response.content[0].text)
@@ -396,7 +396,7 @@ The visualization should show this document as a point in PCA-reduced space.
                     delete_response = await alice_mcp_client.call_tool(
                         "nc_notes_delete_note", {"note_id": note_id}
                     )
-                    if not delete_response.isError:
+                    if not delete_response.is_error:
                         logger.info("✓ Cleaned up test note %s", note_id)
                         note_id = None  # Mark as cleaned
                     else:
@@ -418,7 +418,7 @@ The visualization should show this document as a point in PCA-reduced space.
                     delete_response = await cleanup_client.call_tool(
                         "nc_notes_delete_note", {"note_id": note_id}
                     )
-                    if not delete_response.isError:
+                    if not delete_response.is_error:
                         logger.info("✓ Cleaned up test note %s (finally)", note_id)
                     else:
                         logger.warning(

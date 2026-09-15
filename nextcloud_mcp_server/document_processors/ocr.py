@@ -38,15 +38,25 @@ import httpx
 
 from nextcloud_mcp_server.config import Settings, get_settings
 
-from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .base import (
+    EMPTY_DOCUMENT_REASON,
+    DocumentProcessor,
+    ProcessingResult,
+    ProcessorError,
+)
 
 if TYPE_CHECKING:
-    # Annotation-only import (the runtime import is lazy, inside
-    # build_gateway_batch_client, to avoid a document_processors -> providers
-    # cycle at load).
+    # Annotation-only imports (the runtime imports are lazy — inside
+    # build_gateway_batch_client, and inside the batch methods — to avoid a
+    # document_processors -> providers cycle and to keep the vector/DB stack off
+    # this module's load path).
     from ..providers.gateway_batch import GatewayBatchOcrClient
+    from ..vector.batch_ocr_store import BatchOcrJob, BatchOcrJobStore
 
 logger = logging.getLogger(__name__)
+
+#: Log stand-in for a document handed over as bare bytes, with no filename.
+_UNNAMED = "<bytes>"
 
 # Connect timeout for the OCR backend request. The overall (read) timeout is
 # configurable via DOCUMENT_OCR_TIMEOUT_SECONDS and resolved per call.
@@ -469,6 +479,31 @@ def _reset_poll_batch_client() -> None:
     _poll_batch_client_lock = None
 
 
+def _job_is_stale_for_model(job_id: str, model: str) -> bool:
+    """Whether a tracked batch job was submitted under a provider we no longer use.
+
+    ``batch_ocr_jobs`` is keyed on ``(user_id, doc_id, doc_type, etag)`` — the
+    document's *content* version. Nothing in that key covers the *configuration*
+    version, so re-pointing ``DOCUMENT_OCR_MODEL`` at another provider leaves
+    every in-flight row intact, and the next poll of unchanged content (same
+    etag) replays the OLD provider's job id forever. Deck #1192: a tenant moved
+    from ``mistral/*`` to ``surya/surya-ocr-2`` and its re-index kept polling
+    ``/v1/ocr/batch/mistral/<job>`` — an OCR leg that config said it had left.
+
+    Both ids are namespaced ``<provider>/<rest>`` (the submit pact pins the job id
+    to ``[^/]+/.+``), so the provider segment is the comparison, case-insensitively
+    (``Mistral`` and ``mistral`` are one provider, not a config change). Fails OPEN
+    — an id carrying no usable provider segment (absent, or empty as in ``/rest``)
+    is not attributable to a provider, and a false "stale" re-submits, and re-pays
+    for, OCR on every single poll.
+    """
+    job_provider = job_id.split("/", 1)[0].lower() if "/" in job_id else ""
+    model_provider = model.split("/", 1)[0].lower() if "/" in model else ""
+    if not job_provider or not model_provider:
+        return False
+    return job_provider != model_provider
+
+
 async def poll_pending_batch_ocr(
     *, user_id: str, doc_id: str, etag: str, settings: Settings
 ) -> int | None:
@@ -494,6 +529,11 @@ async def poll_pending_batch_ocr(
     store = await BatchOcrJobStore.shared()
     job = await store.get(user_id=user_id, doc_id=doc_id, doc_type="file", etag=etag)
     if job is None:
+        return None
+    if _job_is_stale_for_model(job.job_id, settings.document_ocr_model):
+        # Submitted under a provider this instance no longer uses. Don't poll it:
+        # fall through so the normal path drops the row and re-submits under the
+        # configured model (which needs the file bytes anyway).
         return None
     client = await _get_poll_batch_client(settings)
     if client is None:
@@ -662,6 +702,25 @@ class OcrProcessor(DocumentProcessor):
             Callable[[float, float | None, str | None], Awaitable[None]] | None
         ) = None,
     ) -> ProcessingResult:
+        # An empty payload base64-encodes to "" and the gateway rejects the
+        # submission with 422 "document decodes to empty bytes" -- a permanent
+        # validation failure that dead-letters the document under the generic
+        # "error" reason, invisibly (card #1230). Refuse it locally under its own
+        # name instead, before any gateway round-trip. The ingest path also
+        # guards the download itself (``vector.processor.empty_download_result``);
+        # this is the backstop for every other caller of a processor.
+        if not content:
+            logger.warning(
+                "OCR skipped for %s: document has no bytes", filename or _UNNAMED
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": EMPTY_DOCUMENT_REASON},
+                processor=self.name,
+                success=False,
+                error="document is empty",
+            )
+
         settings = get_settings()
 
         # Batch mode (Deck #332): submit to the gateway's async Batch OCR job and
@@ -694,7 +753,7 @@ class OcrProcessor(DocumentProcessor):
         if backend is None:
             logger.warning(
                 "OCR requested for %s but no backend is configured (provider=%s)",
-                filename or "<bytes>",
+                filename or _UNNAMED,
                 settings.document_ocr_provider,
             )
             return ProcessingResult(
@@ -717,7 +776,7 @@ class OcrProcessor(DocumentProcessor):
             # rather than being conflated with provider errors.
             timeout = settings.document_ocr_timeout_seconds
             logger.warning(
-                "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
+                "OCR timed out for %s after %.1fs", filename or _UNNAMED, timeout
             )
             return ProcessingResult(
                 text="",
@@ -727,7 +786,7 @@ class OcrProcessor(DocumentProcessor):
                 error=f"OCR timed out after {timeout:.1f}s",
             )
         except Exception as e:
-            logger.warning("OCR failed for %s: %s", filename or "<bytes>", e)
+            logger.warning("OCR failed for %s: %s", filename or _UNNAMED, e)
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "error"},
@@ -771,6 +830,42 @@ class OcrProcessor(DocumentProcessor):
                     )
                     self._batch_client_resolved = True
         return self._batch_client
+
+    async def _live_tracked_job(
+        self,
+        store: "BatchOcrJobStore",
+        *,
+        user_id: str,
+        doc_id: str,
+        doc_type: str,
+        etag: str,
+        settings: Settings,
+        label: str,
+    ) -> "BatchOcrJob | None":
+        """The in-flight batch job for this document+version, or ``None`` to submit.
+
+        ``None`` also covers a tracked job whose provider we no longer use (Deck
+        #1192): its row is dropped here so the caller's submit branch re-submits
+        under the configured model instead of polling the old OCR leg for as long
+        as the content is unchanged.
+        """
+        job = await store.get(
+            user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+        )
+        if job is None:
+            return None
+        model = getattr(settings, self._model_setting)
+        if not _job_is_stale_for_model(job.job_id, model):
+            return job
+        logger.warning(
+            "batch OCR job %s was submitted under a different provider than the "
+            "configured model %s; re-submitting %s",
+            job.job_id,
+            model,
+            label,
+        )
+        await store.delete(user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag)
+        return None
 
     async def _process_batch(
         self,
@@ -828,8 +923,14 @@ class OcrProcessor(DocumentProcessor):
         mime = content_type.split(";")[0].strip().lower()
         poll_seconds = settings.document_ocr_batch_poll_seconds
 
-        job = await store.get(
-            user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
+        job = await self._live_tracked_job(
+            store,
+            user_id=user_id,
+            doc_id=doc_id,
+            doc_type=doc_type,
+            etag=etag,
+            settings=settings,
+            label=filename or doc_id,
         )
         if job is None:
             # New submission. Drop any superseded-version rows for this doc first
