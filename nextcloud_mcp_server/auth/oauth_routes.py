@@ -116,6 +116,18 @@ _dcr_rate_limit: dict[str, list[float]] = {}
 _DCR_RATE_LIMIT_MAX = 10  # max requests
 _DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
 
+# CIMD rate limiting, same shape. A URL client_id makes /oauth/authorize
+# originate an outbound HTTPS request on behalf of an unauthenticated caller,
+# exactly like the DCR proxy does — and the 5-minute cache is keyed on the full
+# URL, so varying the path or port defeats it. Without a cap that is a
+# port-probe / amplification primitive, most sharply under CIMD_ALLOWED_HOSTS=*.
+_cimd_rate_limit: dict[str, list[float]] = {}
+_CIMD_RATE_LIMIT_MAX = 20  # max authorize requests with a URL client_id
+_CIMD_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+# Bucket size past which a rate-limited request also sweeps expired IP entries.
+_RATE_LIMIT_SWEEP_AT = 1000
+
 
 # Fields that carry a credential and must never reach a log sink verbatim.
 # Anything not listed here is logged as-is, which is the point: `scope`,
@@ -227,6 +239,36 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
         else f"{resource_server_id}/{s}"
         for s in scopes.split()
     )
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_exceeded(
+    bucket: dict[str, list[float]], request: Request, max_requests: int, window: int
+) -> bool:
+    """Sliding-window per-IP limiter; records the request when it is allowed."""
+    now = time.time()
+    key = _client_ip(request)
+    timestamps = [t for t in bucket.get(key, []) if now - t < window]
+    if len(timestamps) >= max_requests:
+        bucket[key] = timestamps
+        return True
+    timestamps.append(now)
+    bucket[key] = timestamps
+    # Nothing else evicts an IP that has gone quiet, so a spray of source
+    # addresses would grow the bucket without bound. Sweep the entries that
+    # are wholly outside the window, and only once the bucket is large enough
+    # for the O(n) pass to be worth taking.
+    if len(bucket) > _RATE_LIMIT_SWEEP_AT:
+        for stale in [
+            k
+            for k, v in bucket.items()
+            if k != key and all(now - t >= window for t in v)
+        ]:
+            del bucket[stale]
+    return False
 
 
 def _issuer() -> str:
@@ -369,6 +411,20 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     # Validate client: a URL client_id names its own metadata document (CIMD,
     # GH #1470); anything else must be in the registry.
     if is_cimd_client_id(client_id):
+        # Resolving the document is an outbound request this caller triggers,
+        # so it gets the same per-IP cap as the DCR proxy.
+        if _rate_limit_exceeded(
+            _cimd_rate_limit, request, _CIMD_RATE_LIMIT_MAX, _CIMD_RATE_LIMIT_WINDOW
+        ):
+            logger.warning("CIMD rate limit exceeded for %s", _client_ip(request))
+            return JSONResponse(
+                {
+                    "error": "too_many_requests",
+                    "error_description": "Rate limit exceeded for client metadata resolution",
+                },
+                status_code=429,
+                headers={"Retry-After": str(_CIMD_RATE_LIMIT_WINDOW)},
+            )
         error_msg = await validate_cimd_client(client_id, redirect_uri)
         is_valid = error_msg is None
     else:
@@ -1537,13 +1593,10 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     oauth_config = oauth_ctx["config"]
 
     # Rate limit DCR requests per client IP
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    timestamps = _dcr_rate_limit.get(client_ip, [])
-    # Remove timestamps outside the window
-    timestamps = [t for t in timestamps if now - t < _DCR_RATE_LIMIT_WINDOW]
-    if len(timestamps) >= _DCR_RATE_LIMIT_MAX:
-        logger.warning("DCR rate limit exceeded for %s", client_ip)
+    if _rate_limit_exceeded(
+        _dcr_rate_limit, request, _DCR_RATE_LIMIT_MAX, _DCR_RATE_LIMIT_WINDOW
+    ):
+        logger.warning("DCR rate limit exceeded for %s", _client_ip(request))
         return JSONResponse(
             {
                 "error": "too_many_requests",
@@ -1552,8 +1605,6 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             status_code=429,
             headers={"Retry-After": str(_DCR_RATE_LIMIT_WINDOW)},
         )
-    timestamps.append(now)
-    _dcr_rate_limit[client_ip] = timestamps
 
     # Short-circuit: if any pre-configured static client (ALLOWED_MCP_CLIENTS) already
     # accepts all requested redirect URIs, return it directly without proxying to the

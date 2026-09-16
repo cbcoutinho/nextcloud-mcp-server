@@ -34,9 +34,12 @@ from nextcloud_mcp_server.config import cfg
 
 logger = logging.getLogger(__name__)
 
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _MAX_DOCUMENT_BYTES = 5 * 1024  # draft §6.6 recommends 5 KB
 _FETCH_TIMEOUT_SECONDS = 5.0
-# ponytail: fixed TTL ignores Cache-Control; honour max-age if a client needs faster rotation
+# Fixed TTL: the draft says to respect Cache-Control, but a short fixed window
+# bounds staleness without trusting a header the client controls. Honour
+# max-age if a client ever needs faster rotation than this.
 _CACHE_TTL_SECONDS = 300
 _CACHE_MAX_ENTRIES = 1000
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -87,6 +90,24 @@ def _parse_client_id_url(client_id: str) -> SplitResult:
     return parts
 
 
+def _is_globally_routable(address: str) -> bool:
+    """Whether *address* is a public address that reaches no internal host.
+
+    ``ipaddress`` unwraps IPv4-mapped ``::ffff:0:0/96`` itself, but treats the
+    whole NAT64 well-known prefix (RFC 6052 ``64:ff9b::/96``) as global no
+    matter which IPv4 address its low 32 bits embed. On any DNS64/NAT64 path —
+    the normal case on an IPv6-only host — ``64:ff9b::7f00:1`` is translated
+    back to ``127.0.0.1``, so the embedded address has to be checked too.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:  # e.g. a scoped link-local "fe80::1%eth0"
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
+        ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip.is_global
+
+
 async def _resolve_public_address(host: str, port: int) -> str:
     """Resolve *host* and refuse it unless every address is publicly routable.
 
@@ -102,11 +123,7 @@ async def _resolve_public_address(host: str, port: int) -> str:
     if not addresses:
         raise CIMDError(f"cannot resolve client_id host {host!r}")
     for address in addresses:
-        try:
-            is_global = ipaddress.ip_address(address).is_global
-        except ValueError:  # e.g. a scoped link-local "fe80::1%eth0"
-            is_global = False
-        if not is_global:
+        if not _is_globally_routable(address):
             raise CIMDError(f"client_id host {host!r} is not publicly routable")
     return addresses[0]
 
@@ -194,7 +211,12 @@ async def get_client_metadata(client_id: str) -> dict[str, Any]:
     document = _validate_document(client_id, body)
 
     if len(_cache) >= _CACHE_MAX_ENTRIES:
-        _cache.clear()
+        # Drop what has already expired before falling back to dumping the lot,
+        # so a burst of one-off URLs can't evict live entries on its own.
+        for url in [key for key, (expiry, _) in _cache.items() if expiry <= now]:
+            del _cache[url]
+        if len(_cache) >= _CACHE_MAX_ENTRIES:
+            _cache.clear()
     _cache[client_id] = (now + _CACHE_TTL_SECONDS, document)
     logger.info(
         "CIMD: accepted metadata document for %s (client_name=%r)",

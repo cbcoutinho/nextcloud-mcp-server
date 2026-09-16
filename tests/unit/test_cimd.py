@@ -8,6 +8,7 @@ import anyio
 import pytest
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
+import nextcloud_mcp_server.auth.oauth_routes as oauth_routes
 from nextcloud_mcp_server.auth import cimd
 from nextcloud_mcp_server.auth.oauth_routes import (
     ASProxySession,
@@ -63,7 +64,20 @@ async def test_invalid_or_untrusted_client_id_url_is_rejected(client_id):
     fetch.assert_not_called()
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "10.1.2.3", "169.254.169.254", "::1"])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "10.1.2.3",
+        "169.254.169.254",
+        "::1",
+        # NAT64 well-known prefix (RFC 6052) encoding 127.0.0.1 and 10.1.2.3.
+        # ipaddress calls the whole /96 global, but a DNS64/NAT64 path
+        # translates these straight back to the embedded IPv4 address.
+        "64:ff9b::7f00:1",
+        "64:ff9b::a01:203",
+    ],
+)
 async def test_non_public_address_is_refused(host):
     with pytest.raises(cimd.CIMDError, match="not publicly routable"):
         await cimd._resolve_public_address(host, 443)
@@ -149,6 +163,36 @@ async def test_authorize_accepts_cimd_client_without_registration():
     assert ok.status_code == 302
     assert ok.headers["location"].startswith("https://idp.example.com/authorize?")
     assert bad.status_code == 401
+
+
+async def test_cimd_authorize_is_rate_limited_per_ip():
+    """The outbound document fetch is capped like the DCR proxy's."""
+    oauth_routes._cimd_rate_limit.clear()
+    fetch = AsyncMock(return_value=json.dumps(DOCUMENT).encode())
+    request = _authorize_request(CLIENT_ID, REDIRECT)
+    request.client.host = "203.0.113.7"
+    discovery = {"authorization_endpoint": "https://idp.example.com/authorize"}
+
+    try:
+        with (
+            patch.object(cimd, "_fetch", new=fetch),
+            patch(
+                "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
+                new=AsyncMock(return_value=discovery),
+            ),
+        ):
+            allowed = [
+                await oauth_authorize(request)
+                for _ in range(oauth_routes._CIMD_RATE_LIMIT_MAX)
+            ]
+            blocked = await oauth_authorize(request)
+    finally:
+        oauth_routes._cimd_rate_limit.clear()
+
+    assert {r.status_code for r in allowed} == {302}
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"] == str(oauth_routes._CIMD_RATE_LIMIT_WINDOW)
+    assert json.loads(bytes(blocked.body))["error"] == "too_many_requests"
 
 
 async def test_cimd_disabled_treats_url_client_id_as_unknown(_config):
