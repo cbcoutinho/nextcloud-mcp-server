@@ -34,6 +34,11 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
+from nextcloud_mcp_server.auth.cimd import (
+    cimd_enabled,
+    is_cimd_client_id,
+    validate_cimd_client,
+)
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_utils import (
@@ -224,6 +229,23 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
     )
 
 
+def _issuer() -> str:
+    """This AS's issuer identifier, as advertised in its RFC 8414 metadata."""
+    return cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+
+
+def _redirect_to_client(
+    session: ASProxySession, params: dict[str, str]
+) -> RedirectResponse:
+    """Send an authorization response (success or error) to the client.
+
+    Every response carries ``iss`` (RFC 9207) so the client can detect an
+    authorization-server mix-up before redeeming the code.
+    """
+    query = urlencode({**params, "state": session.client_state, "iss": _issuer()})
+    return RedirectResponse(f"{session.client_redirect_uri}?{query}", status_code=302)
+
+
 def _cleanup_expired_proxy_codes() -> None:
     """Remove expired proxy codes and sessions."""
     now = time.time()
@@ -344,15 +366,19 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate client using registry
-    registry = get_client_registry()
-    is_valid, error_msg = registry.validate_client(
-        client_id=client_id,
-        redirect_uri=redirect_uri,
-        scopes=request.query_params.get("scope", "").split()
-        if request.query_params.get("scope")
-        else None,
-    )
+    # Validate client: a URL client_id names its own metadata document (CIMD,
+    # GH #1470); anything else must be in the registry.
+    if is_cimd_client_id(client_id):
+        error_msg = await validate_cimd_client(client_id, redirect_uri)
+        is_valid = error_msg is None
+    else:
+        is_valid, error_msg = get_client_registry().validate_client(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scopes=request.query_params.get("scope", "").split()
+            if request.query_params.get("scope")
+            else None,
+        )
 
     if not is_valid:
         logger.warning("Client validation failed: %s", error_msg)
@@ -939,15 +965,8 @@ async def _oauth_callback_as_proxy(
         # Retrieve session to redirect back to client with error
         session = _as_proxy_sessions.pop(server_state, None)
         if session:
-            params = urlencode(
-                {
-                    "error": error,
-                    "error_description": error_description,
-                    "state": session.client_state,
-                }
-            )
-            return RedirectResponse(
-                f"{session.client_redirect_uri}?{params}", status_code=302
+            return _redirect_to_client(
+                session, {"error": error, "error_description": error_description}
             )
         return JSONResponse(
             {"error": error, "error_description": error_description},
@@ -1039,15 +1058,12 @@ async def _oauth_callback_as_proxy(
             response.status_code,
             _redact_error_body(response.text),
         )
-        params = urlencode(
+        return _redirect_to_client(
+            session,
             {
                 "error": "server_error",
                 "error_description": "Failed to exchange authorization code",
-                "state": session.client_state,
-            }
-        )
-        return RedirectResponse(
-            f"{session.client_redirect_uri}?{params}", status_code=302
+            },
         )
 
     nc_token_response = response.json()
@@ -1115,15 +1131,11 @@ async def _oauth_callback_as_proxy(
         nc_token_response=nc_token_response,
     )
 
-    # Redirect back to client with proxy_code and client's original state
-    redirect_params = urlencode({"code": proxy_code, "state": session.client_state})
-    redirect_url = f"{session.client_redirect_uri}?{redirect_params}"
-
     logger.info(
         "AS proxy: Redirecting to client with proxy_code (client_id=%s)",
         session.client_id,
     )
-    return RedirectResponse(redirect_url, status_code=302)
+    return _redirect_to_client(session, {"code": proxy_code})
 
 
 def _extract_basic_auth(request: Request) -> tuple[str | None, str | None]:
@@ -1640,6 +1652,29 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     return JSONResponse(nc_response, status_code=response.status_code)
 
 
+async def _registration_supported(request: Request) -> bool:
+    """Whether POST /oauth/register can succeed for at least some client.
+
+    It can when a static client exists (the static short-circuit in
+    ``oauth_register_proxy`` needs no upstream DCR) or when the upstream IdP
+    advertises a registration endpoint. Otherwise advertising DCR only sends
+    clients down a path that ends in ``registration_not_supported``.
+    """
+    if any(client.is_static for client in get_client_registry().list_clients()):
+        return True
+    oauth_ctx = getattr(request.app.state, "oauth_context", None)
+    discovery_url = oauth_ctx["config"].get("discovery_url") if oauth_ctx else None
+    if not discovery_url:
+        return False
+    try:
+        discovery = await get_oidc_discovery(discovery_url)
+    except Exception:
+        # Fail open: a discovery blip must not strip DCR from working setups.
+        logger.warning("AS metadata: OIDC discovery failed; advertising DCR anyway")
+        return True
+    return bool(discovery.get("registration_endpoint"))
+
+
 async def oauth_as_metadata(request: Request) -> JSONResponse:
     """
     RFC 8414 OAuth Authorization Server Metadata endpoint (ADR-023).
@@ -1648,7 +1683,7 @@ async def oauth_as_metadata(request: Request) -> JSONResponse:
     MCP clients (e.g., Claude Code) authenticate through the proxy rather
     than directly with Nextcloud.
     """
-    mcp_server_url = cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    mcp_server_url = _issuer()
 
     # Dynamically discover scopes from registered tools if available
     scopes_supported = ["openid", "profile", "email"]
@@ -1656,20 +1691,22 @@ async def oauth_as_metadata(request: Request) -> JSONResponse:
     if app_scopes:
         scopes_supported = app_scopes
 
-    return JSONResponse(
-        {
-            "issuer": mcp_server_url,
-            "authorization_endpoint": f"{mcp_server_url}/oauth/authorize",
-            "token_endpoint": f"{mcp_server_url}/oauth/token",
-            "registration_endpoint": f"{mcp_server_url}/oauth/register",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": [
-                "client_secret_post",
-                "client_secret_basic",
-                "none",
-            ],
-            "scopes_supported": scopes_supported,
-        }
-    )
+    metadata: dict[str, Any] = {
+        "issuer": mcp_server_url,
+        "authorization_endpoint": f"{mcp_server_url}/oauth/authorize",
+        "token_endpoint": f"{mcp_server_url}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": [
+            "client_secret_post",
+            "client_secret_basic",
+            "none",
+        ],
+        "scopes_supported": scopes_supported,
+        "authorization_response_iss_parameter_supported": True,
+        "client_id_metadata_document_supported": cimd_enabled(),
+    }
+    if await _registration_supported(request):
+        metadata["registration_endpoint"] = f"{mcp_server_url}/oauth/register"
+    return JSONResponse(metadata)

@@ -387,6 +387,8 @@ services:
       # Login Flow v2 (ADR-022) with external IdP — derived from the
       # auto-detected LOGIN_FLOW deployment mode; no separate flag needed.
       - ENABLE_DCR=true
+      # CIMD (GH #1470): trust claude.ai's Client ID Metadata Document
+      - CIMD_ALLOWED_HOSTS=claude.ai
 
       # OAuth scopes (optional - uses defaults if not specified)
       - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write
