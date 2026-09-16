@@ -25,7 +25,7 @@ import logging
 import socket
 import time
 from typing import Any
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 
 import anyio
 import httpx
@@ -67,7 +67,10 @@ def is_cimd_client_id(client_id: str) -> bool:
 def _parse_client_id_url(client_id: str) -> SplitResult:
     """Apply the draft's client_id URL rules (§3) and the host trust policy."""
     parts = urlsplit(client_id)
-    segments = parts.path.split("/")
+    # Percent-decode before looking for dot segments: "%2e%2e" is a "..", and
+    # comparing the raw path would let one through. The URL is an identity, so
+    # the draft wants it unambiguous rather than merely safe to fetch.
+    segments = [unquote(segment) for segment in parts.path.split("/")]
     try:
         _ = parts.port  # raises ValueError on a malformed port
     except ValueError as e:
