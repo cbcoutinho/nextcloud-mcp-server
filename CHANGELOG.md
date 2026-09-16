@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.189.0 (2026-09-16)
+
+### Feat
+
+- **webdav**: add trash bin and file version tools
+
+### Fix
+
+- **webdav**: add OCS header to trash/version calls, skip a redundant fileid lookup
+- **webdav**: correct restore idempotency, refusals and numeric fields
+
+### Refactor
+
+- **webdav**: typed responses and exclusion guards for trash/versions
+
 ## v0.188.1 (2026-09-15)
 
 ### Fix
