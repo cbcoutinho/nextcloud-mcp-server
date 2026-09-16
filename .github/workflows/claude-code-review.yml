@@ -12,11 +12,14 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Same-repo PRs only. A fork PR's diff is untrusted input, and this job
+    # hands it to an agent holding CLAUDE_CODE_OAUTH_TOKEN -- so contributor
+    # PRs are reviewed by a human instead. Fork runs also cannot work: they get
+    # no OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL is absent), so before this
+    # gate every contributor PR carried a failing `claude-review` check.
+    # Skipping the job outright leaves no check at all, which is the intent --
+    # do not "fix" that red check by removing this condition.
+    if: github.event.pull_request.head.repo.full_name == github.repository
 
     runs-on: ubuntu-latest
     permissions:
