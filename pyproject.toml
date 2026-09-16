@@ -167,6 +167,7 @@ dev = [
     "pytest-xdist>=3.6.1",
     "ruff>=0.11.13",
     "reportlab>=4.0.0",
+    "python-pptx>=1.0.0",
     # ty 0.0.62 only honours bracketed suppression codes carrying a `ty:` prefix.
     # The repo's `# type: ignore[<mypy-code>]` comments therefore stopped
     # suppressing on the bump; each still-needed one now carries a matching

@@ -8,13 +8,15 @@ HTTP (``DOCLING_API_URL``) -- no heavy ML dependencies live in the MCP server.
 
 Two touchpoints share the :func:`convert_file` client here:
 
-  * :class:`DoclingProcessor` -- the images-only processor registered on the
-    ``find_processor`` priority path (``app.py``). Its ``process()`` also handles
-    PDFs/office formats so it can be *force-selected* by name
+  * :class:`DoclingProcessor` -- the images + OOXML-office processor registered
+    on the ``find_processor`` priority path (``app.py``). Its ``process()`` also
+    handles PDFs so it can be *force-selected* by name
     (``registry.process(processor_name="docling")``) to re-parse a text-layer PDF
     (tables / partial text) that the classifier would otherwise leave to the fast
     tier. It is deliberately NOT auto-selected for PDFs (``supported_mime_types``
-    is images-only), so enabling docling never reroutes every PDF through it.
+    excludes ``application/pdf``), so enabling docling never reroutes every PDF
+    through it -- see ADR-034 for why office formats *are* auto-selected despite
+    ADR-031 having originally scoped this processor to images only.
   * ``document_processors.ocr._DoclingServeBackend`` -- the PDF OCR-tier backend
     (``DOCUMENT_OCR_PROVIDER=docling``) for scanned/no-text-layer PDFs.
 
@@ -47,6 +49,17 @@ DOCLING_IMAGE_TYPES = {
     "image/bmp",
     "image/gif",
     "image/webp",
+}
+
+# OOXML office formats docling-serve converts natively -- `from_formats` is left
+# unset for these (see `_from_format_for_mime`) so docling infers it from the
+# filename extension, same as when this processor is force-selected onto a PDF.
+# Legacy binary formats (.doc/.ppt/.xls) are deliberately NOT included: docling
+# does not parse the old OLE2 container, only OOXML. See ADR-034.
+DOCLING_OFFICE_TYPES = {
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
 }
 
 # docling-serve conversion statuses treated as usable output.
@@ -211,11 +224,12 @@ async def health(api_url: str, *, timeout: float = 5.0) -> bool:
 
 
 class DoclingProcessor(DocumentProcessor):
-    """Images-only auto processor backed by a docling-serve instance.
+    """Images + OOXML-office auto processor backed by a docling-serve instance.
 
-    Auto-selected for images (``find_processor`` priority path); ``process()`` also
-    handles PDFs/office formats so it can be force-selected by name to re-parse a
-    text-layer PDF. Extracts markdown (keeps tables) via ``/v1/convert/file``.
+    Auto-selected for images and PPTX/DOCX/XLSX (``find_processor`` priority
+    path, ADR-034); ``process()`` also handles PDFs so it can be force-selected
+    by name to re-parse a text-layer PDF. Extracts markdown (keeps tables) via
+    ``/v1/convert/file``.
     """
 
     def __init__(
@@ -265,14 +279,15 @@ class DoclingProcessor(DocumentProcessor):
 
     @property
     def tier(self) -> str:
-        # A single-shot extraction; images have no escalation ladder. Kept off the
-        # PDF tier ladder ("fast"/"structured"/"ocr") on purpose -- supported_mime_types
-        # is images-only, so it is never auto-selected for PDFs.
+        # A single-shot extraction; images/office documents have no escalation
+        # ladder. Kept off the PDF tier ladder ("fast"/"structured"/"ocr") on
+        # purpose -- supported_mime_types excludes application/pdf, so it is
+        # never auto-selected for PDFs.
         return "fast"
 
     @property
     def supported_mime_types(self) -> set[str]:
-        return DOCLING_IMAGE_TYPES
+        return DOCLING_IMAGE_TYPES | DOCLING_OFFICE_TYPES
 
     async def _convert(
         self, content: bytes, content_type: str, filename: str | None
