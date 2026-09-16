@@ -409,8 +409,13 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         )
 
     # Validate client: a URL client_id names its own metadata document (CIMD,
-    # GH #1470); anything else must be in the registry.
-    if is_cimd_client_id(client_id):
+    # GH #1470); anything else must be in the registry. A client that is
+    # already registered wins even when its client_id happens to be an HTTPS
+    # URL — an explicit ALLOWED_MCP_CLIENTS entry or a DCR registration is a
+    # stronger statement of intent than the shape of the identifier, and
+    # routing it through a document fetch would break it.
+    registry = get_client_registry()
+    if is_cimd_client_id(client_id) and registry.get_client(client_id) is None:
         # Resolving the document is an outbound request this caller triggers,
         # so it gets the same per-IP cap as the DCR proxy.
         if _rate_limit_exceeded(
@@ -428,7 +433,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         error_msg = await validate_cimd_client(client_id, redirect_uri)
         is_valid = error_msg is None
     else:
-        is_valid, error_msg = get_client_registry().validate_client(
+        is_valid, error_msg = registry.validate_client(
             client_id=client_id,
             redirect_uri=redirect_uri,
             scopes=request.query_params.get("scope", "").split()
@@ -1710,6 +1715,16 @@ async def _registration_supported(request: Request) -> bool:
     ``oauth_register_proxy`` needs no upstream DCR) or when the upstream IdP
     advertises a registration endpoint. Otherwise advertising DCR only sends
     clients down a path that ends in ``registration_not_supported``.
+
+    The static-client arm is deliberately approximate: metadata is served
+    before any registration request exists, so it cannot know whether a given
+    caller's ``redirect_uris`` are ones a configured static client would
+    actually accept. With an IdP that has no DCR and a static client bound to
+    one specific callback, a *different* client still sees the endpoint
+    advertised and still gets ``registration_not_supported`` — a narrower form
+    of the contradiction this exists to remove. Erring towards advertising is
+    the safer side: suppressing the endpoint would break the clients the
+    static entry was configured for.
     """
     if any(client.is_static for client in get_client_registry().list_clients()):
         return True

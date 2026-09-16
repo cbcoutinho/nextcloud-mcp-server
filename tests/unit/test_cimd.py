@@ -165,6 +165,23 @@ async def test_authorize_accepts_cimd_client_without_registration():
     assert bad.status_code == 401
 
 
+async def test_registered_client_wins_over_cimd_for_url_client_id(_config):
+    """An explicitly allowlisted client is not re-routed through a document fetch."""
+    _config(ALLOWED_MCP_CLIENTS=f"{CLIENT_ID}|{REDIRECT}")
+    discovery = {"authorization_endpoint": "https://idp.example.com/authorize"}
+    with (
+        patch.object(cimd, "_fetch", new=AsyncMock()) as fetch,
+        patch(
+            "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
+            new=AsyncMock(return_value=discovery),
+        ),
+    ):
+        response = await oauth_authorize(_authorize_request(CLIENT_ID, REDIRECT))
+
+    fetch.assert_not_called()
+    assert response.status_code == 302
+
+
 async def test_cimd_authorize_is_rate_limited_per_ip():
     """The outbound document fetch is capped like the DCR proxy's."""
     oauth_routes._cimd_rate_limit.clear()
