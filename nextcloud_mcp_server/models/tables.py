@@ -128,7 +128,11 @@ class GetSchemaResponse(BaseResponse):
 class ReadTableResponse(BaseResponse):
     """Response model for reading table rows."""
 
-    rows: List[TableRow] = Field(description="Table rows")
+    # The Tables rows API returns each row as a raw dict whose ``data`` is a
+    # list of {columnId, value} objects, not the {column_id: value} mapping
+    # TableRow models. Pass rows through untouched so the wrapper only changes
+    # how the result is serialised (one content block, GH #568), not its shape.
+    rows: List[Dict[str, Any]] = Field(description="Table rows")
     table_id: int = Field(description="Table ID")
     total_count: Optional[int] = Field(
         None, description="Total number of rows (if known)"
