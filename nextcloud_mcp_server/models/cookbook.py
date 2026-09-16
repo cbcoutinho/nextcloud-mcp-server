@@ -1,36 +1,10 @@
 """Pydantic models for Cookbook app responses."""
 
-from typing import Any, List, Optional, Union, get_args, get_origin
+from typing import List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic.fields import FieldInfo
-from pydantic_core import PydanticUndefined
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, IdResponse, StatusResponse
-
-
-def _none_replacement(field: FieldInfo) -> Any:
-    """Best stand-in for an explicit ``null`` where the type forbids None.
-
-    Prefers the field's own default/default_factory. A field with neither
-    (a required field, e.g. ``name``) falls back to a type-appropriate
-    empty value instead of leaving None in place - Pydantic would reject
-    that anyway, and an empty string/list is a more useful failure than a
-    hard error over a single missing field.
-    """
-    default = field.get_default(call_default_factory=True)
-    if default is not PydanticUndefined:
-        return default
-    annotation = field.annotation
-    if annotation is str:
-        return ""
-    if annotation is int:
-        return 0
-    if annotation is bool:
-        return False
-    if get_origin(annotation) in (list, List):
-        return []
-    return None
 
 
 class Nutrition(BaseModel):
@@ -135,7 +109,11 @@ class Recipe(BaseModel):
     prepTime: Optional[str] = Field(None, description="Preparation time (ISO8601)")
     cookTime: Optional[str] = Field(None, description="Cooking time (ISO8601)")
     totalTime: Optional[str] = Field(None, description="Total time (ISO8601)")
-    recipeYield: Union[int, str] = Field(default=1, description="Number of servings")
+    # Cookbook's FixRecipeYieldFilter writes `null` for recipes with no
+    # serving count, so None must be a valid value here, not just the default.
+    recipeYield: Optional[Union[int, str]] = Field(
+        default=1, description="Number of servings"
+    )
     recipeCategory: str = Field(default="", description="Recipe category")
     tool: List[str] = Field(default_factory=list, description="Required tools")
     recipeIngredient: List[str] = Field(
@@ -147,40 +125,6 @@ class Recipe(BaseModel):
     nutrition: Optional[Nutrition] = Field(None, description="Nutrition information")
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
-
-    # --- Lokaler Patch: null-Felder abfedern --------------------------------
-    # Nextcloud Cookbook speichert ein fehlendes Feld manchmal als JSON
-    # `null` statt es einfach wegzulassen - live beobachtet an einem Rezept
-    # ohne Portionsangabe: {"recipeYield": null, ...}. Pydantic wendet den
-    # Default eines Feldes nur an, wenn der Schluessel ganz FEHLT; ein
-    # explizites `null` muss trotzdem den deklarierten Typ erfuellen und
-    # scheitert:
-    #
-    #   2 validation errors for Recipe
-    #   recipeYield.int   Input should be a valid integer [input_value=None]
-    #   recipeYield.str   Input should be a valid string  [input_value=None]
-    #
-    # Das ist keine Eigenheit von recipeYield - jedes Feld ohne eigenes
-    # Optional[...] kann so getroffen werden, sobald der Nutzer es einmal
-    # leer gelassen hat. Statt das Feld fuer Feld nachzuruesten, ersetzt
-    # dieser Validator jedes explizite `null` vor der Typpruefung durch den
-    # Default des jeweiligen Feldes (oder einen typgerechten Leerwert, falls
-    # das Feld selbst keinen hat) - siehe _none_replacement() oben. Felder,
-    # die bereits Optional[...] deklarieren, sind davon nicht betroffen:
-    # dort ist None ohnehin ein gueltiger Wert und bleibt unangetastet.
-    @model_validator(mode="before")
-    @classmethod
-    def null_becomes_default(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        for name, field in cls.model_fields.items():
-            key = field.alias or name
-            if key not in data or data[key] is not None:
-                continue
-            if type(None) in get_args(field.annotation):
-                continue  # Optional[...] - None ist hier ein gueltiger Wert.
-            data[key] = _none_replacement(field)
-        return data
 
 
 class Category(BaseModel):

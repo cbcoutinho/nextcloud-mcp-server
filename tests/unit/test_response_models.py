@@ -924,69 +924,20 @@ def test_table_schema_tolerates_missing_columns_and_views():
 
 @pytest.mark.unit
 def test_recipe_tolerates_explicit_null_yield():
-    """A recipe with no serving count stores it as JSON `null`, not a missing key.
-
-    Nextcloud Cookbook wrote `"recipeYield": null` for a recipe that had never
-    had its serving count filled in. `nc_cookbook_get_recipe` failed the whole
-    call with two validation errors (`recipeYield.int`, `recipeYield.str` both
-    "Input should be a valid ..."), even though search still found the recipe
-    fine - a field's default only applies when the key is *absent*; an
-    explicit `null` still has to satisfy the declared type.
+    """Cookbook's FixRecipeYieldFilter writes `"recipeYield": null` for any
+    recipe with no serving count, on every read - not just as an edge case.
+    `nc_cookbook_get_recipe` failed the whole call with two validation errors
+    (`recipeYield.int`, `recipeYield.str` both "Input should be a valid ...")
+    since Union[int, str] didn't accept None.
     """
     recipe = Recipe(**{"name": "Schokokuchen", "recipeYield": None})
 
-    assert recipe.recipeYield == 1  # the field's own declared default
-
-
-@pytest.mark.unit
-def test_recipe_tolerates_null_on_any_non_optional_field():
-    """Not just recipeYield - any field without its own Optional[...] can be
-    stored as `null` by Cookbook once a user has left it empty. Punctually
-    patching recipeYield alone would leave the same failure mode open for the
-    next field someone blanks out.
-    """
-    recipe = Recipe(
-        **{
-            "name": "Test",
-            "description": None,
-            "recipeCategory": None,
-            "recipeIngredient": None,
-            "recipeInstructions": None,
-            "keywords": None,
-        }
-    )
-
-    assert recipe.description == ""
-    assert recipe.recipeCategory == ""
-    assert recipe.recipeIngredient == []
-    assert recipe.recipeInstructions == []
-    assert recipe.keywords == ""
-
-
-@pytest.mark.unit
-def test_recipe_null_on_required_field_without_default():
-    """`name` has no default at all - null still must not crash the process."""
-    recipe = Recipe(**{"name": None})
-
-    assert recipe.name == ""
-
-
-@pytest.mark.unit
-def test_recipe_preserves_none_on_genuinely_optional_fields():
-    """Optional[...] fields (imageUrl, id, ...) must keep None as-is - it's
-    already a valid value there, not something to paper over with a default.
-    """
-    recipe = Recipe(**{"name": "Test", "imageUrl": None, "id": None})
-
-    assert recipe.imageUrl is None
-    assert recipe.id is None
+    assert recipe.recipeYield is None
 
 
 @pytest.mark.unit
 def test_recipe_unaffected_when_fully_populated():
-    """A well-formed recipe must round-trip exactly as given - the validator
-    rewrites nothing when there was no null to begin with.
-    """
+    """A well-formed recipe must round-trip exactly as given."""
     recipe = Recipe(
         **{
             "name": "Test",
