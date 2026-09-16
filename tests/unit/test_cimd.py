@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
+import httpx
 import pytest
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
@@ -271,3 +272,16 @@ async def test_metadata_advertises_registration_only_when_it_can_work(
     assert metadata["authorization_response_iss_parameter_supported"] is True
     assert metadata["client_id_metadata_document_supported"] is True
     assert "none" in metadata["token_endpoint_auth_methods_supported"]
+
+
+async def test_metadata_fails_open_when_discovery_is_unavailable(_config):
+    """A discovery outage must not strip DCR from a deployment that has it."""
+    _config(ALLOWED_MCP_CLIENTS="")
+    with patch(
+        "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
+        new=AsyncMock(side_effect=httpx.ConnectError("idp unreachable")),
+    ):
+        response = await oauth_as_metadata(_metadata_request("https://idp/.wk"))
+
+    metadata = json.loads(bytes(response.body))
+    assert metadata["registration_endpoint"] == "https://mcp.example.com/oauth/register"

@@ -242,6 +242,15 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
 
 
 def _client_ip(request: Request) -> str:
+    """The immediate TCP peer, deliberately not ``X-Forwarded-For``.
+
+    Behind a reverse proxy this collapses every caller into one bucket, which
+    makes the limits below coarser than "per IP" suggests. That is the safer
+    error: ``X-Forwarded-For`` is caller-supplied, so honouring it without
+    knowing which proxies to trust would let anyone mint a fresh identity per
+    request and opt out of rate limiting entirely. Revisit together with a
+    trusted-proxy setting, not on its own.
+    """
     return request.client.host if request.client else "unknown"
 
 
