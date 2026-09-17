@@ -34,6 +34,11 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
+from nextcloud_mcp_server.auth.cimd import (
+    cimd_enabled,
+    is_cimd_client_id,
+    validate_cimd_client,
+)
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_utils import (
@@ -110,6 +115,18 @@ _as_proxy_sessions: dict[str, ASProxySession] = {}
 _dcr_rate_limit: dict[str, list[float]] = {}
 _DCR_RATE_LIMIT_MAX = 10  # max requests
 _DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+# CIMD rate limiting, same shape. A URL client_id makes /oauth/authorize
+# originate an outbound HTTPS request on behalf of an unauthenticated caller,
+# exactly like the DCR proxy does — and the 5-minute cache is keyed on the full
+# URL, so varying the path or port defeats it. Without a cap that is a
+# port-probe / amplification primitive, most sharply under CIMD_ALLOWED_HOSTS=*.
+_cimd_rate_limit: dict[str, list[float]] = {}
+_CIMD_RATE_LIMIT_MAX = 20  # max authorize requests with a URL client_id
+_CIMD_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+# Bucket size past which a rate-limited request also sweeps expired IP entries.
+_RATE_LIMIT_SWEEP_AT = 1000
 
 
 # Fields that carry a credential and must never reach a log sink verbatim.
@@ -222,6 +239,62 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
         else f"{resource_server_id}/{s}"
         for s in scopes.split()
     )
+
+
+def _client_ip(request: Request) -> str:
+    """The immediate TCP peer, deliberately not ``X-Forwarded-For``.
+
+    Behind a reverse proxy this collapses every caller into one bucket, which
+    makes the limits below coarser than "per IP" suggests. That is the safer
+    error: ``X-Forwarded-For`` is caller-supplied, so honouring it without
+    knowing which proxies to trust would let anyone mint a fresh identity per
+    request and opt out of rate limiting entirely. Revisit together with a
+    trusted-proxy setting, not on its own.
+    """
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_exceeded(
+    bucket: dict[str, list[float]], request: Request, max_requests: int, window: int
+) -> bool:
+    """Sliding-window per-IP limiter; records the request when it is allowed."""
+    now = time.time()
+    key = _client_ip(request)
+    timestamps = [t for t in bucket.get(key, []) if now - t < window]
+    if len(timestamps) >= max_requests:
+        bucket[key] = timestamps
+        return True
+    timestamps.append(now)
+    bucket[key] = timestamps
+    # Nothing else evicts an IP that has gone quiet, so a spray of source
+    # addresses would grow the bucket without bound. Sweep the entries that
+    # are wholly outside the window, and only once the bucket is large enough
+    # for the O(n) pass to be worth taking.
+    if len(bucket) > _RATE_LIMIT_SWEEP_AT:
+        for stale in [
+            k
+            for k, v in bucket.items()
+            if k != key and all(now - t >= window for t in v)
+        ]:
+            del bucket[stale]
+    return False
+
+
+def _issuer() -> str:
+    """This AS's issuer identifier, as advertised in its RFC 8414 metadata."""
+    return cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+
+
+def _redirect_to_client(
+    session: ASProxySession, params: dict[str, str]
+) -> RedirectResponse:
+    """Send an authorization response (success or error) to the client.
+
+    Every response carries ``iss`` (RFC 9207) so the client can detect an
+    authorization-server mix-up before redeeming the code.
+    """
+    query = urlencode({**params, "state": session.client_state, "iss": _issuer()})
+    return RedirectResponse(f"{session.client_redirect_uri}?{query}", status_code=302)
 
 
 def _cleanup_expired_proxy_codes() -> None:
@@ -344,15 +417,38 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate client using registry
+    # Validate client: a URL client_id names its own metadata document (CIMD,
+    # GH #1470); anything else must be in the registry. A client that is
+    # already registered wins even when its client_id happens to be an HTTPS
+    # URL — an explicit ALLOWED_MCP_CLIENTS entry or a DCR registration is a
+    # stronger statement of intent than the shape of the identifier, and
+    # routing it through a document fetch would break it.
     registry = get_client_registry()
-    is_valid, error_msg = registry.validate_client(
-        client_id=client_id,
-        redirect_uri=redirect_uri,
-        scopes=request.query_params.get("scope", "").split()
-        if request.query_params.get("scope")
-        else None,
-    )
+    if is_cimd_client_id(client_id) and registry.get_client(client_id) is None:
+        # Resolving the document is an outbound request this caller triggers,
+        # so it gets the same per-IP cap as the DCR proxy.
+        if _rate_limit_exceeded(
+            _cimd_rate_limit, request, _CIMD_RATE_LIMIT_MAX, _CIMD_RATE_LIMIT_WINDOW
+        ):
+            logger.warning("CIMD rate limit exceeded for %s", _client_ip(request))
+            return JSONResponse(
+                {
+                    "error": "too_many_requests",
+                    "error_description": "Rate limit exceeded for client metadata resolution",
+                },
+                status_code=429,
+                headers={"Retry-After": str(_CIMD_RATE_LIMIT_WINDOW)},
+            )
+        error_msg = await validate_cimd_client(client_id, redirect_uri)
+        is_valid = error_msg is None
+    else:
+        is_valid, error_msg = registry.validate_client(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scopes=request.query_params.get("scope", "").split()
+            if request.query_params.get("scope")
+            else None,
+        )
 
     if not is_valid:
         logger.warning("Client validation failed: %s", error_msg)
@@ -939,15 +1035,8 @@ async def _oauth_callback_as_proxy(
         # Retrieve session to redirect back to client with error
         session = _as_proxy_sessions.pop(server_state, None)
         if session:
-            params = urlencode(
-                {
-                    "error": error,
-                    "error_description": error_description,
-                    "state": session.client_state,
-                }
-            )
-            return RedirectResponse(
-                f"{session.client_redirect_uri}?{params}", status_code=302
+            return _redirect_to_client(
+                session, {"error": error, "error_description": error_description}
             )
         return JSONResponse(
             {"error": error, "error_description": error_description},
@@ -1039,15 +1128,12 @@ async def _oauth_callback_as_proxy(
             response.status_code,
             _redact_error_body(response.text),
         )
-        params = urlencode(
+        return _redirect_to_client(
+            session,
             {
                 "error": "server_error",
                 "error_description": "Failed to exchange authorization code",
-                "state": session.client_state,
-            }
-        )
-        return RedirectResponse(
-            f"{session.client_redirect_uri}?{params}", status_code=302
+            },
         )
 
     nc_token_response = response.json()
@@ -1115,15 +1201,11 @@ async def _oauth_callback_as_proxy(
         nc_token_response=nc_token_response,
     )
 
-    # Redirect back to client with proxy_code and client's original state
-    redirect_params = urlencode({"code": proxy_code, "state": session.client_state})
-    redirect_url = f"{session.client_redirect_uri}?{redirect_params}"
-
     logger.info(
         "AS proxy: Redirecting to client with proxy_code (client_id=%s)",
         session.client_id,
     )
-    return RedirectResponse(redirect_url, status_code=302)
+    return _redirect_to_client(session, {"code": proxy_code})
 
 
 def _extract_basic_auth(request: Request) -> tuple[str | None, str | None]:
@@ -1525,13 +1607,10 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     oauth_config = oauth_ctx["config"]
 
     # Rate limit DCR requests per client IP
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    timestamps = _dcr_rate_limit.get(client_ip, [])
-    # Remove timestamps outside the window
-    timestamps = [t for t in timestamps if now - t < _DCR_RATE_LIMIT_WINDOW]
-    if len(timestamps) >= _DCR_RATE_LIMIT_MAX:
-        logger.warning("DCR rate limit exceeded for %s", client_ip)
+    if _rate_limit_exceeded(
+        _dcr_rate_limit, request, _DCR_RATE_LIMIT_MAX, _DCR_RATE_LIMIT_WINDOW
+    ):
+        logger.warning("DCR rate limit exceeded for %s", _client_ip(request))
         return JSONResponse(
             {
                 "error": "too_many_requests",
@@ -1540,8 +1619,6 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             status_code=429,
             headers={"Retry-After": str(_DCR_RATE_LIMIT_WINDOW)},
         )
-    timestamps.append(now)
-    _dcr_rate_limit[client_ip] = timestamps
 
     # Short-circuit: if any pre-configured static client (ALLOWED_MCP_CLIENTS) already
     # accepts all requested redirect URIs, return it directly without proxying to the
@@ -1640,6 +1717,39 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     return JSONResponse(nc_response, status_code=response.status_code)
 
 
+async def _registration_supported(request: Request) -> bool:
+    """Whether POST /oauth/register can succeed for at least some client.
+
+    It can when a static client exists (the static short-circuit in
+    ``oauth_register_proxy`` needs no upstream DCR) or when the upstream IdP
+    advertises a registration endpoint. Otherwise advertising DCR only sends
+    clients down a path that ends in ``registration_not_supported``.
+
+    The static-client arm is deliberately approximate: metadata is served
+    before any registration request exists, so it cannot know whether a given
+    caller's ``redirect_uris`` are ones a configured static client would
+    actually accept. With an IdP that has no DCR and a static client bound to
+    one specific callback, a *different* client still sees the endpoint
+    advertised and still gets ``registration_not_supported`` — a narrower form
+    of the contradiction this exists to remove. Erring towards advertising is
+    the safer side: suppressing the endpoint would break the clients the
+    static entry was configured for.
+    """
+    if any(client.is_static for client in get_client_registry().list_clients()):
+        return True
+    oauth_ctx = getattr(request.app.state, "oauth_context", None)
+    discovery_url = oauth_ctx["config"].get("discovery_url") if oauth_ctx else None
+    if not discovery_url:
+        return False
+    try:
+        discovery = await get_oidc_discovery(discovery_url)
+    except Exception:
+        # Fail open: a discovery blip must not strip DCR from working setups.
+        logger.warning("AS metadata: OIDC discovery failed; advertising DCR anyway")
+        return True
+    return bool(discovery.get("registration_endpoint"))
+
+
 async def oauth_as_metadata(request: Request) -> JSONResponse:
     """
     RFC 8414 OAuth Authorization Server Metadata endpoint (ADR-023).
@@ -1648,7 +1758,7 @@ async def oauth_as_metadata(request: Request) -> JSONResponse:
     MCP clients (e.g., Claude Code) authenticate through the proxy rather
     than directly with Nextcloud.
     """
-    mcp_server_url = cfg("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    mcp_server_url = _issuer()
 
     # Dynamically discover scopes from registered tools if available
     scopes_supported = ["openid", "profile", "email"]
@@ -1656,20 +1766,22 @@ async def oauth_as_metadata(request: Request) -> JSONResponse:
     if app_scopes:
         scopes_supported = app_scopes
 
-    return JSONResponse(
-        {
-            "issuer": mcp_server_url,
-            "authorization_endpoint": f"{mcp_server_url}/oauth/authorize",
-            "token_endpoint": f"{mcp_server_url}/oauth/token",
-            "registration_endpoint": f"{mcp_server_url}/oauth/register",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": [
-                "client_secret_post",
-                "client_secret_basic",
-                "none",
-            ],
-            "scopes_supported": scopes_supported,
-        }
-    )
+    metadata: dict[str, Any] = {
+        "issuer": mcp_server_url,
+        "authorization_endpoint": f"{mcp_server_url}/oauth/authorize",
+        "token_endpoint": f"{mcp_server_url}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": [
+            "client_secret_post",
+            "client_secret_basic",
+            "none",
+        ],
+        "scopes_supported": scopes_supported,
+        "authorization_response_iss_parameter_supported": True,
+        "client_id_metadata_document_supported": cimd_enabled(),
+    }
+    if await _registration_supported(request):
+        metadata["registration_endpoint"] = f"{mcp_server_url}/oauth/register"
+    return JSONResponse(metadata)

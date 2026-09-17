@@ -82,6 +82,9 @@ _DEFAULTS: dict[str, Any] = {
     "mcp_server_client_secret": None,
     "allowed_mcp_clients": "",
     "allowed_mgmt_client": "",
+    # Hosts whose Client ID Metadata Documents the AS proxy trusts (GH #1470).
+    # Empty = CIMD disabled; "*" = any publicly routable host. See auth/cimd.py.
+    "cimd_allowed_hosts": "",
     "enable_dcr": False,
     # Container-runtime / webhook self-URL overrides (local-dev docker-compose).
     "docker_container": False,

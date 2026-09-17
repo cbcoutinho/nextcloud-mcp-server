@@ -216,3 +216,64 @@ async def test_authorize_rejects_unknown_client(keycloak_mcp_available):
         assert "error=" in location, (
             f"302 redirect should contain error= in Location, got: {location}"
         )
+
+
+# --- CIMD (GH #1470) ---
+# mcp-keycloak trusts claude.ai's Client ID Metadata Document (CIMD_ALLOWED_HOSTS).
+# The document is fetched live, so the authorize tests skip when claude.ai is
+# unreachable from the test runner.
+
+CLAUDE_CIMD_CLIENT_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+
+
+async def test_as_metadata_advertises_cimd_and_iss(keycloak_mcp_available):
+    metadata = keycloak_mcp_available
+    assert metadata["client_id_metadata_document_supported"] is True
+    assert metadata["authorization_response_iss_parameter_supported"] is True
+    assert "none" in metadata["token_endpoint_auth_methods_supported"]
+
+
+@pytest.fixture(scope="module")
+async def claude_cimd_document():
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        try:
+            resp = await http.get(CLAUDE_CIMD_CLIENT_ID)
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            pytest.skip(f"claude.ai CIMD document not reachable: {e}")
+
+
+@pytest.mark.parametrize("use_listed_redirect", [True, False])
+async def test_authorize_with_cimd_client_id(
+    keycloak_mcp_available, claude_cimd_document, use_listed_redirect
+):
+    """A CIMD client needs no registration; its document's redirect_uris bind it."""
+    redirect_uri = (
+        claude_cimd_document["redirect_uris"][0]
+        if use_listed_redirect
+        else "https://attacker.example.com/callback"
+    )
+    digest = hashlib.sha256(secrets.token_urlsafe(64).encode()).digest()
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
+        resp = await http.get(
+            f"{MCP_KEYCLOAK_BASE_URL}/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": CLAUDE_CIMD_CLIENT_ID,
+                "redirect_uri": redirect_uri,
+                "state": "test-state",
+                "scope": "openid",
+                "code_challenge": base64.urlsafe_b64encode(digest)
+                .rstrip(b"=")
+                .decode(),
+                "code_challenge_method": "S256",
+            },
+        )
+
+    if use_listed_redirect:
+        assert resp.status_code == 302, f"{resp.status_code}: {resp.text}"
+        assert "/realms/nextcloud-mcp/" in resp.headers["location"]
+    else:
+        assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"] == "unauthorized_client"
