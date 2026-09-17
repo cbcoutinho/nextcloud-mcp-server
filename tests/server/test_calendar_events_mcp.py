@@ -324,3 +324,99 @@ async def test_mcp_update_event_ordered_reminders(
                 await nc_client.calendar.delete_event(calendar_name, event_uid)
             except Exception:
                 pass
+
+
+async def test_mcp_create_event_with_attendees_sets_organizer(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """GH #1497: without ORGANIZER, Nextcloud sends attendees no CANCEL on delete."""
+    user = nc_client.username
+    original_email = (await nc_client.users.get_user_details(user)).email or ""
+    # The ORGANIZER comes from the principal's mailto: address, so the user
+    # needs a profile email.
+    organizer_email = original_email or f"{user}@example.com"
+    if not original_email:
+        await nc_client.users.update_user_field(user, "email", organizer_email)
+
+    event_uid = None
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        create_result = await nc_mcp_client.call_tool(
+            "nc_calendar_create_event",
+            {
+                "calendar_name": temporary_calendar,
+                "title": "Organizer MCP Test",
+                "start_datetime": tomorrow.strftime("%Y-%m-%dT09:00:00"),
+                "end_datetime": tomorrow.strftime("%Y-%m-%dT10:00:00"),
+                "attendees": "guest@example.com",
+            },
+        )
+        assert create_result.is_error is False, create_result.content
+        event_uid = json.loads(create_result.content[0].text)["uid"]
+
+        get_result = await nc_mcp_client.call_tool(
+            "nc_calendar_get_event",
+            {"calendar_name": temporary_calendar, "event_uid": event_uid},
+        )
+        assert get_result.is_error is False, get_result.content
+        event = json.loads(get_result.content[0].text)
+        assert event["organizer"].lower() == organizer_email.lower()
+        assert "guest@example.com" in event["attendees"]
+    finally:
+        if event_uid:
+            await nc_client.calendar.delete_event(temporary_calendar, event_uid)
+        if not original_email:
+            await nc_client.users.update_user_field(user, "email", "")
+
+
+async def test_mcp_bulk_delete_skips_recurring_series_without_opt_in(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """GH #1499: one matched occurrence must not silently delete the whole series."""
+    start = (datetime.now() + timedelta(days=7)).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
+    create_result = await nc_mcp_client.call_tool(
+        "nc_calendar_create_event",
+        {
+            "calendar_name": temporary_calendar,
+            "title": "Bulk Series MCP Test",
+            "start_datetime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end_datetime": (start + timedelta(minutes=30)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            ),
+            "recurrence_rule": "FREQ=DAILY;COUNT=4",
+        },
+    )
+    assert create_result.is_error is False, create_result.content
+    event_uid = json.loads(create_result.content[0].text)["uid"]
+
+    try:
+        # The window covers every occurrence, yet the series is one stored
+        # event: reported once, and skipped without the opt-in.
+        bulk_args = {
+            "operation": "delete",
+            "calendar_name": temporary_calendar,
+            "title_contains": "Bulk Series MCP Test",
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": (start + timedelta(days=4)).strftime("%Y-%m-%d"),
+        }
+        skip_result = await nc_mcp_client.call_tool(
+            "nc_calendar_bulk_operations", bulk_args
+        )
+        assert skip_result.is_error is False, skip_result.content
+        skipped = json.loads(skip_result.content[0].text)
+        assert skipped["total_found"] == 1
+        assert skipped["deleted_count"] == 0
+        assert skipped["skipped_count"] == 1
+        await nc_client.calendar.get_event(temporary_calendar, event_uid)
+
+        delete_result = await nc_mcp_client.call_tool(
+            "nc_calendar_bulk_operations", {**bulk_args, "apply_to_series": True}
+        )
+        assert delete_result.is_error is False, delete_result.content
+        assert json.loads(delete_result.content[0].text)["deleted_count"] == 1
+        event_uid = None
+    finally:
+        if event_uid:
+            await nc_client.calendar.delete_event(temporary_calendar, event_uid)

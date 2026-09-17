@@ -1093,10 +1093,14 @@ class CalendarClient:
         if not etag:
             etag = await self._object_etag(event)
 
-        # Merge updates into existing iCal data
-        organizer = (
-            await self._organizer_address() if event_data.get("attendees") else None
+        # Merge updates into existing iCal data. An event stored with attendees
+        # but no ORGANIZER (written before #1497) gets one on any update, so a
+        # later delete still sends attendees a CANCEL.
+        stored = str(event.data or "")
+        needs_organizer = bool(event_data.get("attendees")) or (
+            "ATTENDEE" in stored and "ORGANIZER" not in stored
         )
+        organizer = await self._organizer_address() if needs_organizer else None
         updated_ical = self._merge_ical_properties(
             event.data,  # type: ignore[arg-type]
             event_data,
@@ -2194,6 +2198,12 @@ class CalendarClient:
                 # Same key the update tool accepts, so a read value can be fed
                 # straight back in — the write side is recurrence_end_date.
                 event_data["recurrence_end_date"] = value.isoformat()
+        recurrence_id = component.get("recurrence-id")
+        if recurrence_id:
+            # An expanded occurrence carries RECURRENCE-ID but no RRULE; it is
+            # still one instance of a stored series, which bulk ops must know
+            # before writing by UID (#1499).
+            event_data["recurrence_id"] = recurrence_id.dt.isoformat()
 
         # Handle attendees
         # A single ATTENDEE comes back as a bare vCalAddress, not a list.
@@ -2455,6 +2465,20 @@ class CalendarClient:
                 if "attendees" in event_data:
                     self._apply_attendees(
                         component, event_data["attendees"] or "", organizer
+                    )
+                elif (
+                    organizer is not None
+                    and "ATTENDEE" in component
+                    and "ORGANIZER" not in component
+                ):
+                    # Re-apply the stored guests: keeps their parameters and
+                    # adds the missing ORGANIZER + CHAIR.
+                    self._apply_attendees(
+                        component,
+                        ",".join(
+                            _address_key(a) for a in _as_list(component["ATTENDEE"])
+                        ),
+                        organizer,
                     )
 
                 # Handle reminders (VALARM). Omitting all reminder arguments
@@ -3054,8 +3078,51 @@ class CalendarClient:
 
     # ============= Legacy Methods (for backward compatibility) =============
 
+    @staticmethod
+    def _bulk_targets(
+        events: list[dict[str, Any]], apply_to_series: bool, operation: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split matched events into ``(targets, skipped)``, one entry per stored event.
+
+        A date-window listing expands a recurring series into one dict per
+        occurrence, but every write is by UID and hits the whole series (#1499).
+        So each (calendar, UID) is acted on once, and a recurring series only
+        when ``apply_to_series`` is set. ``move`` recreates the event from the
+        occurrence's fields, which would flatten the series, so it never takes one.
+        """
+        targets: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        seen: set[tuple[Any, str]] = set()
+        for event in events:
+            key = (event.get("calendar_name"), event["uid"])
+            if key in seen:
+                continue
+            seen.add(key)
+            in_series = event.get("recurring") or event.get("recurrence_id")
+            if in_series and (operation == "move" or not apply_to_series):
+                skipped.append(
+                    {
+                        "uid": event["uid"],
+                        "status": "skipped",
+                        "title": event.get("title", ""),
+                        "error": (
+                            "recurring series cannot be moved in bulk"
+                            if operation == "move"
+                            else "part of a recurring series; the "
+                            f"{operation} would apply to every occurrence. "
+                            "Pass apply_to_series=true to confirm."
+                        ),
+                    }
+                )
+            else:
+                targets.append(event)
+        return targets, skipped
+
     async def bulk_update_events(
-        self, filter_criteria: dict[str, Any], update_data: dict[str, Any]
+        self,
+        filter_criteria: dict[str, Any],
+        update_data: dict[str, Any],
+        apply_to_series: bool = False,
     ) -> dict[str, Any]:
         """Bulk update events matching filter criteria."""
         await self._ensure_calendar_home()
@@ -3075,11 +3142,12 @@ class CalendarClient:
                 filters=filter_criteria,
             )
 
+            targets, skipped = self._bulk_targets(events, apply_to_series, "update")
             updated_count = 0
             failed_count = 0
-            results = []
+            results = list(skipped)
 
-            for event in events:
+            for event in targets:
                 try:
                     await self.update_event(
                         event["calendar_name"], event["uid"], update_data
@@ -3104,9 +3172,10 @@ class CalendarClient:
                     )
 
             return {
-                "total_found": len(events),
+                "total_found": len(targets) + len(skipped),
                 "updated_count": updated_count,
                 "failed_count": failed_count,
+                "skipped_count": len(skipped),
                 "results": results,
             }
 
