@@ -284,9 +284,7 @@ def initialize_document_processors():
                 vlm_preset=docling_config.get("vlm_preset"),
                 progress_interval=docling_config.get("progress_interval", 10),
             )
-            # Above unstructured (10): when both are enabled, docling also wins
-            # PPTX/DOCX/XLSX routing now that it auto-serves them too (ADR-034).
-            registry.register(processor, priority=20)
+            registry.register(processor, priority=20)  # Above unstructured (10)
             logger.info("Registered Docling processor: %s", docling_config["api_url"])
             registered_count += 1
         except Exception as e:

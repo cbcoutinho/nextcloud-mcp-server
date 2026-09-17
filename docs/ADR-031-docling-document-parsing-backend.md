@@ -2,9 +2,7 @@
 
 ## Status
 
-Accepted — 2026-07-01. The "office formats stay with `unstructured`" call below
-is revisited by ADR-034: `DoclingProcessor` now also auto-serves OOXML
-(PPTX/DOCX/XLSX); the PDF exclusion described here is unaffected.
+Accepted — 2026-07-01
 
 ## Context
 

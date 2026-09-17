@@ -228,27 +228,9 @@ async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
 # --- DoclingProcessor --------------------------------------------------------
 
 
-def test_supported_mime_types_images_and_ooxml_office():
+def test_supported_mime_types_images_only():
     proc = DoclingProcessor("https://docling:5001")
     assert "image/png" in proc.supported_mime_types
-    # OOXML office formats auto-route to docling too (ADR-034).
-    assert (
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        in proc.supported_mime_types
-    )
-    assert (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        in proc.supported_mime_types
-    )
-    assert (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        in proc.supported_mime_types
-    )
-    # Legacy binary Office formats are NOT included -- docling doesn't parse the
-    # OLE2 container, only OOXML; those stay `unstructured`'s job.
-    assert "application/vnd.ms-powerpoint" not in proc.supported_mime_types
-    assert "application/msword" not in proc.supported_mime_types
-    assert "application/vnd.ms-excel" not in proc.supported_mime_types
     # PDFs are deliberately excluded from auto-selection -- docling serves PDFs
     # as an OCR provider (DOCUMENT_OCR_PROVIDER=docling), never as a tier of its
     # own, so it can't hijack PDF tiering.
@@ -390,9 +372,8 @@ def test_docling_wins_image_routing_but_not_pdf():
 
     # Images route to docling (higher priority).
     assert registry.find_processor("image/png").name == "docling"
-    # PDFs are unaffected -- docling's supported_mime_types excludes
-    # application/pdf, so the fake still wins there, and docling never appears
-    # as a PDF tier candidate for any tier.
+    # PDFs are unaffected -- docling is images-only, so the fake still wins there,
+    # and docling never appears as a PDF tier candidate for any tier.
     assert registry.find_processor("application/pdf").name == "fake-images"
     for t in ("fast", "structured", "ocr"):
         picked = registry._pdf_processor_for_tier(t)

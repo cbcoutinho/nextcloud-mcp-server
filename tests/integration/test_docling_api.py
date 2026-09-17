@@ -78,20 +78,6 @@ def create_text_image(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def create_text_pptx(text: str) -> bytes:
-    """A one-slide PPTX with a single text box -- enough for docling to extract."""
-    from pptx import Presentation  # noqa: PLC0415
-
-    prs = Presentation()
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
-    box = slide.shapes.add_textbox(0, 0, prs.slide_width, prs.slide_height)
-    box.text_frame.text = text
-    buffer = BytesIO()
-    prs.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
 def create_text_pdf(text: str) -> bytes:
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
@@ -146,39 +132,6 @@ async def test_docling_image_parsing(
         assert isinstance(content, str) and content
         # OCR is imperfect; assert on a distinctive substring rather than equality.
         assert "docling" in content.lower()
-    finally:
-        try:
-            await nc_client.webdav.delete_resource(test_file)
-        except Exception:
-            pass
-
-
-@pytest.mark.skipif(not _DOCLING_ENABLED, reason="Docling is not enabled")
-async def test_docling_pptx_parsing(
-    nc_client: NextcloudClient, test_base_path: str, nc_mcp_client: ClientSession
-):
-    """A PPTX auto-routes to docling (ADR-034) and its text comes back as markdown
-    through nc_webdav_read_file -- no ENABLE_UNSTRUCTURED needed."""
-    test_file = f"{test_base_path}/docling_slide.pptx"
-    marker = "DoclingPptxHello"
-    try:
-        await nc_client.webdav.write_file(
-            test_file,
-            create_text_pptx(marker),
-            content_type=(
-                "application/vnd.openxmlformats-officedocument"
-                ".presentationml.presentation"
-            ),
-        )
-        mcp_result = await nc_mcp_client.call_tool(
-            "nc_webdav_read_file", arguments={"path": test_file}
-        )
-        result = _read_result(mcp_result)
-
-        assert result.get("parsed") is True
-        assert result["parsing_metadata"]["parsing_method"] == "docling"
-        content = result["content"]
-        assert isinstance(content, str) and marker in content
     finally:
         try:
             await nc_client.webdav.delete_resource(test_file)
