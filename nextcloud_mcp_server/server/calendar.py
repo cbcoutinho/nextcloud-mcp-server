@@ -1092,7 +1092,13 @@ def configure_calendar_tools(mcp: MCPServer):
         client = await get_client(ctx)
 
         if action == "list":
-            return await client.calendar.list_calendars()
+            # Wrap in ListCalendarsResponse so the result is one content block,
+            # not one per calendar (GH #568). Mirrors nc_calendar_list_calendars.
+            calendars_data = await client.calendar.list_calendars()
+            calendars = [Calendar(**cal_data) for cal_data in calendars_data]
+            return ListCalendarsResponse(
+                calendars=calendars, total_count=len(calendars)
+            )
 
         elif action == "create":
             if not calendar_name:
