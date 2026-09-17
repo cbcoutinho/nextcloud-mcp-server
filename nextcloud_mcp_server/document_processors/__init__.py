@@ -4,6 +4,7 @@ from nextcloud_mcp_server.config import get_settings
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .ocr import OcrProcessor
+from .presentation import PptxProcessor
 from .pymupdf import PyMuPDFProcessor
 from .pypdfium2_fast import Pypdfium2FastProcessor
 from .registry import ProcessorRegistry, get_registry
@@ -37,12 +38,20 @@ _registry.register(
     priority=1,
 )
 
+# PPTX is OOXML, so python-pptx reads it directly -- no external service and no
+# LibreOffice binary to gate on. Priority 15 puts it above the optional
+# Unstructured processor (10), which also claims this type but flattens
+# slide/table structure; below Docling's images-only 20, where the two never
+# actually compete since Docling does not auto-select PPTX.
+_registry.register(PptxProcessor(), priority=15)
+
 __all__ = [
     "DocumentProcessor",
     "ProcessingResult",
     "ProcessorError",
     "ProcessorRegistry",
     "get_registry",
+    "PptxProcessor",
     "PyMuPDFProcessor",
     "Pypdfium2FastProcessor",
     "OcrProcessor",

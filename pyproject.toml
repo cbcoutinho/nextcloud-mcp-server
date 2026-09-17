@@ -65,6 +65,7 @@ dependencies = [
     "mistralai>=2.4.5",
     "sqlalchemy[asyncio]>=2.0",
     "pypdfium2>=5.9.0",
+    "python-pptx>=1.0.2",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
