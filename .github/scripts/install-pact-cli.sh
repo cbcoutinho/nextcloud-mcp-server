@@ -10,13 +10,14 @@ set -euo pipefail
 # The installer is downloaded, checksum-verified, and only then executed. It
 # used to be piped straight into `sh` from three separate workflow steps, which
 # executed unverified remote code and allowed a redirect to drop to plain HTTP
-# (githubactions:S8482 / S6506). Bump PACT_INSTALLER_SHA256 alongside
-# PACT_CLI_VERSION:
+# (githubactions:S8482 / S6506). Renovate bumps PACT_INSTALLER_SHA256 together
+# with PACT_CLI_VERSION (github-release-attachments digest). To verify by hand:
 #
 #   curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/<ver>/pact-installer.sh | sha256sum
 
-PACT_CLI_VERSION="v0.10.7"
-PACT_INSTALLER_SHA256="44af8d4cf54419efbccd980ce273c3658a15426b32049b9647523a3dca1de758"
+# renovate: datasource=github-release-attachments depName=pact-foundation/pact-cli
+PACT_CLI_VERSION="v0.10.8"
+PACT_INSTALLER_SHA256="a12a95f0f3079bdaec618144e06f8cfe4941496f0e882425b0797816fe502209"
 
 installer="$(mktemp)"
 trap 'rm -f "$installer"' EXIT
