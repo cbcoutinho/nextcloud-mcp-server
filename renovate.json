@@ -55,15 +55,14 @@
     },
     {
       "customType": "regex",
-      "description": "Unified pact CLI version pinned in .github/scripts/install-pact-cli.sh (note: PACT_INSTALLER_SHA256 next to it must be bumped by hand)",
+      "description": "Unified pact CLI version + installer SHA256 pinned in .github/scripts/install-pact-cli.sh — github-release-attachments bumps the digest alongside the version",
       "managerFilePatterns": [
         "/^\\.github/scripts/install-pact-cli\\.sh$/"
       ],
       "matchStrings": [
-        "PACT_CLI_VERSION=\"(?<currentValue>v[^\"]+)\""
+        "#\\s?renovate: datasource=github-release-attachments depName=(?<depName>\\S+)\\n[A-Z_]+VERSION=\"(?<currentValue>[^\"]+)\"\\n[A-Z_]+SHA256=\"(?<currentDigest>[a-f0-9]+)\""
       ],
-      "depNameTemplate": "pact-foundation/pact-cli",
-      "datasourceTemplate": "github-releases"
+      "datasourceTemplate": "github-release-attachments"
     }
   ]
 }
