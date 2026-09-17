@@ -44,7 +44,7 @@ built on `python-pptx`:
 - Speaker notes are appended to their slide's section (`**Notes:** ...`) when
   present.
 - `slide_boundaries` metadata (`{slide, start_offset, end_offset}`) mirrors
-  `page_boundaries`/`sheet_boundaries`, so a chunk can still be attributed to
+  `page_boundaries`, so a chunk can still be attributed to
   the slide it came from despite a presentation having no page geometry to
   highlight.
 
@@ -57,10 +57,8 @@ below Docling's images-only priority 20, where the two do not actually
 compete today.
 
 Legacy `.ppt` (OLE2) is explicitly out of scope: `python-pptx` cannot open the
-binary container, for the same reason `office.py`'s `DOC_MIME_TYPES` excludes
-legacy `.doc` from its direct-read path. It stays `unstructured`'s job (or a
-future LibreOffice-rendition processor, mirroring `office.py`, if that gap
-needs closing).
+binary container. It stays `unstructured`'s job (or a future
+LibreOffice-rendition processor, if that gap needs closing).
 
 This decision reverts the docling-routing approach outlined above; PDFs and
 image auto-selection are unaffected by either.

@@ -39,11 +39,10 @@ _registry.register(
 )
 
 # PPTX is OOXML, so python-pptx reads it directly -- no external service and no
-# LibreOffice binary to gate on, unlike the office/spreadsheet processors this
-# mirrors. Priority 15 puts it above the optional Unstructured processor (10),
-# which also claims this type but flattens slide/table structure; below
-# Docling's images-only 20, where the two never actually compete since Docling
-# does not auto-select PPTX.
+# LibreOffice binary to gate on. Priority 15 puts it above the optional
+# Unstructured processor (10), which also claims this type but flattens
+# slide/table structure; below Docling's images-only 20, where the two never
+# actually compete since Docling does not auto-select PPTX.
 _registry.register(PptxProcessor(), priority=15)
 
 __all__ = [

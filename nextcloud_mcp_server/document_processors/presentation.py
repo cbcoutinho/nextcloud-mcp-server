@@ -1,15 +1,13 @@
 """Presentations, read shape-by-shape rather than through a PDF rendition.
 
 ``.pptx`` is already OOXML (a zip of XML parts), so ``python-pptx`` reads it
-directly -- no LibreOffice/``soffice`` dependency, unlike the ``.doc``/``.docx``
-rendition route in ``office.py``. Legacy ``.ppt`` (OLE2) is out of scope here
-for the same reason ``office.py``'s ``DOC_MIME_TYPES`` excludes legacy binary
-formats from the formats it can read directly: python-pptx cannot open the
-OLE2 container, only the OOXML one.
+directly -- no LibreOffice/``soffice`` dependency. Legacy ``.ppt`` (OLE2) is
+out of scope: python-pptx cannot open the OLE2 container, only the OOXML one.
 """
 
 import io
 import logging
+import zipfile
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
@@ -22,9 +20,16 @@ logger = logging.getLogger(__name__)
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 # Per-slide spans into the joined text: {"slide", "start_offset", "end_offset"}.
-# The presentation counterpart to a PDF's ``page_boundaries`` / a spreadsheet's
-# ``sheet_boundaries`` -- lets a chunk be attributed to the slide it came from.
+# The presentation counterpart to a PDF's ``page_boundaries`` -- lets a chunk be
+# attributed to the slide it came from.
 SLIDE_BOUNDARIES_KEY = "slide_boundaries"
+
+# python-pptx inflates every package part into memory, so bound the total
+# *declared* uncompressed size before opening it (zipfile will not inflate past
+# a member's declared size, so the header cannot lie its way around this). The
+# download ceiling only caps the compressed bytes; this stops a zip bomb.
+# ponytail: fixed cap, make it a setting if real decks hit it.
+MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 
 
 class PptxProcessor(DocumentProcessor):
@@ -53,7 +58,9 @@ class PptxProcessor(DocumentProcessor):
         ] = None,
     ) -> ProcessingResult:
         try:
-            text, boundaries, slide_count = await run_sync(_extract_deck, content)
+            text, boundaries, slide_count = await run_sync(
+                _extract_deck, content, abandon_on_cancel=True
+            )
         except Exception as exc:
             raise ProcessorError(f"Presentation parse failed: {exc}") from exc
 
@@ -78,7 +85,7 @@ class PptxProcessor(DocumentProcessor):
 
 
 def _escape_cell(value: str) -> str:
-    """One table cell as markdown-table-safe text -- see ``spreadsheet._escape``."""
+    """One table cell as markdown-table-safe text."""
     return " ".join(value.replace("|", "\\|").split())
 
 
@@ -97,19 +104,32 @@ def _render_table(table: Any) -> str:
     return "\n".join(lines)
 
 
-def _render_slide(slide: Any, index: int) -> str:
-    """One slide's text frames and tables, in shape order, plus its notes."""
+def _shape_blocks(shapes: Any) -> list[str]:
+    """Text frames and tables in shape order, descending into group shapes."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE  # noqa: PLC0415 -- see _extract_deck
+
     blocks: list[str] = []
-    for shape in slide.shapes:
-        if shape.has_table:
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            blocks.extend(_shape_blocks(shape.shapes))
+        elif shape.has_table:
             blocks.append(_render_table(shape.table))
         elif shape.has_text_frame:
             text = shape.text_frame.text.strip()
             if text:
                 blocks.append(text)
+    return blocks
 
-    if slide.has_notes_slide:
-        notes = slide.notes_slide.notes_text_frame.text.strip()
+
+def _render_slide(slide: Any, index: int) -> str:
+    """One slide's text frames and tables, in shape order, plus its notes."""
+    blocks = _shape_blocks(slide.shapes)
+
+    # A notes page need not carry a notes placeholder, in which case
+    # notes_text_frame is None.
+    notes_frame = slide.notes_slide.notes_text_frame if slide.has_notes_slide else None
+    if notes_frame is not None:
+        notes = notes_frame.text.strip()
         if notes:
             blocks.append(f"**Notes:** {notes}")
 
@@ -121,6 +141,14 @@ def _render_slide(slide: Any, index: int) -> str:
 def _extract_deck(content: bytes) -> tuple[str, list[dict[str, Any]], int]:
     """Render every slide as markdown. Runs in a worker thread."""
     from pptx import Presentation  # noqa: PLC0415 -- keep the import off the hot path
+
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        inflated = sum(info.file_size for info in zf.infolist())
+    if inflated > MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"uncompressed size {inflated} bytes exceeds "
+            f"{MAX_UNCOMPRESSED_BYTES} byte cap"
+        )
 
     prs = Presentation(io.BytesIO(content))
 
