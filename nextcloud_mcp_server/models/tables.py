@@ -2,7 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasGenerator, BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 from .base import BaseResponse, IdResponse, StatusResponse
 
@@ -37,14 +38,37 @@ class TableColumn(BaseModel):
 class TableRow(BaseModel):
     """Model for a table row."""
 
-    id: int = Field(description="Row ID")
-    created_by: Optional[str] = Field(None, description="User who created the row")
-    created_at: Optional[str] = Field(None, description="Row creation timestamp")
-    last_edit_by: Optional[str] = Field(
-        None, description="User who last edited the row"
+    # Accept the Tables API's camelCase keys on INPUT only; OUTPUT stays
+    # snake_case (validation_alias, not a plain alias, so MCP tool output is
+    # not leaked as camelCase).
+    model_config = ConfigDict(
+        alias_generator=AliasGenerator(validation_alias=to_camel),
+        populate_by_name=True,
     )
-    last_edit_at: Optional[str] = Field(None, description="Last edit timestamp")
-    data: Dict[int, Any] = Field(description="Row data keyed by column ID")
+
+    id: int = Field(description="Row ID")
+    # Metadata is optional on purpose: a Tables release that drops a field must
+    # not fail the whole read (see #728). ``dataByAlias`` is redundant and
+    # ignored (extra fields are dropped by default).
+    table_id: int | None = Field(None, description="Table ID the row belongs to")
+    created_by: str | None = Field(None, description="User who created the row")
+    created_at: str | None = Field(None, description="Row creation timestamp")
+    last_edit_by: str | None = Field(None, description="User who last edited the row")
+    last_edit_at: str | None = Field(None, description="Last edit timestamp")
+    data: dict[int, Any] = Field(
+        default_factory=dict, description="Row data keyed by column ID"
+    )
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def _normalise_data(cls, value):
+        # The Tables API sends ``data`` as a list of {columnId, value} cells,
+        # or null. Turn both into a {column_id: value} mapping.
+        if value is None:
+            return {}
+        if isinstance(value, list):
+            return {cell["columnId"]: cell["value"] for cell in value}
+        return value
 
 
 class TableView(BaseModel):
@@ -128,11 +152,7 @@ class GetSchemaResponse(BaseResponse):
 class ReadTableResponse(BaseResponse):
     """Response model for reading table rows."""
 
-    # The Tables rows API returns each row as a raw dict whose ``data`` is a
-    # list of {columnId, value} objects, not the {column_id: value} mapping
-    # TableRow models. Pass rows through untouched so the wrapper only changes
-    # how the result is serialised (one content block, GH #568), not its shape.
-    rows: List[Dict[str, Any]] = Field(description="Table rows")
+    rows: list[TableRow] = Field(description="Table rows")
     table_id: int = Field(description="Table ID")
     total_count: Optional[int] = Field(
         None, description="Total number of rows (if known)"

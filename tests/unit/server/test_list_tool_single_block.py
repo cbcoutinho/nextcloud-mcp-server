@@ -76,9 +76,26 @@ async def test_manage_calendar_list_returns_single_block(mocker):
 
 async def test_read_table_returns_single_block(mocker):
     rows = [
-        {"id": 1, "tableId": 7, "data": [{"columnId": 1, "value": "a"}]},
-        {"id": 2, "tableId": 7, "data": [{"columnId": 1, "value": "b"}]},
-        {"id": 3, "tableId": 7, "data": [{"columnId": 1, "value": "c"}]},
+        {
+            "id": 1,
+            "tableId": 7,
+            "createdBy": "alice",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "lastEditBy": "bob",
+            "lastEditAt": "2024-01-02T00:00:00Z",
+            "data": [
+                {"columnId": 1, "value": "a"},
+                {"columnId": 2, "value": 42},
+            ],
+            "dataByAlias": [],
+        },
+        {
+            "id": 2,
+            "tableId": 7,
+            "createdBy": "carol",
+            "data": None,
+            "dataByAlias": [],
+        },
     ]
     client = mocker.MagicMock()
     client.tables.get_table_rows = mocker.AsyncMock(return_value=rows)
@@ -95,4 +112,11 @@ async def test_read_table_returns_single_block(mocker):
     assert len(blocks) == 1
     payload = json.loads(blocks[0].text)
     assert payload["table_id"] == 7
-    assert [row["id"] for row in payload["rows"]] == [1, 2, 3]
+    assert [row["id"] for row in payload["rows"]] == [1, 2]
+    # data is normalised from the ?list<{columnId, value}> shape to a mapping;
+    # JSON stringifies the int column-id keys, so they come back as strings.
+    assert payload["rows"][0]["data"] == {"1": "a", "2": 42}
+    # camelCase in, snake_case out (validation_alias only).
+    assert payload["rows"][0]["created_by"] == "alice"
+    # null data normalises to an empty mapping.
+    assert payload["rows"][1]["data"] == {}

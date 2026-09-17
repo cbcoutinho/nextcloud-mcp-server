@@ -9,6 +9,7 @@ from nextcloud_mcp_server.models.tables import (
     ListTablesResponse,
     ReadTableResponse,
     Table,
+    TableRow,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
@@ -59,7 +60,10 @@ def configure_tables_tools(mcp: MCPServer):
         # Wrap in a Response so the rows are one content block, not one per row
         # (GH #568). See nc_tables_list_tables for the same pattern.
         return ReadTableResponse(
-            rows=rows, table_id=table_id, offset=offset, limit=limit
+            rows=[TableRow.model_validate(row) for row in rows],
+            table_id=table_id,
+            offset=offset,
+            limit=limit,
         )
 
     @mcp.tool(
