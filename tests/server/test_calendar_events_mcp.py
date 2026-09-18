@@ -420,3 +420,43 @@ async def test_mcp_bulk_delete_skips_recurring_series_without_opt_in(
     finally:
         if event_uid:
             await nc_client.calendar.delete_event(temporary_calendar, event_uid)
+
+
+async def test_mcp_create_meeting_binds_a_timezone(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """create_meeting no longer stores floating time by construction (GH #1502).
+
+    An explicit ``timezone`` must produce a TZID-bound event; without one the
+    tool falls back to the user's Nextcloud timezone, read from the real OCS
+    ``/cloud/user`` endpoint, and only stays floating if that is unset.
+    """
+    date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    user_tz = await nc_client.users.get_current_user_timezone()
+    uids = []
+
+    try:
+        for args, expected_tz in [
+            ({"timezone": "America/New_York"}, "America/New_York"),
+            ({}, user_tz or None),
+        ]:
+            result = await nc_mcp_client.call_tool(
+                "nc_calendar_create_meeting",
+                {
+                    "calendar_name": temporary_calendar,
+                    "title": "Timezone meeting",
+                    "date": date,
+                    "time": "14:00",
+                    **args,
+                },
+            )
+            assert result.is_error is False, result.content
+            uid = json.loads(result.content[0].text)["uid"]
+            uids.append(uid)
+
+            event, _ = await nc_client.calendar.get_event(temporary_calendar, uid)
+            assert event.get("start_tz") == expected_tz, event
+            assert event.get("end_tz") == expected_tz, event
+    finally:
+        for uid in uids:
+            await nc_client.calendar.delete_event(temporary_calendar, uid)

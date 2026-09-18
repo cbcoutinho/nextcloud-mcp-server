@@ -91,6 +91,19 @@ class UsersClient(BaseNextcloudClient):
         )
         return UserDetails(**response.json()["ocs"]["data"])
 
+    async def get_current_user_timezone(self) -> str:
+        """The authenticated user's ``core/timezone`` preference, or ``""``.
+
+        OCS ``/cloud/user`` is the only way to read it: the provisioning
+        preferences API registers POST/DELETE but no GET. Querying the current
+        user (not ``/cloud/users/{id}``) also sidesteps loginName != UID.
+        """
+        headers = self._get_user_headers()
+        response = await self._make_request(
+            "GET", "/ocs/v2.php/cloud/user", headers=headers
+        )
+        return response.json()["ocs"]["data"].get("timezone") or ""
+
     async def update_user_field(self, userid: str, key: str, value: str) -> None:
         """
         Edits attributes related to a user.
