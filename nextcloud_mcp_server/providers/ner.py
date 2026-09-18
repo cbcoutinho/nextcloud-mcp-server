@@ -53,10 +53,12 @@ def _entity_text(entity: object, text: str) -> str | None:
     if not isinstance(entity, dict) or entity.get("label") != _PERSON_LABEL:
         return None
     start, end = entity.get("start"), entity.get("end")
-    # bool is an int subclass, so True would otherwise read as offset 1.
-    if not isinstance(start, int) or not isinstance(end, int):
-        return None
+    # bool is an int subclass, so True would otherwise read as offset 1. The
+    # bool test comes first: after an isinstance(int) narrowing, static
+    # analysers (Sonar S2583) wrongly treat a later bool test as always false.
     if isinstance(start, bool) or isinstance(end, bool):
+        return None
+    if not isinstance(start, int) or not isinstance(end, int):
         return None
     if not 0 <= start < end <= len(text):
         return None
