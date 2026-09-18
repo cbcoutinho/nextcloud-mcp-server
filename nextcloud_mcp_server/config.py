@@ -463,6 +463,25 @@ _DEFAULTS: dict[str, Any] = {
     # VLM preset name sent when docling_pipeline == "vlm". None -> docling-serve
     # picks its own DOCLING_SERVE_DEFAULT_VLM_PRESET. Preset names are server-defined.
     "docling_vlm_preset": None,
+    # Caption raster pictures embedded in a .pptx via the same docling-serve
+    # instance (ADR-037). Explicit opt-in beyond a bare DOCLING_API_URL, like
+    # DOCUMENT_OCR_PROVIDER=docling needs its own selection: a deployment that
+    # only wants docling for scanned-PDF OCR shouldn't start captioning every
+    # picture in every presentation for free. python-pptx has no rendering
+    # engine, so this only reaches actual picture shapes -- native vector
+    # diagrams (SmartArt, freeform/connector shapes) are unaffected.
+    "pptx_caption_images": False,
+    # Cap on pictures captioned per .pptx (one docling-serve round trip each).
+    # nc_webdav_read_file blocks synchronously for the whole parse, so this
+    # bounds the worst case rather than leaving it to the deck's picture count.
+    "pptx_caption_max_images": 8,
+    # Per-picture docling-serve request timeout (seconds). Deliberately short
+    # and independent of DOCLING_TIMEOUT/DOCUMENT_OCR_TIMEOUT_SECONDS (other
+    # touchpoints, other latency profiles): a caption is meant to be a quick
+    # per-picture round trip repeated up to PPTX_CAPTION_MAX_IMAGES times, not
+    # a single long convert. Raise it if DOCLING_PIPELINE=vlm makes captions
+    # time out (VLM is far slower than the standard pipeline -- see ADR-032).
+    "pptx_caption_timeout_seconds": 15.0,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
@@ -631,6 +650,8 @@ _dynaconf = Dynaconf(
         Validator("OIDC_DISCOVERY_MAX_ATTEMPTS", gte=1),
         Validator("OIDC_DISCOVERY_BACKOFF_BASE", gte=0),
         Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
+        Validator("PPTX_CAPTION_MAX_IMAGES", gte=0),
+        Validator("PPTX_CAPTION_TIMEOUT_SECONDS", gt=0),
         Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
         Validator("QDRANT_INIT_BACKOFF_BASE", gte=0),
         Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
@@ -1478,6 +1499,12 @@ class Settings:
     docling_ocr_lang: str = "en,de"
     docling_pipeline: str = "standard"
     docling_vlm_preset: str | None = None
+
+    # PPTX picture captioning, a second touchpoint on the same docling-serve
+    # instance (ADR-037). See _DEFAULTS above for the reasoning.
+    pptx_caption_images: bool = False
+    pptx_caption_max_images: int = 8
+    pptx_caption_timeout_seconds: float = 15.0
 
     # Observability settings
     metrics_enabled: bool = True

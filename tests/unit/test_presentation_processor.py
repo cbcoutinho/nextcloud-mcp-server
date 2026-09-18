@@ -1,7 +1,9 @@
 """Presentations are read shape-by-shape, keeping slide/table structure."""
 
 import io
+import struct
 import threading
+import zlib
 
 import anyio
 import pytest
@@ -17,6 +19,34 @@ from nextcloud_mcp_server.document_processors.presentation import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _png_bytes(
+    width: int, height: int, color: tuple[int, int, int] = (200, 50, 50)
+) -> bytes:
+    """A minimal valid PNG, built by hand so tests need no image library
+    beyond what python-pptx itself already requires."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = bytearray()
+    for _ in range(height):
+        raw.append(0)  # filter type: none
+        raw.extend(bytes(color) * width)
+    idat = zlib.compress(bytes(raw), 9)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", idat)
+        + chunk(b"IEND", b"")
+    )
 
 
 def _deck(slides: list[dict]) -> bytes:
@@ -185,3 +215,151 @@ async def test_a_stuck_parse_is_abandoned_when_the_caller_times_out(monkeypatch)
             await processor.process(b"", PPTX_MIME, "slow.pptx")
     finally:
         release.set()
+
+
+# --- picture eligibility (ADR-037) -------------------------------------------
+
+
+def test_eligible_picture_skips_unsupported_content_type(mocker):
+    shape = mocker.Mock()
+    shape.image.content_type = (
+        "image/x-emf"  # vector paste, docling can't read it either
+    )
+    shape.image.size = (500, 500)
+
+    assert presentation._eligible_picture(shape) is None
+
+
+def test_eligible_picture_skips_pictures_below_the_size_floor(mocker):
+    shape = mocker.Mock()
+    shape.image.content_type = "image/png"
+    shape.image.size = (40, 40)  # below MIN_CAPTION_PICTURE_PX -- logo/icon-sized
+
+    assert presentation._eligible_picture(shape) is None
+
+
+def test_eligible_picture_accepts_a_supported_large_picture(mocker):
+    shape = mocker.Mock()
+    shape.image.content_type = "image/png"
+    shape.image.size = (200, 150)
+    shape.image.blob = b"raw-bytes"
+
+    picture = presentation._eligible_picture(shape)
+
+    assert picture is not None
+    assert picture.content_type == "image/png"
+    assert picture.blob == b"raw-bytes"
+
+
+def test_eligible_picture_returns_none_for_an_unreadable_image_part(mocker):
+    shape = mocker.Mock()
+    type(shape).image = mocker.PropertyMock(side_effect=Exception("corrupt part"))
+
+    assert presentation._eligible_picture(shape) is None
+
+
+# --- picture captioning end to end (ADR-037) ---------------------------------
+
+
+def _deck_with_picture(image_bytes: bytes) -> bytes:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    slide.shapes.add_picture(
+        io.BytesIO(image_bytes), Inches(1), Inches(1), Inches(2), Inches(2)
+    )
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+async def test_picture_is_counted_but_not_captioned_when_disabled():
+    content = _deck_with_picture(_png_bytes(120, 120))
+
+    result = await PptxProcessor().process(content, PPTX_MIME, "pic.pptx")
+
+    assert result.metadata["pptx_pictures_found"] == 1
+    assert "pptx_pictures_captioned" not in result.metadata
+    assert "*Image:" not in result.text
+
+
+async def test_small_picture_is_not_counted_as_eligible():
+    content = _deck_with_picture(_png_bytes(40, 40))
+
+    result = await PptxProcessor().process(content, PPTX_MIME, "small.pptx")
+
+    assert result.metadata["pptx_pictures_found"] == 0
+
+
+async def test_caption_images_flag_without_docling_url_stays_disabled(
+    mocker, monkeypatch
+):
+    convert = mocker.AsyncMock()
+    monkeypatch.setattr(presentation, "convert_file", convert)
+    content = _deck_with_picture(_png_bytes(120, 120))
+
+    processor = PptxProcessor(caption_images=True, docling_api_url=None)
+    result = await processor.process(content, PPTX_MIME, "pic.pptx")
+
+    convert.assert_not_called()
+    assert "pptx_pictures_captioned" not in result.metadata
+
+
+async def test_picture_is_captioned_when_docling_is_configured(mocker, monkeypatch):
+    convert = mocker.AsyncMock(return_value={"md_content": "a red square"})
+    monkeypatch.setattr(presentation, "convert_file", convert)
+    content = _deck_with_picture(_png_bytes(120, 120))
+
+    processor = PptxProcessor(
+        caption_images=True, docling_api_url="https://docling:5001"
+    )
+    result = await processor.process(content, PPTX_MIME, "pic.pptx")
+
+    assert "*Image: a red square*" in result.text
+    assert result.metadata["pptx_pictures_found"] == 1
+    assert result.metadata["pptx_pictures_captioned"] == 1
+    # The picture's own bytes/content type are forwarded, not re-derived.
+    args, kwargs = convert.call_args
+    assert args[0] == "https://docling:5001"
+    assert args[2] == "image/png"
+    assert kwargs["to_formats"] == ["md"]
+
+
+async def test_caption_failure_does_not_fail_the_deck(mocker, monkeypatch):
+    convert = mocker.AsyncMock(side_effect=ProcessorError("docling unreachable"))
+    monkeypatch.setattr(presentation, "convert_file", convert)
+    content = _deck_with_picture(_png_bytes(120, 120))
+
+    processor = PptxProcessor(
+        caption_images=True, docling_api_url="https://docling:5001"
+    )
+    result = await processor.process(content, PPTX_MIME, "pic.pptx")
+
+    assert result.success is True
+    assert "*Image:" not in result.text
+    assert result.metadata["pptx_pictures_found"] == 1
+    assert result.metadata["pptx_pictures_captioned"] == 0
+
+
+async def test_caption_max_images_caps_docling_round_trips(mocker, monkeypatch):
+    convert = mocker.AsyncMock(return_value={"md_content": "caption"})
+    monkeypatch.setattr(presentation, "convert_file", convert)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    for _ in range(3):
+        slide.shapes.add_picture(
+            io.BytesIO(_png_bytes(120, 120)), Inches(1), Inches(1), Inches(2), Inches(2)
+        )
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    processor = PptxProcessor(
+        caption_images=True,
+        docling_api_url="https://docling:5001",
+        caption_max_images=2,
+    )
+    result = await processor.process(buf.getvalue(), PPTX_MIME, "many.pptx")
+
+    assert convert.await_count == 2
+    assert result.metadata["pptx_pictures_found"] == 3
+    assert result.metadata["pptx_pictures_captioned"] == 2

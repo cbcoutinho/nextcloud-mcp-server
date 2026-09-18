@@ -926,8 +926,11 @@ own, so a PDF reaches it through the OCR tier and nowhere else:
   `force_processor="docling"`, which asked the caller to name an extraction
   engine it had no basis to choose.)
 
-Office formats (DOCX/PPTX/XLSX) deliberately stay with `unstructured` — docling
-is scoped to the image/scan/handwriting use case here. OCR language codes are
+Office formats (DOCX/XLSX) deliberately stay with `unstructured` — docling is
+scoped to the image/scan/handwriting use case here. `.pptx` has its own native
+`python-pptx` reader (ADR-036) and does not route through docling for its text;
+it can optionally send the *pictures* it finds to docling for captioning — see
+"PPTX picture captioning" below. OCR language codes are
 engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
 codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
 convert endpoint has an observed ~2 min practical ceiling (from our testing, not a
@@ -973,6 +976,39 @@ base64 **fast** instead of hanging until the client times out. Default is empty
 (e.g. 45–60s) if you want graceful fallback; leave it unset (and expect long calls)
 if you deliberately want interactive VLM with a tolerant client. It never affects
 the async ingest/worker path. See `docs/ADR-032-docling-vlm-pipeline.md`.
+
+#### PPTX picture captioning (opt-in)
+
+`PptxProcessor` (ADR-036) reads `.pptx` text/tables natively and never touches
+docling for that. It can *additionally* send each raster picture it finds on a
+slide to the same docling-serve instance for a short caption, appended under
+the slide as `*Image: <caption>*`:
+
+```dotenv
+PPTX_CAPTION_IMAGES=false          # explicit opt-in, on top of DOCLING_API_URL
+PPTX_CAPTION_MAX_IMAGES=8          # cap on docling round trips per file
+PPTX_CAPTION_TIMEOUT_SECONDS=15    # per-picture request timeout (independent of DOCLING_TIMEOUT)
+```
+
+Requires `DOCLING_API_URL` (does **not** require `ENABLE_DOCLING` — that flag
+only gates the images-auto-select processor on the `find_processor` path,
+a different touchpoint). `PPTX_CAPTION_IMAGES` is its own explicit toggle
+rather than riding the bare URL, for the same reason `DOCUMENT_OCR_PROVIDER`
+needs its own selection: a deployment that only wants docling for scanned-PDF
+OCR shouldn't start captioning every picture in every presentation for free.
+
+Only *raster* picture shapes are captioned, and only above
+`MIN_CAPTION_PICTURE_PX` (80px on either native axis) — small pictures are
+treated as decorative (a logo, a bullet icon) and skipped. **Native vector
+diagrams (SmartArt, freeform/connector shapes) are not pictures in the OOXML
+sense and are not affected by this setting at all** — python-pptx has no
+rendering engine to turn them into pixels, so they still produce no text. The
+result's `parsing_metadata.pptx_pictures_found` / `.pptx_pictures_captioned`
+report what was found/described, surfaced as a `parse_notes` entry on
+`nc_webdav_read_file` whenever a deck has pictures that were not (fully)
+captioned. `DOCLING_PIPELINE=vlm` also affects captions (better descriptions,
+much slower per picture — raise `PPTX_CAPTION_TIMEOUT_SECONDS` accordingly).
+See `docs/ADR-037-pptx-picture-captioning.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 
