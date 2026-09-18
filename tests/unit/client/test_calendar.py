@@ -1538,3 +1538,347 @@ class TestDurationWithoutDtend:
             self.ICS.format(dtstart="DTSTART:20260210T100000Z\r\n", extra="")
         )
         assert "end_datetime" not in data
+
+
+# --- ORGANIZER / ATTENDEE scheduling properties -----------------------------
+#
+# Nextcloud only sends iTIP messages -- including the CANCEL on delete -- for an
+# event whose ORGANIZER is the calendar user. The Calendar web app adds it as
+# soon as an attendee is added; a raw CalDAV PUT has to do the same.
+
+
+def _organizer():
+    from icalendar import vCalAddress, vText
+
+    organizer = vCalAddress("mailto:owner@example.com")
+    organizer.params["CN"] = vText("Owner Name")
+    return organizer
+
+
+def _attendees_by_address(ical):
+    from nextcloud_mcp_server.client.calendar import _as_list
+
+    return {
+        str(a).lower().removeprefix("mailto:"): a
+        for a in _as_list(_vevent(ical).get("attendee"))
+    }
+
+
+def test_create_with_attendees_sets_organizer_and_scheduling_params():
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"},
+        "uid-organizer",
+        organizer=_organizer(),
+    )
+
+    vevent = _vevent(ical)
+    assert str(vevent["organizer"]) == "mailto:owner@example.com"
+    assert vevent["organizer"].params["CN"] == "Owner Name"
+
+    attendees = _attendees_by_address(ical)
+    assert set(attendees) == {"owner@example.com", "guest@example.com"}
+
+    owner = attendees["owner@example.com"].params
+    assert owner["ROLE"] == "CHAIR"
+    assert owner["PARTSTAT"] == "ACCEPTED"
+
+    guest = attendees["guest@example.com"].params
+    assert guest["ROLE"] == "REQ-PARTICIPANT"
+    assert guest["PARTSTAT"] == "NEEDS-ACTION"
+    assert guest["RSVP"] == "TRUE"
+
+
+def test_create_without_attendees_sets_no_organizer():
+    ical = _pure_client()._create_ical_event(
+        dict(TIMED_EVENT), "uid-no-attendees", organizer=_organizer()
+    )
+
+    vevent = _vevent(ical)
+    assert "ORGANIZER" not in vevent
+    assert "ATTENDEE" not in vevent
+
+
+def test_create_with_unknown_organizer_still_adds_attendees():
+    """If the principal address cannot be resolved, attendees are not dropped."""
+    ical = _pure_client()._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"},
+        "uid-no-organizer",
+    )
+
+    assert "ORGANIZER" not in _vevent(ical)
+    assert set(_attendees_by_address(ical)) == {"guest@example.com"}
+
+
+def test_update_adds_missing_organizer_and_keeps_existing_replies():
+    client = _pure_client()
+    created = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"}, "uid-merge"
+    )
+    # The guest has since accepted -- an update must not reset that.
+    accepted = created.replace("PARTSTAT=NEEDS-ACTION", "PARTSTAT=ACCEPTED").replace(
+        ";RSVP=TRUE", ""
+    )
+
+    merged = client._merge_ical_properties(
+        accepted,
+        {"attendees": "guest@example.com,second@example.com"},
+        organizer=_organizer(),
+    )
+
+    vevent = _vevent(merged)
+    assert str(vevent["organizer"]) == "mailto:owner@example.com"
+
+    attendees = _attendees_by_address(merged)
+    assert set(attendees) == {
+        "owner@example.com",
+        "guest@example.com",
+        "second@example.com",
+    }
+    assert attendees["guest@example.com"].params["PARTSTAT"] == "ACCEPTED"
+    assert attendees["second@example.com"].params["PARTSTAT"] == "NEEDS-ACTION"
+
+
+def test_update_keeps_foreign_organizer():
+    """An event organised by someone else keeps its ORGANIZER."""
+    client = _pure_client()
+    created = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"},
+        "uid-foreign",
+        organizer=_organizer(),
+    )
+    foreign = created.replace("owner@example.com", "boss@example.com")
+
+    merged = client._merge_ical_properties(
+        foreign, {"attendees": "guest@example.com"}, organizer=_organizer()
+    )
+
+    assert str(_vevent(merged)["organizer"]) == "mailto:boss@example.com"
+    assert "owner@example.com" not in _attendees_by_address(merged)
+
+
+def test_parse_single_attendee_is_not_split_into_characters():
+    """A lone ATTENDEE is a bare vCalAddress; iterating it walked its characters."""
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"}, "uid-single"
+    )
+
+    event = client._parse_ical_event(ical)
+
+    assert event is not None
+    assert event["attendees"] == "guest@example.com"
+
+
+def test_parse_returns_organizer():
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"},
+        "uid-parse-organizer",
+        organizer=_organizer(),
+    )
+
+    event = client._parse_ical_event(ical)
+
+    assert event is not None
+    assert event["organizer"] == "owner@example.com"
+    assert event["attendees"] == "owner@example.com,guest@example.com"
+
+
+async def test_organizer_address_comes_from_principal(mocker):
+    principal = mocker.Mock()
+    principal.calendar_user_address_set = mocker.AsyncMock(
+        return_value=[
+            "/remote.php/dav/principals/users/owner/",
+            "mailto:owner@example.com",
+        ]
+    )
+    principal.get_display_name = mocker.AsyncMock(return_value="Owner Name")
+    client = _pure_client()
+    client._dav_client = mocker.Mock(
+        get_principal=mocker.AsyncMock(return_value=principal)
+    )
+
+    organizer = await client._organizer_address()
+    again = await client._organizer_address()
+
+    assert organizer is not None
+    assert str(organizer) == "mailto:owner@example.com"
+    assert organizer.params["CN"] == "Owner Name"
+    assert again is organizer
+    principal.calendar_user_address_set.assert_awaited_once()
+
+
+async def test_organizer_address_without_mailto_returns_none(mocker):
+    principal = mocker.Mock()
+    principal.calendar_user_address_set = mocker.AsyncMock(
+        return_value=["/remote.php/dav/principals/users/owner/"]
+    )
+    client = _pure_client()
+    client._dav_client = mocker.Mock(
+        get_principal=mocker.AsyncMock(return_value=principal)
+    )
+
+    assert await client._organizer_address() is None
+
+
+async def test_create_event_threads_organizer_into_the_put(mocker):
+    """create_event resolves the organizer and writes it into the stored iCal."""
+    client = _pure_client()
+    calendar = mocker.Mock()
+    calendar.save_event = mocker.AsyncMock(
+        return_value=mocker.Mock(url="https://x/e.ics")
+    )
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", return_value=calendar)
+    mocker.patch.object(client, "_object_etag", mocker.AsyncMock(return_value='"e"'))
+    resolve = mocker.patch.object(
+        client, "_organizer_address", mocker.AsyncMock(return_value=_organizer())
+    )
+
+    await client.create_event(
+        "personal", {**TIMED_EVENT, "attendees": "guest@example.com"}
+    )
+
+    resolve.assert_awaited_once()
+    stored = calendar.save_event.await_args.kwargs["ical"]
+    assert str(_vevent(stored)["organizer"]) == "mailto:owner@example.com"
+
+
+async def test_create_event_without_attendees_skips_organizer_lookup(mocker):
+    """No attendees means no scheduling, so no principal round-trip."""
+    client = _pure_client()
+    calendar = mocker.Mock()
+    calendar.save_event = mocker.AsyncMock(
+        return_value=mocker.Mock(url="https://x/e.ics")
+    )
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", return_value=calendar)
+    mocker.patch.object(client, "_object_etag", mocker.AsyncMock(return_value='"e"'))
+    resolve = mocker.patch.object(client, "_organizer_address", mocker.AsyncMock())
+
+    await client.create_event("personal", dict(TIMED_EVENT))
+
+    resolve.assert_not_awaited()
+
+
+def test_update_of_legacy_event_adds_missing_organizer():
+    """An event stored with attendees but no ORGANIZER gets one on any update."""
+    client = _pure_client()
+    legacy = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"}, "uid-legacy"
+    )
+    accepted = legacy.replace("PARTSTAT=NEEDS-ACTION", "PARTSTAT=ACCEPTED")
+
+    merged = client._merge_ical_properties(
+        accepted, {"title": "Renamed"}, organizer=_organizer()
+    )
+
+    assert str(_vevent(merged)["organizer"]) == "mailto:owner@example.com"
+    attendees = _attendees_by_address(merged)
+    assert set(attendees) == {"owner@example.com", "guest@example.com"}
+    assert attendees["guest@example.com"].params["PARTSTAT"] == "ACCEPTED"
+
+
+async def test_update_event_resolves_organizer_for_legacy_attendees(mocker):
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {**TIMED_EVENT, "attendees": "guest@example.com"}, "uid-legacy-put"
+    )
+    event = mocker.Mock(data=stored, url="https://x/e.ics")
+    event.load = mocker.Mock(return_value=None)
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", return_value=mocker.Mock())
+    mocker.patch.object(
+        client, "_async_object_by_uid", mocker.AsyncMock(return_value=event)
+    )
+    put = mocker.patch.object(
+        client, "_conditional_put", mocker.AsyncMock(return_value='"n"')
+    )
+    resolve = mocker.patch.object(
+        client, "_organizer_address", mocker.AsyncMock(return_value=_organizer())
+    )
+
+    await client.update_event("personal", "uid-legacy-put", {"title": "x"}, etag='"e"')
+
+    resolve.assert_awaited_once()
+    written = put.await_args.args[1]
+    assert str(_vevent(written)["organizer"]) == "mailto:owner@example.com"
+
+
+# --- bulk operations on recurring series (#1499) ------------------------------
+
+
+def test_expanded_occurrence_carries_recurrence_id():
+    import datetime as dt
+
+    from icalendar import Calendar
+
+    client = _pure_client()
+    ical = client._create_ical_event(
+        {
+            **TIMED_EVENT,
+            "start_datetime": "2026-09-21T10:00:00",
+            "end_datetime": "2026-09-21T10:30:00",
+            "recurrence_rule": "FREQ=WEEKLY;COUNT=4",
+        },
+        "uid-series",
+    )
+
+    occurrences = client._expand_event_occurrences(
+        Calendar.from_ical(ical),
+        dt.datetime(2026, 9, 28),
+        dt.datetime(2026, 9, 29),
+        do_expand=True,
+    )
+
+    assert len(occurrences) == 1
+    assert occurrences[0]["recurrence_id"].startswith("2026-09-28T10:00:00")
+    assert not occurrences[0].get("recurring")
+
+
+def _match(uid, recurring=False, calendar="personal"):
+    event = {"uid": uid, "title": uid, "calendar_name": calendar}
+    if recurring:
+        # How an expanded occurrence of a series comes back from a listing.
+        event["recurrence_id"] = "2026-09-28T10:00:00"
+    return event
+
+
+def test_bulk_targets_dedupes_and_skips_series_without_opt_in():
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    events = [_match("single"), _match("series", True), _match("series", True)]
+
+    targets, skipped = CalendarClient._bulk_targets(events, False, "delete")
+
+    assert [e["uid"] for e in targets] == ["single"]
+    assert [(s["uid"], s["status"]) for s in skipped] == [("series", "skipped")]
+
+
+def test_bulk_targets_acts_on_series_once_with_opt_in():
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    events = [
+        _match("series", True),
+        _match("series", True),
+        _match("series", True, "work"),
+    ]
+
+    targets, skipped = CalendarClient._bulk_targets(events, True, "update")
+
+    assert [(e["uid"], e["calendar_name"]) for e in targets] == [
+        ("series", "personal"),
+        ("series", "work"),
+    ]
+    assert skipped == []
+
+
+def test_bulk_targets_never_moves_a_series():
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    targets, skipped = CalendarClient._bulk_targets(
+        [_match("series", True)], True, "move"
+    )
+
+    assert targets == []
+    assert skipped[0]["status"] == "skipped"
