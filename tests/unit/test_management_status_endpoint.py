@@ -542,3 +542,37 @@ def test_status_advertises_rerank_capability(
 
     assert response.status_code == 200
     assert response.json()["rerank_available"] is expected
+
+
+@pytest.mark.parametrize(
+    "content_redaction, gateway_url, expected",
+    [
+        ("optional", "https://gw.example", True),
+        ("enforced", "https://gw.example", True),
+        ("off", "https://gw.example", False),
+        # Gateway-only (ADR-038): configured but no gateway is unavailable.
+        ("enforced", None, False),
+    ],
+)
+def test_status_advertises_redaction_capability(
+    content_redaction, gateway_url, expected
+):
+    """Present and false (never absent) when unavailable, like rerank_available,
+    so Astrolabe gates its UI on the capability instead of probing the 422."""
+    settings = create_mock_settings(vector_sync_enabled=True)
+    settings.content_redaction = content_redaction
+    settings.embedding_gateway_url = gateway_url
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings", return_value=settings
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=AuthMode.SINGLE_USER_BASIC,
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["redaction_available"] is expected

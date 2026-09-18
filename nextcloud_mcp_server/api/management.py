@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
+from nextcloud_mcp_server.redaction import redaction_mode
 from nextcloud_mcp_server.search.rerank import rerank_available
 from nextcloud_mcp_server.vector.metrics_publisher import (
     count_indexed,
@@ -362,6 +363,10 @@ async def get_server_status(request: Request) -> JSONResponse:
         # when unconfigured, so a client can distinguish "server says no" from
         # "server too old to know about reranking".
         "rerank_available": rerank_available(settings),
+        # Whether `redact: true` can be served (ADR-038): redaction configured
+        # AND an embedding gateway to detect names with. Present and false when
+        # not, for the same reason as rerank_available.
+        "redaction_available": redaction_mode(settings) != "off",
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }

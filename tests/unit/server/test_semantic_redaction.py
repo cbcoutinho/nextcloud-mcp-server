@@ -59,7 +59,10 @@ def ner(mocker):
         client = MagicMock()
         client.model = "local/test-ner"
         client.detect = AsyncMock(side_effect=side_effect, return_value=names_per_text)
-        mocker.patch.object(semantic, "get_ner_client", AsyncMock(return_value=client))
+        mocker.patch(
+            "nextcloud_mcp_server.redaction.get_ner_client",
+            AsyncMock(return_value=client),
+        )
         return client
 
     return _install
@@ -111,7 +114,11 @@ async def test_category_of_a_scanned_row_is_detected_live(ner):
     """Ingest never scans the category, so it goes live even for a scanned row:
     a name that appears only there must not leak."""
     ner_client = ner([{"Tom Brown"}])
-    hit = _hit(person_names=["karen smith"], title_person_names=["karen smith"])
+    hit = _hit(
+        person_names=["karen smith"],
+        title_person_names=["karen smith"],
+        metadata={"path": "HR/letter.pdf", "category": "Tom Brown"},
+    )
     row = _row(hit, category="Tom Brown")
 
     await semantic._redact_results(

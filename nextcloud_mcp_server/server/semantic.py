@@ -31,12 +31,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_search_stage,
 )
 from nextcloud_mcp_server.providers.ner import NerError
-from nextcloud_mcp_server.redaction import (
-    Redactor,
-    detect_names,
-    get_ner_client,
-    redaction_mode,
-)
+from nextcloud_mcp_server.redaction import redaction_mode, redactor_for_hits
 from nextcloud_mcp_server.search.access_filter import (
     MAX_PATH_PREFIXES,
     list_accessible_scope,
@@ -362,49 +357,29 @@ async def _redact_results(
 ) -> RedactionInfo:
     """Replace person names in ``results`` with ``[PERSON_n]``, in place.
 
-    Names come from two places. Points scanned at ingest carry the names they
-    mention (``person_names``), which brings the document-wide propagation
-    with them. Everything else is detected live, in one call: rows that were
-    never scanned, and any context text, which comes from neighbouring chunks.
-    One ``Redactor`` covers the whole response, so a person keeps one number
-    across every row and field.
+    See :func:`redactor_for_hits` for where the names come from. Context text
+    goes in as extra text: it comes from neighbouring chunks, whose stored
+    names this row does not carry.
 
     Raises:
         ToolError: live detection failed. No results are returned rather than
             unredacted ones.
     """
-    names: set[str] = set()
-    live: list[str] = []
-    for row, hit in zip(results, hits, strict=True):
-        if hit.person_names is None:
-            live += [row.title, row.excerpt]
-            live.append((hit.metadata or {}).get("path") or "")
-        else:
-            names.update(hit.person_names)
-            names.update(hit.title_person_names or ())
-        # Always live: ingest never scans the category (a notes category, a
-        # calendar location), and neither does context, which comes from
-        # neighbouring chunks.
-        live += [
-            t
-            for t in (
-                row.category,
-                row.before_context,
-                row.marked_text,
-                row.after_context,
-            )
-            if t
-        ]
-    if any(live):
-        ner = await get_ner_client(settings)
-        try:
-            names |= await detect_names(ner, live)
-        except NerError as e:
-            raise ToolError(
-                f"Redaction failed, so no search results are returned: {e}"
-            ) from e
-
-    redactor = Redactor(names, keep_names)
+    try:
+        redactor = await redactor_for_hits(
+            hits,
+            keep_names=keep_names,
+            settings=settings,
+            extra_texts=[
+                t
+                for row in results
+                for t in (row.before_context, row.marked_text, row.after_context)
+            ],
+        )
+    except NerError as e:
+        raise ToolError(
+            f"Redaction failed, so no search results are returned: {e}"
+        ) from e
     for row, hit in zip(results, hits, strict=True):
         row.title = redactor.redact(row.title) or ""
         row.excerpt = redactor.redact(row.excerpt) or ""
