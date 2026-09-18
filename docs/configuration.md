@@ -928,8 +928,9 @@ own, so a PDF reaches it through the OCR tier and nowhere else:
 
 Office formats never route through docling for their text — docling is scoped
 to the image/scan/handwriting use case here. `.pptx` has a native `python-pptx`
-reader (ADR-036) and `.docx` a native `python-docx` reader (ADR-038); both can
-optionally send the *pictures* they find to docling for captioning — see
+reader (ADR-036), and `.docx`/`.xlsx` native `python-docx`/`openpyxl` readers
+(ADR-038); all three can optionally send the *pictures* they find to docling
+for captioning — see
 "Office picture captioning" below. OCR language codes are
 engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
 codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
@@ -979,11 +980,12 @@ the async ingest/worker path. See `docs/ADR-032-docling-vlm-pipeline.md`.
 
 #### Office picture captioning (opt-in)
 
-The native OOXML readers (`.pptx`, ADR-036; `.docx`, ADR-038) extract
+The native OOXML readers (`.pptx`, ADR-036; `.docx`/`.xlsx`, ADR-038) extract
 text/tables without docling. They can *additionally* send each raster picture
 they find to the same docling-serve instance for a short caption, added as
 `*Image: <caption>*` — under the slide for `.pptx`, right after the paragraph
-holding the picture for `.docx`:
+holding the picture for `.docx`, and in a trailing `## Images` section for
+`.xlsx`:
 
 ```dotenv
 OFFICE_CAPTION_IMAGES=false          # explicit opt-in, on top of DOCLING_API_URL

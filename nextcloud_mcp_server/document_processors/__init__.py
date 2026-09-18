@@ -9,6 +9,7 @@ from .presentation import PptxProcessor
 from .pymupdf import PyMuPDFProcessor
 from .pypdfium2_fast import Pypdfium2FastProcessor
 from .registry import ProcessorRegistry, get_registry
+from .spreadsheet import XlsxProcessor
 from .word import DocxProcessor
 
 # Register processors at module initialization. The tiered PDF pipeline selects
@@ -64,8 +65,9 @@ _captioner = PictureCaptioner(
     docling_ocr_lang=_docling_ocr_lang,
 )
 _registry.register(PptxProcessor(captioner=_captioner), priority=15)
-# Same reasoning, same priority, for .docx (ADR-038).
+# Same reasoning, same priority, for .docx and .xlsx (ADR-038).
 _registry.register(DocxProcessor(captioner=_captioner), priority=15)
+_registry.register(XlsxProcessor(captioner=_captioner), priority=15)
 
 __all__ = [
     "DocumentProcessor",
@@ -75,6 +77,7 @@ __all__ = [
     "get_registry",
     "DocxProcessor",
     "PptxProcessor",
+    "XlsxProcessor",
     "PyMuPDFProcessor",
     "Pypdfium2FastProcessor",
     "OcrProcessor",

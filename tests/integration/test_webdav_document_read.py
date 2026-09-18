@@ -211,3 +211,31 @@ async def test_docx_reads_as_markdown_without_an_optional_processor(
     assert f"# Report {MARKER}" in result["content"]
     assert "| Q1 | 42 |" in result["content"]
     assert any("1 picture(s)" in note for note in result["parse_notes"])
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+async def test_xlsx_reads_as_markdown_tables_without_an_optional_processor(
+    nc_client: NextcloudClient, nc_mcp_client: ClientSession, test_base_path: str
+):
+    """The native reader (ADR-038) renders one markdown table per sheet."""
+    from openpyxl import Workbook  # noqa: PLC0415
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Revenue"
+    ws.append(["Quarter", MARKER])
+    ws.append(["Q1", 42])
+    buffer = BytesIO()
+    wb.save(buffer)
+    path = f"{test_base_path}/workbook.xlsx"
+    await nc_client.webdav.write_file(path, buffer.getvalue(), content_type=XLSX_MIME)
+
+    result = await _read(nc_mcp_client, path)
+
+    assert result["parse_status"] == "parsed"
+    assert "## Sheet: Revenue" in result["content"]
+    assert f"| Quarter | {MARKER} |" in result["content"]
+    assert "| Q1 | 42 |" in result["content"]
+    assert result["parse_notes"] == []
