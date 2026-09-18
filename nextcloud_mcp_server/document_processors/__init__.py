@@ -2,6 +2,7 @@
 
 from nextcloud_mcp_server.config import get_settings
 
+from ._ooxml import PictureCaptioner
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .ocr import OcrProcessor
 from .presentation import PptxProcessor
@@ -44,7 +45,7 @@ _registry.register(
 # slide/table structure; below Docling's images-only 20, where the two never
 # actually compete since Docling does not auto-select PPTX.
 #
-# Picture captioning (ADR-037, PPTX_CAPTION_IMAGES) reuses the same
+# Picture captioning (ADR-037, OFFICE_CAPTION_IMAGES) reuses the same
 # docling-serve instance as the images-only DoclingProcessor and the docling
 # OCR backend, read straight off Settings rather than the app.py-only
 # processors-dict path those two are wired from -- docling_api_url already
@@ -52,18 +53,16 @@ _registry.register(
 _docling_ocr_lang = [
     s.strip() for s in (_settings.docling_ocr_lang or "").split(",") if s.strip()
 ] or None
-_registry.register(
-    PptxProcessor(
-        caption_images=_settings.pptx_caption_images,
-        docling_api_url=_settings.docling_api_url,
-        caption_max_images=_settings.pptx_caption_max_images,
-        caption_timeout=_settings.pptx_caption_timeout_seconds,
-        docling_pipeline=_settings.docling_pipeline,
-        docling_vlm_preset=_settings.docling_vlm_preset,
-        docling_ocr_lang=_docling_ocr_lang,
-    ),
-    priority=15,
+_captioner = PictureCaptioner(
+    caption_images=_settings.office_caption_images,
+    docling_api_url=_settings.docling_api_url,
+    caption_max_images=_settings.office_caption_max_images,
+    caption_timeout=_settings.office_caption_timeout_seconds,
+    docling_pipeline=_settings.docling_pipeline,
+    docling_vlm_preset=_settings.docling_vlm_preset,
+    docling_ocr_lang=_docling_ocr_lang,
 )
+_registry.register(PptxProcessor(captioner=_captioner), priority=15)
 
 __all__ = [
     "DocumentProcessor",

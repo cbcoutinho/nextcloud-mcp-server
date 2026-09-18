@@ -153,3 +153,16 @@ reusing the existing docling-serve HTTP client (`convert_file()` in
   filtered by size before ever reaching docling, so enabling this on a
   branded template deck should not spend the whole `PPTX_CAPTION_MAX_IMAGES`
   budget on the corner logo repeated on every slide.
+
+## Addendum — 2026-09-18: captioning shared across OOXML readers
+
+The captioning pieces (eligibility filter, `PictureCaptioner`, zip-size cap,
+markdown table rendering) moved from `presentation.py` to
+`document_processors/_ooxml.py`, so the native `.docx`/`.xlsx` readers use the
+same code path. Behavior for `.pptx` is unchanged. Two names changed with it:
+
+- Settings `PPTX_CAPTION_*` became `OFFICE_CAPTION_*`. The old names are still
+  read as deprecated fallbacks (`config._apply_legacy_caption_settings`).
+- Metadata `pptx_pictures_found`/`pptx_pictures_captioned` became
+  `pictures_found`/`pictures_captioned` (a breaking change to
+  `parsing_metadata`), and `_pptx_caption_note` became `_picture_caption_note`.

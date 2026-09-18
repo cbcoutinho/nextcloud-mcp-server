@@ -449,6 +449,27 @@ class TestGetSettings:
         _reload_config()
         assert get_settings().usage_metering_enabled is True
 
+    @patch.dict(
+        os.environ,
+        {"PPTX_CAPTION_IMAGES": "true", "PPTX_CAPTION_MAX_IMAGES": "3"},
+        clear=True,
+    )
+    def test_legacy_pptx_caption_names_still_apply(self):
+        """The 0.193.0 PPTX_CAPTION_* names keep working for OFFICE_CAPTION_*."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.office_caption_images is True
+        assert settings.office_caption_max_images == 3
+
+    @patch.dict(
+        os.environ,
+        {"PPTX_CAPTION_MAX_IMAGES": "3", "OFFICE_CAPTION_MAX_IMAGES": "5"},
+        clear=True,
+    )
+    def test_office_caption_name_wins_over_legacy(self):
+        _reload_config()
+        assert get_settings().office_caption_max_images == 5
+
 
 class TestChunkConfigValidation:
     """Test document chunking configuration validation."""

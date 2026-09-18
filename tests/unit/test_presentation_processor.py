@@ -10,7 +10,8 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches
 
-from nextcloud_mcp_server.document_processors import presentation
+from nextcloud_mcp_server.document_processors import _ooxml, presentation
+from nextcloud_mcp_server.document_processors._ooxml import PictureCaptioner
 from nextcloud_mcp_server.document_processors.base import ProcessorError
 from nextcloud_mcp_server.document_processors.presentation import (
     PPTX_MIME,
@@ -198,7 +199,7 @@ async def test_text_inside_nested_group_shapes_is_extracted():
 
 async def test_deck_inflating_past_the_cap_is_refused(monkeypatch):
     content = _deck([{"title": "T", "body": ["x"]}])
-    monkeypatch.setattr(presentation, "MAX_UNCOMPRESSED_BYTES", len(content))
+    monkeypatch.setattr(_ooxml, "MAX_UNCOMPRESSED_BYTES", len(content))
     processor = PptxProcessor()
 
     with pytest.raises(ProcessorError, match="uncompressed size"):
@@ -277,8 +278,8 @@ async def test_picture_is_counted_but_not_captioned_when_disabled():
 
     result = await PptxProcessor().process(content, PPTX_MIME, "pic.pptx")
 
-    assert result.metadata["pptx_pictures_found"] == 1
-    assert "pptx_pictures_captioned" not in result.metadata
+    assert result.metadata["pictures_found"] == 1
+    assert "pictures_captioned" not in result.metadata
     assert "*Image:" not in result.text
 
 
@@ -287,36 +288,40 @@ async def test_small_picture_is_not_counted_as_eligible():
 
     result = await PptxProcessor().process(content, PPTX_MIME, "small.pptx")
 
-    assert result.metadata["pptx_pictures_found"] == 0
+    assert result.metadata["pictures_found"] == 0
 
 
 async def test_caption_images_flag_without_docling_url_stays_disabled(
     mocker, monkeypatch
 ):
     convert = mocker.AsyncMock()
-    monkeypatch.setattr(presentation, "convert_file", convert)
+    monkeypatch.setattr(_ooxml, "convert_file", convert)
     content = _deck_with_picture(_png_bytes(120, 120))
 
-    processor = PptxProcessor(caption_images=True, docling_api_url=None)
+    processor = PptxProcessor(
+        captioner=PictureCaptioner(caption_images=True, docling_api_url=None)
+    )
     result = await processor.process(content, PPTX_MIME, "pic.pptx")
 
     convert.assert_not_called()
-    assert "pptx_pictures_captioned" not in result.metadata
+    assert "pictures_captioned" not in result.metadata
 
 
 async def test_picture_is_captioned_when_docling_is_configured(mocker, monkeypatch):
     convert = mocker.AsyncMock(return_value={"md_content": "a red square"})
-    monkeypatch.setattr(presentation, "convert_file", convert)
+    monkeypatch.setattr(_ooxml, "convert_file", convert)
     content = _deck_with_picture(_png_bytes(120, 120))
 
     processor = PptxProcessor(
-        caption_images=True, docling_api_url="https://docling:5001"
+        captioner=PictureCaptioner(
+            caption_images=True, docling_api_url="https://docling:5001"
+        )
     )
     result = await processor.process(content, PPTX_MIME, "pic.pptx")
 
     assert "*Image: a red square*" in result.text
-    assert result.metadata["pptx_pictures_found"] == 1
-    assert result.metadata["pptx_pictures_captioned"] == 1
+    assert result.metadata["pictures_found"] == 1
+    assert result.metadata["pictures_captioned"] == 1
     # The picture's own bytes/content type are forwarded, not re-derived.
     args, kwargs = convert.call_args
     assert args[0] == "https://docling:5001"
@@ -326,23 +331,25 @@ async def test_picture_is_captioned_when_docling_is_configured(mocker, monkeypat
 
 async def test_caption_failure_does_not_fail_the_deck(mocker, monkeypatch):
     convert = mocker.AsyncMock(side_effect=ProcessorError("docling unreachable"))
-    monkeypatch.setattr(presentation, "convert_file", convert)
+    monkeypatch.setattr(_ooxml, "convert_file", convert)
     content = _deck_with_picture(_png_bytes(120, 120))
 
     processor = PptxProcessor(
-        caption_images=True, docling_api_url="https://docling:5001"
+        captioner=PictureCaptioner(
+            caption_images=True, docling_api_url="https://docling:5001"
+        )
     )
     result = await processor.process(content, PPTX_MIME, "pic.pptx")
 
     assert result.success is True
     assert "*Image:" not in result.text
-    assert result.metadata["pptx_pictures_found"] == 1
-    assert result.metadata["pptx_pictures_captioned"] == 0
+    assert result.metadata["pictures_found"] == 1
+    assert result.metadata["pictures_captioned"] == 0
 
 
 async def test_caption_max_images_caps_docling_round_trips(mocker, monkeypatch):
     convert = mocker.AsyncMock(return_value={"md_content": "caption"})
-    monkeypatch.setattr(presentation, "convert_file", convert)
+    monkeypatch.setattr(_ooxml, "convert_file", convert)
 
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -354,12 +361,14 @@ async def test_caption_max_images_caps_docling_round_trips(mocker, monkeypatch):
     prs.save(buf)
 
     processor = PptxProcessor(
-        caption_images=True,
-        docling_api_url="https://docling:5001",
-        caption_max_images=2,
+        captioner=PictureCaptioner(
+            caption_images=True,
+            docling_api_url="https://docling:5001",
+            caption_max_images=2,
+        )
     )
     result = await processor.process(buf.getvalue(), PPTX_MIME, "many.pptx")
 
     assert convert.await_count == 2
-    assert result.metadata["pptx_pictures_found"] == 3
-    assert result.metadata["pptx_pictures_captioned"] == 2
+    assert result.metadata["pictures_found"] == 3
+    assert result.metadata["pictures_captioned"] == 2

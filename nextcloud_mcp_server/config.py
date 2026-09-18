@@ -463,24 +463,30 @@ _DEFAULTS: dict[str, Any] = {
     # VLM preset name sent when docling_pipeline == "vlm". None -> docling-serve
     # picks its own DOCLING_SERVE_DEFAULT_VLM_PRESET. Preset names are server-defined.
     "docling_vlm_preset": None,
-    # Caption raster pictures embedded in a .pptx via the same docling-serve
-    # instance (ADR-037). Explicit opt-in beyond a bare DOCLING_API_URL, like
-    # DOCUMENT_OCR_PROVIDER=docling needs its own selection: a deployment that
-    # only wants docling for scanned-PDF OCR shouldn't start captioning every
-    # picture in every presentation for free. python-pptx has no rendering
-    # engine, so this only reaches actual picture shapes -- native vector
-    # diagrams (SmartArt, freeform/connector shapes) are unaffected.
-    "pptx_caption_images": False,
-    # Cap on pictures captioned per .pptx (one docling-serve round trip each).
+    # Caption raster pictures embedded in .pptx/.docx/.xlsx via the same
+    # docling-serve instance (ADR-037). Explicit opt-in beyond a bare
+    # DOCLING_API_URL, like DOCUMENT_OCR_PROVIDER=docling needs its own
+    # selection: a deployment that only wants docling for scanned-PDF OCR
+    # shouldn't start captioning every picture in every document for free. The
+    # native readers have no rendering engine, so this only reaches actual
+    # pictures -- native vector drawings (SmartArt, shapes) are unaffected.
+    "office_caption_images": False,
+    # Cap on pictures captioned per file (one docling-serve round trip each).
     # nc_webdav_read_file blocks synchronously for the whole parse, so this
-    # bounds the worst case rather than leaving it to the deck's picture count.
-    "pptx_caption_max_images": 8,
+    # bounds the worst case rather than leaving it to the file's picture count.
+    "office_caption_max_images": 8,
     # Per-picture docling-serve request timeout (seconds). Deliberately short
     # and independent of DOCLING_TIMEOUT/DOCUMENT_OCR_TIMEOUT_SECONDS (other
     # touchpoints, other latency profiles): a caption is meant to be a quick
-    # per-picture round trip repeated up to PPTX_CAPTION_MAX_IMAGES times, not
+    # per-picture round trip repeated up to OFFICE_CAPTION_MAX_IMAGES times, not
     # a single long convert. Raise it if DOCLING_PIPELINE=vlm makes captions
     # time out (VLM is far slower than the standard pipeline -- see ADR-032).
+    "office_caption_timeout_seconds": 15.0,
+    # Deprecated PPTX_CAPTION_* spellings (0.193.0, pptx-only) of the three keys
+    # above; see _apply_legacy_caption_settings. Declared so dynaconf reads
+    # them at all, with the same defaults so their validators still apply.
+    "pptx_caption_images": False,
+    "pptx_caption_max_images": 8,
     "pptx_caption_timeout_seconds": 15.0,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
@@ -650,6 +656,8 @@ _dynaconf = Dynaconf(
         Validator("OIDC_DISCOVERY_MAX_ATTEMPTS", gte=1),
         Validator("OIDC_DISCOVERY_BACKOFF_BASE", gte=0),
         Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
+        Validator("OFFICE_CAPTION_MAX_IMAGES", gte=0),
+        Validator("OFFICE_CAPTION_TIMEOUT_SECONDS", gt=0),
         Validator("PPTX_CAPTION_MAX_IMAGES", gte=0),
         Validator("PPTX_CAPTION_TIMEOUT_SECONDS", gt=0),
         Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
@@ -1500,11 +1508,11 @@ class Settings:
     docling_pipeline: str = "standard"
     docling_vlm_preset: str | None = None
 
-    # PPTX picture captioning, a second touchpoint on the same docling-serve
+    # OOXML picture captioning, a second touchpoint on the same docling-serve
     # instance (ADR-037). See _DEFAULTS above for the reasoning.
-    pptx_caption_images: bool = False
-    pptx_caption_max_images: int = 8
-    pptx_caption_timeout_seconds: float = 15.0
+    office_caption_images: bool = False
+    office_caption_max_images: int = 8
+    office_caption_timeout_seconds: float = 15.0
 
     # Observability settings
     metrics_enabled: bool = True
@@ -2112,6 +2120,28 @@ def _get_semantic_search_enabled() -> bool:
     return new_value or old_value
 
 
+def _apply_legacy_caption_settings(kwargs: dict) -> None:
+    """Honor the deprecated ``PPTX_CAPTION_*`` names for ``OFFICE_CAPTION_*``.
+
+    Both are declared with the same default, so "set" means "differs from the
+    default": a legacy value wins only where the new key was left at its
+    default. Deprecated in the release that generalized captioning beyond
+    .pptx; removal will be a ``BREAKING CHANGE``.
+    """
+    for suffix in ("images", "max_images", "timeout_seconds"):
+        new_field = f"office_caption_{suffix}"
+        legacy = _dynaconf.get(f"PPTX_CAPTION_{suffix.upper()}")
+        default = _DEFAULTS[new_field]
+        if legacy == default or kwargs.get(new_field, default) != default:
+            continue
+        logger.warning(
+            "PPTX_CAPTION_%s is deprecated; use OFFICE_CAPTION_%s instead.",
+            suffix.upper(),
+            suffix.upper(),
+        )
+        kwargs[new_field] = legacy
+
+
 def _is_multi_user_mode() -> bool:
     """Detect if this is a multi-user deployment mode.
 
@@ -2325,6 +2355,7 @@ def _build_settings() -> Settings:
     # Smart dependency overrides (always set, regardless of dynaconf)
     kwargs["vector_sync_enabled"] = enable_semantic_search
     kwargs["enable_offline_access"] = enable_background_operations
+    _apply_legacy_caption_settings(kwargs)
 
     return Settings(**kwargs)
 
