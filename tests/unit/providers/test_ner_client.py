@@ -98,6 +98,8 @@ async def test_ignores_non_person_and_out_of_range_entities(monkeypatch):
         {"results": [{"index": 0, "entities": []}]},  # text 1 unaccounted for
         {"results": [{"index": 0, "entities": []}] * 2},  # duplicate index
         {"results": [{"index": 5, "entities": []}]},
+        # bool is an int subclass: True must not be read as index 1.
+        {"results": [{"index": 0, "entities": []}, {"index": True, "entities": []}]},
         {"results": [{"index": 0}]},
         {"nope": []},
         [],

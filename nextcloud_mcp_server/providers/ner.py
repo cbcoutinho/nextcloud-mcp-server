@@ -152,8 +152,8 @@ class NerClient:
             idx = item.get("index") if isinstance(item, dict) else None
             entities = item.get("entities") if isinstance(item, dict) else None
             if (
-                not isinstance(idx, int)
-                or isinstance(idx, bool)
+                isinstance(idx, bool)  # before the int test, as in _entity_text
+                or not isinstance(idx, int)
                 or not 0 <= idx < len(texts)
                 or found[idx] is not None
                 or not isinstance(entities, list)
