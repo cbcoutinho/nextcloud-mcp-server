@@ -1,13 +1,14 @@
 import base64
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 import anyio
 from anyio.to_thread import run_sync
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
@@ -27,6 +28,7 @@ from nextcloud_mcp_server.models import (
     SearchFilesResponse,
     WriteFileResponse,
 )
+from nextcloud_mcp_server.models.redaction import RedactionInfo
 from nextcloud_mcp_server.models.webdav import (
     FilesByTagResponse,
     FileTagsResponse,
@@ -42,6 +44,13 @@ from nextcloud_mcp_server.models.webdav import (
     TrashEntry,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_server.redaction import (
+    Redactor,
+    detect_names,
+    get_ner_client,
+    redaction_mode,
+)
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
@@ -177,6 +186,45 @@ async def _raw_response(
     )
 
 
+async def _redact_read(
+    response: ReadFileResponse, keep_names: list[str], settings: Any
+) -> ReadFileResponse:
+    """Replace person names in a read with ``[PERSON_n]`` (ADR-038).
+
+    Fails closed: a result that cannot be redacted (base64 bytes) or a name
+    detection that fails raises, so the caller never receives unredacted text
+    from a read that asked for redaction.
+    """
+    if response.content_format == "base64":
+        raise ToolError(
+            f"{response.path!r} cannot be redacted: it was not read as text "
+            f"(parse_status={response.parse_status}). Only extracted text can be "
+            f"redacted; retry without parse_document='raw', or the file may be a "
+            f"type no processor handles."
+        )
+    client = await get_ner_client(settings)
+    try:
+        names = await detect_names(client, [response.content, response.path])
+    except NerError as e:
+        raise ToolError(
+            f"Redaction failed, so no content is returned for {response.path!r}: {e}"
+        ) from e
+    redactor = Redactor(names, keep_names)
+    response.content = redactor.redact(response.content) or ""
+    response.path = redactor.redact(response.path) or ""
+    response.parse_notes = [redactor.redact(n) or "" for n in response.parse_notes]
+    # Processor metadata can carry the author/title of the document and is not
+    # worth redacting field by field; a redacted read simply omits it.
+    response.parsing_metadata = None
+    response.redaction = RedactionInfo(
+        applied=True,
+        persons_redacted=redactor.persons_redacted,
+        kept_names=keep_names,
+        detector_model=client.model,
+    )
+    return response
+
+
 def _as_int(raw: Any) -> Optional[int]:
     """DAV numbers arrive as text; a non-numeric one costs that field, not the row."""
     try:
@@ -288,6 +336,11 @@ def configure_webdav_tools(mcp: MCPServer):
         path: str,
         ctx: Context,
         parse_document: Literal["auto", "markdown", "raw"] = "auto",
+        redact: bool = False,
+        keep_names: Annotated[
+            list[Annotated[str, Field(max_length=200)]] | None,
+            Field(max_length=50),
+        ] = None,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
@@ -310,6 +363,17 @@ def configure_webdav_tools(mcp: MCPServer):
 
                 Files no processor handles (plain text, JSON, archives) are
                 unaffected by this argument.
+            redact: Return a redacted view for a subject access request: every
+                person name in the content (and the path) is replaced with
+                ``[PERSON_n]``, numbered consistently, except ``keep_names``.
+                Requires redaction to be enabled on the server. Asking for it
+                otherwise is an error, never a silent unredacted read. A
+                binary result (``raw``, or a file that could not be parsed to
+                text) cannot be redacted and is refused.
+            keep_names: With ``redact``, the data subject's name and every
+                alias to leave visible (e.g. ``["Jane Doe", "Ms Doe", "J.
+                Doe"]``). Matching is case-insensitive but otherwise exact, so
+                list each form you expect. Anything unlisted is redacted.
 
         Returns:
             ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
@@ -331,7 +395,27 @@ def configure_webdav_tools(mcp: MCPServer):
             - ``url``: a link that opens the file in Nextcloud. Offer it when
               reporting on the file, and especially when ``parse_notes`` says
               the extraction degraded.
+            - ``redaction``: set on a redacted read -- how many people were
+              replaced and which names were kept.
         """
+        settings = get_settings()
+        if redact and redaction_mode(settings) == "off":
+            raise ToolError(
+                "Redaction is not available on this server: it needs "
+                "CONTENT_REDACTION=optional|enforced and the embedding gateway "
+                "(EMBEDDING_GATEWAY_URL). Nothing was read."
+            )
+        response = await _read_file(path, ctx, parse_document)
+        if not redact:
+            return response
+        return await _redact_read(response, keep_names or [], settings)
+
+    async def _read_file(
+        path: str,
+        ctx: Context,
+        parse_document: Literal["auto", "markdown", "raw"],
+    ) -> ReadFileResponse:
+        """The read itself; ``nc_webdav_read_file`` layers redaction on top."""
         client = await get_client(ctx)
 
         # Block reads of paths carrying an excluded tag.

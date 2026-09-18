@@ -6,6 +6,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from .base import BaseResponse, StatusResponse
+from .redaction import RedactionInfo
 
 #: Outcome of a document parse, and the shape of what came back. Defined here
 #: (the response contract) so the tool, the parser and the model cannot drift
@@ -129,6 +130,14 @@ class ReadFileResponse(BaseResponse):
             "is not the whole document. None when the server has no "
             "browser-reachable Nextcloud base URL configured, or when the file "
             "has no resolvable fileid."
+        ),
+    )
+    redaction: RedactionInfo | None = Field(
+        default=None,
+        description=(
+            "Set when `redact` was requested: person names in `content`, "
+            "`path` and `parse_notes` are replaced with `[PERSON_n]`, except "
+            "`keep_names`. Processor metadata is withheld from a redacted read."
         ),
     )
 
