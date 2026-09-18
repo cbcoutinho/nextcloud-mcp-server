@@ -26,8 +26,8 @@ Redaction is optional and gateway-only: :func:`redaction_mode` is "off" unless
 """
 
 import re
-from collections.abc import Iterable
-from typing import Any, Literal
+from collections.abc import Iterable, Sequence
+from typing import Any, Literal, Protocol
 
 import anyio
 
@@ -140,6 +140,53 @@ async def detect_names(client: NerClient, texts: Iterable[str]) -> set[str]:
     if not slices:
         return set()
     return set().union(*await client.detect(slices))
+
+
+class SearchHit(Protocol):
+    """The fields of a search result that redaction reads."""
+
+    title: str
+    excerpt: str
+    metadata: dict[str, Any] | None
+    person_names: list[str] | None
+    title_person_names: list[str] | None
+
+
+async def redactor_for_hits(
+    hits: Sequence[SearchHit],
+    *,
+    keep_names: Iterable[str],
+    settings: Any,
+    extra_texts: Iterable[str | None] = (),
+) -> "Redactor":
+    """One ``Redactor`` for a whole search response.
+
+    Names come from two places. Points scanned at ingest carry the names they
+    mention (``person_names``), which brings the document-wide propagation
+    with them. Everything else is detected live, in one call: hits that were
+    never scanned, and ``extra_texts`` (context from neighbouring chunks).
+    Using one instance for the response keeps a person on one number across
+    every row and field.
+
+    Raises:
+        NerError: live detection failed. The caller must return nothing.
+    """
+    names: set[str] = set()
+    live = [t for t in extra_texts if t]
+    for hit in hits:
+        metadata = hit.metadata or {}
+        # Always live: ingest never scans the category (a notes category, a
+        # calendar location), so a name appearing only there would otherwise
+        # pass through a scanned row unredacted.
+        live.append(metadata.get("category") or "")
+        if hit.person_names is None:
+            live += [hit.title, hit.excerpt, metadata.get("path") or ""]
+        else:
+            names.update(hit.person_names)
+            names.update(hit.title_person_names or ())
+    if any(live):
+        names |= await detect_names(await get_ner_client(settings), live)
+    return Redactor(names, keep_names)
 
 
 async def ingest_person_names(

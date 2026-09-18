@@ -30,11 +30,20 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.models.redaction import RedactionInfo
 from nextcloud_mcp_server.observability.metrics import (
     record_search_request,
     record_search_stage,
 )
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_server.redaction import (
+    Redactor,
+    detect_names,
+    get_ner_client,
+    redaction_mode,
+    redactor_for_hits,
+)
 from nextcloud_mcp_server.search import (
     GRANULARITY_CHUNK,
     GRANULARITY_DOCUMENT,
@@ -171,6 +180,85 @@ def _rerank_capability_error(rerank: bool, settings: Settings) -> JSONResponse |
             status_code=422,
         )
     return None
+
+
+# keep_names bounds, matching the MCP tools' schema.
+_MAX_KEEP_NAMES = 50
+_MAX_KEEP_NAME_CHARS = 200
+
+
+def _parse_redaction(
+    redact_raw: Any, keep_raw: Any
+) -> tuple[bool, list[str], JSONResponse | None]:
+    """Shape-check ``redact`` / ``keep_names`` (ADR-038).
+
+    Shared by the JSON-body search endpoint and the query-string chunk-context
+    endpoint, so each passes its raw values in. A 400 on a malformed value
+    rather than a guess: a caller that asked for a redacted view and silently
+    got an unredacted one could not tell.
+    """
+    if redact_raw is None or isinstance(redact_raw, bool):
+        redact = bool(redact_raw)
+    elif redact_raw in ("true", "false"):
+        redact = redact_raw == "true"
+    else:
+        return False, [], _bad_request("redact must be a boolean")
+    if keep_raw is None:
+        return redact, [], None
+    if (
+        not isinstance(keep_raw, list)
+        or len(keep_raw) > _MAX_KEEP_NAMES
+        or not all(
+            isinstance(k, str) and len(k) <= _MAX_KEEP_NAME_CHARS for k in keep_raw
+        )
+    ):
+        return (
+            False,
+            [],
+            _bad_request(
+                f"keep_names must be a list of at most {_MAX_KEEP_NAMES} strings "
+                f"of at most {_MAX_KEEP_NAME_CHARS} characters"
+            ),
+        )
+    return redact, keep_raw, None
+
+
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"success": False, "error": message}, status_code=400)
+
+
+def _redaction_capability_error(redact: bool, settings: Any) -> JSONResponse | None:
+    """422 when a redacted view was asked for where redaction is unavailable.
+
+    Same contract as :func:`_rerank_capability_error`: callers discover the
+    capability from ``redaction_available`` on ``GET /api/v1/status``.
+    """
+    if redact and redaction_mode(settings) == "off":
+        return JSONResponse(
+            {
+                "error": "redaction_not_available",
+                "message": (
+                    "Redaction is not available on this server. Check "
+                    "`redaction_available` on /api/v1/status before requesting it."
+                ),
+            },
+            status_code=422,
+        )
+    return None
+
+
+def _redaction_failed() -> JSONResponse:
+    """503: live name detection failed, so nothing is returned (fail closed)."""
+    return JSONResponse(
+        {
+            "error": "redaction_failed",
+            "message": (
+                "Person-name detection is unavailable, so no redacted content "
+                "can be returned. Retry later."
+            ),
+        },
+        status_code=503,
+    )
 
 
 def _reranked_label(rerank: bool, outcome: str) -> str:
@@ -485,6 +573,11 @@ async def unified_search(request: Request) -> JSONResponse:
         rerank, rerank_error = _parse_rerank(body)
         if rerank_error is not None:
             return rerank_error
+        redact, keep_names, redaction_error = _parse_redaction(
+            body.get("redact"), body.get("keep_names")
+        )
+        if redaction_error is not None:
+            return redaction_error
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -542,6 +635,9 @@ async def unified_search(request: Request) -> JSONResponse:
         rerank_error = _rerank_capability_error(rerank, settings)
         if rerank_error is not None:
             return rerank_error
+        redaction_error = _redaction_capability_error(redact, settings)
+        if redaction_error is not None:
+            return redaction_error
 
         # Request extra results to handle offset
         search_limit = limit + offset
@@ -671,6 +767,22 @@ async def unified_search(request: Request) -> JSONResponse:
             total_found = min(total_found, unreranked_budget)
         paginated_results = sorted_results[offset : offset + limit]
 
+        # Redacted view (ADR-038): one Redactor for the page, so a person keeps
+        # one number across rows. Built from the page only — rows that are not
+        # returned need no detection.
+        redactor = None
+        if redact:
+            try:
+                redactor = await redactor_for_hits(
+                    paginated_results, keep_names=keep_names, settings=settings
+                )
+            except NerError as e:
+                logger.warning("Redacted search failed closed: %s", e)
+                return _redaction_failed()
+
+        def _r(text: Any) -> Any:
+            return redactor.redact(text) if redactor is not None else text
+
         # Format results for Unified Search
         formatted_results = []
         for result in paginated_results:
@@ -689,7 +801,7 @@ async def unified_search(request: Request) -> JSONResponse:
             result_data: dict[str, Any] = {
                 "id": doc_id,
                 "doc_type": result.doc_type,
-                "title": result.title,
+                "title": _r(result.title),
                 "score": result.score,
                 # Always present, unlike `score` which is only interpretable if
                 # you know which algorithm and fusion produced it. Read
@@ -706,13 +818,13 @@ async def unified_search(request: Request) -> JSONResponse:
 
             # Include excerpt/chunk if requested (full content, no truncation)
             if include_chunks and result.excerpt:
-                result_data["excerpt"] = result.excerpt
+                result_data["excerpt"] = _r(result.excerpt)
 
             # Include navigation metadata from result.metadata
             if result.metadata:
                 # File path and mimetype for files
                 if "path" in result.metadata:
-                    result_data["path"] = result.metadata["path"]
+                    result_data["path"] = _r(result.metadata["path"])
                 if "mime_type" in result.metadata:
                     result_data["mime_type"] = result.metadata["mime_type"]
 
@@ -761,6 +873,13 @@ async def unified_search(request: Request) -> JSONResponse:
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,
         }
+        if redactor is not None:
+            response_data["redaction"] = RedactionInfo(
+                applied=True,
+                persons_redacted=redactor.persons_redacted,
+                kept_names=keep_names,
+                detector_model=settings.ner_model,
+            ).model_dump()
 
         # Optional PCA coordinates. PCA plots the result chunks around the query's
         # dense embedding. Keyword-only result chunks (``keyword-index`` tag) carry
@@ -1218,6 +1337,15 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         end_str = request.query_params.get("end")
         chunk_index_str = request.query_params.get("chunk_index")
         total_chunks_str = request.query_params.get("total_chunks")
+        redact, keep_names, redaction_error = _parse_redaction(
+            request.query_params.get("redact"),
+            request.query_params.getlist("keep_names") or None,
+        )
+        if redaction_error is not None:
+            return redaction_error
+        redaction_error = _redaction_capability_error(redact, get_settings())
+        if redaction_error is not None:
+            return redaction_error
 
         # Validate required parameters. Written as a chained `and` rather than
         # `all([...])` + four `assert`s: `all()` does not narrow the types for
@@ -1365,6 +1493,37 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             "chunk_index": chunk_context.chunk_index,
             "total_chunks": chunk_context.total_chunks,
         }
+
+        if redact:
+            # Context text spans neighbouring chunks, so it is detected live
+            # rather than from any one point's stored names. The bbox is
+            # withheld: it only makes sense over the original rendered page.
+            settings = get_settings()
+            texts = [
+                chunk_context.chunk_text,
+                chunk_context.before_context,
+                chunk_context.after_context,
+            ]
+            try:
+                names = await detect_names(await get_ner_client(settings), texts)
+            except NerError as e:
+                logger.warning("Redacted chunk-context failed closed: %s", e)
+                return _redaction_failed()
+            redactor = Redactor(names, keep_names)
+            response_data["chunk_text"] = redactor.redact(chunk_context.chunk_text)
+            response_data["before_context"] = redactor.redact(
+                chunk_context.before_context
+            )
+            response_data["after_context"] = redactor.redact(
+                chunk_context.after_context
+            )
+            response_data["redaction"] = RedactionInfo(
+                applied=True,
+                persons_redacted=redactor.persons_redacted,
+                kept_names=keep_names,
+                detector_model=settings.ner_model,
+            ).model_dump()
+            chunk_bbox = None
 
         if chunk_bbox:
             response_data["chunk_bbox"] = chunk_bbox

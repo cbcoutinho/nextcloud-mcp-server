@@ -102,12 +102,23 @@ response: {results: [{index, entities: [{start, end, text, label, score}]}]}
 - **`nc_webdav_read_file(redact, keep_names)`.** Redacts the content, path and
   parse notes; withholds processor metadata (it can carry the author); and
   reports a `redaction` block on the response.
-- **`nc_semantic_search(redact, keep_names)`**, **`/api/v1/search`** and
-  **`/api/v1/chunk-context`.** At ingest, each chunk's payload stores the
-  document's names that occur in that chunk. Excerpts, context, titles and URLs
-  are redacted from those names. A point that has not been scanned gets live
-  NER on its excerpt, and its excerpt is withheld if NER is unavailable.
-  Results carry a `file_id`, because the path itself is redacted.
+- **`nc_semantic_search(redact, keep_names)`** and **`/api/v1/search`.** At
+  ingest, each chunk's payload stores the document's names that the chunk
+  mentions, in full or by a token (`person_names`), plus those in the title and
+  path (`title_person_names`). Titles, excerpts, paths, context and links are
+  redacted from those names, with one `Redactor` per response.
+  - Points that were never scanned are detected live, in one call per
+    response. So is context text, which comes from neighbouring chunks.
+  - If live detection fails, the request returns nothing: a `ToolError` from
+    the tool, a 503 from the HTTP API.
+  - A file result's `id` is its file id, and `nc_webdav_read_file(file_id=...)`
+    opens it, because the path itself is redacted.
+- **`/api/v1/chunk-context?redact=true&keep_names=...`.** Context spans chunks,
+  so it is detected live. `chunk_bbox` is withheld, because it only makes sense
+  over the original rendered page.
+- **Discovery.** `GET /api/v1/status` advertises `redaction_available`. Asking
+  for redaction where it is unavailable is a 422 on HTTP and an error from a
+  tool.
 - **Enforced mode.** Principals without the `content.unredacted` scope are always
   redacted, and only tools marked redaction-safe stay visible to them (an
   allowlist, so a new tool is hidden until it opts in). The scope is a no-op,
