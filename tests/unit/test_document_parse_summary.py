@@ -203,6 +203,60 @@ def test_markdown_bookkeeping_is_not_reported_to_a_caller_who_wanted_text():
     assert summary.notes == []
 
 
+def test_pptx_pictures_found_with_no_captioning_attempted():
+    """Captioning off/unconfigured: pptx_pictures_captioned is absent entirely
+    (not zero) -- that is what distinguishes 'not attempted' from 'attempted,
+    none succeeded' (see the next test)."""
+    summary = summarize_parse(
+        _result(metadata={"parse_mode": "markdown", "pptx_pictures_found": 2}),
+        _settings(),
+    )
+
+    joined = " ".join(summary.notes)
+    assert "2 picture(s)" in joined
+    assert "PPTX_CAPTION_IMAGES" in joined
+
+
+def test_pptx_pictures_partially_captioned_names_the_shortfall():
+    summary = summarize_parse(
+        _result(
+            metadata={
+                "parse_mode": "markdown",
+                "pptx_pictures_found": 3,
+                "pptx_pictures_captioned": 1,
+            }
+        ),
+        _settings(),
+    )
+
+    joined = " ".join(summary.notes)
+    assert "2 of 3 picture(s)" in joined
+
+
+def test_pptx_all_pictures_captioned_says_nothing():
+    summary = summarize_parse(
+        _result(
+            metadata={
+                "parse_mode": "markdown",
+                "pptx_pictures_found": 2,
+                "pptx_pictures_captioned": 2,
+            }
+        ),
+        _settings(),
+    )
+
+    assert summary.notes == []
+
+
+def test_pptx_no_pictures_says_nothing():
+    summary = summarize_parse(
+        _result(metadata={"parse_mode": "markdown", "pptx_pictures_found": 0}),
+        _settings(),
+    )
+
+    assert summary.notes == []
+
+
 def test_real_degradations_still_reported_to_a_text_caller():
     """Guard against over-correcting: silencing the markdown note must not silence
     the OCR one, which matters regardless of what the caller asked for."""
