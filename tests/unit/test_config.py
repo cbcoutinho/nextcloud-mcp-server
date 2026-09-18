@@ -451,7 +451,11 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
-        {"PPTX_CAPTION_IMAGES": "true", "PPTX_CAPTION_MAX_IMAGES": "3"},
+        {
+            "PPTX_CAPTION_IMAGES": "true",
+            "PPTX_CAPTION_MAX_IMAGES": "3",
+            "PPTX_CAPTION_TIMEOUT_SECONDS": "40",
+        },
         clear=True,
     )
     def test_legacy_pptx_caption_names_still_apply(self):
@@ -460,15 +464,20 @@ class TestGetSettings:
         settings = get_settings()
         assert settings.office_caption_images is True
         assert settings.office_caption_max_images == 3
+        assert settings.office_caption_timeout_seconds == 40
 
     @patch.dict(
         os.environ,
         {"PPTX_CAPTION_MAX_IMAGES": "3", "OFFICE_CAPTION_MAX_IMAGES": "5"},
         clear=True,
     )
-    def test_office_caption_name_wins_over_legacy(self):
+    def test_office_caption_name_wins_over_legacy(self, caplog):
         _reload_config()
-        assert get_settings().office_caption_max_images == 5
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
+            assert get_settings().office_caption_max_images == 5
+        assert (
+            "Both OFFICE_CAPTION_MAX_IMAGES and PPTX_CAPTION_MAX_IMAGES" in caplog.text
+        )
 
 
 class TestChunkConfigValidation:

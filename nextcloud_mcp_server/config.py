@@ -2132,12 +2132,23 @@ def _apply_legacy_caption_settings(kwargs: dict) -> None:
         new_field = f"office_caption_{suffix}"
         legacy = _dynaconf.get(f"PPTX_CAPTION_{suffix.upper()}")
         default = _DEFAULTS[new_field]
-        if legacy == default or kwargs.get(new_field, default) != default:
+        if legacy == default:
+            continue
+        name = suffix.upper()
+        if kwargs.get(new_field, default) != default:
+            logger.warning(
+                "Both OFFICE_CAPTION_%s and PPTX_CAPTION_%s are set. Using "
+                "OFFICE_CAPTION_%s; PPTX_CAPTION_%s is deprecated.",
+                name,
+                name,
+                name,
+                name,
+            )
             continue
         logger.warning(
             "PPTX_CAPTION_%s is deprecated; use OFFICE_CAPTION_%s instead.",
-            suffix.upper(),
-            suffix.upper(),
+            name,
+            name,
         )
         kwargs[new_field] = legacy
 
