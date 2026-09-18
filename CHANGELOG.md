@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.192.0 (2026-09-18)
+
+### BREAKING CHANGE
+
+- nc_calendar_bulk_operations skips events that belong to a
+recurring series unless apply_to_series=true is passed; previously the whole
+series was updated or deleted.
+
+### Fix
+
+- **calendar**: bulk ops no longer rewrite a whole recurring series per occurrence
+- **calendar**: set ORGANIZER on events with attendees
+
 ## v0.191.0 (2026-09-17)
 
 ### Feat
