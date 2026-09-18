@@ -72,6 +72,8 @@ def test_shared_token_with_third_party_is_redacted():
 def test_honorifics_and_short_tokens_are_not_expanded():
     r = Redactor({"Mrs Al Green"})
     assert r.redact("Mrs Al Green; Mrs Lee; Al") == "[PERSON_1]; Mrs Lee; Al"
+    r = Redactor({"Rev Tom Brown"})
+    assert r.redact("the Rev spoke; Brown left") == "the Rev spoke; [PERSON_1] left"
 
 
 def test_keep_alias_with_initial():
@@ -126,6 +128,8 @@ def test_settings_validate_content_redaction():
     assert Settings(content_redaction=" Enforced ").content_redaction == "enforced"
     with pytest.raises(ValueError, match="CONTENT_REDACTION"):
         Settings(content_redaction="bogus")
+    with pytest.raises(ValueError, match="NER_THRESHOLD"):
+        Settings(ner_threshold=0)
 
 
 async def test_get_ner_client_targets_gateway_and_is_cached():
@@ -137,11 +141,13 @@ async def test_get_ner_client_targets_gateway_and_is_cached():
         embedding_gateway_client_id=None,
         ner_model="local/m",
         ner_timeout_seconds=5,
+        ner_threshold=0.3,
     )
     try:
         client = await redaction.get_ner_client(settings)
         assert client._url == "https://gw/v1/ner"
         assert client.model == "local/m"
+        assert client._threshold == 0.3
         assert await redaction.get_ner_client(settings) is client
     finally:
         redaction._reset_ner_state()
