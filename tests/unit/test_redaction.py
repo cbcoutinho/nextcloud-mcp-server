@@ -151,3 +151,41 @@ async def test_get_ner_client_targets_gateway_and_is_cached():
         assert await redaction.get_ner_client(settings) is client
     finally:
         redaction._reset_ner_state()
+
+
+def test_names_in_reports_detected_names_found_by_token():
+    finder = Redactor({"Karen Smith", "Tom Brown"})
+    assert finder.names_in("Smith replied.") == {"karen smith"}
+    assert finder.names_in("Karen Smith and TOM BROWN") == {"karen smith", "tom brown"}
+    assert finder.names_in("nobody here") == set()
+    assert Redactor(set()).names_in("Smith") == set()
+
+
+async def test_ingest_person_names_propagates_across_chunks(mocker):
+    from nextcloud_mcp_server import redaction
+
+    client = mocker.AsyncMock()
+    # Only the first chunk's detection finds the full name.
+    client.detect.return_value = [{"Karen Smith"}, set(), set()]
+    mocker.patch.object(
+        redaction, "get_ner_client", mocker.AsyncMock(return_value=client)
+    )
+    settings = SimpleNamespace(
+        content_redaction="optional", embedding_gateway_url="https://gw"
+    )
+
+    per_chunk, heading = await redaction.ingest_person_names(
+        settings, ["Karen Smith wrote.", "Smith replied."], "letter.pdf"
+    )
+
+    assert per_chunk == [["karen smith"], ["karen smith"]]
+    assert heading == []
+
+
+async def test_ingest_person_names_is_skipped_when_unavailable(mocker):
+    from nextcloud_mcp_server import redaction
+
+    get_client = mocker.patch.object(redaction, "get_ner_client")
+    settings = SimpleNamespace(content_redaction="optional", embedding_gateway_url=None)
+    assert await redaction.ingest_person_names(settings, ["x"], "t") is None
+    get_client.assert_not_called()

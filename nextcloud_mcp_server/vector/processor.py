@@ -58,6 +58,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.providers import get_bm25_service, get_provider
+from nextcloud_mcp_server.redaction import ingest_person_names
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
@@ -1910,6 +1911,12 @@ async def _index_document_inner(
     # Where the bboxes came from — "ocr" (gateway-provided per-block geometry) or
     # "pymupdf" (local text-search). Stamped on each chunk payload that has a bbox.
     bbox_source: str | None = None
+    # Person names for the redacted view (ADR-038): per chunk, the document's
+    # names that chunk mentions, and those in the title/path. None = not scanned
+    # (redaction unavailable, or detection failed), which read time handles with
+    # live detection.
+    chunk_person_names: list[list[str]] | None = None
+    title_person_names: list[str] = []
 
     # Determine if we need PDF highlighting
     is_pdf = doc_task.doc_type == "file" and content_type == PDF_MIME_TYPE
@@ -1986,6 +1993,31 @@ async def _index_document_inner(
                 chunks=len(chunk_texts),
                 chars=total_chars,
             )
+
+    async def detect_person_names():
+        """Detect person names for the redacted view (ADR-038).
+
+        Never fails the ingest: redaction reads a point with no stored names as
+        unscanned and detects live, so a failure here costs read-time latency,
+        not correctness. Detection runs over the whole document at once so a
+        name found in one chunk is recorded on every chunk that mentions it.
+        """
+        nonlocal chunk_person_names, title_person_names
+        try:
+            found = await ingest_person_names(
+                settings, chunk_texts, f"{title} {file_path or ''}"
+            )
+        except Exception as e:  # NerError, or a gateway misconfiguration
+            logger.warning(
+                "Person-name detection failed for %s %s; its points are left "
+                "unscanned and redacted reads detect live: %s",
+                doc_task.doc_type,
+                doc_task.doc_id,
+                e,
+            )
+            return
+        if found is not None:
+            chunk_person_names, title_person_names = found
 
     async def generate_highlights():
         """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering).
@@ -2163,6 +2195,7 @@ async def _index_document_inner(
                 tg.start_soon(generate_dense_embeddings)
             tg.start_soon(generate_sparse_embeddings)
             tg.start_soon(generate_highlights)
+            tg.start_soon(detect_person_names)
 
     # Usage metering (Deck #67), recorded once per document AFTER the embedding/
     # sparse task group so it covers BOTH modes (byte + page dimensions for
@@ -2475,6 +2508,14 @@ async def _index_document_inner(
                     **(
                         {"chunk_bbox": chunk_bboxes[i], "bbox_source": bbox_source}
                         if i in chunk_bboxes
+                        else {}
+                    ),
+                    **(
+                        {
+                            payload_keys.PERSON_NAMES: chunk_person_names[i],
+                            payload_keys.TITLE_PERSON_NAMES: title_person_names,
+                        }
+                        if chunk_person_names is not None
                         else {}
                     ),
                 },

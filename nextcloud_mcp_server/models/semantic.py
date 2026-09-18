@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field
 
 from .base import BaseResponse
+from .redaction import RedactionInfo
 
 
 class SemanticSearchResult(BaseModel):
@@ -208,6 +209,14 @@ class SemanticSearchResponse(BaseResponse):
             "chunks — a single document can contribute multiple chunks, "
             "so subtracting dropped_document_count from "
             "verified_chunk_count is NOT a meaningful operation."
+        ),
+    )
+    redaction: RedactionInfo | None = Field(
+        default=None,
+        description=(
+            "Set when `redact` was requested: person names in titles, excerpts, "
+            "context and links are replaced with `[PERSON_n]`, except "
+            "`keep_names`."
         ),
     )
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import anyio
 from httpx import RequestError
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
     ToolAnnotations,
@@ -18,6 +19,7 @@ from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import file_url
+from nextcloud_mcp_server.models.redaction import RedactionInfo
 from nextcloud_mcp_server.models.semantic import (
     SemanticSearchResponse,
     SemanticSearchResult,
@@ -27,6 +29,13 @@ from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
     record_search_request,
     record_search_stage,
+)
+from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_server.redaction import (
+    Redactor,
+    detect_names,
+    get_ner_client,
+    redaction_mode,
 )
 from nextcloud_mcp_server.search.access_filter import (
     MAX_PATH_PREFIXES,
@@ -222,6 +231,41 @@ def _log_top_results(verified_results: list[SearchResult]) -> None:
     )
 
 
+def _chunk_link(
+    browser_base: str | None,
+    r: SearchResult,
+    doc_id: int,
+    *,
+    title: str | None,
+    path: str | None,
+) -> str | None:
+    """The Astrolabe chunk-viewer link for one row.
+
+    Title and path are parameters because the link embeds both, so a redacted
+    response has to rebuild it from the redacted values.
+    """
+    metadata = r.metadata or {}
+    # board_id is the only one of Astrolabe's access-recheck identifiers the
+    # chunk payload carries (see build_search_result_from_point); the others
+    # fall through to its MCP backstop. Tested against None rather than
+    # falsiness to match chunk_url's handling of a legitimate 0 — Nextcloud ids
+    # are 1-based, so this is consistency, not a live bug.
+    board_id = metadata.get("board_id")
+    return chunk_url(
+        browser_base,
+        doc_type=r.doc_type,
+        doc_id=doc_id,
+        chunk_start=r.chunk_start_offset,
+        chunk_end=r.chunk_end_offset,
+        title=title,
+        path=path,
+        page_number=r.page_number,
+        chunk_index=metadata.get("chunk_index"),
+        total_chunks=metadata.get("total_chunks"),
+        extra=None if board_id is None else {"board_id": str(board_id)},
+    )
+
+
 def _to_semantic_results(
     search_results: list[SearchResult],
     *,
@@ -268,14 +312,6 @@ def _to_semantic_results(
             rerank_model=rerank_model,
         )
         metadata = r.metadata or {}
-        # board_id is the only one of Astrolabe's access-recheck
-        # identifiers the chunk payload carries (see
-        # build_search_result_from_point); the others fall through to
-        # its MCP backstop. Tested against None rather than falsiness to
-        # match chunk_url's handling of a legitimate 0 — Nextcloud ids
-        # are 1-based, so this is consistency, not a live bug.
-        board_id = metadata.get("board_id")
-        link_extra = None if board_id is None else {"board_id": str(board_id)}
         results.append(
             SemanticSearchResult(
                 id=narrowed_id,
@@ -293,18 +329,12 @@ def _to_semantic_results(
                 chunk_end_offset=r.chunk_end_offset,
                 page_number=r.page_number,
                 page_end=r.page_end,
-                url=chunk_url(
+                url=_chunk_link(
                     browser_base,
-                    doc_type=r.doc_type,
-                    doc_id=narrowed_id,
-                    chunk_start=r.chunk_start_offset,
-                    chunk_end=r.chunk_end_offset,
+                    r,
+                    narrowed_id,
                     title=r.title,
                     path=metadata.get("path"),
-                    page_number=r.page_number,
-                    chunk_index=metadata.get("chunk_index"),
-                    total_chunks=metadata.get("total_chunks"),
-                    extra=link_extra,
                 ),
                 # For doc_type="file" the doc_id IS the Nextcloud
                 # fileid (vector/scanner.py indexes it as such), so the
@@ -320,6 +350,81 @@ def _to_semantic_results(
             )
         )
     return results
+
+
+async def _redact_results(
+    results: list[SemanticSearchResult],
+    hits: list[SearchResult],
+    *,
+    keep_names: list[str],
+    settings: Any,
+    browser_base: str | None,
+) -> RedactionInfo:
+    """Replace person names in ``results`` with ``[PERSON_n]``, in place.
+
+    Names come from two places. Points scanned at ingest carry the names they
+    mention (``person_names``), which brings the document-wide propagation
+    with them. Everything else is detected live, in one call: rows that were
+    never scanned, and any context text, which comes from neighbouring chunks.
+    One ``Redactor`` covers the whole response, so a person keeps one number
+    across every row and field.
+
+    Raises:
+        ToolError: live detection failed. No results are returned rather than
+            unredacted ones.
+    """
+    names: set[str] = set()
+    live: list[str] = []
+    for row, hit in zip(results, hits, strict=True):
+        if hit.person_names is None:
+            live += [row.title, row.excerpt]
+            live.append((hit.metadata or {}).get("path") or "")
+        else:
+            names.update(hit.person_names)
+            names.update(hit.title_person_names or ())
+        # Always live: ingest never scans the category (a notes category, a
+        # calendar location), and neither does context, which comes from
+        # neighbouring chunks.
+        live += [
+            t
+            for t in (
+                row.category,
+                row.before_context,
+                row.marked_text,
+                row.after_context,
+            )
+            if t
+        ]
+    if any(live):
+        ner = await get_ner_client(settings)
+        try:
+            names |= await detect_names(ner, live)
+        except NerError as e:
+            raise ToolError(
+                f"Redaction failed, so no search results are returned: {e}"
+            ) from e
+
+    redactor = Redactor(names, keep_names)
+    for row, hit in zip(results, hits, strict=True):
+        row.title = redactor.redact(row.title) or ""
+        row.excerpt = redactor.redact(row.excerpt) or ""
+        row.category = redactor.redact(row.category) or ""
+        row.marked_text = redactor.redact(row.marked_text)
+        row.before_context = redactor.redact(row.before_context)
+        row.after_context = redactor.redact(row.after_context)
+        row.url = _chunk_link(
+            browser_base,
+            hit,
+            row.id,
+            title=row.title,
+            path=redactor.redact((hit.metadata or {}).get("path")),
+        )
+    return RedactionInfo(
+        applied=True,
+        persons_redacted=redactor.persons_redacted,
+        kept_names=keep_names,
+        detector_model=settings.ner_model,
+    )
 
 
 async def _expand_results_with_context(
@@ -549,6 +654,34 @@ async def nc_semantic_search(  # NOSONAR(S107)
     ] = False,
     include_context: bool = False,
     context_chars: Annotated[int, Field(ge=0)] = 300,
+    redact: Annotated[
+        bool,
+        Field(
+            description=(
+                "Return a redacted view for a subject access request. Every "
+                "person name in titles, excerpts, context and links is "
+                "replaced with [PERSON_n], numbered consistently across the "
+                "response, except keep_names. Requires redaction to be enabled "
+                "on the server, and asking for it otherwise is an error rather "
+                "than an unredacted result. Matching still runs on the full "
+                "text, so you can search for the data subject by name. For a "
+                "file result, the result id is its file_id: read the whole "
+                "document redacted with nc_webdav_read_file(file_id=..., "
+                "redact=true)."
+            ),
+        ),
+    ] = False,
+    keep_names: Annotated[
+        list[Annotated[str, Field(max_length=200)]] | None,
+        Field(
+            max_length=50,
+            description=(
+                "With redact, the data subject's name and every alias to "
+                "leave visible (e.g. ['Jane Doe', 'Ms Doe']). Matching is "
+                "case-insensitive but otherwise exact, so list each form."
+            ),
+        ),
+    ] = None,
     modified_after: Annotated[
         str | int | None,
         Field(
@@ -710,6 +843,16 @@ async def nc_semantic_search(  # NOSONAR(S107)
     # capability on GET /api/v1/status so callers can check rather than
     # probe. (A reranker that is configured but momentarily unavailable is
     # a different case — that degrades, and the response says so.)
+    if redact and redaction_mode(settings) == "off":
+        raise MCPError(
+            code=-1,
+            message=(
+                "Redaction is not available on this server: it needs "
+                "CONTENT_REDACTION=optional|enforced and the embedding gateway "
+                "(EMBEDDING_GATEWAY_URL). Omit redact to search unredacted."
+            ),
+        )
+
     if rerank and not rerank_available(settings):
         raise MCPError(
             code=-1,
@@ -922,6 +1065,18 @@ async def nc_semantic_search(  # NOSONAR(S107)
             accessible_owners=accessible_owners,
         )
 
+        redaction = (
+            await _redact_results(
+                results,
+                search_results,
+                keep_names=keep_names or [],
+                settings=settings,
+                browser_base=browser_base,
+            )
+            if redact
+            else None
+        )
+
         logger.info("Returning %d results from %s", len(results), search_method)
 
         # Usage metering (Deck #67): record the query embedding's token
@@ -967,6 +1122,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
             ),
             verified_chunk_count=verified_chunk_count,
             dropped_document_count=dropped_count,
+            redaction=redaction,
         )
 
     except ValueError as e:
@@ -979,6 +1135,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
         raise MCPError(code=-1, message=f"Configuration error: {error_msg}")
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error during search: {str(e)}")
+    except ToolError:
+        # Anticipated, with a message already written for the caller (a
+        # redaction that failed closed). Not an unexpected crash to wrap.
+        raise
     except Exception as e:
         # Genuinely-unexpected bucket (after the ValueError / RequestError
         # cases above). We convert it to an MCPError so the reason survives:

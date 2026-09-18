@@ -1277,3 +1277,60 @@ async def test_read_file_without_redact_is_unchanged_when_redaction_on(
     assert result.content == "Karen Smith"
     assert result.redaction is None
     ner_client.detect.assert_not_called()
+
+
+# ── Read by file id (ADR-038: search results redact the path) ───────────
+
+
+async def test_read_file_by_file_id_resolves_the_path(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    parsing(parseable=False)
+    fake_client.webdav.path_for_file_id = AsyncMock(return_value="Docs/a.txt")
+    _spool(fake_client, b"hello", "text/plain")
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(file_id=123, ctx=_read_ctx(fake_client))
+
+    fake_client.webdav.path_for_file_id.assert_awaited_once_with(123)
+    assert fake_client.webdav.stream_to_file.await_args.args[0] == "Docs/a.txt"
+    assert result.content == "hello"
+
+
+async def test_read_file_by_file_id_still_honours_excluded_tags(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Secret.txt"})
+    fake_client.webdav.path_for_file_id = AsyncMock(return_value="Secret.txt")
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(file_id=7, ctx=_read_ctx(fake_client))
+    fake_client.webdav.stream_to_file.assert_not_called()
+
+
+async def test_read_file_by_unknown_file_id_errors(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.path_for_file_id = AsyncMock(return_value=None)
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="No accessible file has id 9"):
+        await fn(file_id=9, ctx=_read_ctx(fake_client))
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"path": "/a.txt", "file_id": 1}], ids=["neither", "both"]
+)
+async def test_read_file_needs_exactly_one_of_path_or_file_id(
+    webdav_tools, fake_client, patch_get_client, kwargs
+):
+    patch_get_client(fake_client)
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="exactly one"):
+        await fn(ctx=_read_ctx(fake_client), **kwargs)

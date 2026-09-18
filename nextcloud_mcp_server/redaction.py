@@ -142,6 +142,28 @@ async def detect_names(client: NerClient, texts: Iterable[str]) -> set[str]:
     return set().union(*await client.detect(slices))
 
 
+async def ingest_person_names(
+    settings: Any, chunk_texts: list[str], heading: str
+) -> tuple[list[list[str]], list[str]] | None:
+    """Names to store at ingest: per chunk, and for the title/path heading.
+
+    Detection runs over the whole document at once, so a name found in one
+    chunk is recorded on every chunk that mentions it, in full or by a token.
+    ``None`` when redaction is unavailable, so nothing is stored.
+
+    Raises:
+        NerError: detection failed. The caller leaves the points unscanned.
+    """
+    if redaction_mode(settings) == "off":
+        return None
+    names = await detect_names(await get_ner_client(settings), [*chunk_texts, heading])
+    finder = Redactor(names)
+    return (
+        [sorted(finder.names_in(t)) for t in chunk_texts],
+        sorted(finder.names_in(heading)),
+    )
+
+
 def _key(name: str) -> str:
     """Canonical form: tokens split on any name separator, casefolded.
 
@@ -172,15 +194,21 @@ class Redactor:
     def __init__(self, names: Iterable[str], keep_names: Iterable[str] = ()) -> None:
         self._keep = {key for k in keep_names if (key := _key(k))}
         forms = set(self._keep)
+        # form -> the detected names it stands for (a token can belong to
+        # several), so names_in() can report names rather than forms.
+        self._sources: dict[str, set[str]] = {}
         for name in names:
             if not (key := _key(name)):
                 continue
             forms.add(key)
+            self._sources.setdefault(key, set()).add(key)
             if key not in self._keep:
                 # ponytail: a bare surname gets its own number rather than the
                 # full name's. Reconciling aliases is the person-entity layer's
                 # job (Deck P9), not string matching's.
-                forms.update(_tokens(key))
+                for token in _tokens(key):
+                    forms.add(token)
+                    self._sources.setdefault(token, set()).add(key)
         self._numbers: dict[str, int] = {}
         # Longest first, so a kept "Jane Doe" wins over a redacted "Doe". Sorting
         # by canonical key rather than by matched text is enough: two
@@ -210,6 +238,24 @@ class Redactor:
             return match.group(0)
         number = self._numbers.setdefault(form, len(self._numbers) + 1)
         return f"[PERSON_{number}]"
+
+    def names_in(self, text: str | None) -> set[str]:
+        """The detected names (canonical form) that occur in ``text``, in full
+        or by one of their tokens.
+
+        This is what ingest stores per chunk: the document-level names that a
+        chunk actually mentions. Replaying them through a new ``Redactor`` at
+        read time reproduces the propagation (a bare "Smith" in this chunk is
+        redacted because "Karen Smith" was detected elsewhere in the document)
+        without storing the whole document's name list on every chunk.
+        """
+        if not text or self._regex is None:
+            return set()
+        return {
+            name
+            for match in self._regex.finditer(text)
+            for name in self._sources.get(_key(match.group(0)), ())
+        }
 
     def redact(self, text: str | None) -> str | None:
         if not text or self._regex is None:
