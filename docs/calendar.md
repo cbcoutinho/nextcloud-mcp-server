@@ -58,7 +58,8 @@ await nc_calendar_create_event(
     recurrence_rule="FREQ=WEEKLY;BYDAY=MO"
 )
 
-# Quick meeting creation
+# Quick meeting creation. `timezone` defaults to the user's Nextcloud
+# timezone setting; pass an IANA name to override it.
 await nc_calendar_create_meeting(
     title="Client Call",
     date="2025-07-28",

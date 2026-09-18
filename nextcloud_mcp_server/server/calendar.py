@@ -2,6 +2,7 @@ import datetime as dt
 import logging
 from typing import Any, Optional
 
+import httpx
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -542,6 +543,7 @@ def configure_calendar_tools(mcp: MCPServer):
         location: str = "",
         description: str = "",
         reminder_minutes: int = 15,
+        timezone: str = "",
     ):
         """Quick meeting creation with smart defaults
 
@@ -565,11 +567,22 @@ def configure_calendar_tools(mcp: MCPServer):
             location: Meeting location
             description: Meeting description/agenda
             reminder_minutes: Minutes before meeting to send reminder (default: 15)
+            timezone: IANA timezone ``date``/``time`` are expressed in (e.g.
+                ``"Europe/Amsterdam"``). Defaults to the user's Nextcloud
+                timezone setting. Only if that is unset or unreadable is the
+                meeting stored as floating local time.
 
         Returns:
             Dict with meeting creation result
         """
         client = await get_client(ctx)
+
+        if not timezone:
+            try:
+                timezone = await client.users.get_current_user_timezone()
+            except (httpx.HTTPError, KeyError, ValueError) as e:
+                # Fail open: a floating meeting beats no meeting.
+                logger.warning("Could not read the user's timezone: %s", e)
 
         # Combine date and time for start_datetime
         start_datetime = f"{date}T{time}:00"
@@ -591,6 +604,7 @@ def configure_calendar_tools(mcp: MCPServer):
             "status": "CONFIRMED",
             "priority": 5,
             "privacy": "PUBLIC",
+            "timezone": timezone,
         }
 
         return await client.calendar.create_event(calendar_name, event_data)
