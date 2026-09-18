@@ -55,6 +55,14 @@ SOURCE_BYTES = "source_bytes"
 # until an admin payload backfill populates them (no re-embed).
 FOLDER_ANCESTORS = "folder_ancestors"
 
+# Person names for the redacted view (ADR-038), as canonical (casefolded)
+# forms. PERSON_NAMES: the document-level names a chunk mentions, in full or by a
+# token. TITLE_PERSON_NAMES: those found in the title and file path. Written only
+# when redaction is available; a point without PERSON_NAMES is "unscanned" and
+# gets live name detection at read time instead.
+PERSON_NAMES = "person_names"
+TITLE_PERSON_NAMES = "title_person_names"
+
 # Fixed platform namespace for deterministic chunk point IDs (design §2.2).
 # Derived once from ``uuid5(NAMESPACE_DNS, "astrolabe.cloud/mcp/point-id/v1")``
 # and pinned here as a literal so neither repo recomputes it. DO NOT CHANGE —

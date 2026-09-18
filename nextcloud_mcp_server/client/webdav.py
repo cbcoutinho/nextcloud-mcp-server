@@ -1997,6 +1997,29 @@ class WebDAVClient(BaseNextcloudClient):
         )
         return len(results) > 0
 
+    async def path_for_file_id(self, file_id: int) -> str | None:
+        """The path at which the caller sees ``file_id``, or ``None`` if they
+        cannot access it.
+
+        Same WebDAV SEARCH-by-fileid as :meth:`file_accessible_by_id`, and for
+        the same reason: it is the lookup that resolves files shared into the
+        caller's tree, where the ``/dav/meta/{id}/`` endpoint 404s.
+
+        Raises:
+            HTTPStatusError: On transport/server errors.
+        """
+        where = (
+            "<d:eq><d:prop><oc:fileid/></d:prop>"
+            f"<d:literal>{int(file_id)}</d:literal></d:eq>"
+        )
+        results = await self.search_files(
+            scope="",
+            where_conditions=where,
+            properties=["fileid"],
+            limit=1,
+        )
+        return results[0].get("path") if results else None
+
     async def get_fileid(self, path: str) -> str | None:
         """Return the Nextcloud fileid of a file/folder path, or None if absent.
 

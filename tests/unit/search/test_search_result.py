@@ -202,6 +202,31 @@ def test_build_search_result_from_point_note_payload():
     assert sr.total_chunks == 2
     assert sr.point_id == "p-1"
     assert sr.metadata == {"chunk_index": 0, "total_chunks": 2}
+    # Never scanned for person names (ADR-038): None, not [].
+    assert sr.person_names is None
+    assert sr.title_person_names is None
+
+
+@pytest.mark.unit
+def test_build_search_result_from_point_carries_person_names_outside_metadata():
+    """Stored names reach the result for redaction but never ``metadata``,
+    which some surfaces return verbatim."""
+    point = _make_point(
+        point_id="p-2",
+        payload={
+            "doc_id": "7",
+            "doc_type": "note",
+            "person_names": ["karen smith"],
+            "title_person_names": [],
+        },
+    )
+
+    sr = build_search_result_from_point(point)
+
+    assert sr is not None
+    assert sr.person_names == ["karen smith"]
+    assert sr.title_person_names == []
+    assert "person_names" not in (sr.metadata or {})
 
 
 @pytest.mark.unit

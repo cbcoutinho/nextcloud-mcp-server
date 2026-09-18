@@ -10,6 +10,7 @@ from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -186,6 +187,10 @@ class SearchResult:
         chunk_index: Zero-based index of this chunk in the document
         total_chunks: Total number of chunks in the document
         point_id: Qdrant point ID for batch vector retrieval (None if not from Qdrant)
+        person_names: Person names stored at ingest for the redacted view
+            (ADR-038); None when the point was never scanned. Kept out of
+            ``metadata`` on purpose: some surfaces return that dict verbatim.
+        title_person_names: Names found in the title and path at ingest.
     """
 
     id: str
@@ -221,6 +226,8 @@ class SearchResult:
     chunk_index: int = 0
     total_chunks: int = 1
     point_id: str | None = None
+    person_names: list[str] | None = None
+    title_person_names: list[str] | None = None
 
     def __post_init__(self):
         """Validate score is non-negative.
@@ -303,6 +310,8 @@ def build_search_result_from_point(
         chunk_index=point.payload.get("chunk_index", 0),
         total_chunks=point.payload.get("total_chunks", 1),
         point_id=str(point.id),
+        person_names=point.payload.get(payload_keys.PERSON_NAMES),
+        title_person_names=point.payload.get(payload_keys.TITLE_PERSON_NAMES),
     )
 
 

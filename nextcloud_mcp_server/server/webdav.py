@@ -333,14 +333,15 @@ def configure_webdav_tools(mcp: MCPServer):
     @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_read_file(
-        path: str,
         ctx: Context,
+        path: str | None = None,
         parse_document: Literal["auto", "markdown", "raw"] = "auto",
         redact: bool = False,
         keep_names: Annotated[
             list[Annotated[str, Field(max_length=200)]] | None,
             Field(max_length=50),
         ] = None,
+        file_id: int | None = None,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
@@ -348,7 +349,8 @@ def configure_webdav_tools(mcp: MCPServer):
         file (or an ancestor folder) carries an excluded system tag.
 
         Args:
-            path: Full path to the file to read
+            path: Full path to the file to read. Give either this or
+                ``file_id``.
             parse_document: How to handle a document (PDF, DOCX, image, ...):
 
                 - ``"auto"`` (default): extract its text. Cheapest route that
@@ -374,6 +376,10 @@ def configure_webdav_tools(mcp: MCPServer):
                 alias to leave visible (e.g. ``["Jane Doe", "Ms Doe", "J.
                 Doe"]``). Matching is case-insensitive but otherwise exact, so
                 list each form you expect. Anything unlisted is redacted.
+            file_id: Read the file with this Nextcloud file id instead of by
+                path. A file result from ``nc_semantic_search`` carries it as
+                its ``id``, which is how to open a result whose path was
+                redacted.
 
         Returns:
             ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
@@ -405,6 +411,13 @@ def configure_webdav_tools(mcp: MCPServer):
                 "CONTENT_REDACTION=optional|enforced and the embedding gateway "
                 "(EMBEDDING_GATEWAY_URL). Nothing was read."
             )
+        if (path is None) == (file_id is None):
+            raise ToolError("Give exactly one of path or file_id.")
+        if file_id is not None:
+            client = await get_client(ctx)
+            path = await client.webdav.path_for_file_id(file_id)
+        if path is None:
+            raise ToolError(f"No accessible file has id {file_id}.")
         response = await _read_file(path, ctx, parse_document)
         if not redact:
             return response
