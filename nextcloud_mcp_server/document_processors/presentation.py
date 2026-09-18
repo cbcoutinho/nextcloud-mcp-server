@@ -137,6 +137,24 @@ class PptxProcessor(DocumentProcessor):
         ).strip()
         return caption or None
 
+    async def _caption_all_pictures(self, slides: list["_SlideData"]) -> int:
+        """Caption up to ``_caption_max_images`` pictures across ``slides``,
+        appending a caption block to each slide whose picture succeeds.
+        Returns how many were captioned.
+        """
+        budget = self._caption_max_images
+        captioned = 0
+        for slide in slides:
+            for picture in slide.pictures:
+                if budget <= 0:
+                    return captioned
+                budget -= 1
+                caption = await self._caption_picture(picture)
+                if caption:
+                    slide.blocks.append(f"*Image: {caption}*")
+                    captioned += 1
+        return captioned
+
     async def process(
         self,
         content: bytes,
@@ -155,38 +173,11 @@ class PptxProcessor(DocumentProcessor):
             raise ProcessorError(f"Presentation parse failed: {exc}") from exc
 
         pictures_found = sum(len(slide.pictures) for slide in slides)
-        pictures_captioned = 0
-        if self._should_caption:
-            budget = self._caption_max_images
-            for slide in slides:
-                if budget <= 0:
-                    break
-                for picture in slide.pictures:
-                    if budget <= 0:
-                        break
-                    budget -= 1
-                    caption = await self._caption_picture(picture)
-                    if caption:
-                        slide.blocks.append(f"*Image: {caption}*")
-                        pictures_captioned += 1
+        pictures_captioned = (
+            await self._caption_all_pictures(slides) if self._should_caption else None
+        )
 
-        parts: list[str] = []
-        boundaries: list[dict[str, Any]] = []
-        offset = 0
-        for slide in slides:
-            body = _render_slide_markdown(slide)
-            if not body:
-                continue
-            parts.append(body)
-            boundaries.append(
-                {
-                    "slide": slide.index,
-                    "start_offset": offset,
-                    "end_offset": offset + len(body),
-                }
-            )
-            offset += len(body)
-        text = "".join(parts)
+        text, boundaries = _assemble_text(slides)
 
         metadata: dict[str, Any] = {
             "slide_count": slide_count,
@@ -198,7 +189,7 @@ class PptxProcessor(DocumentProcessor):
             # seeing" (see document_parser._pptx_caption_note).
             "pptx_pictures_found": pictures_found,
         }
-        if self._should_caption:
+        if pictures_captioned is not None:
             metadata["pptx_pictures_captioned"] = pictures_captioned
 
         return ProcessingResult(
@@ -291,6 +282,28 @@ def _render_slide_markdown(slide: _SlideData) -> str:
     if not blocks:
         return ""
     return f"## Slide {slide.index}\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def _assemble_text(slides: list[_SlideData]) -> tuple[str, list[dict[str, Any]]]:
+    """Join every non-empty slide's markdown and its ``slide_boundaries``
+    span, in one pass so the offsets always index the returned text exactly."""
+    parts: list[str] = []
+    boundaries: list[dict[str, Any]] = []
+    offset = 0
+    for slide in slides:
+        body = _render_slide_markdown(slide)
+        if not body:
+            continue
+        parts.append(body)
+        boundaries.append(
+            {
+                "slide": slide.index,
+                "start_offset": offset,
+                "end_offset": offset + len(body),
+            }
+        )
+        offset += len(body)
+    return "".join(parts), boundaries
 
 
 def _extract_deck(content: bytes) -> tuple[list[_SlideData], int]:
