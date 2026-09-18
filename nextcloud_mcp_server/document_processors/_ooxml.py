@@ -165,11 +165,11 @@ def caption_line(caption: str) -> str:
     return f"*Image: {caption}*"
 
 
-def picture_metadata(found: int, captions: list[str | None] | None) -> dict:
+def picture_metadata(found: int, captions: list[str | None] | None) -> dict[str, int]:
     """``pictures_found`` always -- on its own already a signal that there is
     content the caller is not seeing -- and ``pictures_captioned`` only when
     captioning was attempted (see ``document_parser._picture_caption_note``)."""
-    metadata: dict = {"pictures_found": found}
+    metadata: dict[str, int] = {"pictures_found": found}
     if captions is not None:
         metadata["pictures_captioned"] = sum(1 for c in captions if c)
     return metadata

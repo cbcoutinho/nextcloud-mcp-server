@@ -930,7 +930,7 @@ Office formats (DOCX/XLSX) deliberately stay with `unstructured` — docling is
 scoped to the image/scan/handwriting use case here. `.pptx` has its own native
 `python-pptx` reader (ADR-036) and does not route through docling for its text;
 it can optionally send the *pictures* it finds to docling for captioning — see
-"PPTX picture captioning" below. OCR language codes are
+"Office picture captioning" below. OCR language codes are
 engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
 codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
 convert endpoint has an observed ~2 min practical ceiling (from our testing, not a
