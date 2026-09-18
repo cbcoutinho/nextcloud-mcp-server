@@ -41,8 +41,31 @@ RedactionMode = Literal["off", "optional", "enforced"]
 UNREDACTED_SCOPE = "content.unredacted"
 
 _MIN_TOKEN_CHARS = 3
+# Titles that precede a name but are not part of it. A missed one only costs a
+# needless token expansion (over-redaction), so this need not be exhaustive.
 _HONORIFICS = frozenset(
-    {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "dame", "lord", "lady"}
+    {
+        "mr",
+        "mrs",
+        "ms",
+        "miss",
+        "mx",
+        "dr",
+        "prof",
+        "sir",
+        "dame",
+        "lord",
+        "lady",
+        "rev",
+        "revd",
+        "hon",
+        "capt",
+        "col",
+        "sgt",
+        "fr",
+        "sr",
+        "jr",
+    }
 )
 # Between the tokens of a multi-token name: whitespace (including the line
 # breaks OCR and markdown introduce) and the separators filenames and email
@@ -101,6 +124,7 @@ async def get_ner_client(settings: Any) -> NerClient:
                 url=url,
                 model=settings.ner_model,
                 token_provider=build_gateway_token_provider(settings),
+                threshold=float(settings.ner_threshold),
                 timeout_seconds=float(settings.ner_timeout_seconds),
             )
     return _client

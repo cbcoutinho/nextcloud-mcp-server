@@ -313,6 +313,10 @@ _DEFAULTS: dict[str, Any] = {
     # Per-request budget. Reads block on NER, and a redacted read that times out
     # fails closed (no content), so this is a latency ceiling, not a retry knob.
     "ner_timeout_seconds": 30.0,
+    # Minimum model confidence for a span to count as a person. Lower raises
+    # recall at the cost of over-redaction, which is the safe direction for a
+    # disclosure; 0.5 is GLiNER's customary operating point.
+    "ner_threshold": 0.5,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -1357,6 +1361,7 @@ class Settings:
     content_redaction: str = "off"
     ner_model: str = "local/urchade/gliner_multi_pii-v1"
     ner_timeout_seconds: float = 30.0
+    ner_threshold: float = 0.5
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1798,6 +1803,11 @@ class Settings:
             raise ValueError(
                 "CONTENT_REDACTION must be one of off, optional, enforced; got "
                 f"{self.content_redaction!r}"
+            )
+        self.ner_threshold = float(self.ner_threshold)
+        if not 0.0 < self.ner_threshold <= 1.0:
+            raise ValueError(
+                f"NER_THRESHOLD must be in (0, 1]; got {self.ner_threshold!r}"
             )
         if self.content_redaction != "off" and not self.embedding_gateway_url:
             logger.warning(

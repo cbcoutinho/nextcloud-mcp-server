@@ -1390,6 +1390,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `CONTENT_REDACTION` | ⚠️ Optional | `off` | Person-name redaction for SAR workflows (ADR-038): `off`, `optional` (callers may ask for a redacted view that keeps the data subject's `keep_names` and replaces every other person with `[PERSON_n]`), or `enforced` (redaction is forced for principals without the `content.unredacted` scope). **Gateway-only:** names are detected by the embedding gateway's `POST /v1/ner`, so without `EMBEDDING_GATEWAY_URL` the effective mode is `off` whatever this says (a startup warning says so) and `content.unredacted` is a no-op. A redacted read never falls back to unredacted text: if detection fails, the content is withheld. |
 | `NER_MODEL` | ⚠️ Optional | `local/urchade/gliner_multi_pii-v1` | Name-detection model, addressed the gateway way (`<provider>/<model>`). |
 | `NER_TIMEOUT_SECONDS` | ⚠️ Optional | `30` | Per-request NER budget. A redacted read that exceeds it fails closed (no content). |
+| `NER_THRESHOLD` | ⚠️ Optional | `0.5` | Minimum model confidence, in `(0, 1]`, for a span to count as a person name. Lower it to raise recall; the cost is over-redaction, which is the safe direction for a disclosure. |
 
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)
