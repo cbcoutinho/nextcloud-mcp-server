@@ -238,7 +238,8 @@ def _eligible_picture(shape: Any) -> Optional[_Picture]:
     """
     try:
         image = shape.image
-    except Exception as exc:  # noqa: BLE001 -- a corrupt/unreadable image part costs this picture, not the deck
+    except Exception as exc:  # noqa: BLE001
+        # A corrupt/unreadable image part costs this picture, not the deck.
         logger.debug("Skipping unreadable picture shape: %s", exc)
         return None
     if image.content_type not in DOCLING_IMAGE_TYPES:
