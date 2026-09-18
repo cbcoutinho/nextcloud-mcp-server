@@ -152,6 +152,16 @@ services:
     profiles:
       - infinity
 
+  # Canned stand-in for the embedding gateway's POST /v1/ner, so the integration
+  # tier exercises person-name redaction (ADR-038) without a model. It detects
+  # only the synthetic names hard-coded in tests/fixtures/ner_stub.py.
+  ner-stub:
+    image: docker.io/library/python:3.12-alpine
+    restart: always
+    command: ["python", "/stub/ner_stub.py"]
+    volumes:
+      - ./tests/fixtures/ner_stub.py:/stub/ner_stub.py:ro
+
   mcp:
     build: .
     restart: always
@@ -159,6 +169,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      ner-stub:
+        condition: service_started
     ports:
       - 127.0.0.1:8000:8000
       - 127.0.0.1:9090:9090
@@ -195,6 +207,12 @@ services:
       # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).
       # Without it the route is not mounted and vector sync relies on polling.
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-me}
+
+      # Person-name redaction (ADR-038). Redaction is gateway-only, so the dev
+      # stack points the gateway URL at the NER stub. Nothing else here routes
+      # through the gateway: OCR is off and reranking is not enabled.
+      - CONTENT_REDACTION=${CONTENT_REDACTION:-optional}
+      - EMBEDDING_GATEWAY_URL=${EMBEDDING_GATEWAY_URL:-http://ner-stub:8080}
 
       #- LOG_FORMAT=json
 

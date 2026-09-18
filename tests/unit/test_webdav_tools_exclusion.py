@@ -1114,3 +1114,166 @@ async def test_move_copy_report_conflicts_as_unsuccessful(
     assert result.success is False
     assert result.status_code == status
     assert result.message == "nope"
+
+
+# ── Redacted reads (ADR-038) ────────────────────────────────────────────
+#
+# Synthetic names only. The NER client is mocked; the redaction itself is the
+# real Redactor, so these assert the wiring and the fail-closed paths.
+
+
+def _redaction_settings(**overrides) -> SimpleNamespace:
+    return _settings(
+        content_redaction="optional",
+        embedding_gateway_url="https://gw.example",
+        **overrides,
+    )
+
+
+@pytest.fixture
+def ner(mocker):
+    """Mock the gateway NER client the read tool redacts with."""
+
+    def _install(names_per_text=None, side_effect=None):
+        client = mocker.MagicMock()
+        client.model = "local/test-ner"
+        client.detect = AsyncMock(side_effect=side_effect, return_value=names_per_text)
+        mocker.patch(
+            "nextcloud_mcp_server.server.webdav.get_ner_client",
+            AsyncMock(return_value=client),
+        )
+        return client
+
+    return _install
+
+
+async def test_read_file_redacts_content_and_path_keeping_subject(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, ner
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(
+        _result(
+            text="Jane Doe complained about Karen Smith. Smith replied.",
+            metadata={"pipeline_tier": "fast", "author": "Karen Smith"},
+        ),
+        settings=_redaction_settings(),
+    )
+    ner_client = ner([{"Jane Doe", "Karen Smith"}, {"Karen Smith"}])
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/HR/Karen Smith/letter.pdf",
+        ctx=_read_ctx(fake_client),
+        redact=True,
+        keep_names=["Jane Doe"],
+    )
+
+    assert result.content == (
+        "Jane Doe complained about [PERSON_1]. [PERSON_2] replied."
+    )
+    assert result.path == "/HR/[PERSON_1]/letter.pdf"
+    assert result.parsing_metadata is None  # may carry the author
+    assert result.redaction is not None
+    assert result.redaction.persons_redacted == 2
+    assert result.redaction.kept_names == ["Jane Doe"]
+    assert result.redaction.detector_model == "local/test-ner"
+    # Both the content and the path were sent for detection.
+    (sent,) = ner_client.detect.await_args.args
+    assert sent == [
+        "Jane Doe complained about Karen Smith. Smith replied.",
+        "/HR/Karen Smith/letter.pdf",
+    ]
+
+
+async def test_read_file_redaction_fails_closed_when_ner_fails(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, ner
+):
+    from nextcloud_mcp_server.providers.ner import NerError
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(_result(text="Karen Smith wrote."), settings=_redaction_settings())
+    ner(side_effect=NerError("NER endpoint returned HTTP 503"))
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="no content is returned") as exc:
+        await fn(path="/letter.pdf", ctx=_read_ctx(fake_client), redact=True)
+    assert "Karen" not in str(exc.value)
+
+
+async def test_read_file_redaction_refuses_base64(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, ner
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(_result(), settings=_redaction_settings())
+    ner_client = ner([set()])
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="cannot be redacted"):
+        await fn(
+            path="/doc.pdf",
+            ctx=_read_ctx(fake_client),
+            parse_document="raw",
+            redact=True,
+        )
+    ner_client.detect.assert_not_called()
+
+
+async def test_read_file_redaction_redacts_plain_text_files(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, ner
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"Minutes: Tom Brown attended.", "text/plain")
+    parsing(parseable=False, settings=_redaction_settings())
+    ner([{"Tom Brown"}, set()])
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/minutes.txt", ctx=_read_ctx(fake_client), redact=True)
+
+    assert result.content == "Minutes: [PERSON_1] attended."
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        _settings(content_redaction="off", embedding_gateway_url="https://gw"),
+        # Gateway-only: "optional" without a gateway is unavailable, not a no-op.
+        _settings(content_redaction="optional", embedding_gateway_url=None),
+    ],
+    ids=["off", "no-gateway"],
+)
+async def test_read_file_redact_errors_when_unavailable(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, settings
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"Karen Smith", "text/plain")
+    parsing(parseable=False, settings=settings)
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="not available"):
+        await fn(path="/a.txt", ctx=_read_ctx(fake_client), redact=True)
+    fake_client.webdav.stream_to_file.assert_not_called()
+
+
+async def test_read_file_without_redact_is_unchanged_when_redaction_on(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, ner
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"Karen Smith", "text/plain")
+    parsing(parseable=False, settings=_redaction_settings())
+    ner_client = ner([set()])
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/a.txt", ctx=_read_ctx(fake_client))
+
+    assert result.content == "Karen Smith"
+    assert result.redaction is None
+    ner_client.detect.assert_not_called()
