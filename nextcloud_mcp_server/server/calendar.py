@@ -569,7 +569,7 @@ def configure_calendar_tools(mcp: MCPServer):
             reminder_minutes: Minutes before meeting to send reminder (default: 15)
             timezone: IANA timezone ``date``/``time`` are expressed in (e.g.
                 ``"Europe/Amsterdam"``). Defaults to the user's Nextcloud
-                timezone setting; only if that is unset or unreadable is the
+                timezone setting. Only if that is unset or unreadable is the
                 meeting stored as floating local time.
 
         Returns:
