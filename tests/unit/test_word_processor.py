@@ -59,6 +59,16 @@ async def test_headings_lists_and_paragraphs_become_markdown():
     assert result.metadata["pictures_found"] == 0
 
 
+async def test_direct_numbering_on_a_plain_style_is_a_list_item():
+    doc = Document()
+    paragraph = doc.add_paragraph("numbered without a List style")
+    paragraph._p.get_or_add_pPr().get_or_add_numPr()
+
+    result = await DocxProcessor().process(_save(doc), DOCX_MIME, "n.docx")
+
+    assert result.text == "- numbered without a List style\n"
+
+
 async def test_a_table_becomes_a_markdown_table_in_body_order():
     doc = Document()
     doc.add_paragraph("before")
@@ -161,3 +171,20 @@ async def test_caption_max_images_caps_docling_round_trips(mocker, monkeypatch):
 
 async def test_health_check_is_true_once_docx_is_importable():
     assert await DocxProcessor().health_check() is True
+
+
+async def test_two_pictures_in_one_paragraph_keep_their_order(mocker, monkeypatch):
+    convert = mocker.AsyncMock(
+        side_effect=[{"md_content": "first"}, {"md_content": "second"}]
+    )
+    monkeypatch.setattr(_ooxml, "convert_file", convert)
+    doc = Document()
+    doc.add_paragraph("intro")
+    paragraph = doc.add_paragraph("")
+    for _ in range(2):
+        paragraph.add_run().add_picture(io.BytesIO(_png(120, 120)), width=Inches(1))
+    doc.add_paragraph("outro")
+
+    result = await _captioning().process(_save(doc), DOCX_MIME, "two.docx")
+
+    assert result.text == "intro\n\n*Image: first*\n\n*Image: second*\n\noutro\n"

@@ -26,7 +26,7 @@ pure-Python OOXML reader, and remain its concern.
 - The body is walked in document order (`Document.iter_inner_content()`):
   - paragraphs become text
   - `Title`/`Heading N` styles become `#`-headings
-  - `List*` styles become `- ` items
+  - `List*` styles, or direct numbering (`w:numPr`), become `- ` items
   - tables become markdown tables
 - python-docx repeats a merged cell in every grid position it spans, so table
   columns stay aligned (the failure #1265 measured for mammoth, which drops the

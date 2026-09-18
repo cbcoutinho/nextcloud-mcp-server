@@ -113,7 +113,10 @@ def _paragraph_markdown(paragraph: Any) -> str:
         level = style.removeprefix("Heading ")
         if level.isdigit():
             return f"{'#' * min(int(level), 6)} {text}"
-    if style.startswith("List"):
+    # A list item carries either a List* style or direct numbering (w:numPr),
+    # which converters and some Word workflows apply to a plain style.
+    p_pr = paragraph._p.pPr
+    if style.startswith("List") or (p_pr is not None and p_pr.numPr is not None):
         return f"- {text}"
     return text
 
@@ -123,8 +126,10 @@ def _table_markdown(table: Any) -> str:
     grid position it spans, so columns stay aligned; rows are padded only in
     case of a ragged grid (``gridBefore``/``gridAfter``)."""
     rows = [[escape_cell(cell.text) for cell in row.cells] for row in table.rows]
-    width = max((len(r) for r in rows), default=0)
-    return render_table([r + [""] * (width - len(r)) for r in rows if width])
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    return render_table([r + [""] * (width - len(r)) for r in rows])
 
 
 def _paragraph_pictures(paragraph: Any, part: Any) -> list[Picture]:
