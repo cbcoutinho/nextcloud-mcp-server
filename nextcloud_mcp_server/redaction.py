@@ -182,7 +182,11 @@ class Redactor:
                 # job (Deck P9), not string matching's.
                 forms.update(_tokens(key))
         self._numbers: dict[str, int] = {}
-        # Longest first, so a kept "Jane Doe" wins over a redacted "Doe".
+        # Longest first, so a kept "Jane Doe" wins over a redacted "Doe". Sorting
+        # by canonical key rather than by matched text is enough: two
+        # alternatives only compete at one position when one's tokens are a
+        # prefix of the other's, and then the longer key is also the longer
+        # match whatever separators the text uses.
         alternatives = sorted(forms, key=len, reverse=True)
         self._regex = (
             re.compile(
