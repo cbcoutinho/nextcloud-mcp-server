@@ -30,10 +30,11 @@ async def test_semantic_search_redacts_third_parties(nc_mcp_client, nc_client):
     note = await nc_client.notes.create_note(
         title=f"Letter re Karen Smith {term}",
         content=(
-            f"Jane Doe met Karen Smith and Tom Brown about {term}. "
-            "Later Smith left the meeting."
+            f"Jane Doe met Karen Smith about {term}. Later Smith left the meeting."
         ),
-        category="RedactionTest",
+        # A name that appears ONLY in the category, which ingest never scans:
+        # it must still be redacted (detected live).
+        category="Tom Brown",
     )
     try:
         with anyio.move_on_after(INDEX_TIMEOUT_SECONDS) as scope:
@@ -66,6 +67,7 @@ async def test_semantic_search_redacts_third_parties(nc_mcp_client, nc_client):
                 str(row.get(field) or "")
                 for field in (
                     "title",
+                    "category",
                     "excerpt",
                     "url",
                     "marked_text",

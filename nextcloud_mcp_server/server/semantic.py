@@ -377,13 +377,23 @@ async def _redact_results(
     live: list[str] = []
     for row, hit in zip(results, hits, strict=True):
         if hit.person_names is None:
-            live += [row.title, row.excerpt, row.category]
+            live += [row.title, row.excerpt]
             live.append((hit.metadata or {}).get("path") or "")
         else:
             names.update(hit.person_names)
             names.update(hit.title_person_names or ())
+        # Always live: ingest never scans the category (a notes category, a
+        # calendar location), and neither does context, which comes from
+        # neighbouring chunks.
         live += [
-            t for t in (row.before_context, row.marked_text, row.after_context) if t
+            t
+            for t in (
+                row.category,
+                row.before_context,
+                row.marked_text,
+                row.after_context,
+            )
+            if t
         ]
     if any(live):
         ner = await get_ner_client(settings)
@@ -1125,6 +1135,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
         raise MCPError(code=-1, message=f"Configuration error: {error_msg}")
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error during search: {str(e)}")
+    except ToolError:
+        # Anticipated, with a message already written for the caller (a
+        # redaction that failed closed). Not an unexpected crash to wrap.
+        raise
     except Exception as e:
         # Genuinely-unexpected bucket (after the ValueError / RequestError
         # cases above). We convert it to an MCPError so the reason survives:

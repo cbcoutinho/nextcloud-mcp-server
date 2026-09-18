@@ -107,6 +107,22 @@ async def test_unscanned_rows_and_context_are_detected_live(ner):
     assert "Karen" not in row.excerpt
 
 
+async def test_category_of_a_scanned_row_is_detected_live(ner):
+    """Ingest never scans the category, so it goes live even for a scanned row:
+    a name that appears only there must not leak."""
+    ner_client = ner([{"Tom Brown"}])
+    hit = _hit(person_names=["karen smith"], title_person_names=["karen smith"])
+    row = _row(hit, category="Tom Brown")
+
+    await semantic._redact_results(
+        [row], [hit], keep_names=[], settings=_SETTINGS, browser_base=None
+    )
+
+    (sent,) = ner_client.detect.await_args.args
+    assert sent == ["Tom Brown"]
+    assert row.category == "[PERSON_3]"
+
+
 async def test_live_detection_failure_returns_nothing(ner):
     ner(side_effect=NerError("NER endpoint returned HTTP 503"))
     hit = _hit(person_names=None)
