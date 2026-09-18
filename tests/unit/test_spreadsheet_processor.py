@@ -7,7 +7,7 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XlImage
 from PIL import Image
 
-from nextcloud_mcp_server.document_processors import _ooxml
+from nextcloud_mcp_server.document_processors import _ooxml, spreadsheet
 from nextcloud_mcp_server.document_processors._ooxml import PictureCaptioner
 from nextcloud_mcp_server.document_processors.base import ProcessorError
 from nextcloud_mcp_server.document_processors.spreadsheet import (
@@ -133,6 +133,16 @@ async def test_captions_go_in_a_trailing_images_section(mocker, monkeypatch):
     assert result.metadata["pictures_captioned"] == 1
     args, _ = convert.call_args_list[0]
     assert args[2] == "image/png"
+
+
+def test_media_is_ordered_naturally_so_the_cap_takes_the_first_pictures():
+    names = ["xl/media/image10.png", "xl/media/image2.png", "xl/media/image1.png"]
+
+    assert sorted(names, key=spreadsheet._natural_key) == [
+        "xl/media/image1.png",
+        "xl/media/image2.png",
+        "xl/media/image10.png",
+    ]
 
 
 async def test_health_check_is_true_once_openpyxl_is_importable():

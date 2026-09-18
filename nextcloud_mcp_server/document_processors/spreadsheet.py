@@ -13,6 +13,7 @@ trailing ``## Images`` section.
 import io
 import logging
 import mimetypes
+import re
 import zipfile
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
@@ -125,13 +126,19 @@ def _sheet_table(sheet: Any) -> str:
     return render_table([r + [""] * (width - len(r)) for r in rows])
 
 
+def _natural_key(name: str) -> list[int | str]:
+    """Sort ``image2.png`` before ``image10.png``: the caption cap should take
+    the first pictures in insertion order, not in lexicographic order."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
+
+
 def _media_pictures(content: bytes) -> list[Picture]:
     """Eligible pictures stored in the package's ``xl/media/`` folder."""
     from PIL import Image  # noqa: PLC0415 -- keep the import off the hot path
 
     pictures = []
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for name in sorted(zf.namelist()):
+        for name in sorted(zf.namelist(), key=_natural_key):
             if not name.startswith("xl/media/"):
                 continue
             content_type = mimetypes.guess_type(name)[0] or ""
