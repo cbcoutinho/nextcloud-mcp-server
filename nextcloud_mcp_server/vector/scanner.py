@@ -475,8 +475,8 @@ async def _discover_tagged_files(
 ) -> list[dict]:
     """Discover tagged indexable files for both index modes, stamping ``_index_mode``.
 
-    Which types count is ``settings.indexable_mime_types`` — PDF plus the office
-    and Outlook formats by default. It is a setting rather than "whatever the
+    Which types count is ``settings.indexable_mime_types`` — PDF plus
+    ``.docx``/``.xlsx``/``.pptx`` by default. It is a setting rather than "whatever the
     processor registry can parse" so that enabling an optional processor cannot
     silently widen the corpus, and its embedding bill, behind the operator.
 

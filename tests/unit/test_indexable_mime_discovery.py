@@ -196,15 +196,15 @@ class TestEmptyAllowlist:
 
 
 class TestIndexableSetting:
-    def test_the_default_covers_pdf_office_and_outlook(self):
-        types = Settings().indexable_mime_types
-
-        assert "application/pdf" in types
-        assert "application/msword" in types
-        assert DOCX in types
-        assert "application/vnd.ms-excel" in types
-        assert XLSX in types
-        assert "application/vnd.ms-outlook" in types
+    def test_the_default_covers_pdf_and_the_natively_read_ooxml_formats(self):
+        """Only types a processor on this build can read: legacy .doc/.xls/.msg
+        would fail every discovered file as "no processor for type"."""
+        assert Settings().indexable_mime_types == (
+            "application/pdf",
+            DOCX,
+            XLSX,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
 
     def test_whitespace_and_blank_entries_are_dropped(self):
         settings = Settings(

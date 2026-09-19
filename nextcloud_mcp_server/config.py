@@ -175,11 +175,9 @@ _DEFAULTS: dict[str, Any] = {
     # discovered, fails to parse once, and is reported.
     "vector_sync_indexable_mime_types": (
         "application/pdf,"
-        "application/msword,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-        "application/vnd.ms-excel,"
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.ms-outlook"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     ),
     # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
     # (the default) indexes every message in every mailbox, which is the
@@ -1265,14 +1263,13 @@ class Settings:
     # Comma-separated MIME types that tagged-file discovery enqueues. Explicit
     # rather than derived from the processor registry: turning on an optional
     # processor would otherwise silently widen the corpus (and its embedding
-    # bill). Defaults to PDF plus the office and Outlook formats.
+    # bill). Defaults to PDF plus the OOXML formats with a native reader
+    # (.docx/.xlsx/.pptx, ADR-036/038).
     vector_sync_indexable_mime_types: str = (
         "application/pdf,"
-        "application/msword,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-        "application/vnd.ms-excel,"
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.ms-outlook"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     )
 
     @property
