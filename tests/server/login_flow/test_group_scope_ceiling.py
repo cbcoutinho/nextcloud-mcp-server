@@ -129,13 +129,34 @@ async def test_group_limits_are_unioned(
     assert "notes.write" not in scopes, scopes
 
 
+@pytest.fixture
+def astrolabe_public_audience():
+    """Mint Astrolabe tokens for the audience mcp-login-flow validates.
+
+    Astrolabe uses ``mcp_server_public_url`` as the token's resource. CI only
+    sets the internal URL, which the server rejects as ``bad_audience``.
+    """
+    key = "mcp_server_public_url"
+    previous = _occ("config:system:get", key, check=False)
+    _occ("config:system:set", key, "--value", "http://localhost:8004")
+    try:
+        yield
+    finally:
+        if previous.returncode == 0:
+            _occ("config:system:set", key, "--value", previous.stdout.strip())
+        else:
+            _occ("config:system:delete", key, check=False)
+
+
 def _probe_tools(user: str) -> set[str]:
     """Tool names visible to ``user`` through Astrolabe's minted token."""
     out = _occ("astrolabe:mcp-probe", user, "--scopes", "notes.read files.read").stdout
     return {line.split()[0] for line in out.splitlines() if line.startswith("  nc_")}
 
 
-async def test_astrolabe_minted_token_respects_group_limit(limited_user):
+async def test_astrolabe_minted_token_respects_group_limit(
+    limited_user, astrolabe_public_audience
+):
     """TokenGenerationRequestEvent (Astrolabe's path) applies the same limit."""
     username, _, limit = limited_user
     await limit("files.read")
