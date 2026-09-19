@@ -5,6 +5,29 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.194.0 (2026-09-19)
+
+### BREAKING CHANGE
+
+- parsing_metadata keys pptx_pictures_found and
+pptx_pictures_captioned (added in 0.193.0) are renamed to
+pictures_found and pictures_captioned.
+
+### Feat
+
+- **processors**: read .xlsx natively via openpyxl (ADR-038)
+- **processors**: read .docx natively via python-docx (ADR-038)
+
+### Fix
+
+- **xlsx**: order xl/media naturally so the caption cap takes the first pictures
+- **docx**: treat direct numbering as a list item; pin same-paragraph picture order
+- **config**: warn when OFFICE_CAPTION_* and PPTX_CAPTION_* are both set
+
+### Refactor
+
+- **ooxml**: share pptx picture captioning with the other OOXML readers
+
 ## v0.193.1 (2026-09-18)
 
 ### Fix
