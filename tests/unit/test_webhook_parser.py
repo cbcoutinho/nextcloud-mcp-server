@@ -380,8 +380,8 @@ def test_indexable_file_suffix_is_case_insensitive():
 
 @pytest.mark.unit
 def test_non_indexable_file_event_returns_none():
-    """Vector sync only indexes PDFs, so other file types stay ignored — no
-    reconcile job for every image or spreadsheet saved on the instance."""
+    """Types outside VECTOR_SYNC_INDEXABLE_MIME_TYPES stay ignored — no
+    reconcile job for every image saved on the instance."""
     payload = {
         "user": {"uid": "alice"},
         "time": 1,
@@ -392,6 +392,42 @@ def test_non_indexable_file_event_returns_none():
     }
 
     assert extract_document_task(payload) is None
+
+
+def _file_written(path: str) -> dict:
+    return {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+            "node": {"id": 12, "path": path},
+        },
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["contract.docx", "sheet.xlsx", "deck.pptx"])
+def test_office_files_are_indexable_by_default(name):
+    task = extract_document_task(_file_written(f"/alice/files/Docs/{name}"))
+
+    assert task is not None
+    assert task.doc_type == "file"
+
+
+@pytest.mark.unit
+def test_webhook_suffixes_follow_the_indexable_mime_setting(monkeypatch):
+    """Narrowing VECTOR_SYNC_INDEXABLE_MIME_TYPES narrows the webhook too, so
+    the push path never enqueues a type the scanner would not discover."""
+    from nextcloud_mcp_server import config  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: config.Settings(vector_sync_indexable_mime_types="application/pdf"),
+    )
+
+    assert extract_document_task(_file_written("/alice/files/Docs/a.docx")) is None
+    assert extract_document_task(_file_written("/alice/files/Docs/a.pdf")) is not None
 
 
 @pytest.mark.unit

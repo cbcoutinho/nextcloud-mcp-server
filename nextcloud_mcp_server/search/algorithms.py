@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -84,7 +84,7 @@ class NextcloudClientProtocol(Protocol):
     # Top-level client helper (not a sub-client) used by verify-on-read to
     # gate file results on current vector-index tag membership.
     async def find_files_by_tag(
-        self, tag_name: str, mime_type_filter: str | None = None
+        self, tag_name: str, mime_type_filter: str | Sequence[str] | None = None
     ) -> list[dict]:
         """Return files carrying ``tag_name`` (folders expanded by MIME)."""
         ...

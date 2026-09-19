@@ -47,11 +47,30 @@ _DECK_CARD_EVENTS = frozenset(
 # "/admin/files/Notes/Sub/Note.md" or "/alice/files/Notes/foo.md".
 _NOTES_PATH_RE = re.compile(r"^/[^/]+/files/Notes/.+\.md$")
 
-# File extensions vector sync can index as ``doc_type="file"``. Mirrors the
-# ``mime_type_filter="application/pdf"`` that scanner._discover_tagged_files
-# applies — the webhook payload carries no mime type, so the suffix is the only
-# signal available. Broaden both together.
-_INDEXABLE_FILE_SUFFIXES = (".pdf",)
+# The webhook payload carries no mime type, so the suffix is the only signal:
+# map settings.indexable_mime_types (what scanner._discover_tagged_files
+# enqueues) to suffixes. A listed type missing here is still indexed, just by
+# the polling scanner instead of on the webhook.
+_SUFFIX_BY_MIME = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-outlook": ".msg",
+}
+
+
+def _indexable_suffixes() -> tuple[str, ...]:
+    """File suffixes for the currently indexable MIME types."""
+    from nextcloud_mcp_server.config import get_settings  # noqa: PLC0415
+
+    return tuple(
+        _SUFFIX_BY_MIME[m]
+        for m in get_settings().indexable_mime_types
+        if m in _SUFFIX_BY_MIME
+    )
 
 
 def extract_document_task(payload: dict) -> DocumentTask | None:
@@ -95,7 +114,7 @@ def _parse_file_event(
     node_id = node.get("id")
 
     is_note = bool(_NOTES_PATH_RE.match(path))
-    is_indexable_file = path.lower().endswith(_INDEXABLE_FILE_SUFFIXES)
+    is_indexable_file = path.lower().endswith(_indexable_suffixes())
     if not is_note and not is_indexable_file:
         # A folder, or a file type vector sync never indexes.
         return None

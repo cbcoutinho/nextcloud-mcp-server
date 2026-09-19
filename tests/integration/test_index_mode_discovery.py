@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.scanner import _discover_tagged_files
 
@@ -73,6 +74,10 @@ async def dual_tag_environment(nc_client: NextcloudClient):
         "settings": SimpleNamespace(
             vector_sync_tag=hybrid_tag,
             vector_sync_keyword_tag=keyword_tag,
+            # Discovery filters on this, and an empty value now means "index
+            # nothing" -- so the stub has to carry the real default or the
+            # fixture's tagged PDFs are never discovered.
+            indexable_mime_types=Settings().indexable_mime_types,
         ),
     }
 
