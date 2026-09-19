@@ -79,7 +79,7 @@ config (`astrolabe.enabled_sync_presets`); with none enabled, no listener fires.
 | Preset | Events delivered | What it keeps in sync |
 |---|---|---|
 | `notes_sync` | Node created/written/deleted under `…/files/Notes/` | Notes (`.md`) |
-| `files_sync` | Node created/written/deleted anywhere, plus SystemTag changes (NC 32+) | Notes, tagged PDFs, and index-tag changes |
+| `files_sync` | Node created/written/deleted anywhere, plus SystemTag changes (NC 32+) | Notes, tagged indexable files (`VECTOR_SYNC_INDEXABLE_MIME_TYPES`), and index-tag changes |
 | `deck_sync` | Deck card created/updated/deleted, board updated | Deck cards (board updates are reconciled by the scanner) |
 
 Every preset maps to a doc type vector sync actually indexes; the receiver
@@ -162,7 +162,8 @@ SELECT userid, configkey FROM oc_preferences WHERE appid = 'astrolabe';
 3. Background jobs not running — delivery is a queued job
    (`php occ background:job:worker`, or a working cron).
 4. The change was to something vector sync doesn't index — an untagged file, a
-   file type other than PDF, a calendar event (see the preset table).
+   file type outside `VECTOR_SYNC_INDEXABLE_MIME_TYPES`, a calendar event (see the
+   preset table).
 
 ### 401 on `/webhooks/nextcloud`
 `mcp_webhook_secret` (Nextcloud) does not match `WEBHOOK_SECRET` (MCP server).

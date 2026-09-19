@@ -34,8 +34,8 @@ def _warn_missing_secret_once() -> None:
     _warned_about_missing_secret = True
     logger.warning(
         "WEBHOOK_SECRET is not set; /webhooks/nextcloud rejects all requests "
-        "(503). Set WEBHOOK_SECRET and re-register webhooks to enable "
-        "Authorization: Bearer validation and webhook-driven vector sync."
+        "(503). Set WEBHOOK_SECRET, and Astrolabe's mcp_webhook_secret to the "
+        "same value, to enable webhook-driven vector sync."
     )
 
 

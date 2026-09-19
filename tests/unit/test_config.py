@@ -1142,7 +1142,7 @@ class TestUnknownEnvVarWarning:
         [
             "LS_COLORS",
             # Kubernetes injects a pair like this into every pod; at cutoff 0.80
-            # they matched NEXTCLOUD_MCP_SERVICE_NAME / NEXTCLOUD_MCP_PORT.
+            # they matched the (since removed) NEXTCLOUD_MCP_* self-URL keys.
             "NEXTCLOUD_MCP_SERVICE_HOST",
             "NEXTCLOUD_MCP_PORT_8000_TCP",
             # Read by the OpenTelemetry SDK itself, not declared by us.

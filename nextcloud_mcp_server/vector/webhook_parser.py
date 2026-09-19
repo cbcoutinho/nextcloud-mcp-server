@@ -56,9 +56,14 @@ _SUFFIX_BY_MIME = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.ms-outlook": ".msg",
+    # Readable only with COLLABORA_URL set (ADR-039), so opt-in.
     "application/msword": ".doc",
     "application/vnd.ms-excel": ".xls",
-    "application/vnd.ms-outlook": ".msg",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
 }
 
 
