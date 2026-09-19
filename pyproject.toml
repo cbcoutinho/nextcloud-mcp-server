@@ -68,6 +68,7 @@ dependencies = [
     "python-pptx>=1.0.2",
     "python-docx>=1.2.0",
     "openpyxl>=3.1.5",
+    "olefile>=0.47",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -106,6 +107,7 @@ markers = [
     "postgres: Tests requiring the docker-compose postgres-test service (ADR-026)",
     "contract: Pact consumer/provider contract tests (ADR-029)",
     "docling: Tests requiring the docker-compose docling-serve backend (ADR-031)",
+    "collabora: Tests requiring the docker-compose Collabora Online converter (ADR-039)",
 ]
 testpaths = [
     "tests",
