@@ -386,15 +386,15 @@ Notes:
 
 ### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
 
-Tagged-file discovery enqueues **PDF plus the OOXML office formats that have a
-native reader** (`.pdf`, `.docx`, `.xlsx`, `.pptx`; ADR-036/038). A tagged file of
-any other type is ignored. The list is an explicit allowlist rather than "whatever the
+Tagged-file discovery enqueues **PDF plus every format read in-process with no
+external service** (`.pdf`, `.docx`, `.xlsx`, `.pptx`, `.msg`; ADR-036/038/039). A
+tagged file of any other type is ignored. The list is an explicit allowlist rather than "whatever the
 processor registry can parse", so enabling an optional processor cannot widen
 the corpus — and its embedding bill — without someone choosing to.
 
 > **Upgrading from a PDF-only release changes what you pay to embed.** Before
 > this setting existed, discovery was hard-filtered to `application/pdf`. On
-> upgrade, any `.docx`/`.xlsx`/`.pptx` file already sitting under a `vector-index`
+> upgrade, any `.docx`/`.xlsx`/`.pptx`/`.msg` file already sitting under a `vector-index`
 > (or `keyword-index`) tag — including everything beneath a tagged folder —
 > becomes eligible and will be indexed on the next scan. Nothing is removed and
 > no API changes, so this is not a breaking change; but if you tagged folders
@@ -407,9 +407,16 @@ the corpus — and its embedding bill — without someone choosing to.
 > Setting it **empty** does not mean "no filter" — it means *index nothing*, and
 > discovery logs a warning saying so.
 
-Reading `.doc`/`.docx` and legacy `.xls` needs LibreOffice in the image. Where
-it is absent those types are simply not claimed, and each discovered file logs
-one "no processor for type" failure rather than failing mid-parse.
+Legacy `.doc`/`.xls`/`.ppt` and ODF `.odt`/`.ods`/`.odp` are readable only with
+`COLLABORA_URL` set (ADR-039), so they are not in the default. Where Collabora is
+configured, add their MIME types to index them:
+
+```dotenv
+VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-outlook,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation
+```
+
+Without Collabora, a listed type of this kind fails each discovered file once as
+"no processor for type" rather than failing mid-parse.
 
 ### Per-document keyword vs hybrid indexing — `VECTOR_SYNC_KEYWORD_TAG`
 
@@ -1401,7 +1408,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
 | `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
-| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | `application/pdf`, `…wordprocessingml.document`, `…spreadsheetml.sheet`, `…presentationml.presentation` | Comma-separated MIME types that tagged-file discovery will enqueue — PDF plus `.docx`/`.xlsx`/`.pptx`. A tagged file of any other type is ignored. Deliberately an explicit allowlist rather than "whatever the processor registry can parse", so enabling an optional processor cannot silently widen the corpus (and its embedding bill). Set to `application/pdf` alone to restore PDF-only indexing. Adding a type with no processor (e.g. legacy `.doc`/`.xls`) makes each discovered file of that type fail once as "no processor for type" |
+| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | `application/pdf`, `…wordprocessingml.document`, `…spreadsheetml.sheet`, `…presentationml.presentation`, `application/vnd.ms-outlook` | Comma-separated MIME types that tagged-file discovery will enqueue — PDF plus `.docx`/`.xlsx`/`.pptx`/`.msg`. A tagged file of any other type is ignored. Deliberately an explicit allowlist rather than "whatever the processor registry can parse", so enabling an optional processor cannot silently widen the corpus (and its embedding bill). Set to `application/pdf` alone to restore PDF-only indexing. Legacy/ODF types (`.doc`/`.xls`/`.ppt`/`.odt`/…) need `COLLABORA_URL`; without it each discovered file of that type fails once as "no processor for type" |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |

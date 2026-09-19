@@ -31,14 +31,17 @@ pytestmark = pytest.mark.integration
 # changes to content sniffing.
 PDF_BYTES = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF"
 ZIP_BYTES = b"PK\x03\x04" + b"\x00" * 26
+OLE2_BYTES = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 24
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+MSG_MIME = "application/vnd.ms-outlook"
 
 
 @pytest.fixture
 async def tagged_office_folder(nc_client: NextcloudClient):
-    """A tagged folder holding a PDF, a .docx, an .xlsx and one ignorable file."""
+    """A tagged folder holding every default-indexable type and one ignorable file."""
     suffix = uuid.uuid4().hex[:8]
     tag_name = f"mcp-office-{suffix}"
     test_dir = f"mcp_office_disc_{suffix}"
@@ -47,6 +50,8 @@ async def tagged_office_folder(nc_client: NextcloudClient):
         "pdf": (f"{test_dir}/report.pdf", PDF_BYTES, "application/pdf"),
         "docx": (f"{test_dir}/contract.docx", ZIP_BYTES, DOCX_MIME),
         "xlsx": (f"{test_dir}/sheet.xlsx", ZIP_BYTES, XLSX_MIME),
+        "pptx": (f"{test_dir}/deck.pptx", ZIP_BYTES, PPTX_MIME),
+        "msg": (f"{test_dir}/mail.msg", OLE2_BYTES, MSG_MIME),
         # Not in the allowlist: proves the filter still excludes, so a green
         # result cannot come from the filter having been dropped entirely.
         "png": (f"{test_dir}/diagram.png", b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -92,8 +97,14 @@ async def test_nextcloud_reports_the_mime_types_the_allowlist_expects(
     assert reported["xlsx"].startswith(XLSX_MIME), (
         f"Nextcloud reports {reported['xlsx']!r} for .xlsx"
     )
+    assert reported["pptx"].startswith(PPTX_MIME), (
+        f"Nextcloud reports {reported['pptx']!r} for .pptx"
+    )
+    assert reported["msg"].startswith(MSG_MIME), (
+        f"Nextcloud reports {reported['msg']!r} for .msg"
+    )
     # And each of those is actually covered by the configured default.
-    for key in ("pdf", "docx", "xlsx"):
+    for key in ("pdf", "docx", "xlsx", "pptx", "msg"):
         assert reported[key].startswith(indexable), (
             f"{key}: {reported[key]!r} is not matched by {indexable}"
         )
@@ -110,8 +121,12 @@ async def test_a_tagged_folder_expands_to_its_office_files(
     discovered = await _discover_tagged_files(nc_client, settings)
 
     names = sorted(f["path"].rsplit("/", 1)[-1] for f in discovered)
-    assert names == ["contract.docx", "report.pdf", "sheet.xlsx"], (
-        f"expected the three indexable files, got {names}"
-    )
+    assert names == [
+        "contract.docx",
+        "deck.pptx",
+        "mail.msg",
+        "report.pdf",
+        "sheet.xlsx",
+    ], f"expected the five indexable files, got {names}"
     # The png is in the same tagged folder and must not be pulled in.
     assert not any(n.endswith(".png") for n in names)

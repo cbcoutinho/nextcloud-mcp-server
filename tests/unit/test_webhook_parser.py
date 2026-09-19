@@ -406,7 +406,9 @@ def _file_written(path: str) -> dict:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", ["contract.docx", "sheet.xlsx", "deck.pptx"])
+@pytest.mark.parametrize(
+    "name", ["contract.docx", "sheet.xlsx", "deck.pptx", "thread.msg"]
+)
 def test_office_files_are_indexable_by_default(name):
     task = extract_document_task(_file_written(f"/alice/files/Docs/{name}"))
 
@@ -428,6 +430,27 @@ def test_webhook_suffixes_follow_the_indexable_mime_setting(monkeypatch):
 
     assert extract_document_task(_file_written("/alice/files/Docs/a.docx")) is None
     assert extract_document_task(_file_written("/alice/files/Docs/a.pdf")) is not None
+
+
+@pytest.mark.unit
+def test_collabora_types_are_webhook_indexable_once_opted_in(monkeypatch):
+    """.doc/.ppt/ODF need COLLABORA_URL, so they are off by default -- but an
+    operator who lists them gets webhook delivery, not just the scanner."""
+    from nextcloud_mcp_server import config  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: config.Settings(
+            vector_sync_indexable_mime_types=(
+                "application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.text"
+            )
+        ),
+    )
+
+    assert extract_document_task(_file_written("/alice/files/Docs/a.ppt")) is not None
+    assert extract_document_task(_file_written("/alice/files/Docs/a.odt")) is not None
+    assert extract_document_task(_file_written("/alice/files/Docs/a.doc")) is None
 
 
 @pytest.mark.unit
