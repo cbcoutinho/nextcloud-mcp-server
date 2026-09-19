@@ -25,11 +25,16 @@ from .conftest import (
     KEYCLOAK_BASE_URL,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_CLIENT_SECRET,
+    KEYCLOAK_OAUTH_PASSWORD,
+    KEYCLOAK_OAUTH_USER,
     KEYCLOAK_REALM,
     KEYCLOAK_SUPPORTED_SCOPES,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.keycloak]
+
+# realm-export.json fixture users; dev-only, not a real secret.
+TEST_USER_PASSWORD = "test123"  # NOSONAR(S2068)
 
 TOKEN_ENDPOINT = (
     f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
@@ -64,9 +69,14 @@ async def _granted_scopes(username: str, password: str) -> set[str]:
 @pytest.mark.parametrize(
     ("username", "password", "granted", "withheld"),
     [
-        ("admin", "admin", {"notes.write", "files.write"}, set()),
-        ("test_write_only", "test123", {"files.write"}, {"notes.write"}),
-        ("test_read_only", "test123", set(), {"notes.write", "files.write"}),
+        (
+            KEYCLOAK_OAUTH_USER,
+            KEYCLOAK_OAUTH_PASSWORD,
+            {"notes.write", "files.write"},
+            set(),
+        ),
+        ("test_write_only", TEST_USER_PASSWORD, {"files.write"}, {"notes.write"}),
+        ("test_read_only", TEST_USER_PASSWORD, set(), {"notes.write", "files.write"}),
     ],
 )
 async def test_group_limits_write_scopes(
