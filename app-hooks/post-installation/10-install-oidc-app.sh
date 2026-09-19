@@ -4,8 +4,11 @@ set -euox pipefail
 
 echo "Installing and configuring OIDC app for testing..."
 
-# Check if development OIDC app is mounted at /opt/apps/oidc
-if [ -d /opt/apps/oidc ]; then
+# Use the development OIDC app mounted at /opt/apps/oidc only if it has been
+# built (composer vendor/ present). A checkout without submodules, or a CI job
+# that skips the build, mounts an empty or unbuilt directory; enabling that
+# would fatal on the missing autoloader, so fall back to the app store.
+if [ -f /opt/apps/oidc/vendor/autoload.php ]; then
     echo "Development OIDC app found at /opt/apps/oidc"
 
     # Remove any existing OIDC app in custom_apps (from app store or old symlink)

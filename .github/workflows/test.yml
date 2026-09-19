@@ -213,9 +213,17 @@ jobs:
         with:
           node-version: 24
 
-      # Astrolabe is the only app built from its submodule here; oidc is
-      # installed from the app store by app-hooks/post-installation, so it
-      # needs no build step and no mount in docker-compose.yml.
+      # TEMPORARY: oidc is mounted from its submodule (group scope limits are
+      # unreleased). The post-installation hook only uses the mount once it is
+      # built; lanes that skip this step fall back to the app store.
+      - name: Build OIDC app
+        if: matrix.mode != 'single-user'
+        run: |
+          cd third_party/oidc
+          composer install --no-dev --optimize-autoloader
+          npm ci
+          npm run build
+
       - name: Build Astrolabe app
         if: matrix.mode != 'single-user'
         run: |
