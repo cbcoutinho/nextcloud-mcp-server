@@ -195,32 +195,33 @@ def _ocr_note(metadata: dict) -> str | None:
     return None
 
 
-def _pptx_caption_note(metadata: dict) -> str | None:
-    """Why a .pptx's pictures may be missing from the text below (ADR-037).
+def _picture_caption_note(metadata: dict) -> str | None:
+    """Why an OOXML document's pictures may be missing from the text below
+    (ADR-037).
 
-    ``pptx_pictures_found`` is stamped by ``PptxProcessor`` regardless of
+    ``pictures_found`` is stamped by the native OOXML readers regardless of
     whether captioning is configured -- it is itself already a useful signal,
-    so this fires even with captioning off. ``pptx_pictures_captioned`` is
-    only present when captioning was actually attempted.
+    so this fires even with captioning off. ``pictures_captioned`` is only
+    present when captioning was actually attempted.
     """
-    found = metadata.get("pptx_pictures_found")
+    found = metadata.get("pictures_found")
     if not found:
         return None
-    captioned = metadata.get("pptx_pictures_captioned")
+    captioned = metadata.get("pictures_captioned")
     if captioned is None:
         return (
-            f"This presentation contains {found} picture(s) whose content was "
-            f"not described (PPTX_CAPTION_IMAGES is off, or DOCLING_API_URL is "
-            f"not configured); a diagram or screenshot pasted as an image may "
-            f"be missing from the text below."
+            f"This document contains {found} picture(s) whose content was "
+            f"not described (OFFICE_CAPTION_IMAGES is off, or DOCLING_API_URL "
+            f"is not configured); a diagram or screenshot pasted as an image "
+            f"may be missing from the text below."
         )
     if captioned < found:
         missing = found - captioned
         return (
-            f"{missing} of {found} picture(s) in this presentation could not "
-            f"be described (a docling-serve error/timeout, or the "
-            f"PPTX_CAPTION_MAX_IMAGES cap was reached); the text below may be "
-            f"missing diagram/screenshot content."
+            f"{missing} of {found} picture(s) in this document could not be "
+            f"described (a docling-serve error/timeout, or the "
+            f"OFFICE_CAPTION_MAX_IMAGES cap was reached); the text below may "
+            f"be missing diagram/screenshot content."
         )
     return None
 
@@ -260,7 +261,7 @@ def summarize_parse(
         for note in (
             _markdown_note(metadata, settings, markdown_requested=markdown_requested),
             _ocr_note(metadata),
-            _pptx_caption_note(metadata),
+            _picture_caption_note(metadata),
         )
         if note is not None
     ]
