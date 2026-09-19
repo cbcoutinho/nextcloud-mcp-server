@@ -33,7 +33,6 @@ from starlette.types import Scope as StarletteScope
 
 from nextcloud_mcp_server.admin.payload_backfill import handle_payload_backfill
 from nextcloud_mcp_server.api import (
-    __version__,
     delete_app_password,
     get_app_password_status,
     get_chunk_context,
@@ -1816,9 +1815,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         mcp = NextcloudMCPServer(
             "Nextcloud MCP",
-            # serverInfo.version is required by the spec; the SDK default is ""
-            # and strict clients (Astrolabe's PHP SDK) reject the handshake.
-            version=__version__,
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
@@ -1828,9 +1824,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info("Configuring MCP server for %s mode", mode.value)
         mcp = NextcloudMCPServer(
             "Nextcloud MCP",
-            # serverInfo.version is required by the spec; the SDK default is ""
-            # and strict clients (Astrolabe's PHP SDK) reject the handshake.
-            version=__version__,
             lifespan=app_lifespan_basic,
         )
 
