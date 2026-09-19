@@ -5,6 +5,22 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.195.0 (2026-09-19)
+
+### Feat
+
+- **processors**: read legacy and ODF office files via a shared Collabora service (ADR-039)
+- **vector-sync**: discover office and Outlook documents, not only PDFs
+
+### Fix
+
+- **vector-sync**: index only formats this build can read; webhook follows the setting
+- **vector-sync**: treat an empty indexable-MIME list as "index nothing"
+
+### Perf
+
+- **vector-sync**: expand each tagged folder's types concurrently
+
 ## v0.194.0 (2026-09-19)
 
 ### BREAKING CHANGE
