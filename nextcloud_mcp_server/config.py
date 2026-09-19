@@ -482,6 +482,15 @@ _DEFAULTS: dict[str, Any] = {
     # a single long convert. Raise it if DOCLING_PIPELINE=vlm makes captions
     # time out (VLM is far slower than the standard pipeline -- see ADR-032).
     "office_caption_timeout_seconds": 15.0,
+    # Collabora Online (coolwsd) base URL for converting legacy .doc/.xls/.ppt
+    # and ODF .odt/.ods/.odp to OOXML, which the native readers then parse
+    # (ADR-039). Unset = those types are not claimed. coolwsd only answers
+    # convert-to for clients in its net.post_allow list (private ranges by
+    # default).
+    "collabora_url": None,
+    # Per-file convert-to request timeout (seconds). A typical document
+    # converts in well under a second; the headroom is for large workbooks.
+    "collabora_timeout_seconds": 60.0,
     # Deprecated PPTX_CAPTION_* spellings (0.193.0, pptx-only) of the three keys
     # above; see _apply_legacy_caption_settings. Declared so dynaconf reads
     # them at all, with the same defaults so their validators still apply.
@@ -658,6 +667,7 @@ _dynaconf = Dynaconf(
         Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
         Validator("OFFICE_CAPTION_MAX_IMAGES", gte=0),
         Validator("OFFICE_CAPTION_TIMEOUT_SECONDS", gt=0),
+        Validator("COLLABORA_TIMEOUT_SECONDS", gt=0),
         Validator("PPTX_CAPTION_MAX_IMAGES", gte=0),
         Validator("PPTX_CAPTION_TIMEOUT_SECONDS", gt=0),
         Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
@@ -1513,6 +1523,11 @@ class Settings:
     office_caption_images: bool = False
     office_caption_max_images: int = 8
     office_caption_timeout_seconds: float = 15.0
+
+    # Collabora Online conversion service for legacy/ODF office formats
+    # (ADR-039). See _DEFAULTS above.
+    collabora_url: str | None = None
+    collabora_timeout_seconds: float = 60.0
 
     # Observability settings
     metrics_enabled: bool = True

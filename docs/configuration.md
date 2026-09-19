@@ -978,6 +978,28 @@ base64 **fast** instead of hanging until the client times out. Default is empty
 if you deliberately want interactive VLM with a tolerant client. It never affects
 the async ingest/worker path. See `docs/ADR-032-docling-vlm-pipeline.md`.
 
+#### Legacy and ODF office formats via Collabora Online (opt-in)
+
+`.doc`/`.xls`/`.ppt` and `.odt`/`.ods`/`.odp` have no pure-Python reader. Point
+the server at a Collabora Online (coolwsd) instance, for example the one serving
+Nextcloud Office, and these files are converted to OOXML by its stateless
+`convert-to` API and read by the native `.docx`/`.xlsx`/`.pptx` readers (ADR-039):
+
+```dotenv
+COLLABORA_URL=http://collabora:9980   # coolwsd base URL; unset = these types are not claimed
+COLLABORA_TIMEOUT_SECONDS=60          # per-file convert-to request timeout
+```
+
+coolwsd answers `convert-to` only for clients in its `net.post_allow` list. The
+default list covers loopback and the private ranges (compose networks, cluster
+pod CIDRs); a denied client gets HTTP 403. Check with
+`curl $COLLABORA_URL/hosting/capabilities`, which reports
+`"convert-to":{"available":true}` for an allowed client. For local development:
+`docker compose --profile collabora up -d collabora` and
+`COLLABORA_URL=http://collabora:9980`.
+
+Outlook `.msg` needs none of this: it is read in-process.
+
 #### Office picture captioning (opt-in)
 
 The native OOXML readers (`.pptx`, ADR-036; `.docx`/`.xlsx`, ADR-038) extract

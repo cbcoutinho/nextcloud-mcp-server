@@ -102,6 +102,24 @@ services:
     profiles:
       - docling
 
+  # Collabora Online (CODE): converts legacy .doc/.xls/.ppt and ODF
+  # .odt/.ods/.odp to OOXML over its stateless POST /cool/convert-to API, for the
+  # native readers to parse (ADR-039). Opt-in via the "collabora" profile; point
+  # the MCP server at it with COLLABORA_URL=http://collabora:9980. convert-to is
+  # only answered for clients in coolwsd's net.post_allow list, whose default
+  # already covers the private ranges a compose network uses. TLS is off because
+  # the MCP server reaches it on the compose network. The image ships no shell,
+  # so there is no container healthcheck; poll /hosting/capabilities instead.
+  collabora:
+    image: docker.io/collabora/code:26.04.4.1.1@sha256:1efda3043e8b9cb437d1b6c6efe20cc3753760e634de012b8dac391da488bf97
+    restart: always
+    ports:
+      - 127.0.0.1:9980:9980
+    environment:
+      - extra_params=--o:ssl.enable=false
+    profiles:
+      - collabora
+
   # infinity: self-hosted embeddings + CROSS-ENCODER RERANKING. Opt-in via the
   # "infinity" profile. The reason it exists here: Ollama serves no rerank
   # models at all, so a self-hoster who wants the rerank stage needs either a
@@ -259,6 +277,10 @@ services:
       # A client-friendly bound (e.g. 45-60) makes a slow VLM/OCR read return the
       # raw file fast instead of blocking past the MCP client's own timeout.
       - DOCUMENT_READ_TIMEOUT_SECONDS=${DOCUMENT_READ_TIMEOUT_SECONDS:-}
+      # Collabora Online conversion service for legacy/ODF office files
+      # (ADR-039). Empty = those types are not claimed. The CI "collabora" lane
+      # starts the `collabora` profile and sets COLLABORA_URL=http://collabora:9980.
+      - COLLABORA_URL=${COLLABORA_URL:-}
     profiles:
       - single-user
 

@@ -4,6 +4,8 @@ from nextcloud_mcp_server.config import get_settings
 
 from ._ooxml import PictureCaptioner
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .collabora import CollaboraProcessor
+from .msg import MsgProcessor
 from .ocr import OcrProcessor
 from .presentation import PptxProcessor
 from .pymupdf import PyMuPDFProcessor
@@ -64,10 +66,31 @@ _captioner = PictureCaptioner(
     docling_vlm_preset=_settings.docling_vlm_preset,
     docling_ocr_lang=_docling_ocr_lang,
 )
-_registry.register(PptxProcessor(captioner=_captioner), priority=15)
-# Same reasoning, same priority, for .docx and .xlsx (ADR-038).
-_registry.register(DocxProcessor(captioner=_captioner), priority=15)
-_registry.register(XlsxProcessor(captioner=_captioner), priority=15)
+_readers = {
+    "pptx": PptxProcessor(captioner=_captioner),
+    # Same reasoning, same priority, for .docx and .xlsx (ADR-038).
+    "docx": DocxProcessor(captioner=_captioner),
+    "xlsx": XlsxProcessor(captioner=_captioner),
+}
+for _reader in _readers.values():
+    _registry.register(_reader, priority=15)
+
+# Outlook .msg is OLE2, read in-process with olefile -- no service needed.
+_registry.register(MsgProcessor(), priority=15)
+
+# Legacy .doc/.xls/.ppt and ODF .odt/.ods/.odp go to a shared Collabora Online
+# service for conversion to OOXML, then to the readers above (ADR-039). Only
+# registered when a URL is configured, so an absent service means "no processor
+# for this type" once, not a failed request per document.
+if _settings.collabora_url:
+    _registry.register(
+        CollaboraProcessor(
+            _settings.collabora_url,
+            readers=_readers,
+            timeout=_settings.collabora_timeout_seconds,
+        ),
+        priority=15,
+    )
 
 __all__ = [
     "DocumentProcessor",
@@ -75,7 +98,9 @@ __all__ = [
     "ProcessorError",
     "ProcessorRegistry",
     "get_registry",
+    "CollaboraProcessor",
     "DocxProcessor",
+    "MsgProcessor",
     "PptxProcessor",
     "XlsxProcessor",
     "PyMuPDFProcessor",
