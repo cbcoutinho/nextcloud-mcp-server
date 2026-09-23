@@ -1676,6 +1676,7 @@ tag names to file paths and applies the following:
 | `nc_webdav_list_directory` | Excluded files/folders are omitted from listings |
 | `nc_webdav_read_file` | Raises `ToolError` (access denied) |
 | `nc_webdav_write_file` | Raises `ToolError` (access denied) |
+| `nc_webdav_insert_tracked_change` | Raises `ToolError` (access denied) |
 | `nc_webdav_create_directory` | Blocked inside excluded paths |
 | `nc_webdav_delete_resource` | Raises `ToolError` (access denied) |
 | `nc_webdav_move_resource` | Blocked when source **or** destination is excluded |

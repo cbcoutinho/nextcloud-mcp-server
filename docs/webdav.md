@@ -7,6 +7,7 @@
 | `nc_webdav_list_directory` | List files and directories in any NextCloud path |
 | `nc_webdav_read_file` | Read file content (documents extracted to text/markdown, text decoded, other binary as base64) |
 | `nc_webdav_write_file` | Create or update files in NextCloud |
+| `nc_webdav_insert_tracked_change` | Suggest an edit to a `.docx` as a native tracked change (insert / delete / replace) |
 | `nc_webdav_create_directory` | Create new directories |
 | `nc_webdav_delete_resource` | Delete files or directories |
 | `nc_webdav_move_resource` | Move or rename files and directories |
@@ -102,6 +103,42 @@ sends the notification itself.
 A comment is capped at **1000 characters** (measured after trimming whitespace,
 counting Unicode code points — Nextcloud's own rule). Longer content belongs in
 the file, with a short pointer comment.
+
+### Suggested Edits in Word Documents (Track Changes)
+
+A file comment is invisible inside the document. To *propose* a change a
+reviewer can accept or reject in their editor, use
+`nc_webdav_insert_tracked_change`: it writes the edit into the `.docx` as a
+native Word revision (`<w:ins>` / `<w:del>`), which Word, LibreOffice,
+Collabora and OnlyOffice all display as a tracked change.
+
+```python
+# Insert text after an anchor
+await nc_webdav_insert_tracked_change(
+    "Reports/q3.docx", anchor_text="revenue grew", new_text=" by 12%"
+)
+
+# Mark text as deleted
+await nc_webdav_insert_tracked_change(
+    "Reports/q3.docx", anchor_text=" (preliminary)", mode="delete"
+)
+
+# Replace: a deletion followed by an insertion, credited to a named author
+await nc_webdav_insert_tracked_change(
+    "Reports/q3.docx", anchor_text="Q2", new_text="Q3",
+    mode="replace", author="Review bot", occurrence=2,
+)
+```
+
+- `anchor_text` is matched exactly, within a single paragraph; it may span
+  formatting boundaries but not a hyperlink, a field or an existing tracked
+  change. When it occurs more than once, pass `occurrence` (1-based) — the
+  tool refuses to guess.
+- `author` defaults to the Nextcloud user.
+- Only the main document part is rewritten; every other part of the package
+  is copied through unchanged. Nothing outside the server is involved.
+- The write-back is conditional on the etag of the tool's own read (see
+  below), so an edit made in between fails the call rather than being lost.
 
 ### Safe Writes: Concurrent Edits and Locks
 
