@@ -115,7 +115,8 @@ def _split_run_children(paragraph: etree._Element) -> None:
     sharing the same ``rPr``. That renders identically and means every later
     split or wrap works on whole runs only.
     """
-    for run in list(paragraph.iterchildren(_w("r"))):
+    # findall() snapshots the runs: the loop adds and removes siblings.
+    for run in paragraph.findall(_w("r")):
         rpr = run.find(_w("rPr"))
         content = [c for c in run if c is not rpr]
         if len(content) <= 1:
@@ -230,29 +231,156 @@ def _mark_deleted(run: etree._Element) -> None:
         instr.tag = _w("delInstrText")
 
 
+def _template_rpr(template: etree._Element | None) -> etree._Element | None:
+    """Copy of ``template``'s run properties, minus any formatting revision."""
+    rpr = template.find(_w("rPr")) if template is not None else None
+    if rpr is None:
+        return None
+    rpr = copy.deepcopy(rpr)
+    # A formatting revision on the template is not part of this change.
+    for change in rpr.findall(_w("rPrChange")):
+        rpr.remove(change)
+    return rpr
+
+
+def _append_line(run: etree._Element, line: str) -> None:
+    """Append one line of text, a tab becoming ``w:tab`` (w:t renders a space)."""
+    for j, chunk in enumerate(line.split("\t")):
+        if j:
+            etree.SubElement(run, _w("tab"))
+        if chunk:
+            _set_text(etree.SubElement(run, _w("t")), chunk)
+
+
 def _inserted_run(template: etree._Element | None, text: str) -> etree._Element:
     """A run carrying ``text`` in the formatting of ``template`` (if any)."""
     run = etree.Element(_w("r"))
-    if template is not None:
-        rpr = template.find(_w("rPr"))
-        if rpr is not None:
-            rpr = copy.deepcopy(rpr)
-            # A formatting revision on the template is not part of this change.
-            for change in rpr.findall(_w("rPrChange")):
-                rpr.remove(change)
-            run.append(rpr)
-    # A newline in new_text is a line break, a tab a tab: w:t would render
-    # both as a space.
-    pieces = text.replace("\r\n", "\n").split("\n")
-    for i, line in enumerate(pieces):
+    rpr = _template_rpr(template)
+    if rpr is not None:
+        run.append(rpr)
+    # A newline in new_text is a line break: w:t would render it as a space.
+    for i, line in enumerate(text.replace("\r\n", "\n").split("\n")):
         if i:
             etree.SubElement(run, _w("br"))
-        for j, chunk in enumerate(line.split("\t")):
-            if j:
-                etree.SubElement(run, _w("tab"))
-            if chunk:
-                _set_text(etree.SubElement(run, _w("t")), chunk)
+        _append_line(run, line)
     return run
+
+
+def _validate_arguments(
+    anchor_text: str,
+    new_text: str,
+    mode: RevisionMode,
+    author: str,
+    occurrence: int | None,
+) -> None:
+    if not anchor_text:
+        raise DocxRevisionError("anchor_text must not be empty")
+    if _OPAQUE in anchor_text:
+        raise DocxRevisionError("anchor_text must not contain U+FFFC")
+    if mode == "delete" and new_text:
+        raise DocxRevisionError("new_text must be empty when mode is 'delete'")
+    if mode in ("insert", "replace") and not new_text:
+        raise DocxRevisionError(f"new_text is required when mode is {mode!r}")
+    for name, value in (("new_text", new_text), ("author", author)):
+        if _XML_ILLEGAL.search(value):
+            raise DocxRevisionError(
+                f"{name} contains a control character a .docx cannot store"
+            )
+    if occurrence is not None and occurrence < 1:
+        raise DocxRevisionError("occurrence is 1-based and must be >= 1")
+
+
+def _open_package(docx: bytes) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(io.BytesIO(docx))
+    except zipfile.BadZipFile:
+        raise DocxRevisionError(
+            "Not a Word document: the file is not a zip package"
+        ) from None
+
+
+def _load_main_part(archive: zipfile.ZipFile) -> tuple[str, etree._Element]:
+    """Return the main document part's name and parsed root."""
+    part_name = _main_part_name(archive)
+    try:
+        root = etree.fromstring(archive.read(part_name))
+    except KeyError:
+        raise DocxRevisionError(
+            f"Main document part {part_name!r} is missing"
+        ) from None
+    if root.tag != _w("document"):
+        raise DocxRevisionError("Not a WordprocessingML document")
+    return part_name, root
+
+
+def _find_matches(
+    root: etree._Element, anchor_text: str
+) -> list[tuple[etree._Element, str, int]]:
+    """Every (paragraph, paragraph text, offset) where ``anchor_text`` occurs."""
+    matches: list[tuple[etree._Element, str, int]] = []
+    for paragraph in root.iter(_w("p")):
+        text, _ = _index_paragraph(paragraph)
+        start = text.find(anchor_text)
+        while start != -1:
+            matches.append((paragraph, text, start))
+            start = text.find(anchor_text, start + 1)
+    return matches
+
+
+def _select_match(
+    matches: list[tuple[etree._Element, str, int]],
+    anchor_text: str,
+    occurrence: int | None,
+) -> tuple[etree._Element, str, int]:
+    """Pick the targeted match, refusing a missing or ambiguous anchor."""
+    if not matches:
+        raise DocxRevisionError(
+            f"anchor_text {anchor_text!r} was not found in any paragraph. It "
+            "must match the document text exactly and lie within a single "
+            "paragraph, outside hyperlinks and existing tracked changes."
+        )
+    if occurrence is None and len(matches) > 1:
+        raise DocxRevisionError(
+            f"anchor_text {anchor_text!r} occurs {len(matches)} times; pass "
+            "occurrence (1-based) or a longer, unique anchor"
+        )
+    index = (occurrence or 1) - 1
+    if index >= len(matches):
+        raise DocxRevisionError(
+            f"occurrence={occurrence} requested but anchor_text occurs only "
+            f"{len(matches)} time(s)"
+        )
+    return matches[index]
+
+
+def _wrap_in_deletion(covered: list[etree._Element], deletion: etree._Element) -> None:
+    """Move the covered span into ``deletion``, placed where the span was.
+
+    Everything from the first to the last covered run moves, bookkeeping
+    siblings (proofErr, bookmarks) included, so document order is preserved. No
+    barrier can sit in that span: a match never crosses one.
+    """
+    span = [covered[0]]
+    while span[-1] is not covered[-1]:
+        span.append(span[-1].getnext())
+    covered[0].addprevious(deletion)
+    for el in span:
+        if el.tag == _w("r"):
+            _mark_deleted(el)
+        deletion.append(el)
+
+
+def _repackage(archive: zipfile.ZipFile, part_name: str, root: etree._Element) -> bytes:
+    """The package with ``part_name`` replaced by ``root``, all else copied as is."""
+    new_part = etree.tostring(
+        root, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as rewritten:
+        for info in archive.infolist():
+            data = new_part if info.filename == part_name else archive.read(info)
+            rewritten.writestr(info, data, compress_type=info.compress_type)
+    return out.getvalue()
 
 
 def apply_revision(
@@ -285,70 +413,17 @@ def apply_revision(
         DocxRevisionError: When the file is not a Word document or the anchor
             cannot be resolved to exactly one location.
     """
-    if not anchor_text:
-        raise DocxRevisionError("anchor_text must not be empty")
-    if _OPAQUE in anchor_text:
-        raise DocxRevisionError("anchor_text must not contain U+FFFC")
-    if mode == "delete" and new_text:
-        raise DocxRevisionError("new_text must be empty when mode is 'delete'")
-    if mode in ("insert", "replace") and not new_text:
-        raise DocxRevisionError(f"new_text is required when mode is {mode!r}")
-    for name, value in (("new_text", new_text), ("author", author)):
-        if _XML_ILLEGAL.search(value):
-            raise DocxRevisionError(
-                f"{name} contains a control character a .docx cannot store"
-            )
-    if occurrence is not None and occurrence < 1:
-        raise DocxRevisionError("occurrence is 1-based and must be >= 1")
+    _validate_arguments(anchor_text, new_text, mode, author, occurrence)
 
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(docx))
-    except zipfile.BadZipFile:
-        raise DocxRevisionError(
-            "Not a Word document: the file is not a zip package"
-        ) from None
-
-    with archive:
-        part_name = _main_part_name(archive)
-        try:
-            root = etree.fromstring(archive.read(part_name))
-        except KeyError:
-            raise DocxRevisionError(
-                f"Main document part {part_name!r} is missing"
-            ) from None
-        if root.tag != _w("document"):
-            raise DocxRevisionError("Not a WordprocessingML document")
-
-        matches: list[tuple[etree._Element, str, int]] = []
-        for paragraph in root.iter(_w("p")):
-            text, _ = _index_paragraph(paragraph)
-            start = text.find(anchor_text)
-            while start != -1:
-                matches.append((paragraph, text, start))
-                start = text.find(anchor_text, start + 1)
-
-        if not matches:
-            raise DocxRevisionError(
-                f"anchor_text {anchor_text!r} was not found in any paragraph. It "
-                "must match the document text exactly and lie within a single "
-                "paragraph, outside hyperlinks and existing tracked changes."
-            )
-        if occurrence is None and len(matches) > 1:
-            raise DocxRevisionError(
-                f"anchor_text {anchor_text!r} occurs {len(matches)} times; pass "
-                "occurrence (1-based) or a longer, unique anchor"
-            )
-        index = (occurrence or 1) - 1
-        if index >= len(matches):
-            raise DocxRevisionError(
-                f"occurrence={occurrence} requested but anchor_text occurs only "
-                f"{len(matches)} time(s)"
-            )
-        paragraph, paragraph_text, start = matches[index]
-        end = start + len(anchor_text)
+    with _open_package(docx) as archive:
+        part_name, root = _load_main_part(archive)
+        matches = _find_matches(root, anchor_text)
+        paragraph, paragraph_text, start = _select_match(
+            matches, anchor_text, occurrence
+        )
 
         _split_run_children(paragraph)
-        covered = _runs_covering(paragraph, start, end)
+        covered = _runs_covering(paragraph, start, start + len(anchor_text))
         if not covered:  # pragma: no cover - a non-empty match covers >= 1 run
             raise DocxRevisionError("Internal error: the match covers no run")
 
@@ -358,22 +433,10 @@ def apply_revision(
         last: etree._Element = covered[-1]
 
         if mode in ("delete", "replace"):
-            deletion = _revision_element("del", rev_id, author, date)
-            # Everything from the first to the last covered run moves into the
-            # deletion, bookkeeping siblings (proofErr, bookmarks) included, so
-            # document order is preserved. No barrier can sit in that span:
-            # a match never crosses one.
-            span = [covered[0]]
-            while span[-1] is not covered[-1]:
-                span.append(span[-1].getnext())
-            covered[0].addprevious(deletion)
-            for el in span:
-                if el.tag == _w("r"):
-                    _mark_deleted(el)
-                deletion.append(el)
+            last = _revision_element("del", rev_id, author, date)
+            _wrap_in_deletion(covered, last)
             revision_ids.append(rev_id)
             rev_id += 1
-            last = deletion
 
         if mode in ("insert", "replace"):
             insertion = _revision_element("ins", rev_id, author, date)
@@ -381,18 +444,10 @@ def apply_revision(
             last.addnext(insertion)
             revision_ids.append(rev_id)
 
-        new_part = etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
-        )
-
-        out = io.BytesIO()
-        with zipfile.ZipFile(out, "w") as rewritten:
-            for info in archive.infolist():
-                data = new_part if info.filename == part_name else archive.read(info)
-                rewritten.writestr(info, data, compress_type=info.compress_type)
+        content = _repackage(archive, part_name, root)
 
     return RevisionResult(
-        content=out.getvalue(),
+        content=content,
         revision_ids=revision_ids,
         paragraph_text=paragraph_text.replace(_OPAQUE, ""),
         match_count=len(matches),
