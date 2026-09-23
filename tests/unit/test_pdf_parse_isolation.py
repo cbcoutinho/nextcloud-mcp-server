@@ -13,6 +13,7 @@ check on the sample PDFs, not here (unit tests must not spawn the heavy worker
 or depend on the sample files).
 """
 
+import os
 import pickle
 import subprocess
 import sys
@@ -796,3 +797,148 @@ def test_ingest_import_graph_does_not_load_pymupdf4llm():
         "pymupdf4llm is imported at module scope somewhere on the ingest path; "
         "load it lazily via load_classic_pymupdf4llm() instead"
     )
+
+
+# --- one-shot parse: no worker outlives an interactive read (Deck #1337) ------
+#
+# anyio pools a finished to_process worker and prunes idle ones only inside the
+# NEXT run_sync call. On an API pod there may be no next call, so the worker kept
+# its parse's peak RSS indefinitely (~640 MiB). These two tests spawn a real, but
+# trivial, worker (os.getpid) to pin both halves of that: the pooled default
+# keeps its process, and one_shot does not.
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def test_pooled_worker_outlives_the_call():
+    """The root cause, pinned: without one_shot the worker is still running."""
+    pid = await anyio.to_process.run_sync(os.getpid)
+
+    assert pid != os.getpid()
+    assert _alive(pid), "anyio no longer pools workers -- one_shot may be unneeded"
+
+
+async def test_one_shot_worker_is_gone_when_the_call_returns():
+    pid = await _isolation._run_one_shot(os.getpid, (), 30, anyio.CapacityLimiter(1))
+
+    assert pid != os.getpid()
+    assert not _alive(pid), "the one-shot parse left its worker process running"
+
+
+async def test_one_shot_timeout_is_still_classified(monkeypatch):
+    """The timeout runs inside the private loop, so a hung parse is still cut off."""
+
+    async def hang(*args, **kwargs):
+        await anyio.sleep(30)
+
+    monkeypatch.setattr(anyio.to_process, "run_sync", hang)
+    with pytest.raises(PdfParseFailed) as exc:
+        await run_isolated_pdf_parse(
+            "/nonexistent.pdf",
+            write_images=False,
+            image_path=None,
+            graphics_limit=5000,
+            timeout_seconds=0.2,
+            mem_limit_mb=1536,
+            markdown_max_pages=150,
+            one_shot=True,
+        )
+    assert exc.value.reason == "timeout"
+
+
+async def test_one_shot_failure_is_still_classified(monkeypatch):
+    async def oom(*args, **kwargs):
+        raise MemoryError("rlimit hit")
+
+    monkeypatch.setattr(anyio.to_process, "run_sync", oom)
+    with pytest.raises(PdfParseFailed) as exc:
+        await run_isolated_pdf_parse(
+            "/nonexistent.pdf",
+            write_images=False,
+            image_path=None,
+            graphics_limit=5000,
+            timeout_seconds=5,
+            mem_limit_mb=1536,
+            markdown_max_pages=150,
+            one_shot=True,
+        )
+    assert exc.value.reason == "oom"
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (None, False),
+        ({"prefer_markdown": True}, False),
+        ({"one_shot_parse": True}, True),
+    ],
+)
+async def test_processor_forwards_one_shot_option(monkeypatch, options, expected):
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+
+    seen = {}
+
+    async def fake_parse(content, **kwargs):
+        seen.update(kwargs)
+        return [{"text": "x", "metadata": {"page": 1}}]
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    await proc.process(_tiny_pdf(), "application/pdf", options=options)
+
+    assert seen["one_shot"] is expected
+
+
+# --- page slicing (Deck #1337) -------------------------------------------------
+# Driven in-process with mem_limit_mb=0 so the test process is never rlimited.
+
+
+def _page_texts(path) -> list[str]:
+    doc = pymupdf.open(str(path), filetype="pdf")
+    try:
+        return [page.get_text().strip() for page in doc]
+    finally:
+        doc.close()
+
+
+def test_slice_copies_only_the_requested_pages(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(5, "Page"))
+    out = tmp_path / "slice.pdf"
+
+    total = _isolation._slice_pdf_worker(src, str(out), 2, 4, 0)
+
+    assert total == 5
+    assert _page_texts(out) == ["Page 2", "Page 3", "Page 4"]
+
+
+def test_slice_clamps_last_to_the_page_count(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(3, "Page"))
+    out = tmp_path / "slice.pdf"
+
+    assert _isolation._slice_pdf_worker(src, str(out), 3, 99, 0) == 3
+    assert _page_texts(out) == ["Page 3"]
+
+
+def test_slice_writes_nothing_when_first_is_past_the_end(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(2))
+    out = tmp_path / "slice.pdf"
+
+    assert _isolation._slice_pdf_worker(src, str(out), 3, 5, 0) == 2
+    assert not out.exists()
+
+
+def test_slice_raises_picklable_errors(tmp_path):
+    src = tmp_path / "junk.pdf"
+    src.write_bytes(b"not a pdf at all")
+
+    with pytest.raises(_isolation.PdfWorkerError) as exc:
+        _isolation._slice_pdf_worker(str(src), str(tmp_path / "out.pdf"), 1, 1, 0)
+
+    pickle.loads(pickle.dumps(exc.value))

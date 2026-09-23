@@ -10,15 +10,26 @@ one bad file fails *that document*, not the pod: an rlimit breach raises
 
 The worker function is module-level (picklable) so ``anyio.to_process`` can run it
 in its process pool.
+
+That pool keeps a finished worker alive for reuse, and anyio only prunes idle
+workers inside the *next* ``run_sync`` call. On the ingest fleet the next call
+comes quickly. On an API pod it may never come, so the worker lingers holding its
+parse's high-water RSS: ~640 MiB after one markdown read of a 114-page PDF,
+pinning the API container at ~94% of its 1 GiB limit (Deck #1337). Interactive
+callers therefore pass ``one_shot=True``, which runs the call on a private event
+loop whose exit tears its pool down (see :func:`_run_one_shot`).
 """
 
+import functools
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import anyio
 import anyio.to_process
+import anyio.to_thread
 from anyio import BrokenWorkerProcess, CapacityLimiter
 from anyio.lowlevel import RunVar
 
@@ -351,42 +362,56 @@ def _parse_pdf_extract(
         doc.close()
 
 
-async def run_isolated_pdf_parse(
-    source_path: str,
-    *,
-    write_images: bool,
-    image_path: Path | None,
-    graphics_limit: int,
-    timeout_seconds: float,
-    mem_limit_mb: int,
-    markdown_max_pages: int,
-    process_slots: int = 2,
-) -> list[dict[str, Any]]:
-    """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
+def _slice_pdf_worker(
+    source_path: str, target_path: str, first: int, last: int, mem_limit_mb: int
+) -> int:
+    """Write pages ``first``..``last`` (1-based, inclusive) of a PDF to a new file.
 
-    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``error``) instead of
-    taking the pod down. On timeout the worker process is killed (``cancellable``).
+    Returns the SOURCE document's page count. Writes nothing when ``first`` is
+    past the end, so the caller can report that range against the real count.
+    ``last`` is clamped to the page count.
 
-    ``process_slots`` bounds how many parses run concurrently. Without it anyio
-    defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
-    ``--concurrency`` nor the pod memory limit constrains.
-
-    ``markdown_max_pages`` is required rather than defaulted: <=0 legitimately
-    means "never run to_markdown", so a default would silently pick a parse mode
-    for any caller that forgot to pass one.
+    Runs in the parse subprocess, not the API process: ``insert_pdf`` copies the
+    pages' objects through MuPDF's allocator, and on a large document that is
+    the same kind of high-water RSS the isolation exists to keep out of the
+    parent. Errors are normalised to picklable ones, as in :func:`_parse_pdf_worker`.
     """
+    _apply_mem_limit(mem_limit_mb)
+    import pymupdf  # noqa: PLC0415
+
+    try:
+        src = pymupdf.open(source_path, filetype="pdf")
+        try:
+            total = src.page_count
+            if first > total:
+                return total
+            out = pymupdf.open()
+            try:
+                out.insert_pdf(src, from_page=first - 1, to_page=min(last, total) - 1)
+                # garbage=1 drops objects only the excluded pages referenced.
+                out.save(target_path, garbage=1)
+            finally:
+                out.close()
+            return total
+        finally:
+            src.close()
+    except MemoryError as exc:
+        raise MemoryError(_picklable_message(exc)) from exc
+    except Exception as exc:
+        raise PdfWorkerError(_picklable_message(exc)) from exc
+
+
+async def _run_classified(
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    timeout_seconds: float,
+    limiter: CapacityLimiter | None,
+) -> Any:
+    """Run ``func`` in the process pool, mapping every failure to ``PdfParseFailed``."""
     with anyio.move_on_after(timeout_seconds):
         try:
             return await anyio.to_process.run_sync(
-                _parse_pdf_worker,
-                source_path,
-                write_images,
-                str(image_path) if image_path is not None else None,
-                graphics_limit,
-                mem_limit_mb,
-                markdown_max_pages,
-                cancellable=True,
-                limiter=parse_process_limiter(process_slots),
+                func, *args, cancellable=True, limiter=limiter
             )
         except MemoryError as e:
             # A clean rlimit breach: the worker raised MemoryError and stays
@@ -408,3 +433,103 @@ async def run_isolated_pdf_parse(
             raise PdfParseFailed("error", f"{type(e).__name__}: {e}") from e
     # Reached only when move_on_after swallowed the timeout cancellation.
     raise PdfParseFailed("timeout", f"parse exceeded {timeout_seconds}s")
+
+
+async def _run_one_shot(
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    timeout_seconds: float,
+    limiter: CapacityLimiter,
+) -> Any:
+    """Like :func:`_run_classified`, but no worker process outlives the call.
+
+    anyio's process pool belongs to the event loop that started it, and
+    ``anyio.run`` kills that pool's workers when its loop exits
+    (``setup_process_pool_exit_at_shutdown``). So the call runs on a fresh loop
+    in a worker thread: when it returns, its subprocess is gone and the memory is
+    back with the OS. Public anyio behaviour only -- no reaching into the pool.
+
+    The timeout and failure mapping run INSIDE that loop, so a hung parse is
+    still killed at ``timeout_seconds``. ``limiter`` bounds the threads, which
+    keeps concurrent one-shot parses within ``document_parse_process_slots``.
+
+    ``abandon_on_cancel``: if the CALLER is cancelled (the tool's
+    DOCUMENT_READ_TIMEOUT_SECONDS cap), it returns at once rather than waiting
+    for the parse. The private loop runs on until its own timeout and still
+    reaps its worker, so nothing leaks. The cost is that its limiter slot frees
+    early, so for at most ``timeout_seconds`` more parses can run than
+    ``document_parse_process_slots`` allows.
+    """
+    return await anyio.to_thread.run_sync(
+        functools.partial(
+            anyio.run, _run_classified, func, args, timeout_seconds, None
+        ),
+        limiter=limiter,
+        abandon_on_cancel=True,
+    )
+
+
+async def run_isolated_pdf_parse(
+    source_path: str,
+    *,
+    write_images: bool,
+    image_path: Path | None,
+    graphics_limit: int,
+    timeout_seconds: float,
+    mem_limit_mb: int,
+    markdown_max_pages: int,
+    process_slots: int = 2,
+    one_shot: bool = False,
+) -> list[dict[str, Any]]:
+    """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
+
+    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``error``) instead of
+    taking the pod down. On timeout the worker process is killed (``cancellable``).
+
+    ``process_slots`` bounds how many parses run concurrently. Without it anyio
+    defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
+    ``--concurrency`` nor the pod memory limit constrains.
+
+    ``markdown_max_pages`` is required rather than defaulted: <=0 legitimately
+    means "never run to_markdown", so a default would silently pick a parse mode
+    for any caller that forgot to pass one.
+
+    ``one_shot`` (interactive reads) guarantees the subprocess exits when the call
+    returns. See the module docstring for why the pooled default is wrong there.
+    """
+    args = (
+        source_path,
+        write_images,
+        str(image_path) if image_path is not None else None,
+        graphics_limit,
+        mem_limit_mb,
+        markdown_max_pages,
+    )
+    limiter = parse_process_limiter(process_slots)
+    if one_shot:
+        return await _run_one_shot(_parse_pdf_worker, args, timeout_seconds, limiter)
+    return await _run_classified(_parse_pdf_worker, args, timeout_seconds, limiter)
+
+
+async def slice_pdf_pages(
+    source_path: str,
+    target_path: str,
+    first: int,
+    last: int,
+    *,
+    timeout_seconds: float,
+    mem_limit_mb: int,
+    process_slots: int = 2,
+) -> int:
+    """Copy pages ``first``..``last`` of a PDF to ``target_path`` in a one-shot subprocess.
+
+    Returns the source's total page count. Nothing is written when ``first`` is
+    past the end -- compare the return value to ``first`` to detect that.
+    Raises ``PdfParseFailed`` like the parse does.
+    """
+    return await _run_one_shot(
+        _slice_pdf_worker,
+        (source_path, target_path, first, last, mem_limit_mb),
+        timeout_seconds,
+        parse_process_limiter(process_slots),
+    )

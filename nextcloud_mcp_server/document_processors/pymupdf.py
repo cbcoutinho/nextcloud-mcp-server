@@ -61,6 +61,15 @@ def _record_parse_mode(
         )
 
 
+def _wants_one_shot(options: Optional[dict[str, Any]]) -> bool:
+    """Whether the caller asked for a parse subprocess that exits with the call.
+
+    Interactive reads set ``one_shot_parse`` so no worker stays pooled on the API
+    pod (see _isolation's module docstring). Ingest leaves it unset.
+    """
+    return bool(options and options.get("one_shot_parse"))
+
+
 class PyMuPDFProcessor(DocumentProcessor):
     """Document processor using PyMuPDF library for PDF processing.
 
@@ -325,6 +334,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
                     process_slots=settings.document_parse_process_slots,
                     markdown_max_pages=settings.document_markdown_max_pages,
+                    one_shot=_wants_one_shot(options),
                 )
             except PdfParseFailed as exc:
                 logger.warning(

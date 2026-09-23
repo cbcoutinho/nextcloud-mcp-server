@@ -135,6 +135,9 @@ def _settings(**overrides) -> SimpleNamespace:
         "document_spool_dir": None,
         "document_max_pdf_size_mb": 50.0,
         "document_markdown_max_pages": 150,
+        "document_parse_timeout_seconds": 120.0,
+        "document_parse_mem_limit_mb": 1536,
+        "document_parse_process_slots": 2,
         "webdav_write_max_mb": 50.0,
     }
     values.update(overrides)
@@ -834,6 +837,313 @@ async def test_read_file_streams_instead_of_buffering(
     assert fake_client.webdav.stream_to_file.await_args.kwargs["max_bytes"] == int(
         50.0 * 1024 * 1024 * 2
     )
+
+
+# ── Page-range reads (Deck #1337) ───────────────────────────────────────
+
+
+def _pdf_pages(n: int) -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for i in range(n):
+        doc.new_page().insert_text((72, 72), f"Page {i + 1}")
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+@pytest.fixture
+def in_process_slicing(mocker):
+    """Run the real slice worker in-process instead of in a subprocess.
+
+    mem_limit_mb=0 keeps ``_apply_mem_limit`` a no-op, so the test process is
+    never rlimited.
+    """
+    from nextcloud_mcp_server.document_processors import _isolation
+
+    async def _slice(source_path, target_path, first, last, **_kwargs):
+        return _isolation._slice_pdf_worker(source_path, target_path, first, last, 0)
+
+    return mocker.patch.object(_isolation, "slice_pdf_pages", side_effect=_slice)
+
+
+async def test_read_file_page_range_parses_only_those_pages(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+):
+    """The pipeline sees a document holding only the requested pages, and the
+    page numbers it reports come back as the real ones."""
+    import pymupdf
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    body = _pdf_pages(5)
+    _spool(fake_client, body, "application/pdf", "etag-5")
+    seen = {}
+
+    async def _parse(source, **_kwargs):
+        doc = pymupdf.open(str(source.path()), filetype="pdf")
+        seen["texts"] = [page.get_text().strip() for page in doc]
+        doc.close()
+        return _result(
+            text="Page 2Page 3",
+            metadata={
+                "pipeline_tier": "fast",
+                "page_count": 2,
+                "page_boundaries": [
+                    {"page": 1, "start_offset": 0, "end_offset": 6},
+                    {"page": 2, "start_offset": 6, "end_offset": 12},
+                ],
+            },
+        )
+
+    parsing(side_effect=_parse)
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=2, page_end=3
+    )
+
+    assert seen["texts"] == ["Page 2", "Page 3"]
+    assert result.parse_status == "parsed"
+    assert (result.page_count, result.page_start, result.page_end) == (5, 2, 3)
+    pages = [b["page"] for b in result.parsing_metadata["page_boundaries"]]
+    assert pages == [2, 3]
+    assert result.parse_notes == []
+    # The whole file is what was downloaded, and is what size/etag describe.
+    assert result.size == len(body)
+    assert result.etag == "etag-5"
+
+
+async def test_read_file_page_end_past_the_end_is_clamped_and_noted(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, _pdf_pages(3), "application/pdf")
+    parsing(_result(metadata={"pipeline_tier": "fast"}))
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=2, page_end=10
+    )
+
+    assert (result.page_count, result.page_start, result.page_end) == (3, 2, 3)
+    assert any("page_end=10 is past the end" in n for n in result.parse_notes)
+
+
+async def test_read_file_page_start_alone_reads_to_the_end(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, _pdf_pages(4), "application/pdf")
+    parsing(_result(metadata={"pipeline_tier": "fast"}))
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=3)
+
+    assert (result.page_count, result.page_start, result.page_end) == (4, 3, 4)
+    assert result.parse_notes == []
+
+
+async def test_read_file_page_start_past_the_end_is_an_error(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, _pdf_pages(3), "application/pdf")
+    parse = parsing(_result())
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="page_start=5 is past the end.*3 page"):
+        await fn(path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=5)
+
+    parse.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("page_start", "page_end", "reason"),
+    [
+        (0, None, "page_start=0, but pages are numbered from 1"),
+        (None, 0, "page_end=0, but pages are numbered from 1"),
+        (-1, 4, "page_start=-1, but pages are numbered from 1"),
+        (3, 2, "page_end=2 precedes page_start=3"),
+    ],
+)
+async def test_read_file_rejects_an_invalid_page_range(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    page_start,
+    page_end,
+    reason,
+):
+    """Rejected before anything is downloaded, saying which value is wrong."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match=f"Invalid page range: {reason}"):
+        await fn(
+            path="/doc.pdf",
+            ctx=_read_ctx(fake_client),
+            page_start=page_start,
+            page_end=page_end,
+        )
+
+    fake_client.webdav.stream_to_file.assert_not_called()
+
+
+async def test_read_file_page_range_cannot_be_combined_with_raw(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="parse_document='raw'"):
+        await fn(
+            path="/doc.pdf",
+            ctx=_read_ctx(fake_client),
+            parse_document="raw",
+            page_start=1,
+        )
+
+    fake_client.webdav.stream_to_file.assert_not_called()
+
+
+async def test_read_file_page_range_is_pdf_only(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"hello", "text/plain")
+    parse = parsing(_result())
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    with pytest.raises(ToolError, match="PDFs only"):
+        await fn(path="/notes.txt", ctx=_read_ctx(fake_client), page_start=1)
+
+    parse.assert_not_called()
+
+
+async def test_read_file_unsliceable_pdf_returns_the_raw_file(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing, mocker
+):
+    """A slice failure is reported like a parse failure, not raised."""
+    from nextcloud_mcp_server.document_processors import _isolation
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parse = parsing(_result())
+    mocker.patch.object(
+        _isolation,
+        "slice_pdf_pages",
+        side_effect=_isolation.PdfParseFailed("error", "FzErrorFormat: no objects"),
+    )
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=1)
+
+    parse.assert_not_called()
+    assert result.parse_status == "failed"
+    assert result.encoding == "base64"
+    assert any(
+        "requested pages could not be extracted" in n for n in result.parse_notes
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param({"side_effect": RuntimeError("boom")}, id="parse-raises"),
+        pytest.param(
+            {
+                "result": _result(
+                    text="",
+                    metadata={"parse_failed_reason": "timeout"},
+                    processor="pymupdf",
+                    success=False,
+                )
+            },
+            id="parse-reports-failure",
+        ),
+    ],
+)
+async def test_read_file_failed_parse_of_a_range_returns_only_those_pages(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+    failure,
+):
+    """The raw fallback after a successful slice is the slice, not the whole
+    document, and the range survives into the response (review round 1)."""
+    import pymupdf
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, _pdf_pages(5), "application/pdf")
+    parsing(**failure)
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=2, page_end=3
+    )
+
+    assert result.parse_status == "failed"
+    assert result.encoding == "base64"
+    raw = pymupdf.open(stream=base64.b64decode(result.content), filetype="pdf")
+    assert [p.get_text().strip() for p in raw] == ["Page 2", "Page 3"]
+    raw.close()
+    assert (result.page_count, result.page_start, result.page_end) == (5, 2, 3)
+    assert any("pages 2-3 only" in n for n in result.parse_notes)
+
+
+async def test_read_file_whole_document_reports_its_page_count(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7", "application/pdf")
+    parsing(_result(metadata={"pipeline_tier": "fast", "page_count": 7}))
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(path="/doc.pdf", ctx=_read_ctx(fake_client))
+
+    assert (result.page_count, result.page_start, result.page_end) == (7, None, None)
+
+
+async def test_read_file_schema_offers_a_page_range(webdav_tools):
+    properties = webdav_tools["nc_webdav_read_file"].parameters["properties"]
+
+    assert "page_start" in properties
+    assert "page_end" in properties
 
 
 # ── Write conflict handling (etag / lock) and size gate ─────────────────
