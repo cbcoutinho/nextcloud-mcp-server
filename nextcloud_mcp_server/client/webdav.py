@@ -198,6 +198,10 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return cleaned
 
 
+#: The generic fallback used throughout this client whenever neither a
+#: caller-supplied Content-Type nor an extension-based guess is available.
+_OCTET_STREAM = "application/octet-stream"
+
 #: Content-Type values this generic are treated as untrustworthy enough to
 #: second-guess against the file's extension. Nextcloud does its own mimetype
 #: detection on ``getcontenttype``/GET responses rather than echoing back
@@ -205,7 +209,7 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
 #: extension-guessed Content-Type header, so this is not a gap in what we
 #: upload) -- and on some deployments that detection falls back to one of
 #: these for extensions Python's own ``mimetypes`` table resolves precisely.
-_GENERIC_CONTENT_TYPES = frozenset({"application/octet-stream", "text/plain"})
+_GENERIC_CONTENT_TYPES = frozenset({_OCTET_STREAM, "text/plain"})
 
 
 def _resolve_content_type(reported: str, path: str) -> str:
@@ -622,7 +626,7 @@ class WebDAVClient(BaseNextcloudClient):
         if not mime_type:
             mime_type, _ = mimetypes.guess_type(filename)
             if not mime_type:
-                mime_type = "application/octet-stream"
+                mime_type = _OCTET_STREAM
 
         headers = {"Content-Type": mime_type, "OCS-APIRequest": "true"}
         try:
@@ -706,7 +710,7 @@ class WebDAVClient(BaseNextcloudClient):
             response.raise_for_status()
 
             content = _read_complete_body(response, filename)
-            mime_type = response.headers.get("content-type", "application/octet-stream")
+            mime_type = response.headers.get("content-type", _OCTET_STREAM)
 
             logger.debug(
                 "Successfully fetched attachment '%s' (%s bytes)",
@@ -905,7 +909,7 @@ class WebDAVClient(BaseNextcloudClient):
         try:
             async with self._stream_request("GET", webdav_path) as response:
                 content_type = _resolve_content_type(
-                    response.headers.get("content-type", "application/octet-stream"),
+                    response.headers.get("content-type", _OCTET_STREAM),
                     path,
                 )
                 etag = _normalize_etag(response.headers.get("etag"))
@@ -955,7 +959,7 @@ class WebDAVClient(BaseNextcloudClient):
 
             content = _read_complete_body(response, path)
             content_type = _resolve_content_type(
-                response.headers.get("content-type", "application/octet-stream"),
+                response.headers.get("content-type", _OCTET_STREAM),
                 path,
             )
             etag = _normalize_etag(response.headers.get("etag"))
@@ -1019,7 +1023,7 @@ class WebDAVClient(BaseNextcloudClient):
         if not content_type:
             content_type, _ = mimetypes.guess_type(path)
             if not content_type:
-                content_type = "application/octet-stream"
+                content_type = _OCTET_STREAM
 
         headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
         # Always send a precondition so a write can never silently clobber an
