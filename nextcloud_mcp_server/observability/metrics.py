@@ -1324,6 +1324,19 @@ def _log_tool_call(
     )
 
 
+def _is_tool_error(result: Any) -> bool:
+    """Whether a ``tools/call`` result is a tool error, in either shape.
+
+    The runner serializes the handler's result to the wire dict INSIDE the
+    middleware chain, so what a middleware sees is normally ``{"isError": true}``,
+    not a ``CallToolResult`` — reading only ``.is_error`` logged every failure as
+    success. Both shapes are accepted, as the SDK's own ``_otel.py`` does.
+    """
+    if isinstance(result, Mapping):
+        return result.get("isError") is True
+    return getattr(result, "is_error", False) is True
+
+
 def instrument_call_tool_outcomes(mcp: MCPServer) -> None:
     """Append a middleware that records how the SDK replied to ``tools/call``.
 
@@ -1382,14 +1395,7 @@ def instrument_call_tool_outcomes(mcp: MCPServer) -> None:
             ).inc()
             _log_tool_call(requested, arguments, tool_name, "protocol_error", started)
             raise
-        # The runner serializes the handler's result to the wire dict INSIDE the
-        # middleware chain, so what arrives here is normally `{"isError": true}`,
-        # not a `CallToolResult` — reading only `.is_error` logged every failure
-        # as success. Both shapes are accepted, as the SDK's own _otel.py does.
-        is_error = getattr(result, "is_error", False) is True or (
-            isinstance(result, Mapping) and result.get("isError") is True
-        )
-        outcome = "tool_error" if is_error else "success"
+        outcome = "tool_error" if _is_tool_error(result) else "success"
         mcp_tool_outcomes_total.labels(tool_name=tool_name, outcome=outcome).inc()
         _log_tool_call(requested, arguments, tool_name, outcome, started)
         return result
