@@ -198,6 +198,49 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     return cleaned
 
 
+#: Content-Type values this generic are treated as untrustworthy enough to
+#: second-guess against the file's extension. Nextcloud does its own mimetype
+#: detection on ``getcontenttype``/GET responses rather than echoing back
+#: whatever a client sent on PUT (``write_file`` already sends a correct,
+#: extension-guessed Content-Type header, so this is not a gap in what we
+#: upload) -- and on some deployments that detection falls back to one of
+#: these for extensions Python's own ``mimetypes`` table resolves precisely.
+_GENERIC_CONTENT_TYPES = frozenset({"application/octet-stream", "text/plain"})
+
+
+def _resolve_content_type(reported: str, path: str) -> str:
+    """Reconcile a server-reported Content-Type against the file's extension.
+
+    Observed against a real deployment: uploading ``report.json`` sends
+    ``Content-Type: application/json`` (``write_file``'s own extension guess),
+    yet reading it back reports ``text/plain`` -- same for ``.html``, ``.xml``,
+    ``.yaml``, ``.js`` and ``.svg``. The value a caller gets from
+    ``read_file``/``stream_to_file`` was, until now, always whatever Nextcloud
+    put on the response, unquestioned.
+
+    This does not second-guess a *specific* answer -- a server that says
+    ``application/pdf`` or ``image/png`` is trusted outright, including for
+    extensions this function cannot guess at all (``guess_type`` returns
+    ``None`` for e.g. ``.ini``, in which case ``reported`` passes through
+    unchanged, generic or not). It only intervenes when the server's answer is
+    one of the two catch-all fallbacks above *and* the path's extension maps to
+    something more specific -- the same rule ``write_file`` already applies
+    when a caller omits ``content_type`` on upload. Any charset parameter on
+    the reported value (e.g. ``text/plain;charset=UTF-8``) is preserved on the
+    substituted type, since callers may depend on it for decoding.
+    """
+    guessed, _ = mimetypes.guess_type(path)
+    if not guessed:
+        return reported
+
+    base, _, params = reported.partition(";")
+    if base.strip().lower() not in _GENERIC_CONTENT_TYPES:
+        return reported
+    if base.strip().lower() == guessed.lower():
+        return reported
+    return f"{guessed};{params}" if params else guessed
+
+
 #: Collection holding one file's comments, addressed by file id.
 _COMMENTS_PATH = "/remote.php/dav/comments/files"
 
@@ -861,8 +904,9 @@ class WebDAVClient(BaseNextcloudClient):
         written = 0
         try:
             async with self._stream_request("GET", webdav_path) as response:
-                content_type = response.headers.get(
-                    "content-type", "application/octet-stream"
+                content_type = _resolve_content_type(
+                    response.headers.get("content-type", "application/octet-stream"),
+                    path,
                 )
                 etag = _normalize_etag(response.headers.get("etag"))
                 # anyio's async file wrapper, not pathlib.Path.open: the writes
@@ -910,8 +954,9 @@ class WebDAVClient(BaseNextcloudClient):
             response.raise_for_status()
 
             content = _read_complete_body(response, path)
-            content_type = response.headers.get(
-                "content-type", "application/octet-stream"
+            content_type = _resolve_content_type(
+                response.headers.get("content-type", "application/octet-stream"),
+                path,
             )
             etag = _normalize_etag(response.headers.get("etag"))
 
