@@ -118,6 +118,21 @@ class ReadFileResponse(BaseResponse):
     parsing_metadata: Optional[dict] = Field(
         None, description="Raw document-processor metadata when a parse ran"
     )
+    page_count: Optional[int] = Field(
+        None,
+        description=(
+            "Total pages in the document (paged documents such as PDF, when a "
+            "parse ran). Compare with page_end to see whether more remains."
+        ),
+    )
+    page_start: Optional[int] = Field(
+        None,
+        description="First page (1-based) the content covers, for a page-range read",
+    )
+    page_end: Optional[int] = Field(
+        None,
+        description="Last page (1-based, inclusive) the content covers, for a page-range read",
+    )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")
     url: str | None = Field(

@@ -179,6 +179,61 @@ async def test_raw_read_is_linked_too(
     assert result["url"].endswith(f"/index.php/f/{file_id}")
 
 
+@pytest.fixture
+async def three_page_pdf(nc_client: NextcloudClient, test_base_path: str):
+    """A born-digital PDF whose pages carry distinct markers (Deck #1337)."""
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    for page in (1, 2, 3):
+        c.drawString(72, 750, f"Chapter {page} PageMarker{page}")
+        for offset, line in enumerate(_BODY, start=1):
+            c.drawString(72, 750 - offset * 20, line)
+        c.showPage()
+    c.save()
+
+    path = f"{test_base_path}/chapters.pdf"
+    await nc_client.webdav.write_file(
+        path, buffer.getvalue(), content_type="application/pdf"
+    )
+    return path
+
+
+@pytest.mark.parametrize("parse_document", ["auto", "markdown"])
+async def test_page_range_returns_only_those_pages(
+    nc_mcp_client: ClientSession, three_page_pdf: str, parse_document: str
+):
+    """Only the requested page comes back, numbered as in the original document.
+
+    The markdown case drives the structured tier, i.e. the one-shot parse
+    subprocess, inside the real MCP container.
+    """
+    result = await _read(
+        nc_mcp_client,
+        three_page_pdf,
+        parse_document=parse_document,
+        page_start=2,
+        page_end=2,
+    )
+
+    assert result["parse_status"] == "parsed"
+    assert "PageMarker2" in result["content"]
+    assert "PageMarker1" not in result["content"]
+    assert "PageMarker3" not in result["content"]
+    assert (result["page_count"], result["page_start"], result["page_end"]) == (3, 2, 2)
+    pages = [b["page"] for b in result["parsing_metadata"]["page_boundaries"]]
+    assert pages == [2]
+
+
+async def test_whole_read_reports_the_page_count(
+    nc_mcp_client: ClientSession, three_page_pdf: str
+):
+    result = await _read(nc_mcp_client, three_page_pdf)
+
+    assert result["page_count"] == 3
+    assert result["page_start"] is None
+    assert all(f"PageMarker{n}" in result["content"] for n in (1, 2, 3))
+
+
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 

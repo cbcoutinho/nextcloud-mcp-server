@@ -325,6 +325,9 @@ class PyMuPDFProcessor(DocumentProcessor):
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
                     process_slots=settings.document_parse_process_slots,
                     markdown_max_pages=settings.document_markdown_max_pages,
+                    # An interactive read must not leave its worker pooled on the
+                    # API pod (see _isolation's module docstring).
+                    one_shot=bool((options or {}).get("one_shot_parse")),
                 )
             except PdfParseFailed as exc:
                 logger.warning(
