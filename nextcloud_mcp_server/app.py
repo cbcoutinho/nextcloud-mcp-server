@@ -119,6 +119,7 @@ from nextcloud_mcp_server.server import (
     configure_semantic_tools,
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
+from nextcloud_mcp_server.server.disabled_tools import remove_disabled_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector.metrics_publisher import (
     usage_stock_task,
@@ -1871,6 +1872,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if settings.enable_login_flow:
         logger.info("Registering Login Flow v2 auth tools")
         register_auth_tools(mcp)
+
+    # Operator denylist: must run after the last registration above and before
+    # the scope filter below captures the tool manager's list_tools.
+    remove_disabled_tools(mcp)
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:

@@ -104,3 +104,20 @@ def test_get_stdio_mcp_registers_capabilities_resource(single_user_env):
     # NOTE: _resource_manager._resources is a MCPServer internal; may break on SDK upgrades
     resources = mcp._resource_manager._resources
     assert "nc://capabilities" in resources
+
+
+@pytest.mark.unit
+def test_get_stdio_mcp_removes_disabled_tools(single_user_env, monkeypatch):
+    """MCP_DISABLED_TOOLS, read from the environment, unregisters those tools."""
+    monkeypatch.setenv(
+        "MCP_DISABLED_TOOLS", "nc_webdav_delete_resource, nc_webdav_move_resource"
+    )
+    _reload_config()
+
+    mcp = get_stdio_mcp(enabled_apps=["webdav"])
+    # NOTE: _tool_manager is a MCPServer internal; may break on SDK upgrades
+    tool_names = {t.name for t in mcp._tool_manager.list_tools()}
+
+    assert "nc_webdav_delete_resource" not in tool_names
+    assert "nc_webdav_move_resource" not in tool_names
+    assert "nc_webdav_write_file" in tool_names
