@@ -421,13 +421,20 @@ def configure_webdav_tools(mcp: MCPServer):
                     "page_start/page_end select pages to parse, so they cannot be "
                     "combined with parse_document='raw'."
                 )
-            if (page_start is not None and page_start < 1) or (
-                page_end is not None and page_end < max(page_start or 1, 1)
+            for name, value in (("page_start", page_start), ("page_end", page_end)):
+                if value is not None and value < 1:
+                    raise ToolError(
+                        f"Invalid page range: {name}={value}, but pages are "
+                        f"numbered from 1."
+                    )
+            if (
+                page_start is not None
+                and page_end is not None
+                and page_end < page_start
             ):
                 raise ToolError(
-                    f"Invalid page range page_start={page_start}, "
-                    f"page_end={page_end}: pages are 1-based and page_end must "
-                    f"not precede page_start."
+                    f"Invalid page range: page_end={page_end} precedes "
+                    f"page_start={page_start}."
                 )
 
         client = await get_client(ctx)
@@ -540,6 +547,25 @@ def configure_webdav_tools(mcp: MCPServer):
                         )
                     page_range = (first, last)
 
+                async def _parse_failed(notes: list[str], **kwargs: Any):
+                    """Raw fallback for a failed parse, scoped to what was asked for.
+
+                    ``parse_source`` is the slice on a range read (else the whole
+                    file), so a caller who asked for pages 5-10 gets those pages
+                    back rather than the entire document, and is told so.
+                    """
+                    response = await _raw_response(
+                        parse_source, path, "failed", range_notes + notes, **kwargs
+                    )
+                    if page_range is not None:
+                        response.page_count = page_count
+                        response.page_start, response.page_end = page_range
+                        response.parse_notes.append(
+                            f"The raw content is a PDF of pages {page_range[0]}-"
+                            f"{page_range[1]} only, not the whole document."
+                        )
+                    return _stamp_url(response, url)
+
                 if parse_document != "raw" and document_parser.is_parseable_document(
                     content_type
                 ):
@@ -581,22 +607,14 @@ def configure_webdav_tools(mcp: MCPServer):
                             f"instead."
                         )
                         logger.warning("Parsing document %r timed out: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(source, path, "failed", [note]), url
-                        )
+                        return await _parse_failed([note])
                     except Exception as e:
                         logger.warning("Failed to parse document %r: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                [
-                                    f"Parsing failed ({type(e).__name__}: {e}); the "
-                                    f"raw file is returned instead."
-                                ],
-                            ),
-                            url,
+                        return await _parse_failed(
+                            [
+                                f"Parsing failed ({type(e).__name__}: {e}); the "
+                                f"raw file is returned instead."
+                            ]
                         )
 
                     summary = document_parser.summarize_parse(
@@ -607,17 +625,11 @@ def configure_webdav_tools(mcp: MCPServer):
                     if summary.status == "failed":
                         # An unsuccessful parse is never reported as content: hand
                         # back the raw file with the reason attached.
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                summary.notes,
-                                parse_tier=summary.tier,
-                                parse_processor=summary.processor,
-                                parsing_metadata=result.metadata,
-                            ),
-                            url,
+                        return await _parse_failed(
+                            summary.notes,
+                            parse_tier=summary.tier,
+                            parse_processor=summary.processor,
+                            parsing_metadata=result.metadata,
                         )
                     metadata = result.metadata or {}
                     if page_range is not None:

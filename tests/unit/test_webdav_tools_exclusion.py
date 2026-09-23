@@ -983,17 +983,29 @@ async def test_read_file_page_start_past_the_end_is_an_error(
 
 
 @pytest.mark.parametrize(
-    ("page_start", "page_end"), [(0, None), (None, 0), (3, 2), (-1, 4)]
+    ("page_start", "page_end", "reason"),
+    [
+        (0, None, "page_start=0, but pages are numbered from 1"),
+        (None, 0, "page_end=0, but pages are numbered from 1"),
+        (-1, 4, "page_start=-1, but pages are numbered from 1"),
+        (3, 2, "page_end=2 precedes page_start=3"),
+    ],
 )
 async def test_read_file_rejects_an_invalid_page_range(
-    webdav_tools, fake_client, patch_get_client, patch_excluded, page_start, page_end
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    page_start,
+    page_end,
+    reason,
 ):
-    """Rejected before anything is downloaded."""
+    """Rejected before anything is downloaded, saying which value is wrong."""
     patch_get_client(fake_client)
     patch_excluded(set())
 
     fn = webdav_tools["nc_webdav_read_file"].fn
-    with pytest.raises(ToolError, match="Invalid page range"):
+    with pytest.raises(ToolError, match=f"Invalid page range: {reason}"):
         await fn(
             path="/doc.pdf",
             ctx=_read_ctx(fake_client),
@@ -1062,6 +1074,55 @@ async def test_read_file_unsliceable_pdf_returns_the_raw_file(
     assert any(
         "requested pages could not be extracted" in n for n in result.parse_notes
     )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param({"side_effect": RuntimeError("boom")}, id="parse-raises"),
+        pytest.param(
+            {
+                "result": _result(
+                    text="",
+                    metadata={"parse_failed_reason": "timeout"},
+                    processor="pymupdf",
+                    success=False,
+                )
+            },
+            id="parse-reports-failure",
+        ),
+    ],
+)
+async def test_read_file_failed_parse_of_a_range_returns_only_those_pages(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    parsing,
+    in_process_slicing,
+    failure,
+):
+    """The raw fallback after a successful slice is the slice, not the whole
+    document, and the range survives into the response (review round 1)."""
+    import pymupdf
+
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, _pdf_pages(5), "application/pdf")
+    parsing(**failure)
+
+    fn = webdav_tools["nc_webdav_read_file"].fn
+    result = await fn(
+        path="/doc.pdf", ctx=_read_ctx(fake_client), page_start=2, page_end=3
+    )
+
+    assert result.parse_status == "failed"
+    assert result.encoding == "base64"
+    raw = pymupdf.open(stream=base64.b64decode(result.content), filetype="pdf")
+    assert [p.get_text().strip() for p in raw] == ["Page 2", "Page 3"]
+    raw.close()
+    assert (result.page_count, result.page_start, result.page_end) == (5, 2, 3)
+    assert any("pages 2-3 only" in n for n in result.parse_notes)
 
 
 async def test_read_file_whole_document_reports_its_page_count(
