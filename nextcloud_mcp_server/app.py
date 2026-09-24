@@ -49,6 +49,7 @@ from nextcloud_mcp_server.api import (
     update_user_scopes,
     vector_search,
 )
+from nextcloud_mcp_server.api.sar import create_sar_export, get_sar_export
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     discover_all_scopes,
@@ -419,6 +420,12 @@ def notify_user_provisioned() -> None:
     signal = _vector_sync_state.provision_signal
     if signal is not None:
         signal.ring()
+
+
+def background_task_group() -> TaskGroup | None:
+    """The lifespan's long-lived task group, for background work started from a
+    request (e.g. SAR export, ADR-040). ``None`` outside the lifespan."""
+    return _vector_sync_state.eviction_task_group
 
 
 def _wire_vector_sync_state(
@@ -2803,6 +2810,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             )
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
+            # SAR export (ADR-040); advertised as sar_export_available.
+            if redaction_available(settings):
+                routes.append(
+                    Route("/api/v1/sar/exports", create_sar_export, methods=["POST"])
+                )
+                routes.append(
+                    Route("/api/v1/sar/exports", get_sar_export, methods=["GET"])
+                )
+                logger.info("SAR export endpoints enabled: /api/v1/sar/exports")
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(

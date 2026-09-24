@@ -1,6 +1,6 @@
 """Models for SAR export archives (ADR-040)."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -44,6 +44,28 @@ class SarItem(BaseModel):
         ):
             raise ValueError("page_end must be >= page_start")
         return self
+
+
+Subject = Annotated[str, Field(min_length=1, max_length=200)]
+Query = Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class SarExportRequest(BaseModel):
+    """What to export. Shared by the MCP tool and the management API."""
+
+    output_folder: str = Field(
+        max_length=1000,
+        description="Existing folder the user can write to, e.g. a team folder.",
+    )
+    name: str = Field(description='Archive name, e.g. "SAR-2026-014".')
+    subject: list[Subject] = Field(
+        min_length=1,
+        max_length=MAX_KEEP,
+        description="The data subject's names, aliases, emails, phone numbers "
+        "and NI numbers. These are kept.",
+    )
+    items: list[SarItem] = Field(min_length=1, max_length=MAX_ITEMS)
+    queries: list[Query] = Field(default_factory=list, max_length=MAX_QUERIES)
 
 
 class SarFailedItem(BaseModel):

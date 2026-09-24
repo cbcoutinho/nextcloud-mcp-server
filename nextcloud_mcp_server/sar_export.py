@@ -24,16 +24,31 @@ from typing import Any
 
 import pymupdf
 from anyio.abc import TaskGroup
+from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.models.sar import SarExportStatus, SarFailedItem, SarItem
+from nextcloud_mcp_server.models.sar import (
+    SarExportRequest,
+    SarExportStatus,
+    SarFailedItem,
+    SarItem,
+)
 from nextcloud_mcp_server.providers.ner import NerClient
-from nextcloud_mcp_server.redaction import Redactor, counts, detect_names
+from nextcloud_mcp_server.redaction import (
+    Redactor,
+    counts,
+    detect_names,
+    get_ner_client,
+)
 from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
     list_accessible_owners,
+)
+from nextcloud_mcp_server.vector.oauth_sync import (
+    NotProvisionedError,
+    resolve_background_client,
 )
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -47,7 +62,14 @@ _PAGE_MARGIN = 50  # points
 
 
 class ExportError(Exception):
-    """The export cannot start or finish. The message is safe to show."""
+    """The export cannot start or finish. The message is safe to show.
+
+    ``status`` is the HTTP status the management API answers with.
+    """
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class _ItemError(Exception):
@@ -287,14 +309,74 @@ async def _write_status(
         if_match=None if create else "*",
     )
     if result["status_code"] == 412 and create:
-        raise ExportError(f"an export already exists at {status.status_path}")
+        raise ExportError(
+            f"an export already exists at {status.status_path}", status=409
+        )
     if result["status_code"] in (412, 423):
-        raise ExportError(f"could not write {status.status_path}")
+        raise ExportError(f"could not write {status.status_path}", status=409)
 
 
-async def read_status(nc: NextcloudClient, status_path: str) -> SarExportStatus:
-    content, _, _ = await nc.webdav.read_file(status_path)
+async def read_status(
+    nc: NextcloudClient, output_folder: str, name: str
+) -> SarExportStatus:
+    """The recorded status of an export.
+
+    Raises:
+        ExportError: invalid name/folder (400) or no such export (404).
+    """
+    _, status_path = archive_paths(output_folder, name)
+    try:
+        content, _, _ = await nc.webdav.read_file(status_path)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise ExportError(
+                f"no export named {name!r} in {output_folder!r}", status=404
+            ) from e
+        raise
     return SarExportStatus.model_validate_json(content)
+
+
+async def submit_export(
+    user_id: str, request: SarExportRequest, task_group: TaskGroup | None
+) -> SarExportStatus:
+    """Validate, check the output folder and start an export for ``user_id``.
+
+    Shared by the MCP tool and the management API.
+
+    Raises:
+        ExportError: with the HTTP status the API should answer with.
+    """
+    if task_group is None:
+        raise ExportError(
+            "SAR export is unavailable: background tasks not running", 503
+        )
+    archive_paths(request.output_folder, request.name)  # validate before any I/O
+    try:
+        nc = await resolve_background_client(user_id)
+    except NotProvisionedError as e:
+        raise ExportError(
+            "SAR export runs in the background and needs background access: "
+            "provision it in Astrolabe's personal settings.",
+            status=403,
+        ) from e
+    try:
+        # On success the job owns `nc` and closes it.
+        return await start_export(
+            nc=nc,
+            ner=await get_ner_client(get_settings()),
+            task_group=task_group,
+            request=request,
+        )
+    except HTTPStatusError as e:
+        await nc.close()
+        raise ExportError(
+            f"Cannot write to {request.output_folder!r} "
+            f"(HTTP {e.response.status_code}): it must exist and be writable.",
+            status=403,
+        ) from e
+    except BaseException:
+        await nc.close()
+        raise
 
 
 async def start_export(
@@ -302,11 +384,7 @@ async def start_export(
     nc: NextcloudClient,
     ner: NerClient,
     task_group: TaskGroup,
-    output_folder: str,
-    name: str,
-    keep: list[str],
-    items: list[SarItem],
-    queries: list[str],
+    request: SarExportRequest,
 ) -> SarExportStatus:
     """Check the output folder, write the initial status, start the job.
 
@@ -314,10 +392,11 @@ async def start_export(
     ``resolve_background_client``); the job closes it when done.
 
     Raises:
-        ExportError: invalid name, folder not writable, or name taken.
+        ExportError: invalid name, or the name is taken.
         HTTPStatusError: the folder is missing or not writable (403/404/409).
     """
-    archive_path, status_path = archive_paths(output_folder, name)
+    items = request.items
+    archive_path, status_path = archive_paths(request.output_folder, request.name)
     started = _now()
     status = SarExportStatus(
         state="running",
@@ -333,7 +412,16 @@ async def start_export(
     # any work if the user cannot create files in the folder or the name is
     # taken.
     await _write_status(nc, status, create=True)
-    task_group.start_soon(_run_and_close, nc, ner, status, name, keep, items, queries)
+    task_group.start_soon(
+        _run_and_close,
+        nc,
+        ner,
+        status,
+        request.name,
+        list(request.subject),
+        items,
+        list(request.queries),
+    )
     return status
 
 

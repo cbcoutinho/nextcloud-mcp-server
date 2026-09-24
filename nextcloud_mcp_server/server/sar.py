@@ -2,37 +2,25 @@
 
 from typing import Annotated, Any
 
-from httpx import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.sar import (
     MAX_ITEMS,
     MAX_KEEP,
     MAX_QUERIES,
+    Query,
+    SarExportRequest,
     SarExportStatus,
     SarItem,
+    Subject,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
-from nextcloud_mcp_server.redaction import get_ner_client
-from nextcloud_mcp_server.sar_export import (
-    ExportError,
-    archive_paths,
-    read_status,
-    start_export,
-)
-from nextcloud_mcp_server.vector.oauth_sync import (
-    NotProvisionedError,
-    resolve_background_client,
-)
-
-Subject = Annotated[str, Field(min_length=1, max_length=200)]
-Query = Annotated[str, Field(min_length=1, max_length=1000)]
+from nextcloud_mcp_server.sar_export import ExportError, read_status, submit_export
 
 
 def configure_sar_tools(mcp: MCPServer) -> None:
@@ -74,46 +62,21 @@ def configure_sar_tools(mcp: MCPServer) -> None:
                 results, each with a reason and optionally a page range.
             queries: The searches that found these documents, for the record.
         """
-        settings = get_settings()
         client = await get_client(ctx)
         lifespan_ctx: Any = ctx.request_context.lifespan_context
-        task_group = lifespan_ctx.eviction_task_group
-        if task_group is None:
-            raise ToolError("SAR export is unavailable: background tasks not running")
+        request = SarExportRequest(
+            output_folder=output_folder,
+            name=name,
+            subject=subject,
+            items=items,
+            queries=queries or [],
+        )
         try:
-            archive_paths(output_folder, name)  # validate before any I/O
-            background = await resolve_background_client(client.username)
-        except ExportError as e:
-            raise ToolError(str(e)) from e
-        except NotProvisionedError as e:
-            raise ToolError(
-                "SAR export runs in the background and needs background access: "
-                "provision it in Astrolabe's personal settings."
-            ) from e
-        try:
-            # On success the job owns `background` and closes it.
-            return await start_export(
-                nc=background,
-                ner=await get_ner_client(settings),
-                task_group=task_group,
-                output_folder=output_folder,
-                name=name,
-                keep=list(subject),
-                items=items,
-                queries=list(queries or []),
+            return await submit_export(
+                client.username, request, lifespan_ctx.eviction_task_group
             )
         except ExportError as e:
-            await background.close()
             raise ToolError(str(e)) from e
-        except HTTPStatusError as e:
-            await background.close()
-            raise ToolError(
-                f"Cannot write to {output_folder!r} "
-                f"(HTTP {e.response.status_code}): it must exist and be writable."
-            ) from e
-        except BaseException:
-            await background.close()
-            raise
 
     @mcp.tool(
         title="SAR Export Status",
@@ -133,11 +96,6 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         """
         client = await get_client(ctx)
         try:
-            _, status_path = archive_paths(output_folder, name)
-            return await read_status(client, status_path)
+            return await read_status(client, output_folder, name)
         except ExportError as e:
             raise ToolError(str(e)) from e
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ToolError(f"No export named {name!r} in {output_folder!r}") from e
-            raise
