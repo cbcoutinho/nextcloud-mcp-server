@@ -125,8 +125,11 @@ async def test_batches_large_inputs(monkeypatch):
         )
 
     seen = _patch_transport(monkeypatch, handler)
-    found = await NerClient(_URL, "m").detect(["t"] * 70)
+    found = await NerClient(_URL, "m", batch_size=32).detect(["t"] * 70)
     assert len(found) == 70
+    assert len(seen) == 3
+    seen.clear()
+    await NerClient(_URL, "m").detect(["t"] * 17)  # default batch of 8
     assert len(seen) == 3
 
 

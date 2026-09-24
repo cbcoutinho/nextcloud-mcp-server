@@ -11,9 +11,9 @@ text via the offsets rather than trusting the echoed ``text`` field, so a
 provider that normalises or truncates its echo cannot make us redact the wrong
 string.
 
-Unlike reranking, NER failure is never degraded around: a redacted read that
-cannot detect names must return nothing rather than the raw text. So every
-failure raises :class:`NerError` and callers fail closed.
+Unlike reranking, NER failure is never degraded around: a document whose names
+cannot be detected must not be exported unredacted. So every failure raises
+:class:`NerError` and callers fail closed.
 """
 
 import httpx
@@ -29,8 +29,9 @@ _NER_CONNECT_TIMEOUT_SECONDS = 5.0
 MAX_TEXT_CHARS = 2000
 _WINDOW_OVERLAP_CHARS = 200
 
-# Texts per request, to keep one body well under a typical 1 MB ingress limit.
-_MAX_TEXTS_PER_REQUEST = 32
+# Default texts per request. Also keeps one body well under a typical 1 MB
+# ingress limit; NER_BATCH_SIZE tunes it per backend (small for CPU).
+_DEFAULT_BATCH_SIZE = 8
 
 _PERSON_LABEL = "person"
 
@@ -76,12 +77,14 @@ class NerClient:
         *,
         threshold: float = 0.5,
         timeout_seconds: float = 30.0,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
     ) -> None:
         self._url = url
         self._model = model
         self._token_provider = token_provider
         self._threshold = threshold
         self._timeout = timeout_seconds
+        self._batch_size = max(1, batch_size)
 
     @property
     def model(self) -> str:
@@ -103,10 +106,8 @@ class NerClient:
                 account for every submitted text.
         """
         found: list[set[str]] = []
-        for i in range(0, len(texts), _MAX_TEXTS_PER_REQUEST):
-            found.extend(
-                await self._detect_batch(texts[i : i + _MAX_TEXTS_PER_REQUEST])
-            )
+        for i in range(0, len(texts), self._batch_size):
+            found.extend(await self._detect_batch(texts[i : i + self._batch_size]))
         return found
 
     async def _detect_batch(self, texts: list[str]) -> list[set[str]]:

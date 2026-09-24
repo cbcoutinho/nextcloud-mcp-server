@@ -1,4 +1,4 @@
-"""Unit tests for person-name redaction (ADR-038). Synthetic names only."""
+"""Unit tests for SAR export redaction (ADR-040). Synthetic names only."""
 
 from types import SimpleNamespace
 
@@ -6,16 +6,17 @@ import pytest
 
 from nextcloud_mcp_server.redaction import (
     Redactor,
+    counts,
     detect_names,
     ner_endpoint,
-    redaction_mode,
+    redaction_available,
 )
 
 pytestmark = pytest.mark.unit
 
 
 def test_keeps_subject_and_redacts_third_party():
-    r = Redactor({"Jane Doe", "Karen Smith"}, keep_names=["Jane Doe"])
+    r = Redactor({"Jane Doe", "Karen Smith"}, keep=["Jane Doe"])
     assert r.redact("Jane Doe met Karen Smith.") == "Jane Doe met [PERSON_1]."
 
 
@@ -33,14 +34,12 @@ def test_numbering_is_consistent_across_calls():
     r = Redactor({"Karen Smith", "Tom Brown"})
     assert r.redact("Tom Brown and Karen Smith") == "[PERSON_1] and [PERSON_2]"
     assert r.redact("letter from Karen Smith") == "letter from [PERSON_2]"
-    assert r.persons_redacted == 2
 
 
 def test_matches_across_line_breaks_and_filename_separators():
     r = Redactor({"Karen Smith"})
     assert r.redact("signed Karen\nSmith") == "signed [PERSON_1]"
     assert r.redact("/HR/KAREN_SMITH.pdf") == "/HR/[PERSON_1].pdf"
-    assert r.redact("karen.smith@example.org") == "[PERSON_1]@example.org"
 
 
 def test_hyphenated_name_is_one_person():
@@ -54,18 +53,18 @@ def test_does_not_match_inside_words():
 
 
 def test_kept_name_is_not_token_expanded():
-    r = Redactor({"Jane Doe"}, keep_names=["Jane Doe"])
+    r = Redactor({"Jane Doe"}, keep=["Jane Doe"])
     assert r.redact("Dear Jane, re Jane Doe") == "Dear Jane, re Jane Doe"
 
 
 def test_shared_token_with_third_party_is_redacted():
     # "Doe" is a token of a third party's name, so a bare "Doe" is ambiguous
     # and redacted unless the caller lists it as an alias of the subject.
-    r = Redactor({"Jane Doe", "John Doe"}, keep_names=["Jane Doe"])
+    r = Redactor({"Jane Doe", "John Doe"}, keep=["Jane Doe"])
     assert (
         r.redact("Jane Doe and John Doe; Doe") == "Jane Doe and [PERSON_1]; [PERSON_2]"
     )
-    r = Redactor({"Jane Doe", "John Doe"}, keep_names=["Jane Doe", "Doe"])
+    r = Redactor({"Jane Doe", "John Doe"}, keep=["Jane Doe", "Doe"])
     assert r.redact("Doe") == "Doe"
 
 
@@ -77,7 +76,7 @@ def test_honorifics_and_short_tokens_are_not_expanded():
 
 
 def test_keep_alias_with_initial():
-    r = Redactor({"J. Doe"}, keep_names=["J. Doe"])
+    r = Redactor({"J. Doe"}, keep=["J. Doe"])
     assert r.redact("J. Doe and J Doe") == "J. Doe and J Doe"
 
 
@@ -86,22 +85,51 @@ def test_no_names_is_identity():
     assert Redactor({"X Y"}).redact(None) is None
 
 
-@pytest.mark.parametrize(
-    ("configured", "gateway", "expected"),
-    [
-        ("enforced", "https://gw", "enforced"),
-        ("optional", "https://gw/v1", "optional"),
-        ("off", "https://gw", "off"),
-        # Gateway-only: without one, redaction is unavailable whatever is set.
-        ("enforced", None, "off"),
-        ("optional", None, "off"),
-    ],
-)
-def test_redaction_mode(configured, gateway, expected):
-    settings = SimpleNamespace(
-        content_redaction=configured, embedding_gateway_url=gateway
+def test_redaction_available_needs_gateway():
+    assert redaction_available(SimpleNamespace(embedding_gateway_url="https://gw"))
+    assert not redaction_available(SimpleNamespace(embedding_gateway_url=None))
+
+
+def test_emails_phones_and_ni_numbers_are_redacted_except_the_subjects():
+    r = Redactor(
+        set(),
+        keep=["jane.doe@example.org", "+44 7700 900111", "AB 12 34 56 C"],
     )
-    assert redaction_mode(settings) == expected
+    text = (
+        "From jane.doe@example.org to karen.smith@example.org; "
+        "call 07700 900111 or 07700 900222; NI AB123456C, CE 12 34 56 D."
+    )
+    assert r.redact(text) == (
+        "From jane.doe@example.org to [EMAIL_1]; "
+        "call 07700 900111 or [PHONE_1]; NI AB123456C, [NI_1]."
+    )
+
+
+def test_dates_and_short_numbers_are_not_phones():
+    r = Redactor(set())
+    text = "On 01-02-2021 14:30, ref 0123 45, amount 1000000."
+    assert r.redact(text) == text
+
+
+def test_invalid_ni_prefix_is_not_redacted():
+    assert Redactor(set()).redact("GB123456A") == "GB123456A"
+
+
+def test_email_is_one_placeholder_not_a_name():
+    r = Redactor({"Karen Smith"})
+    assert r.redact("karen.smith@example.org") == "[EMAIL_1]"
+
+
+def test_seen_counts_per_call():
+    r = Redactor({"Karen Smith", "Tom Brown"})
+    first: set = set()
+    r.redact("Karen Smith, karen@example.org", first)
+    second: set = set()
+    r.redact("Tom Brown and Karen Smith", second)
+    assert counts(first) == {"PERSON": 1, "EMAIL": 1}
+    assert counts(second) == {"PERSON": 2}
+    # Numbering is archive-wide: Karen is [PERSON_1] in both.
+    assert r.redact("Karen Smith") == "[PERSON_1]"
 
 
 def test_ner_endpoint_normalises_v1_suffix():
@@ -122,14 +150,13 @@ async def test_detect_names_windows_long_text(mocker):
     assert names == {"Karen Smith", "Tom Brown"}
 
 
-def test_settings_validate_content_redaction():
+def test_settings_validate_ner():
     from nextcloud_mcp_server.config import Settings
 
-    assert Settings(content_redaction=" Enforced ").content_redaction == "enforced"
-    with pytest.raises(ValueError, match="CONTENT_REDACTION"):
-        Settings(content_redaction="bogus")
     with pytest.raises(ValueError, match="NER_THRESHOLD"):
         Settings(ner_threshold=0)
+    with pytest.raises(ValueError, match="NER_BATCH_SIZE"):
+        Settings(ner_batch_size=0)
 
 
 async def test_get_ner_client_targets_gateway_and_is_cached():
@@ -142,12 +169,14 @@ async def test_get_ner_client_targets_gateway_and_is_cached():
         ner_model="local/m",
         ner_timeout_seconds=5,
         ner_threshold=0.3,
+        ner_batch_size=4,
     )
     try:
         client = await redaction.get_ner_client(settings)
         assert client._url == "https://gw/v1/ner"
         assert client.model == "local/m"
         assert client._threshold == 0.3
+        assert client._batch_size == 4
         assert await redaction.get_ner_client(settings) is client
     finally:
         redaction._reset_ner_state()

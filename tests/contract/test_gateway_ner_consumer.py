@@ -1,6 +1,6 @@
 """Consumer contract: nextcloud-mcp-server -> embedding-gateway NER.
 
-Redaction (:mod:`nextcloud_mcp_server.redaction`, ADR-038) POSTs text to
+Redaction (:mod:`nextcloud_mcp_server.redaction`, ADR-040) POSTs text to
 ``POST /v1/ner`` and reads back ``results[].index`` plus, per entity, ``start``,
 ``end`` and ``label``. Those offsets are the fields the client depends on: it
 takes each name from the SUBMITTED text by offset, so the provider must keep
