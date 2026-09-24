@@ -108,7 +108,22 @@ def _state_vector_sync_disabled() -> None:
     # No in-process injection into the separate provider yet (phase 4).
 
 
+def _state_sar_export() -> None:
+    """Provider states for astrolabe's SAR export pacts (ADR-040):
+    ``POST /api/v1/sar/exports`` and its status ``GET``.
+
+    Both are authenticated and act as the token's user, who needs background
+    access and an indexed document (and, for the status, a finished export).
+    Seeding that, plus the bearer token, is the ADR-029 phase-4 test hook; until
+    then these interactions ride the broker's pending flow like the purge pact.
+    Registered so the states are recognised by name.
+    """
+    # Intentionally empty: no live-stack state to set up yet (phase 4).
+
+
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
+    "a user with background access can export a SAR archive": _state_sar_export,
+    "a finished SAR export exists": _state_sar_export,
     "an admin can purge indexed documents": _state_admin_can_purge,
     # Search advertisement states for GET /api/v1/status (ADR-031); the astrolabe
     # UI consumer pact declares one of these to assert supported_search_types.
