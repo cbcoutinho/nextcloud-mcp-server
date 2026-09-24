@@ -2202,6 +2202,8 @@ async def _get_oauth_token_with_scopes(
     scopes: str,
     resource: str | None = None,
     mcp_server_base_url: str = "http://localhost:8004",  # login-flow container port
+    username: str | None = None,
+    password: str | None = None,
 ) -> str:
     """
     Helper function to obtain OAuth token with specific scopes.
@@ -2213,14 +2215,16 @@ async def _get_oauth_token_with_scopes(
         scopes: Space-separated list of scopes (e.g., "openid profile email notes.read")
         resource: Optional resource parameter (RFC 8707) for token audience
         mcp_server_base_url: Base URL of the MCP server for resource metadata discovery
+        username: Nextcloud user to log in as (default: NEXTCLOUD_USERNAME)
+        password: That user's password (default: NEXTCLOUD_PASSWORD)
 
     Returns:
         OAuth access token string with requested scopes
     """
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    username = os.getenv("NEXTCLOUD_USERNAME")
-    password = os.getenv("NEXTCLOUD_PASSWORD")
+    username = username or os.getenv("NEXTCLOUD_USERNAME")
+    password = password or os.getenv("NEXTCLOUD_PASSWORD")
 
     if not all([nextcloud_host, username, password]):
         pytest.skip(

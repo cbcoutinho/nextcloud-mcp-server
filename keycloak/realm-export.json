@@ -51,6 +51,18 @@
           ]
         },
         "clientRole": false
+      },
+      {
+        "name": "notes-writer",
+        "description": "Grants the notes.write client scope (group scope limit)",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "files-writer",
+        "description": "Grants the files.write client scope (group scope limit)",
+        "composite": false,
+        "clientRole": false
       }
     ]
   },
@@ -77,7 +89,11 @@
         "quota": [
           "1073741824"
         ]
-      }
+      },
+      "groups": [
+        "/notes-writers",
+        "/files-writers"
+      ]
     },
     {
       "username": "test_read_only",
@@ -125,7 +141,10 @@
         "quota": [
           "1073741824"
         ]
-      }
+      },
+      "groups": [
+        "/files-writers"
+      ]
     },
     {
       "username": "test_no_scopes",
@@ -848,5 +867,35 @@
     "sharing.write",
     "todo.read",
     "todo.write"
+  ],
+  "groups": [
+    {
+      "name": "notes-writers",
+      "path": "/notes-writers",
+      "realmRoles": [
+        "notes-writer"
+      ]
+    },
+    {
+      "name": "files-writers",
+      "path": "/files-writers",
+      "realmRoles": [
+        "files-writer"
+      ]
+    }
+  ],
+  "scopeMappings": [
+    {
+      "clientScope": "notes.write",
+      "roles": [
+        "notes-writer"
+      ]
+    },
+    {
+      "clientScope": "files.write",
+      "roles": [
+        "files-writer"
+      ]
+    }
   ]
 }
