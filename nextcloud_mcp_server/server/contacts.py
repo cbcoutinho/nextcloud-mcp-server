@@ -13,6 +13,7 @@ from nextcloud_mcp_server.models.contacts import (
     AddressBook,
     Contact,
     ContactField,
+    ContactMutationResponse,
     ListAddressBooksResponse,
     ListContactsResponse,
     UpdateContactResponse,
@@ -431,7 +432,7 @@ def configure_contacts_tools(mcp: MCPServer):
     @instrument_tool
     async def nc_contacts_create_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict
-    ):
+    ) -> ContactMutationResponse:
         """Create a new contact.
 
         Args:
@@ -456,11 +457,16 @@ def configure_contacts_tools(mcp: MCPServer):
                 Unknown keys are ignored. Example:
                 ``{"fn": "John Doe", "email": "john@example.com",
                 "organization": "Acme", "note": "Met at conference"}``.
+
+        Returns:
+            Mutation receipt with the resource path, HTTP status and ETag when
+            supplied by the server. No read-after-write is performed.
         """
         client = await get_client(ctx)
-        return await client.contacts.create_contact(
+        result = await client.contacts.create_contact(
             addressbook=addressbook, uid=uid, contact_data=contact_data
         )
+        return ContactMutationResponse(**result)
 
     @mcp.tool(
         title="Delete Contact",
@@ -470,7 +476,9 @@ def configure_contacts_tools(mcp: MCPServer):
     )
     @require_scopes("contacts.write")
     @instrument_tool
-    async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
+    async def nc_contacts_delete_contact(
+        ctx: Context, *, addressbook: str, uid: str
+    ) -> ContactMutationResponse:
         """Delete a contact.
 
         Args:
@@ -478,9 +486,14 @@ def configure_contacts_tools(mcp: MCPServer):
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
             uid: The unique ID of the contact to delete.
+
+        Returns:
+            Mutation receipt with the resolved resource path and HTTP status.
+            A missing contact still raises rather than reporting success.
         """
         client = await get_client(ctx)
-        return await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
+        result = await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
+        return ContactMutationResponse(**result)
 
     @mcp.tool(
         title="Update Contact",
