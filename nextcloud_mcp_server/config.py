@@ -313,6 +313,22 @@ _DEFAULTS: dict[str, Any] = {
     # else it serves, is its business. Raise it if yours has headroom — a CPU
     # cross-encoder almost certainly does not.
     "search_rerank_max_concurrency": 1,
+    # --- Person-name redaction (optional, SAR workflows; ADR-038) -----------
+    # "off" | "optional" | "enforced". Redaction needs the embedding gateway's
+    # ``POST /v1/ner`` endpoint, so without EMBEDDING_GATEWAY_URL the effective
+    # mode is "off" whatever this says (see ``redaction.redaction_mode``).
+    # "optional" lets callers ask for a redacted view; "enforced" additionally
+    # forces it on every principal that lacks the ``content.unredacted`` scope.
+    "content_redaction": "off",
+    # NER model, addressed the gateway way (``<provider>/<model>``).
+    "ner_model": "local/urchade/gliner_multi_pii-v1",
+    # Per-request budget. Reads block on NER, and a redacted read that times out
+    # fails closed (no content), so this is a latency ceiling, not a retry knob.
+    "ner_timeout_seconds": 30.0,
+    # Minimum model confidence for a span to count as a person. Lower raises
+    # recall at the cost of over-redaction, which is the safe direction for a
+    # disclosure; 0.5 is GLiNER's customary operating point.
+    "ner_threshold": 0.5,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -1392,6 +1408,11 @@ class Settings:
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
     search_rerank_max_concurrency: int = 1
+    # Person-name redaction (ADR-038; see _DEFAULTS for the semantics).
+    content_redaction: str = "off"
+    ner_model: str = "local/urchade/gliner_multi_pii-v1"
+    ner_timeout_seconds: float = 30.0
+    ner_threshold: float = 0.5
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1829,6 +1850,27 @@ class Settings:
                     f"{_prefix}/",
                     _bare,
                 )
+        # Redaction is optional and gateway-only: a mode other than "off" without
+        # a gateway is not an error (the feature is simply unavailable, and
+        # redaction.redaction_mode() reports "off"), but say so, because an
+        # operator who set "enforced" expects it to be enforced.
+        self.content_redaction = str(self.content_redaction).strip().lower()
+        if self.content_redaction not in ("off", "optional", "enforced"):
+            raise ValueError(
+                "CONTENT_REDACTION must be one of off, optional, enforced; got "
+                f"{self.content_redaction!r}"
+            )
+        self.ner_threshold = float(self.ner_threshold)
+        if not 0.0 < self.ner_threshold <= 1.0:
+            raise ValueError(
+                f"NER_THRESHOLD must be in (0, 1]; got {self.ner_threshold!r}"
+            )
+        if self.content_redaction != "off" and not self.embedding_gateway_url:
+            logger.warning(
+                "CONTENT_REDACTION=%s has no effect: redaction needs the embedding "
+                "gateway's /v1/ner endpoint and EMBEDDING_GATEWAY_URL is unset",
+                self.content_redaction,
+            )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is
