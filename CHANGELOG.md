@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.195.3 (2026-09-24)
+
+### Fix
+
+- **contacts**: drop only unparseable vCard properties, not the whole contact
+
 ## v0.195.2 (2026-09-24)
 
 ### Fix
