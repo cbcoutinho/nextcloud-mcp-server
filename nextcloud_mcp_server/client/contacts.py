@@ -199,6 +199,37 @@ def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[s
     }
 
 
+def _parses_alone(line: str) -> bool:
+    try:
+        Contact.from_vcard(f"FN:x\n{line}")
+    except Exception:
+        return False
+    return True
+
+
+def _parse_vcard(vcard_text: str) -> Contact:
+    """Parse a vCard, dropping only the properties pythonvCard4 chokes on.
+
+    The library raises on shapes real servers store — a reduced-form
+    ``BDAY:--1226`` (issue #1551), a vCard 3.0 ``GEO:lat,lon`` — and a raise
+    loses every field of the contact. On failure, retry without the lines that
+    fail in isolation, so the contact keeps its name, phone and email.
+    """
+    try:
+        return Contact.from_vcard(vcard_text)
+    except Exception:
+        lines = unfold_lines(vcard_text.splitlines())
+        dropped = [line for line in lines if not _parses_alone(line)]
+        if not dropped:
+            raise
+        logger.warning(
+            "Dropped unparseable vCard properties: %s",
+            [line.split(":", 1)[0] for line in dropped],
+        )
+        kept = [line for line in lines if line not in dropped]
+        return Contact.from_vcard("\n".join(kept))
+
+
 def _project_contact(contact: Contact) -> dict[str, Any]:
     """Project a parsed vCard into the flat dict the server layer maps to a model.
 
@@ -584,7 +615,7 @@ class ContactsClient(BaseNextcloudClient):
         # projection is at risk. The caller still gets the new ETag and the full
         # ``addressdata``, so nothing is withheld.
         try:
-            contact_projection = _project_contact(Contact.from_vcard(vcard_content))
+            contact_projection = _project_contact(_parse_vcard(vcard_content))
         except Exception:
             # Broad by intent: pythonvCard4 is third-party and its parse failure
             # modes aren't enumerable. Whatever it raises, the write stands.
@@ -693,7 +724,7 @@ class ContactsClient(BaseNextcloudClient):
             # ``addressdata`` still carries everything, so the caller loses the
             # parsed convenience fields for that one contact, not the listing.
             try:
-                contact_projection = _project_contact(Contact.from_vcard(addressdata))
+                contact_projection = _project_contact(_parse_vcard(addressdata))
             except Exception:
                 logger.warning(
                     "Could not parse vCard for %s in addressbook %s; returning it "

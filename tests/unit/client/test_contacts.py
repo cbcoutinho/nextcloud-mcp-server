@@ -8,12 +8,15 @@ PR #719 review without standing up the compose stack.
 from datetime import date
 
 import pytest
+from pythonvCard4.vcard import ValidationError
 
 from nextcloud_mcp_server.client.contacts import (
     ContactsClient,
     _build_contact_from_data,
     _first_custom,
     _normalize_contact_data,
+    _parse_vcard,
+    _project_contact,
     _wrap_contact_field,
 )
 
@@ -994,3 +997,22 @@ class TestVcardLineFolding:
         assert len(url_lines) == 1
         assert url_lines[0] == "item1.URL:https://new.example.com"
         assert "item1.X-ABLabel:homepage" in result
+
+
+@pytest.mark.parametrize("bad_line", ["BDAY;VALUE=DATE:--1226", "GEO:37.38,-122.08"])
+def test_unparseable_property_drops_only_that_property(bad_line: str):
+    """Issue #1551: one bad property must not blank the whole contact."""
+    vcard = (
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nN:Doe;Jane;;;\r\n"
+        f"TEL;TYPE=CELL:+1 555 010 1234\r\n{bad_line}\r\nUID:u1\r\nEND:VCARD\r\n"
+    )
+    projection = _project_contact(_parse_vcard(vcard))
+    assert projection["fullname"] == "Jane Doe"
+    assert projection["tel"][0]["value"] == "+1 555 010 1234"
+    assert projection["birthday"] is None
+
+
+def test_parse_vcard_without_fn_still_raises():
+    """No line is at fault, so the original error surfaces to the caller's net."""
+    with pytest.raises(ValidationError):
+        _parse_vcard("BEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD\r\n")
