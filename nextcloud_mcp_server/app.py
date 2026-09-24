@@ -111,6 +111,7 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
+from nextcloud_mcp_server.redaction import redaction_available
 from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
@@ -120,6 +121,7 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.server.sar import configure_sar_tools
 from nextcloud_mcp_server.vector.metrics_publisher import (
     usage_stock_task,
     vector_density_snapshot_task,
@@ -1854,6 +1856,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if settings.vector_sync_enabled:
         logger.info("Configuring search tools (vector sync enabled, hybrid search)")
         configure_semantic_tools(mcp)
+        # SAR export reads document text from the index and detects names via
+        # the embedding gateway (ADR-040).
+        if redaction_available(settings):
+            configure_sar_tools(mcp)
+        else:
+            logger.info("Skipping SAR export tools (EMBEDDING_GATEWAY_URL not set)")
     else:
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
 

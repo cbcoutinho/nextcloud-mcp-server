@@ -364,24 +364,10 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
 
 
 async def _resolve_client(user_id: str) -> NextcloudClient:
-    """Build an authenticated NextcloudClient for ``user_id`` in the worker.
+    """Build an authenticated NextcloudClient for ``user_id`` in the worker."""
+    from ..oauth_sync import resolve_background_client  # noqa: PLC0415
 
-    Single-user BasicAuth uses the shared env credentials; every multi-user mode
-    resolves the user's locally-stored app password (BasicAuth).
-    """
-    from ...client import NextcloudClient  # noqa: PLC0415
-    from ...config_validators import AuthMode, detect_auth_mode  # noqa: PLC0415
-
-    settings = get_settings()
-    if detect_auth_mode(settings) == AuthMode.SINGLE_USER_BASIC:
-        return NextcloudClient.from_env()
-
-    from ..oauth_sync import get_user_client_basic_auth  # noqa: PLC0415
-
-    host = settings.nextcloud_host
-    if not host:
-        raise ValueError("NEXTCLOUD_HOST is required for multi-user ingest")
-    return await get_user_client_basic_auth(user_id, host)
+    return await resolve_background_client(user_id)
 
 
 def _first_leaf(exc: BaseException) -> BaseException:
