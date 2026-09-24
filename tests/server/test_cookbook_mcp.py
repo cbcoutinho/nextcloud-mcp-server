@@ -96,6 +96,54 @@ async def test_mcp_cookbook_create_and_read_recipe(
                 logger.warning("Failed to cleanup recipe: %s", e)
 
 
+async def test_mcp_cookbook_get_recipe_without_yield(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """Cookbook writes `"recipeYield": null` for a recipe with no serving
+    count (FixRecipeYieldFilter). nc_cookbook_get_recipe must tolerate that.
+    """
+
+    unique_suffix = uuid.uuid4().hex[:8]
+    recipe_name = f"MCP No Yield Test {unique_suffix}"
+
+    created_recipe_id = None
+
+    try:
+        create_result = await nc_mcp_client.call_tool(
+            "nc_cookbook_create_recipe",
+            {
+                "name": recipe_name,
+                "ingredients": ["1 test ingredient"],
+                "instructions": ["Do the test"],
+            },
+        )
+        assert create_result.is_error is False, (
+            f"MCP recipe creation failed: {create_result.content}"
+        )
+
+        create_response = json.loads(create_result.content[0].text)
+        created_recipe_id = create_response["id"]
+
+        read_result = await nc_mcp_client.call_tool(
+            "nc_cookbook_get_recipe", {"recipe_id": created_recipe_id}
+        )
+        assert read_result.is_error is False, (
+            f"MCP recipe read failed: {read_result.content}"
+        )
+
+        read_recipe = json.loads(read_result.content[0].text)
+        assert read_recipe["name"] == recipe_name
+        assert read_recipe["recipeYield"] is None
+
+    finally:
+        if created_recipe_id is not None:
+            try:
+                await nc_client.cookbook.delete_recipe(created_recipe_id)
+                logger.info("Cleaned up recipe %s", created_recipe_id)
+            except Exception as e:
+                logger.warning("Failed to cleanup recipe: %s", e)
+
+
 async def test_mcp_cookbook_update_recipe(
     nc_mcp_client: ClientSession, nc_client: NextcloudClient
 ):
