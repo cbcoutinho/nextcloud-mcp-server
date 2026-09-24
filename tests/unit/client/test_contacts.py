@@ -1016,3 +1016,14 @@ def test_parse_vcard_without_fn_still_raises():
     """No line is at fault, so the original error surfaces to the caller's net."""
     with pytest.raises(ValidationError):
         _parse_vcard("BEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD\r\n")
+
+
+def test_two_unparseable_properties_are_both_dropped():
+    """Probing lines in isolation handles several bad lines; leave-one-out would not."""
+    vcard = (
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nBDAY:--1226\r\n"
+        "GEO:37.38,-122.08\r\nEMAIL:jane@example.com\r\nEND:VCARD\r\n"
+    )
+    projection = _project_contact(_parse_vcard(vcard))
+    assert projection["fullname"] == "Jane Doe"
+    assert projection["email"][0]["value"] == "jane@example.com"
