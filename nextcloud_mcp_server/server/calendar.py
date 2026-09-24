@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from mcp.server.mcpserver import Context, MCPServer
@@ -29,6 +30,47 @@ from nextcloud_mcp_server.models.calendar import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _event_search_bound(name: str, value: str, tz: ZoneInfo) -> dt.datetime | None:
+    """Parse one local date or exact instant into a UTC search boundary."""
+    if not value:
+        return None
+    try:
+        # Explicit offsets win; only date-only end bounds include the whole day.
+        try:
+            date = dt.date.fromisoformat(value)
+        except ValueError:
+            bound = dt.datetime.fromisoformat(value)
+        else:
+            if name == "end_date":
+                date += dt.timedelta(days=1)
+            bound = dt.datetime.combine(date, dt.time())
+        if bound.tzinfo is None:
+            bound = bound.replace(tzinfo=tz)
+        return bound.astimezone(dt.UTC)
+    except (ValueError, OverflowError) as e:
+        raise ToolError(
+            f"Invalid {name} {value!r}; expected YYYY-MM-DD or an ISO datetime"
+        ) from e
+
+
+def _event_search_range(
+    start_date: str, end_date: str, timezone: str = "UTC"
+) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """Convert inclusive local dates (or exact ISO instants) to UTC bounds."""
+    try:
+        tz = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise ToolError(
+            f"Invalid timezone {timezone!r}; expected an IANA timezone"
+        ) from e
+
+    start = _event_search_bound("start_date", start_date, tz)
+    end = _event_search_bound("end_date", end_date, tz)
+    if start is not None and end is not None and start >= end:
+        raise ToolError("start_date must be before the exclusive end of end_date")
+    return start, end
 
 
 def _stale_etag_error(uid: str, e: DavPreconditionFailed) -> ToolError:
@@ -266,15 +308,20 @@ def configure_calendar_tools(mcp: MCPServer):
         title_contains: Optional[str] = None,
         location_contains: Optional[str] = None,
         search_all_calendars: bool = False,
-    ):
+        timezone: str = "UTC",
+    ) -> ListEventsResponse:
         """List events in a calendar (or all calendars) within date range with advanced filtering.
+
+        A non-empty filtered single-calendar listing reads its DAV display name
+        once, falling back to the calendar slug if that optional read fails.
+        Cross-calendar listings reuse names from calendar discovery.
 
         Args:
             ctx: MCP context
             calendar_name: Name of the calendar to search. Required unless
                 search_all_calendars=True, in which case it is ignored.
-            start_date: Start date for search (YYYY-MM-DD format, e.g., "2025-01-01")
-            end_date: End date for search (YYYY-MM-DD format, e.g., "2025-01-31")
+            start_date: Inclusive start date (YYYY-MM-DD), or an ISO datetime.
+            end_date: Inclusive end date (YYYY-MM-DD), or an exclusive ISO datetime.
             limit: Maximum number of events to return
             min_attendees: Filter events with at least this many attendees
             min_duration_minutes: Filter events with at least this duration
@@ -283,6 +330,11 @@ def configure_calendar_tools(mcp: MCPServer):
             title_contains: Filter events where title contains this text
             location_contains: Filter events where location contains this text
             search_all_calendars: If True, search across all calendars instead of just one
+            timezone: IANA timezone for date-only and naive datetime bounds
+                (e.g. "Asia/Seoul"). Defaults to UTC. Explicit datetime offsets
+                take precedence. Date-only bounds cover whole local days,
+                including daylight-saving transitions. Invalid dates, timezones,
+                and reversed or empty ranges are rejected.
 
         Returns:
             List of events matching the filters
@@ -296,34 +348,10 @@ def configure_calendar_tools(mcp: MCPServer):
                 "calendar_name is required when search_all_calendars is False"
             )
 
+        start_datetime, end_datetime = _event_search_range(
+            start_date, end_date, timezone
+        )
         client = await get_client(ctx)
-
-        # Convert YYYY-MM-DD format dates to datetime objects
-        start_datetime = None
-        end_datetime = None
-
-        if start_date:
-            try:
-                start_datetime = dt.datetime.strptime(start_date, "%Y-%m-%d")
-            except ValueError:
-                # If parsing fails, try to parse as ISO format
-                try:
-                    start_datetime = dt.datetime.fromisoformat(start_date)
-                except ValueError:
-                    logger.warning("Invalid start_date format: %s", start_date)
-
-        if end_date:
-            try:
-                # For end date, set to end of day (23:59:59)
-                end_datetime = dt.datetime.strptime(end_date, "%Y-%m-%d").replace(
-                    hour=23, minute=59, second=59
-                )
-            except ValueError:
-                # If parsing fails, try to parse as ISO format
-                try:
-                    end_datetime = dt.datetime.fromisoformat(end_date)
-                except ValueError:
-                    logger.warning("Invalid end_date format: %s", end_date)
 
         # Build filters dictionary
         filters = {}
@@ -357,16 +385,24 @@ def configure_calendar_tools(mcp: MCPServer):
                 limit=limit,
             )
 
-            # Enrich events with calendar context for per-event mapping.
-            # Note: calendar_display_name is not available here without an
-            # extra list_calendars() call; the response-level calendar_name
-            # already identifies the calendar for single-calendar queries.
-            for event in events:
-                event["calendar_name"] = calendar_name
-
-            # Apply filters if provided
             if filters:
                 events = client.calendar._apply_event_filters(events, filters)
+
+            display_name = calendar_name
+            if events:
+                try:
+                    display_name = await client.calendar.get_calendar_display_name(
+                        calendar_name
+                    )
+                except Exception:
+                    # Optional metadata must not discard a successful event query.
+                    # DAV errors can contain credentials or response bodies.
+                    logger.warning(
+                        "Calendar display-name lookup failed; using calendar slug"
+                    )
+            for event in events:
+                event["calendar_name"] = calendar_name
+                event["calendar_display_name"] = display_name
 
         summaries = [_event_dict_to_summary(e) for e in events]
         return ListEventsResponse(
