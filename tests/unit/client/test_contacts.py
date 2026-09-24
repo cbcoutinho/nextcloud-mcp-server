@@ -8,7 +8,7 @@ PR #719 review without standing up the compose stack.
 from datetime import date
 
 import pytest
-from pythonvCard4.vcard import ValidationError
+from pythonvCard4.vcard import Contact, ValidationError
 
 from nextcloud_mcp_server.client.contacts import (
     ContactsClient,
@@ -1027,3 +1027,15 @@ def test_two_unparseable_properties_are_both_dropped():
     projection = _project_contact(_parse_vcard(vcard))
     assert projection["fullname"] == "Jane Doe"
     assert projection["email"][0]["value"] == "jane@example.com"
+
+
+@pytest.mark.parametrize("bad_line", ["BDAY;VALUE=DATE:--1226", "GEO:37.38,-122.08"])
+def test_upstream_still_raises_on_bad_property(bad_line: str):
+    """Canary for the pythonvCard4 bug ``_parse_vcard`` works around (GH #1551).
+
+    Upstream: https://github.com/sharf-shawon/pythonvCard4/issues/2. When a
+    dependency bump makes this fail, upstream parses the shape: drop that case,
+    and once both pass drop ``_parse_vcard``/``_parses_alone`` too.
+    """
+    with pytest.raises(ValueError):
+        Contact.from_vcard(f"BEGIN:VCARD\r\nFN:x\r\n{bad_line}\r\nEND:VCARD\r\n")
