@@ -22,11 +22,20 @@ def test_keeps_subject_and_redacts_third_party():
 
 def test_propagates_and_expands_tokens():
     # NER saw "Karen Smith" once; the bare surname and a case variant elsewhere
-    # are redacted too.
+    # are redacted too, as the same person: the token belongs to no one else.
     r = Redactor({"Karen Smith"})
     assert (
-        r.redact("Karen Smith wrote. Later SMITH replied; smith agreed.")
-        == "[PERSON_1] wrote. Later [PERSON_2] replied; [PERSON_2] agreed."
+        r.redact("Karen Smith wrote. Later SMITH replied; Karen agreed.")
+        == "[PERSON_1] wrote. Later [PERSON_1] replied; [PERSON_1] agreed."
+    )
+
+
+def test_token_shared_by_two_third_parties_keeps_its_own_number():
+    # "Smith" could be either person, so it is redacted without being
+    # attributed to one of them.
+    r = Redactor({"Karen Smith", "Tom Smith"})
+    assert r.redact("Karen Smith, Tom Smith; Smith") == (
+        "[PERSON_1], [PERSON_2]; [PERSON_3]"
     )
 
 

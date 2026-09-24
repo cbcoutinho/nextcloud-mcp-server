@@ -212,20 +212,36 @@ class Redactor:
         }
         self._keep = {key for k in keep if "@" not in k and (key := _key(k))}
         forms = set(self._keep)
+        # Token -> the full names it expands from, to number a bare "Smith" as
+        # the one person it can only belong to.
+        owners: dict[str, set[str]] = {}
         for name in names:
             if not (key := _key(name)):
                 continue
             forms.add(key)
             if key not in self._keep:
-                # ponytail: a bare surname gets its own number rather than the
-                # full name's. Reconciling aliases is the person-entity layer's
-                # job (Deck P9), not string matching's.
                 tokens = _tokens(key)
-                forms.update(tokens)
                 # "Rev Tom Brown" recurring as plain "Tom Brown" is one person,
-                # so the title-free phrase is a form of its own.
-                if len(tokens) > 1:
-                    forms.add(" ".join(tokens))
+                # so the title-free phrase is a form of its own, numbered like
+                # a bare token.
+                phrase = [" ".join(tokens)] if len(tokens) > 1 else []
+                for token in [*tokens, *phrase]:
+                    forms.add(token)
+                    if token != key:
+                        owners.setdefault(token, set()).add(key)
+        # A bare token shares its full name's number only when it is
+        # unambiguous: it belongs to exactly one detected third party and to
+        # none of the subject's kept names. "Doe" shared by the subject "Jane
+        # Doe" and a third party "John Doe" keeps its own number, so the
+        # archive never attributes an ambiguous mention to a specific person.
+        # ponytail: string-level alias resolution; a person-entity layer
+        # (Deck P9) would reconcile initials and nicknames too.
+        kept_tokens = {t for k in self._keep for t in k.split()}
+        self._canonical = {
+            token: next(iter(full))
+            for token, full in owners.items()
+            if len(full) == 1 and token not in kept_tokens
+        }
         self._numbers: dict[tuple[str, str], int] = {}
         self._counters: Counter[str] = Counter()
         # Longest first, so a kept "Jane Doe" wins over a redacted "Doe". Sorting
@@ -289,7 +305,7 @@ class Redactor:
             key = _key(m.group(0))
             if key not in self._redactable:
                 return m.group(0)
-            return self._placeholder(PERSON, key, seen)
+            return self._placeholder(PERSON, self._canonical.get(key, key), seen)
 
         text = _EMAIL_RE.sub(email, text)
         text = _NI_RE.sub(ni, text)
