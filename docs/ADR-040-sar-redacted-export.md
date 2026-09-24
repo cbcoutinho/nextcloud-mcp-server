@@ -65,6 +65,11 @@ Astrolabe, and an internal auditor inspects every archive before it is shared.
   name set covers the archive. Redaction is then word-boundary matching of that
   set: a name detected once is replaced wherever it occurs, and each token of a
   multi-token name is replaced on its own, so a bare surname is caught.
+- **One person, one number.** A bare token shares its full name's number when
+  it belongs to exactly one detected third party and to none of the subject's
+  kept names, so "Karen Smith", "Karen" and "Smith" are all `[PERSON_1]`. A
+  token shared by two people (or with the subject) keeps a number of its own,
+  so the archive never attributes an ambiguous mention.
 - **Emails, phone numbers and NI numbers** are found by pattern.
 - Everything not on the keep list becomes `[PERSON_n]`, `[EMAIL_n]`,
   `[PHONE_n]` or `[NI_n]`.
@@ -74,8 +79,13 @@ Astrolabe, and an internal auditor inspects every archive before it is shared.
 ### Surfaces
 
 - MCP: `sar_export_submit` and `sar_export_status`.
-- HTTP `/api/v1/sar/*` for the Astrolabe app, added with its UI.
-- Available only with `EMBEDDING_GATEWAY_URL` configured.
+- HTTP `POST`/`GET /api/v1/sar/exports` for the Astrolabe app, acting as the
+  bearer token's user. Refusals carry their status (400 invalid, 403 folder
+  not writable or no background access, 404 unknown export, 409 name taken).
+- `GET /api/v1/status` advertises `sar_export_available`; Astrolabe shows its
+  SAR basket and view only when it is true.
+- Available only with semantic search and `EMBEDDING_GATEWAY_URL` configured;
+  the HTTP route additionally needs an authenticated deployment mode.
 
 ### Execution
 
