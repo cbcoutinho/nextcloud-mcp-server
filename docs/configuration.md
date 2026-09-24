@@ -1637,6 +1637,43 @@ presence gates are applied automatically from `APP_CAPABILITY_KEY` in
 `nextcloud_mcp_server/server/__init__.py`; only add an app there after confirming
 it publishes a capability block, because a missing key is what closes the gate.
 
+## Disabling Individual Tools (Optional)
+
+`--enable-app` selects whole apps and OAuth scopes grant whole read/write
+families, so neither can remove *one* tool while keeping its siblings. All
+mutating WebDAV tools share `files.write`, for instance: an operator who wants
+file writes but never deletions has no scope to express that — and in OAuth
+mode a user can re-grant `files.write` with `nc_auth_update_scopes`.
+
+Set `MCP_DISABLED_TOOLS` to a comma-separated list of tool names:
+
+```bash
+MCP_DISABLED_TOOLS=nc_webdav_delete_resource,nc_webdav_move_resource
+```
+
+Empty (the default) keeps every registered tool.
+
+### Behaviour
+
+- The listed tools are **unregistered at startup**, after every app's tools are
+  registered. They are absent from `tools/list`, and `tools/call` answers
+  `Unknown tool` — in every deployment mode, for every user, whatever the token's
+  scopes. No client-side setting can bring them back.
+- It composes with the other filters: a tool is exposed only if its app is
+  enabled, it is not denylisted, the token carries its scopes, and the instance
+  can serve it (capability gating).
+- A name that matches no registered tool is logged as a startup warning, with
+  the closest match when there is one (`did you mean 'nc_webdav_delete_resource'?`).
+  It does not stop the server: the tool may belong to an app not enabled on this
+  deployment. **Check the startup log after changing the list** — a typo leaves
+  the tool you meant to disable available.
+- Changing the list requires a restart.
+
+Tool names are the ones MCP clients see (`nc_webdav_delete_resource`,
+`nc_notes_delete_note`, `deck_delete_card`, ...); list them with any MCP client,
+or read the `INFO` line `MCP_DISABLED_TOOLS: disabled N tool(s): ...` at startup
+to confirm what was removed.
+
 ## Tag-Based File Exclusion (Optional)
 
 Some files (contracts, medical records, credentials, private notes) should
