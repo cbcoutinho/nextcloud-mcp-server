@@ -169,6 +169,33 @@ class WriteFileResponse(StatusResponse):
     )
 
 
+class TrackedChangeResponse(StatusResponse):
+    """Response model for adding a tracked change to a .docx file."""
+
+    path: str = Field(description="File path that was revised")
+    mode: Literal["insert", "delete", "replace"] = Field(
+        description="Kind of tracked change that was added"
+    )
+    author: str = Field(description="Author recorded on the tracked change")
+    revision_ids: List[int] = Field(
+        description="w:id of each <w:ins>/<w:del> element added (a replace adds "
+        "one of each)"
+    )
+    paragraph_text: str = Field(
+        description="Text of the paragraph the change was anchored in, before the "
+        "change, so the location can be confirmed"
+    )
+    match_count: int = Field(
+        description="How many times anchor_text occurs in the document"
+    )
+    size: int = Field(description="Size of the rewritten file in bytes")
+    etag: Optional[str] = Field(
+        None,
+        description="ETag of the file as written. Pass it as `if_match` to chain "
+        "further edits; None if the server did not return one.",
+    )
+
+
 class CreateDirectoryResponse(StatusResponse):
     """Response model for directory creation."""
 

@@ -84,6 +84,7 @@ from .webdav import (
     MoveResourceResponse,
     ReadFileResponse,
     SearchFilesResponse,
+    TrackedChangeResponse,
     WriteFileResponse,
 )
 
@@ -150,6 +151,7 @@ __all__ = [
     "DirectoryListing",
     "ReadFileResponse",
     "WriteFileResponse",
+    "TrackedChangeResponse",
     "CreateDirectoryResponse",
     "DeleteResourceResponse",
     "MoveResourceResponse",
