@@ -206,7 +206,14 @@ def test_archive_name_is_one_plain_segment(name):
         sar_export.archive_paths("/Team", name)
 
 
+@pytest.mark.parametrize("folder", ["../x", "/Team/../Other", "Team/./x"])
+def test_output_folder_refuses_dot_segments(folder):
+    with pytest.raises(sar_export.ExportError, match="segments"):
+        sar_export.archive_paths(folder, "SAR-1")
+
+
 def test_archive_paths_normalise_folder():
+    assert sar_export.archive_paths("/", "SAR") == ("/SAR.zip", "/SAR.status.json")
     assert sar_export.archive_paths(" Team/SAR/ ", "SAR 1") == (
         "/Team/SAR/SAR 1.zip",
         "/Team/SAR/SAR 1.status.json",

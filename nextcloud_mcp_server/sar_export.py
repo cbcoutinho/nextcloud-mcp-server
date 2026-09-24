@@ -67,14 +67,21 @@ def _now() -> str:
 
 
 def archive_paths(output_folder: str, name: str) -> tuple[str, str]:
-    """``(archive_path, status_path)`` for an export, validating ``name``."""
+    """``(archive_path, status_path)`` for an export, validating both inputs.
+
+    Both are user-controlled. The user's own credentials bound what can be
+    written, but a ``..`` segment is refused outright rather than left to the
+    server's path normalisation.
+    """
     if not _NAME_RE.fullmatch(name) or ".." in name:
         raise ExportError(
             "name must be 1-100 letters, digits, spaces, '.', '_' or '-', "
             "starting with a letter or digit"
         )
-    folder = "/" + output_folder.strip().strip("/")
-    folder = folder.rstrip("/")
+    segments = [s for s in output_folder.strip().split("/") if s]
+    if any(s in (".", "..") for s in segments):
+        raise ExportError("output_folder must not contain '.' or '..' segments")
+    folder = "/" + "/".join(segments) if segments else ""
     return f"{folder}/{name}.zip", f"{folder}/{name}.status.json"
 
 
