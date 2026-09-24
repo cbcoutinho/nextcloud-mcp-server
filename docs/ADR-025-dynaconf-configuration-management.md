@@ -45,7 +45,7 @@ The nextcloud-mcp-server configuration system has grown to ~80+ environment vari
 | Embedding Providers | 15 | `OLLAMA_BASE_URL`, `OPENAI_API_KEY`, `BEDROCK_*` |
 | Document Processing | 18 | `ENABLE_UNSTRUCTURED`, `TESSERACT_CMD`, `PYMUPDF_*` |
 | Observability | 10 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_FORMAT`, `METRICS_PORT` |
-| Webhooks/Internal | 4 | `WEBHOOK_INTERNAL_URL`, `NEXTCLOUD_MCP_SERVICE_NAME` |
+| Webhooks | 1 | `WEBHOOK_SECRET` (the counts above are as of this ADR; the registration-era `WEBHOOK_INTERNAL_URL`/`NEXTCLOUD_MCP_*` keys were later removed) |
 | **Total** | **~82** | |
 
 ## Decision
@@ -181,10 +181,6 @@ otel_exporter_verify_ssl = false
 log_format = "text"
 log_level = "INFO"
 log_include_trace_context = true
-
-# === Webhooks ===
-nextcloud_mcp_service_name = "mcp"
-nextcloud_mcp_port = 8000
 
 # ─────────────────────────────────────────────
 # Deployment Mode Overrides

@@ -1319,14 +1319,14 @@ async def setup_oauth_config_for_multi_user_basic(
     This is a lightweight version of setup_oauth_config() that:
     - Performs OIDC discovery to get endpoints
     - Creates UnifiedTokenVerifier for management API token validation
-    - Creates RefreshTokenStorage for webhook token storage
+    - Creates RefreshTokenStorage for background-operation token storage
     - Skips OAuth client creation (not needed for BasicAuth background sync)
     - Skips AuthSettings creation (not needed for BasicAuth MCP operations)
 
     This enables hybrid authentication mode where:
     - MCP operations use BasicAuth (stateless, simple)
     - Management APIs use OAuth bearer tokens (secure, per-user)
-    - Background operations use OAuth refresh tokens (webhook sync)
+    - Background operations use OAuth refresh tokens (vector sync)
 
     Args:
         settings: Application settings
@@ -1585,7 +1585,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "🔄 Hybrid authentication mode will be enabled:\n"
             "  - MCP operations: BasicAuth (stateless, credentials per-request)\n"
             "  - Management APIs: OAuth bearer tokens (secure, per-user)\n"
-            "  - Background operations: OAuth refresh tokens (webhook sync)"
+            "  - Background operations: OAuth refresh tokens (vector sync)"
         )
 
     # Setup Prometheus metrics (always enabled by default)
@@ -1693,7 +1693,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Setup OAuth infrastructure for management APIs and background operations
         # This creates the UnifiedTokenVerifier needed by management.py and
-        # RefreshTokenStorage for webhook token persistence
+        # RefreshTokenStorage for background-operation token persistence
         if multi_user_basic_oauth_creds:
             sync_client_id, sync_client_secret = multi_user_basic_oauth_creds
 

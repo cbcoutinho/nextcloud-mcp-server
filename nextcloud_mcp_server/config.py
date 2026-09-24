@@ -86,10 +86,6 @@ _DEFAULTS: dict[str, Any] = {
     # Empty = CIMD disabled; "*" = any publicly routable host. See auth/cimd.py.
     "cimd_allowed_hosts": "",
     "enable_dcr": False,
-    # Container-runtime / webhook self-URL overrides (local-dev docker-compose).
-    "docker_container": False,
-    "nextcloud_mcp_service_name": "mcp",
-    "nextcloud_mcp_port": 8000,
     # Mode flags
     # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` are
     # intentionally absent — they are derived from MCP_DEPLOYMENT_MODE in
@@ -123,13 +119,11 @@ _DEFAULTS: dict[str, Any] = {
     # DATABASE_MAX_OVERFLOW for high-traffic prod fleets.
     "database_pool_size": 2,
     "database_max_overflow": 5,
-    # Webhook delivery authentication (ADR-010): when set, registrations
-    # tell NC to add `Authorization: Bearer <secret>` to webhook deliveries
-    # and the receiver rejects unauthenticated requests.
+    # Shared secret for the /webhooks/nextcloud receiver, which Astrolabe POSTs
+    # Nextcloud change events to with `Authorization: Bearer <secret>` (its
+    # `mcp_webhook_secret` system config must hold the same value). Unset = the
+    # route is not mounted and vector sync relies on the polling scanner.
     "webhook_secret": None,
-    # Internal URL override for webhook registration; wins over
-    # NEXTCLOUD_MCP_SERVER_URL when set (e.g. split internal/external URLs).
-    "webhook_internal_url": None,
     # Vector sync
     "vector_sync_scan_interval": 300,
     "vector_sync_processor_workers": 3,
@@ -177,7 +171,8 @@ _DEFAULTS: dict[str, Any] = {
         "application/pdf,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation,"
+        "application/vnd.ms-outlook"
     ),
     # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
     # (the default) indexes every message in every mailbox, which is the
@@ -1183,30 +1178,24 @@ class Settings:
     # sites that read it (app.py, context.py, scope_authorization.py).
     enable_login_flow: bool = False
 
-    # Token and webhook storage settings
+    # Token storage settings
     # TOKEN_ENCRYPTION_KEY: Optional - Only required for OAuth token storage operations.
-    #                       Webhook tracking works without encryption key.
     #                       If set, must be a valid base64-encoded Fernet key (32 bytes).
     # TOKEN_STORAGE_DB: Path to SQLite database for persistent storage.
-    #                   Used for webhook tracking (all modes) and OAuth token storage.
+    #                   Used for OAuth token storage.
     #                   Defaults to /tmp/tokens.db
     token_encryption_key: str | None = None
     token_storage_db: str | None = None
 
-    # Webhook delivery authentication (ADR-010). REQUIRED for webhooks
-    # (GHSA-8vh3-g2qg-2h2c). When set, the registrar passes
-    # Authorization: Bearer <secret> as the webhook authData and the receiver
-    # validates the same header on each delivery. When unset, the
-    # /webhooks/nextcloud route is not mounted, the receiver refuses any request
-    # that reaches it (503), and registration refuses to create webhooks — the
-    # receiver trusts user.uid from the payload, so unauthenticated access would
-    # let any caller delete/re-index other users' embeddings. Vector sync still
+    # Webhook receiver authentication (ADR-010). REQUIRED for the
+    # /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c). Astrolabe delivers
+    # Nextcloud change events there with Authorization: Bearer <secret>, and the
+    # receiver validates that header on each delivery. When unset, the route is
+    # not mounted and the receiver refuses any request that reaches it (503):
+    # it trusts user.uid from the payload, so unauthenticated access would let
+    # any caller delete/re-index other users' embeddings. Vector sync still
     # works via the polling scanner when this is unset.
     webhook_secret: str | None = None
-    # Internal URL override for webhook registration. Highest-priority
-    # source for the URL we register with NC (above
-    # nextcloud_mcp_server_url and the docker-detection fallback).
-    webhook_internal_url: str | None = None
 
     # Vector sync settings (ADR-007)
     vector_sync_enabled: bool = False
@@ -1273,13 +1262,14 @@ class Settings:
     # Comma-separated MIME types that tagged-file discovery enqueues. Explicit
     # rather than derived from the processor registry: turning on an optional
     # processor would otherwise silently widen the corpus (and its embedding
-    # bill). Defaults to PDF plus the OOXML formats with a native reader
-    # (.docx/.xlsx/.pptx, ADR-036/038).
+    # bill). Defaults to PDF plus every format read in-process with no external
+    # service: .docx/.xlsx/.pptx (ADR-036/038) and Outlook .msg (ADR-039).
     vector_sync_indexable_mime_types: str = (
         "application/pdf,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation,"
+        "application/vnd.ms-outlook"
     )
 
     @property
