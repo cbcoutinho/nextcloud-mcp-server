@@ -200,6 +200,10 @@ def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[s
 
 
 def _parses_alone(line: str) -> bool:
+    # Relies on from_vcard ignoring BEGIN/END/VERSION and taking the first FN,
+    # so structural lines probe clean. If a future release validates the
+    # envelope, every line "fails", the retry raises, and callers fall back to
+    # the pre-#1551 empty projection — degraded, never crashed.
     try:
         Contact.from_vcard(f"FN:x\n{line}")
     except Exception:
