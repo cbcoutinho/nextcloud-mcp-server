@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from mcp import types
+from mcp.client import Client
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
@@ -101,6 +102,39 @@ class TestToolCallLine:
         with caplog.at_level(logging.INFO, logger=LOGGER):
             await _wrap(inner)(_request())
 
+        record = _line(caplog)
+        assert record.outcome == "tool_error"
+        assert record.levelno == logging.WARNING
+
+    async def test_tool_error_in_the_wire_shape(self, caplog):
+        """What the runner actually hands a middleware: the serialized dict."""
+
+        async def inner(_ctx):
+            return {"content": [], "isError": True}
+
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            await _wrap(inner)(_request())
+
+        assert _line(caplog).outcome == "tool_error"
+
+    async def test_tool_error_through_the_real_runner(self, caplog):
+        """The fakes above return whichever shape they are written with; only a
+        real ``Client(server)`` round-trip shows what the SDK passes along. Every
+        failure was logged as success until this was checked end to end."""
+
+        mcp = MCPServer(name="test-tool-error-outcome")
+
+        @mcp.tool()
+        async def nc_semantic_search() -> str:
+            raise ValueError("board 999 not found")
+
+        instrument_call_tool_outcomes(mcp)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            async with Client(mcp) as client:
+                result = await client.call_tool("nc_semantic_search", {})
+
+        assert result.is_error is True
         record = _line(caplog)
         assert record.outcome == "tool_error"
         assert record.levelno == logging.WARNING
