@@ -120,7 +120,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
 
         Args:
             state: "closed" finishes the case: it becomes read-only and cannot
-                be reopened; its archives stay. "open" reopens a case that is
+                be reopened. Its archives stay. "open" reopens a case that is
                 ready for audit, to change it and export again.
         """
         try:
@@ -155,7 +155,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
                 already in the case updates it.
             remove: Documents to drop, by `doc_type`/`doc_id`.
             queries: Searches run for the case, including ones that found
-                nothing (`text`, optional `hits`); recorded in the archive.
+                nothing (`text`, optional `hits`). They are recorded in the archive.
         """
         try:
             request = SarCaseItemsChange(
@@ -178,11 +178,11 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         [EMAIL_1], ...), except the subject's own. The archive holds one PDF
         per document (redacted text, not the original layout), an index with
         each document's reason and redaction counts, and the logged searches.
-        The case is locked while exporting; poll `sar_case_get` until it is
+        The case is locked while exporting. Poll `sar_case_get` until it is
         "ready_for_audit". Each export is a new version (`-v1`, `-v2`, ...).
 
         Args:
-            output_folder: Where to write the archive; defaults to the case's
+            output_folder: Where to write the archive. Defaults to the case's
                 own `exports/` folder.
         """
         client = await get_client(ctx)
