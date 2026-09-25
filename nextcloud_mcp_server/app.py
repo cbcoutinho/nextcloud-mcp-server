@@ -49,7 +49,14 @@ from nextcloud_mcp_server.api import (
     update_user_scopes,
     vector_search,
 )
-from nextcloud_mcp_server.api.sar import create_sar_export, get_sar_export
+from nextcloud_mcp_server.api.sar import (
+    change_sar_case_items,
+    create_sar_case,
+    export_sar_case,
+    get_sar_case,
+    list_sar_cases,
+    update_sar_case,
+)
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     discover_all_scopes,
@@ -2812,13 +2819,17 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
             # SAR export (ADR-040); advertised as sar_export_available.
             if redaction_available(settings):
-                routes.append(
-                    Route("/api/v1/sar/exports", create_sar_export, methods=["POST"])
-                )
-                routes.append(
-                    Route("/api/v1/sar/exports", get_sar_export, methods=["GET"])
-                )
-                logger.info("SAR export endpoints enabled: /api/v1/sar/exports")
+                cases = "/api/v1/sar/cases"
+                case = cases + "/{case_id:int}"
+                routes += [
+                    Route(cases, create_sar_case, methods=["POST"]),
+                    Route(cases, list_sar_cases, methods=["GET"]),
+                    Route(case, get_sar_case, methods=["GET"]),
+                    Route(case, update_sar_case, methods=["PATCH"]),
+                    Route(case + "/items", change_sar_case_items, methods=["POST"]),
+                    Route(case + "/exports", export_sar_case, methods=["POST"]),
+                ]
+                logger.info("SAR case endpoints enabled: %s", cases)
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(

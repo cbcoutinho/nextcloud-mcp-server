@@ -6,9 +6,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .base import BaseResponse
 
-MAX_ITEMS = 500
 MAX_KEEP = 50
 MAX_QUERIES = 200
+MAX_ITEMS_PER_CALL = 1000
+# ponytail: a case is one JSON file rewritten on each change, and an export
+# holds every document's text in memory. Fine for a few thousand documents;
+# move cases to a database table and stream the export past that.
+MAX_CASE_ITEMS = 2000
 
 
 class SarItem(BaseModel):
@@ -48,24 +52,128 @@ class SarItem(BaseModel):
 
 Subject = Annotated[str, Field(min_length=1, max_length=200)]
 Query = Annotated[str, Field(min_length=1, max_length=1000)]
+SubjectList = Annotated[list[Subject], Field(min_length=1, max_length=MAX_KEEP)]
+
+CaseState = Literal["open", "exporting", "ready_for_audit", "closed"]
 
 
-class SarExportRequest(BaseModel):
-    """What to export. Shared by the MCP tool and the management API."""
+# --- The case file (sar-case.json) -------------------------------------------
 
-    output_folder: str = Field(
-        max_length=1000,
-        description="Existing folder the user can write to, e.g. a team folder.",
+
+class SarCaseItem(SarItem):
+    """A document selected for the case."""
+
+    title: str = Field(
+        default="",
+        max_length=500,
+        description="Unredacted title, for the case only; never exported.",
     )
-    name: str = Field(description='Archive name, e.g. "SAR-2026-014".')
-    subject: list[Subject] = Field(
-        min_length=1,
-        max_length=MAX_KEEP,
+    found_by: str | None = Field(
+        default=None, max_length=1000, description="The query that found it."
+    )
+    added_by: str = ""
+    added_at: str = ""
+
+
+class SarQueryLog(BaseModel):
+    """A search run for the case, including ones that found nothing."""
+
+    text: Query
+    hits: int | None = Field(default=None, ge=0)
+    run_by: str = ""
+    run_at: str = ""
+
+
+class SarCaseExport(BaseModel):
+    """One export of the case. Progress lives in its status file."""
+
+    version: int
+    state: Literal["running", "done", "failed"]
+    archive_path: str
+    status_path: str
+    submitted_by: str
+    submitted_at: str
+    total: int
+    failed: int = 0
+    message: str | None = None
+
+
+class SarCase(BaseModel):
+    """A subject access request case, stored as ``sar-case.json`` in Nextcloud."""
+
+    version: int = 1
+    name: str
+    description: str = Field(default="", max_length=2000)
+    state: CaseState = "open"
+    created_by: str
+    created_at: str
+    updated_at: str
+    closed_by: str | None = None
+    closed_at: str | None = None
+    subject: SubjectList = Field(
         description="The data subject's names, aliases, emails, phone numbers "
-        "and NI numbers. These are kept.",
+        "and NI numbers. These are kept; everyone else is redacted."
     )
-    items: list[SarItem] = Field(min_length=1, max_length=MAX_ITEMS)
-    queries: list[Query] = Field(default_factory=list, max_length=MAX_QUERIES)
+    items: list[SarCaseItem] = Field(default_factory=list, max_length=MAX_CASE_ITEMS)
+    queries: list[SarQueryLog] = Field(default_factory=list)
+    exports: list[SarCaseExport] = Field(default_factory=list)
+
+
+# --- Requests (HTTP bodies; the MCP tools take the same fields) ----------------
+
+
+class SarCaseCreate(BaseModel):
+    folder: str = Field(
+        max_length=1000,
+        description="Existing folder to create the case in, e.g. a team folder. "
+        "The case gets its own sub-folder named after it.",
+    )
+    name: str = Field(description='Case name, e.g. "SAR-2026-014".')
+    subject: SubjectList
+    description: str = Field(default="", max_length=2000)
+
+
+class SarCaseUpdate(BaseModel):
+    subject: SubjectList | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    state: Literal["open", "closed"] | None = Field(
+        default=None,
+        description='"closed" finishes the case (read-only, final); "open" '
+        "reopens a case that is ready for audit so it can be changed and "
+        "exported again.",
+    )
+
+
+class SarItemRef(BaseModel):
+    doc_type: str
+    doc_id: str
+
+    @field_validator("doc_id", mode="before")
+    @classmethod
+    def _stringify_id(cls, value: object) -> object:
+        return str(value) if isinstance(value, int) else value
+
+
+class SarQueryIn(BaseModel):
+    text: Query
+    hits: int | None = Field(default=None, ge=0)
+
+
+class SarCaseItemsChange(BaseModel):
+    add: list[SarCaseItem] = Field(default_factory=list, max_length=MAX_ITEMS_PER_CALL)
+    remove: list[SarItemRef] = Field(
+        default_factory=list, max_length=MAX_ITEMS_PER_CALL
+    )
+    queries: list[SarQueryIn] = Field(default_factory=list, max_length=MAX_QUERIES)
+
+
+class SarCaseExportRequest(BaseModel):
+    output_folder: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Where to write the archive. Defaults to the case's own "
+        "exports/ folder.",
+    )
 
 
 class SarFailedItem(BaseModel):
@@ -99,3 +207,33 @@ class SarExportStatus(BaseResponse):
     )
     started_at: str
     updated_at: str
+
+
+# --- Responses -----------------------------------------------------------------
+
+
+class SarCaseResponse(BaseResponse):
+    """A case, with its items paged and its latest export's live progress."""
+
+    case_id: int = Field(description="The case's id (its file's Nextcloud id).")
+    path: str = Field(description="Where the case file is, for this user.")
+    case: SarCase
+    items_total: int = Field(description="Items in the case; `case.items` is a page.")
+    items_offset: int = 0
+    latest_export: SarExportStatus | None = Field(
+        default=None, description="Progress of the most recent export, if any."
+    )
+
+
+class SarCaseSummary(BaseModel):
+    case_id: int
+    path: str
+    name: str
+    state: CaseState
+    items: int
+    updated_at: str
+    latest_export: SarCaseExport | None = None
+
+
+class SarCaseListResponse(BaseResponse):
+    cases: list[SarCaseSummary]

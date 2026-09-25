@@ -11,7 +11,6 @@ import pytest
 
 from nextcloud_mcp_server import sar_export
 from nextcloud_mcp_server.models.sar import (
-    SarExportRequest,
     SarExportStatus,
     SarItem,
 )
@@ -182,81 +181,75 @@ async def test_ner_failure_fails_the_export_and_writes_nothing(indexed):
     assert nc.closed
 
 
-def _request(folder: str = "/Team/SAR") -> SarExportRequest:
-    return SarExportRequest(
+async def _start(nc, tg, folder="/Team/SAR", on_finish=None):
+    return await sar_export.start_export(
+        nc=nc,
+        ner=FakeNer(),
+        task_group=tg,
         output_folder=folder,
         name="SAR-1",
-        subject=["Jane Doe"],
+        keep=["Jane Doe"],
         items=[SarItem(doc_type="file", doc_id="1", reason="r")],
+        queries=[],
+        on_finish=on_finish,
     )
 
 
-@pytest.fixture
-def background(monkeypatch):
-    """submit_export's collaborators: the background client and NER client."""
-    webdav = FakeWebDAV()
-    nc = FakeClient(webdav)
+async def test_start_runs_job_in_background_and_calls_on_finish(indexed):
+    nc = FakeClient(FakeWebDAV())
+    finished = []
 
-    async def resolve(user_id):
-        return nc
+    async def on_finish(status):
+        assert not nc.closed  # runs before the job closes its client
+        finished.append(status.state)
 
-    async def ner_client(settings):
-        return FakeNer()
-
-    monkeypatch.setattr(sar_export, "resolve_background_client", resolve)
-    monkeypatch.setattr(sar_export, "get_ner_client", ner_client)
-    return nc
-
-
-async def test_submit_runs_job_in_background(indexed, background):
     async with anyio.create_task_group() as tg:
-        status = await sar_export.submit_export("dpo", _request(), tg)
+        status = await _start(nc, tg, on_finish=on_finish)
         assert status.state == "running"
-    assert "/Team/SAR/SAR-1.zip" in background.webdav.files
-    assert background.closed
-    done = await sar_export.read_status(background, "/Team/SAR", "SAR-1")
-    assert done.state == "done"
+    assert "/Team/SAR/SAR-1.zip" in nc.webdav.files
+    assert nc.closed
+    assert finished == ["done"]
+    assert (await sar_export.read_status(nc, status.status_path)).state == "done"
 
 
-async def test_submit_refuses_existing_name(indexed, background):
-    background.webdav.existing.add("/Team/SAR/SAR-1.status.json")
+async def test_start_refuses_existing_name(indexed):
+    nc = FakeClient(FakeWebDAV(existing={"/Team/SAR/SAR-1.status.json"}))
     async with anyio.create_task_group() as tg:
         with pytest.raises(sar_export.ExportError, match="already exists") as info:
-            await sar_export.submit_export("dpo", _request("Team/SAR/"), tg)
+            await _start(nc, tg, folder="Team/SAR/")
     assert info.value.status == 409
-    assert background.closed
+    assert not nc.closed  # the caller still owns it
 
 
-async def test_submit_refuses_unwritable_folder(indexed, background):
-    background.webdav.fail_writes_with = 403
+async def test_start_refuses_unwritable_folder(indexed):
+    webdav = FakeWebDAV()
+    webdav.fail_writes_with = 403
     async with anyio.create_task_group() as tg:
         with pytest.raises(sar_export.ExportError, match="writable") as info:
-            await sar_export.submit_export("dpo", _request(), tg)
+            await _start(FakeClient(webdav), tg)
     assert info.value.status == 403
-    assert background.closed
 
 
-async def test_submit_needs_background_access(monkeypatch):
+async def test_start_without_task_group_is_unavailable():
+    with pytest.raises(sar_export.ExportError) as info:
+        await _start(FakeClient(FakeWebDAV()), None)
+    assert info.value.status == 503
+
+
+async def test_background_client_needs_provisioning(monkeypatch):
     async def resolve(user_id):
         raise NotProvisionedError("no app password")
 
     monkeypatch.setattr(sar_export, "resolve_background_client", resolve)
-    async with anyio.create_task_group() as tg:
-        with pytest.raises(sar_export.ExportError, match="background access") as info:
-            await sar_export.submit_export("dpo", _request(), tg)
+    with pytest.raises(sar_export.ExportError, match="background access") as info:
+        await sar_export.background_client("dpo")
     assert info.value.status == 403
-
-
-async def test_submit_without_task_group_is_unavailable():
-    with pytest.raises(sar_export.ExportError) as info:
-        await sar_export.submit_export("dpo", _request(), None)
-    assert info.value.status == 503
 
 
 async def test_read_status_of_unknown_export_is_404():
     nc = FakeClient(FakeWebDAV())
-    with pytest.raises(sar_export.ExportError, match="no export named") as info:
-        await sar_export.read_status(nc, "/Team", "SAR-9")
+    with pytest.raises(sar_export.ExportError, match="no export status") as info:
+        await sar_export.read_status(nc, "/Team/SAR-9.status.json")
     assert info.value.status == 404
 
 

@@ -18,6 +18,7 @@ import io
 import logging
 import re
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -30,7 +31,6 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.models.sar import (
-    SarExportRequest,
     SarExportStatus,
     SarFailedItem,
     SarItem,
@@ -40,7 +40,6 @@ from nextcloud_mcp_server.redaction import (
     Redactor,
     counts,
     detect_names,
-    get_ner_client,
 )
 from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
@@ -88,22 +87,37 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def archive_paths(output_folder: str, name: str) -> tuple[str, str]:
-    """``(archive_path, status_path)`` for an export, validating both inputs.
+def validate_name(name: str) -> str:
+    """An archive or case name: one plain path segment.
 
-    Both are user-controlled. The user's own credentials bound what can be
-    written, but a ``..`` segment is refused outright rather than left to the
-    server's path normalisation.
+    Raises:
+        ExportError: not a plain name (400).
     """
     if not _NAME_RE.fullmatch(name) or ".." in name:
         raise ExportError(
             "name must be 1-100 letters, digits, spaces, '.', '_' or '-', "
             "starting with a letter or digit"
         )
-    segments = [s for s in output_folder.strip().split("/") if s]
+    return name
+
+
+def normalize_folder(folder: str) -> str:
+    """``folder`` as an absolute path ("" for the root), refusing ``.``/``..``.
+
+    User-controlled. The user's own credentials bound what can be written,
+    but a ``..`` segment is refused outright rather than left to the server's
+    path normalisation.
+    """
+    segments = [s for s in folder.strip().split("/") if s]
     if any(s in (".", "..") for s in segments):
-        raise ExportError("output_folder must not contain '.' or '..' segments")
-    folder = "/" + "/".join(segments) if segments else ""
+        raise ExportError("folder must not contain '.' or '..' segments")
+    return "/" + "/".join(segments) if segments else ""
+
+
+def archive_paths(output_folder: str, name: str) -> tuple[str, str]:
+    """``(archive_path, status_path)`` for an export, validating both inputs."""
+    folder = normalize_folder(output_folder)
+    validate_name(name)
     return f"{folder}/{name}.zip", f"{folder}/{name}.status.json"
 
 
@@ -316,87 +330,68 @@ async def _write_status(
         raise ExportError(f"could not write {status.status_path}", status=409)
 
 
-async def read_status(
-    nc: NextcloudClient, output_folder: str, name: str
-) -> SarExportStatus:
+async def read_status(nc: NextcloudClient, status_path: str) -> SarExportStatus:
     """The recorded status of an export.
 
     Raises:
-        ExportError: invalid name/folder (400) or no such export (404).
+        ExportError: no such export (404).
     """
-    _, status_path = archive_paths(output_folder, name)
     try:
         content, _, _ = await nc.webdav.read_file(status_path)
     except HTTPStatusError as e:
         if e.response.status_code == 404:
-            raise ExportError(
-                f"no export named {name!r} in {output_folder!r}", status=404
-            ) from e
+            raise ExportError(f"no export status at {status_path}", 404) from e
         raise
     return SarExportStatus.model_validate_json(content)
 
 
-async def submit_export(
-    user_id: str, request: SarExportRequest, task_group: TaskGroup | None
-) -> SarExportStatus:
-    """Validate, check the output folder and start an export for ``user_id``.
-
-    Shared by the MCP tool and the management API.
+async def background_client(user_id: str) -> NextcloudClient:
+    """A client for ``user_id`` that outlives the request, for the export job.
 
     Raises:
-        ExportError: with the HTTP status the API should answer with.
+        ExportError: the user has not provisioned background access (403).
     """
-    if task_group is None:
-        raise ExportError(
-            "SAR export is unavailable: background tasks not running", 503
-        )
-    archive_paths(request.output_folder, request.name)  # validate before any I/O
     try:
-        nc = await resolve_background_client(user_id)
+        return await resolve_background_client(user_id)
     except NotProvisionedError as e:
         raise ExportError(
             "SAR export runs in the background and needs background access: "
             "provision it in Astrolabe's personal settings.",
             status=403,
         ) from e
-    try:
-        # On success the job owns `nc` and closes it.
-        return await start_export(
-            nc=nc,
-            ner=await get_ner_client(get_settings()),
-            task_group=task_group,
-            request=request,
-        )
-    except HTTPStatusError as e:
-        await nc.close()
-        raise ExportError(
-            f"Cannot write to {request.output_folder!r} "
-            f"(HTTP {e.response.status_code}): it must exist and be writable.",
-            status=403,
-        ) from e
-    except BaseException:
-        await nc.close()
-        raise
+
+
+OnFinish = Callable[[SarExportStatus], Awaitable[None]]
 
 
 async def start_export(
     *,
     nc: NextcloudClient,
     ner: NerClient,
-    task_group: TaskGroup,
-    request: SarExportRequest,
+    task_group: TaskGroup | None,
+    output_folder: str,
+    name: str,
+    keep: list[str],
+    items: list[SarItem],
+    queries: list[str],
+    on_finish: OnFinish | None = None,
 ) -> SarExportStatus:
     """Check the output folder, write the initial status, start the job.
 
     ``nc`` must be a client that outlives the request (see
-    ``resolve_background_client``); the job closes it when done.
+    :func:`background_client`). On success the job owns it and closes it;
+    on failure the caller still owns it. ``on_finish`` runs when the job ends,
+    successful or not, before the client is closed.
 
     Raises:
-        ExportError: invalid name, or the name is taken.
-        HTTPStatusError: the folder is missing or not writable (403/404/409).
+        ExportError: no task group (503), invalid name or folder (400), the
+            folder is missing or not writable (403), or the name is taken (409).
     """
-    items = request.items
-    archive_path, status_path = archive_paths(request.output_folder, request.name)
+    if task_group is None:
+        raise ExportError(
+            "SAR export is unavailable: background tasks not running", 503
+        )
+    archive_path, status_path = archive_paths(output_folder, name)
     started = _now()
     status = SarExportStatus(
         state="running",
@@ -411,16 +406,16 @@ async def start_export(
     # Writing the status file first is the writability check: it fails before
     # any work if the user cannot create files in the folder or the name is
     # taken.
-    await _write_status(nc, status, create=True)
+    try:
+        await _write_status(nc, status, create=True)
+    except HTTPStatusError as e:
+        raise ExportError(
+            f"Cannot write to {output_folder!r} "
+            f"(HTTP {e.response.status_code}): it must exist and be writable.",
+            status=403,
+        ) from e
     task_group.start_soon(
-        _run_and_close,
-        nc,
-        ner,
-        status,
-        request.name,
-        list(request.subject),
-        items,
-        list(request.queries),
+        _run_and_close, nc, ner, status, name, keep, items, queries, on_finish
     )
     return status
 
@@ -433,6 +428,7 @@ async def _run_and_close(
     keep: list[str],
     items: list[SarItem],
     queries: list[str],
+    on_finish: OnFinish | None = None,
 ) -> None:
     try:
         await run_export(nc, ner, status, name, keep, items, queries)
@@ -449,6 +445,11 @@ async def _run_and_close(
             await _write_status(nc, status)
         except Exception:
             logger.exception("Could not record failure of %s", status.status_path)
+    try:
+        if on_finish is not None:
+            await on_finish(status)
+    except Exception:
+        logger.exception("SAR export finish hook failed for %s", status.archive_path)
     finally:
         await nc.close()
 

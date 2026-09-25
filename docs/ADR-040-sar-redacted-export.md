@@ -20,19 +20,50 @@ Astrolabe, and an internal auditor inspects every archive before it is shared.
 
 ## Decision
 
-### Workflow
+### Workflow: a case
 
-1. **Search and select.** The operator searches and picks the documents to
-   disclose, each with a reason and an optional page range. Only included
-   documents are recorded. How relevance scores and the queries themselves
-   should drive inclusion is left to a follow-up.
-2. **Submit.** The operator supplies the subject's identifiers (names, aliases,
-   emails, phone numbers, NI numbers: the **keep list**), the items, optionally
-   the queries that were run, and an **output folder**, typically a shared team
-   folder. The server refuses a folder the user cannot write to, before any work
-   starts.
-3. **Redact**, asynchronously, with a status the operator can poll.
-4. **Ready for audit.** The archive is in the output folder.
+A SAR is a **case**, one shared, durable object that the Astrolabe app and MCP
+agents both work on:
+
+```
+open ──export──▶ exporting ──done──▶ ready_for_audit ──close──▶ closed
+  ▲                  │ failed                 │
+  └──────────────────┴──────── reopen ────────┘
+```
+
+1. **Create** the case in a folder the user can write to, typically a team
+   folder, with the subject's identifiers (names, aliases, emails, phone
+   numbers, NI numbers: the **keep list**).
+2. **Search and select.** Add documents with a reason and an optional page
+   range; remove them; log the searches run, including ones that found
+   nothing. Only included documents are recorded. How relevance scores and the
+   queries should drive inclusion is left to a follow-up.
+3. **Export.** The case locks while a background job builds the archive, then
+   becomes **ready for audit**. A failed export reopens it. Reopening to change
+   and export again writes a new version (`-v1`, `-v2`, ...); earlier archives
+   are kept.
+4. **Close.** Final: the case becomes read-only and cannot be reopened. Its
+   archives stay.
+
+#### Where a case lives
+
+`<folder>/<case name>/sar-case.json`, in Nextcloud rather than a database of
+the MCP server:
+
+- The subject's identifiers and the internal titles stay in the customer's
+  system of record, with its backup, retention and erasure.
+- Nextcloud's permissions are the access model: whoever can write the case
+  folder can work on the case, and sharing a case means sharing its folder.
+  File versions give an edit history.
+- A case is addressed by its **case id**, the Nextcloud file id of
+  `sar-case.json`, which survives moves and renames and is the same for every
+  user the folder is shared with. Resolving it (WebDAV SEARCH by fileid) is
+  also the access check, so a case the user cannot see is a 404.
+- Every change is a read-modify-write guarded by the file's ETag. On a
+  conflict the change is re-applied to the fresh copy, because changes are
+  operations ("add these items"), not whole-document replaces.
+- A case holds up to 2,000 documents. Past that, cases belong in a database
+  table and exports need streaming.
 
 ### Archive
 
@@ -78,14 +109,24 @@ Astrolabe, and an internal auditor inspects every archive before it is shared.
 
 ### Surfaces
 
-- MCP: `sar_export_submit` and `sar_export_status`.
-- HTTP `POST`/`GET /api/v1/sar/exports` for the Astrolabe app, acting as the
-  bearer token's user. Refusals carry their status (400 invalid, 403 folder
-  not writable or no background access, 404 unknown export, 409 name taken).
-- `GET /api/v1/status` advertises `sar_export_available`; Astrolabe shows its
-  SAR basket and view only when it is true.
-- Available only with semantic search and `EMBEDDING_GATEWAY_URL` configured;
-  the HTTP route additionally needs an authenticated deployment mode.
+The same operations over MCP (agents) and HTTP (the Astrolabe app), each acting
+as the calling user:
+
+| Operation | MCP tool | HTTP |
+|---|---|---|
+| Create | `sar_case_create` | `POST /api/v1/sar/cases` → 201 |
+| List | `sar_case_list` | `GET /api/v1/sar/cases` |
+| Get (items paged, latest export progress) | `sar_case_get` | `GET /api/v1/sar/cases/{id}` |
+| Subject, description, close, reopen | `sar_case_update` | `PATCH /api/v1/sar/cases/{id}` |
+| Add/update/remove items, log queries | `sar_case_items` | `POST /api/v1/sar/cases/{id}/items` |
+| Export (optional output folder; default the case's `exports/`) | `sar_case_export` | `POST /api/v1/sar/cases/{id}/exports` → 202 |
+
+Refusals carry their status: 400 invalid, 403 folder not writable or no
+background access, 404 no such case (or no access to it), 409 wrong state or
+name taken, 503 no background task group. `GET /api/v1/status` advertises
+`sar_export_available`; Astrolabe shows its SAR UI only when it is true. The
+tools need semantic search and `EMBEDDING_GATEWAY_URL`; the HTTP routes
+additionally need an authenticated deployment mode.
 
 ### Execution
 
