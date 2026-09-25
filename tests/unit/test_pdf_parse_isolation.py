@@ -196,6 +196,28 @@ def test_apply_mem_limit_noop_when_resource_unavailable(monkeypatch):
     assert _isolation._MEM_LIMIT_APPLIED is True
 
 
+@requires_resource
+def test_apply_mem_limit_noop_when_os_refuses_cap(monkeypatch):
+    """Where the kernel rejects the cap (macOS), the worker runs without it.
+
+    macOS raises ``ValueError: current limit exceeds maximum limit`` for any
+    finite ``RLIMIT_AS``; that used to fail every page-range read.
+    """
+    monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
+    monkeypatch.setattr(
+        _isolation.resource,
+        "getrlimit",
+        lambda _w: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
+    )
+
+    def refuse(*_a):
+        raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(_isolation.resource, "setrlimit", refuse)
+    _isolation._apply_mem_limit(1536)  # must not raise
+    assert _isolation._MEM_LIMIT_APPLIED is True
+
+
 def test_isolation_imports_on_windows_without_resource(monkeypatch):
     """Importing ``_isolation`` on Windows must not crash on ``import resource``.
 

@@ -209,7 +209,10 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
 
     On a platform without the Unix-only ``resource`` module (e.g. Windows, see
     #877) the cap is skipped -- the worker still runs, just without the
-    address-space limit.
+    address-space limit. The same applies where ``resource`` exists but the
+    kernel refuses the cap: macOS rejects any finite ``RLIMIT_AS`` with
+    ``ValueError: current limit exceeds maximum limit``, which otherwise failed
+    every page-range read before the PDF was opened.
     """
     global _MEM_LIMIT_APPLIED
     if _MEM_LIMIT_APPLIED or mem_limit_mb <= 0:
@@ -221,7 +224,10 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
     target = mem_limit_mb * 1024 * 1024
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     soft_target = target if hard == resource.RLIM_INFINITY else min(target, hard)
-    resource.setrlimit(resource.RLIMIT_AS, (soft_target, hard))
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (soft_target, hard))
+    except (ValueError, OSError) as exc:
+        logger.warning("RLIMIT_AS cap refused by the OS (%s); parsing without it", exc)
     _MEM_LIMIT_APPLIED = True
 
 
