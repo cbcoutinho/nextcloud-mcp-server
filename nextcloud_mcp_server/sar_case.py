@@ -62,6 +62,7 @@ _WRITE_ATTEMPTS = 6
 # Write ids kept in the case for the lineage check; far more than the writes
 # that can overlap one attempt.
 _LINEAGE = 50
+_LIST_CONCURRENCY = 20
 _DEFAULT_PAGE = 200
 
 
@@ -256,18 +257,20 @@ async def list_cases(nc: NextcloudClient) -> SarCaseListResponse:
         where_conditions=like_predicate("d:displayname", CASE_FILE),
         properties=["fileid", "displayname"],
     )
-    summaries = []
-    for hit in found:
-        if hit.get("name") != CASE_FILE or hit.get("file_id") is None:
-            continue
+    summaries: list[SarCaseSummary] = []
+    limit = anyio.Semaphore(_LIST_CONCURRENCY)
+
+    async def summarise(hit: dict) -> None:
         path = _abs(hit["path"])
         try:
-            case, _ = await _load(nc, path)
+            async with limit:
+                case, _ = await _load(nc, path)
         except Exception:
             # A damaged or foreign file of the same name is not a case; skip
             # it rather than failing the whole list.
             logger.warning("Skipping unreadable SAR case file %s", path)
-            continue
+            return
+        # Appends from concurrent tasks are safe: no await between read and write.
         summaries.append(
             SarCaseSummary(
                 case_id=int(hit["file_id"]),
@@ -279,6 +282,11 @@ async def list_cases(nc: NextcloudClient) -> SarCaseListResponse:
                 latest_export=case.exports[-1] if case.exports else None,
             )
         )
+
+    async with anyio.create_task_group() as tg:
+        for hit in found:
+            if hit.get("name") == CASE_FILE and hit.get("file_id") is not None:
+                tg.start_soon(summarise, hit)
     summaries.sort(key=lambda s: s.updated_at, reverse=True)
     return SarCaseListResponse(cases=summaries)
 
