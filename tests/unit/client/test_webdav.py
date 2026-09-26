@@ -804,6 +804,39 @@ async def test_read_file_returns_none_etag_when_absent(mocker):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("path", "reported", "expected"),
+    [
+        # Observed against a real deployment: the server falls back to a
+        # generic type for extensions Python's mimetypes table resolves
+        # precisely (write_file already sends the correct Content-Type on
+        # upload -- this is the server's own detection on the way back).
+        ("report.json", "text/plain;charset=UTF-8", "application/json;charset=UTF-8"),
+        ("page.html", "text/plain", "text/html"),
+        # A specific server answer is trusted outright, even one that
+        # disagrees with the extension.
+        ("report.json", "application/pdf", "application/pdf"),
+        # No mimetypes entry for this extension: nothing to prefer it over.
+        ("settings.ini", "application/octet-stream", "application/octet-stream"),
+    ],
+)
+async def test_read_file_prefers_extension_over_generic_content_type(
+    mocker, path, reported, expected
+):
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"hello"
+    mock_response.headers = {"content-type": reported}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    _, content_type, _ = await client.read_file(f"Documents/{path}")
+    assert content_type == expected
+
+
+@pytest.mark.unit
 async def test_write_file_sends_if_match_header_when_provided(mocker):
     """if_match must reach the server as a quoted If-Match header."""
     mock_http_client = AsyncMock()
