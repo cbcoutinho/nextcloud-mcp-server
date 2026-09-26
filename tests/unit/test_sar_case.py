@@ -40,7 +40,9 @@ class FakeWebDAV:
         self.dirs = {"", "/Team"}
         self.files: dict[str, tuple[bytes, int, int]] = {}  # path -> (body, id, rev)
         self._next_id = 100
-        self.before_write = None  # hook to simulate a concurrent writer
+        # Hooks simulating a writer in another process (bypassing our lock).
+        self.before_write = None
+        self.after_write = None
 
     async def create_directory(self, path):
         path = path.rstrip("/")
@@ -72,6 +74,9 @@ class FakeWebDAV:
         else:
             _, file_id, rev = current
         self.files[path] = (content, file_id, rev + 1)
+        if self.after_write is not None:
+            hook, self.after_write = self.after_write, None
+            await hook()
         return {"status_code": 201, "etag": f"rev{rev + 1}"}
 
     async def read_file(self, path):
@@ -257,17 +262,52 @@ async def test_items_cap(nc, monkeypatch):
     assert info.value.status == 400
 
 
-async def test_concurrent_change_is_reapplied_not_lost(nc, webdav):
+def _other_process_adds(webdav, path, doc_id, base=None):
+    """A write from another process, straight to storage: adds ``doc_id`` to
+    ``base`` (default: the current file) without going through our lock."""
+
+    async def write():
+        body, file_id, rev = webdav.files[path]
+        data = json.loads(base if base is not None else body)
+        data["items"].append({"doc_type": "note", "doc_id": doc_id, "reason": "r"})
+        data["recent_writes"] = [*data.get("recent_writes", []), f"other-{doc_id}"]
+        webdav.files[path] = (json.dumps(data).encode(), file_id, rev + 1)
+
+    return write
+
+
+async def test_write_between_read_and_write_is_retried(nc, webdav):
     created = await _create(nc)
-    other = FakeClient(webdav, username="colleague")
+    webdav.before_write = _other_process_adds(webdav, created.path, "other")
+    result = await sar_case.change_items(nc, created.case_id, _add("mine"))
+    assert {i.doc_id for i in result.case.items} == {"other", "mine"}
 
-    async def colleague_adds():
-        await sar_case.change_items(other, created.case_id, _add("colleague"))
 
-    webdav.before_write = colleague_adds
+async def test_lost_update_from_stale_copy_is_detected_and_reapplied(nc, webdav):
+    """The stress-test bug: our write is acknowledged, then overwritten by a
+    writer that read the case before it. The lineage check must notice."""
+    created = await _create(nc)
+    stale = webdav.files[created.path][0]
+    webdav.after_write = _other_process_adds(webdav, created.path, "other", base=stale)
+
     result = await sar_case.change_items(nc, created.case_id, _add("mine"))
 
-    assert {i.doc_id for i in result.case.items} == {"colleague", "mine"}
+    stored = json.loads(webdav.files[created.path][0])
+    assert {i["doc_id"] for i in stored["items"]} == {"other", "mine"}
+    assert {i.doc_id for i in result.case.items} == {"other", "mine"}
+
+
+async def test_concurrent_edits_in_this_process_all_land(nc):
+    created = await _create(nc)
+
+    async def add(doc_id: str) -> None:
+        await sar_case.change_items(nc, created.case_id, _add(doc_id))
+
+    async with anyio.create_task_group() as tg:
+        for n in range(20):
+            tg.start_soon(add, str(n))
+    got = await sar_case.get_case(nc, created.case_id)
+    assert {i.doc_id for i in got.case.items} == {str(n) for n in range(20)}
 
 
 # --- State machine ------------------------------------------------------------------

@@ -11,20 +11,25 @@ A case is addressed by its **case id**, the Nextcloud file id of
 the folder is shared with, while the path differs per user. Resolving the id is
 a WebDAV SEARCH by fileid, which is also the access check.
 
-Every change is a read-modify-write guarded by the file's ETag. On a conflict
-the change is re-applied to the fresh copy, because changes are operations
-("add these items"), not whole-document replaces.
+Every change is a read-modify-write guarded by the file's ETag, serialised per
+case within this process, and verified by re-reading. On a conflict or a lost
+write the change is re-applied to the fresh copy, because changes are
+operations ("add these items"), not whole-document replaces.
 
 The same functions back the MCP tools and the management API.
 """
 
 import logging
 import posixpath
+import random
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+import anyio
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
+from pydantic import ValidationError
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.webdav import like_predicate
@@ -53,7 +58,10 @@ from nextcloud_mcp_server.sar_export import (
 logger = logging.getLogger(__name__)
 
 CASE_FILE = "sar-case.json"
-_WRITE_ATTEMPTS = 3
+_WRITE_ATTEMPTS = 6
+# Write ids kept in the case for the lineage check; far more than the writes
+# that can overlap one attempt.
+_LINEAGE = 50
 _DEFAULT_PAGE = 200
 
 
@@ -87,27 +95,71 @@ async def _load(nc: NextcloudClient, path: str) -> tuple[SarCase, str | None]:
     return SarCase.model_validate_json(content), etag
 
 
+class _Retry(Exception):
+    """This attempt lost a race; re-read and re-apply the change."""
+
+
+# One lock per case in this process: edits to a case from this server queue
+# behind each other instead of racing through Nextcloud, where a stress test
+# showed concurrent read-modify-writes losing acknowledged changes (reads during
+# a write can return inconsistent content). Other processes, other replicas and
+# other clients are caught by the lineage check in _mutate.
+# ponytail: per-process lock; move the case to a database row if many replicas
+# ever edit one case concurrently.
+_case_locks: dict[int, anyio.Lock] = {}
+
+
+async def _attempt(
+    nc: NextcloudClient, case_id: int, change: Callable[[SarCase], None]
+) -> tuple[str, SarCase]:
+    path = await _resolve(nc, case_id)
+    try:
+        case, etag = await _load(nc, path)
+    except ValidationError as e:  # a read torn by a concurrent write
+        raise _Retry from e
+    if etag is None:
+        raise _Retry
+    change(case)
+    write_id = uuid.uuid4().hex
+    case.recent_writes = [*case.recent_writes, write_id][-_LINEAGE:]
+    case.updated_at = _now()
+    result = await nc.webdav.write_file(
+        path, case.model_dump_json(indent=2).encode(), "application/json", if_match=etag
+    )
+    if result["status_code"] in (412, 423):
+        raise _Retry
+    # Lineage check: every later write built on ours carries our id forward, so
+    # a re-read without it means our write was overwritten from a stale copy.
+    try:
+        stored, _ = await _load(nc, path)
+    except ValidationError as e:
+        raise _Retry from e
+    if write_id not in stored.recent_writes:
+        logger.warning(
+            "SAR case %s: a concurrent write lost ours; re-applying", case_id
+        )
+        raise _Retry
+    return path, case
+
+
 async def _mutate(
     nc: NextcloudClient, case_id: int, change: Callable[[SarCase], None]
 ) -> tuple[str, SarCase]:
-    """Apply ``change`` to the case and write it back, retrying on conflict.
+    """Apply ``change`` to the case and write it back, re-applying it on conflict.
 
-    ``change`` mutates the case in place and raises :class:`ExportError` to
-    refuse (e.g. the case is not open).
+    ``change`` mutates a freshly read case in place and raises
+    :class:`ExportError` to refuse (e.g. the case is not open); it may run more
+    than once, so it must derive everything from the case it is given.
     """
-    for _ in range(_WRITE_ATTEMPTS):
-        path = await _resolve(nc, case_id)
-        case, etag = await _load(nc, path)
-        change(case)
-        case.updated_at = _now()
-        result = await nc.webdav.write_file(
-            path,
-            case.model_dump_json(indent=2).encode(),
-            "application/json",
-            if_match=etag or "*",
-        )
-        if result["status_code"] not in (412, 423):
-            return path, case
+    lock = _case_locks.setdefault(case_id, anyio.Lock())
+    async with lock:
+        for attempt in range(_WRITE_ATTEMPTS):
+            try:
+                return await _attempt(nc, case_id, change)
+            except _Retry:
+                # Jittered backoff so writers from other processes spread out
+                # instead of retrying in lockstep.
+                await anyio.sleep(random.uniform(0.05, 0.25) * (attempt + 1))
     raise ExportError("the case is being changed by someone else; try again", 409)
 
 

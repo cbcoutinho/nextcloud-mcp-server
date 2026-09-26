@@ -117,6 +117,10 @@ class SarCase(BaseModel):
     items: list[SarCaseItem] = Field(default_factory=list, max_length=MAX_CASE_ITEMS)
     queries: list[SarQueryLog] = Field(default_factory=list)
     exports: list[SarCaseExport] = Field(default_factory=list)
+    recent_writes: list[str] = Field(
+        default_factory=list,
+        description="Internal: ids of the last writes, to detect lost updates.",
+    )
 
 
 # --- Requests (HTTP bodies; the MCP tools take the same fields) ----------------
