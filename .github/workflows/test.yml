@@ -103,7 +103,7 @@ jobs:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
-            nextcloud_image: "docker.io/library/nextcloud:32.0.15@sha256:64f3fe9cf4185bdaa44595d67f8e4aad1e31c52d9f36c3b39318f3d364a19619"
+            nextcloud_image: "docker.io/library/nextcloud:32.0.15@sha256:a8c3fba1adca6455ce66b3ab428bef8fa01f4928f84fb2b5a1d7410ffb7d4b6e"
           - nextcloud_version: "33"
             nextcloud_image: "docker.io/library/nextcloud:33.0.9@sha256:98f8db7fa866cf4a8cfabd441731be428f54854caa760bd8e022a03cac77c581"
           # NOTE: the nc34 lanes are EXPECTED TO FAIL until Astrolabe publishes an
