@@ -5,6 +5,15 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.197.1 (2026-09-27)
+
+### Fix
+
+- **redaction**: a detected job title is redacted whole, never split
+- **redaction**: role and relationship words are never names
+- **redaction**: a window never starts inside a word longer than the overlap
+- **redaction**: cut NER windows on whitespace, never mid-word
+
 ## v0.197.0 (2026-09-27)
 
 ### BREAKING CHANGE
