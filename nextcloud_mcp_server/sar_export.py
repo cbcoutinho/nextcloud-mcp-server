@@ -161,20 +161,42 @@ async def document_text(
         _ItemError: the user cannot access it, it is not indexed, or the
             requested pages hold no text.
     """
-    owners: list[str] | None = None
-    if item.doc_type == "file":
-        # Live check: the file still exists and this user can open it. Only
-        # then widen the index lookup to owners who share with the user, as
-        # search/context.py does for context expansion.
-        if not item.doc_id.isdigit() or not await nc.webdav.file_accessible_by_id(
-            int(item.doc_id)
-        ):
-            raise _ItemError("not accessible to the requesting user")
-        owners = await list_accessible_owners(nc.sharing, user_id)
-    # ponytail: non-file items rely on the index's ownership filter (self-only)
-    # without a live existence check; add one per doc type via
-    # search/verification.py if deleted notes/cards ever reach an export.
+    owners = await _index_owners(nc, user_id, item)
+    chunks = _in_requested_pages(await _indexed_chunks(user_id, owners, item), item)
+    title = str(chunks[0].get("title") or f"{item.doc_type} {item.doc_id}")
+    text = stitch(
+        [
+            (int(p.get("chunk_start_offset") or 0), str(p.get("excerpt") or ""))
+            for p in chunks
+        ]
+    )
+    return title, text
 
+
+async def _index_owners(
+    nc: NextcloudClient, user_id: str, item: SarItem
+) -> list[str] | None:
+    """Whose index entries may hold the item: shared owners for a file the user
+    can open right now, else the user only (``None``)."""
+    if item.doc_type != "file":
+        # ponytail: non-file items rely on the index's ownership filter
+        # (self-only) without a live existence check; add one per doc type via
+        # search/verification.py if deleted notes/cards ever reach an export.
+        return None
+    # Live check: the file still exists and this user can open it. Only then
+    # widen the index lookup to owners who share with the user, as
+    # search/context.py does for context expansion.
+    if not item.doc_id.isdigit() or not await nc.webdav.file_accessible_by_id(
+        int(item.doc_id)
+    ):
+        raise _ItemError("not accessible to the requesting user")
+    return await list_accessible_owners(nc.sharing, user_id)
+
+
+async def _indexed_chunks(
+    user_id: str, owners: list[str] | None, item: SarItem
+) -> list[dict[str, Any]]:
+    """The item's indexed chunks, one per chunk index."""
     qdrant = await get_qdrant_client()
     scroll_filter = Filter(
         must=[
@@ -211,25 +233,23 @@ async def document_text(
             break
     if not payloads:
         raise _ItemError("not in the search index")
+    return list(payloads.values())
 
-    chunks = list(payloads.values())
-    if item.page_start is not None or item.page_end is not None:
-        if all(p.get("page_number") is None for p in chunks):
-            raise _ItemError("a page range was given but the document has no pages")
-        first = item.page_start or 1
-        last = item.page_end if item.page_end is not None else 10**9
-        chunks = [p for p in chunks if _in_pages(p, first, last)]
-        if not chunks:
-            raise _ItemError("no indexed text in the requested pages")
 
-    title = str(chunks[0].get("title") or f"{item.doc_type} {item.doc_id}")
-    text = stitch(
-        [
-            (int(p.get("chunk_start_offset") or 0), str(p.get("excerpt") or ""))
-            for p in chunks
-        ]
-    )
-    return title, text
+def _in_requested_pages(
+    chunks: list[dict[str, Any]], item: SarItem
+) -> list[dict[str, Any]]:
+    """The chunks within the item's page range; all of them without one."""
+    if item.page_start is None and item.page_end is None:
+        return chunks
+    if all(p.get("page_number") is None for p in chunks):
+        raise _ItemError("a page range was given but the document has no pages")
+    first = item.page_start or 1
+    last = item.page_end if item.page_end is not None else 10**9
+    selected = [p for p in chunks if _in_pages(p, first, last)]
+    if not selected:
+        raise _ItemError("no indexed text in the requested pages")
+    return selected
 
 
 # --- Rendering --------------------------------------------------------------

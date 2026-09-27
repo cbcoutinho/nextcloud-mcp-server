@@ -185,6 +185,18 @@ async def test_create_refuses_existing_case_and_missing_folder(nc):
     assert info.value.status == 403
 
 
+async def test_create_reports_a_nextcloud_failure_as_retryable(nc, monkeypatch):
+    """A 5xx is Nextcloud failing, not the folder being unwritable."""
+
+    async def unavailable(path):
+        raise _http_error(503)
+
+    monkeypatch.setattr(nc.webdav, "create_directory", unavailable)
+    with pytest.raises(sar_export.ExportError, match="try again") as info:
+        await _create(nc)
+    assert info.value.status == 503
+
+
 async def test_create_validates_name_and_folder(nc):
     for folder, name in (("/Team", "../x"), ("/Team/../Other", "SAR-3")):
         with pytest.raises(sar_export.ExportError) as info:

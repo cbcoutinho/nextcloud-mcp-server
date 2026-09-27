@@ -25,6 +25,7 @@ import random
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Literal
 
 import anyio
 from anyio.abc import TaskGroup
@@ -225,6 +226,14 @@ async def create_case(
     try:
         created = await nc.webdav.create_directory(case_dir)
     except HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            # Nextcloud failing (maintenance, timeout) is not a permissions
+            # problem: say so, and let the caller retry.
+            raise ExportError(
+                f"Nextcloud could not create {case_dir!r} "
+                f"(HTTP {e.response.status_code}); try again.",
+                503,
+            ) from e
         raise ExportError(
             f"Cannot create {case_dir!r} (HTTP {e.response.status_code}): "
             f"{folder!r} must exist and be writable.",
@@ -338,49 +347,85 @@ async def change_items(
 
     def change(case: SarCase) -> None:
         _require(case, "open")
-        removed = {(r.doc_type, r.doc_id) for r in request.remove}
-        items = {
-            (i.doc_type, i.doc_id): i
-            for i in case.items
-            if (i.doc_type, i.doc_id) not in removed
-        }
-        for item in request.add:
-            key = (item.doc_type, item.doc_id)
-            existing = items.get(key)
-            items[key] = item.model_copy(
-                update={
-                    "added_by": existing.added_by if existing else user,
-                    "added_at": existing.added_at if existing else now,
-                    # Keep what an earlier add knew if this one omits it.
-                    "title": item.title or (existing.title if existing else ""),
-                    "found_by": item.found_by
-                    or (existing.found_by if existing else None),
-                }
-            )
-        if len(items) > MAX_CASE_ITEMS:
-            raise ExportError(f"a case holds at most {MAX_CASE_ITEMS} items", 400)
-        case.items = list(items.values())
-
-        # A search already in the log (same text, same filters) is not logged
-        # again: re-running it adds nothing to the record, only to the file.
-        def key(q: SarQueryIn | SarQueryLog) -> tuple[str, str]:
-            return q.text, q.filters.model_dump_json() if q.filters else ""
-
-        logged = {key(q) for q in case.queries}
-        for q in request.queries:
-            if key(q) in logged:
-                continue
-            logged.add(key(q))
-            case.queries.append(
-                SarQueryLog(
-                    text=q.text, hits=q.hits, filters=q.filters, run_by=user, run_at=now
-                )
-            )
-        if len(case.queries) > MAX_CASE_QUERIES:
-            raise ExportError(f"a case logs at most {MAX_CASE_QUERIES} searches", 400)
+        _merge_items(case, request, user, now)
+        _log_queries(case, request.queries, user, now)
 
     path, case = await _mutate(nc, case_id, change)
     return await _response(nc, case_id, path, case)
+
+
+def _merge_items(
+    case: SarCase, request: SarCaseItemsChange, user: str, now: str
+) -> None:
+    """Remove, then add or update, keeping who first added an item."""
+    removed = {(r.doc_type, r.doc_id) for r in request.remove}
+    items = {
+        (i.doc_type, i.doc_id): i
+        for i in case.items
+        if (i.doc_type, i.doc_id) not in removed
+    }
+    for item in request.add:
+        key = (item.doc_type, item.doc_id)
+        existing = items.get(key)
+        if existing is None:
+            items[key] = item.model_copy(update={"added_by": user, "added_at": now})
+            continue
+        items[key] = item.model_copy(
+            update={
+                "added_by": existing.added_by,
+                "added_at": existing.added_at,
+                # Keep what an earlier add knew if this one omits it.
+                "title": item.title or existing.title,
+                "found_by": item.found_by or existing.found_by,
+            }
+        )
+    if len(items) > MAX_CASE_ITEMS:
+        raise ExportError(f"a case holds at most {MAX_CASE_ITEMS} items", 400)
+    case.items = list(items.values())
+
+
+def _query_key(q: SarQueryIn | SarQueryLog) -> tuple[str, str]:
+    return q.text, q.filters.model_dump_json() if q.filters else ""
+
+
+def _log_queries(case: SarCase, queries: list[SarQueryIn], user: str, now: str) -> None:
+    """Log searches, except ones already logged (same text, same filters):
+    re-running a search adds nothing to the record, only to the file."""
+    logged = {_query_key(q) for q in case.queries}
+    for q in queries:
+        if _query_key(q) in logged:
+            continue
+        logged.add(_query_key(q))
+        case.queries.append(
+            SarQueryLog(
+                text=q.text, hits=q.hits, filters=q.filters, run_by=user, run_at=now
+            )
+        )
+    if len(case.queries) > MAX_CASE_QUERIES:
+        raise ExportError(f"a case logs at most {MAX_CASE_QUERIES} searches", 400)
+
+
+def _require_exportable(case: SarCase) -> None:
+    if not case.items:
+        raise ExportError("add at least one document before exporting", 400)
+    if any(not i.reason.strip() for i in case.items):
+        raise ExportError("give a reason for every document before exporting", 400)
+
+
+def _mark_export(
+    case: SarCase,
+    version: int,
+    state: Literal["done", "failed"],
+    message: str | None,
+    failed: int | None = None,
+) -> None:
+    """Record how export ``version`` ended."""
+    for export in case.exports:
+        if export.version == version:
+            export.state = state
+            export.message = message
+            if failed is not None:
+                export.failed = failed
 
 
 async def export_case(
@@ -420,10 +465,7 @@ async def _start_case_export(
     path = await _resolve(nc, case_id)
     case, _ = await _load(nc, path)
     _require(case, "open")
-    if not case.items:
-        raise ExportError("add at least one document before exporting", 400)
-    if any(not i.reason.strip() for i in case.items):
-        raise ExportError("give a reason for every document before exporting", 400)
+    _require_exportable(case)
     version = len(case.exports) + 1
     folder = output_folder or posixpath.join(posixpath.dirname(path), "exports")
     name = f"{case.name}-v{version}"
@@ -450,8 +492,7 @@ async def _start_case_export(
         _require(c, "open")
         if len(c.exports) + 1 != version:
             raise ExportError("another export was just started; reload", 409)
-        if any(not i.reason.strip() for i in c.items):
-            raise ExportError("give a reason for every document before exporting", 400)
+        _require_exportable(c)
         submitted.total = len(c.items)
         c.state = "exporting"
         c.exports.append(submitted)
@@ -463,12 +504,11 @@ async def _start_case_export(
 
     async def finish(status: SarExportStatus) -> None:
         def record(c: SarCase) -> None:
-            for export in c.exports:
-                if export.version == version:
-                    export.state = "done" if status.state == "done" else "failed"
-                    export.failed = status.failed
-                    export.message = status.message
-            c.state = "ready_for_audit" if status.state == "done" else "open"
+            done = status.state == "done"
+            _mark_export(
+                c, version, "done" if done else "failed", status.message, status.failed
+            )
+            c.state = "ready_for_audit" if done else "open"
 
         await _mutate(background, case_id, record)
 
@@ -489,10 +529,7 @@ async def _start_case_export(
 
         def unlock(c: SarCase) -> None:
             c.state = "open"
-            for export in c.exports:
-                if export.version == version:
-                    export.state = "failed"
-                    export.message = message
+            _mark_export(c, version, "failed", message)
 
         # Shielded: on cancellation the unlock would otherwise be cancelled
         # too, leaving the case locked in "exporting" for good.

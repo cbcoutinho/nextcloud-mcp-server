@@ -1,6 +1,8 @@
 """MCP tools for subject access request cases (ADR-040)."""
 
-from typing import Annotated, Any, Literal
+import functools
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, Literal, TypeVar, cast
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -40,11 +42,28 @@ from nextcloud_mcp_server.search.access_filter import MAX_PATH_PREFIXES
 _WRITE = ToolAnnotations(idempotent_hint=False, open_world_hint=True)
 _READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 
+_Tool = TypeVar("_Tool", bound=Callable[..., Awaitable[Any]])
+
+
+def _tool_errors(fn: _Tool) -> _Tool:
+    """Report a refused operation (wrong state, bad input, no access) as a tool
+    error carrying its message, rather than as an internal error."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except (ExportError, ValueError) as e:
+            raise ToolError(str(e)) from e
+
+    return cast(_Tool, wrapper)
+
 
 def configure_sar_tools(mcp: MCPServer) -> None:
     @mcp.tool(title="Create SAR Case", annotations=_WRITE)
     @require_scopes("sar.write", "files.write")
     @instrument_tool
+    @_tool_errors
     async def sar_case_create(
         ctx: Context,
         folder: str,
@@ -70,17 +89,13 @@ def configure_sar_tools(mcp: MCPServer) -> None:
                 redacted.
             description: Free text, e.g. the request reference.
         """
-        client = await get_client(ctx)
-        try:
-            return await create_case(
-                client,
-                folder=folder,
-                name=name,
-                subject=list(subject),
-                description=description,
-            )
-        except ExportError as e:
-            raise ToolError(str(e)) from e
+        return await create_case(
+            await get_client(ctx),
+            folder=folder,
+            name=name,
+            subject=list(subject),
+            description=description,
+        )
 
     @mcp.tool(title="List SAR Cases", annotations=_READ)
     @require_scopes("sar.read", "files.read")
@@ -93,6 +108,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
     @mcp.tool(title="Get SAR Case", annotations=_READ)
     @require_scopes("sar.read", "files.read")
     @instrument_tool
+    @_tool_errors
     async def sar_case_get(
         ctx: Context,
         case_id: int,
@@ -103,14 +119,12 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         `items_total`), logged queries, exports, and the latest export's
         progress in `latest_export`. Poll this after `sar_case_export`: the
         case moves to "ready_for_audit" when the archive is written."""
-        try:
-            return await get_case(await get_client(ctx), case_id, offset, limit)
-        except ExportError as e:
-            raise ToolError(str(e)) from e
+        return await get_case(await get_client(ctx), case_id, offset, limit)
 
     @mcp.tool(title="Update SAR Case", annotations=_WRITE)
     @require_scopes("sar.write", "files.write")
     @instrument_tool
+    @_tool_errors
     async def sar_case_update(
         ctx: Context,
         case_id: int,
@@ -126,17 +140,15 @@ def configure_sar_tools(mcp: MCPServer) -> None:
                 be reopened. Its archives stay. "open" reopens a case that is
                 ready for audit, to change it and export again.
         """
-        try:
-            update = SarCaseUpdate.model_validate(
-                {"subject": subject, "description": description, "state": state}
-            )
-            return await update_case(await get_client(ctx), case_id, update)
-        except (ExportError, ValueError) as e:
-            raise ToolError(str(e)) from e
+        update = SarCaseUpdate.model_validate(
+            {"subject": subject, "description": description, "state": state}
+        )
+        return await update_case(await get_client(ctx), case_id, update)
 
     @mcp.tool(title="Change SAR Case Items", annotations=_WRITE)
     @require_scopes("sar.write", "files.write")
     @instrument_tool
+    @_tool_errors
     async def sar_case_items(
         ctx: Context,
         case_id: int,
@@ -160,18 +172,18 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             queries: Searches run for the case, including ones that found
                 nothing (`text`, optional `hits`). They are recorded in the archive.
         """
-        try:
-            request = SarCaseItemsChange(
-                add=add or [], remove=remove or [], queries=queries or []
-            )
-            return await change_items(await get_client(ctx), case_id, request)
-        except ExportError as e:
-            raise ToolError(str(e)) from e
+        request = SarCaseItemsChange(
+            add=add or [], remove=remove or [], queries=queries or []
+        )
+        return await change_items(await get_client(ctx), case_id, request)
 
     @mcp.tool(title="Search for a SAR Case", annotations=_WRITE)
     @require_scopes("sar.write", "semantic.read", "files.write")
     @instrument_tool
-    async def sar_case_search(  # NOSONAR(S107): the parameters are the wire schema
+    @_tool_errors
+    # S107 (too many parameters): the parameter list is the tool's wire schema,
+    # the same filters nc_semantic_search takes.
+    async def sar_case_search(  # NOSONAR(S107)
         ctx: Context,
         case_id: int,
         query: str,
@@ -227,18 +239,17 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             path_prefixes=path_prefixes,
         )
         log = SarQueryIn(text=query, hits=result.total_found, filters=filters)
-        try:
-            await change_items(
-                await get_client(ctx), case_id, SarCaseItemsChange(queries=[log])
-            )
-        except ExportError as e:
-            # No record, no results: a search for a case must be logged in it.
-            raise ToolError(str(e)) from e
+        # No record, no results: a search for a case must be logged in it, so
+        # a refused log (closed case, no access) fails the call.
+        await change_items(
+            await get_client(ctx), case_id, SarCaseItemsChange(queries=[log])
+        )
         return result
 
     @mcp.tool(title="Export SAR Case", annotations=_WRITE)
     @require_scopes("sar.write", "semantic.read", "files.write")
     @instrument_tool
+    @_tool_errors
     async def sar_case_export(
         ctx: Context, case_id: int, output_folder: str | None = None
     ) -> SarCaseResponse:
@@ -259,19 +270,13 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         client = await get_client(ctx)
         lifespan_ctx: Any = ctx.request_context.lifespan_context
         ner = await get_ner_client(get_settings())
-        try:
-            background = await background_client(client.username)
-        except ExportError as e:
-            raise ToolError(str(e)) from e
-        try:
-            # export_case owns `background` from here on.
-            return await export_case(
-                client,
-                background,
-                ner,
-                lifespan_ctx.eviction_task_group,
-                case_id,
-                output_folder,
-            )
-        except ExportError as e:
-            raise ToolError(str(e)) from e
+        background = await background_client(client.username)
+        # export_case owns `background` from here on.
+        return await export_case(
+            client,
+            background,
+            ner,
+            lifespan_ctx.eviction_task_group,
+            case_id,
+            output_folder,
+        )

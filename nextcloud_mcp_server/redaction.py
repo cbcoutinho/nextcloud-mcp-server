@@ -40,7 +40,7 @@ available only with ``EMBEDDING_GATEWAY_URL`` configured.
 
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import anyio
@@ -239,6 +239,59 @@ def _ni_key(raw: str) -> str | None:
     return None if key[:2] in _NI_INVALID_PREFIXES else key
 
 
+def _alternation(
+    keys: Iterable[str], pattern: Callable[[str], str]
+) -> re.Pattern[str] | None:
+    """One case-insensitive regex matching any key, longest first, or None."""
+    ordered = sorted(keys, key=len, reverse=True)
+    if not ordered:
+        return None
+    body = "|".join(map(pattern, ordered))
+    return re.compile(_LEFT + "(?:" + body + ")" + _RIGHT, re.IGNORECASE)
+
+
+def _address_pattern(
+    addresses: Iterable[str], keep: list[str]
+) -> re.Pattern[str] | None:
+    """Detected addresses of two or more words, minus any part of a kept one."""
+    # Padded so containment matches whole words: "2 high st" is not in
+    # "12 high st".
+    kept = [f" {_address_key(k)} " for k in keep if "@" not in k]
+    keys = {
+        key
+        for a in addresses
+        if len((key := _address_key(a)).split()) >= _MIN_ADDRESS_WORDS
+        and not any(f" {key} " in k for k in kept)
+    }
+    return _alternation(
+        keys, lambda key: _ADDRESS_SEPARATOR.join(map(re.escape, key.split()))
+    )
+
+
+def _name_forms(
+    names: Iterable[str], kept: set[str]
+) -> tuple[set[str], dict[str, set[str]]]:
+    """Every matchable form of the detected names, and for each token or
+    title-free phrase, the full names it comes from."""
+    forms = set(kept)
+    owners: dict[str, set[str]] = {}
+    for name in names:
+        if not (key := _key(name)):
+            continue
+        forms.add(key)
+        if key in kept:
+            continue
+        tokens = _tokens(key)
+        # "Rev Tom Brown" recurring as plain "Tom Brown" is one person, so the
+        # title-free phrase is a form of its own, numbered like a bare token.
+        phrase = [" ".join(tokens)] if len(tokens) > 1 else []
+        for token in [*tokens, *phrase]:
+            forms.add(token)
+            if token != key:
+                owners.setdefault(token, set()).add(key)
+    return forms, owners
+
+
 class Redactor:
     """Replaces third parties' names and identifiers with ``[LABEL_n]``.
 
@@ -255,57 +308,17 @@ class Redactor:
         addresses: Iterable[str] = (),
     ) -> None:
         keep = [k for k in keep if k and k.strip()]
-        # Padded so containment matches whole words: "2 high st" is not in
-        # "12 high st".
-        kept_addresses = [f" {_address_key(k)} " for k in keep if "@" not in k]
         self._keep_postcodes = {
             _postcode_key(m) for k in keep for m in _POSTCODE_RE.findall(k)
         }
-        address_keys = {
-            key
-            for a in addresses
-            if len((key := _address_key(a)).split()) >= _MIN_ADDRESS_WORDS
-            and not any(f" {key} " in kept for kept in kept_addresses)
-        }
-        self._addresses_re = (
-            re.compile(
-                _LEFT
-                + "(?:"
-                + "|".join(
-                    _ADDRESS_SEPARATOR.join(map(re.escape, key.split()))
-                    for key in sorted(address_keys, key=len, reverse=True)
-                )
-                + ")"
-                + _RIGHT,
-                re.IGNORECASE,
-            )
-            if address_keys
-            else None
-        )
+        self._addresses_re = _address_pattern(addresses, keep)
         self._keep_emails = {k.strip().casefold() for k in keep if "@" in k}
         self._keep_phones = {p for k in keep if (p := _phone_key(k))}
         self._keep_ni = {
             n for k in keep if _NI_RE.fullmatch(k.strip()) and (n := _ni_key(k))
         }
         self._keep = {key for k in keep if "@" not in k and (key := _key(k))}
-        forms = set(self._keep)
-        # Token -> the full names it expands from, to number a bare "Smith" as
-        # the one person it can only belong to.
-        owners: dict[str, set[str]] = {}
-        for name in names:
-            if not (key := _key(name)):
-                continue
-            forms.add(key)
-            if key not in self._keep:
-                tokens = _tokens(key)
-                # "Rev Tom Brown" recurring as plain "Tom Brown" is one person,
-                # so the title-free phrase is a form of its own, numbered like
-                # a bare token.
-                phrase = [" ".join(tokens)] if len(tokens) > 1 else []
-                for token in [*tokens, *phrase]:
-                    forms.add(token)
-                    if token != key:
-                        owners.setdefault(token, set()).add(key)
+        forms, owners = _name_forms(names, self._keep)
         # A bare token shares its full name's number only when it is
         # unambiguous: it belongs to exactly one detected third party and to
         # none of the subject's kept names. "Doe" shared by the subject "Jane
@@ -326,15 +339,7 @@ class Redactor:
         # alternatives only compete at one position when one's tokens are a
         # prefix of the other's, and then the longer key is also the longer
         # match whatever separators the text uses.
-        alternatives = sorted(forms, key=len, reverse=True)
-        self._names_re = (
-            re.compile(
-                _LEFT + "(?:" + "|".join(map(_pattern, alternatives)) + ")" + _RIGHT,
-                re.IGNORECASE,
-            )
-            if alternatives
-            else None
-        )
+        self._names_re = _alternation(forms, _pattern)
         # Forms that are only keep aliases can still match; they are left alone.
         self._redactable = forms - self._keep
 

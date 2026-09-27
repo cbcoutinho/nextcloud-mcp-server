@@ -53,6 +53,9 @@ logger = logging.getLogger(__name__)
 
 Operation = Callable[[NextcloudClient], Awaitable[BaseModel]]
 
+_SAR_READ = "sar.read"
+_SAR_WRITE = "sar.write"
+
 
 def _error(status: int, error: str, message: str) -> JSONResponse:
     return JSONResponse({"error": error, "message": message}, status_code=status)
@@ -137,13 +140,13 @@ async def create_sar_case(request: Request) -> JSONResponse:
             subject=list(body.subject),
             description=body.description,
         ),
-        "sar.write",
+        _SAR_WRITE,
         status=201,
     )
 
 
 async def list_sar_cases(request: Request) -> JSONResponse:
-    return await _run(request, list_cases, "sar.read")
+    return await _run(request, list_cases, _SAR_READ)
 
 
 async def get_sar_case(request: Request) -> JSONResponse:
@@ -156,7 +159,7 @@ async def get_sar_case(request: Request) -> JSONResponse:
     except ValueError:
         return _error(400, "invalid_request", "offset and limit must be integers")
     return await _run(
-        request, lambda nc: get_case(nc, case_id, offset, limit), "sar.read"
+        request, lambda nc: get_case(nc, case_id, offset, limit), _SAR_READ
     )
 
 
@@ -167,7 +170,7 @@ async def update_sar_case(request: Request) -> JSONResponse:
     body = await _body(request, SarCaseUpdate)
     if isinstance(body, JSONResponse):
         return body
-    return await _run(request, lambda nc: update_case(nc, case_id, body), "sar.write")
+    return await _run(request, lambda nc: update_case(nc, case_id, body), _SAR_WRITE)
 
 
 async def change_sar_case_items(request: Request) -> JSONResponse:
@@ -177,7 +180,7 @@ async def change_sar_case_items(request: Request) -> JSONResponse:
     body = await _body(request, SarCaseItemsChange)
     if isinstance(body, JSONResponse):
         return body
-    return await _run(request, lambda nc: change_items(nc, case_id, body), "sar.write")
+    return await _run(request, lambda nc: change_items(nc, case_id, body), _SAR_WRITE)
 
 
 async def export_sar_case(request: Request) -> JSONResponse:
@@ -199,7 +202,7 @@ async def export_sar_case(request: Request) -> JSONResponse:
             nc, background, ner, background_task_group(), case_id, body.output_folder
         )
 
-    return await _run(request, start, "sar.write", status=202)
+    return await _run(request, start, _SAR_WRITE, status=202)
 
 
 async def search_sar_case(request: Request) -> JSONResponse:
@@ -215,7 +218,7 @@ async def search_sar_case(request: Request) -> JSONResponse:
         return case_id
     # Before searching: without the scopes there must be no results either.
     # semantic.read too, as the sar_case_search tool requires.
-    denied = await _authorize(request, "sar.write", "semantic.read")
+    denied = await _authorize(request, _SAR_WRITE, "semantic.read")
     if isinstance(denied, JSONResponse):
         return denied
     # Lazy: visualization imports the search stack.
@@ -241,7 +244,7 @@ async def search_sar_case(request: Request) -> JSONResponse:
     logged = await _run(
         request,
         lambda nc: change_items(nc, case_id, SarCaseItemsChange(queries=[log])),
-        "sar.write",
+        _SAR_WRITE,
     )
     # A case the user cannot change (closed, gone, not theirs) gets no results:
     # searching "for" it must leave a record or not happen.
