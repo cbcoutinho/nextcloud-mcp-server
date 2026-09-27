@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.196.0 (2026-09-27)
+
+### BREAKING CHANGE
+
+- with VECTOR_SYNC_INDEXABLE_MIME_TYPES unset, tagged
+.msg, .txt, .md and .csv files are now indexed, as are ODF and legacy
+Office files when COLLABORA_URL is set, and whatever types an optional
+processor claims when one is configured (Unstructured, Tesseract,
+Docling, custom HTTP: images, EPUB, RTF, ...). Set the variable to keep
+the previous scope.
+
+### Feat
+
+- **vector-sync**: index every file type an enabled processor reads
+
+### Fix
+
+- **webdav**: reading a text file stays raw now that text has a processor
+
 ## v0.195.5 (2026-09-27)
 
 ### Fix
