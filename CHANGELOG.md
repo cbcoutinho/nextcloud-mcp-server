@@ -5,6 +5,54 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.197.0 (2026-09-27)
+
+### BREAKING CHANGE
+
+- /api/v1/status reports sar_available instead of
+sar_export_available, and the SAR tools and routes now require the
+sar.read or sar.write scope. Clients need to request them.
+- NerClient.detect() now takes the labels to request and
+returns (label, surface) pairs; detect_names() is replaced by
+detect_entities(), which returns (names, addresses). The gateway NER
+consumer pact now sends labels ["person", "address"] under the provider
+state "the gateway detects person names and addresses".
+
+### Feat
+
+- **sar**: sar.read and sar.write scopes; advertise sar_available
+- **sar**: case searches with the search page's filters, logged in the case
+- **redaction**: redact addresses and UK postcodes in SAR archives
+- **sar**: persisted SAR cases shared by Astrolabe and MCP agents (ADR-040)
+- **sar**: /api/v1/sar/exports for the Astrolabe app (ADR-040)
+- **sar**: redacted SAR export archives via sar_export_submit (ADR-040)
+- **redaction**: gateway NER client and person-name redaction core
+
+### Fix
+
+- **redaction**: keep only the subject's address or its leading part
+- **sar**: a case search's log entry is built before the search runs
+- **sar**: cap and dedupe the search log; case search needs semantic.read
+- **sar**: export what was locked, render off the event loop
+- **sar**: no lost updates when a case is edited concurrently
+- **sar**: no semicolons in SAR tool descriptions
+- **redaction**: number a bare token as the one person it belongs to
+- **sar**: refuse '.'/'..' segments in output_folder
+- **redaction**: an NER error never repeats the response's entity text
+- **redaction**: title-free name phrase is one form; validate NER_TIMEOUT_SECONDS
+- **redaction**: bool-first index guard in NerClient._parse; test bool index
+- **redaction**: order bool guard first for Sonar S2583; document sort key
+- **redaction**: address review round 1
+
+### Refactor
+
+- **sar**: split complex functions; 5xx on case creation is retryable
+- **redaction**: re-scope the core to SAR export archives (ADR-040)
+
+### Perf
+
+- **sar**: load case files concurrently when listing cases
+
 ## v0.196.0 (2026-09-27)
 
 ### BREAKING CHANGE
