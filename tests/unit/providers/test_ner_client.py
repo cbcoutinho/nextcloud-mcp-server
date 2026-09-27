@@ -111,6 +111,19 @@ async def test_incomplete_or_malformed_response_raises(monkeypatch, payload):
         await NerClient(_URL, "m").detect(["a", "b"])
 
 
+async def test_error_for_a_bad_result_does_not_carry_its_names(monkeypatch):
+    """A result with a bad index can still hold real names: the error must
+    describe its shape, not repeat them."""
+    entity = {**_person(0, 11), "text": "Karen Smith"}
+    _patch_transport(
+        monkeypatch, _ok({"results": [{"index": 5, "entities": [entity]}]})
+    )
+    with pytest.raises(NerError) as info:
+        await NerClient(_URL, "m").detect(["Karen Smith"])
+    assert "Karen" not in str(info.value)
+    assert "index 5 with 1 entities" in str(info.value)
+
+
 async def test_http_error_raises(monkeypatch):
     _patch_transport(monkeypatch, lambda r: httpx.Response(503))
     with pytest.raises(NerError, match="HTTP 503"):

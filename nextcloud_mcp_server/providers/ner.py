@@ -159,7 +159,13 @@ class NerClient:
                 or found[idx] is not None
                 or not isinstance(entities, list)
             ):
-                raise NerError(f"NER response has an unusable result: {item!r}")
+                # Shape only, never the item: its entities carry the names this
+                # client exists to keep out of anything that is logged or shown.
+                count = len(entities) if isinstance(entities, list) else "no"
+                raise NerError(
+                    f"NER response has an unusable result: index {idx!r} "
+                    f"with {count} entities"
+                )
             found[idx] = {
                 name for e in entities if (name := _entity_text(e, texts[idx]))
             }
