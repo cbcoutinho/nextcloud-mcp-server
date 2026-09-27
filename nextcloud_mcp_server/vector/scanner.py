@@ -475,10 +475,9 @@ async def _discover_tagged_files(
 ) -> list[dict]:
     """Discover tagged indexable files for both index modes, stamping ``_index_mode``.
 
-    Which types count is ``settings.indexable_mime_types`` — PDF plus
-    ``.docx``/``.xlsx``/``.pptx`` by default. It is a setting rather than "whatever the
-    processor registry can parse" so that enabling an optional processor cannot
-    silently widen the corpus, and its embedding bill, behind the operator.
+    Which types count is ``settings.indexable_mime_types``: by default every type
+    a registered processor can read, narrowed by
+    ``VECTOR_SYNC_INDEXABLE_MIME_TYPES`` when that is set.
 
     ``vector_sync_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
     → keyword (BM25 sparse only). Hybrid wins precedence: a file carrying both tags

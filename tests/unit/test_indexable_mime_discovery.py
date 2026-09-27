@@ -122,7 +122,7 @@ class TestDirectlyTaggedFiles:
         client.find_files_by_tag = NextcloudClient.find_files_by_tag.__get__(client)
         return client
 
-    async def test_office_files_pass_and_others_are_dropped(self, mocker):
+    async def test_readable_files_pass_and_others_are_dropped(self, mocker):
         client = self._client(
             mocker,
             [
@@ -138,7 +138,7 @@ class TestDirectlyTaggedFiles:
             "vector-index", mime_type_filter=Settings().indexable_mime_types
         )
 
-        assert sorted(f["id"] for f in found) == [1, 2, 3]
+        assert sorted(f["id"] for f in found) == [1, 2, 3, 5]
 
     async def test_a_content_type_with_parameters_still_matches(self, mocker):
         """WebDAV may report `…document; charset=binary`; startswith handles it."""
@@ -196,15 +196,20 @@ class TestEmptyAllowlist:
 
 
 class TestIndexableSetting:
-    def test_the_default_covers_pdf_and_the_natively_read_ooxml_formats(self):
-        """Only types a processor on this build can read: legacy .doc/.xls/.msg
-        would fail every discovered file as "no processor for type"."""
-        assert Settings().indexable_mime_types == (
-            "application/pdf",
-            DOCX,
-            XLSX,
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    def test_the_default_is_every_type_a_registered_processor_reads(self):
+        """Unset, discovery follows the enabled processors, so a type is never
+        discovered without a reader and never readable but undiscovered."""
+        from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+            get_registry,
         )
+
+        indexable = Settings().indexable_mime_types
+
+        assert set(indexable) == get_registry().supported_mime_types()
+        assert {"application/pdf", DOCX, XLSX, "text/plain", "text/markdown"} <= set(
+            indexable
+        )
+        assert "application/vnd.ms-outlook" in indexable
 
     def test_whitespace_and_blank_entries_are_dropped(self):
         settings = Settings(

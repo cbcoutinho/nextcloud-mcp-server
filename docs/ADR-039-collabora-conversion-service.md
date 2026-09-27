@@ -82,8 +82,8 @@ reaches `DocxProcessor` intact.
 - Every conversion is a network round trip to a shared service, bounded by
   `COLLABORA_TIMEOUT_SECONDS`. An unreachable service fails that file with a
   `ProcessorError`, never the process.
-- Indexing these types is still governed by `VECTOR_SYNC_INDEXABLE_MIME_TYPES`.
-  Adding them there is an operator choice, and only makes sense where
-  `COLLABORA_URL` is set (`.msg` excepted).
+- With `COLLABORA_URL` set, these types are indexed by default, since discovery
+  follows the registered processors; `VECTOR_SYNC_INDEXABLE_MIME_TYPES` narrows
+  that (superseded wording: an earlier default listed only PDF and OOXML).
 - Not addressed: `.rtf`, `.wpd` and other formats LibreOffice imports. They are
   one `CONVERSIONS` entry each if they turn out to matter.

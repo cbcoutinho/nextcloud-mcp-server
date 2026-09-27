@@ -59,6 +59,13 @@ _SUFFIX_BY_MIME = {
     "application/msword": ".doc",
     "application/vnd.ms-excel": ".xls",
     "application/vnd.ms-outlook": ".msg",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    # Plain text, Markdown and CSV are deliberately left to the polling
+    # scanner: the Text app and Collectives save .md files on every few
+    # keystrokes, and each write here would queue a tagged-file discovery.
 }
 
 

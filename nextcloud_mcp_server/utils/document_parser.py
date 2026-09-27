@@ -43,6 +43,10 @@ def is_parseable_document(content_type: Optional[str]) -> bool:
     """
     if not content_type:
         return False
+    # Text needs no extraction: the raw file already is the text. A processor
+    # claims text/* for indexing, not to change what reading a file returns.
+    if content_type.split(";")[0].strip().lower().startswith("text/"):
+        return False
 
     registry = get_registry()
     return registry.find_processor(content_type) is not None
