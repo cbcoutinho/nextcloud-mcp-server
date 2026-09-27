@@ -542,3 +542,38 @@ def test_status_advertises_rerank_capability(
 
     assert response.status_code == 200
     assert response.json()["rerank_available"] is expected
+
+
+@pytest.mark.parametrize(
+    "mode,offline_access,vector_sync,gateway_url,expected",
+    [
+        (AuthMode.LOGIN_FLOW, False, True, "https://gw.example", True),
+        (AuthMode.MULTI_USER_BASIC, True, True, "https://gw.example", True),
+        # The route is authenticated: not served in single-user mode.
+        (AuthMode.SINGLE_USER_BASIC, False, True, "https://gw.example", False),
+        # Names are detected by the gateway; text comes from the index.
+        (AuthMode.LOGIN_FLOW, False, True, "", False),
+        (AuthMode.LOGIN_FLOW, False, False, "https://gw.example", False),
+    ],
+)
+def test_status_advertises_sar_export_capability(
+    mode, offline_access, vector_sync, gateway_url, expected
+):
+    """Astrolabe gates its SAR export UI on this (ADR-040). Always present."""
+    settings = create_mock_settings(vector_sync_enabled=vector_sync)
+    settings.embedding_gateway_url = gateway_url
+    settings.enable_offline_access = offline_access
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings", return_value=settings
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=mode,
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["sar_available"] is expected

@@ -305,6 +305,22 @@ _DEFAULTS: dict[str, Any] = {
     # else it serves, is its business. Raise it if yours has headroom — a CPU
     # cross-encoder almost certainly does not.
     "search_rerank_max_concurrency": 1,
+    # --- SAR export redaction (ADR-040) -------------------------------------
+    # Names are detected by the embedding gateway's ``POST /v1/ner``, so SAR
+    # export is available only with EMBEDDING_GATEWAY_URL set.
+    # NER model, addressed the gateway way (``<provider>/<model>``).
+    "ner_model": "local/urchade/gliner_multi_pii-v1",
+    # Per-request budget. Export runs in the background, so this only needs to
+    # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
+    "ner_timeout_seconds": 120.0,
+    # Texts (of up to 2,000 chars) per /v1/ner request. Small for CPU GLiNER,
+    # which must finish a batch inside the gateway's own upstream timeout; raise
+    # it (e.g. 32) on a GPU backend.
+    "ner_batch_size": 8,
+    # Minimum model confidence for a span to count as a person. Lower raises
+    # recall at the cost of over-redaction, which is the safe direction for a
+    # disclosure; 0.5 is GLiNER's customary operating point.
+    "ner_threshold": 0.5,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -1386,6 +1402,11 @@ class Settings:
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
     search_rerank_max_concurrency: int = 1
+    # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
+    ner_model: str = "local/urchade/gliner_multi_pii-v1"
+    ner_timeout_seconds: float = 120.0
+    ner_batch_size: int = 8
+    ner_threshold: float = 0.5
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1823,6 +1844,21 @@ class Settings:
                     f"{_prefix}/",
                     _bare,
                 )
+        self.ner_threshold = float(self.ner_threshold)
+        if not 0.0 < self.ner_threshold <= 1.0:
+            raise ValueError(
+                f"NER_THRESHOLD must be in (0, 1]; got {self.ner_threshold!r}"
+            )
+        self.ner_batch_size = int(self.ner_batch_size)
+        if self.ner_batch_size < 1:
+            raise ValueError(f"NER_BATCH_SIZE must be >= 1; got {self.ner_batch_size}")
+        # 0 would give httpx no time budget: every NER call would time out at
+        # request time instead of failing here with a clear message.
+        self.ner_timeout_seconds = float(self.ner_timeout_seconds)
+        if self.ner_timeout_seconds <= 0:
+            raise ValueError(
+                f"NER_TIMEOUT_SECONDS must be > 0; got {self.ner_timeout_seconds}"
+            )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is

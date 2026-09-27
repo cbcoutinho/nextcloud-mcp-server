@@ -49,6 +49,15 @@ from nextcloud_mcp_server.api import (
     update_user_scopes,
     vector_search,
 )
+from nextcloud_mcp_server.api.sar import (
+    change_sar_case_items,
+    create_sar_case,
+    export_sar_case,
+    get_sar_case,
+    list_sar_cases,
+    search_sar_case,
+    update_sar_case,
+)
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     discover_all_scopes,
@@ -98,7 +107,7 @@ from nextcloud_mcp_server.config_validators import (
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.http import nextcloud_httpx_client
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
@@ -111,6 +120,7 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
+from nextcloud_mcp_server.redaction import sar_available
 from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
@@ -120,6 +130,7 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.server.sar import configure_sar_tools
 from nextcloud_mcp_server.vector.metrics_publisher import (
     usage_stock_task,
     vector_density_snapshot_task,
@@ -147,7 +158,12 @@ logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
 
 
-def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool) -> str:
+def build_dcr_scopes(
+    *,
+    vector_sync_enabled: bool,
+    offline_access_enabled: bool,
+    sar_enabled: bool = False,
+) -> str:
     """Build the space-separated scope list this server registers via DCR.
 
     When we register as a resource server (with resource_url) the allowed
@@ -162,12 +178,15 @@ def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool)
     scope) ungrantable in OAuth mode despite being in use. semantic.read is
     subtracted and re-added conditionally so it is advertised only when
     semantic search is enabled — subtracting is what keeps it from being
-    emitted twice now that it is a member of the vocabulary.
+    emitted twice now that it is a member of the vocabulary. The SAR scopes are
+    handled the same way, advertised only when SAR cases are available.
     """
     scopes = ["openid", "profile", "email"]
-    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"})
+    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"} - SAR_SCOPES)
     if vector_sync_enabled:
         scopes.append("semantic.read")
+    if sar_enabled:
+        scopes += sorted(SAR_SCOPES)
     if offline_access_enabled:
         scopes.append("offline_access")
     return " ".join(scopes)
@@ -417,6 +436,12 @@ def notify_user_provisioned() -> None:
     signal = _vector_sync_state.provision_signal
     if signal is not None:
         signal.ring()
+
+
+def background_task_group() -> TaskGroup | None:
+    """The lifespan's long-lived task group, for background work started from a
+    request (e.g. SAR export, ADR-040). ``None`` outside the lifespan."""
+    return _vector_sync_state.eviction_task_group
 
 
 def _wire_vector_sync_state(
@@ -883,6 +908,7 @@ async def load_oauth_client_credentials(
         dcr_scopes = build_dcr_scopes(
             vector_sync_enabled=dcr_settings.vector_sync_enabled,
             offline_access_enabled=enable_offline_access,
+            sar_enabled=sar_available(dcr_settings),
         )
         if dcr_settings.vector_sync_enabled:
             logger.info("✓ semantic.read scope enabled for semantic search tools")
@@ -1854,6 +1880,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if settings.vector_sync_enabled:
         logger.info("Configuring search tools (vector sync enabled, hybrid search)")
         configure_semantic_tools(mcp)
+        # SAR export reads document text from the index and detects names via
+        # the embedding gateway (ADR-040).
+        if sar_available(settings):
+            configure_sar_tools(mcp)
+        else:
+            logger.info("Skipping SAR export tools (EMBEDDING_GATEWAY_URL not set)")
     else:
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
 
@@ -2795,6 +2827,20 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             )
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
+            # SAR export (ADR-040); advertised as sar_available.
+            if sar_available(settings):
+                cases = "/api/v1/sar/cases"
+                case = cases + "/{case_id:int}"
+                routes += [
+                    Route(cases, create_sar_case, methods=["POST"]),
+                    Route(cases, list_sar_cases, methods=["GET"]),
+                    Route(case, get_sar_case, methods=["GET"]),
+                    Route(case, update_sar_case, methods=["PATCH"]),
+                    Route(case + "/items", change_sar_case_items, methods=["POST"]),
+                    Route(case + "/exports", export_sar_case, methods=["POST"]),
+                    Route(case + "/search", search_sar_case, methods=["POST"]),
+                ]
+                logger.info("SAR case endpoints enabled: %s", cases)
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(
