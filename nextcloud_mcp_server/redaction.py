@@ -25,8 +25,8 @@ Emails, phone numbers and UK National Insurance numbers are found by pattern in
 each text, not by NER, and are redacted wherever they occur.
 
 The data subject passes through via ``keep``: their names, aliases, emails,
-phone numbers, NI numbers and addresses. An address is kept when it is part of
-a kept one, so keeping the full address also keeps a detected fragment of it.
+phone numbers, NI numbers and addresses. A detected address is kept when it is a
+kept address or its leading part (house number first), never a bare street.
 Kept names match first (longest match wins) and
 are left as written. Tokens of a detected name that is itself kept are not
 expanded, so a bare "Jane" survives when only "Jane Doe" is the subject — unless
@@ -253,15 +253,17 @@ def _alternation(
 def _address_pattern(
     addresses: Iterable[str], keep: list[str]
 ) -> re.Pattern[str] | None:
-    """Detected addresses of two or more words, minus any part of a kept one."""
-    # Padded so containment matches whole words: "2 high st" is not in
-    # "12 high st".
+    """Detected addresses of two or more words, minus the subject's own: a kept
+    address, or its leading part ("3 Oak Road" of "3 Oak Road, Harbourvale")."""
+    # Leading part only, and padded to whole words: a neighbour's "Oak Road,
+    # Harbourvale" (no house number) is someone else's address, and "2 High St"
+    # is not "12 High St".
     kept = [f" {_address_key(k)} " for k in keep if "@" not in k]
     keys = {
         key
         for a in addresses
         if len((key := _address_key(a)).split()) >= _MIN_ADDRESS_WORDS
-        and not any(f" {key} " in k for k in kept)
+        and not any(k.startswith(f" {key} ") for k in kept)
     }
     return _alternation(
         keys, lambda key: _ADDRESS_SEPARATOR.join(map(re.escape, key.split()))

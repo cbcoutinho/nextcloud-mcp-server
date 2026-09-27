@@ -165,8 +165,9 @@ async def _mutate(
                 return await _attempt(nc, case_id, change)
             except _Retry:
                 # Jittered backoff so writers from other processes spread out
-                # instead of retrying in lockstep.
-                await anyio.sleep(random.uniform(0.05, 0.25) * (attempt + 1))
+                # instead of retrying in lockstep; none after the last attempt.
+                if attempt + 1 < _WRITE_ATTEMPTS:
+                    await anyio.sleep(random.uniform(0.05, 0.25) * (attempt + 1))
     raise ExportError("the case is being changed by someone else; try again", 409)
 
 
@@ -191,9 +192,10 @@ async def _response(
     if case.exports:
         try:
             latest = await read_status(nc, case.exports[-1].status_path)
-        except (ExportError, HTTPStatusError):
+        except (ExportError, HTTPStatusError) as e:
             # The case still records the export's outcome; only live progress
             # is missing (e.g. the output folder was moved).
+            logger.debug("SAR case %s: no export status (%s)", case_id, e)
             latest = None
     total = len(case.items)
     page = case.model_copy(update={"items": case.items[offset : offset + limit]})
@@ -208,6 +210,17 @@ async def _response(
 
 
 # --- Operations ----------------------------------------------------------------
+
+
+def _raise_if_unavailable(e: HTTPStatusError, path: str) -> None:
+    """A 5xx is Nextcloud failing (maintenance, timeout), not a permissions
+    problem: say so, as a retryable 503."""
+    if e.response.status_code >= 500:
+        raise ExportError(
+            f"Nextcloud could not write {path!r} "
+            f"(HTTP {e.response.status_code}); try again.",
+            503,
+        ) from e
 
 
 async def create_case(
@@ -229,14 +242,7 @@ async def create_case(
     try:
         created = await nc.webdav.create_directory(case_dir)
     except HTTPStatusError as e:
-        if e.response.status_code >= 500:
-            # Nextcloud failing (maintenance, timeout) is not a permissions
-            # problem: say so, and let the caller retry.
-            raise ExportError(
-                f"Nextcloud could not create {case_dir!r} "
-                f"(HTTP {e.response.status_code}); try again.",
-                503,
-            ) from e
+        _raise_if_unavailable(e, case_dir)
         raise ExportError(
             f"Cannot create {case_dir!r} (HTTP {e.response.status_code}): "
             f"{folder!r} must exist and be writable.",
@@ -253,9 +259,13 @@ async def create_case(
         updated_at=now,
         subject=subject,
     )
-    result = await nc.webdav.write_file(
-        case_file, case.model_dump_json(indent=2).encode(), "application/json"
-    )
+    try:
+        result = await nc.webdav.write_file(
+            case_file, case.model_dump_json(indent=2).encode(), "application/json"
+        )
+    except HTTPStatusError as e:
+        _raise_if_unavailable(e, case_file)
+        raise
     if result["status_code"] in (412, 423):
         raise ExportError(f"{case_file} already exists", 409)
     file_id = await nc.webdav.get_fileid(case_file)

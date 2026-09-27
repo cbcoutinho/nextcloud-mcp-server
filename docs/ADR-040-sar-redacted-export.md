@@ -104,7 +104,8 @@ the MCP server:
   so the archive never attributes an ambiguous mention.
 - **Addresses** are detected by NER as whole phrases (never split into words;
   single-word addresses such as a lone town are ignored), and UK postcodes by
-  pattern. The subject's own address, or any part of it, is kept.
+  pattern. The subject's own address, or its leading part (from the house
+  number), is kept; a bare street or town is not, since it may be someone else's.
 - **Emails, phone numbers and NI numbers** are found by pattern.
 - Everything not on the keep list becomes `[PERSON_n]`, `[ADDRESS_n]`, `[EMAIL_n]`,
   `[PHONE_n]` or `[NI_n]`.

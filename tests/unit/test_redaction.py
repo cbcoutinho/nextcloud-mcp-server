@@ -213,6 +213,20 @@ def test_a_fragment_of_the_subjects_address_is_kept():
     assert r.redact("3 Oak Road; 13 Oak Road") == "3 Oak Road; [ADDRESS_1]"
 
 
+def test_a_street_without_the_subjects_house_number_is_redacted():
+    """ "Oak Road, Harbourvale" is inside the subject's address as text, but
+    without the house number it may be a neighbour's: it is not kept."""
+    r = Redactor(
+        set(),
+        keep=["3 Oak Road, Harbourvale, XK1 1AA"],
+        addresses={"Oak Road, Harbourvale"},
+    )
+
+    assert r.redact("The neighbour at Oak Road, Harbourvale called.") == (
+        "The neighbour at [ADDRESS_1] called."
+    )
+
+
 def test_settings_validate_ner():
     from nextcloud_mcp_server.config import Settings
 

@@ -197,6 +197,16 @@ async def test_create_reports_a_nextcloud_failure_as_retryable(nc, monkeypatch):
     assert info.value.status == 503
 
 
+async def test_create_reports_a_failed_case_file_write_as_retryable(nc, monkeypatch):
+    async def unavailable(*args, **kwargs):
+        raise _http_error(502)
+
+    monkeypatch.setattr(nc.webdav, "write_file", unavailable)
+    with pytest.raises(sar_export.ExportError, match="try again") as info:
+        await _create(nc)
+    assert info.value.status == 503
+
+
 async def test_create_validates_name_and_folder(nc):
     for folder, name in (("/Team", "../x"), ("/Team/../Other", "SAR-3")):
         with pytest.raises(sar_export.ExportError) as info:
@@ -475,6 +485,28 @@ async def test_export_includes_an_item_added_just_before_the_lock(nc, indexed):
     assert export.total == 2
     done = await sar_case.get_case(nc, created.case_id)
     assert done.latest_export is not None and done.latest_export.total == 2
+
+
+async def test_two_exports_at_once_start_only_one(nc, indexed):
+    """Both read the case as open; the lock lets one through and refuses the
+    other, rather than starting two exports of the same version."""
+    created = await sar_case.change_items(nc, (await _create(nc)).case_id, _add("1"))
+    outcomes: list[object] = []
+
+    async def export(tg) -> None:
+        try:
+            started, _ = await _export(nc, created.case_id, tg)
+            outcomes.append(started.case.exports[-1].version)
+        except sar_export.ExportError as e:
+            outcomes.append(e.status)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(export, tg)
+        tg.start_soon(export, tg)
+
+    assert sorted(outcomes, key=str) == [1, 409]
+    done = await sar_case.get_case(nc, created.case_id)
+    assert [e.version for e in done.case.exports] == [1]
 
 
 async def test_export_needs_items_with_reasons(nc):
