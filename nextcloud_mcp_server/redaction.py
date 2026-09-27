@@ -220,7 +220,12 @@ class Redactor:
                 # ponytail: a bare surname gets its own number rather than the
                 # full name's. Reconciling aliases is the person-entity layer's
                 # job (Deck P9), not string matching's.
-                forms.update(_tokens(key))
+                tokens = _tokens(key)
+                forms.update(tokens)
+                # "Rev Tom Brown" recurring as plain "Tom Brown" is one person,
+                # so the title-free phrase is a form of its own.
+                if len(tokens) > 1:
+                    forms.add(" ".join(tokens))
         self._numbers: dict[tuple[str, str], int] = {}
         self._counters: Counter[str] = Counter()
         # Longest first, so a kept "Jane Doe" wins over a redacted "Doe". Sorting

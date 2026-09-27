@@ -1858,6 +1858,13 @@ class Settings:
         self.ner_batch_size = int(self.ner_batch_size)
         if self.ner_batch_size < 1:
             raise ValueError(f"NER_BATCH_SIZE must be >= 1; got {self.ner_batch_size}")
+        # 0 would give httpx no time budget: every NER call would time out at
+        # request time instead of failing here with a clear message.
+        self.ner_timeout_seconds = float(self.ner_timeout_seconds)
+        if self.ner_timeout_seconds <= 0:
+            raise ValueError(
+                f"NER_TIMEOUT_SECONDS must be > 0; got {self.ner_timeout_seconds}"
+            )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is

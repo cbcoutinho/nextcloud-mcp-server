@@ -75,6 +75,13 @@ def test_honorifics_and_short_tokens_are_not_expanded():
     assert r.redact("the Rev spoke; Brown left") == "the Rev spoke; [PERSON_1] left"
 
 
+def test_name_detected_with_a_title_recurring_without_it_is_one_placeholder():
+    r = Redactor({"Rev Tom Brown"})
+    redacted = r.redact("Rev Tom Brown will officiate. Tom Brown has served 20 years.")
+    assert redacted.count("[PERSON_") == 2  # not three: "Tom Brown" is one span
+    assert "Tom" not in redacted and "Brown" not in redacted
+
+
 def test_keep_alias_with_initial():
     r = Redactor({"J. Doe"}, keep=["J. Doe"])
     assert r.redact("J. Doe and J Doe") == "J. Doe and J Doe"
@@ -157,6 +164,8 @@ def test_settings_validate_ner():
         Settings(ner_threshold=0)
     with pytest.raises(ValueError, match="NER_BATCH_SIZE"):
         Settings(ner_batch_size=0)
+    with pytest.raises(ValueError, match="NER_TIMEOUT_SECONDS"):
+        Settings(ner_timeout_seconds=0)
 
 
 async def test_get_ner_client_targets_gateway_and_is_cached():
