@@ -20,6 +20,25 @@ def test_keeps_subject_and_redacts_third_party():
     assert r.redact("Jane Doe met Karen Smith.") == "Jane Doe met [PERSON_1]."
 
 
+def test_roles_detected_as_people_are_not_names():
+    # The model tags "student" in a query and "Father" in a contact list as
+    # people; as name forms they would be redacted wherever the word occurs.
+    r = Redactor({"student", "Father", "Mrs Mother", "Tom Father"})
+    assert (
+        r.redact("Student Record. Father: Tom Father. The student's mother.")
+        == "Student Record. Father: [PERSON_1]. The student's mother."
+    )
+
+
+def test_job_title_detected_as_person_is_not_split_into_words():
+    # "Academic Mentor" tagged as a person must not make "academic" a name.
+    r = Redactor({"Academic Mentor", "Father Brown"})
+    assert (
+        r.redact("Academic Mentor: Brown. 2024 Academic Year. Father Brown said.")
+        == "[PERSON_1]: Brown. 2024 Academic Year. [PERSON_2] said."
+    )
+
+
 def test_propagates_and_expands_tokens():
     # NER saw "Karen Smith" once; the bare surname and a case variant elsewhere
     # are redacted too, as the same person: the token belongs to no one else.
