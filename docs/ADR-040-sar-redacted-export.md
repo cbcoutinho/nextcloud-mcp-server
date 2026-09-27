@@ -33,7 +33,7 @@ open ──export──▶ exporting ──done──▶ ready_for_audit ──c
 
 1. **Create** the case in a folder the user can write to, typically a team
    folder, with the subject's identifiers (names, aliases, emails, phone
-   numbers, NI numbers: the **keep list**).
+   numbers, NI numbers, addresses: the **keep list**).
 2. **Search and select.** Add documents with a reason and an optional page
    range; remove them; log the searches run, including ones that found
    nothing. Only included documents are recorded. How relevance scores and the
@@ -101,8 +101,11 @@ the MCP server:
   kept names, so "Karen Smith", "Karen" and "Smith" are all `[PERSON_1]`. A
   token shared by two people (or with the subject) keeps a number of its own,
   so the archive never attributes an ambiguous mention.
+- **Addresses** are detected by NER as whole phrases (never split into words;
+  single-word addresses such as a lone town are ignored), and UK postcodes by
+  pattern. The subject's own address, or any part of it, is kept.
 - **Emails, phone numbers and NI numbers** are found by pattern.
-- Everything not on the keep list becomes `[PERSON_n]`, `[EMAIL_n]`,
+- Everything not on the keep list becomes `[PERSON_n]`, `[ADDRESS_n]`, `[EMAIL_n]`,
   `[PHONE_n]` or `[NI_n]`.
 - Detection failure is never degraded around: the affected document is marked
   failed rather than exported unredacted.
@@ -156,8 +159,8 @@ queue is the upgrade path once usage warrants it.
 - **OCR-damaged names** are caught only if detected in that damaged form.
 - **The export reflects the index.** A document changed since it was indexed is
   exported as indexed.
-- **Person names and three identifier kinds only.** Addresses and other
-  free-text personal data are out of scope for now.
+- **Names, addresses and three identifier kinds only.** Dates of birth, staff
+  or student IDs and other personal data are out of scope for now.
 - **Throughput** depends on the NER backend: CPU inference is two orders of
   magnitude slower than a GPU. `NER_BATCH_SIZE` and `NER_TIMEOUT_SECONDS` tune
   requests to the backend.

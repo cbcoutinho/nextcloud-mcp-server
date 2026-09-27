@@ -113,6 +113,8 @@ async def _run(
     except ExportError as e:
         return _error(e.status, "sar_case_error", str(e))
     except Exception as e:
+        # The path only: request bodies can hold personal data.
+        logger.exception("SAR request failed: %s", request.url.path)
         return _error(500, "internal_error", _sanitize_error_for_client(e, "sar"))
     finally:
         await nc.close()

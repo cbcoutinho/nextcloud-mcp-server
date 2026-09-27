@@ -427,14 +427,25 @@ async def _start_case_export(
         total=len(case.items),
     )
 
+    # What the export works from is taken from the copy the lock is written
+    # to, not from the read above: an item added in between would otherwise be
+    # in the case but missing from its archive.
+    locked: list[SarCase] = []
+
     def lock(c: SarCase) -> None:
         _require(c, "open")
         if len(c.exports) + 1 != version:
             raise ExportError("another export was just started; reload", 409)
+        if any(not i.reason.strip() for i in c.items):
+            raise ExportError("give a reason for every document before exporting", 400)
+        submitted.total = len(c.items)
         c.state = "exporting"
         c.exports.append(submitted)
+        # _mutate may call this again on a retry; the last call is the write.
+        locked[:] = [c.model_copy(deep=True)]
 
     await _mutate(nc, case_id, lock)
+    snapshot = locked[0]
 
     async def finish(status: SarExportStatus) -> None:
         def record(c: SarCase) -> None:
@@ -454,9 +465,9 @@ async def _start_case_export(
             task_group=task_group,
             output_folder=folder,
             name=name,
-            keep=list(case.subject),
-            items=list(case.items),
-            queries=[q.describe() for q in case.queries],
+            keep=list(snapshot.subject),
+            items=list(snapshot.items),
+            queries=[q.describe() for q in snapshot.queries],
             on_finish=finish,
         )
     except BaseException as e:
@@ -469,6 +480,9 @@ async def _start_case_export(
                     export.state = "failed"
                     export.message = message
 
-        await _mutate(nc, case_id, unlock)
+        # Shielded: on cancellation the unlock would otherwise be cancelled
+        # too, leaving the case locked in "exporting" for good.
+        with anyio.CancelScope(shield=True):
+            await _mutate(nc, case_id, unlock)
         raise
     return True

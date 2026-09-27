@@ -419,6 +419,22 @@ async def test_failed_export_reopens_case(nc, indexed):
     assert after.case.exports[0].state == "failed"
 
 
+async def test_export_includes_an_item_added_just_before_the_lock(nc, indexed):
+    """The export works from the case as locked, not from the earlier read."""
+    created = await _create(nc)
+    await sar_case.change_items(nc, created.case_id, _add("1"))
+    # Another process adds a document between the export's read and its lock.
+    nc.webdav.before_write = _other_process_adds(nc.webdav, created.path, "late")
+
+    async with anyio.create_task_group() as tg:
+        started, _ = await _export(nc, created.case_id, tg)
+
+    (export,) = started.case.exports
+    assert export.total == 2
+    done = await sar_case.get_case(nc, created.case_id)
+    assert done.latest_export is not None and done.latest_export.total == 2
+
+
 async def test_export_needs_items_with_reasons(nc):
     created = await _create(nc)
     async with anyio.create_task_group() as tg:

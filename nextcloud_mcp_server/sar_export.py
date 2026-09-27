@@ -1,9 +1,9 @@
 """Redacted export archives for subject access requests (ADR-040).
 
 An export takes the documents an operator selected, redacts every third party
-(names, emails, phone numbers, NI numbers) while keeping the data subject's own
-identifiers, renders each document to PDF and writes one zip to an output folder
-in Nextcloud:
+(names, addresses, emails, phone numbers, NI numbers) while keeping the
+subject's own identifiers, renders each document to PDF and writes one zip to
+an output folder in Nextcloud:
 
     <output folder>/<name>.zip           index.pdf, documents/NNN-<title>.pdf, searches.pdf
     <output folder>/<name>.status.json   progress; ids and counts only, never content
@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pymupdf
+from anyio import CapacityLimiter, to_thread
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
@@ -278,7 +279,8 @@ def render_index(name: str, rows: list[dict[str, Any]]) -> bytes:
         )
     return _pdf(
         f"<h2>{_e(name)}</h2>"
-        "<p>Third-party names, email addresses, phone numbers and NI numbers are "
+        "<p>Third-party names, postal addresses, email addresses, phone numbers "
+        "and NI numbers are "
         "replaced with numbered placeholders, consistent across this archive. "
         "Detection is automated and may miss or over-redact; review before "
         "disclosure.</p>"
@@ -505,8 +507,39 @@ async def run_export(
     names |= found
     addresses |= places
 
-    # Pass 2: redact and render.
+    # Pass 2: redact and render, on a worker thread: regexes, PDF layout and
+    # deflate for every document would otherwise hold the event loop.
     redactor = Redactor(names, keep=keep, addresses=addresses)
+    archive = await to_thread.run_sync(
+        _build_archive, name, docs, queries, redactor, limiter=_render_limiter()
+    )
+
+    result = await nc.webdav.write_file(status.archive_path, archive, "application/zip")
+    if result["status_code"] in (412, 423):
+        raise ExportError(f"an archive already exists at {status.archive_path}")
+    status.state = "done"
+    await _write_status(nc, status)
+
+
+# PyMuPDF is not safe to call from several threads at once, so exports take
+# turns rendering.
+# ponytail: one render at a time per process; render in a subprocess if
+# concurrent exports ever queue behind each other.
+_limiter: CapacityLimiter | None = None
+
+
+def _render_limiter() -> CapacityLimiter:
+    # Created on first use: a limiter needs a running event loop.
+    global _limiter
+    if _limiter is None:
+        _limiter = CapacityLimiter(1)
+    return _limiter
+
+
+def _build_archive(
+    name: str, docs: list["_Doc"], queries: list[str], redactor: Redactor
+) -> bytes:
+    """The zip: one redacted PDF per document, the index and the search log."""
     archive = io.BytesIO()
     rows: list[dict[str, Any]] = []
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -538,11 +571,4 @@ async def run_export(
                 "searches.pdf",
                 render_searches([redactor.redact(q) or "" for q in queries]),
             )
-
-    result = await nc.webdav.write_file(
-        status.archive_path, archive.getvalue(), "application/zip"
-    )
-    if result["status_code"] in (412, 423):
-        raise ExportError(f"an archive already exists at {status.archive_path}")
-    status.state = "done"
-    await _write_status(nc, status)
+    return archive.getvalue()

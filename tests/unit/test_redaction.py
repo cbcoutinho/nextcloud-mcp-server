@@ -175,9 +175,9 @@ async def test_detect_entities_windows_long_text_and_splits_labels(mocker):
 def test_address_is_redacted_wherever_it_occurs_across_line_breaks():
     r = Redactor(set(), addresses={"14 Mill Lane, Harbourvale"})
 
-    assert r.redact("Lives at 14 Mill Lane,\nHarbourvale. Also 14 mill lane harbourvale.") == (
-        "Lives at [ADDRESS_1]. Also [ADDRESS_1]."
-    )
+    assert r.redact(
+        "Lives at 14 Mill Lane,\nHarbourvale. Also 14 mill lane harbourvale."
+    ) == ("Lives at [ADDRESS_1]. Also [ADDRESS_1].")
 
 
 def test_address_words_are_not_expanded_and_one_word_addresses_ignored():
