@@ -130,6 +130,15 @@ _ROLE_WORDS = frozenset(
         "colleague",
         "applicant",
         "subject",
+        "mentor",
+        "coach",
+        "coordinator",
+        "counsellor",
+        "assistant",
+        "governor",
+        "officer",
+        "secretary",
+        "chaplain",
     }
 )
 _NOT_NAMES = _HONORIFICS | _ROLE_WORDS
@@ -331,7 +340,10 @@ def _name_forms(
         if all(t in _NOT_NAMES for t in key.split()):
             continue
         forms.add(key)
-        if key in kept:
+        # A phrase with a role in it is a job title ("Academic Mentor") or a
+        # title-led name ("Father Brown"): redact it whole, but never expand it
+        # into bare words, which would redact "academic" wherever it occurs.
+        if key in kept or any(t in _ROLE_WORDS for t in key.split()):
             continue
         tokens = _tokens(key)
         # "Rev Tom Brown" recurring as plain "Tom Brown" is one person, so the
