@@ -158,8 +158,8 @@ class SarCase(BaseModel):
     closed_by: str | None = None
     closed_at: str | None = None
     subject: SubjectList = Field(
-        description="The data subject's names, aliases, emails, phone numbers "
-        "and NI numbers. These are kept; everyone else is redacted."
+        description="The data subject's names, aliases, emails, phone numbers, "
+        "NI numbers and addresses. These are kept. Everyone else is redacted."
     )
     items: list[SarCaseItem] = Field(default_factory=list, max_length=MAX_CASE_ITEMS)
     queries: list[SarQueryLog] = Field(default_factory=list)

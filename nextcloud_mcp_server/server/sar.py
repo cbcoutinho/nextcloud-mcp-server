@@ -65,7 +65,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             folder: Existing folder the user can write to, e.g. a team folder.
             name: Case name, e.g. "SAR-2026-014". Becomes a sub-folder.
             subject: The data subject's names, aliases, email addresses, phone
-                numbers and NI numbers. These are kept in exports. List every
+                numbers, NI numbers and addresses. These are kept in exports. List every
                 alias ("Jane Doe", "Ms Doe", "J. Doe"), as unlisted forms are
                 redacted.
             description: Free text, e.g. the request reference.
@@ -244,9 +244,9 @@ def configure_sar_tools(mcp: MCPServer) -> None:
     ) -> SarCaseResponse:
         """Build a redacted archive of an open case, in the background.
 
-        Every person, email address, phone number and UK NI number in the
-        documents is replaced with a numbered placeholder ([PERSON_1],
-        [EMAIL_1], ...), except the subject's own. The archive holds one PDF
+        Every person, address, UK postcode, email address, phone number and UK NI
+        number in the documents is replaced with a numbered placeholder ([PERSON_1],
+        [ADDRESS_1], ...), except the subject's own. The archive holds one PDF
         per document (redacted text, not the original layout), an index with
         each document's reason and redaction counts, and the logged searches.
         The case is locked while exporting. Poll `sar_case_get` until it is
