@@ -10,6 +10,7 @@ from nextcloud_mcp_server.redaction import (
     detect_entities,
     ner_endpoint,
     redaction_available,
+    sar_available,
 )
 
 pytestmark = pytest.mark.unit
@@ -130,6 +131,25 @@ def test_no_names_is_identity():
 def test_redaction_available_needs_gateway():
     assert redaction_available(SimpleNamespace(embedding_gateway_url="https://gw"))
     assert not redaction_available(SimpleNamespace(embedding_gateway_url=None))
+
+
+@pytest.mark.parametrize(
+    "enabled,vector_sync,gateway,expected",
+    [
+        (True, True, "https://gw", True),
+        # Opt-in: everything SAR needs is there, but the deployment did not ask.
+        (False, True, "https://gw", False),
+        (True, False, "https://gw", False),
+        (True, True, None, False),
+    ],
+)
+def test_sar_available_is_opt_in(enabled, vector_sync, gateway, expected):
+    settings = SimpleNamespace(
+        sar_enabled=enabled,
+        vector_sync_enabled=vector_sync,
+        embedding_gateway_url=gateway,
+    )
+    assert sar_available(settings) is expected
 
 
 def test_emails_phones_and_ni_numbers_are_redacted_except_the_subjects():

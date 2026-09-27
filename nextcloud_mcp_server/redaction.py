@@ -209,9 +209,14 @@ def redaction_available(settings: Any) -> bool:
 
 
 def sar_available(settings: Any) -> bool:
-    """Whether SAR cases can be served (ADR-040): they search and read document
-    text from the index, and detect names through the embedding gateway."""
-    return bool(settings.vector_sync_enabled) and redaction_available(settings)
+    """Whether SAR cases are served (ADR-040): the deployment opted in with
+    ``SAR_ENABLED``, and has what they need (the index to search and read, and
+    the embedding gateway to detect names)."""
+    return (
+        bool(getattr(settings, "sar_enabled", False))
+        and bool(settings.vector_sync_enabled)
+        and redaction_available(settings)
+    )
 
 
 async def get_ner_client(settings: Any) -> NerClient:
