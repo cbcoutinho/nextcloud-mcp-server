@@ -277,6 +277,26 @@ def test_a_calendar_name_containing_a_hash_is_not_truncated():
     )
 
 
+@pytest.mark.parametrize(
+    "decoded, encoded",
+    [
+        ("personal_shared_by_Ada Lovelace", "personal_shared_by_Ada%20Lovelace"),
+        ("Müller", "M%C3%BCller"),
+    ],
+)
+def test_a_percent_encoded_calendar_name_is_not_encoded_twice(decoded, encoded):
+    """Names are passed as they appear in hrefs; ``%20`` must not become ``%2520``,
+    which silently REPORTs an empty calendar instead of failing."""
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+
+    url = client._get_calendar_url(decoded)
+    assert client._get_calendar_url(encoded) == url
+    assert url.endswith(f"/alice/{encoded}/")
+    assert "%25" not in url
+
+
 async def test_event_objects_from_a_report_keep_a_hash_in_their_href(mocker):
     """An event whose UID contains '#' must not have its URL truncated.
 
