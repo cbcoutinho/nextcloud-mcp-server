@@ -91,6 +91,13 @@ def test_name_detected_with_a_title_recurring_without_it_is_one_placeholder():
     assert "Tom" not in redacted and "Brown" not in redacted
 
 
+def test_title_free_phrase_shares_the_full_names_number():
+    r = Redactor({"Rev Tom Brown"})
+    assert r.redact("Rev Tom Brown spoke. Tom Brown left. Brown sat.") == (
+        "[PERSON_1] spoke. [PERSON_1] left. [PERSON_1] sat."
+    )
+
+
 def test_keep_alias_with_initial():
     r = Redactor({"J. Doe"}, keep=["J. Doe"])
     assert r.redact("J. Doe and J Doe") == "J. Doe and J Doe"
