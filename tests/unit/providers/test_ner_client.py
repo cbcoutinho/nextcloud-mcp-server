@@ -194,3 +194,19 @@ def test_windows_overlap_and_cover_text():
     assert all(len(p) <= MAX_TEXT_CHARS for p in parts)
     assert parts[0] + parts[1][200:] + parts[2][200:] == text
     assert windows("short") == ["short"]
+
+
+def test_windows_never_cut_a_word():
+    """A word cut in two ("Aca|demic") reads as a name to the model, and a
+    detected name is redacted everywhere in the archive."""
+    words = [f"Academic{i}" for i in range(1000)]
+    text = " ".join(words)
+    parts = windows(text)
+    assert len(parts) > 1
+    assert all(len(p) <= MAX_TEXT_CHARS for p in parts)
+    for p in parts:
+        assert all(w in words for w in p.split())
+    # Consecutive windows overlap, so a name spanning a cut is seen whole.
+    for a, b in zip(parts, parts[1:]):
+        assert a.split()[-1] in b.split()
+    assert " ".join(dict.fromkeys(w for p in parts for w in p.split())) == text
