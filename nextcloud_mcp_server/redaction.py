@@ -86,6 +86,53 @@ _HONORIFICS = frozenset(
         "jr",
     }
 )
+# Roles and relationships the model tags as people ("student", "Father"). They
+# are never a name, and one registered as a name token would be redacted
+# wherever the word occurs, so they are never names or name tokens. Closed on
+# purpose: it holds no names, so it cannot hide a person.
+_ROLE_WORDS = frozenset(
+    {
+        "student",
+        "students",
+        "pupil",
+        "pupils",
+        "teacher",
+        "teachers",
+        "tutor",
+        "headteacher",
+        "parent",
+        "parents",
+        "mother",
+        "father",
+        "mum",
+        "dad",
+        "guardian",
+        "carer",
+        "child",
+        "children",
+        "son",
+        "daughter",
+        "brother",
+        "sister",
+        "aunt",
+        "uncle",
+        "grandmother",
+        "grandfather",
+        "husband",
+        "wife",
+        "partner",
+        "doctor",
+        "nurse",
+        "patient",
+        "client",
+        "employee",
+        "manager",
+        "colleague",
+        "applicant",
+        "subject",
+    }
+)
+_NOT_NAMES = _HONORIFICS | _ROLE_WORDS
 # Between the tokens of a multi-token name: whitespace (including the line
 # breaks OCR and markdown introduce) and the separators filenames and email
 # local-parts use ("KAREN_SMITH.pdf", "karen.smith@").
@@ -206,7 +253,7 @@ def _key(name: str) -> str:
 
 def _tokens(key: str) -> list[str]:
     return [
-        t for t in key.split() if len(t) >= _MIN_TOKEN_CHARS and t not in _HONORIFICS
+        t for t in key.split() if len(t) >= _MIN_TOKEN_CHARS and t not in _NOT_NAMES
     ]
 
 
@@ -279,6 +326,9 @@ def _name_forms(
     owners: dict[str, set[str]] = {}
     for name in names:
         if not (key := _key(name)):
+            continue
+        # "student", "Mrs Mother": nothing but titles and roles.
+        if all(t in _NOT_NAMES for t in key.split()):
             continue
         forms.add(key)
         if key in kept:
