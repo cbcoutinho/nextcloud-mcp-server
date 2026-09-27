@@ -16,6 +16,8 @@ cannot be detected must not be exported unredacted. So every failure raises
 :class:`NerError` and callers fail closed.
 """
 
+import re
+
 import httpx
 
 from .gateway import GatewayTokenProvider
@@ -28,6 +30,7 @@ _NER_CONNECT_TIMEOUT_SECONDS = 5.0
 # so a name straddling a cut is still seen whole in one window.
 MAX_TEXT_CHARS = 2000
 _WINDOW_OVERLAP_CHARS = 200
+_SPACE_RE = re.compile(r"\s+")
 
 # Default texts per request. Also keeps one body well under a typical 1 MB
 # ingress limit; NER_BATCH_SIZE tunes it per backend (small for CPU).
@@ -43,11 +46,35 @@ class NerError(Exception):
 
 
 def windows(text: str) -> list[str]:
-    """Split ``text`` into overlapping slices of at most ``MAX_TEXT_CHARS``."""
+    """Split ``text`` into overlapping slices of at most ``MAX_TEXT_CHARS``.
+
+    Cuts fall on whitespace: a word cut in two ("…for Aca|demic") reads as a
+    name to the model, and every detected name is redacted wherever it occurs.
+    A run with no whitespace in reach is cut hard.
+    """
     if len(text) <= MAX_TEXT_CHARS:
         return [text]
-    step = MAX_TEXT_CHARS - _WINDOW_OVERLAP_CHARS
-    return [text[i : i + MAX_TEXT_CHARS] for i in range(0, len(text), step)]
+    out: list[str] = []
+    start = 0
+    while len(text) - start > MAX_TEXT_CHARS:
+        end = start + MAX_TEXT_CHARS
+        # Back off to the last whitespace, but no further than the overlap, so
+        # the next window always starts after this one.
+        runs = list(_SPACE_RE.finditer(text, start, end))
+        if runs and runs[-1].start() > start + _WINDOW_OVERLAP_CHARS:
+            end = runs[-1].start()
+        out.append(text[start:end])
+        # The next window reaches back an overlap, to the first word start in
+        # it; past a word longer than the overlap, to the last one before it
+        # (more overlap). It still starts after this window's start.
+        back = end - _WINDOW_OVERLAP_CHARS
+        starts = [m.end() for m in runs if start < m.end() <= end]
+        start = next(
+            (s for s in starts if s >= back),
+            max((s for s in starts if s < back), default=back),
+        )
+    out.append(text[start:])
+    return out
 
 
 def _entity(
