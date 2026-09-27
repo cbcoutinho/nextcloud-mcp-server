@@ -1837,7 +1837,7 @@ class Settings:
             self.vector_sync_enabled and self.embedding_gateway_url
         ):
             raise ValueError(
-                "SAR_ENABLED requires vector sync (VECTOR_SYNC_ENABLED) and "
+                "SAR_ENABLED requires semantic search (ENABLE_SEMANTIC_SEARCH) and "
                 "EMBEDDING_GATEWAY_URL (names are detected through its /v1/ner)"
             )
         # The default model id is namespaced for the gateway's routing layer. A
