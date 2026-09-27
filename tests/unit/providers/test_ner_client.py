@@ -210,3 +210,17 @@ def test_windows_never_cut_a_word():
     for a, b in zip(parts, parts[1:]):
         assert a.split()[-1] in b.split()
     assert " ".join(dict.fromkeys(w for p in parts for w in p.split())) == text
+
+
+def test_windows_start_before_a_word_longer_than_the_overlap():
+    # A 250-character token ends just before the cut, so an overlap reaching
+    # back 200 characters lands inside it: the next window must start at the
+    # token rather than in the middle of it.
+    long = "X" * 250
+    text = ("word " * 1000)[:1745] + long + " more words" * 50
+    parts = windows(text)
+    assert all(len(p) <= MAX_TEXT_CHARS for p in parts)
+    for p in parts:
+        for w in p.split():
+            assert w in {"word", "more", "words", long}, w[:20]
+    assert any(p.startswith(long) for p in parts[1:])

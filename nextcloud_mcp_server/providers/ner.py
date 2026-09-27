@@ -60,14 +60,19 @@ def windows(text: str) -> list[str]:
         end = start + MAX_TEXT_CHARS
         # Back off to the last whitespace, but no further than the overlap, so
         # the next window always starts after this one.
-        spaces = [m.start() for m in _SPACE_RE.finditer(text, start, end)]
-        if spaces and spaces[-1] > start + _WINDOW_OVERLAP_CHARS:
-            end = spaces[-1]
+        runs = list(_SPACE_RE.finditer(text, start, end))
+        if runs and runs[-1].start() > start + _WINDOW_OVERLAP_CHARS:
+            end = runs[-1].start()
         out.append(text[start:end])
-        # The next window reaches back an overlap, to the first word start.
+        # The next window reaches back an overlap, to the first word start in
+        # it; past a word longer than the overlap, to the last one before it
+        # (more overlap). It still starts after this window's start.
         back = end - _WINDOW_OVERLAP_CHARS
-        m = _SPACE_RE.search(text, back, end)
-        start = m.end() if m else back
+        starts = [m.end() for m in runs if start < m.end() <= end]
+        start = next(
+            (s for s in starts if s >= back),
+            max((s for s in starts if s < back), default=back),
+        )
     out.append(text[start:])
     return out
 
