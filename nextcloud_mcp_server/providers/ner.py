@@ -1,12 +1,12 @@
-"""Person-name detection against the Astrolabe embedding gateway's ``/v1/ner``.
+"""Person-name and address detection against the embedding gateway's ``/v1/ner``.
 
 Wire format: request ``{model, texts, labels, threshold}``, response
 ``{"results": [{"index", "entities": [{"start", "end", "text", "label",
 "score"}]}]}``. Offsets are character offsets into the submitted text.
 
 A plain-httpx client, like :mod:`.rerank`: NER satisfies none of the embedding
-``Provider`` contract. The client returns only what redaction needs — the person
-surface forms found in each text — and it takes each form from the SUBMITTED
+``Provider`` contract. The client returns only what redaction needs — the
+``(label, surface form)`` pairs found in each text — and it takes each form from the SUBMITTED
 text via the offsets rather than trusting the echoed ``text`` field, so a
 provider that normalises or truncates its echo cannot make us redact the wrong
 string.
@@ -33,7 +33,8 @@ _WINDOW_OVERLAP_CHARS = 200
 # ingress limit; NER_BATCH_SIZE tunes it per backend (small for CPU).
 _DEFAULT_BATCH_SIZE = 8
 
-_PERSON_LABEL = "person"
+PERSON_LABEL = "person"
+ADDRESS_LABEL = "address"
 
 
 class NerError(Exception):
@@ -49,9 +50,11 @@ def windows(text: str) -> list[str]:
     return [text[i : i + MAX_TEXT_CHARS] for i in range(0, len(text), step)]
 
 
-def _entity_text(entity: object, text: str) -> str | None:
-    """The person surface form one entity names in ``text``, or ``None``."""
-    if not isinstance(entity, dict) or entity.get("label") != _PERSON_LABEL:
+def _entity(
+    entity: object, text: str, labels: tuple[str, ...]
+) -> tuple[str, str] | None:
+    """``(label, surface form)`` of one entity in ``text``, or ``None``."""
+    if not isinstance(entity, dict) or entity.get("label") not in labels:
         return None
     start, end = entity.get("start"), entity.get("end")
     # bool is an int subclass, so True would otherwise read as offset 1. The
@@ -63,11 +66,12 @@ def _entity_text(entity: object, text: str) -> str | None:
         return None
     if not 0 <= start < end <= len(text):
         return None
-    return text[start:end].strip() or None
+    surface = text[start:end].strip()
+    return (entity["label"], surface) if surface else None
 
 
 class NerClient:
-    """Detects person names in text over HTTP."""
+    """Detects named entities (people, addresses) in text over HTTP."""
 
     def __init__(
         self,
@@ -95,8 +99,10 @@ class NerClient:
             return {}
         return {"Authorization": f"Bearer {await self._token_provider.get_token()}"}
 
-    async def detect(self, texts: list[str]) -> list[set[str]]:
-        """Person surface forms found in each of ``texts``, positionally.
+    async def detect(
+        self, texts: list[str], labels: tuple[str, ...] = (PERSON_LABEL,)
+    ) -> list[set[tuple[str, str]]]:
+        """``(label, surface form)`` pairs found in each of ``texts``, positionally.
 
         Each text must be at most ``MAX_TEXT_CHARS``; split longer ones with
         :func:`windows` first.
@@ -105,18 +111,22 @@ class NerClient:
             NerError: transport failure, non-2xx, or a response that does not
                 account for every submitted text.
         """
-        found: list[set[str]] = []
+        found: list[set[tuple[str, str]]] = []
         for i in range(0, len(texts), self._batch_size):
-            found.extend(await self._detect_batch(texts[i : i + self._batch_size]))
+            found.extend(
+                await self._detect_batch(texts[i : i + self._batch_size], labels)
+            )
         return found
 
-    async def _detect_batch(self, texts: list[str]) -> list[set[str]]:
+    async def _detect_batch(
+        self, texts: list[str], labels: tuple[str, ...]
+    ) -> list[set[tuple[str, str]]]:
         if any(len(t) > MAX_TEXT_CHARS for t in texts):
             raise NerError(f"NER input over {MAX_TEXT_CHARS} chars; window it first")
         payload = {
             "model": self._model,
             "texts": texts,
-            "labels": [_PERSON_LABEL],
+            "labels": list(labels),
             "threshold": self._threshold,
         }
         try:
@@ -135,10 +145,12 @@ class NerClient:
             ) from e
         except Exception as e:  # transport, JSON decode, timeout
             raise NerError(f"NER request failed: {e}") from e
-        return self._parse(body, texts)
+        return self._parse(body, texts, labels)
 
     @staticmethod
-    def _parse(body: object, texts: list[str]) -> list[set[str]]:
+    def _parse(
+        body: object, texts: list[str], labels: tuple[str, ...]
+    ) -> list[set[tuple[str, str]]]:
         """Map a response onto the submitted texts.
 
         Strict where rerank is lenient: a text the response does not account
@@ -148,12 +160,12 @@ class NerClient:
         results = body.get("results") if isinstance(body, dict) else None
         if not isinstance(results, list):
             raise NerError("NER response has no 'results' list")
-        found: list[set[str] | None] = [None] * len(texts)
+        found: list[set[tuple[str, str]] | None] = [None] * len(texts)
         for item in results:
             idx = item.get("index") if isinstance(item, dict) else None
             entities = item.get("entities") if isinstance(item, dict) else None
             if (
-                isinstance(idx, bool)  # before the int test, as in _entity_text
+                isinstance(idx, bool)  # before the int test, as in _entity
                 or not isinstance(idx, int)
                 or not 0 <= idx < len(texts)
                 or found[idx] is not None
@@ -167,7 +179,7 @@ class NerClient:
                     f"with {count} entities"
                 )
             found[idx] = {
-                name for e in entities if (name := _entity_text(e, texts[idx]))
+                pair for e in entities if (pair := _entity(e, texts[idx], labels))
             }
         if any(f is None for f in found):
             raise NerError(

@@ -20,6 +20,7 @@ from nextcloud_mcp_server.vector.oauth_sync import NotProvisionedError
 pytestmark = pytest.mark.unit
 
 NAMES = ("Jane Doe", "Karen Smith", "Tom Brown")
+ADDRESSES = ("14 Mill Lane", "3 Oak Road")
 
 
 class FakeNer:
@@ -28,10 +29,16 @@ class FakeNer:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
 
-    async def detect(self, texts: list[str]) -> list[set[str]]:
+    async def detect(
+        self, texts: list[str], labels: tuple[str, ...] = ("person",)
+    ) -> list[set[tuple[str, str]]]:
         if self.fail:
             raise NerError("down")
-        return [{n for n in NAMES if n in t} for t in texts]
+        return [
+            {("person", n) for n in NAMES if n in t}
+            | {("address", a) for a in ADDRESSES if a in t and "address" in labels}
+            for t in texts
+        ]
 
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
@@ -74,9 +81,14 @@ class FakeClient:
 DOCS = {
     "1": (
         "Letter re Karen Smith",
-        "Jane Doe met Karen Smith (karen@example.org). Later Smith left.",
+        "Jane Doe met Karen Smith (karen@example.org). Later Smith left. "
+        "Jane Doe lives at 3 Oak Road, XK1 1AA.",
     ),
-    "2": ("Minutes", "Tom Brown chaired. Jane Doe, 07700 900111, attended."),
+    "2": (
+        "Minutes",
+        "Tom Brown chaired. Jane Doe, 07700 900111, attended. "
+        "Tom Brown, 14 Mill Lane, XA9 8QT.",
+    ),
 }
 
 
@@ -127,7 +139,7 @@ async def test_run_export_builds_redacted_archive(indexed):
         FakeNer(),
         status,
         "SAR-1",
-        keep=["Jane Doe", "07700 900111"],
+        keep=["Jane Doe", "07700 900111", "3 Oak Road, XK1 1AA"],
         items=items,
         queries=["Jane Doe", "Karen Smith complaint"],
     )
@@ -148,11 +160,20 @@ async def test_run_export_builds_redacted_archive(indexed):
         "searches.pdf",
     ]
     everything = " ".join(_pdf_text(zf.read(n)) for n in names)
-    for leak in ("Karen", "Smith", "Tom Brown", "karen@example.org"):
+    for leak in (
+        "Karen",
+        "Smith",
+        "Tom Brown",
+        "karen@example.org",
+        "Mill Lane",
+        "XA9 8QT",
+    ):
         assert leak not in everything, leak
     assert "Jane Doe" in everything
     assert "07700 900111" in everything  # the subject's own number is kept
+    assert "3 Oak Road, XK1 1AA" in everything  # and their own address
     assert "[EMAIL_1]" in everything
+    assert "[ADDRESS_1], [ADDRESS_2]" in everything  # street, then postcode
     # Archive-wide numbering: Karen Smith is PERSON_1 in the title, reason
     # and the query log alike.
     assert "[PERSON_1]'s complaint" in _pdf_text(zf.read("index.pdf"))

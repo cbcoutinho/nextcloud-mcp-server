@@ -7,7 +7,7 @@ import pytest
 from nextcloud_mcp_server.redaction import (
     Redactor,
     counts,
-    detect_names,
+    detect_entities,
     ner_endpoint,
     redaction_available,
 )
@@ -157,13 +157,53 @@ def test_ner_endpoint_normalises_v1_suffix():
     )
 
 
-async def test_detect_names_windows_long_text(mocker):
+async def test_detect_entities_windows_long_text_and_splits_labels(mocker):
     client = mocker.AsyncMock()
-    client.detect.return_value = [{"Karen Smith"}, {"Tom Brown"}, set()]
-    names = await detect_names(client, ["x" * 2500, "", "short"])
-    (sent,) = client.detect.call_args.args
+    client.detect.return_value = [
+        {("person", "Karen Smith")},
+        {("person", "Tom Brown"), ("address", "14 Mill Lane")},
+        set(),
+    ]
+    names, addresses = await detect_entities(client, ["x" * 2500, "", "short"])
+    sent, labels = client.detect.call_args.args
     assert len(sent) == 3  # 2 windows + "short"; the empty text is skipped
+    assert labels == ("person", "address")
     assert names == {"Karen Smith", "Tom Brown"}
+    assert addresses == {"14 Mill Lane"}
+
+
+def test_address_is_redacted_wherever_it_occurs_across_line_breaks():
+    r = Redactor(set(), addresses={"14 Mill Lane, Harbourvale"})
+
+    assert r.redact("Lives at 14 Mill Lane,\nHarbourvale. Also 14 mill lane harbourvale.") == (
+        "Lives at [ADDRESS_1]. Also [ADDRESS_1]."
+    )
+
+
+def test_address_words_are_not_expanded_and_one_word_addresses_ignored():
+    r = Redactor(set(), addresses={"14 Mill Lane", "Harbourvale"})
+
+    assert (
+        r.redact("Mill Lane School in Harbourvale") == "Mill Lane School in Harbourvale"
+    )
+
+
+def test_standalone_postcodes_are_redacted_but_the_subjects_kept():
+    r = Redactor(set(), keep=["Jane Doe", "3 Oak Road, XK1 1AA"])
+
+    assert r.redact("XA9 8QT and XA98QT, not XK1 1AA or xa9 8qt") == (
+        "[ADDRESS_1] and [ADDRESS_1], not XK1 1AA or xa9 8qt"
+    )
+
+
+def test_a_fragment_of_the_subjects_address_is_kept():
+    r = Redactor(
+        set(),
+        keep=["3 Oak Road, Harbourvale, XK1 1AA"],
+        addresses={"3 Oak Road", "Oak Road, Harbourvale", "13 Oak Road"},
+    )
+
+    assert r.redact("3 Oak Road; 13 Oak Road") == "3 Oak Road; [ADDRESS_1]"
 
 
 def test_settings_validate_ner():

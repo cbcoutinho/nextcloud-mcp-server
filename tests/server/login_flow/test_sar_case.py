@@ -32,7 +32,7 @@ CASES = "http://localhost:8004/api/v1/sar/cases"
 INDEX_TIMEOUT_SECONDS = 180
 EXPORT_TIMEOUT_SECONDS = 120
 POLL_INTERVAL_SECONDS = 3
-LEAKS = ("Karen", "Smith", "Tom Brown", "karen@example.org")
+LEAKS = ("Karen", "Smith", "Tom Brown", "karen@example.org", "Mill Lane", "XA9 8QT")
 
 
 def _pdf_text(data: bytes) -> str:
@@ -75,7 +75,8 @@ async def workspace(nc_client):
         title=f"Letter re Karen Smith {term}",
         content=(
             f"Jane Doe met Karen Smith about {term}. Karen wrote from "
-            "karen@example.org. Later Smith left; Tom Brown took notes."
+            "karen@example.org. Later Smith left; Tom Brown took notes. "
+            "Karen lives at 14 Mill Lane, XA9 8QT."
         ),
         category="",
     )
@@ -96,6 +97,7 @@ def _assert_redacted(zf: zipfile.ZipFile, term: str) -> None:
         assert leak not in everything, leak
     assert "Jane Doe" in everything
     assert "[EMAIL_1]" in everything
+    assert "[ADDRESS_1], [ADDRESS_2]" in everything  # street, then postcode
     # A bare "Karen" / "Smith" is the same person as "Karen Smith".
     assert "[PERSON_2]" in everything  # Tom Brown
     assert "[PERSON_3]" not in everything

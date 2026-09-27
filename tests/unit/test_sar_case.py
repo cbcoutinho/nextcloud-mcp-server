@@ -120,10 +120,10 @@ class FakeNer:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
 
-    async def detect(self, texts):
+    async def detect(self, texts, labels=("person",)):
         if self.fail:
             raise NerError("down")
-        return [{n for n in NAMES if n in t} for t in texts]
+        return [{("person", n) for n in NAMES if n in t} for t in texts]
 
 
 @pytest.fixture

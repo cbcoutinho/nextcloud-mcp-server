@@ -68,10 +68,35 @@ async def test_posts_texts_and_reads_names_from_offsets(monkeypatch):
     assert body["model"] == "local/m"
     assert body["texts"] == ["Dear Karen Smith,", "none"]
     assert body["labels"] == ["person"]
-    assert found == [{"Karen Smith"}, set()]
+    assert found == [{("person", "Karen Smith")}, set()]
 
 
-async def test_ignores_non_person_and_out_of_range_entities(monkeypatch):
+async def test_requests_and_returns_every_asked_label(monkeypatch):
+    text = "Karen Smith, 72 High Street"
+    seen = _patch_transport(
+        monkeypatch,
+        _ok(
+            {
+                "results": [
+                    {
+                        "index": 0,
+                        "entities": [
+                            _person(0, 11),
+                            {**_person(13, 27), "label": "address"},
+                        ],
+                    }
+                ]
+            }
+        ),
+    )
+
+    found = await NerClient(_URL, "m").detect([text], ("person", "address"))
+
+    assert json.loads(seen[0].content)["labels"] == ["person", "address"]
+    assert found == [{("person", "Karen Smith"), ("address", "72 High Street")}]
+
+
+async def test_ignores_unasked_labels_and_out_of_range_entities(monkeypatch):
     _patch_transport(
         monkeypatch,
         _ok(

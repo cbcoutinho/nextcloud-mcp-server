@@ -2,32 +2,37 @@
 
 Served by the ``ner-stub`` compose service so the integration tier exercises the
 real redaction flow without a model. Stdlib only, so it runs on a bare
-``python`` image. It "detects" exactly the synthetic names below, at every
-occurrence, and returns them in the gateway's wire format.
+``python`` image. It "detects" exactly the synthetic names and addresses below,
+at every occurrence, for the labels requested, and returns them in the
+gateway's wire format.
 """
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-NAMES = ("Jane Doe", "Karen Smith", "Tom Brown")
+CANNED = {
+    "person": ("Jane Doe", "Karen Smith", "Tom Brown"),
+    "address": ("14 Mill Lane",),
+}
 
 
-def entities(text: str) -> list[dict]:
+def entities(text: str, labels: list[str]) -> list[dict]:
     found = []
-    for name in NAMES:
-        start = text.find(name)
-        while start != -1:
-            end = start + len(name)
-            found.append(
-                {
-                    "start": start,
-                    "end": end,
-                    "text": name,
-                    "label": "person",
-                    "score": 0.99,
-                }
-            )
-            start = text.find(name, end)
+    for label in labels:
+        for surface in CANNED.get(label, ()):
+            start = text.find(surface)
+            while start != -1:
+                end = start + len(surface)
+                found.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "text": surface,
+                        "label": label,
+                        "score": 0.99,
+                    }
+                )
+                start = text.find(surface, end)
     return found
 
 
@@ -40,7 +45,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.dumps(
             {
                 "results": [
-                    {"index": i, "entities": entities(t)}
+                    {"index": i, "entities": entities(t, body["labels"])}
                     for i, t in enumerate(body["texts"])
                 ]
             }

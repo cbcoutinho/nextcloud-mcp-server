@@ -15,11 +15,19 @@ failure for a disclosure:
 * **token expansion** — each token (3+ chars, not an honorific) of a
   multi-token name is redacted on its own, so a later bare "Smith" is caught.
 
+Addresses are detected by NER too and propagate the same way, but as whole
+phrases only: their words are never expanded, since redacting every "Street" or
+"Road" would destroy the text. A single-word address ("Harbourvale") identifies no one
+and is left alone. UK postcodes are also matched by pattern, so a postcode on
+its own is redacted even where NER saw no address.
+
 Emails, phone numbers and UK National Insurance numbers are found by pattern in
 each text, not by NER, and are redacted wherever they occur.
 
 The data subject passes through via ``keep``: their names, aliases, emails,
-phone numbers and NI numbers. Kept names match first (longest match wins) and
+phone numbers, NI numbers and addresses. An address is kept when it is part of
+a kept one, so keeping the full address also keeps a detected fragment of it.
+Kept names match first (longest match wins) and
 are left as written. Tokens of a detected name that is itself kept are not
 expanded, so a bare "Jane" survives when only "Jane Doe" is the subject — unless
 "Jane" is also a token of some third party's name, in which case it is redacted.
@@ -27,6 +35,8 @@ expanded, so a bare "Jane" survives when only "Jane Doe" is the subject — unle
 Detection needs the embedding gateway's ``POST /v1/ner``, so redaction is
 available only with ``EMBEDDING_GATEWAY_URL`` configured.
 """
+# ponytail: dates of birth and staff/student IDs are not detected yet; add
+# labels (GLiNER is zero-shot) when the auditor asks for them.
 
 import re
 from collections import Counter
@@ -36,9 +46,15 @@ from typing import Any
 import anyio
 
 from nextcloud_mcp_server.providers.gateway import build_gateway_token_provider
-from nextcloud_mcp_server.providers.ner import NerClient, windows
+from nextcloud_mcp_server.providers.ner import (
+    ADDRESS_LABEL,
+    PERSON_LABEL,
+    NerClient,
+    windows,
+)
 
 PERSON = "PERSON"
+ADDRESS = "ADDRESS"
 EMAIL = "EMAIL"
 PHONE = "PHONE"
 NI = "NI"
@@ -96,6 +112,14 @@ _PHONE_DIGITS = range(10, 16)
 # A date followed by a time ("01-02-2021 14:30") has as many digits as a phone
 # number; never read one as a phone.
 _DATE_RE = re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}-\d{2}-\d{2}")
+# UK postcode, e.g. "XA9 8QT", "SW1A 1AA". Upper case only: lower-case
+# look-alikes are far likelier to be codes or words than a postcode.
+_POSTCODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}(?![A-Za-z0-9])"
+)
+# Between the words of an address, which PDFs and forms break across lines.
+_ADDRESS_SEPARATOR = r"[\s,]+"
+_MIN_ADDRESS_WORDS = 2
 
 _client: NerClient | None = None
 _client_lock: anyio.Lock | None = None
@@ -147,16 +171,22 @@ async def get_ner_client(settings: Any) -> NerClient:
     return _client
 
 
-async def detect_names(client: NerClient, texts: Iterable[str]) -> set[str]:
-    """Every person name in ``texts`` (windowed as needed), as one set.
+async def detect_entities(
+    client: NerClient, texts: Iterable[str]
+) -> tuple[set[str], set[str]]:
+    """Every person name and every address in ``texts`` (windowed as needed).
 
     Raises:
         NerError: detection failed; the caller must not export the text.
     """
+    names: set[str] = set()
+    addresses: set[str] = set()
     slices = [w for t in texts if t for w in windows(t)]
-    if not slices:
-        return set()
-    return set().union(*await client.detect(slices))
+    if slices:
+        for found in await client.detect(slices, (PERSON_LABEL, ADDRESS_LABEL)):
+            for label, surface in found:
+                (names if label == PERSON_LABEL else addresses).add(surface)
+    return names, addresses
 
 
 def _key(name: str) -> str:
@@ -190,6 +220,14 @@ def _phone_key(raw: str) -> str | None:
     return digits
 
 
+def _address_key(raw: str) -> str:
+    return " ".join(w for w in re.split(_ADDRESS_SEPARATOR, raw) if w).casefold()
+
+
+def _postcode_key(raw: str) -> str:
+    return re.sub(r"\s", "", raw).upper()
+
+
 def _ni_key(raw: str) -> str | None:
     key = re.sub(r"\s", "", raw).upper()
     return None if key[:2] in _NI_INVALID_PREFIXES else key
@@ -203,8 +241,41 @@ class Redactor:
     ``[PERSON_2]`` everywhere.
     """
 
-    def __init__(self, names: Iterable[str], keep: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        names: Iterable[str],
+        keep: Iterable[str] = (),
+        *,
+        addresses: Iterable[str] = (),
+    ) -> None:
         keep = [k for k in keep if k and k.strip()]
+        # Padded so containment matches whole words: "2 high st" is not in
+        # "12 high st".
+        kept_addresses = [f" {_address_key(k)} " for k in keep if "@" not in k]
+        self._keep_postcodes = {
+            _postcode_key(m) for k in keep for m in _POSTCODE_RE.findall(k)
+        }
+        address_keys = {
+            key
+            for a in addresses
+            if len((key := _address_key(a)).split()) >= _MIN_ADDRESS_WORDS
+            and not any(f" {key} " in kept for kept in kept_addresses)
+        }
+        self._addresses_re = (
+            re.compile(
+                _LEFT
+                + "(?:"
+                + "|".join(
+                    _ADDRESS_SEPARATOR.join(map(re.escape, key.split()))
+                    for key in sorted(address_keys, key=len, reverse=True)
+                )
+                + ")"
+                + _RIGHT,
+                re.IGNORECASE,
+            )
+            if address_keys
+            else None
+        )
         self._keep_emails = {k.strip().casefold() for k in keep if "@" in k}
         self._keep_phones = {p for k in keep if (p := _phone_key(k))}
         self._keep_ni = {
@@ -289,6 +360,15 @@ class Redactor:
                 return m.group(0)
             return self._placeholder(EMAIL, key, seen)
 
+        def address(m: re.Match[str]) -> str:
+            return self._placeholder(ADDRESS, _address_key(m.group(0)), seen)
+
+        def postcode(m: re.Match[str]) -> str:
+            key = _postcode_key(m.group(0))
+            if key in self._keep_postcodes:
+                return m.group(0)
+            return self._placeholder(ADDRESS, key, seen)
+
         def ni(m: re.Match[str]) -> str:
             key = _ni_key(m.group(0))
             if key is None or key in self._keep_ni:
@@ -308,6 +388,11 @@ class Redactor:
             return self._placeholder(PERSON, self._canonical.get(key, key), seen)
 
         text = _EMAIL_RE.sub(email, text)
+        # A whole address before its parts: its postcode is then already gone,
+        # and a street named after a person stays one address.
+        if self._addresses_re is not None:
+            text = self._addresses_re.sub(address, text)
+        text = _POSTCODE_RE.sub(postcode, text)
         text = _NI_RE.sub(ni, text)
         text = _PHONE_RE.sub(phone, text)
         if self._names_re is not None:

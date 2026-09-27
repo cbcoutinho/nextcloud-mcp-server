@@ -19,19 +19,21 @@ from nextcloud_mcp_server.providers.ner import NerClient
 pytestmark = pytest.mark.contract
 
 _MODEL = "local/urchade/gliner_multi_pii-v1"
-_TEXTS = ["Dear Karen Smith, thank you.", "Quarterly revenue rose."]
+_TEXTS = ["Dear Karen Smith, 72 High Street.", "Quarterly revenue rose."]
 
 
-async def test_ner_returns_person_offsets(gateway_consumer_pact):
+async def test_ner_returns_person_and_address_offsets(gateway_consumer_pact):
     (
-        gateway_consumer_pact.upon_receiving("an NER request for two texts")
-        .given("the gateway detects person names")
+        gateway_consumer_pact.upon_receiving(
+            "an NER request for people and addresses in two texts"
+        )
+        .given("the gateway detects person names and addresses")
         .with_request("POST", "/v1/ner")
         .with_body(
             {
                 "model": _MODEL,
                 "texts": _TEXTS,
-                "labels": ["person"],
+                "labels": ["person", "address"],
                 "threshold": 0.5,
             },
             content_type="application/json",
@@ -48,7 +50,13 @@ async def test_ner_returns_person_offsets(gateway_consumer_pact):
                                 "end": match.integer(16),
                                 "label": "person",
                                 "score": match.number(0.93),
-                            }
+                            },
+                            {
+                                "start": match.integer(18),
+                                "end": match.integer(32),
+                                "label": "address",
+                                "score": match.number(0.88),
+                            },
                         ],
                     },
                     {"index": match.integer(1), "entities": []},
@@ -59,6 +67,9 @@ async def test_ner_returns_person_offsets(gateway_consumer_pact):
 
     with gateway_consumer_pact.serve() as srv:
         client = NerClient(f"{str(srv.url).rstrip('/')}/v1/ner", _MODEL)
-        found = await client.detect(_TEXTS)
+        found = await client.detect(_TEXTS, ("person", "address"))
 
-    assert found == [{"Karen Smith"}, set()]
+    assert found == [
+        {("person", "Karen Smith"), ("address", "72 High Street")},
+        set(),
+    ]

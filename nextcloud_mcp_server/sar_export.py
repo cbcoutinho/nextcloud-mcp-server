@@ -39,7 +39,7 @@ from nextcloud_mcp_server.providers.ner import NerClient
 from nextcloud_mcp_server.redaction import (
     Redactor,
     counts,
-    detect_names,
+    detect_entities,
 )
 from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
@@ -472,11 +472,12 @@ async def run_export(
     user_id = nc.username
     docs = [_Doc(item) for item in items]
 
-    # Pass 1: read every document and detect names across all of them, so one
-    # name set (and one numbering) covers the archive.
+    # Pass 1: read every document and detect names and addresses across all of
+    # them, so one set (and one numbering) covers the archive.
     # ponytail: texts are held in memory for the whole export; fine for
     # hundreds of documents, re-read per pass if archives grow far beyond that.
     names: set[str] = set()
+    addresses: set[str] = set()
     for doc in docs:
         try:
             doc.title, doc.text = await document_text(nc, user_id, doc.item)
@@ -486,7 +487,11 @@ async def run_export(
             logger.exception("SAR export: could not read an item")
             doc.error = "could not be read"
         if doc.error is None:
-            names |= await detect_names(ner, [doc.title, doc.text, doc.item.reason])
+            found, places = await detect_entities(
+                ner, [doc.title, doc.text, doc.item.reason]
+            )
+            names |= found
+            addresses |= places
         else:
             status.failed_items.append(
                 SarFailedItem(
@@ -496,10 +501,12 @@ async def run_export(
         status.processed += 1
         status.failed = len(status.failed_items)
         await _write_status(nc, status)
-    names |= await detect_names(ner, queries)
+    found, places = await detect_entities(ner, queries)
+    names |= found
+    addresses |= places
 
     # Pass 2: redact and render.
-    redactor = Redactor(names, keep=keep)
+    redactor = Redactor(names, keep=keep, addresses=addresses)
     archive = io.BytesIO()
     rows: list[dict[str, Any]] = []
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
