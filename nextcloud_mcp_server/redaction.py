@@ -14,6 +14,10 @@ failure for a disclosure:
   including ones the model missed in context;
 * **token expansion** — each token (3+ chars, not an honorific) of a
   multi-token name is redacted on its own, so a later bare "Smith" is caught.
+  One deliberate exception: role and relationship words ("student", "Father")
+  are never names, and a detection containing one ("Academic Mentor", "Father
+  Brown") is redacted as a whole phrase only. Its other words are not expanded,
+  so a later bare "Brown" relies on the model detecting it there.
 
 Addresses are detected by NER too and propagate the same way, but as whole
 phrases only: their words are never expanded, since redacting every "Street" or
