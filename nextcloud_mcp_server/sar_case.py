@@ -110,6 +110,9 @@ class _Retry(Exception):
 # other clients are caught by the lineage check in _mutate.
 # ponytail: per-process lock; move the case to a database row if many replicas
 # ever edit one case concurrently.
+# ponytail: one small lock per case id this process has changed, never evicted;
+# bounded by the cases a process ever touches. Drop a lock on close (or use an
+# LRU) if a process ever serves very many cases.
 _case_locks: dict[int, anyio.Lock] = {}
 
 

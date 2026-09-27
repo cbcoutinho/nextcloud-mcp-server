@@ -48,6 +48,7 @@ from nextcloud_mcp_server.sar_case import (
     update_case,
 )
 from nextcloud_mcp_server.sar_export import ExportError, background_client
+from nextcloud_mcp_server.search.access_filter import normalize_path_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,31 @@ async def export_sar_case(request: Request) -> JSONResponse:
     return await _run(request, start, _SAR_WRITE, status=202)
 
 
+async def _log_entry(request: Request) -> SarQueryIn | JSONResponse | None:
+    """The case log entry for this search, a 400 if its filters cannot be
+    logged, or None when there is nothing to log (a later page, no query, or a
+    body the search itself will reject)."""
+    try:
+        body = await request.json()  # Starlette caches it for unified_search
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or not body.get("query") or body.get("offset"):
+        return None
+    raw = body.get("path_prefixes")
+    folders = normalize_path_prefixes(
+        body.get("path_prefix"), raw if isinstance(raw, list) else None
+    )
+    try:
+        return SarQueryIn(
+            text=body["query"],
+            filters=SarSearchFilters.model_validate(
+                {**body, "path_prefixes": folders or None}
+            ),
+        )
+    except ValidationError as e:
+        return _invalid(e)
+
+
 async def search_sar_case(request: Request) -> JSONResponse:
     """Search as ``POST /api/v1/search`` does, with the same body, and log the
     query and its filters to the case.
@@ -226,21 +252,16 @@ async def search_sar_case(request: Request) -> JSONResponse:
         unified_search,
     )
 
+    # The log entry is built before searching, from the folders the search
+    # will actually use: once a search has run, logging it cannot fail on its
+    # filters. A body unified_search rejects is left for it to answer.
+    log = await _log_entry(request)
+    if isinstance(log, JSONResponse):
+        return log
     response = await unified_search(request)
-    if response.status_code != 200:
+    if response.status_code != 200 or log is None:
         return response
-    body = await request.json()  # Starlette caches it; unified_search read it
-    if not body.get("query") or body.get("offset"):
-        return response
-    try:
-        found = json.loads(bytes(response.body))
-        log = SarQueryIn(
-            text=body["query"],
-            hits=found.get("total_found"),
-            filters=SarSearchFilters.model_validate(body),
-        )
-    except ValidationError as e:
-        return _invalid(e)
+    log.hits = json.loads(bytes(response.body)).get("total_found")
     logged = await _run(
         request,
         lambda nc: change_items(nc, case_id, SarCaseItemsChange(queries=[log])),

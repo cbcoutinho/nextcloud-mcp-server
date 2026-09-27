@@ -84,8 +84,11 @@ class SarSearchFilters(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     algorithm: str | None = Field(default=None, max_length=32)
-    doc_types: list[Annotated[str, Field(max_length=64)]] | None = Field(
-        default=None, max_length=20
+    # Generous bounds: a search accepts any doc_types, and a log entry must not
+    # refuse what the search took. Anything past them is refused before the
+    # search runs, not after.
+    doc_types: list[Annotated[str, Field(max_length=200)]] | None = Field(
+        default=None, max_length=100
     )
     path_prefixes: list[Annotated[str, Field(max_length=1000)]] | None = Field(
         default=None, max_length=MAX_PATH_PREFIXES

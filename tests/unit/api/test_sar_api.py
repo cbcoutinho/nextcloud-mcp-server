@@ -278,6 +278,35 @@ def test_search_returns_results_and_logs_query_with_its_filters(nc):
     assert query.filters.granularity == "document"
 
 
+def test_search_logs_the_folders_the_search_used(nc):
+    """unified_search keeps the first MAX_PATH_PREFIXES folders; so does the
+    log, instead of refusing the entry after the search has run."""
+    from nextcloud_mcp_server.search.access_filter import (  # noqa: PLC0415
+        MAX_PATH_PREFIXES,
+    )
+
+    folders = [f"/F{i}" for i in range(MAX_PATH_PREFIXES + 5)]
+    change = AsyncMock(return_value=_case_response())
+    with _search_returns(), patch(f"{_MOD}.change_items", change):
+        response = _client().post(
+            CASES + "/101/search", json={**FILTERED, "path_prefixes": folders}
+        )
+    assert response.status_code == 200, response.text
+    (query,) = change.call_args.args[2].queries
+    assert query.filters.path_prefixes == folders[:MAX_PATH_PREFIXES]
+
+
+def test_filters_the_log_cannot_hold_are_refused_before_searching(nc):
+    ran = AsyncMock()
+    with patch("nextcloud_mcp_server.api.visualization.unified_search", ran):
+        response = _client().post(
+            CASES + "/101/search",
+            json={**FILTERED, "doc_types": [f"t{i}" for i in range(101)]},
+        )
+    assert response.status_code == 400
+    ran.assert_not_called()
+
+
 def test_search_later_pages_are_not_logged_again(nc):
     change = AsyncMock(return_value=_case_response())
     with _search_returns(), patch(f"{_MOD}.change_items", change):
