@@ -25,8 +25,9 @@ pytestmark = pytest.mark.unit
 
 _MOD = "nextcloud_mcp_server.api.sar"
 CASES = "/api/v1/sar/cases"
-# What validate_token_and_get_user returns for a token with both SAR scopes.
-SAR_TOKEN = ("dpo", {"scopes": ["sar.read", "sar.write"]})
+# What validate_token_and_get_user returns for a token with the SAR scopes
+# (and semantic.read, which a case search also needs).
+SAR_TOKEN = ("dpo", {"scopes": ["sar.read", "sar.write", "semantic.read"]})
 
 
 def _case_response(state="open") -> SarCaseResponse:
@@ -228,6 +229,18 @@ def test_case_search_without_sar_write_runs_no_search():
     ):
         response = _client().post(CASES + "/101/search", json={"query": "q"})
     assert response.status_code == 403
+    ran.assert_not_called()
+
+
+def test_case_search_needs_semantic_read_like_the_mcp_tool():
+    ran = AsyncMock()
+    with (
+        _token("sar.read", "sar.write"),
+        patch("nextcloud_mcp_server.api.visualization.unified_search", ran),
+    ):
+        response = _client().post(CASES + "/101/search", json={"query": "q"})
+    assert response.status_code == 403
+    assert "semantic.read" in response.json()["message"]
     ran.assert_not_called()
 
 

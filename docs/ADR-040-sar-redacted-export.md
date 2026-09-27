@@ -62,8 +62,9 @@ the MCP server:
 - Every change is a read-modify-write guarded by the file's ETag. On a
   conflict the change is re-applied to the fresh copy, because changes are
   operations ("add these items"), not whole-document replaces.
-- A case holds up to 2,000 documents. Past that, cases belong in a database
-  table and exports need streaming.
+- A case holds up to 2,000 documents and logs up to 1,000 searches. Past
+  that, cases belong in a database table and exports need streaming. A search
+  already in the log (same text and filters) is not logged again.
 
 ### Archive
 

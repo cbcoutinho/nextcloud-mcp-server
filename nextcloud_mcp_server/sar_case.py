@@ -35,6 +35,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.models.sar import (
     MAX_CASE_ITEMS,
+    MAX_CASE_QUERIES,
     SarCase,
     SarCaseExport,
     SarCaseItemsChange,
@@ -43,6 +44,7 @@ from nextcloud_mcp_server.models.sar import (
     SarCaseSummary,
     SarCaseUpdate,
     SarExportStatus,
+    SarQueryIn,
     SarQueryLog,
 )
 from nextcloud_mcp_server.providers.ner import NerClient
@@ -358,12 +360,24 @@ async def change_items(
         if len(items) > MAX_CASE_ITEMS:
             raise ExportError(f"a case holds at most {MAX_CASE_ITEMS} items", 400)
         case.items = list(items.values())
-        case.queries += [
-            SarQueryLog(
-                text=q.text, hits=q.hits, filters=q.filters, run_by=user, run_at=now
+
+        # A search already in the log (same text, same filters) is not logged
+        # again: re-running it adds nothing to the record, only to the file.
+        def key(q: SarQueryIn | SarQueryLog) -> tuple[str, str]:
+            return q.text, q.filters.model_dump_json() if q.filters else ""
+
+        logged = {key(q) for q in case.queries}
+        for q in request.queries:
+            if key(q) in logged:
+                continue
+            logged.add(key(q))
+            case.queries.append(
+                SarQueryLog(
+                    text=q.text, hits=q.hits, filters=q.filters, run_by=user, run_at=now
+                )
             )
-            for q in request.queries
-        ]
+        if len(case.queries) > MAX_CASE_QUERIES:
+            raise ExportError(f"a case logs at most {MAX_CASE_QUERIES} searches", 400)
 
     path, case = await _mutate(nc, case_id, change)
     return await _response(nc, case_id, path, case)

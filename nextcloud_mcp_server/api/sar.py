@@ -84,15 +84,18 @@ def _case_id(request: Request) -> int | JSONResponse:
         return _error(400, "invalid_request", "case_id must be an integer")
 
 
-async def _authorize(request: Request, scope: str) -> str | JSONResponse:
-    """The token's user, or a 401 (no valid token) / 403 (lacks ``scope``)."""
+async def _authorize(request: Request, *scopes: str) -> str | JSONResponse:
+    """The token's user, or a 401 (no valid token) / 403 (lacks a scope)."""
     try:
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
         logger.warning("Unauthorized access to %s: %s", request.url.path, e)
         return _error(401, "Unauthorized", _sanitize_error_for_client(e, "sar"))
-    if scope not in (validated.get("scopes") or []):
-        return _error(403, "insufficient_scope", f"this needs the {scope} scope")
+    granted = validated.get("scopes") or []
+    if missing := [s for s in scopes if s not in granted]:
+        return _error(
+            403, "insufficient_scope", f"this needs the {', '.join(missing)} scope"
+        )
     return user_id
 
 
@@ -210,8 +213,9 @@ async def search_sar_case(request: Request) -> JSONResponse:
     case_id = _case_id(request)
     if isinstance(case_id, JSONResponse):
         return case_id
-    # Before searching: without the scope there must be no results either.
-    denied = await _authorize(request, "sar.write")
+    # Before searching: without the scopes there must be no results either.
+    # semantic.read too, as the sar_case_search tool requires.
+    denied = await _authorize(request, "sar.write", "semantic.read")
     if isinstance(denied, JSONResponse):
         return denied
     # Lazy: visualization imports the search stack.

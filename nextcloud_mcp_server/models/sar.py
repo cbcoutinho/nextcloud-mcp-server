@@ -14,6 +14,8 @@ MAX_ITEMS_PER_CALL = 1000
 # holds every document's text in memory. Fine for a few thousand documents;
 # move cases to a database table and stream the export past that.
 MAX_CASE_ITEMS = 2000
+# Searches logged in one case. Repeats of a logged search are not logged again.
+MAX_CASE_QUERIES = 1000
 
 
 class SarItem(BaseModel):
@@ -162,7 +164,9 @@ class SarCase(BaseModel):
         "NI numbers and addresses. These are kept. Everyone else is redacted."
     )
     items: list[SarCaseItem] = Field(default_factory=list, max_length=MAX_CASE_ITEMS)
-    queries: list[SarQueryLog] = Field(default_factory=list)
+    queries: list[SarQueryLog] = Field(
+        default_factory=list, max_length=MAX_CASE_QUERIES
+    )
     exports: list[SarCaseExport] = Field(default_factory=list)
     recent_writes: list[str] = Field(
         default_factory=list,

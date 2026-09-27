@@ -265,6 +265,36 @@ async def test_items_cap(nc, monkeypatch):
     assert info.value.status == 400
 
 
+async def test_a_search_already_logged_is_not_logged_again(nc):
+    """Same text and filters: one entry. Different filters: a new entry."""
+    created = await _create(nc)
+    folder = SarSearchFilters(path_prefixes=["/HR"])
+    for _ in range(3):
+        result = await sar_case.change_items(
+            nc,
+            created.case_id,
+            SarCaseItemsChange(
+                queries=[
+                    SarQueryIn(text="q", hits=1, filters=folder),
+                    SarQueryIn(text="q", hits=1),
+                ]
+            ),
+        )
+    assert [(q.text, bool(q.filters)) for q in result.case.queries] == [
+        ("q", True),
+        ("q", False),
+    ]
+
+
+async def test_queries_cap(nc, monkeypatch):
+    monkeypatch.setattr(sar_case, "MAX_CASE_QUERIES", 2)
+    created = await _create(nc)
+    change = SarCaseItemsChange(queries=[SarQueryIn(text=t) for t in "abc"])
+    with pytest.raises(sar_export.ExportError, match="at most 2 searches") as info:
+        await sar_case.change_items(nc, created.case_id, change)
+    assert info.value.status == 400
+
+
 def _other_process_adds(webdav, path, doc_id, base=None):
     """A write from another process, straight to storage: adds ``doc_id`` to
     ``base`` (default: the current file) without going through our lock."""
