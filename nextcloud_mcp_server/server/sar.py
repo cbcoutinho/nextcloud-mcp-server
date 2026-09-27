@@ -43,7 +43,7 @@ _READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 
 def configure_sar_tools(mcp: MCPServer) -> None:
     @mcp.tool(title="Create SAR Case", annotations=_WRITE)
-    @require_scopes("files.write")
+    @require_scopes("sar.write", "files.write")
     @instrument_tool
     async def sar_case_create(
         ctx: Context,
@@ -83,7 +83,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             raise ToolError(str(e)) from e
 
     @mcp.tool(title="List SAR Cases", annotations=_READ)
-    @require_scopes("files.read")
+    @require_scopes("sar.read", "files.read")
     @instrument_tool
     async def sar_case_list(ctx: Context) -> SarCaseListResponse:
         """List the SAR cases this user can see, newest first, with their state
@@ -91,7 +91,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         return await list_cases(await get_client(ctx))
 
     @mcp.tool(title="Get SAR Case", annotations=_READ)
-    @require_scopes("files.read")
+    @require_scopes("sar.read", "files.read")
     @instrument_tool
     async def sar_case_get(
         ctx: Context,
@@ -109,7 +109,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             raise ToolError(str(e)) from e
 
     @mcp.tool(title="Update SAR Case", annotations=_WRITE)
-    @require_scopes("files.write")
+    @require_scopes("sar.write", "files.write")
     @instrument_tool
     async def sar_case_update(
         ctx: Context,
@@ -135,7 +135,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             raise ToolError(str(e)) from e
 
     @mcp.tool(title="Change SAR Case Items", annotations=_WRITE)
-    @require_scopes("files.write")
+    @require_scopes("sar.write", "files.write")
     @instrument_tool
     async def sar_case_items(
         ctx: Context,
@@ -169,7 +169,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             raise ToolError(str(e)) from e
 
     @mcp.tool(title="Search for a SAR Case", annotations=_WRITE)
-    @require_scopes("semantic.read", "files.write")
+    @require_scopes("sar.write", "semantic.read", "files.write")
     @instrument_tool
     async def sar_case_search(  # NOSONAR(S107): the parameters are the wire schema
         ctx: Context,
@@ -237,7 +237,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         return result
 
     @mcp.tool(title="Export SAR Case", annotations=_WRITE)
-    @require_scopes("semantic.read", "files.write")
+    @require_scopes("sar.write", "semantic.read", "files.write")
     @instrument_tool
     async def sar_case_export(
         ctx: Context, case_id: int, output_folder: str | None = None

@@ -120,11 +120,20 @@ as the calling user:
 | Subject, description, close, reopen | `sar_case_update` | `PATCH /api/v1/sar/cases/{id}` |
 | Add/update/remove items, log queries | `sar_case_items` | `POST /api/v1/sar/cases/{id}/items` |
 | Export (optional output folder; default the case's `exports/`) | `sar_case_export` | `POST /api/v1/sar/cases/{id}/exports` → 202 |
+| Search for the case, with the search page's filters; logged with them | `sar_case_search` | `POST /api/v1/sar/cases/{id}/search` (the `/api/v1/search` body) |
+
+Every operation needs the `sar.read` (list, get) or `sar.write` (everything
+else) scope, on the MCP token or the bearer token of the HTTP routes. Exporting
+personal data about someone is its own grant, not a side effect of file access:
+the tools also keep their underlying scopes (`files.*`, `semantic.read` for
+search and export), so a SAR scope never widens what can be read. The SAR
+scopes are advertised (DCR, the tools' scope list) only when `sar_available`,
+and Astrolabe asks for them when minting the tokens for its SAR calls.
 
 Refusals carry their status: 400 invalid, 403 folder not writable or no
 background access, 404 no such case (or no access to it), 409 wrong state or
 name taken, 503 no background task group. `GET /api/v1/status` advertises
-`sar_export_available`; Astrolabe shows its SAR UI only when it is true. The
+`sar_available`; Astrolabe shows its SAR UI only when it is true. The
 tools need semantic search and `EMBEDDING_GATEWAY_URL`; the HTTP routes
 additionally need an authenticated deployment mode.
 

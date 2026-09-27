@@ -148,6 +148,12 @@ def redaction_available(settings: Any) -> bool:
     return ner_endpoint(settings) is not None
 
 
+def sar_available(settings: Any) -> bool:
+    """Whether SAR cases can be served (ADR-040): they search and read document
+    text from the index, and detect names through the embedding gateway."""
+    return bool(settings.vector_sync_enabled) and redaction_available(settings)
+
+
 async def get_ner_client(settings: Any) -> NerClient:
     """The shared NER client. Call only when :func:`redaction_available`."""
     global _client, _client_lock

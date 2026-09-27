@@ -39,7 +39,9 @@ def _hook_allowed_scopes() -> set[str]:
 def test_dcr_advertises_every_supported_scope():
     """The DCR registration must cover the whole vocabulary."""
     advertised = set(
-        build_dcr_scopes(vector_sync_enabled=True, offline_access_enabled=True).split()
+        build_dcr_scopes(
+            vector_sync_enabled=True, offline_access_enabled=True, sar_enabled=True
+        ).split()
     )
     assert ALL_SUPPORTED_SCOPES <= advertised, (
         f"not advertised via DCR: {sorted(ALL_SUPPORTED_SCOPES - advertised)}"
@@ -64,6 +66,18 @@ def test_dcr_omits_semantic_read_when_vector_sync_disabled():
         vector_sync_enabled=False, offline_access_enabled=False
     ).split()
     assert "semantic.read" not in scopes
+
+
+def test_dcr_advertises_sar_scopes_only_when_sar_is_available():
+    """Like semantic.read: no SAR scopes for tools that are not registered."""
+    off = build_dcr_scopes(
+        vector_sync_enabled=True, offline_access_enabled=False
+    ).split()
+    on = build_dcr_scopes(
+        vector_sync_enabled=True, offline_access_enabled=False, sar_enabled=True
+    ).split()
+    assert "sar.read" not in off and "sar.write" not in off
+    assert on.count("sar.read") == 1 and on.count("sar.write") == 1
 
 
 def test_astrolabe_oidc_client_allows_every_supported_scope():

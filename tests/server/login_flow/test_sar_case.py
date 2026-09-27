@@ -179,7 +179,7 @@ async def test_sar_case_via_management_api(
 
     async with httpx.AsyncClient(timeout=30.0, headers=headers) as http:
         status = (await http.get("http://localhost:8004/api/v1/status")).json()
-        assert status["sar_export_available"] is True
+        assert status["sar_available"] is True
 
         response = await http.post(
             CASES, json={"folder": folder, "name": "SAR-api", "subject": ["Jane Doe"]}

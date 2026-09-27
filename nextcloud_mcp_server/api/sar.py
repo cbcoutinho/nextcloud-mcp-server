@@ -11,7 +11,8 @@
 Every operation acts as the bearer token's user, through their stored app
 password, so it can only read what that user can read and write where that
 user can write. Nextcloud's permissions on the case folder are the access
-model; a case the user cannot see is a 404.
+model; a case the user cannot see is a 404. The token also needs `sar.read`
+(list, get) or `sar.write` (everything else), else 403.
 """
 
 import json
@@ -83,13 +84,26 @@ def _case_id(request: Request) -> int | JSONResponse:
         return _error(400, "invalid_request", "case_id must be an integer")
 
 
-async def _run(request: Request, operation: Operation, status: int = 200):
-    """Authenticate, run ``operation`` as the token's user, map errors."""
+async def _authorize(request: Request, scope: str) -> str | JSONResponse:
+    """The token's user, or a 401 (no valid token) / 403 (lacks ``scope``)."""
     try:
-        user_id, _ = await validate_token_and_get_user(request)
+        user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
         logger.warning("Unauthorized access to %s: %s", request.url.path, e)
         return _error(401, "Unauthorized", _sanitize_error_for_client(e, "sar"))
+    if scope not in (validated.get("scopes") or []):
+        return _error(403, "insufficient_scope", f"this needs the {scope} scope")
+    return user_id
+
+
+async def _run(
+    request: Request, operation: Operation, scope: str, status: int = 200
+) -> JSONResponse:
+    """Authenticate, require ``scope``, run ``operation`` as the token's user,
+    map errors."""
+    user_id = await _authorize(request, scope)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     try:
         nc = await background_client(user_id)
     except ExportError as e:
@@ -118,12 +132,13 @@ async def create_sar_case(request: Request) -> JSONResponse:
             subject=list(body.subject),
             description=body.description,
         ),
+        "sar.write",
         status=201,
     )
 
 
 async def list_sar_cases(request: Request) -> JSONResponse:
-    return await _run(request, list_cases)
+    return await _run(request, list_cases, "sar.read")
 
 
 async def get_sar_case(request: Request) -> JSONResponse:
@@ -135,7 +150,9 @@ async def get_sar_case(request: Request) -> JSONResponse:
         limit = min(1000, max(1, int(request.query_params.get("limit", 200))))
     except ValueError:
         return _error(400, "invalid_request", "offset and limit must be integers")
-    return await _run(request, lambda nc: get_case(nc, case_id, offset, limit))
+    return await _run(
+        request, lambda nc: get_case(nc, case_id, offset, limit), "sar.read"
+    )
 
 
 async def update_sar_case(request: Request) -> JSONResponse:
@@ -145,7 +162,7 @@ async def update_sar_case(request: Request) -> JSONResponse:
     body = await _body(request, SarCaseUpdate)
     if isinstance(body, JSONResponse):
         return body
-    return await _run(request, lambda nc: update_case(nc, case_id, body))
+    return await _run(request, lambda nc: update_case(nc, case_id, body), "sar.write")
 
 
 async def change_sar_case_items(request: Request) -> JSONResponse:
@@ -155,7 +172,7 @@ async def change_sar_case_items(request: Request) -> JSONResponse:
     body = await _body(request, SarCaseItemsChange)
     if isinstance(body, JSONResponse):
         return body
-    return await _run(request, lambda nc: change_items(nc, case_id, body))
+    return await _run(request, lambda nc: change_items(nc, case_id, body), "sar.write")
 
 
 async def export_sar_case(request: Request) -> JSONResponse:
@@ -177,7 +194,7 @@ async def export_sar_case(request: Request) -> JSONResponse:
             nc, background, ner, background_task_group(), case_id, body.output_folder
         )
 
-    return await _run(request, start, status=202)
+    return await _run(request, start, "sar.write", status=202)
 
 
 async def search_sar_case(request: Request) -> JSONResponse:
@@ -191,6 +208,10 @@ async def search_sar_case(request: Request) -> JSONResponse:
     case_id = _case_id(request)
     if isinstance(case_id, JSONResponse):
         return case_id
+    # Before searching: without the scope there must be no results either.
+    denied = await _authorize(request, "sar.write")
+    if isinstance(denied, JSONResponse):
+        return denied
     # Lazy: visualization imports the search stack.
     from nextcloud_mcp_server.api.visualization import (  # noqa: PLC0415
         unified_search,
@@ -214,6 +235,7 @@ async def search_sar_case(request: Request) -> JSONResponse:
     logged = await _run(
         request,
         lambda nc: change_items(nc, case_id, SarCaseItemsChange(queries=[log])),
+        "sar.write",
     )
     # A case the user cannot change (closed, gone, not theirs) gets no results:
     # searching "for" it must leave a record or not happen.

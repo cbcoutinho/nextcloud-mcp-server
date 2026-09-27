@@ -56,7 +56,8 @@ DEFAULT_FULL_SCOPES = (
     "shopping_list.read shopping_list.write "
     "mail.read mail.write mail.send "
     "talk.read talk.write "
-    "semantic.read"
+    "semantic.read "
+    "sar.read sar.write"
 )
 
 # Read-only scopes (all read scopes across apps) - should match DEFAULT_FULL_SCOPES read portion
@@ -76,7 +77,8 @@ DEFAULT_READ_SCOPES = (
     "shopping_list.read "
     "mail.read "
     "talk.read "
-    "semantic.read"
+    "semantic.read "
+    "sar.read"
 )
 
 # Write-only scopes (all write scopes across apps) - should match DEFAULT_FULL_SCOPES write portion
@@ -95,7 +97,8 @@ DEFAULT_WRITE_SCOPES = (
     "collectives.write "
     "shopping_list.write "
     "mail.write mail.send "
-    "talk.write"
+    "talk.write "
+    "sar.write"
 )
 
 

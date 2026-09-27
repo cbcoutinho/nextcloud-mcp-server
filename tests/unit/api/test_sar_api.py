@@ -25,6 +25,8 @@ pytestmark = pytest.mark.unit
 
 _MOD = "nextcloud_mcp_server.api.sar"
 CASES = "/api/v1/sar/cases"
+# What validate_token_and_get_user returns for a token with both SAR scopes.
+SAR_TOKEN = ("dpo", {"scopes": ["sar.read", "sar.write"]})
 
 
 def _case_response(state="open") -> SarCaseResponse:
@@ -62,9 +64,7 @@ def nc():
     """Authenticated as "dpo", with a background client per request."""
     client = MagicMock(username="dpo", close=AsyncMock())
     with (
-        patch(
-            f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=("dpo", {}))
-        ),
+        patch(f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)),
         patch(f"{_MOD}.background_client", AsyncMock(return_value=client)),
     ):
         yield client
@@ -177,9 +177,7 @@ def test_unauthenticated_is_401():
 
 def test_not_provisioned_is_403():
     with (
-        patch(
-            f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=("dpo", {}))
-        ),
+        patch(f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)),
         patch(
             f"{_MOD}.background_client",
             AsyncMock(side_effect=ExportError("needs background access", 403)),
@@ -187,6 +185,50 @@ def test_not_provisioned_is_403():
     ):
         response = _client().get(CASES)
     assert response.status_code == 403
+
+
+def _token(*scopes: str):
+    return patch(
+        f"{_MOD}.validate_token_and_get_user",
+        AsyncMock(return_value=("dpo", {"scopes": list(scopes)})),
+    )
+
+
+def test_read_scope_reads_but_cannot_change_cases():
+    """sar.read lists and gets; everything else needs sar.write."""
+    listed = AsyncMock(return_value=SarCaseListResponse(cases=[]))
+    create = AsyncMock()
+    client = MagicMock(username="dpo", close=AsyncMock())
+    with (
+        _token("sar.read", "files.read"),
+        patch(f"{_MOD}.background_client", AsyncMock(return_value=client)),
+        patch(f"{_MOD}.list_cases", listed),
+        patch(f"{_MOD}.create_case", create),
+    ):
+        assert _client().get(CASES).status_code == 200
+        response = _client().post(
+            CASES, json={"folder": "/Team", "name": "SAR-1", "subject": ["Jane Doe"]}
+        )
+    assert response.status_code == 403
+    assert response.json()["error"] == "insufficient_scope"
+    create.assert_not_called()
+
+
+def test_without_sar_scopes_nothing_is_served():
+    with _token("files.read", "files.write", "semantic.read"):
+        assert _client().get(CASES).status_code == 403
+        assert _client().get(CASES + "/101").status_code == 403
+
+
+def test_case_search_without_sar_write_runs_no_search():
+    ran = AsyncMock()
+    with (
+        _token("sar.read", "semantic.read"),
+        patch("nextcloud_mcp_server.api.visualization.unified_search", ran),
+    ):
+        response = _client().post(CASES + "/101/search", json={"query": "q"})
+    assert response.status_code == 403
+    ran.assert_not_called()
 
 
 def _search_returns(status: int = 200, body: dict | None = None):

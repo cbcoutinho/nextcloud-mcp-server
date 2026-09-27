@@ -107,7 +107,7 @@ from nextcloud_mcp_server.config_validators import (
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.http import nextcloud_httpx_client
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
@@ -120,7 +120,7 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
-from nextcloud_mcp_server.redaction import redaction_available
+from nextcloud_mcp_server.redaction import sar_available
 from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
@@ -158,7 +158,12 @@ logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
 
 
-def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool) -> str:
+def build_dcr_scopes(
+    *,
+    vector_sync_enabled: bool,
+    offline_access_enabled: bool,
+    sar_enabled: bool = False,
+) -> str:
     """Build the space-separated scope list this server registers via DCR.
 
     When we register as a resource server (with resource_url) the allowed
@@ -173,12 +178,15 @@ def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool)
     scope) ungrantable in OAuth mode despite being in use. semantic.read is
     subtracted and re-added conditionally so it is advertised only when
     semantic search is enabled — subtracting is what keeps it from being
-    emitted twice now that it is a member of the vocabulary.
+    emitted twice now that it is a member of the vocabulary. The SAR scopes are
+    handled the same way, advertised only when SAR cases are available.
     """
     scopes = ["openid", "profile", "email"]
-    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"})
+    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"} - SAR_SCOPES)
     if vector_sync_enabled:
         scopes.append("semantic.read")
+    if sar_enabled:
+        scopes += sorted(SAR_SCOPES)
     if offline_access_enabled:
         scopes.append("offline_access")
     return " ".join(scopes)
@@ -900,6 +908,7 @@ async def load_oauth_client_credentials(
         dcr_scopes = build_dcr_scopes(
             vector_sync_enabled=dcr_settings.vector_sync_enabled,
             offline_access_enabled=enable_offline_access,
+            sar_enabled=sar_available(dcr_settings),
         )
         if dcr_settings.vector_sync_enabled:
             logger.info("✓ semantic.read scope enabled for semantic search tools")
@@ -1873,7 +1882,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         configure_semantic_tools(mcp)
         # SAR export reads document text from the index and detects names via
         # the embedding gateway (ADR-040).
-        if redaction_available(settings):
+        if sar_available(settings):
             configure_sar_tools(mcp)
         else:
             logger.info("Skipping SAR export tools (EMBEDDING_GATEWAY_URL not set)")
@@ -2818,8 +2827,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             )
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
-            # SAR export (ADR-040); advertised as sar_export_available.
-            if redaction_available(settings):
+            # SAR export (ADR-040); advertised as sar_available.
+            if sar_available(settings):
                 cases = "/api/v1/sar/cases"
                 case = cases + "/{case_id:int}"
                 routes += [

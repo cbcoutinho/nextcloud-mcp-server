@@ -576,4 +576,4 @@ def test_status_advertises_sar_export_capability(
         response = TestClient(create_test_app()).get("/api/v1/status")
 
     assert response.status_code == 200
-    assert response.json()["sar_export_available"] is expected
+    assert response.json()["sar_available"] is expected
