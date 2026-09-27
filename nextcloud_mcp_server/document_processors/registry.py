@@ -188,6 +188,14 @@ class ProcessorRegistry:
         """
         return list(self._priority_order)
 
+    def supported_mime_types(self) -> set[str]:
+        """Every MIME type some registered processor can read."""
+        return {
+            mime
+            for p, _ in self._processors.values()
+            for mime in p.supported_mime_types
+        }
+
     async def process(
         self,
         content: bytes,

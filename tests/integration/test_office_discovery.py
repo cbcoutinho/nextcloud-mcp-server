@@ -38,7 +38,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 @pytest.fixture
 async def tagged_office_folder(nc_client: NextcloudClient):
-    """A tagged folder holding a PDF, a .docx, an .xlsx and one ignorable file."""
+    """A tagged folder holding a PDF, .docx, .xlsx, .txt, .md and one ignorable file."""
     suffix = uuid.uuid4().hex[:8]
     tag_name = f"mcp-office-{suffix}"
     test_dir = f"mcp_office_disc_{suffix}"
@@ -47,6 +47,8 @@ async def tagged_office_folder(nc_client: NextcloudClient):
         "pdf": (f"{test_dir}/report.pdf", PDF_BYTES, "application/pdf"),
         "docx": (f"{test_dir}/contract.docx", ZIP_BYTES, DOCX_MIME),
         "xlsx": (f"{test_dir}/sheet.xlsx", ZIP_BYTES, XLSX_MIME),
+        "txt": (f"{test_dir}/notes.txt", b"plain text", "text/plain"),
+        "md": (f"{test_dir}/readme.md", b"# Title", "text/markdown"),
         # Not in the allowlist: proves the filter still excludes, so a green
         # result cannot come from the filter having been dropped entirely.
         "png": (f"{test_dir}/diagram.png", b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -92,8 +94,12 @@ async def test_nextcloud_reports_the_mime_types_the_allowlist_expects(
     assert reported["xlsx"].startswith(XLSX_MIME), (
         f"Nextcloud reports {reported['xlsx']!r} for .xlsx"
     )
+    assert reported["txt"].startswith("text/plain")
+    assert reported["md"].startswith("text/markdown"), (
+        f"Nextcloud reports {reported['md']!r} for .md"
+    )
     # And each of those is actually covered by the configured default.
-    for key in ("pdf", "docx", "xlsx"):
+    for key in ("pdf", "docx", "xlsx", "txt", "md"):
         assert reported[key].startswith(indexable), (
             f"{key}: {reported[key]!r} is not matched by {indexable}"
         )
@@ -110,8 +116,12 @@ async def test_a_tagged_folder_expands_to_its_office_files(
     discovered = await _discover_tagged_files(nc_client, settings)
 
     names = sorted(f["path"].rsplit("/", 1)[-1] for f in discovered)
-    assert names == ["contract.docx", "report.pdf", "sheet.xlsx"], (
-        f"expected the three indexable files, got {names}"
-    )
+    assert names == [
+        "contract.docx",
+        "notes.txt",
+        "readme.md",
+        "report.pdf",
+        "sheet.xlsx",
+    ], f"expected the five indexable files, got {names}"
     # The png is in the same tagged folder and must not be pulled in.
     assert not any(n.endswith(".png") for n in names)

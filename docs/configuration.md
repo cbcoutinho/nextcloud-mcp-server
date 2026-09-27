@@ -386,23 +386,32 @@ Notes:
 
 ### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
 
-Tagged-file discovery enqueues **PDF plus the OOXML office formats that have a
-native reader** (`.pdf`, `.docx`, `.xlsx`, `.pptx`; ADR-036/038). A tagged file of
-any other type is ignored. The list is an explicit allowlist rather than "whatever the
-processor registry can parse", so enabling an optional processor cannot widen
-the corpus — and its embedding bill — without someone choosing to.
+By default, tagged-file discovery enqueues **every type an enabled processor can
+read**: PDF, `.docx`/`.xlsx`/`.pptx` (ADR-036/038), Outlook `.msg`, plain text,
+Markdown and CSV, plus legacy Office and ODF when Collabora is configured
+(`COLLABORA_URL`, ADR-039). Enabling a processor is what opts its types in; a
+tagged file of a type no processor reads is ignored. That includes the optional
+processors: configuring Unstructured, Tesseract, Docling or a custom HTTP
+processor also indexes the types they claim (images, EPUB, RTF, …) in tagged
+folders, with the OCR and embedding cost that brings. Set the variable below to
+keep them to the types you want.
 
-> **Upgrading from a PDF-only release changes what you pay to embed.** Before
-> this setting existed, discovery was hard-filtered to `application/pdf`. On
-> upgrade, any `.docx`/`.xlsx`/`.pptx` file already sitting under a `vector-index`
-> (or `keyword-index`) tag — including everything beneath a tagged folder —
-> becomes eligible and will be indexed on the next scan. Nothing is removed and
-> no API changes, so this is not a breaking change; but if you tagged folders
-> broadly and only meant PDFs, narrow it back before upgrading:
->
-> ```dotenv
-> VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
-> ```
+Plain text, Markdown and CSV files are picked up by the polling scanner only,
+not on the change webhook: editors such as Text save them on every few
+keystrokes.
+
+Set `VECTOR_SYNC_INDEXABLE_MIME_TYPES` to a comma-separated list to narrow that,
+for example to PDF only:
+
+```dotenv
+VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
+```
+
+> **Upgrading changes what you pay to embed.** Previously the default was PDF and
+> `.docx`/`.xlsx`/`.pptx` only. On upgrade, `.msg`, `.txt`, `.md` and `.csv` files
+> (and ODF/legacy Office with Collabora) already under a `vector-index` or
+> `keyword-index` tag, including everything beneath a tagged folder, are indexed
+> on the next scan. Set the list above before upgrading to keep the old scope.
 >
 > Setting it **empty** does not mean "no filter" — it means *index nothing*, and
 > discovery logs a warning saying so.
