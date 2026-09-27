@@ -5,10 +5,12 @@ import io
 import json
 import posixpath
 import re
+import unicodedata
 import zipfile
 
 import anyio
 import httpx
+import pymupdf
 import pytest
 
 from nextcloud_mcp_server import sar_case, sar_export
@@ -18,6 +20,7 @@ from nextcloud_mcp_server.models.sar import (
     SarCaseUpdate,
     SarItemRef,
     SarQueryIn,
+    SarSearchFilters,
 )
 from nextcloud_mcp_server.providers.ner import NerError
 
@@ -382,6 +385,28 @@ async def test_export_locks_case_then_marks_it_ready_for_audit(nc, webdav, index
     again = await sar_case.get_case(nc, created.case_id)
     assert [e.version for e in again.case.exports] == [1, 2]
     assert "/Team/SAR-1/exports/SAR-1-v2.zip" in webdav.files
+
+
+async def test_searches_pdf_lists_each_querys_filters_redacted(nc, webdav, indexed):
+    created = await _create(nc)
+    filters = SarSearchFilters(
+        path_prefixes=["/HR/Karen Smith"], doc_types=["file"], modified_after="2023"
+    )
+    request = _add("1")
+    request.queries = [SarQueryIn(text="grievance", hits=1, filters=filters)]
+    await sar_case.change_items(nc, created.case_id, request)
+
+    async with anyio.create_task_group() as tg:
+        await _export(nc, created.case_id, tg)
+
+    (export,) = (await sar_case.get_case(nc, created.case_id)).case.exports
+    archive = zipfile.ZipFile(io.BytesIO(webdav.files[export.archive_path][0]))
+    with pymupdf.open(stream=archive.read("searches.pdf"), filetype="pdf") as pdf:
+        # NFKC folds the "fi" ligature PyMuPDF extracts back to two letters.
+        text = unicodedata.normalize("NFKC", "".join(p.get_text() for p in pdf))
+    searches = " ".join(text.split())
+    assert "grievance (folders: /HR/[PERSON_1]; types: file; modified 2023" in searches
+    assert "Karen" not in searches
 
 
 async def test_failed_export_reopens_case(nc, indexed):

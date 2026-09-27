@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.applications import Starlette
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
@@ -50,6 +51,7 @@ def _client() -> TestClient:
             Route(case, api.update_sar_case, methods=["PATCH"]),
             Route(case + "/items", api.change_sar_case_items, methods=["POST"]),
             Route(case + "/exports", api.export_sar_case, methods=["POST"]),
+            Route(case + "/search", api.search_sar_case, methods=["POST"]),
         ]
     )
     return TestClient(app)
@@ -185,3 +187,66 @@ def test_not_provisioned_is_403():
     ):
         response = _client().get(CASES)
     assert response.status_code == 403
+
+
+def _search_returns(status: int = 200, body: dict | None = None):
+    """Stand in for the unified search handler, reading the body as it does."""
+
+    async def search(request):
+        await request.json()
+        return JSONResponse(body or {"results": [], "total_found": 3}, status)
+
+    return patch("nextcloud_mcp_server.api.visualization.unified_search", search)
+
+
+FILTERED = {
+    "query": "grievance",
+    "algorithm": "hybrid",
+    "doc_types": ["file"],
+    "path_prefixes": ["/HR/Conduct"],
+    "modified_after": "2023-01-01T00:00:00Z",
+    "granularity": "document",
+    "limit": 20,
+}
+
+
+def test_search_returns_results_and_logs_query_with_its_filters(nc):
+    change = AsyncMock(return_value=_case_response())
+    with _search_returns(), patch(f"{_MOD}.change_items", change):
+        response = _client().post(CASES + "/101/search", json=FILTERED)
+    assert response.status_code == 200, response.text
+    assert response.json()["total_found"] == 3
+    (query,) = change.call_args.args[2].queries
+    assert (query.text, query.hits) == ("grievance", 3)
+    assert query.filters.path_prefixes == ["/HR/Conduct"]
+    assert query.filters.doc_types == ["file"]
+    assert query.filters.granularity == "document"
+
+
+def test_search_later_pages_are_not_logged_again(nc):
+    change = AsyncMock(return_value=_case_response())
+    with _search_returns(), patch(f"{_MOD}.change_items", change):
+        response = _client().post(
+            CASES + "/101/search", json={**FILTERED, "offset": 20}
+        )
+    assert response.status_code == 200
+    change.assert_not_called()
+
+
+def test_search_for_a_closed_case_returns_no_results(nc):
+    change = AsyncMock(side_effect=ExportError("this case is closed", 409))
+    with _search_returns(), patch(f"{_MOD}.change_items", change):
+        response = _client().post(CASES + "/101/search", json=FILTERED)
+    assert response.status_code == 409
+    assert "results" not in response.json()
+
+
+def test_search_errors_pass_through_unlogged(nc):
+    change = AsyncMock()
+    with (
+        _search_returns(422, {"error": "unsupported"}),
+        patch(f"{_MOD}.change_items", change),
+    ):
+        response = _client().post(CASES + "/101/search", json=FILTERED)
+    assert response.status_code == 422
+    change.assert_not_called()

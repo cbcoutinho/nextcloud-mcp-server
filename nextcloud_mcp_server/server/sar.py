@@ -1,6 +1,6 @@
 """MCP tools for subject access request cases (ADR-040)."""
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -20,8 +20,10 @@ from nextcloud_mcp_server.models.sar import (
     SarCaseUpdate,
     SarItemRef,
     SarQueryIn,
+    SarSearchFilters,
     SubjectList,
 )
+from nextcloud_mcp_server.models.semantic import SemanticSearchResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.redaction import get_ner_client
 from nextcloud_mcp_server.sar_case import (
@@ -33,6 +35,7 @@ from nextcloud_mcp_server.sar_case import (
     update_case,
 )
 from nextcloud_mcp_server.sar_export import ExportError, background_client
+from nextcloud_mcp_server.search.access_filter import MAX_PATH_PREFIXES
 
 _WRITE = ToolAnnotations(idempotent_hint=False, open_world_hint=True)
 _READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
@@ -164,6 +167,74 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             return await change_items(await get_client(ctx), case_id, request)
         except ExportError as e:
             raise ToolError(str(e)) from e
+
+    @mcp.tool(title="Search for a SAR Case", annotations=_WRITE)
+    @require_scopes("semantic.read", "files.write")
+    @instrument_tool
+    async def sar_case_search(  # NOSONAR(S107): the parameters are the wire schema
+        ctx: Context,
+        case_id: int,
+        query: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+        doc_types: list[str] | None = None,
+        path_prefixes: Annotated[
+            list[str] | None, Field(max_length=MAX_PATH_PREFIXES)
+        ] = None,
+        modified_after: str | int | None = None,
+        modified_before: str | int | None = None,
+        min_relevance: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
+        fusion: str = "rrf",
+        rerank: bool = False,
+        granularity: Literal["chunk", "document"] = "document",
+    ) -> SemanticSearchResponse:
+        """Search for documents for an open SAR case, and log the search in it.
+
+        Takes the same filters as `nc_semantic_search` (folders, document
+        types, modified dates, relevance) and returns the same results. The
+        query and its filters are recorded in the case and listed, redacted,
+        in the archive. Results default to one row per document. Add the ones
+        to disclose with `sar_case_items`.
+        """
+        # Lazy: the semantic tools module pulls in the search stack.
+        from nextcloud_mcp_server.server.semantic import (  # noqa: PLC0415
+            nc_semantic_search,
+        )
+
+        filters = SarSearchFilters(
+            doc_types=doc_types,
+            path_prefixes=path_prefixes,
+            modified_after=modified_after,
+            modified_before=modified_before,
+            min_relevance=min_relevance or None,
+            score_threshold=score_threshold or None,
+            fusion=fusion,
+            rerank=rerank,
+            granularity=granularity,
+        )
+        result = await nc_semantic_search(
+            query=query,
+            ctx=ctx,
+            limit=limit,
+            doc_types=doc_types,
+            score_threshold=score_threshold,
+            min_relevance=min_relevance,
+            fusion=fusion,
+            granularity=granularity,
+            rerank=rerank,
+            modified_after=modified_after,
+            modified_before=modified_before,
+            path_prefixes=path_prefixes,
+        )
+        log = SarQueryIn(text=query, hits=result.total_found, filters=filters)
+        try:
+            await change_items(
+                await get_client(ctx), case_id, SarCaseItemsChange(queries=[log])
+            )
+        except ExportError as e:
+            # No record, no results: a search for a case must be logged in it.
+            raise ToolError(str(e)) from e
+        return result
 
     @mcp.tool(title="Export SAR Case", annotations=_WRITE)
     @require_scopes("semantic.read", "files.write")

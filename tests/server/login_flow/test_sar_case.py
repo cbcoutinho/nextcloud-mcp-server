@@ -272,7 +272,9 @@ def _three_page_pdf(term: str) -> bytes:
     return doc.tobytes()
 
 
-async def test_sar_case_page_range_of_indexed_pdf(nc_mcp_login_flow_client, nc_client):
+async def test_sar_case_page_range_of_indexed_pdf(
+    nc_mcp_login_flow_client, login_flow_static_client_token, nc_client
+):
     """A page range exports only those pages of an indexed PDF, rebuilt from
     the real chunker's offsets and page numbers."""
     mcp = nc_mcp_login_flow_client
@@ -296,6 +298,43 @@ async def test_sar_case_page_range_of_indexed_pdf(nc_mcp_login_flow_client, nc_c
                 {"folder": folder, "name": "SAR-pages", "subject": ["Jane Doe"]},
             )
         )["case_id"]
+
+        # Case searches take the search filters: the folder finds it, another
+        # folder does not, and both searches are logged with their folders.
+        search = {"case_id": case_id, "query": term, "doc_types": ["file"]}
+        inside = _tool_json(
+            await mcp.call_tool(
+                "sar_case_search", {**search, "path_prefixes": [folder]}
+            )
+        )
+        assert [str(r["id"]) for r in inside["results"]] == [str(file_id)]
+        outside = _tool_json(
+            await mcp.call_tool(
+                "sar_case_search", {**search, "path_prefixes": ["/elsewhere"]}
+            )
+        )
+        assert outside["results"] == []
+        headers = {"Authorization": f"Bearer {login_flow_static_client_token}"}
+        async with httpx.AsyncClient(timeout=30.0, headers=headers) as http:
+            via_http = await http.post(
+                f"{CASES}/{case_id}/search",
+                json={
+                    "query": term,
+                    "algorithm": "hybrid",
+                    "granularity": "document",
+                    "doc_types": ["file"],
+                    "path_prefixes": [folder],
+                },
+            )
+        assert via_http.status_code == 200, via_http.text
+        assert [str(r["id"]) for r in via_http.json()["results"]] == [str(file_id)]
+        logged = _tool_json(await mcp.call_tool("sar_case_get", {"case_id": case_id}))
+        assert [q["filters"]["path_prefixes"] for q in logged["case"]["queries"]] == [
+            [folder],
+            ["/elsewhere"],
+            [folder],
+        ]
+
         _tool_json(
             await mcp.call_tool(
                 "sar_case_items",

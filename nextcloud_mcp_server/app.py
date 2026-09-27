@@ -55,6 +55,7 @@ from nextcloud_mcp_server.api.sar import (
     export_sar_case,
     get_sar_case,
     list_sar_cases,
+    search_sar_case,
     update_sar_case,
 )
 from nextcloud_mcp_server.auth import (
@@ -2828,6 +2829,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     Route(case, update_sar_case, methods=["PATCH"]),
                     Route(case + "/items", change_sar_case_items, methods=["POST"]),
                     Route(case + "/exports", export_sar_case, methods=["POST"]),
+                    Route(case + "/search", search_sar_case, methods=["POST"]),
                 ]
                 logger.info("SAR case endpoints enabled: %s", cases)
         # Access and scope management endpoints (ADR-022)

@@ -2,8 +2,9 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..search.access_filter import MAX_PATH_PREFIXES
 from .base import BaseResponse
 
 MAX_KEEP = 50
@@ -51,7 +52,7 @@ class SarItem(BaseModel):
 
 
 Subject = Annotated[str, Field(min_length=1, max_length=200)]
-Query = Annotated[str, Field(min_length=1, max_length=1000)]
+Query = Annotated[str, Field(min_length=1, max_length=10000)]
 SubjectList = Annotated[list[Subject], Field(min_length=1, max_length=MAX_KEEP)]
 
 CaseState = Literal["open", "exporting", "ready_for_audit", "closed"]
@@ -75,13 +76,59 @@ class SarCaseItem(SarItem):
     added_at: str = ""
 
 
+class SarSearchFilters(BaseModel):
+    """The filters a search ran with: the search API's own parameter names."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    algorithm: str | None = Field(default=None, max_length=32)
+    doc_types: list[Annotated[str, Field(max_length=64)]] | None = Field(
+        default=None, max_length=20
+    )
+    path_prefixes: list[Annotated[str, Field(max_length=1000)]] | None = Field(
+        default=None, max_length=MAX_PATH_PREFIXES
+    )
+    modified_after: str | int | None = None
+    modified_before: str | int | None = None
+    score_threshold: float | None = None
+    min_relevance: float | None = None
+    fusion: str | None = Field(default=None, max_length=16)
+    granularity: str | None = Field(default=None, max_length=16)
+    rerank: bool | None = None
+
+    def describe(self) -> str:
+        """One line for the archive's search log; empty without filters."""
+        parts = []
+        if self.path_prefixes:
+            parts.append("folders: " + ", ".join(self.path_prefixes))
+        if self.doc_types:
+            parts.append("types: " + ", ".join(self.doc_types))
+        if self.modified_after is not None or self.modified_before is not None:
+            parts.append(
+                f"modified {self.modified_after or '…'} to {self.modified_before or '…'}"
+            )
+        if self.min_relevance:
+            parts.append(f"min relevance {self.min_relevance}")
+        if self.score_threshold:
+            parts.append(f"score threshold {self.score_threshold}")
+        if self.algorithm:
+            parts.append(f"algorithm: {self.algorithm}")
+        return "; ".join(parts)
+
+
 class SarQueryLog(BaseModel):
     """A search run for the case, including ones that found nothing."""
 
     text: Query
     hits: int | None = Field(default=None, ge=0)
+    filters: SarSearchFilters | None = None
     run_by: str = ""
     run_at: str = ""
+
+    def describe(self) -> str:
+        """The query as the archive lists it: its text, then its filters."""
+        filters = self.filters.describe() if self.filters else ""
+        return f"{self.text} ({filters})" if filters else self.text
 
 
 class SarCaseExport(BaseModel):
@@ -161,6 +208,7 @@ class SarItemRef(BaseModel):
 class SarQueryIn(BaseModel):
     text: Query
     hits: int | None = Field(default=None, ge=0)
+    filters: SarSearchFilters | None = None
 
 
 class SarCaseItemsChange(BaseModel):

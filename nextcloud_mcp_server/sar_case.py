@@ -359,7 +359,9 @@ async def change_items(
             raise ExportError(f"a case holds at most {MAX_CASE_ITEMS} items", 400)
         case.items = list(items.values())
         case.queries += [
-            SarQueryLog(text=q.text, hits=q.hits, run_by=user, run_at=now)
+            SarQueryLog(
+                text=q.text, hits=q.hits, filters=q.filters, run_by=user, run_at=now
+            )
             for q in request.queries
         ]
 
@@ -454,7 +456,7 @@ async def _start_case_export(
             name=name,
             keep=list(case.subject),
             items=list(case.items),
-            queries=[q.text for q in case.queries],
+            queries=[q.describe() for q in case.queries],
             on_finish=finish,
         )
     except BaseException as e:

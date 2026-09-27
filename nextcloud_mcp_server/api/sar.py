@@ -6,6 +6,7 @@
     PATCH  /api/v1/sar/cases/{case_id}            SarCaseUpdate        -> case
     POST   /api/v1/sar/cases/{case_id}/items      SarCaseItemsChange   -> case
     POST   /api/v1/sar/cases/{case_id}/exports    SarCaseExportRequest -> 202 case
+    POST   /api/v1/sar/cases/{case_id}/search     search body          -> search results
 
 Every operation acts as the bearer token's user, through their stored app
 password, so it can only read what that user can read and write where that
@@ -13,6 +14,7 @@ user can write. Nextcloud's permissions on the case folder are the access
 model; a case the user cannot see is a 404.
 """
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -32,6 +34,8 @@ from nextcloud_mcp_server.models.sar import (
     SarCaseExportRequest,
     SarCaseItemsChange,
     SarCaseUpdate,
+    SarQueryIn,
+    SarSearchFilters,
 )
 from nextcloud_mcp_server.redaction import get_ner_client
 from nextcloud_mcp_server.sar_case import (
@@ -174,3 +178,43 @@ async def export_sar_case(request: Request) -> JSONResponse:
         )
 
     return await _run(request, start, status=202)
+
+
+async def search_sar_case(request: Request) -> JSONResponse:
+    """Search as ``POST /api/v1/search`` does, with the same body, and log the
+    query and its filters to the case.
+
+    The search itself is the unified search handler, unchanged, so a case
+    search can never accept different filters from the search page. Only the
+    first page (``offset`` 0) is logged; later pages are the same search.
+    """
+    case_id = _case_id(request)
+    if isinstance(case_id, JSONResponse):
+        return case_id
+    # Lazy: visualization imports the search stack.
+    from nextcloud_mcp_server.api.visualization import (  # noqa: PLC0415
+        unified_search,
+    )
+
+    response = await unified_search(request)
+    if response.status_code != 200:
+        return response
+    body = await request.json()  # Starlette caches it; unified_search read it
+    if not body.get("query") or body.get("offset"):
+        return response
+    try:
+        found = json.loads(bytes(response.body))
+        log = SarQueryIn(
+            text=body["query"],
+            hits=found.get("total_found"),
+            filters=SarSearchFilters.model_validate(body),
+        )
+    except ValidationError as e:
+        return _invalid(e)
+    logged = await _run(
+        request,
+        lambda nc: change_items(nc, case_id, SarCaseItemsChange(queries=[log])),
+    )
+    # A case the user cannot change (closed, gone, not theirs) gets no results:
+    # searching "for" it must leave a record or not happen.
+    return response if logged.status_code == 200 else logged
