@@ -144,6 +144,41 @@ async def test_streamed_etag_is_none_when_absent(tmp_path):
     assert etag is None
 
 
+@pytest.mark.parametrize(
+    ("path", "reported", "expected"),
+    [
+        # Server falls back to a generic type for an extension mimetypes knows
+        # precisely -- observed against a real deployment for .json/.html/.xml/
+        # .yaml/.js/.svg, all reproduced here via the two catch-alls involved.
+        ("/report.json", "text/plain;charset=UTF-8", "application/json;charset=UTF-8"),
+        ("/page.html", "text/plain", "text/html"),
+        ("/data.xml", "application/octet-stream", "text/xml"),
+        # A specific server answer is trusted even when it disagrees with the
+        # extension -- this only intervenes on the two generic catch-alls.
+        ("/report.json", "application/pdf", "application/pdf"),
+        # No mimetypes entry for this extension: pass the server's answer
+        # through unchanged, generic or not -- there is nothing to prefer it
+        # over.
+        ("/settings.ini", "application/octet-stream", "application/octet-stream"),
+        # Already correct: no-op rather than reformatting away the charset.
+        ("/notes.txt", "text/plain;charset=UTF-8", "text/plain;charset=UTF-8"),
+    ],
+)
+async def test_streamed_content_type_prefers_extension_over_generic_answer(
+    tmp_path, path, reported, expected
+):
+    """A generic Content-Type from the server is second-guessed against the
+    path's extension; a specific one is trusted outright."""
+    body = b"content"
+    dest = tmp_path / "out"
+
+    _, content_type, _ = await _client(
+        body, {"content-length": str(len(body)), "content-type": reported}
+    ).stream_to_file(path, dest)
+
+    assert content_type == expected
+
+
 async def test_short_read_raises_and_removes_partial_file(tmp_path):
     """#965: a truncated download must not be left on disk to parse as valid."""
     dest = tmp_path / "out.pdf"
