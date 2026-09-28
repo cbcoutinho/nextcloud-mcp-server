@@ -201,6 +201,10 @@ async def nc_social_get_account_statuses(
 ) -> SocialStatusListResponse:
     """Read the statuses one account posted, newest first.
 
+    Other readers get only its public and unlisted statuses, followers included:
+    Social serves followers-only posts to their author alone here. A follower
+    reads those on the home or hashtag timeline instead.
+
     account: numeric account id, or a handle ('alice', 'alice@example.org').
     limit and paging as for nc_social_get_timeline.
     """

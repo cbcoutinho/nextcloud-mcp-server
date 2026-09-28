@@ -26,7 +26,7 @@ behave the way Mastodon's do. Written against Social v0.24.1.
 | `nc_social_get_hashtag_timeline` | `social.read` | Statuses carrying a hashtag |
 | `nc_social_get_status` | `social.read` | One status |
 | `nc_social_get_status_context` | `social.read` | The thread around a status (ancestors and replies) |
-| `nc_social_get_account_statuses` | `social.read` | Statuses one account posted |
+| `nc_social_get_account_statuses` | `social.read` | Statuses one account posted (public and unlisted only, unless it is your own account; followers see followers-only posts on the home timeline) |
 | `nc_social_get_account` | `social.read` | An account by numeric id or handle |
 | `nc_social_search_accounts` | `social.read` | Search accounts by name or handle |
 | `nc_social_get_relationships` | `social.read` | Following / followed-by / requested, per account |
