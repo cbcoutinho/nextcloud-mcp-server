@@ -138,9 +138,10 @@ and Astrolabe asks for them when minting the tokens for its SAR calls.
 Refusals carry their status: 400 invalid, 403 folder not writable or no
 background access, 404 no such case (or no access to it), 409 wrong state or
 name taken, 503 no background task group. `GET /api/v1/status` advertises
-`sar_available`; Astrolabe shows its SAR UI only when it is true. The
-tools need semantic search and `EMBEDDING_GATEWAY_URL`; the HTTP routes
-additionally need an authenticated deployment mode.
+`sar_available`; Astrolabe shows its SAR UI only when it is true. SAR is
+opt-in per deployment: `SAR_ENABLED=true` (default false), plus semantic
+search and `EMBEDDING_GATEWAY_URL`, which startup requires once it is set. The
+HTTP routes additionally need an authenticated deployment mode.
 
 ### Execution
 

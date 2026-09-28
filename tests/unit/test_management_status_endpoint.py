@@ -545,22 +545,26 @@ def test_status_advertises_rerank_capability(
 
 
 @pytest.mark.parametrize(
-    "mode,offline_access,vector_sync,gateway_url,expected",
+    "mode,offline_access,sar_enabled,vector_sync,gateway_url,expected",
     [
-        (AuthMode.LOGIN_FLOW, False, True, "https://gw.example", True),
-        (AuthMode.MULTI_USER_BASIC, True, True, "https://gw.example", True),
+        (AuthMode.LOGIN_FLOW, False, True, True, "https://gw.example", True),
+        (AuthMode.MULTI_USER_BASIC, True, True, True, "https://gw.example", True),
+        # Opt-in: a deployment with everything SAR needs still does not serve it
+        # unless SAR_ENABLED is set.
+        (AuthMode.LOGIN_FLOW, False, False, True, "https://gw.example", False),
         # The route is authenticated: not served in single-user mode.
-        (AuthMode.SINGLE_USER_BASIC, False, True, "https://gw.example", False),
+        (AuthMode.SINGLE_USER_BASIC, False, True, True, "https://gw.example", False),
         # Names are detected by the gateway; text comes from the index.
-        (AuthMode.LOGIN_FLOW, False, True, "", False),
-        (AuthMode.LOGIN_FLOW, False, False, "https://gw.example", False),
+        (AuthMode.LOGIN_FLOW, False, True, True, "", False),
+        (AuthMode.LOGIN_FLOW, False, True, False, "https://gw.example", False),
     ],
 )
 def test_status_advertises_sar_export_capability(
-    mode, offline_access, vector_sync, gateway_url, expected
+    mode, offline_access, sar_enabled, vector_sync, gateway_url, expected
 ):
     """Astrolabe gates its SAR export UI on this (ADR-040). Always present."""
     settings = create_mock_settings(vector_sync_enabled=vector_sync)
+    settings.sar_enabled = sar_enabled
     settings.embedding_gateway_url = gateway_url
     settings.enable_offline_access = offline_access
 

@@ -487,9 +487,11 @@ services:
       # against this profile too.
       - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
 
-      # SAR export (ADR-040): names are detected via the gateway's /v1/ner, stubbed
-      # here like the `mcp` service. OCR and reranking are off by default, so
-      # nothing else routes through the gateway.
+      # SAR export (ADR-040): opt-in, enabled here for the SAR tests. Names are
+      # detected via the gateway's /v1/ner, stubbed here like the `mcp`
+      # service. OCR and reranking are off by default, so nothing else routes
+      # through the gateway.
+      - SAR_ENABLED=${SAR_ENABLED:-true}
       - EMBEDDING_GATEWAY_URL=${EMBEDDING_GATEWAY_URL:-http://ner-stub:8080}
 
       # Observability -- same host passthrough as the `mcp` service. This is the

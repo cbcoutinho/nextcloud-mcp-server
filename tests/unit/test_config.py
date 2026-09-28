@@ -320,6 +320,38 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {"SAR_ENABLED": "true", "VECTOR_SYNC_ENABLED": "true"},
+        clear=True,
+    )
+    def test_sar_requires_the_embedding_gateway(self):
+        """Opting in to SAR without name detection would advertise nothing and
+        look broken: refuse to start instead."""
+        _reload_config()
+        with pytest.raises(ValueError, match="SAR_ENABLED requires"):
+            get_settings()
+
+    @patch.dict(
+        os.environ,
+        {
+            "SAR_ENABLED": "true",
+            "VECTOR_SYNC_ENABLED": "true",
+            "EMBEDDING_GATEWAY_URL": "http://gateway:8083",
+        },
+        clear=True,
+    )
+    def test_sar_enabled_parses_from_the_environment(self):
+        """The env var reaches Settings as a real bool."""
+        _reload_config()
+        assert get_settings().sar_enabled is True
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_sar_is_off_by_default(self):
+        """SAR is opt-in per deployment."""
+        _reload_config()
+        assert get_settings().sar_enabled is False
+
+    @patch.dict(
+        os.environ,
         {
             "SEARCH_RERANK_ENABLED": "true",
             "SEARCH_RERANK_URL": "http://infinity:7997/rerank",

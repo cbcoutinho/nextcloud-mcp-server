@@ -309,6 +309,10 @@ _DEFAULTS: dict[str, Any] = {
     # Names are detected by the embedding gateway's ``POST /v1/ner``, so SAR
     # export is available only with EMBEDDING_GATEWAY_URL set.
     # NER model, addressed the gateway way (``<provider>/<model>``).
+    # Subject access request cases and redacted export (ADR-040). Off by
+    # default: a deployment opts in, since only some need it. Also requires
+    # vector sync and EMBEDDING_GATEWAY_URL (for name detection).
+    "sar_enabled": False,
     "ner_model": "local/urchade/gliner_multi_pii-v1",
     # Per-request budget. Export runs in the background, so this only needs to
     # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
@@ -1403,6 +1407,7 @@ class Settings:
     search_rerank_timeout_seconds: float = 30.0
     search_rerank_max_concurrency: int = 1
     # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
+    sar_enabled: bool = False
     ner_model: str = "local/urchade/gliner_multi_pii-v1"
     ner_timeout_seconds: float = 120.0
     ner_batch_size: int = 8
@@ -1824,6 +1829,16 @@ class Settings:
                 "SEARCH_RERANK_ENABLED requires SEARCH_RERANK_URL (the full URL "
                 "of a Cohere-protocol rerank endpoint — Infinity, vLLM, Cohere) "
                 "or EMBEDDING_GATEWAY_URL"
+            )
+        # SAR cases search and read documents from the index and detect names
+        # through the gateway. Opting in without either would advertise nothing
+        # and look like the feature is broken: fail at startup instead.
+        if self.sar_enabled and not (
+            self.vector_sync_enabled and self.embedding_gateway_url
+        ):
+            raise ValueError(
+                "SAR_ENABLED requires semantic search (ENABLE_SEMANTIC_SEARCH) and "
+                "EMBEDDING_GATEWAY_URL (names are detected through its /v1/ner)"
             )
         # The default model id is namespaced for the gateway's routing layer. A
         # direct endpoint has no such layer and will 404/422 on `local/...`,
