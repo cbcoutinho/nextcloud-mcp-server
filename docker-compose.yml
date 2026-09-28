@@ -174,7 +174,7 @@ services:
   # tests exercise SAR export redaction (ADR-040) without a model. It detects
   # only the synthetic names hard-coded in tests/fixtures/ner_stub.py.
   ner-stub:
-    image: docker.io/library/python:3.12-alpine
+    image: docker.io/library/python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
     restart: always
     command: ["python", "/stub/ner_stub.py"]
     volumes:
