@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import functools
 import logging
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -25,6 +26,7 @@ from nextcloud_mcp_server.models import (
     MoveResourceResponse,
     ReadFileResponse,
     SearchFilesResponse,
+    TrackedChangeResponse,
     WriteFileResponse,
 )
 from nextcloud_mcp_server.models.webdav import (
@@ -70,6 +72,10 @@ _WEBDAV_CONFLICT_STATUSES = frozenset({404, 409, 412})
 #: content is absent. A constant rather than a setting: the useful bound is the
 #: client's context, not anything an operator knows better.
 RAW_CONTENT_MAX_BYTES = 5 * 1024 * 1024
+
+DOCX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 
 
 def _stamp_url(response: ReadFileResponse, url: str | None) -> ReadFileResponse:
@@ -780,6 +786,121 @@ def configure_webdav_tools(mcp: MCPServer):
             created=status_code == 201,
             size=len(content_bytes),
             etag=result.get("etag"),
+        )
+
+    @mcp.tool(
+        title="Suggest Tracked Change in Word Document",
+        annotations=ToolAnnotations(
+            # Not idempotent: repeating the call adds a second revision.
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_insert_tracked_change(
+        path: str,
+        anchor_text: str,
+        ctx: Context,
+        new_text: str = "",
+        mode: Literal["insert", "delete", "replace"] = "insert",
+        author: str | None = None,
+        occurrence: int | None = None,
+    ) -> TrackedChangeResponse:
+        """Suggest an edit to a .docx file as a native tracked change.
+
+        Unlike ``nc_webdav_create_comment`` (a Nextcloud-side comment no editor
+        shows), the suggestion is written *into* the document as a Word
+        ``<w:ins>``/``<w:del>`` revision: Word, LibreOffice, Collabora and
+        OnlyOffice display it as a tracked change the reviewer can accept or
+        reject. The rest of the document is left byte-for-byte untouched.
+
+        The file is read, revised and written back guarded by the etag of that
+        read, so an edit made elsewhere in between fails the call instead of
+        being overwritten. Raises ``ToolError`` when the file is not a Word
+        document, when ``anchor_text`` is not found or is ambiguous, on a
+        concurrent edit (412) or lock (423), when the file exceeds
+        ``WEBDAV_WRITE_MAX_MB``, or when ``EXCLUDED_TAGS`` covers the path.
+
+        Args:
+            path: Full path to the .docx file
+            anchor_text: Existing text that locates the change, matched exactly
+                within one paragraph (formatting boundaries inside it are fine).
+                Read the file first to copy it verbatim.
+            new_text: Suggested text. Inserted right after ``anchor_text`` for
+                ``insert``, in place of it for ``replace``. Leave empty for
+                ``delete``. A newline becomes a line break.
+            mode: ``insert`` (add ``new_text`` after the anchor), ``delete``
+                (mark the anchor as deleted) or ``replace`` (both).
+            author: Name shown on the revision. Defaults to the Nextcloud user.
+            occurrence: 1-based occurrence of ``anchor_text`` to target, required
+                when it appears more than once.
+
+        Returns:
+            ``TrackedChangeResponse`` with the ``revision_ids`` added, the
+            ``paragraph_text`` the change was anchored in, and the new ``etag``.
+        """
+        from nextcloud_mcp_server.utils.docx_revisions import (  # noqa: PLC0415
+            DocxRevisionError,
+            apply_revision,
+        )
+
+        client = await get_client(ctx)
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        content, _, etag = await client.webdav.read_file(path)
+
+        # The revised file goes back as one PUT, so the write cap applies to it.
+        max_mb = get_settings().webdav_write_max_mb
+        if max_mb and len(content) / (1024 * 1024) > max_mb:
+            raise ToolError(
+                f"Refusing to revise {path!r}: it exceeds the configured "
+                f"WEBDAV_WRITE_MAX_MB ({max_mb} MB)."
+            )
+        if etag is None:
+            # Without an etag the write-back could only be a blind overwrite,
+            # which would silently discard an edit made since the read.
+            raise ToolError(
+                f"Refusing to revise {path!r}: the server returned no ETag, so a "
+                "concurrent edit could not be detected."
+            )
+
+        revision_author = author or client.username
+        try:
+            result = await run_sync(
+                functools.partial(
+                    apply_revision,
+                    content,
+                    anchor_text,
+                    new_text,
+                    mode=mode,
+                    author=revision_author,
+                    occurrence=occurrence,
+                )
+            )
+        except DocxRevisionError as e:
+            raise ToolError(f"{e} ({path!r})") from e
+
+        write = await client.webdav.write_file(
+            path, result.content, DOCX_CONTENT_TYPE, if_match=etag
+        )
+        status_code = write.get("status_code")
+        if status_code in (412, 423):
+            raise ToolError(f"{write['message']} ({path!r})")
+
+        return TrackedChangeResponse(
+            path=path,
+            status_code=status_code,
+            mode=mode,
+            author=revision_author,
+            revision_ids=result.revision_ids,
+            paragraph_text=result.paragraph_text,
+            match_count=result.match_count,
+            size=len(result.content),
+            etag=write.get("etag"),
         )
 
     @mcp.tool(
