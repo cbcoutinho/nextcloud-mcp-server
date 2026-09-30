@@ -321,6 +321,9 @@ async def test_engine_never_creates_named_prepared_statements(
     session must hold no prepared statements after 10 identical executions."""
     from nextcloud_mcp_server.usage.store import UsageEvent, UsageEventStore
 
+    # pg_prepared_statements is per-session, so the executions and the check
+    # must share one connection -- one acquire() block (NullPool reconnects on
+    # the next acquire). The batch below then checks the user-visible symptom.
     async with storage.acquire() as db:
         for _ in range(10):
             await db.execute("SELECT COUNT(*) FROM usage_events")
