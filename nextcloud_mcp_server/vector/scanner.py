@@ -289,11 +289,11 @@ def _plan_file_deletions(
     returned fewer than ``_IMPLAUSIBLE_DISCOVERY_RATIO`` of the points Qdrant
     holds for it (zero included) — the signature of a flaky/empty/partial tag
     read (issue: the observed re-index flap). While a mode's consecutive-empty
-    streak is below ``empty_delete_threshold`` its deletions are
-    suppressed and its grace timers are left untouched (neither started nor
-    advanced), so a transient empty deletes nothing. Once the streak reaches the
-    threshold (a sustained empty = a genuine mass-untag) the mode's deletions
-    proceed normally. Any healthy read (at or above the ratio) pops the streak and
+    streak is below ``empty_delete_threshold`` its deletions are suppressed and
+    its grace timers are left untouched (neither started nor advanced), so a
+    transient empty deletes nothing. Once the streak reaches the threshold (a
+    sustained empty = a genuine mass-untag) the mode's deletions proceed
+    normally. Any healthy read (at or above the ratio) pops the streak and
     restores normal grace-based deletion.
 
     A mode that was *not attempted* (files admin-disabled, or the keyword tag

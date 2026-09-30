@@ -245,6 +245,21 @@ def test_partial_discovery_suppresses_deletions():
     assert streak == {(USER, HYB): 1}
 
 
+@pytest.mark.parametrize(("discovered", "suppressed"), [(5, False), (4, True)])
+def test_ratio_boundary_is_strict(discovered, suppressed):
+    """Exactly half discovered is healthy; just under half is implausible."""
+    streak: dict = {}
+    _plan(
+        indexed_by_mode={HYB: {str(i) for i in range(10)}},
+        nextcloud_file_ids={str(i) for i in range(discovered)},
+        discovered_by_mode={HYB: discovered},
+        attempted_modes={HYB},
+        grace_state={},
+        streak_state=streak,
+    )
+    assert ((USER, HYB) in streak) is suppressed
+
+
 def test_sustained_bulk_untag_still_purges():
     """A real bulk untag (<50% left) purges once the streak hits the threshold."""
     grace: dict = {(USER, str(i), "file"): 0.0 for i in range(2, 10)}
