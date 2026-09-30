@@ -571,10 +571,19 @@ class RefreshTokenStorage:
         # accepts the operator-supplied DSN as-is (ADR-026). When the URL omits
         # ``sslmode`` libpq's default (``prefer``) applies, keeping
         # cluster-local Postgres without TLS working out of the box.
+        #
+        # ``prepare_threshold=None`` disables psycopg's auto-prepare, which turns
+        # a query into a server-side named statement (``_pg3_0``...) on its 6th
+        # run. Behind a transaction-mode PgBouncer those names collide across
+        # clients (``DuplicatePreparedStatement``), so a usage batch of >=6
+        # INSERTs was dropped wholesale (Deck #1374). Same fix as
+        # ``_psycopg_connector`` in vector/queue/procrastinate.py (Deck #424);
+        # harmless when connecting direct.
         engine = create_async_engine(
             self.database_url,
             poolclass=NullPool,
             future=True,
+            connect_args={"prepare_threshold": None},
         )
         logger.info(
             "Postgres engine ready: NullPool (one connection per "
