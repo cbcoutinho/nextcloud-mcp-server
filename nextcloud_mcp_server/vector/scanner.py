@@ -226,6 +226,13 @@ _empty_discovery_streak: dict[tuple[str, str], int] = {}
 # to half capacity on overflow.
 _EMPTY_DISCOVERY_STREAK_MAX = 50_000
 
+# A discovery that finds fewer than this fraction of a mode's indexed docs is
+# treated like an empty one (streak-gated). A partial read -- one tagged folder's
+# walk timing out -- returned 18% of the corpus and purged the rest (Deck #1373);
+# the empty-only check let it through. A genuine bulk untag still purges once the
+# streak reaches the threshold.
+_IMPLAUSIBLE_DISCOVERY_RATIO = 0.5
+
 
 def _bump_streak(streak_state: dict[tuple[str, str], int], key: tuple[str, str]) -> int:
     """Increment and return the consecutive-empty streak for ``key``, bounded.
@@ -278,14 +285,15 @@ def _plan_file_deletions(
 ) -> _FileDeletionPlan:
     """Decide which indexed file points to delete, fail-safe against empty reads.
 
-    A mode's discovery is *implausible* this cycle iff it was attempted, returned
-    zero files, yet Qdrant still holds indexed points for it — the signature of a
-    flaky/empty tag read (issue: the observed re-index flap). While a mode's
-    consecutive-empty streak is below ``empty_delete_threshold`` its deletions are
+    A mode's discovery is *implausible* this cycle iff it was attempted yet
+    returned fewer than ``_IMPLAUSIBLE_DISCOVERY_RATIO`` of the points Qdrant
+    holds for it (zero included) — the signature of a flaky/empty/partial tag
+    read (issue: the observed re-index flap). While a mode's consecutive-empty
+    streak is below ``empty_delete_threshold`` its deletions are
     suppressed and its grace timers are left untouched (neither started nor
     advanced), so a transient empty deletes nothing. Once the streak reaches the
     threshold (a sustained empty = a genuine mass-untag) the mode's deletions
-    proceed normally. Any healthy read (>0 discovered) pops the streak and
+    proceed normally. Any healthy read (at or above the ratio) pops the streak and
     restores normal grace-based deletion.
 
     A mode that was *not attempted* (files admin-disabled, or the keyword tag
@@ -331,19 +339,21 @@ def _update_empty_discovery_streaks(
 ) -> tuple[set[str], dict[str, int]]:
     """Advance per-mode empty-discovery streaks; return (suppressed_modes, streaks).
 
-    A mode is *implausible* iff it was attempted, discovered zero, yet still has
-    indexed points — bump its streak and suppress deletions while the streak is
-    below ``empty_delete_threshold``. Any other outcome (not attempted → an
+    A mode is *implausible* iff it was attempted and discovered fewer than
+    ``_IMPLAUSIBLE_DISCOVERY_RATIO`` of its indexed points (zero included) —
+    bump its streak and suppress deletions while the streak is below
+    ``empty_delete_threshold``. Any other outcome (not attempted → an
     intentional zero; healthy read; nothing indexed) clears the streak.
     """
     suppressed_modes: set[str] = set()
     streaks: dict[str, int] = {}
     for mode in set(indexed_by_mode) | attempted_modes:
         streak_key = (user_id, mode)
+        indexed = len(indexed_by_mode.get(mode, set()))
         implausible = (
             mode in attempted_modes
-            and discovered_by_mode.get(mode, 0) == 0
-            and len(indexed_by_mode.get(mode, set())) > 0
+            and indexed > 0
+            and discovered_by_mode.get(mode, 0) < indexed * _IMPLAUSIBLE_DISCOVERY_RATIO
         )
         if not implausible:
             streak_state.pop(streak_key, None)
@@ -410,11 +420,12 @@ def _record_suppressed_deletions(
             continue
         logger.warning(
             "[SCAN-%s] Suppressed %d file deletion(s) for mode %s: tag "
-            "discovery returned 0 but Qdrant holds %d indexed doc(s) — "
+            "discovery found under %d%% of the %d indexed doc(s) — "
             "treating as a failed read (streak %d/%d)",
             scan_id,
             suppressed,
             mode,
+            int(_IMPLAUSIBLE_DISCOVERY_RATIO * 100),
             len(indexed_by_mode.get(mode, set())),
             plan.streaks.get(mode, 0),
             threshold,

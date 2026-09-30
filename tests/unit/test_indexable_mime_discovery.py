@@ -88,7 +88,7 @@ class TestTaggedFolderExpansion:
         assert failed is False
 
     async def test_one_failing_type_keeps_the_others(self, mocker):
-        """A partial folder beats an empty one."""
+        """Every type is still walked and the failure is reported."""
         client = self._client(
             mocker,
             per_type={DOCX: [{"id": 1}], "application/pdf": [{"id": 3}]},
