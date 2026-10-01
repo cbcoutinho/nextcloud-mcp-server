@@ -22,6 +22,7 @@ from .cookbook import CookbookClient
 from .deck import DeckClient
 from .groups import GroupsClient
 from .http import nextcloud_httpx_client, nextcloud_httpx_transport
+from .lucarne import LucarneClient
 from .mail import MailClient
 from .news import NewsClient
 from .notes import NotesClient
@@ -221,6 +222,7 @@ class NextcloudClient:
         self.groups = GroupsClient(self._client, username)
         self.sharing = SharingClient(self._client, username)
         self.shopping_list = ShoppingListClient(self._client, username)
+        self.lucarne = LucarneClient(self._client, username)
 
         # Initialize controllers
         self._notes_search = NotesSearchController()

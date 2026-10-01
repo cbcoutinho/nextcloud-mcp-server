@@ -99,6 +99,8 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "shopping_list.read",
         "shopping_list.write",
         "whiteboard.read",
+        "lucarne.read",
+        "lucarne.write",
         # MCP-server-level rather than a Nextcloud app, but it gates tools the
         # same way, so it lives in the same vocabulary. Advertised in DCR only
         # when vector sync is enabled — see app.py.

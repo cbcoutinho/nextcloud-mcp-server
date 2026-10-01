@@ -326,6 +326,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `collectives.read` / `collectives.write` | Collectives |
 | `shopping_list.read` / `shopping_list.write` | Shopping List |
 | `whiteboard.read` | Whiteboard (read-only). Reads board files without `files.read` |
+| `lucarne.read` / `lucarne.write` | Lucarne |
 | `news.read` | News (read-only) |
 | `mail.read` / `mail.write` / `mail.send` / `mail.draft` | Mail (see [mail.md](mail.md#scopes)) |
 | `sharing.write` | Share-link / share-permission management |
