@@ -164,6 +164,8 @@ async def test_update_operations_not_idempotent(nc_mcp_client: ClientSession):
     idempotent_exceptions = {
         "nc_shopping_list_update_list",
         "nc_shopping_list_update_item",
+        "nc_lucarne_update_catalog",
+        "nc_lucarne_update_playlist",
     }
 
     for tool in tools.tools:
