@@ -18,6 +18,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.lucarne import (
+    AddLucarnePlaylistVideoResponse,
     DeleteLucarneCatalogResponse,
     DeleteLucarnePlaylistResponse,
     ListLucarneCatalogsResponse,
@@ -26,6 +27,7 @@ from nextcloud_mcp_server.models.lucarne import (
     LucarneCatalog,
     LucarneCatalogResponse,
     LucarneChannel,
+    LucarneChannelResponse,
     LucarnePlaylist,
     LucarnePlaylistResponse,
 )
@@ -81,6 +83,28 @@ def configure_lucarne_tools(mcp: MCPServer):
             data = await client.lucarne.get_channels(catalog_id, uncategorized)
         channels = [LucarneChannel(**c) for c in data]
         return ListLucarneChannelsResponse(results=channels, total_count=len(channels))
+
+    @mcp.tool(
+        title="Subscribe to Lucarne Channel",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )
+    @require_scopes("lucarne.write")
+    @instrument_tool
+    async def nc_lucarne_subscribe_channel(
+        url: str, ctx: Context
+    ) -> LucarneChannelResponse:
+        """Subscribe to a YouTube channel in Lucarne (requires lucarne.write scope).
+
+        Lucarne finishes setting the channel up in the background, so its title
+        and videos may take a moment to appear.
+
+        Args:
+            url: YouTube channel URL, for example https://www.youtube.com/@Fireship
+        """
+        client = await get_client(ctx)
+        with _lucarne_errors(f"subscribing to channel {url}"):
+            data = await client.lucarne.add_channel(url)
+        return LucarneChannelResponse(channel=LucarneChannel(**data))
 
     # --- Catalogues ---
 
@@ -294,5 +318,30 @@ def configure_lucarne_tools(mcp: MCPServer):
         with _lucarne_errors(f"deleting playlist {playlist_id}"):
             data = await client.lucarne.delete_playlist(playlist_id, delete_videos)
         return DeleteLucarnePlaylistResponse(
+            playlist_id=playlist_id, queued=bool(data.get("queued", True))
+        )
+
+    @mcp.tool(
+        title="Add Video to Lucarne Playlist",
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
+    )
+    @require_scopes("lucarne.write")
+    @instrument_tool
+    async def nc_lucarne_add_video_to_playlist(
+        playlist_id: int, url: str, ctx: Context
+    ) -> AddLucarnePlaylistVideoResponse:
+        """Add a YouTube video to a personal Lucarne playlist (requires lucarne.write scope).
+
+        Lucarne inspects the video in the background, so it joins the playlist a
+        moment later. A playlist imported from YouTube cannot be changed this way.
+
+        Args:
+            playlist_id: Personal playlist to add the video to
+            url: YouTube video URL, for example https://www.youtube.com/watch?v=...
+        """
+        client = await get_client(ctx)
+        with _lucarne_errors(f"adding a video to playlist {playlist_id}"):
+            data = await client.lucarne.add_playlist_video(playlist_id, url)
+        return AddLucarnePlaylistVideoResponse(
             playlist_id=playlist_id, queued=bool(data.get("queued", True))
         )

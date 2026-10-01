@@ -66,6 +66,8 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 def test_registers_the_expected_tools(tools):
     assert set(tools) == {
         "nc_lucarne_list_channels",
+        "nc_lucarne_subscribe_channel",
+        "nc_lucarne_add_video_to_playlist",
         "nc_lucarne_list_catalogs",
         "nc_lucarne_get_catalog",
         "nc_lucarne_create_catalog",
@@ -158,3 +160,26 @@ async def test_delete_playlist_reports_it_is_queued(tools, lucarne, ctx):
     lucarne.delete_playlist.assert_awaited_once_with(7, True)
     assert result.playlist_id == 7
     assert result.queued is True
+
+
+async def test_subscribe_channel_returns_the_new_channel(tools, lucarne, ctx):
+    lucarne.add_channel.return_value = {
+        "id": 3,
+        "title": "@a",
+        "source_url": "https://www.youtube.com/@a/videos",
+    }
+
+    result = await tools["nc_lucarne_subscribe_channel"](
+        "https://www.youtube.com/@a", ctx
+    )
+
+    lucarne.add_channel.assert_awaited_once_with("https://www.youtube.com/@a")
+    assert result.channel.id == 3
+
+
+async def test_add_video_to_youtube_playlist_reads_as_conflict(tools, lucarne, ctx):
+    lucarne.add_playlist_video.side_effect = _http_error(409)
+    add = tools["nc_lucarne_add_video_to_playlist"]
+
+    with pytest.raises(MCPError, match="conflict"):
+        await add(2, "https://youtu.be/x", ctx)
