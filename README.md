@@ -94,6 +94,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
 | **Shopping List** | 12 | Lists and items — add a whole recipe's ingredients in one call, tick items off, clear checked |
+| **Lucarne** | 14 | Catalogues, channel subscriptions filed into catalogues, playlists with videos (requires the Lucarne AppAPI app) |
 | **Semantic Search** | 2+ | Vector search for Notes, Files, News items, Deck cards, and Mail messages (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
