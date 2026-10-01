@@ -129,3 +129,24 @@ async def test_delete_playlist_sends_the_body_lucarne_requires(mocker, delete_vi
     request.assert_called_once_with(
         "DELETE", f"{API}/playlists/1", json={"delete_videos": delete_videos}
     )
+
+
+async def test_add_channel(mocker):
+    client, request = _client(mocker, {"id": 1, "title": "@a"})
+
+    await client.add_channel("https://www.youtube.com/@a")
+
+    request.assert_called_once_with(
+        "POST", f"{API}/channels", json={"url": "https://www.youtube.com/@a"}
+    )
+
+
+async def test_add_playlist_video(mocker):
+    client, request = _client(mocker, {"queued": True})
+
+    result = await client.add_playlist_video(2, "https://youtu.be/x")
+
+    assert result == {"queued": True}
+    request.assert_called_once_with(
+        "POST", f"{API}/playlists/2/videos", json={"url": "https://youtu.be/x"}
+    )
