@@ -40,6 +40,17 @@ class LucarneClient(BaseNextcloudClient):
         )
         return response.json()
 
+    async def add_channel(self, url: str) -> dict[str, Any]:
+        """Subscribe to a YouTube channel.
+
+        Lucarne answers 202 at once and finishes initialising the channel (title,
+        videos) in the background.
+        """
+        response = await self._make_request(
+            "POST", f"{self.API_BASE}/channels", json={"url": url}
+        )
+        return response.json()
+
     # --- Catalogues ---
 
     async def get_catalogs(self) -> list[dict[str, Any]]:
@@ -148,5 +159,22 @@ class LucarneClient(BaseNextcloudClient):
             "DELETE",
             f"{self.API_BASE}/playlists/{playlist_id}",
             json={"delete_videos": delete_videos},
+        )
+        return response.json()
+
+    async def add_playlist_video(self, playlist_id: int, url: str) -> dict[str, Any]:
+        """Add a YouTube video to a personal playlist, by URL.
+
+        Lucarne inspects the video in the background, so it joins the playlist
+        a moment later.
+
+        Raises:
+            HTTPStatusError: 404 if the playlist is not found, 409 if it is a
+                YouTube playlist, which only the collection agent may change
+        """
+        response = await self._make_request(
+            "POST",
+            f"{self.API_BASE}/playlists/{playlist_id}/videos",
+            json={"url": url},
         )
         return response.json()

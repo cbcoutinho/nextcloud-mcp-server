@@ -44,6 +44,21 @@ class LucarnePlaylist(BaseModel):
     )
 
 
+class LucarneChannelResponse(BaseResponse):
+    """Response for a single channel."""
+
+    channel: LucarneChannel = Field(description="The channel")
+
+
+class AddLucarnePlaylistVideoResponse(BaseResponse):
+    """Response for adding a video to a playlist."""
+
+    playlist_id: int = Field(description="ID of the playlist")
+    queued: bool = Field(
+        description="True: Lucarne is still inspecting the video, which joins shortly"
+    )
+
+
 class ListLucarneChannelsResponse(BaseResponse):
     """Response for listing channels."""
 
