@@ -130,7 +130,13 @@ def _verify_content_length(response: Response, received: int, label: str) -> Non
 # Paging defaults for WebDAV SEARCH. Nextcloud's SEARCH returns a server-default
 # page (~100 results) when no ``<d:nresults>`` is sent, silently truncating large
 # folders. ``search_files_all`` pages explicitly to fetch the complete result set.
-WEBDAV_SEARCH_PAGE_SIZE = 500
+# Small enough that one page returns well inside the client read timeout even on a
+# slow instance: a single 50k-row SEARCH over a ~10k-file folder exceeded 30 s and
+# the resulting truncated discovery purged the index (Deck #1373).
+WEBDAV_SEARCH_PAGE_SIZE = 1000
+# Nextcloud's SEARCH (icewind/searchdav) reads the offset from its *own* XML
+# namespace, not ``DAV:`` -- a ``<d:firstresult>`` is silently ignored.
+SEARCHDAV_NS = "https://github.com/icewind1991/SearchDAV/ns"
 # Hard ceiling so a pathologically large folder can't drive an unbounded crawl.
 # Crossing it is logged as a truncation warning (and surfaced via a metric) so the
 # cap can never again silently hide files.
@@ -1291,7 +1297,7 @@ class WebDAVClient(BaseNextcloudClient):
             properties: List of property names to retrieve (defaults to basic set)
             order_by: List of (property, direction) tuples for sorting, e.g. [("getlastmodified", "descending")]
             limit: Maximum number of results to return
-            offset: Number of leading results to skip (``<d:firstresult>``). Note
+            offset: Number of leading results to skip (``<sd:firstresult>``). Note
                 that not every Nextcloud release honours offset paging; callers
                 that need guaranteed completeness should use ``search_files_all``,
                 which detects an ignored offset and falls back.
@@ -1374,7 +1380,7 @@ class WebDAVClient(BaseNextcloudClient):
 
         A plain ``search_files`` with no ``limit`` returns only Nextcloud's default
         page (~100), silently dropping the rest of a large folder. This method pages
-        with ``<d:firstresult>`` until a short page signals the end. If the server
+        with ``<sd:firstresult>`` until a short page signals the end. If the server
         ignores the offset (a page repeats results already seen), it falls back to a
         single fetch with an explicit large ``nresults`` so completeness never depends
         on offset support.
@@ -1412,7 +1418,7 @@ class WebDAVClient(BaseNextcloudClient):
         page_size: int,
         max_results: int,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Page the SEARCH with ``<d:firstresult>`` until exhausted.
+        """Page the SEARCH with ``<sd:firstresult>`` until exhausted.
 
         Returns the accumulated rows, or ``None`` when the server ignores the
         offset (a page repeats already-seen rows, or an offset page errors) and
@@ -1573,22 +1579,23 @@ class WebDAVClient(BaseNextcloudClient):
         else:
             orderby_xml = ""
 
-        # Build limit clause. ``<d:nresults>`` caps the page size; ``<d:firstresult>``
-        # is the paging offset. Nextcloud silently ignores an unsupported offset
-        # (returns the first page again) rather than erroring -- ``search_files_all``
-        # detects that non-progress and falls back to a single bounded fetch.
+        # Build limit clause. ``<d:nresults>`` caps the page size; ``<sd:firstresult>``
+        # is the paging offset, in the searchdav namespace (see ``SEARCHDAV_NS``).
+        # A server that still ignores it returns the first page again rather than
+        # erroring -- ``search_files_all`` detects that non-progress and falls back
+        # to a single bounded fetch.
         limit_parts = []
         if limit:
             limit_parts.append(f"<d:nresults>{limit}</d:nresults>")
         # ``is not None`` (not truthiness) so a future explicit offset=0 is
         # emitted rather than silently dropped.
         if offset is not None:
-            limit_parts.append(f"<d:firstresult>{offset}</d:firstresult>")
+            limit_parts.append(f"<sd:firstresult>{offset}</sd:firstresult>")
         limit_xml = f"<d:limit>{''.join(limit_parts)}</d:limit>" if limit_parts else ""
 
         # Construct the full SEARCH XML
         search_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:sd="{SEARCHDAV_NS}">
     <d:basicsearch>
         <d:select>
             <d:prop>
