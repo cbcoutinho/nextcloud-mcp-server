@@ -94,6 +94,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
 | **Shopping List** | 12 | Lists and items — add a whole recipe's ingredients in one call, tick items off, clear checked |
+| **[Social](docs/social.md)** | 20 | Fediverse microblogging: timelines, notifications, post/reply, follow, favourite, boost |
 | **Semantic Search** | 2+ | Vector search for Notes, Files, News items, Deck cards, and Mail messages (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
@@ -142,7 +143,7 @@ For result *ordering* — turning the fused rank score into a calibrated relevan
 - **[Configuration](docs/configuration.md)** — Environment variables, document processing, semantic search setup
 - **[Authentication](docs/authentication.md)** — Basic Auth, Login Flow v2
 - **[Running the Server](docs/running.md)** — Start, manage, troubleshoot
-- **[App Documentation](docs/)** — Per-app guides (Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables)
+- **[App Documentation](docs/)** — Per-app guides (Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables, Social)
 - **[Semantic Search Architecture](docs/semantic-search-architecture.md)** + **[Vector Sync UI](docs/user-guide/vector-sync-ui.md)**
 - **[Reranking](docs/reranking.md)** — cross-encoder relevance scoring (Infinity, vLLM, Cohere); no embedding gateway required
 - **[Login Flow v2](docs/login-flow-v2.md)** — recommended multi-user setup (architecture, env vars, scope reference, troubleshooting)
