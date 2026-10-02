@@ -21,6 +21,7 @@ from .collectives import CollectivesClient
 from .contacts import ContactsClient
 from .cookbook import CookbookClient
 from .deck import DeckClient
+from .fulltextsearch import FullTextSearchClient
 from .groups import GroupsClient
 from .mail import MailClient
 from .news import NewsClient
@@ -187,6 +188,7 @@ class NextcloudClient:
         )
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
+        self.fulltextsearch = FullTextSearchClient(self._client, username)
         self.collectives = CollectivesClient(self._client, username)
         self.deck = DeckClient(self._client, username)
         self.news = NewsClient(self._client, username)
