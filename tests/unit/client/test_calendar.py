@@ -1902,3 +1902,162 @@ def test_bulk_targets_never_moves_a_series():
 
     assert targets == []
     assert skipped[0]["status"] == "skipped"
+
+
+# --- VTIMEZONE RDATE layout --------------------------------------------------
+#
+# ``Timezone.from_tzinfo`` writes every DST transition into one comma-separated
+# RDATE. ical.js (Thunderbird) reads only the first value of each RDATE, so the
+# zone degrades to its standard offset and summer-time events land an hour off.
+# One RDATE property per value is what it can read.
+
+
+def _rdate_props(vtimezone):
+    """Every RDATE property of every sub-component, as a flat list."""
+    props = []
+    for sub in vtimezone.subcomponents:
+        rdate = sub.get("RDATE")
+        if rdate is None:
+            continue
+        props.extend(rdate if isinstance(rdate, list) else [rdate])
+    return props
+
+
+def _rdate_values(vtimezone):
+    return sorted(d.dt for p in _rdate_props(vtimezone) for d in p.dts)
+
+
+def _vtimezones(ical):
+    from icalendar import Calendar as ICalendar
+
+    return ICalendar.from_ical(ical).walk("VTIMEZONE")
+
+
+def _multi_valued_rdates(vtimezone):
+    return [p for p in _rdate_props(vtimezone) if len(p.dts) != 1]
+
+
+def test_split_vtimezone_rdates_leaves_one_value_per_rdate():
+    from zoneinfo import ZoneInfo
+
+    from icalendar import Timezone
+
+    from nextcloud_mcp_server.client.calendar import _split_vtimezone_rdates
+
+    tz = Timezone.from_tzinfo(ZoneInfo("Europe/Berlin"))
+    before = _rdate_values(tz)
+    # Guard the premise: icalendar really does emit comma-separated RDATEs.
+    assert _multi_valued_rdates(tz)
+
+    result = _split_vtimezone_rdates(tz)
+
+    assert result is tz
+    assert len(before) > 2
+    assert _rdate_props(result)
+    assert _multi_valued_rdates(result) == []
+    assert _rdate_values(result) == before
+
+
+def test_split_vtimezone_rdates_survives_serialisation():
+    from zoneinfo import ZoneInfo
+
+    from icalendar import Timezone
+
+    from nextcloud_mcp_server.client.calendar import _split_vtimezone_rdates
+
+    tz = _split_vtimezone_rdates(Timezone.from_tzinfo(ZoneInfo("Europe/Berlin")))
+    lines = [
+        line for line in tz.to_ical().decode().splitlines() if line.startswith("RDATE")
+    ]
+
+    assert lines
+    assert all("," not in line for line in lines)
+
+
+@pytest.mark.parametrize("zone", ["UTC", "Asia/Tokyo"])
+def test_split_vtimezone_rdates_ignores_zones_without_dst(zone):
+    from zoneinfo import ZoneInfo
+
+    from icalendar import Timezone
+
+    from nextcloud_mcp_server.client.calendar import _split_vtimezone_rdates
+
+    tz = Timezone.from_tzinfo(ZoneInfo(zone))
+    before = tz.to_ical()
+
+    _split_vtimezone_rdates(tz)
+
+    assert tz.to_ical() == before
+    assert _multi_valued_rdates(tz) == []
+
+
+def test_created_event_vtimezone_has_one_value_per_rdate():
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "Summer meeting",
+            "start_datetime": "2026-07-10T10:00:00",
+            "end_datetime": "2026-07-10T11:00:00",
+            "timezone": "Europe/Berlin",
+        },
+        "uid-berlin",
+    )
+
+    zones = _vtimezones(ical)
+
+    assert [str(z.get("TZID")) for z in zones] == ["Europe/Berlin"]
+    assert _rdate_props(zones[0])
+    assert _multi_valued_rdates(zones[0]) == []
+
+
+def test_created_event_without_dst_zone_is_unaffected():
+    ical = _pure_client()._create_ical_event(
+        {
+            "title": "Tokyo call",
+            "start_datetime": "2026-07-10T10:00:00",
+            "end_datetime": "2026-07-10T11:00:00",
+            "timezone": "Asia/Tokyo",
+        },
+        "uid-tokyo",
+    )
+
+    zones = _vtimezones(ical)
+
+    assert [str(z.get("TZID")) for z in zones] == ["Asia/Tokyo"]
+    assert _multi_valued_rdates(zones[0]) == []
+
+
+def test_merge_heals_a_vtimezone_written_by_an_older_version():
+    from zoneinfo import ZoneInfo
+
+    from icalendar import Calendar as ICalendar
+    from icalendar import Timezone
+
+    client = _pure_client()
+    stored = client._create_ical_event(
+        {
+            "title": "Summer meeting",
+            "start_datetime": "2026-07-10T10:00:00",
+            "end_datetime": "2026-07-10T11:00:00",
+            "timezone": "Europe/Berlin",
+        },
+        "uid-heal",
+    )
+    # Rebuild the stored object as an older version wrote it: the VTIMEZONE
+    # straight from icalendar, comma-separated RDATEs and all.
+    cal = ICalendar.from_ical(stored)
+    old_style = Timezone.from_tzinfo(ZoneInfo("Europe/Berlin"))
+    cal.subcomponents[:] = [old_style, *cal.walk("VEVENT")]
+    old_ical = cal.to_ical().decode()
+    assert _multi_valued_rdates(_vtimezones(old_ical)[0])
+    old_dtstart = _vevent(old_ical).get("dtstart")
+
+    merged = client._merge_ical_properties(old_ical, {"title": "Renamed"})
+
+    zones = _vtimezones(merged)
+    assert [str(z.get("TZID")) for z in zones] == ["Europe/Berlin"]
+    assert _multi_valued_rdates(zones[0]) == []
+    assert _rdate_values(zones[0]) == _rdate_values(_vtimezones(old_ical)[0])
+    vevent = _vevent(merged)
+    assert str(vevent.get("summary")) == "Renamed"
+    assert vevent.get("dtstart").dt == old_dtstart.dt
+    assert vevent.get("dtstart").params["TZID"] == old_dtstart.params["TZID"]

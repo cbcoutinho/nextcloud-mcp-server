@@ -15,7 +15,16 @@ import recurring_ical_events
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
 from caldav.lib import error as caldav_error
-from icalendar import Alarm, Calendar, Timezone, vCalAddress, vDDDTypes, vRecur, vText
+from icalendar import (
+    Alarm,
+    Calendar,
+    Component,
+    Timezone,
+    vCalAddress,
+    vDDDTypes,
+    vRecur,
+    vText,
+)
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
@@ -275,6 +284,29 @@ def _format_until(end_date: str, *, all_day: bool, tz: dt.tzinfo | None = None) 
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=tz or dt.UTC)
     return parsed.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _split_vtimezone_rdates(vtimezone: Component) -> Component:
+    """Rewrite each multi-valued RDATE in a VTIMEZONE as one RDATE per value.
+
+    ``Timezone.from_tzinfo`` lists every DST transition in a single
+    comma-separated RDATE. RFC 5545 allows that, but ical.js (used by
+    Thunderbird) reads only the first value of each RDATE property, so the
+    zone collapses to its standard offset and summer-time events shift by
+    one hour there.
+    """
+    for sub in vtimezone.subcomponents:
+        rdate = sub.get("RDATE")
+        if rdate is None:
+            continue
+        props = rdate if isinstance(rdate, list) else [rdate]
+        values = [d.dt for p in props for d in p.dts]
+        if len(values) == len(props):
+            continue
+        del sub["RDATE"]
+        for value in values:
+            sub.add("RDATE", value)
+    return vtimezone
 
 
 def _occurrence_is_done(component: Any) -> bool:
@@ -2142,7 +2174,7 @@ class CalendarClient:
 
         # VTIMEZONE must appear before the referencing VEVENT.
         for zi in used_timezones:
-            cal.add_component(Timezone.from_tzinfo(zi))
+            cal.add_component(_split_vtimezone_rdates(Timezone.from_tzinfo(zi)))
         cal.add_component(event)
         return cal.to_ical().decode("utf-8")
 
@@ -2591,7 +2623,14 @@ class CalendarClient:
                 }
                 for zi in used_timezones:
                     if str(zi) not in existing_tzids:
-                        cal.add_component(Timezone.from_tzinfo(zi))
+                        cal.add_component(
+                            _split_vtimezone_rdates(Timezone.from_tzinfo(zi))
+                        )
+                # Heal VTIMEZONEs written by older versions, whose
+                # comma-separated RDATEs ical.js reads only the first value of.
+                for sub in cal.subcomponents:
+                    if sub.name == "VTIMEZONE":
+                        _split_vtimezone_rdates(sub)
 
                 break
 
