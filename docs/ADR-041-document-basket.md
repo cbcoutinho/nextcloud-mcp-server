@@ -52,15 +52,22 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
 - **Progress lives in the run's status file, not the basket file.** As in
   ADR-040, each run writes `runs/<n>.status.json` next to the basket: counts,
   per-item outcomes and a heartbeat. It has one writer (the run), so it needs
-  no ETag guard. It is flushed at most once every 5 s (sooner only when the
-  run ends), so the number of status writes is bounded by the run's duration,
-  not its item count. The basket file itself is written twice per run: lock at
+  no ETag guard. There is exactly **one writer task** per run: the processor's
+  `report.item()` calls only buffer in memory, and a single flusher task writes
+  the whole snapshot. It flushes when the buffer is dirty (at most once every
+  5 s), at least every 60 s even when nothing changed (that is the heartbeat),
+  and once when the run ends. Because counts and heartbeat come from one
+  snapshot, a heartbeat can never overwrite fresher counts. The number of
+  status writes is bounded by the run's duration, not its item count. The
+  status file is **created at lock time**, in the same step that locks the
+  basket, so a run killed before its first flush still has a file whose age
+  can be judged. The basket file itself is written twice per run: lock at
   the start, unlock with the run summary at the end.
 - **A dead run cannot lock a basket.**
-  - *Heartbeat is the framework's job.* The run framework starts a heartbeat
-    task in the run's task group that rewrites the status file every 60 s for
-    the run's lifetime, so a processor blocked on one slow item (an OCR'd PDF,
-    an `nc_task` poll) cannot forget to heartbeat.
+  - *Heartbeat is the framework's job.* The flusher above runs in the run's
+    task group for the run's lifetime, independent of the processor, so a
+    processor blocked on one slow item (an OCR'd PDF, an `nc_task` poll)
+    cannot forget to heartbeat.
   - *Staleness is judged on Nextcloud's clock.* The heartbeat's age is the
     status file's `getlastmodified`, which Nextcloud sets, compared with the
     `Date` header of the same WebDAV response. Replica clocks never enter it.
@@ -91,7 +98,11 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
 - **Runs are history.** Every run appends to `runs[]` with its processor id,
   options, counts and result (archive path, target folder, tag ids). Reopening
   and running again appends a new run; SAR archive versions (`-v1`, `-v2`) are
-  the `sar_redact` runs numbered per basket.
+  the `sar_redact` runs numbered per basket. Per-item outcomes stay in the
+  run's status file, so `runs[]` holds only summaries. It is capped at 100
+  runs per basket: a run beyond that is a 409. Status files share the basket
+  folder's lifecycle. Closing keeps them as the audit record, deleting the
+  basket folder deletes them, and nothing reaps them earlier.
 - **Item results.** A run reports, per item, `ok`, `failed` (with reason) or
   `skipped` (with reason). Nothing is dropped silently; ADR-040's "listed as
   failed, never dropped" becomes a rule for every processor.
@@ -107,8 +118,9 @@ A processor declares `binds_at`:
 - **`run`** — chosen when the user runs the basket, with options validated
   against `options_schema`. `tag`, `copy`, `move` and `nc_task` are run-time.
 
-**`kind` is immutable** once the basket exists, and a kind is exactly one
-processor id. This is intentional: a future create-time processor gets its own
+**`kind` is immutable** once the basket exists (a `PATCH` that sets it is a
+400), and a kind is exactly one processor id. Basket data is validated against
+the processor's `basket_schema` on every update, not only on create. This is intentional: a future create-time processor gets its own
 kind rather than sharing a family. Basket data (the keep-list)
 stays editable while the basket is `open`, as the subject is today, and is
 frozen while `processing`. It is applied only when the processor runs: the
@@ -217,9 +229,11 @@ none leaves a lock behind:
 
 1. 403: no `baskets.write`.
 2. 404: no such basket, or no access to it.
-3. 400: unknown or unavailable processor, `create`-time processor on a basket
-   of another kind, options failing the schema (including `move` without
-   `confirm`), or `move` sent to `basket_run`.
+3. 400: unknown or unavailable processor; `create`-time processor on a basket
+   of another kind; an empty basket, or one with no item the processor's
+   `item_types` accept (for every processor, ADR-040's "at least one document"
+   rule); options failing the schema (including `move` without `confirm`); or
+   `move` sent to `basket_run`.
 4. 403: missing processor scope.
 5. 409: basket not `open`.
 6. Lock, then 202.
@@ -273,9 +287,13 @@ a `BREAKING CHANGE:` footer.**
   `sar_case_*` tools become thin adapters over baskets. They list only baskets
   of kind `sar_redact`, map the states back (`processing` → `exporting`, `done`
   → `ready_for_audit`) and expose `sar_redact` runs as `exports`. Every alias
-  response carries `Deprecation: true` and a `Link` to ADR-041, plus a
+  response carries `Deprecation: @<unix-ts>` (RFC 9745, the time release N
+  was cut) and a `Link` to ADR-041 with `rel="deprecation"`, plus a
   deprecation warning in the logs once per process. There is no `Sunset` date,
-  because removal is keyed to the next minor release, not a calendar date.
+  because removal is keyed to the next minor release, not a calendar date. The
+  adapters keep the SAR scopes: every alias call still needs `sar.read` or
+  `sar.write`, plus `semantic.read` for search and export, exactly as in
+  ADR-040. They never fall back to `baskets.*` alone.
   `sar_available` is still
   advertised and keeps its meaning. The alias keeps the item contract as of
   v0.198.4 (#1595): `reason` is optional on every basket, `sar_redact` ones
@@ -381,14 +399,19 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   `sar-case.json` loading, alias state mapping, each processor with a fake
   WebDAV client (`tag`/`copy`/`move` skip non-files, `on_conflict`, a re-run
   `move` skips files already in the target), the error order for a run
-  request, and `basket_move` without `confirm` over MCP as well as HTTP.
+  request, `basket_move` without `confirm` over MCP as well as HTTP, and
+  `basket_run` with `processor: "move"` (400, so the split cannot be bypassed
+  by calling the wrong tool). Also: a `PATCH` setting `kind` (400), and an
+  empty basket (400).
   Stale runs: a reader with only `baskets.read` sees the computed `open` view
   and nothing is written. The next `baskets.write` call persists it. A slow
   item past the stale window stays alive on the framework heartbeat.
 - **MCP server, integration** (login-flow lane, real Nextcloud): create basket →
   `basket_search` → add → run `tag` (tags visible via WebDAV), `copy`
   (files in target), `move`; run `sar_redact` (archive written) through both
-  `/baskets` and the `sar/*` alias. Negative case: a basket shared with a user
+  `/baskets` and the `sar/*` alias. The alias still refuses a token holding
+  only `baskets.*` (403 without `sar.*` / `semantic.read`) and sends the
+  `Deprecation` header. Negative case: a basket shared with a user
   who cannot read one of its files; their run reports that item `failed`
   rather than reading it, because a basket scope never widens access.
   Heartbeat end to end: a `sar_redact` run over a document slow enough to
@@ -400,7 +423,13 @@ Every new API surface ships with e2e and contract coverage in the same PR.
 - **Pact provider** (`test_mcp_provider_verification.py`): provider states for
   "a basket exists", "a basket of kind sar_redact exists", "a run is in
   progress"; verifies `/api/v1/baskets/*`, `/runs`, `/baskets/processors`, and
-  the `basket_processors` summary in `/api/v1/status`.
+  the `basket_processors` summary in `/api/v1/status`. **Known gap:** only the
+  `/api/v1/status` part can be verified today. The basket routes are
+  authenticated, and like the existing SAR states (`_state_sar_case`) their
+  states stay empty until the ADR-029 phase-4 hook (bearer token plus
+  seeded data) exists. That gap is tracked on board 11 card #1340 (SAR e2e +
+  authenticated provider verification), which this ADR extends to the basket
+  routes. The consumer pacts are still recorded and published in the meantime.
 - **Pact consumer** (Astrolabe `McpServerClientPactTest.php`): basket CRUD,
   items, search, runs, and the status shape with and without
   `basket_processors` (the fallback to `sar_available`).
