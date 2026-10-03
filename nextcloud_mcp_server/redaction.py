@@ -194,7 +194,8 @@ def _reset_ner_state() -> None:
 
 
 async def get_ner_client(settings: Any) -> NerClient:
-    """The shared NER client. Call only when :func:`redaction_available`."""
+    """The shared NER client. Call only when
+    :func:`~nextcloud_mcp_server.features.redaction_available`."""
     global _client, _client_lock
     url = ner_endpoint(settings)
     if url is None:

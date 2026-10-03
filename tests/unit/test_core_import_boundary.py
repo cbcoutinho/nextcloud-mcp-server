@@ -11,6 +11,7 @@ bare install looks like. A module-level import of one of them anywhere on the
 core path fails the test with the offending import chain in the traceback.
 """
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -56,8 +57,11 @@ _BLOCKER = textwrap.dedent(
 
 
 def _run(body: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess:
+    # Only what the interpreter needs to start on any OS -- never the caller's
+    # NEXTCLOUD_*/VECTOR_* settings, which would change what gets imported.
     env = {
-        "PATH": "/usr/bin:/bin",
+        k: os.environ[k] for k in ("PATH", "HOME", "SYSTEMROOT") if k in os.environ
+    } | {
         "NEXTCLOUD_HOST": "http://nextcloud.invalid",
         "NEXTCLOUD_USERNAME": "admin",
         "NEXTCLOUD_PASSWORD": "admin",
