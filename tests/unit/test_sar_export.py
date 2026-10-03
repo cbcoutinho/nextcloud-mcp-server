@@ -187,7 +187,9 @@ def test_blank_reason_is_left_out(monkeypatch):
     assert b"Reason for inclusion" not in sar_export.render_document("L", " ", "b")
     assert b"Reason for inclusion" in sar_export.render_document("L", "why", "b")
     row = {"n": 1, "title": "Letter", "reason": "", "pages": "", "counts": {}}
-    assert b"<i></i>" not in sar_export.render_index("SAR-1", [row])
+    index = sar_export.render_index("SAR-1", [row])
+    assert b"<td>Letter</td>" in index
+    assert b"<i></i>" not in index
     row["reason"] = "why"
     assert b"<i>why</i>" in sar_export.render_index("SAR-1", [row])
 

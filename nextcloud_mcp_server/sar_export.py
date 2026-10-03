@@ -289,11 +289,13 @@ def render_document(title: str, reason: str, text: str) -> bytes:
 def render_index(name: str, rows: list[dict[str, Any]]) -> bytes:
     cells = []
     for row in rows:
+        reason_html = (
+            f"<br/><i>{_e(row['reason'])}</i>" if row["reason"].strip() else ""
+        )
         detail = (
             f"<b>Not exported:</b> {_e(row['error'])}"
             if row.get("error")
-            else _e(row["title"])
-            + (f"<br/><i>{_e(row['reason'])}</i>" if row["reason"].strip() else "")
+            else f"{_e(row['title'])}{reason_html}"
         )
         redacted = ", ".join(f"{k.lower()}: {v}" for k, v in row["counts"].items())
         cells.append(
