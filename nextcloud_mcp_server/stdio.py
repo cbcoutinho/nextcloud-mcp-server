@@ -23,7 +23,6 @@ from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.observability.metrics import instrument_call_tool_outcomes
-from nextcloud_mcp_server.plugins import register_plugin_tools
 from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 
@@ -111,8 +110,6 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> MCPServer:
                 app_name,
                 list(AVAILABLE_APPS.keys()),
             )
-
-    register_plugin_tools(mcp, settings)
 
     # Mirrors app.py: the per-tool-call log line, the client-fleet metrics and
     # the delivery-outcome counter all hang off this wrapper, so the stdio

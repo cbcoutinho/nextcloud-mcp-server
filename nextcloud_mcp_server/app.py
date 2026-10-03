@@ -169,13 +169,13 @@ def build_dcr_scopes(
     ``(scopes, available)`` pair per installed plugin, and a plugin's scopes are
     advertised only while it is available.
     """
-    plugin_scopes = list(plugin_scopes)
-    withheld = frozenset().union(*(s for s, _ in plugin_scopes))
+    per_plugin = list(plugin_scopes)
+    withheld = frozenset().union(*(s for s, _ in per_plugin))
     scopes = ["openid", "profile", "email"]
     scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"} - withheld)
     if vector_sync_enabled:
         scopes.append("semantic.read")
-    for plugin_scope_set, available in plugin_scopes:
+    for plugin_scope_set, available in per_plugin:
         if available:
             scopes += sorted(plugin_scope_set)
     if offline_access_enabled:
@@ -1617,6 +1617,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         raise ValueError(error_msg)
 
     logger.info("✅ Configuration validated successfully for %s mode", mode.value)
+
+    # Load plugins now so a broken one fails startup, not every later call
+    # (e.g. /api/v1/status) -- load_plugins() caches only a success.
+    for plugin in load_plugins():
+        logger.info("Plugin installed: %s", plugin.name)
     logger.debug("Mode details:\\n%s", get_mode_summary(mode))
 
     # Derive helper variables for backward compatibility with existing code.

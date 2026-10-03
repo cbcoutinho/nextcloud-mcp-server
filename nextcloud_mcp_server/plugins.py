@@ -25,18 +25,25 @@ the helpers a plugin needs (``get_client``, ``require_scopes``, ...).
 """
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import entry_points
-from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from starlette.routing import BaseRoute
 
+from nextcloud_mcp_server.config import Settings
+
 logger = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "nextcloud_mcp_server.plugins"
+
+# A plugin's name becomes the ``<name>_available`` key of /api/v1/status, so it
+# must be identifier-like and must not shadow a key the server already reports.
+_NAME = re.compile(r"[a-z][a-z0-9_]*")
+_RESERVED_NAMES = frozenset({"rerank"})
 
 
 def _no_routes() -> list[BaseRoute]:
@@ -45,10 +52,11 @@ def _no_routes() -> list[BaseRoute]:
 
 @dataclass(frozen=True)
 class Plugin:
-    """An optional feature. ``name`` must be unique across installed plugins."""
+    """An optional feature. ``name`` is lowercase ``[a-z][a-z0-9_]*`` and unique
+    across installed plugins."""
 
     name: str
-    available: Callable[[Any], bool]
+    available: Callable[[Settings], bool]
     """Whether the feature is configured and usable, from settings alone."""
     register_tools: Callable[[MCPServer], None]
     routes: Callable[[], list[BaseRoute]] = _no_routes
@@ -70,20 +78,25 @@ def load_plugins() -> tuple[Plugin, ...]:
                 f"entry point {ep.name!r} ({ep.value}) in {ENTRY_POINT_GROUP} "
                 f"is a {type(plugin).__name__}, not a Plugin"
             )
+        if not _NAME.fullmatch(plugin.name) or plugin.name in _RESERVED_NAMES:
+            raise ValueError(
+                f"entry point {ep.name!r} ({ep.value}): invalid plugin name "
+                f"{plugin.name!r}"
+            )
         if plugin.name in plugins:
             raise ValueError(f"two installed plugins are named {plugin.name!r}")
         plugins[plugin.name] = plugin
     return tuple(plugins.values())
 
 
-def available_plugins(settings: Any) -> list[Plugin]:
+def available_plugins(settings: Settings) -> list[Plugin]:
     """The installed plugins that are available under ``settings``."""
     return [p for p in load_plugins() if p.available(settings)]
 
 
-def register_plugin_tools(mcp: MCPServer, settings: Any) -> None:
-    """Register the MCP tools of every available plugin. Shared by both
-    transports (app.py, stdio.py) so their tool sets cannot drift."""
+def register_plugin_tools(mcp: MCPServer, settings: Settings) -> None:
+    """Register the MCP tools of every available plugin, logging the skipped
+    ones. HTTP transport only: the stdio server supports no plugins yet."""
     for plugin in load_plugins():
         if plugin.available(settings):
             logger.info("Plugin %s: registering tools", plugin.name)
