@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 import logging
 import os
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -25,17 +26,21 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.requests import Request
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as StarletteScope
 
-from nextcloud_mcp_server.admin.payload_backfill import handle_payload_backfill
 from nextcloud_mcp_server.api import (
     delete_app_password,
     get_app_password_status,
-    get_chunk_context,
     get_installed_apps,
     get_server_status,
     get_user_access,
@@ -43,20 +48,8 @@ from nextcloud_mcp_server.api import (
     get_vector_sync_status,
     list_supported_scopes,
     provision_app_password,
-    purge_doc_types_route,
     revoke_user_access,
-    unified_search,
     update_user_scopes,
-    vector_search,
-)
-from nextcloud_mcp_server.api.sar import (
-    change_sar_case_items,
-    create_sar_case,
-    export_sar_case,
-    get_sar_case,
-    list_sar_cases,
-    search_sar_case,
-    update_sar_case,
 )
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
@@ -106,6 +99,7 @@ from nextcloud_mcp_server.config_validators import (
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
+from nextcloud_mcp_server.features import sar_available
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from nextcloud_mcp_server.observability import (
@@ -120,38 +114,25 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
-from nextcloud_mcp_server.redaction import sar_available
 from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
-from nextcloud_mcp_server.server import (
-    AVAILABLE_APPS,
-    configure_app_tools,
-    configure_semantic_tools,
-)
+from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
-from nextcloud_mcp_server.server.sar import configure_sar_tools
-from nextcloud_mcp_server.vector.metrics_publisher import (
-    usage_stock_task,
-    vector_density_snapshot_task,
-    vector_sync_metrics_task,
-)
-from nextcloud_mcp_server.vector.oauth_sync import (
-    ProvisionSignal,
-    credential_cleanup_task,
-    oauth_processor_task,
-    user_manager_task,
-)
-from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
-from nextcloud_mcp_server.vector.processor import processor_task
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.queue import build_transport
-from nextcloud_mcp_server.vector.scanner import scanner_task
-from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
+
+# The vector/semantic-search stack (vector/, search/, document_processors/,
+# admin/payload_backfill, api/{visualization,vector_sync,sar}, server/{semantic,
+# sar}) is NEVER imported at module level here. It pulls in optional heavy
+# dependencies (qdrant-client, fastembed, pymupdf, provider SDKs), and the core
+# server must start without them. Each use imports it inside the branch that is
+# already gated on VECTOR_SYNC_ENABLED / sar_available, or via _lazy_endpoint
+# for routes that are mounted unconditionally.
+# tests/unit/test_core_import_boundary.py enforces this.
 
 if TYPE_CHECKING:
     # Annotation-only in this module (the file uses `from __future__ import
     # annotations`, so these are never evaluated at runtime).
+    from nextcloud_mcp_server.vector.oauth_sync import ProvisionSignal
     from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
@@ -695,6 +676,10 @@ async def _init_qdrant_collection_with_retry() -> None:
         jitter=True,
     )
     async def _attempt() -> None:
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
+        )
+
         await get_qdrant_client()  # Triggers collection creation if needed
 
     try:
@@ -1580,6 +1565,22 @@ def _build_transport_security() -> TransportSecuritySettings:
     return TransportSecuritySettings(**kwargs)
 
 
+def _lazy_endpoint(module: str, name: str) -> Callable[[Request], Awaitable[Response]]:
+    """A route endpoint that imports its real handler on first request.
+
+    For routes mounted regardless of VECTOR_SYNC_ENABLED whose handler lives in
+    the optional vector stack: the route table stays the same, but the stack is
+    only imported once such a route is actually hit.
+    """
+
+    async def endpoint(request: Request) -> Response:
+        handler = getattr(importlib.import_module(module), name)
+        return await handler(request)
+
+    endpoint.__name__ = name
+    return endpoint
+
+
 def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
@@ -1878,11 +1879,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     if settings.vector_sync_enabled:
+        from nextcloud_mcp_server.server.semantic import (  # noqa: PLC0415
+            configure_semantic_tools,
+        )
+
         logger.info("Configuring search tools (vector sync enabled, hybrid search)")
         configure_semantic_tools(mcp)
         # SAR export reads document text from the index and detects names via
         # the embedding gateway (ADR-040).
         if sar_available(settings):
+            from nextcloud_mcp_server.server.sar import (  # noqa: PLC0415
+                configure_sar_tools,
+            )
+
             configure_sar_tools(mcp)
         else:
             logger.info("Skipping SAR export tools (EMBEDDING_GATEWAY_URL not set)")
@@ -2049,6 +2058,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         """
         if not settings.vector_sync_orphan_sweep_enabled:
             return
+        from nextcloud_mcp_server.vector.placeholder import (  # noqa: PLC0415
+            sweep_orphan_placeholders,
+        )
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
+        )
+
         try:
             qdrant_client = await get_qdrant_client()
             collection = settings.get_collection_name()
@@ -2232,6 +2248,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             and not settings.enable_multi_user_basic_auth
         ):
             # BasicAuth mode - single user sync
+            from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+                usage_stock_task,
+                vector_density_snapshot_task,
+                vector_sync_metrics_task,
+            )
+            from nextcloud_mcp_server.vector.processor import (  # noqa: PLC0415
+                processor_task,
+            )
+            from nextcloud_mcp_server.vector.queue import (  # noqa: PLC0415
+                build_transport,
+            )
+            from nextcloud_mcp_server.vector.scanner import (  # noqa: PLC0415
+                scanner_task,
+            )
+
             logger.info("Starting background vector sync tasks for BasicAuth mode")
 
             # Get username from settings
@@ -2354,6 +2385,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         ):
             # OAuth mode with background operations - multi-user sync
             # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords or OAuth)
+            from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+                usage_stock_task,
+                vector_density_snapshot_task,
+                vector_sync_metrics_task,
+            )
+            from nextcloud_mcp_server.vector.oauth_sync import (  # noqa: PLC0415
+                ProvisionSignal,
+                credential_cleanup_task,
+                oauth_processor_task,
+                user_manager_task,
+            )
+            from nextcloud_mcp_server.vector.queue import (  # noqa: PLC0415
+                build_transport,
+            )
+
             mode_desc = "OAuth mode" if oauth_enabled else "Multi-user BasicAuth mode"
             logger.info("Starting background vector sync tasks for %s", mode_desc)
 
@@ -2729,7 +2775,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # feature is off and vector sync still reconciles via the polling scanner.
     if settings.webhook_secret:
         routes.append(
-            Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
+            Route(
+                "/webhooks/nextcloud",
+                _lazy_endpoint(
+                    "nextcloud_mcp_server.vector.webhook_receiver",
+                    "handle_nextcloud_webhook",
+                ),
+                methods=["POST"],
+            )
         )
         logger.info("Webhook endpoint enabled: /webhooks/nextcloud")
     else:
@@ -2765,7 +2818,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route(
                 "/api/v1/admin/payload-backfill",
-                handle_payload_backfill,
+                _lazy_endpoint(
+                    "nextcloud_mcp_server.admin.payload_backfill",
+                    "handle_payload_backfill",
+                ),
                 methods=["POST"],
             )
         )
@@ -2805,20 +2861,39 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 methods=["DELETE"],
             )
         )
+        viz = "nextcloud_mcp_server.api.visualization"
         routes.append(
-            Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])
+            Route(
+                "/api/v1/vector-viz/search",
+                _lazy_endpoint(viz, "vector_search"),
+                methods=["POST"],
+            )
         )
         routes.append(
-            Route("/api/v1/chunk-context", get_chunk_context, methods=["GET"])
+            Route(
+                "/api/v1/chunk-context",
+                _lazy_endpoint(viz, "get_chunk_context"),
+                methods=["GET"],
+            )
         )
         # ADR-018: Unified search endpoint for Nextcloud PHP app integration
-        routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
+        routes.append(
+            Route(
+                "/api/v1/search",
+                _lazy_endpoint(viz, "unified_search"),
+                methods=["POST"],
+            )
+        )
         routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
         # Vector-sync admin: purge indexed vectors by doc type (admin consent —
         # called by Astrolabe when a source is disabled for semantic search).
         # Gated on vector_sync_enabled: without it there is no Qdrant client, so
         # the purge would 500 rather than no-op.
         if settings.vector_sync_enabled:
+            from nextcloud_mcp_server.api.vector_sync import (  # noqa: PLC0415
+                purge_doc_types_route,
+            )
+
             routes.append(
                 Route(
                     "/api/v1/vector-sync/purge",
@@ -2829,6 +2904,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
             # SAR export (ADR-040); advertised as sar_available.
             if sar_available(settings):
+                from nextcloud_mcp_server.api.sar import (  # noqa: PLC0415
+                    change_sar_case_items,
+                    create_sar_case,
+                    export_sar_case,
+                    get_sar_case,
+                    list_sar_cases,
+                    search_sar_case,
+                    update_sar_case,
+                )
+
                 cases = "/api/v1/sar/cases"
                 case = cases + "/{case_id:int}"
                 routes += [

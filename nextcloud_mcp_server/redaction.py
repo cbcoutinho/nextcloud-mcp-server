@@ -49,6 +49,7 @@ from typing import Any
 
 import anyio
 
+from nextcloud_mcp_server.features import ner_endpoint
 from nextcloud_mcp_server.providers.gateway import build_gateway_token_provider
 from nextcloud_mcp_server.providers.ner import (
     ADDRESS_LABEL,
@@ -190,33 +191,6 @@ def _reset_ner_state() -> None:
     global _client, _client_lock
     _client = None
     _client_lock = None
-
-
-def ner_endpoint(settings: Any) -> str | None:
-    """``<gateway>/v1/ner``, or ``None`` without a gateway."""
-    gateway = getattr(settings, "embedding_gateway_url", None)
-    if not gateway:
-        return None
-    base = gateway.rstrip("/")
-    if not base.endswith("/v1"):
-        base = f"{base}/v1"
-    return f"{base}/ner"
-
-
-def redaction_available(settings: Any) -> bool:
-    """Whether names can be detected, i.e. an embedding gateway is configured."""
-    return ner_endpoint(settings) is not None
-
-
-def sar_available(settings: Any) -> bool:
-    """Whether SAR cases are served (ADR-040): the deployment opted in with
-    ``SAR_ENABLED``, and has what they need (the index to search and read, and
-    the embedding gateway to detect names)."""
-    return (
-        bool(getattr(settings, "sar_enabled", False))
-        and bool(settings.vector_sync_enabled)
-        and redaction_available(settings)
-    )
 
 
 async def get_ner_client(settings: Any) -> NerClient:

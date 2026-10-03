@@ -25,13 +25,7 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.redaction import sar_available
-from nextcloud_mcp_server.search.rerank import rerank_available
-from nextcloud_mcp_server.vector.metrics_publisher import (
-    count_indexed,
-    estimate_hybrid_vector_bytes,
-)
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.features import rerank_available, sar_available
 
 logger = logging.getLogger(__name__)
 
@@ -419,8 +413,17 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
     try:
         # Outstanding-work view depends on the queue backend (Deck #183):
         # memory → stream buffer depth; postgres → procrastinate job counts.
+        # Deferred, like everything below: the vector stack is optional and
+        # only importable when vector sync is on.
         from nextcloud_mcp_server.vector.ingest_status import (  # noqa: PLC0415
             get_ingest_pending,
+        )
+        from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+            count_indexed,
+            estimate_hybrid_vector_bytes,
+        )
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
         )
 
         pending = await get_ingest_pending(
