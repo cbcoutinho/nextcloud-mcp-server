@@ -25,7 +25,8 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.features import rerank_available, sar_available
+from nextcloud_mcp_server.features import rerank_available
+from nextcloud_mcp_server.plugins import load_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -371,11 +372,14 @@ async def get_server_status(request: Request) -> JSONResponse:
     oauth_provisioning_available = auth_mode == "oauth" or (
         mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access
     )
-    # Whether /api/v1/sar/cases is served (ADR-040). Always present, like
-    # rerank_available, so Astrolabe can hide the SAR UI when it is false.
-    response_data["sar_available"] = bool(
-        oauth_provisioning_available and sar_available(settings)
-    )
+    # Whether each plugin is served, e.g. sar_available for /api/v1/sar/cases
+    # (ADR-040). Present for every installed plugin, like rerank_available, so
+    # Astrolabe can hide a plugin's UI when it is false. Plugin routes mount
+    # alongside the authenticated management API, hence the provisioning gate.
+    for plugin in load_plugins():
+        response_data[f"{plugin.name}_available"] = bool(
+            oauth_provisioning_available and plugin.available(settings)
+        )
     if oauth_provisioning_available:
         # Provide IdP discovery information for NC PHP app
         oidc_config = {}
