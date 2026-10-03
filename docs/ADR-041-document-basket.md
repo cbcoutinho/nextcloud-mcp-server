@@ -52,10 +52,10 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
 - **Progress lives in the run's status file, not the basket file.** As in
   ADR-040, each run writes `runs/<n>.status.json` next to the basket: counts,
   per-item outcomes and a heartbeat. It has one writer (the run), so it needs
-  no ETag guard, and it is written at most every 5 s or 50 items. The basket
-  file itself is written twice per run: lock at the start, unlock with the run
-  summary at the end. A 2,000-item run is therefore a few hundred small status
-  writes, not 2,000 read-modify-writes of the basket.
+  no ETag guard. It is flushed at most once every 5 s (sooner only when the
+  run ends), so the number of status writes is bounded by the run's duration,
+  not its item count. The basket file itself is written twice per run: lock at
+  the start, unlock with the run summary at the end.
 - **A dead run cannot lock a basket.**
   - *Heartbeat is the framework's job.* The run framework starts a heartbeat
     task in the run's task group that rewrites the status file every 60 s for
@@ -72,8 +72,22 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
     persisted by the next write-capable operation on that basket (any
     `baskets.write` call, including a new run), through the usual ETag-guarded
     write, so two replicas resolving it at once agree.
+  - *A run that was declared dead stays dead.* The basket's `runs[n].state` is
+    the source of truth, not the status file. A slow-but-alive run (for
+    example, one that resumes after a network partition) ends with a
+    *conditional* unlock: inside the ETag-guarded mutation it checks that the
+    basket is still `processing` and that the active run is still its own `n`.
+    If not, because it was recovered and maybe re-run meanwhile, it changes
+    nothing in the basket. It logs the outcome and leaves its own status file
+    as the record of what it did. The ETag guard alone would not give this:
+    it only detects concurrent writes, not a basket that has moved on. Side
+    effects the late run already made (tags assigned, files copied or moved)
+    stay recorded per item in that status file.
   - This also closes a gap ADR-040 left open: today a killed process (as
     opposed to a cancelled task) leaves a case in `exporting` for good.
+- **Closing is final**, as in ADR-040. A `closed` basket is read-only and
+  cannot be reopened. Only `done` (and a failed run, which returns to `open`)
+  leads back to `open`.
 - **Runs are history.** Every run appends to `runs[]` with its processor id,
   options, counts and result (archive path, target folder, tag ids). Reopening
   and running again appends a new run; SAR archive versions (`-v1`, `-v2`) are
@@ -163,9 +177,14 @@ Non-file items reaching a file-only processor are **skipped and reported**
 - **Every item records `from_path` and `to_path`** in the run result, so a
   `move` that stops partway is auditable and can be put back by hand.
 - **Nothing is overwritten**: the default conflict policy is `skip`.
-- `move` is the only destructive processor, so its `options_schema` **requires
-  `confirm: true`** (`"const": true`), and the server rejects a run without it
-  with 400, for MCP clients as well as Astrolabe.
+- **The `confirm` rule.** `move` is the only destructive processor. Its
+  `options_schema` requires `confirm: true` (`"const": true`), and the schema
+  is validated wherever `move` runs: the HTTP `/runs` route and the
+  `basket_move` tool. A `move` without it is a 400. `basket_run` does not
+  accept `processor: "move"` at all (also 400). So there is exactly one way to
+  run `move` per surface, and each requires `confirm`. The duplication with
+  `basket_move`'s destructive hint is deliberate: the hint is advisory for the
+  client, while `confirm` is enforced by the server.
 
 ### API
 
@@ -205,14 +224,15 @@ none leaves a lock behind:
 5. 409: basket not `open`.
 6. Lock, then 202.
 
-Checking the processor (3) before its scopes (4) reveals nothing: the processor
-list is already public in `/api/v1/status`.
+Checking the processor (3) before its scopes (4) reveals nothing beyond
+`/api/v1/status`, which already lists the available processor ids. That list
+does hint at server configuration (whether NER or TaskProcessing is set up),
+as `sar_available` does today.
 
 **Annotations (ADR-017).** `move` is its own MCP tool so the hints are exact.
 `basket_run` is `destructive_hint=False` (`tag` and `copy` only add, and
 `sar_redact` writes a new archive). `basket_move` is `destructive_hint=True`.
-Both are `idempotent_hint=False`, because each call appends a run. Over HTTP,
-the single `/runs` route is guarded by `confirm`. The other basket tools follow
+Both are `idempotent_hint=False`, because each call appends a run. The other basket tools follow
 ADR-017 as for ADR-040's SAR tools.
 
 ### Advertising
@@ -253,7 +273,10 @@ a `BREAKING CHANGE:` footer.**
   `sar_case_*` tools become thin adapters over baskets. They list only baskets
   of kind `sar_redact`, map the states back (`processing` → `exporting`, `done`
   → `ready_for_audit`) and expose `sar_redact` runs as `exports`. Every alias
-  call logs a deprecation warning once per process. `sar_available` is still
+  response carries `Deprecation: true` and a `Link` to ADR-041, plus a
+  deprecation warning in the logs once per process. There is no `Sunset` date,
+  because removal is keyed to the next minor release, not a calendar date.
+  `sar_available` is still
   advertised and keeps its meaning. The alias keeps the item contract as of
   v0.198.4 (#1595): `reason` is optional on every basket, `sar_redact` ones
   included.
@@ -274,7 +297,9 @@ a `BREAKING CHANGE:` footer.**
 - Existing case folders need no migration: the basket loader reads
   `sar-case.json` as a basket of kind `sar_redact` and maps the fields above.
   New writes to such a basket keep the legacy file name, so the basket id (its
-  file id) never changes.
+  file id) never changes. `basket.json` is used only when a basket is created,
+  in a new folder, so a folder never holds both files. Creating a basket in a
+  folder that already has either file is a 409.
 
 The PR descriptions state the versions ("baskets added in 0.N.0; `sar/*`
 removed in 0.N+1.0"), never a merge order.
@@ -366,6 +391,12 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   `/baskets` and the `sar/*` alias. Negative case: a basket shared with a user
   who cannot read one of its files; their run reports that item `failed`
   rather than reading it, because a basket scope never widens access.
+  Heartbeat end to end: a `sar_redact` run over a document slow enough to
+  outlast the stale window (with `BASKET_RUN_STALE_SECONDS` lowered for the
+  test) is never shown as stale. Concurrent recovery: two concurrent writers
+  against one stale basket (as two replicas would be) persist the recovery
+  exactly once, and a late unlock from the dead run leaves the reopened basket
+  untouched.
 - **Pact provider** (`test_mcp_provider_verification.py`): provider states for
   "a basket exists", "a basket of kind sar_redact exists", "a run is in
   progress"; verifies `/api/v1/baskets/*`, `/runs`, `/baskets/processors`, and
