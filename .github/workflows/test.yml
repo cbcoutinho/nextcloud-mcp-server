@@ -55,8 +55,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # "" is the bare install (app tools only); "semantic" adds the
+        # optional semantic-search stack. Both are what users can install.
+        extra: ["", "semantic"]
     runs-on: ${{ matrix.os }}
-    name: package-smoke (${{ matrix.os }})
+    name: package-smoke (${{ matrix.os }}${{ matrix.extra && format(', {0}', matrix.extra) || '' }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Deliberately NOT ./.github/actions/uv-env: that syncs the dev group,
@@ -80,7 +83,23 @@ jobs:
       # both runners so the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
         shell: bash
-        run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help
+        env:
+          EXTRA: ${{ matrix.extra }}
+          NEXTCLOUD_HOST: http://nextcloud.invalid
+          NEXTCLOUD_USERNAME: admin
+          NEXTCLOUD_PASSWORD: admin
+        run: |
+          wheel=$(ls dist/*.whl)
+          req="nextcloud-mcp-server${EXTRA:+[$EXTRA]} @ ./$wheel"
+          run() { uv run --isolated --no-project --no-build --with "$req" "$@"; }
+          run nextcloud-mcp-server --help
+          # The extra is either fully there or fully absent, and without it
+          # semantic search is refused at startup with the install hint.
+          if [ -n "$EXTRA" ]; then expect=True; else expect=False; fi
+          run python -c "from nextcloud_mcp_server.features import semantic_installed as s; assert str(s()) == '$expect', s()"
+          if [ -z "$EXTRA" ]; then
+            ENABLE_SEMANTIC_SEARCH=true run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs"
+          fi
 
   integration-test:
     runs-on: ubuntu-latest

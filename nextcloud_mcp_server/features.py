@@ -8,7 +8,17 @@ on an install without that stack. Everything in this module depends on settings
 alone.
 """
 
+from importlib.util import find_spec
 from typing import Any
+
+
+def semantic_installed() -> bool:
+    """Whether the ``semantic`` extra is installed.
+
+    qdrant-client stands in for the whole extra: every semantic feature needs
+    it, and the extra installs as a unit.
+    """
+    return find_spec("qdrant_client") is not None
 
 
 def _gateway_v1(settings: Any) -> str | None:

@@ -68,6 +68,26 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+### Optional features (extras)
+
+The base install provides every Nextcloud app tool (Notes, Calendar, Contacts,
+Deck, Files, …). Heavier features are opt-in [extras](https://packaging.python.org/en/latest/specifications/dependency-specifiers/#extras):
+
+| Extra | Enables | Pulls in |
+|---|---|---|
+| `semantic` | Semantic search, background vector sync, document processing, SAR export | qdrant-client, fastembed, PyMuPDF, numpy, OpenAI/Mistral/Bedrock SDKs |
+| `postgres` | Postgres-backed ingest queue (ADR-026/028) | procrastinate, psycopg |
+| `observability` | Continuous profiling (Pyroscope) | pyroscope-io (no Windows wheel) |
+
+```bash
+pip install 'nextcloud-mcp-server[semantic]'
+uvx --from 'nextcloud-mcp-server[semantic]' nextcloud-mcp-server run
+```
+
+Setting `ENABLE_SEMANTIC_SEARCH=true` without the `semantic` extra fails at
+startup with an install hint. The Docker image installs all extras. A source
+checkout (`uv sync`) includes `semantic` through the dev group.
+
 ### Verify Installation
 
 ```bash

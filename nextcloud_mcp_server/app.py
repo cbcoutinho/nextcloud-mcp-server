@@ -99,7 +99,7 @@ from nextcloud_mcp_server.config_validators import (
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
-from nextcloud_mcp_server.features import sar_available
+from nextcloud_mcp_server.features import sar_available, semantic_installed
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from nextcloud_mcp_server.observability import (
@@ -1570,10 +1570,16 @@ def _lazy_endpoint(module: str, name: str) -> Callable[[Request], Awaitable[Resp
 
     For routes mounted regardless of VECTOR_SYNC_ENABLED whose handler lives in
     the optional vector stack: the route table stays the same, but the stack is
-    only imported once such a route is actually hit.
+    only imported once such a route is actually hit. Without the ``semantic``
+    extra installed the route answers 404, as a removed endpoint would.
     """
 
     async def endpoint(request: Request) -> Response:
+        if not semantic_installed():
+            return JSONResponse(
+                {"error": "Semantic search is not installed on this server"},
+                status_code=404,
+            )
         handler = getattr(importlib.import_module(module), name)
         return await handler(request)
 

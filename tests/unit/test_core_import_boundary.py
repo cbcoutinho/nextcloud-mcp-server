@@ -141,3 +141,15 @@ def test_cli_help_without_semantic_stack():
             {},
         )
     )
+
+
+async def test_lazy_endpoint_404s_without_semantic_extra(monkeypatch):
+    """Unconditionally-mounted semantic routes degrade like a removed endpoint."""
+    from nextcloud_mcp_server import app as app_module
+
+    monkeypatch.setattr(app_module, "semantic_installed", lambda: False)
+    endpoint = app_module._lazy_endpoint("nextcloud_mcp_server.no_such_module", "x")
+
+    response = await endpoint(None)  # ty: ignore[invalid-argument-type]
+
+    assert response.status_code == 404

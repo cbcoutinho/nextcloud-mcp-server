@@ -25,11 +25,11 @@ COPY pyproject.toml uv.lock README.md .
 # dependency's setup.py executes at image-build time (docker:S8541). This is
 # the sync that installs them all; the second one only adds the project itself,
 # which by definition has to be built and cannot carry the flag.
-RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache --extra semantic --extra postgres --extra observability
 
 COPY . .
 
-RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-editable --no-cache --extra semantic --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault
