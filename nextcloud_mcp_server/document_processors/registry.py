@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import DocumentSource
 from nextcloud_mcp_server.observability.metrics import (
     record_document_classification,
     record_document_escalation,
@@ -23,7 +24,6 @@ from .classifier import (
 )
 from .escalation import TIER_LADDER, EscalationDecision
 from .ocr import OCR_BATCH_PENDING_KEY
-from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 

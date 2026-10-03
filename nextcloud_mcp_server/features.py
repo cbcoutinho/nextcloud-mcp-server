@@ -21,6 +21,12 @@ def semantic_installed() -> bool:
     return find_spec("qdrant_client") is not None
 
 
+def documents_installed() -> bool:
+    """Whether the ``documents`` extra (PDF/Office text extraction) is
+    installed. PyMuPDF stands in for it, as qdrant-client does for semantic."""
+    return find_spec("pymupdf") is not None
+
+
 def _gateway_v1(settings: Any) -> str | None:
     gateway = getattr(settings, "embedding_gateway_url", None)
     if not gateway:

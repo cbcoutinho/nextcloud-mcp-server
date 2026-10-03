@@ -527,7 +527,7 @@ def _sweep_spools_at_startup(settings) -> int:
     if not settings.document_stream_download_enabled:
         return 0
 
-    from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
+    from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
         sweep_orphaned_spools,
     )
 

@@ -75,12 +75,14 @@ Deck, Files, …). Heavier features are opt-in [extras](https://packaging.python
 
 | Extra | Enables | Pulls in |
 |---|---|---|
-| `semantic` | Semantic search, background vector sync, document text extraction for indexing (PDF, Word, PowerPoint, Excel, Outlook `.msg`), SAR export | qdrant-client, fastembed, PyMuPDF, numpy, OpenAI/Mistral/Bedrock SDKs |
+| `documents` | PDF/Office text extraction in `nc_webdav_read_file` (PDF, Word, PowerPoint, Excel, Outlook `.msg`); without it those files are returned raw with an install hint | PyMuPDF, pypdfium2, python-docx/pptx, openpyxl, olefile, Mistral SDK (OCR) |
+| `semantic` | Semantic search, background vector sync, SAR export. Includes `documents` | qdrant-client, fastembed, numpy, OpenAI/Bedrock SDKs |
 | `postgres` | Postgres-backed ingest queue (ADR-026/028) | procrastinate, psycopg |
 | `observability` | Continuous profiling (Pyroscope) | pyroscope-io (no Windows wheel) |
 
 ```bash
-pip install 'nextcloud-mcp-server[semantic]'
+pip install 'nextcloud-mcp-server[documents]'   # read PDF/Office files as text
+pip install 'nextcloud-mcp-server[semantic]'    # + semantic search
 uvx --from 'nextcloud-mcp-server[semantic]' nextcloud-mcp-server run
 ```
 

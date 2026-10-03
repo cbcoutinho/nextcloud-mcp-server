@@ -178,19 +178,25 @@ dev = [
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 
 [project.optional-dependencies]
-# Semantic search, background vector sync, document processing and SAR export.
+# Semantic search, background vector sync and SAR export (includes `documents`).
 # Without it the server runs every Nextcloud app tool, and VECTOR_SYNC_ENABLED
 # is rejected at startup. The core import path never touches these packages;
 # tests/unit/test_core_import_boundary.py enforces that.
 semantic = [
+    "nextcloud-mcp-server[documents]", # ingest parses every indexed document
     "qdrant-client>=1.17.0",
     "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
     "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "openai>=2.8.1",
-    "mistralai>=2.4.5",
     "boto3>=1.35.0", # Amazon Bedrock provider
     "botocore>=1.35.0", # providers/bedrock.py exception types
     "markdownify>=0.14.1", # vector/html_processor.py (News/Mail ingest)
+]
+# PDF/Office text extraction (document_processors/): what nc_webdav_read_file
+# parses with, and what semantic ingest builds on. Without it the read tool
+# returns PDF/Office files raw, with a note naming this extra.
+documents = [
+    "mistralai>=2.4.5", # document_processors/ocr.py (Mistral OCR tier)
     # Pinned exactly, and upgraded deliberately rather than by range. The
     # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
     # hard dependency of our page-boundary/citation path, and it is not stable

@@ -56,7 +56,7 @@ def test_startup_sweep_runs_when_streaming_is_enabled(mocker, tmp_path):
     from nextcloud_mcp_server import cli
 
     sweep = mocker.patch(
-        "nextcloud_mcp_server.document_processors.source.sweep_orphaned_spools",
+        "nextcloud_mcp_server.document_source.sweep_orphaned_spools",
         return_value=3,
     )
     settings = SimpleNamespace(
@@ -72,9 +72,7 @@ def test_startup_sweep_skipped_when_streaming_is_disabled(mocker):
     """Nothing spools on the buffered path, so there is nothing to sweep."""
     from nextcloud_mcp_server import cli
 
-    sweep = mocker.patch(
-        "nextcloud_mcp_server.document_processors.source.sweep_orphaned_spools"
-    )
+    sweep = mocker.patch("nextcloud_mcp_server.document_source.sweep_orphaned_spools")
     settings = SimpleNamespace(
         document_stream_download_enabled=False,
         document_spool_dir=None,

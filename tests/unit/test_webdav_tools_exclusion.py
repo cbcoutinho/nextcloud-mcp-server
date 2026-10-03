@@ -1424,3 +1424,69 @@ async def test_move_copy_report_conflicts_as_unsuccessful(
     assert result.success is False
     assert result.status_code == status
     assert result.message == "nope"
+
+
+# ── Without the ``documents`` extra ─────────────────────────────────────
+
+
+@pytest.fixture
+def no_documents_extra(mocker):
+    """An install without PDF/Office parsing: the parser modules must not even
+    be imported, so make importing them fail the test."""
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.documents_installed", return_value=False
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_settings", return_value=_settings()
+    )
+    mocker.patch.dict(
+        "sys.modules",
+        {
+            "nextcloud_mcp_server.utils.document_parser": None,
+            "nextcloud_mcp_server.document_processors._isolation": None,
+        },
+    )
+
+
+async def test_read_without_documents_extra_returns_a_pdf_raw_with_a_hint(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, no_documents_extra
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"%PDF-1.7 body", "application/pdf")
+
+    result = await webdav_tools["nc_webdav_read_file"].fn(
+        path="/report.pdf", ctx=_mock_ctx(fake_client)
+    )
+
+    assert result.parsed is False
+    assert result.parse_status == "not_applicable"
+    assert any("nextcloud-mcp-server[documents]" in n for n in result.parse_notes)
+
+
+async def test_read_without_documents_extra_still_reads_text(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, no_documents_extra
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    _spool(fake_client, b"hello", "text/plain")
+
+    result = await webdav_tools["nc_webdav_read_file"].fn(
+        path="/notes.txt", ctx=_mock_ctx(fake_client)
+    )
+
+    assert result.content == "hello"
+    assert result.parse_notes == []
+
+
+async def test_page_range_without_documents_extra_says_what_to_install(
+    webdav_tools, fake_client, patch_get_client, patch_excluded, no_documents_extra
+):
+    patch_get_client(fake_client)
+    patch_excluded(set())
+
+    with pytest.raises(ToolError, match=r"\[documents\]"):
+        await webdav_tools["nc_webdav_read_file"].fn(
+            path="/report.pdf", ctx=_mock_ctx(fake_client), page_start=2
+        )
+    fake_client.webdav.stream_to_file.assert_not_called()
