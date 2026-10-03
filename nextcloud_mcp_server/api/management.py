@@ -307,6 +307,27 @@ def _validate_query_string(query: str, max_length: int = 10000) -> None:
         raise ValueError(f"Query too long: maximum {max_length} characters")
 
 
+def _plugin_availability(settings: Settings, served: bool) -> dict[str, bool]:
+    """``<name>_available`` for every installed plugin, e.g. ``sar_available``
+    for /api/v1/sar/cases (ADR-040). Present even when false, like
+    ``rerank_available``, so Astrolabe can hide a plugin's UI.
+
+    Unlike the startup callers (DCR scopes, tool registration), which let a
+    raising ``available()`` fail the server once, this one reports the plugin
+    unavailable: Astrolabe polls this endpoint, and one faulty plugin must not
+    take the whole status down.
+    """
+    flags = {}
+    for plugin in load_plugins():
+        try:
+            available = plugin.available(settings)
+        except Exception:
+            logger.exception("Plugin %s: available() raised", plugin.name)
+            available = False
+        flags[f"{plugin.name}_available"] = served and available
+    return flags
+
+
 async def get_server_status(request: Request) -> JSONResponse:
     """GET /api/v1/status - Server status and version.
 
@@ -337,7 +358,7 @@ async def get_server_status(request: Request) -> JSONResponse:
     else:
         auth_mode = "unknown"
 
-    response_data = {
+    response_data: dict[str, Any] = {
         "version": __version__,
         "auth_mode": auth_mode,
         "vector_sync_enabled": settings.vector_sync_enabled,
@@ -372,21 +393,9 @@ async def get_server_status(request: Request) -> JSONResponse:
     oauth_provisioning_available = auth_mode == "oauth" or (
         mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access
     )
-    # Whether each plugin is served, e.g. sar_available for /api/v1/sar/cases
-    # (ADR-040). Present for every installed plugin, like rerank_available, so
-    # Astrolabe can hide a plugin's UI when it is false. Plugin routes mount
-    # alongside the authenticated management API, hence the provisioning gate.
-    for plugin in load_plugins():
-        try:
-            available = plugin.available(settings)
-        except Exception:
-            # Astrolabe polls this endpoint: one faulty plugin must not take
-            # the whole status down, so it reports unavailable instead.
-            logger.exception("Plugin %s: available() raised", plugin.name)
-            available = False
-        response_data[f"{plugin.name}_available"] = bool(
-            oauth_provisioning_available and available
-        )
+    # Plugin routes mount alongside the authenticated management API, hence
+    # the provisioning gate.
+    response_data |= _plugin_availability(settings, oauth_provisioning_available)
     if oauth_provisioning_available:
         # Provide IdP discovery information for NC PHP app
         oidc_config = {}
