@@ -421,8 +421,6 @@ def _log_queries(case: SarCase, queries: list[SarQueryIn], user: str, now: str) 
 def _require_exportable(case: SarCase) -> None:
     if not case.items:
         raise ExportError("add at least one document before exporting", 400)
-    if any(not i.reason.strip() for i in case.items):
-        raise ExportError("give a reason for every document before exporting", 400)
 
 
 def _mark_export(

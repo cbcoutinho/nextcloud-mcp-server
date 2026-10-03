@@ -277,9 +277,11 @@ def _e(text: str | None) -> str:
 
 
 def render_document(title: str, reason: str, text: str) -> bytes:
+    reason_line = (
+        f"<p><i>Reason for inclusion:</i> {_e(reason)}</p>" if reason.strip() else ""
+    )
     return _pdf(
-        f"<h2>{_e(title)}</h2>"
-        f"<p><i>Reason for inclusion:</i> {_e(reason)}</p><hr/>"
+        f"<h2>{_e(title)}</h2>{reason_line}<hr/>"
         f"<p style='white-space: pre-wrap; font-size: 10pt'>{_e(text)}</p>"
     )
 
@@ -290,7 +292,8 @@ def render_index(name: str, rows: list[dict[str, Any]]) -> bytes:
         detail = (
             f"<b>Not exported:</b> {_e(row['error'])}"
             if row.get("error")
-            else f"{_e(row['title'])}<br/><i>{_e(row['reason'])}</i>"
+            else _e(row["title"])
+            + (f"<br/><i>{_e(row['reason'])}</i>" if row["reason"].strip() else "")
         )
         redacted = ", ".join(f"{k.lower()}: {v}" for k, v in row["counts"].items())
         cells.append(
