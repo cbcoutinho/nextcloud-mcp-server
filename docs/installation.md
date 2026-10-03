@@ -86,7 +86,8 @@ uvx --from 'nextcloud-mcp-server[semantic]' nextcloud-mcp-server run
 
 Setting `ENABLE_SEMANTIC_SEARCH=true` without the `semantic` extra fails at
 startup with an install hint. The Docker image installs all extras. A source
-checkout (`uv sync`) includes `semantic` through the dev group.
+checkout (`uv sync`) includes `semantic` through the dev group. The extras are
+independent: `postgres` and `observability` work with or without `semantic`.
 
 ### Verify Installation
 

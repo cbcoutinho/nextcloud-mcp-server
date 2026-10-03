@@ -306,6 +306,8 @@ The probe reports each dependency under `checks` (`ok` / `embedded` / `pending` 
 
 The MCP server includes semantic search capabilities powered by vector embeddings. This feature requires a vector database (Qdrant) and an embedding service.
 
+> **Install the `semantic` extra.** A PyPI install needs `pip install 'nextcloud-mcp-server[semantic]'` (the Docker image already includes it). With `ENABLE_SEMANTIC_SEARCH=true` and the extra missing, the server refuses to start and names this command. See [Installation → Optional features](installation.md#optional-features-extras).
+
 ### Quick Start
 
 **Single-User Mode:**

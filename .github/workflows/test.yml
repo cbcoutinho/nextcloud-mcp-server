@@ -96,9 +96,9 @@ jobs:
           # The extra is either fully there or fully absent, and without it
           # semantic search is refused at startup with the install hint.
           if [ -n "$EXTRA" ]; then expect=True; else expect=False; fi
-          run python -c "from nextcloud_mcp_server.features import semantic_installed as s; assert str(s()) == '$expect', s()"
+          run python -c "from nextcloud_mcp_server.features import semantic_installed as s; assert s() is $expect, s()"
           if [ -z "$EXTRA" ]; then
-            ENABLE_SEMANTIC_SEARCH=true run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs"
+            (export ENABLE_SEMANTIC_SEARCH=true; run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs")
           fi
 
   integration-test:
