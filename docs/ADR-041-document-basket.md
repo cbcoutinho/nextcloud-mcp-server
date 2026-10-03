@@ -90,7 +90,8 @@ next run simply appends.
     A run is stale past `BASKET_RUN_STALE_SECONDS` (default 900). The heartbeat
     interval is `BASKET_RUN_HEARTBEAT_SECONDS` (default 60). A stale window
     below 3× the heartbeat interval is clamped up to that with a startup
-    warning, so a healthy run is never declared dead. Tests shorten both.
+    warning naming both the configured and the effective value, so a healthy
+  run is never declared dead. Tests shorten both.
   - *A missing status file counts as stale.* The file is created in the same
     step that locks the basket, and it lives in the basket's own folder, which
     every reader of the basket can read. A `processing` basket whose active
@@ -98,6 +99,16 @@ next run simply appends.
     as `failed` (`status lost`), and the next write persists that, so a stuck
     basket always recovers. Any other error (5xx, timeout) is reported as-is
     and leaves the state unchanged.
+  - *Legacy cases left in `exporting`.* An ADR-040 case has no
+    `runs/<n>.status.json`. Its export's status file is ADR-040's
+    `<output folder>/<name>.status.json`, and the loader uses that as the run
+    status. Staleness is judged on it like any other. A legacy case whose export
+    really is still running therefore keeps running after an upgrade. One that
+    died under ADR-040 (the stuck-in-`exporting` gap below) is shown as
+    `failed (interrupted)` on the first read and persisted on the next write.
+    Only a legacy case whose status file is also missing shows as
+    `failed (status lost)`. Both outcomes are intended: those cases really are
+    stuck.
   - *Reads compute, writes persist.* `basket_get` and `basket_list` show a
     stale run as `failed`
     (`interrupted`) and the basket as `open`, without writing. That works for a
@@ -333,9 +344,9 @@ a `BREAKING CHANGE:` footer.**
   → `ready_for_audit`) and expose `sar_redact` runs as `exports`. Every alias
   response carries `Deprecation: @<unix-ts>` (RFC 9745, the time release N
   was cut, set as a build-time constant, never computed per request) and a
-  `Link` to ADR-041 with `rel="deprecation"`, plus a
-  deprecation warning in the logs once per process. There is no `Sunset` date,
-  because removal is keyed to the next minor release, not a calendar date. The
+  `Link` to ADR-041 with `rel="deprecation"`, plus a deprecation warning in the
+  logs once per process. There is no `Sunset` date, because removal is keyed
+  to the next minor release, not a calendar date. The
   adapters keep the SAR scopes: every alias call still needs `sar.read` or
   `sar.write`, plus `semantic.read` for search and export, exactly as in
   ADR-040. They never fall back to `baskets.*` alone, and they apply no
@@ -473,8 +484,10 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   outlast the stale window (with `BASKET_RUN_STALE_SECONDS` lowered for the
   test) is never shown as stale. Concurrent recovery: two concurrent writers
   against one stale basket (as two replicas would be) persist the recovery
-  exactly once, and a late unlock from the dead run leaves the reopened basket
-  untouched.
+  exactly once. A late unlock from dead run `n` leaves the basket untouched
+  even when it is `processing` again under run `n+1`, which proves the check
+  compares the run number, not just the state. A legacy `exporting` case
+  whose ADR-040 status file is fresh keeps running after the upgrade.
 - **Pact provider** (`test_mcp_provider_verification.py`): provider states for
   "a basket exists", "a basket of kind sar_redact exists", "a run is in
   progress"; verifies `/api/v1/baskets/*`, `/runs`, `/baskets/processors`, and
@@ -523,6 +536,11 @@ Every new API surface ships with e2e and contract coverage in the same PR.
 - `move` makes a basket run destructive. It is mitigated by `on_conflict:
   skip`, the required `confirm`, a separate `basket_move` tool, and per-item
   `from_path`/`to_path`. But nothing puts a moved file back automatically.
+- **The alias writes baskets under SAR scopes, intentionally.** A token with
+  `sar.write` but no `baskets.write` can change `sar_redact` baskets through
+  `sar/*` for the one alias release. That is not a scope bypass: those are
+  exactly the objects `sar.write` governed under ADR-040, and the alias
+  reaches no other kind of basket.
 - **Regression for old Astrolabe on a release-N+1 server.** An Astrolabe that
   predates baskets reads only `sar_available`, which N+1 reports as `false`, so
   it hides SAR entirely even though the server can serve it through
