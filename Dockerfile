@@ -30,8 +30,7 @@ RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache \
 
 COPY . .
 
-RUN uv sync --locked --no-dev --no-editable --no-cache \
-    --extra semantic --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-editable --no-cache --extra semantic --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault
