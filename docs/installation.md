@@ -75,7 +75,7 @@ Deck, Files, …). Heavier features are opt-in [extras](https://packaging.python
 
 | Extra | Enables | Pulls in |
 |---|---|---|
-| `semantic` | Semantic search, background vector sync, document processing, SAR export | qdrant-client, fastembed, PyMuPDF, numpy, OpenAI/Mistral/Bedrock SDKs |
+| `semantic` | Semantic search, background vector sync, document text extraction for indexing (PDF, Word, PowerPoint, Excel, Outlook `.msg`), SAR export | qdrant-client, fastembed, PyMuPDF, numpy, OpenAI/Mistral/Bedrock SDKs |
 | `postgres` | Postgres-backed ingest queue (ADR-026/028) | procrastinate, psycopg |
 | `observability` | Continuous profiling (Pyroscope) | pyroscope-io (no Windows wheel) |
 
@@ -88,6 +88,9 @@ Setting `ENABLE_SEMANTIC_SEARCH=true` without the `semantic` extra fails at
 startup with an install hint. The Docker image installs all extras. A source
 checkout (`uv sync`) includes `semantic` through the dev group. The extras are
 independent: `postgres` and `observability` work with or without `semantic`.
+If you add `semantic` to an install whose `DATABASE_URL` is Postgres, re-run
+`nextcloud-mcp-server db upgrade`: without the extra it skips the ingest-queue
+schema.
 
 ### Verify Installation
 
