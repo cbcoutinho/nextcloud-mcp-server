@@ -624,3 +624,33 @@ def test_status_reports_each_installed_plugin(
 
     assert response.status_code == 200
     assert response.json()["fake_available"] is expected
+
+
+def test_status_survives_a_plugin_whose_available_raises():
+    """Astrolabe polls /api/v1/status; one faulty plugin reports unavailable
+    instead of turning the whole response into a 500."""
+    from nextcloud_mcp_server.plugins import Plugin  # noqa: PLC0415
+
+    def boom(settings):
+        raise RuntimeError("misconfigured")
+
+    faulty = Plugin(name="faulty", available=boom, register_tools=lambda mcp: None)
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings",
+            return_value=create_mock_settings(),
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=AuthMode.LOGIN_FLOW,
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.load_plugins",
+            return_value=(faulty,),
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["faulty_available"] is False

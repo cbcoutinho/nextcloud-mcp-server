@@ -20,7 +20,7 @@ see ``sar_plugin.py``.
 
 Known gaps before a plugin can live outside this repository (Deck #1381):
 the scopes a plugin declares must also be in ``models.auth.ALL_SUPPORTED_SCOPES``
-for scope validation to accept them, and there is no stable import surface for
+(``load_plugins`` rejects any other), and there is no stable import surface for
 the helpers a plugin needs (``get_client``, ``require_scopes``, ...).
 """
 
@@ -35,6 +35,7 @@ from mcp.server.mcpserver import MCPServer
 from starlette.routing import BaseRoute
 
 from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,12 @@ def load_plugins() -> tuple[Plugin, ...]:
     """Every installed plugin, loaded once per process."""
     plugins: dict[str, Plugin] = {}
     for ep in entry_points(group=ENTRY_POINT_GROUP):
-        plugin = ep.load()
+        try:
+            plugin = ep.load()
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load plugin entry point {ep.name!r} ({ep.value})"
+            ) from exc
         if not isinstance(plugin, Plugin):
             raise TypeError(
                 f"entry point {ep.name!r} ({ep.value}) in {ENTRY_POINT_GROUP} "
@@ -82,6 +88,14 @@ def load_plugins() -> tuple[Plugin, ...]:
             raise ValueError(
                 f"entry point {ep.name!r} ({ep.value}): invalid plugin name "
                 f"{plugin.name!r}"
+            )
+        # ponytail: until scopes are a registry plugins extend (Deck #1381), a
+        # plugin may only declare scopes the server already validates; anything
+        # else would be advertised via DCR yet rejected everywhere it is used.
+        if unknown := plugin.scopes - ALL_SUPPORTED_SCOPES:
+            raise ValueError(
+                f"plugin {plugin.name!r} declares scopes the server does not "
+                f"support: {sorted(unknown)}"
             )
         if plugin.name in plugins:
             raise ValueError(f"two installed plugins are named {plugin.name!r}")

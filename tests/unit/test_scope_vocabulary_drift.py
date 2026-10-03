@@ -102,3 +102,16 @@ def test_full_access_test_token_carries_every_supported_scope():
     vocabulary, or e2e tests pass while real deployments lose those tools."""
     missing = ALL_SUPPORTED_SCOPES - set(DEFAULT_FULL_SCOPES.split())
     assert not missing, f"DEFAULT_FULL_SCOPES is missing: {sorted(missing)}"
+
+
+def test_dcr_withholds_every_plugin_scope_and_advertises_available_ones():
+    """Each plugin's scopes are withheld from the base list and re-added only
+    while that plugin is available -- independently per plugin."""
+    on, off = frozenset({"sar.read"}), frozenset({"sar.write"})
+    scopes = build_dcr_scopes(
+        vector_sync_enabled=False,
+        offline_access_enabled=False,
+        plugin_scopes=[(on, True), (off, False)],
+    ).split()
+    assert scopes.count("sar.read") == 1
+    assert "sar.write" not in scopes

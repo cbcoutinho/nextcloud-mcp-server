@@ -79,3 +79,24 @@ def test_plugin_name_must_be_a_safe_status_key(monkeypatch, name):
     _install(monkeypatch, bad="nextcloud_mcp_server.plugins:_TEST_PLUGIN")
     with pytest.raises(ValueError, match="invalid plugin name"):
         load_plugins()
+
+
+def test_load_failure_names_the_entry_point(monkeypatch):
+    _install(monkeypatch, broken="nextcloud_mcp_server.no_such_module:plugin")
+    with pytest.raises(RuntimeError, match="broken"):
+        load_plugins()
+
+
+def test_plugin_scopes_must_be_supported(monkeypatch):
+    """Until scopes are a registry, an unknown one would be advertised via DCR
+    and then rejected by every validation site."""
+    bad = Plugin(
+        name="extra",
+        available=lambda s: True,
+        register_tools=lambda m: None,
+        scopes=frozenset({"extra.read"}),
+    )
+    monkeypatch.setattr(plugins, "_TEST_PLUGIN", bad, raising=False)
+    _install(monkeypatch, extra="nextcloud_mcp_server.plugins:_TEST_PLUGIN")
+    with pytest.raises(ValueError, match=r"extra\.read"):
+        load_plugins()

@@ -377,8 +377,15 @@ async def get_server_status(request: Request) -> JSONResponse:
     # Astrolabe can hide a plugin's UI when it is false. Plugin routes mount
     # alongside the authenticated management API, hence the provisioning gate.
     for plugin in load_plugins():
+        try:
+            available = plugin.available(settings)
+        except Exception:
+            # Astrolabe polls this endpoint: one faulty plugin must not take
+            # the whole status down, so it reports unavailable instead.
+            logger.exception("Plugin %s: available() raised", plugin.name)
+            available = False
         response_data[f"{plugin.name}_available"] = bool(
-            oauth_provisioning_available and plugin.available(settings)
+            oauth_provisioning_available and available
         )
     if oauth_provisioning_available:
         # Provide IdP discovery information for NC PHP app
