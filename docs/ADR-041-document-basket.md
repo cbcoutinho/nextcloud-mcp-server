@@ -14,7 +14,7 @@ Only the last step is SAR-specific. The same pattern is wanted for other jobs:
 
 - assign a system tag to every collected document;
 - copy or move the collected files into a folder;
-- later, run a Nextcloud AI task over the files.
+- run a Nextcloud AI task over the files (the optional `nc_task` processor).
 
 Today each of these would need its own "case". This ADR splits the case into a
 generic **basket** (collect) and a pluggable **processor** (act once on the
@@ -71,11 +71,19 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
   - *Staleness is judged on Nextcloud's clock.* The heartbeat's age is the
     status file's `getlastmodified`, which Nextcloud sets, compared with the
     `Date` header of the same WebDAV response. Replica clocks never enter it.
-    A run is stale past `BASKET_RUN_STALE_SECONDS` (default 900).
-  - *Reads compute, writes persist.* `basket_get` and `basket_list` (which
-    already read each basket's latest run status) show a stale run as `failed`
+    A run is stale past `BASKET_RUN_STALE_SECONDS` (default 900). Values below
+    3× the 60 s heartbeat are clamped to 180 s with a startup warning, so a
+    healthy run is never declared dead. Tests that need a short window lower
+    the heartbeat interval with it, through the same settings object.
+  - *Reads compute, writes persist.* `basket_get` and `basket_list` show a
+    stale run as `failed`
     (`interrupted`) and the basket as `open`, without writing. That works for a
-    caller with only `baskets.read` or a read-only share. The recovery is
+    caller with only `baskets.read` or a read-only share. The check costs one
+    request per basket that is actually `processing` (a `PROPFIND` of its
+    active run's status file), never one per run and never one for an idle
+    basket. `basket_list` therefore stays proportional to the number of
+    baskets, with the extra requests bounded by how many are running at once.
+    That is deliberate, not an N+1 to fix. The recovery is
     persisted by the next write-capable operation on that basket (any
     `baskets.write` call, including a new run), through the usual ETag-guarded
     write, so two replicas resolving it at once agree.
@@ -119,10 +127,11 @@ A processor declares `binds_at`:
   against `options_schema`. `tag`, `copy`, `move` and `nc_task` are run-time.
 
 **`kind` is immutable** once the basket exists (a `PATCH` that sets it is a
-400), and a kind is exactly one processor id. Basket data is validated against
-the processor's `basket_schema` on every update, not only on create. This is intentional: a future create-time processor gets its own
-kind rather than sharing a family. Basket data (the keep-list)
-stays editable while the basket is `open`, as the subject is today, and is
+400). A kind is exactly one processor id, which is intentional: a future
+create-time processor gets its own kind rather than sharing a family. Basket
+data is validated against the processor's `basket_schema` on every update, not
+only on create. Basket data (the keep-list) stays editable while the basket is
+`open`, as the subject is today, and is
 frozen while `processing`. It is applied only when the processor runs: the
 query log stores searches as typed, and `sar_redact` redacts the log with the
 keep-list current at run time, exactly as ADR-040's `searches.pdf` does. So an
@@ -265,9 +274,20 @@ That is enough to gate the UI, and it reveals no more than `sar_available`
 does today. Titles and the `basket_schema`/`options_schema` JSON Schemas are
 served by the authenticated `GET /api/v1/baskets/processors` (`baskets.read`).
 Only processors whose `available(settings)` is true are listed in either
-place. The basket routes themselves are served when the list is non-empty.
-Because `tag`, `copy` and `move` are always available, in practice that means
-every authenticated deployment mode.
+place.
+
+**Deployment modes**, the same split ADR-040 uses for SAR:
+
+- **MCP tools** are registered in every mode. Under BasicAuth (single-user and
+  multi-user BasicAuth) there is no OAuth token, so `@require_scopes` and
+  `check_scopes` pass by design, and Nextcloud's own ACLs are the only access
+  control. Under Login Flow v2 / OAuth they enforce `baskets.*` plus the
+  processor scopes, and fail closed without a verified token.
+- **HTTP routes** need a bearer token to authorize, so they are served, and
+  `basket_processors` is non-empty, only where OAuth provisioning is available
+  (OAuth mode, or multi-user BasicAuth with offline access). That is the same
+  condition that makes `sar_available` true today. Elsewhere,
+  `basket_processors` is `[]` and Astrolabe shows no basket UI.
 
 Astrolabe extends `SearchCapabilities` with `getBasketProcessors()` (cached like
 `isSarAvailable()`), and:
@@ -288,7 +308,8 @@ a `BREAKING CHANGE:` footer.**
   of kind `sar_redact`, map the states back (`processing` → `exporting`, `done`
   → `ready_for_audit`) and expose `sar_redact` runs as `exports`. Every alias
   response carries `Deprecation: @<unix-ts>` (RFC 9745, the time release N
-  was cut) and a `Link` to ADR-041 with `rel="deprecation"`, plus a
+  was cut, set as a build-time constant, never computed per request) and a
+  `Link` to ADR-041 with `rel="deprecation"`, plus a
   deprecation warning in the logs once per process. There is no `Sunset` date,
   because removal is keyed to the next minor release, not a calendar date. The
   adapters keep the SAR scopes: every alias call still needs `sar.read` or
@@ -401,8 +422,9 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   `move` skips files already in the target), the error order for a run
   request, `basket_move` without `confirm` over MCP as well as HTTP, and
   `basket_run` with `processor: "move"` (400, so the split cannot be bypassed
-  by calling the wrong tool). Also: a `PATCH` setting `kind` (400), and an
-  empty basket (400).
+  by calling the wrong tool). Also: a `PATCH` setting `kind` (400), a `PATCH`
+  whose basket data violates `basket_schema` (400), an empty basket (400), and
+  `BASKET_RUN_STALE_SECONDS` below the clamp.
   Stale runs: a reader with only `baskets.read` sees the computed `open` view
   and nothing is written. The next `baskets.write` call persists it. A slow
   item past the stale window stays alive on the framework heartbeat.
@@ -431,8 +453,9 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   authenticated provider verification), which this ADR extends to the basket
   routes. The consumer pacts are still recorded and published in the meantime.
 - **Pact consumer** (Astrolabe `McpServerClientPactTest.php`): basket CRUD,
-  items, search, runs, and the status shape with and without
-  `basket_processors` (the fallback to `sar_available`).
+  items, search, runs, and three status shapes: `basket_processors` with
+  `sar_redact`, `basket_processors` without it (SAR hidden, no `sar/*` call),
+  and `sar_available` only (the fallback to `sar/*`).
 - **Playwright** (Astrolabe `tests/e2e`): collect from two searches → run
   `tag`; SAR flow via `sar_redact`; and the existing `sar.spec.ts` against a
   server advertising only `sar_available`, proving the old path still works.
