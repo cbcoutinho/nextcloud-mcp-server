@@ -60,7 +60,13 @@ The edges, completely:
 | `closed` | none | none |
 
 `reopen` is valid only from `done`. It changes nothing in `runs[]`, and the
-next run simply appends.
+next run simply appends. A legacy ADR-040 case loads with its state mapped
+one to one: `open` → `open`, `exporting` → `processing`, `ready_for_audit` →
+`done`, `closed` → `closed`.
+
+Run numbers `n` are monotonic per basket and never reused, even for a run
+that failed or was recovered as stale. That is what makes the conditional
+unlock below safe: a dead run's `n` can never match a later active run.
 
 - **One run at a time.** The basket locks (`processing`) while a run is
   active, so a run always sees a fixed item set. A second run, and any change
@@ -91,7 +97,7 @@ next run simply appends.
     interval is `BASKET_RUN_HEARTBEAT_SECONDS` (default 60). A stale window
     below 3× the heartbeat interval is clamped up to that with a startup
     warning naming both the configured and the effective value, so a healthy
-  run is never declared dead. Tests shorten both.
+    run is never declared dead. Tests shorten both.
   - *A missing status file counts as stale.* The file is created in the same
     step that locks the basket, and it lives in the basket's own folder, which
     every reader of the basket can read. A `processing` basket whose active
@@ -140,8 +146,10 @@ next run simply appends.
   and running again appends a new run; SAR archive versions (`-v1`, `-v2`) are
   the `sar_redact` runs numbered per basket. Per-item outcomes stay in the
   run's status file, so `runs[]` holds only summaries. It is capped at 100
-  runs per basket. The cap is permanent: a 101st run is a 409 whose message
-  says to start a new basket. The basket stays readable and closable, so its
+  runs per basket, counting every run, including failed and recovered ones.
+  That is intended: a processor that keeps failing on the same basket should
+  stop being retried there, not loop forever. The cap is permanent: a 101st
+  run is a 409 whose message says to start a new basket. The basket stays readable and closable, so its
   history is kept. A basket that needs a hundred runs has become a standing
   job, which is outside this design. Status files share the basket
   folder's lifecycle. Closing keeps them as the audit record, deleting the
@@ -189,8 +197,8 @@ class Processor(Protocol):
     title: str
     binds_at: Literal["create", "run"]
     item_types: frozenset[str]   # {"file"}, or {"*"} for any doc_type
-    basket_schema: dict | None   # JSON Schema, binds_at == "create" only
-    options_schema: dict         # JSON Schema for the run's options
+    basket_schema: dict[str, Any] | None  # JSON Schema, binds_at == "create" only
+    options_schema: dict[str, Any]        # JSON Schema for the run's options
     scopes: tuple[str, ...]      # extra token scopes the run needs
     destructive: bool            # move
     def available(self, settings: Settings) -> bool: ...
@@ -202,7 +210,7 @@ class Processor(Protocol):
 class RunReport(Protocol):
     async def item(self, item: BasketItem,
                    outcome: Literal["ok", "failed", "skipped"],
-                   detail: str = "", **result: str) -> None: ...
+                   detail: str = "", **result: str | int | float) -> None: ...
     # buffered into the run status file; `result` carries per-item facts
     # such as copy/move's `from_path` and `to_path`
 ```
@@ -256,7 +264,7 @@ The ADR-040 operations, renamed, plus one run endpoint:
 | Search for the basket, logged with its filters | `basket_search` | `POST /api/v1/baskets/{id}/search` |
 | Run a non-destructive processor | `basket_run` | `POST /api/v1/baskets/{id}/runs` `{processor, options}` → 202 |
 | Run `move` | `basket_move` | the same route, `processor: "move"` |
-| Processor titles and schemas | `basket_processor_schemas` | `GET /api/v1/baskets/processors` |
+| Processor titles and schemas | `basket_processor_schemas` (named apart from the `basket_processors` status field on purpose) | `GET /api/v1/baskets/processors` |
 
 Scopes: `baskets.read` (list, get, processors) and `baskets.write`
 (everything else), plus each processor's own `scopes` on a run (`sar_redact`:
@@ -467,8 +475,10 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   request, `basket_move` without `confirm` over MCP as well as HTTP, and
   `basket_run` with `processor: "move"` (400, so the split cannot be bypassed
   by calling the wrong tool). Also: a `PATCH` setting `kind` (400), a `PATCH`
-  whose basket data violates `basket_schema` (400), an empty basket (400), and
-  `BASKET_RUN_STALE_SECONDS` below the clamp.
+  whose basket data violates `basket_schema` (400), an empty basket (400),
+  the 101st run (409), `basket_create` in a folder that already holds
+  `basket.json` or `sar-case.json` (409), and `BASKET_RUN_STALE_SECONDS` below
+  the clamp (effective value applied, and the warning asserted via `caplog`).
   Stale runs: a reader with only `baskets.read` sees the computed `open` view
   and nothing is written. The next `baskets.write` call persists it. A slow
   item past the stale window stays alive on the framework heartbeat.
