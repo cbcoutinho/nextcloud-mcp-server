@@ -48,6 +48,14 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
 
 - **One run at a time.** The basket locks (`processing`) while a run is
   active, so a run always sees a fixed item set. A second run is a 409.
+- **A dead run cannot lock a basket.** The active run's status carries a
+  heartbeat (`updated_at`), written after every item and at least every 60 s.
+  Any read or write of a `processing` basket whose heartbeat is older than
+  `BASKET_RUN_STALE_SECONDS` (default 900) marks that run `failed`
+  (`interrupted`) and returns the basket to `open`, through the usual
+  ETag-guarded write, so two replicas resolving it at once agree. This also
+  closes a gap ADR-040 left open: today a killed process (as opposed to a
+  cancelled task) leaves a case in `exporting` for good.
 - **Runs are history.** Every run appends to `runs[]` with its processor id,
   options, counts and result (archive path, target folder, tag ids). Reopening
   and running again appends a new run; SAR archive versions (`-v1`, `-v2`) are
@@ -63,10 +71,17 @@ A processor declares `binds_at`:
 - **`create`** — needs data on the basket before collection starts. A basket
   bound to it carries `kind: <processor id>` plus that processor's basket data,
   validated against the processor's `basket_schema`. `sar_redact` is the only
-  one: the subject keep-list is entered up front, is shown while collecting, and
-  is redacted *from* every later search log.
+  one: the subject keep-list is entered up front and shown while collecting.
 - **`run`** — chosen when the user runs the basket, with options validated
   against `options_schema`. `tag`, `copy`, `move` and `nc_task` are run-time.
+
+**`kind` is immutable** once the basket exists. Basket data (the keep-list)
+stays editable while the basket is `open`, as the subject is today, and is
+frozen while `processing`. It is applied only when the processor runs: the
+query log stores searches as typed, and `sar_redact` redacts the log with the
+keep-list current at run time, exactly as ADR-040's `searches.pdf` does. So an
+edit mid-collection never leaves an earlier log entry redacted against an old
+subject.
 
 Any basket can be run with any `run`-time processor whose `item_types` match at
 least one item. A `create`-time processor can only run on a basket of its own
@@ -89,15 +104,28 @@ class Processor(Protocol):
     scopes: tuple[str, ...]      # extra token scopes the run needs
     destructive: bool            # move
     def available(self, settings: Settings) -> bool: ...
-    async def run(self, nc, basket, options, report) -> RunResult: ...
+    async def run(
+        self, nc: NextcloudClient, basket: Basket, options: dict, report: RunReport
+    ) -> RunResult: ...
+
+
+class RunReport(Protocol):
+    async def item(self, item: BasketItem,
+                   outcome: Literal["ok", "failed", "skipped"],
+                   detail: str = "") -> None: ...  # persists counts + heartbeat
+    async def heartbeat(self) -> None: ...         # long items (OCR'd PDFs, nc_task polls)
 ```
+
+Cancellation belongs to the task group: a run is cancelled only by shutdown,
+and the shielded unlock from ADR-040 records it as `failed`. There is no
+user-facing "cancel run" in this ADR.
 
 Processors are code, not configuration: there is no plugin loading. A new
 processor is a new module and a registry entry.
 
 | Processor | Items | Options | Backend | Available when |
 |---|---|---|---|---|
-| `sar_redact` | `*` (notes, files, …: index text) | output folder | ADR-040 export (index text + `/v1/ner`) | `sar_available(settings)` |
+| `sar_redact` | `*` (notes, files, …: index text; an item not in the index is `failed`, as in ADR-040) | output folder | ADR-040 export (index text + `/v1/ner`) | `sar_available(settings)` |
 | `tag` | `file` | `tags: [name]`, `create_missing: bool` | `WebDAVClient.get_or_create_tag` + `assign_tag_to_file` | always |
 | `copy` | `file` | `target`, `on_conflict: skip\|rename` | `WebDAVClient.copy_resource` | always |
 | `move` | `file` | `target`, `on_conflict: skip\|rename` | `WebDAVClient.move_resource` | always |
@@ -105,8 +133,10 @@ processor is a new module and a registry entry.
 
 Non-file items reaching a file-only processor are **skipped and reported**
 (`skipped: not a file`). `copy`/`move` never overwrite: the default conflict
-policy is `skip`. `move` is the only destructive processor, so its run needs
-explicit confirmation in the UI.
+policy is `skip`. `move` is the only destructive processor, so its
+`options_schema` **requires `confirm: true`** (`"const": true`), and the server
+rejects a run without it with 400. The confirmation is enforced for MCP clients
+too, not only by an Astrolabe dialog.
 
 ### API
 
@@ -121,13 +151,22 @@ The ADR-040 operations, renamed, plus one run endpoint:
 | Add/update/remove items, log queries | `basket_items` | `POST /api/v1/baskets/{id}/items` |
 | Search for the basket, logged with its filters | `basket_search` | `POST /api/v1/baskets/{id}/search` |
 | Run a processor | `basket_run` | `POST /api/v1/baskets/{id}/runs` `{processor, options}` → 202 |
+| Processor titles and schemas | `basket_processors` | `GET /api/v1/baskets/processors` |
 
-Scopes: `baskets.read` (list, get) and `baskets.write` (everything else), plus
-each processor's own `scopes` on `basket_run` (`sar_redact`: `sar.write` and
-`semantic.read`, as today; `tag`/`copy`/`move`: `files.write`). As in ADR-040,
-a basket scope never widens what can be read: every item is access-checked as
-the calling user. `basket_run` is annotated `destructive_hint=True` because one
-of its processors (`move`) is.
+Scopes: `baskets.read` (list, get, processors) and `baskets.write`
+(everything else), plus each processor's own `scopes` on a run (`sar_redact`:
+`sar.write` and `semantic.read`, as today; `tag`/`copy`/`move`: `files.write`).
+`@require_scopes` is static per tool, so on `basket_run` it carries only
+`baskets.write`. The per-processor scopes are checked in the body once the
+processor is resolved and before the basket is locked: `check_scopes(ctx,
+*processor.scopes)` for the MCP tool, and `_authorize(request,
+"baskets.write", *processor.scopes)` for the HTTP route. A missing scope is a
+403 and leaves the basket untouched. As in ADR-040, a basket scope never widens
+what can be read: every item is access-checked as the calling user.
+
+`basket_run` is annotated `destructive_hint=True` because one of its
+processors (`move`) is. Over-warning for `tag` and `copy` is accepted rather
+than splitting the tool, since `move` is also guarded by `confirm`.
 
 Errors keep ADR-040's statuses, plus 400 for an unknown or unavailable
 processor, a `create`-time processor on a basket of another kind, or options
@@ -135,19 +174,21 @@ that fail the processor's schema.
 
 ### Advertising
 
-`GET /api/v1/status` gains, always present (empty list when off):
+`GET /api/v1/status` is public, so it gains only a summary, always present
+(an empty list when off):
 
 ```json
 "basket_processors": [
-  {"id": "sar_redact", "title": "Redacted SAR export", "binds_at": "create",
-   "item_types": ["*"], "destructive": false,
-   "basket_schema": {...}, "options_schema": {...}},
-  {"id": "tag", "title": "Tag", "binds_at": "run", "item_types": ["file"],
-   "destructive": false, "options_schema": {...}}
+  {"id": "sar_redact", "binds_at": "create", "item_types": ["*"], "destructive": false},
+  {"id": "tag", "binds_at": "run", "item_types": ["file"], "destructive": false}
 ]
 ```
 
-Only processors whose `available(settings)` is true are listed. The basket
+That is enough to gate the UI, and it reveals no more than `sar_available`
+does today. Titles and the `basket_schema`/`options_schema` JSON Schemas are
+served by the authenticated `GET /api/v1/baskets/processors` (`baskets.read`).
+Only processors whose `available(settings)` is true are listed in either
+place. The basket
 routes themselves are served when the list is non-empty (`tag`/`copy`/`move`
 are always available, so in practice: in every authenticated deployment mode).
 
@@ -177,8 +218,12 @@ a `BREAKING CHANGE:` footer.**
   last part is what keeps an older Astrolabe safe: it reads `sar_available`,
   hides its SAR UI, and never calls the removed routes. It degrades to "no SAR"
   rather than a broken page.
-- **Astrolabe** prefers baskets when `basket_processors` is present and falls
-  back to `sar/*` when only `sar_available` is. So an older server (no
+- **Astrolabe decides from one field.** When `basket_processors` is
+  **present**, it is authoritative: SAR is shown if and only if `sar_redact` is
+  in the list, and `sar/*` is never called. A server that lists baskets without
+  `sar_redact` (NER unconfigured, say) also reports `sar_available: false`, but
+  Astrolabe does not rely on that. Only when the key is **absent** (a server
+  older than baskets) does it fall back to `sar_available` and `sar/*`. So an older server (no
   baskets) keeps the full SAR UI, and a new server works with either Astrolabe.
   Astrolabe never assumes a server version from its own.
 - Existing case folders need no migration: the basket loader reads
@@ -211,7 +256,8 @@ fit:
 is Python, so it uses the OCS API, not OCP: `GET /ocs/v2.php/taskprocessing/tasktypes`
 to find task types with a `ListOfFiles` input slot (`EShapeType::ListOfFiles`,
 `@since 30.0.0`), `POST …/taskprocessing/schedule` with the basket's file ids
-and `customId: basket:<id>:run:<n>`, then `GET …/taskprocessing/task/{id}` to
+and `customId: basket:<id>:run:<n>` (a correlation hint for logs and the task
+list only, never trusted; the run already holds the task id), then `GET …/taskprocessing/task/{id}` to
 poll. One basket run is one task: progress is the task's single float, and
 per-item results are only "submitted". It does **not** replace `sar_redact`:
 SAR needs archive-wide placeholder numbering, the subject keep-list, and
@@ -226,7 +272,7 @@ from the file list. Optional; the API is the same `POST …/items`.
 ### Minimum Nextcloud version
 
 **Stays at 32. No bump.** Every API this design touches, checked by `@since`
-in `~/Software/server` and confirmed present on `stable32`:
+in `nextcloud/server` and confirmed present on its `stable32` branch:
 
 | API | `@since` |
 |---|---|
@@ -248,17 +294,21 @@ explicit minimum-version bump in Astrolabe's `appinfo/info.xml`, recorded here.
 Every new API surface ships with e2e and contract coverage in the same PR.
 
 - **MCP server, unit**: registry (availability, schema validation, `binds_at`
-  rules), state machine (one run at a time, failed run reopens), legacy
+  rules, the 400 for a `kind` mismatch, `move` without `confirm`), state
+  machine (one run at a time, failed run reopens, a stale heartbeat unlocks the
+  basket), the per-processor scope check (403, basket left `open`), legacy
   `sar-case.json` loading, alias state mapping, each processor with a fake
   WebDAV client (`tag`/`copy`/`move` skip non-files, `on_conflict`).
 - **MCP server, integration** (login-flow lane, real Nextcloud): create basket →
   `basket_search` → add → run `tag` (tags visible via WebDAV), `copy`
   (files in target), `move`; run `sar_redact` (archive written) through both
-  `/baskets` and the `sar/*` alias.
+  `/baskets` and the `sar/*` alias. Negative case: a basket shared with a user
+  who cannot read one of its files; their run reports that item `failed`
+  rather than reading it, because a basket scope never widens access.
 - **Pact provider** (`test_mcp_provider_verification.py`): provider states for
   "a basket exists", "a basket of kind sar_redact exists", "a run is in
-  progress"; verifies `/api/v1/baskets/*`, `/runs`, and `basket_processors` in
-  `/api/v1/status`.
+  progress"; verifies `/api/v1/baskets/*`, `/runs`, `/baskets/processors`, and
+  the `basket_processors` summary in `/api/v1/status`.
 - **Pact consumer** (Astrolabe `McpServerClientPactTest.php`): basket CRUD,
   items, search, runs, and the status shape with and without
   `basket_processors` (the fallback to `sar_available`).
@@ -270,12 +320,14 @@ Every new API surface ships with e2e and contract coverage in the same PR.
 
 1. **nextcloud-mcp-server**: basket model, API, MCP tools, processor registry,
    `sar_redact` as the first processor, `sar/*` alias, `basket_processors` in
-   status. Unit + integration + provider pact.
+   status, stale-run recovery. Unit + integration + **provider** pact (states
+   for the new routes).
 2. **astrolabe**: basket UI, processor picker from `basket_processors`, SAR
-   panel as the `sar_redact` form, fallback to `sar/*`. Consumer pact +
-   Playwright.
-3. **nextcloud-mcp-server** then **astrolabe**: `tag`, `copy`, `move` processors
-   and their option forms; "add files with tag" action.
+   panel as the `sar_redact` form, fallback to `sar/*`. **Consumer** pact for
+   every route it calls + Playwright.
+3. `tag`, `copy`, `move` and the "add files with tag" action:
+   **nextcloud-mcp-server** (processors + provider states) then **astrolabe**
+   (option forms + consumer pact for `/baskets/processors` + Playwright).
 4. **Optional**: Astrolabe Flow operation "Add to basket", Files batch action,
    `nc_task` processor.
 5. **nextcloud-mcp-server**, one release after 1: remove the `sar/*` alias

@@ -5,6 +5,10 @@
 Proposed — 2026-09-24. Replaces an earlier, unmerged design that redacted every
 search and read surface at read time.
 
+The case model and surfaces are superseded in part by
+[ADR-041](ADR-041-document-basket.md) (proposed): a case becomes a basket of
+kind `sar_redact`. The archive and redaction rules here still apply.
+
 ## Context
 
 Organisations answering a Subject Access Request (GDPR Art. 15) must find what
