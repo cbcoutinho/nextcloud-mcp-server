@@ -41,10 +41,26 @@ limits (2,000 items, 1,000 logged searches) are unchanged from ADR-040.
 ### Basket model
 
 ```
-open ──run(processor)──▶ processing ──ok──▶ done ──close──▶ closed
-  ▲                          │ failed          │
-  └──────────────────────────┴──── reopen ─────┘
+open ──run(processor)──▶ processing ──ok──▶ done ──close──▶ closed  (final)
+ ▲ ▲                         │                 │
+ │ └──────── failed ─────────┘                 │
+ └──────────────────── reopen ─────────────────┘
+open ──close──▶ closed
 ```
+
+The edges, completely:
+
+| From | Event | To |
+|---|---|---|
+| `open` | run accepted | `processing` |
+| `processing` | run succeeds | `done` |
+| `processing` | run fails, or is recovered as stale | `open` |
+| `done` | `reopen` | `open` |
+| `open`, `done` | `close` | `closed` |
+| `closed` | none | none |
+
+`reopen` is valid only from `done`. It changes nothing in `runs[]`, and the
+next run simply appends.
 
 - **One run at a time.** The basket locks (`processing`) while a run is
   active, so a run always sees a fixed item set. A second run, and any change
@@ -71,10 +87,17 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
   - *Staleness is judged on Nextcloud's clock.* The heartbeat's age is the
     status file's `getlastmodified`, which Nextcloud sets, compared with the
     `Date` header of the same WebDAV response. Replica clocks never enter it.
-    A run is stale past `BASKET_RUN_STALE_SECONDS` (default 900). Values below
-    3× the 60 s heartbeat are clamped to 180 s with a startup warning, so a
-    healthy run is never declared dead. Tests that need a short window lower
-    the heartbeat interval with it, through the same settings object.
+    A run is stale past `BASKET_RUN_STALE_SECONDS` (default 900). The heartbeat
+    interval is `BASKET_RUN_HEARTBEAT_SECONDS` (default 60). A stale window
+    below 3× the heartbeat interval is clamped up to that with a startup
+    warning, so a healthy run is never declared dead. Tests shorten both.
+  - *A missing status file counts as stale.* The file is created in the same
+    step that locks the basket, and it lives in the basket's own folder, which
+    every reader of the basket can read. A `processing` basket whose active
+    run has no status file (404) is therefore broken, not busy. Reads show it
+    as `failed` (`status lost`), and the next write persists that, so a stuck
+    basket always recovers. Any other error (5xx, timeout) is reported as-is
+    and leaves the state unchanged.
   - *Reads compute, writes persist.* `basket_get` and `basket_list` show a
     stale run as `failed`
     (`interrupted`) and the basket as `open`, without writing. That works for a
@@ -100,15 +123,16 @@ open ──run(processor)──▶ processing ──ok──▶ done ──close
     stay recorded per item in that status file.
   - This also closes a gap ADR-040 left open: today a killed process (as
     opposed to a cancelled task) leaves a case in `exporting` for good.
-- **Closing is final**, as in ADR-040. A `closed` basket is read-only and
-  cannot be reopened. Only `done` (and a failed run, which returns to `open`)
-  leads back to `open`.
+- **Closing is final**, as in ADR-040 (see the edge table above).
 - **Runs are history.** Every run appends to `runs[]` with its processor id,
   options, counts and result (archive path, target folder, tag ids). Reopening
   and running again appends a new run; SAR archive versions (`-v1`, `-v2`) are
   the `sar_redact` runs numbered per basket. Per-item outcomes stay in the
   run's status file, so `runs[]` holds only summaries. It is capped at 100
-  runs per basket: a run beyond that is a 409. Status files share the basket
+  runs per basket. The cap is permanent: a 101st run is a 409 whose message
+  says to start a new basket. The basket stays readable and closable, so its
+  history is kept. A basket that needs a hundred runs has become a standing
+  job, which is outside this design. Status files share the basket
   folder's lifecycle. Closing keeps them as the audit record, deleting the
   basket folder deletes them, and nothing reaps them earlier.
 - **Item results.** A run reports, per item, `ok`, `failed` (with reason) or
@@ -221,7 +245,7 @@ The ADR-040 operations, renamed, plus one run endpoint:
 | Search for the basket, logged with its filters | `basket_search` | `POST /api/v1/baskets/{id}/search` |
 | Run a non-destructive processor | `basket_run` | `POST /api/v1/baskets/{id}/runs` `{processor, options}` → 202 |
 | Run `move` | `basket_move` | the same route, `processor: "move"` |
-| Processor titles and schemas | `basket_processors` | `GET /api/v1/baskets/processors` |
+| Processor titles and schemas | `basket_processor_schemas` | `GET /api/v1/baskets/processors` |
 
 Scopes: `baskets.read` (list, get, processors) and `baskets.write`
 (everything else), plus each processor's own `scopes` on a run (`sar_redact`:
@@ -314,8 +338,9 @@ a `BREAKING CHANGE:` footer.**
   because removal is keyed to the next minor release, not a calendar date. The
   adapters keep the SAR scopes: every alias call still needs `sar.read` or
   `sar.write`, plus `semantic.read` for search and export, exactly as in
-  ADR-040. They never fall back to `baskets.*` alone.
-  `sar_available` is still
+  ADR-040. They never fall back to `baskets.*` alone, and they apply no
+  `baskets.*` check either, so a SAR token keeps working unchanged even though
+  the adapters write through basket storage. `sar_available` is still
   advertised and keeps its meaning. The alias keeps the item contract as of
   v0.198.4 (#1595): `reason` is optional on every basket, `sar_redact` ones
   included.
@@ -335,6 +360,11 @@ a `BREAKING CHANGE:` footer.**
   with either Astrolabe. Astrolabe never assumes a server version from its own.
 - Existing case folders need no migration: the basket loader reads
   `sar-case.json` as a basket of kind `sar_redact` and maps the fields above.
+  ADR-040's `subject` becomes the basket data unchanged, because
+  `sar_redact`'s `basket_schema` **is** ADR-040's subject model (`SubjectList`),
+  not a new shape. Every case ADR-040 could save therefore validates. Should
+  that schema ever tighten, validation on update covers only the fields the
+  update changes, so an older case never becomes uneditable.
   New writes to such a basket keep the legacy file name, so the basket id (its
   file id) never changes. `basket.json` is used only when a basket is created,
   in a new folder, so a folder never holds both files. Creating a basket in a
@@ -379,7 +409,10 @@ calling user's credentials, so it is that user's task. Nextcloud checks every
 file id in a `ListOfFiles` input against that user when scheduling
 (`Manager::validateUserAccessToFile`, also on stable32), so a basket still never
 widens access. One basket run is one task: progress is the task's single float,
-and per-item results are only "submitted". It does **not** replace `sar_redact`:
+and per-item results are only "submitted". Its poll loop is ordinary
+processor code inside `run()`. Liveness comes from the framework's flusher,
+like every processor, so a long poll is covered by the shared heartbeat and
+`nc_task` writes no status itself. It does **not** replace `sar_redact`:
 SAR needs archive-wide placeholder numbering, the subject keep-list, and
 per-document failure, none of which a generic task gives. No Astrolabe PHP is
 needed for `nc_task`; a provider-side integration
@@ -453,9 +486,13 @@ Every new API surface ships with e2e and contract coverage in the same PR.
   authenticated provider verification), which this ADR extends to the basket
   routes. The consumer pacts are still recorded and published in the meantime.
 - **Pact consumer** (Astrolabe `McpServerClientPactTest.php`): basket CRUD,
-  items, search, runs, and three status shapes: `basket_processors` with
-  `sar_redact`, `basket_processors` without it (SAR hidden, no `sar/*` call),
-  and `sar_available` only (the fallback to `sar/*`).
+  items, search, runs, and four status shapes:
+  - `basket_processors` with `sar_redact`;
+  - `basket_processors` without it (SAR hidden, no `sar/*` call);
+  - `basket_processors: []` (no basket UI and no SAR, even if
+    `sar_available` were true);
+  - `sar_available` only, with no `basket_processors` key (the fallback to
+    `sar/*`).
 - **Playwright** (Astrolabe `tests/e2e`): collect from two searches → run
   `tag`; SAR flow via `sar_redact`; and the existing `sar.spec.ts` against a
   server advertising only `sar_available`, proving the old path still works.
