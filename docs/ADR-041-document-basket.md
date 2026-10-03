@@ -104,7 +104,11 @@ unlock below safe: a dead run's `n` can never match a later active run.
     run has no status file (404) is therefore broken, not busy. Reads show it
     as `failed` (`status lost`), and the next write persists that, so a stuck
     basket always recovers. Any other error (5xx, timeout) is reported as-is
-    and leaves the state unchanged.
+    and leaves the state unchanged. A 404 is only *shown* as stale to the
+    reader who got it. It is *persisted* only by a write, and the write
+    re-checks the status file as the writing user, so a reader who merely
+    cannot see `runs/` (a narrower share) never records a healthy run as
+    lost.
   - *Legacy cases left in `exporting`.* An ADR-040 case has no
     `runs/<n>.status.json`. Its export's status file is ADR-040's
     `<output folder>/<name>.status.json`, and the loader uses that as the run
@@ -148,10 +152,13 @@ unlock below safe: a dead run's `n` can never match a later active run.
   run's status file, so `runs[]` holds only summaries. It is capped at 100
   runs per basket, counting every run, including failed and recovered ones.
   That is intended: a processor that keeps failing on the same basket should
-  stop being retried there, not loop forever. The cap is permanent: a 101st
-  run is a 409 whose message says to start a new basket. The basket stays readable and closable, so its
-  history is kept. A basket that needs a hundred runs has become a standing
-  job, which is outside this design. Status files share the basket
+  stop being retried there, not loop forever. Recovery never allocates a run
+  number. It only marks the already-allocated run `n` failed, so however often
+  stale detection fires, it cannot use up the cap by itself. The cap is
+  permanent: a 101st run is a 409 whose message says to start a new basket.
+  The basket stays readable and closable, so its history is kept. A basket
+  that needs a hundred runs has become a standing job, which is outside this
+  design. Status files share the basket
   folder's lifecycle. Closing keeps them as the audit record, deleting the
   basket folder deletes them, and nothing reaps them earlier.
 - **Item results.** A run reports, per item, `ok`, `failed` (with reason) or
@@ -317,7 +324,11 @@ That is enough to gate the UI, and it reveals no more than `sar_available`
 does today. Titles and the `basket_schema`/`options_schema` JSON Schemas are
 served by the authenticated `GET /api/v1/baskets/processors` (`baskets.read`).
 Only processors whose `available(settings)` is true are listed in either
-place.
+place. A processor becoming unavailable (NER unconfigured after an upgrade,
+say) never strands a basket. Baskets of that kind stay readable, editable
+while `open`, and closable. Only new runs of that processor are refused (400).
+A run already `processing` either finishes or fails and is recovered like any
+other.
 
 **Deployment modes**, the same split ADR-040 uses for SAR:
 
