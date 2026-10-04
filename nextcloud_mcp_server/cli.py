@@ -784,9 +784,10 @@ def upgrade(database_url: str | None, database_path: str | None, revision: str):
         # The ingest queue only exists for semantic ingest, and its module
         # imports the vector stack, so without the extra there is nothing to
         # provision (Postgres can still back token storage alone).
-        if not is_sqlite_url(url) and not semantic_installed():
+        postgres = not is_sqlite_url(url)
+        if postgres and not semantic_installed():
             click.echo("Ingest queue schema skipped (semantic extra not installed)")
-        elif not is_sqlite_url(url):
+        elif postgres:
             import anyio  # noqa: PLC0415
 
             from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
