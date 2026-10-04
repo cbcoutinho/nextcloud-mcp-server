@@ -2918,6 +2918,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
         # Plugin routes (e.g. SAR, ADR-040), advertised as <name>_available.
+        # Mounted only inside this authenticated-management block: keep it in
+        # step with the `served` gate of api.management._plugin_availability,
+        # or status would advertise routes that are not mounted.
         for plugin in available_plugins(settings):
             routes += plugin.routes()
             logger.info("Plugin %s: HTTP routes enabled", plugin.name)
