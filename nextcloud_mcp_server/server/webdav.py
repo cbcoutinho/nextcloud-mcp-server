@@ -60,15 +60,21 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
 logger = logging.getLogger(__name__)
 
 _DOCUMENTS_HINT = "Install it with: pip install 'nextcloud-mcp-server[documents]'"
-# What the ``documents`` extra would parse (PDF, Office, Outlook .msg, images
-# via OCR), checked without importing it. Only these get the install hint, so a
-# JSON or XML file -- returned raw either way -- doesn't point at an extra that
-# would not change anything.
+# What the ``documents`` extra would parse (utils.document_parser
+# .is_parseable_document), checked without importing it. Only these get the
+# install hint, so a JSON or XML file -- returned raw either way -- doesn't point
+# at an extra that would not change anything. test_webdav_tools_exclusion.py
+# fails if a processor starts declaring a type this does not cover.
 _DOCUMENT_TYPE_PREFIXES = (
     "application/pdf",
     "application/msword",
+    "application/rtf",
+    "application/epub+zip",
+    "application/x-msg",
     "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.oasis.opendocument.",
     "application/vnd.ms-",
+    "message/rfc822",
     "image/",
 )
 

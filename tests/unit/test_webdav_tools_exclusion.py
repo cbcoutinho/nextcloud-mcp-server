@@ -1479,6 +1479,20 @@ async def test_read_without_documents_extra_still_reads_text(
     assert result.parse_notes == []
 
 
+def test_install_hint_covers_every_type_a_processor_parses():
+    """The hint's static type list must not drift from the processors: a type
+    they parse but the list misses would come back raw with no hint."""
+    from nextcloud_mcp_server.document_processors import get_registry
+    from nextcloud_mcp_server.server.webdav import _DOCUMENT_TYPE_PREFIXES
+
+    missed = {
+        mime
+        for mime in get_registry().supported_mime_types()
+        if not mime.startswith("text/") and not mime.startswith(_DOCUMENT_TYPE_PREFIXES)
+    }
+    assert not missed, f"add to _DOCUMENT_TYPE_PREFIXES: {sorted(missed)}"
+
+
 async def test_page_range_without_documents_extra_says_what_to_install(
     webdav_tools, fake_client, patch_get_client, patch_excluded, no_documents_extra
 ):
