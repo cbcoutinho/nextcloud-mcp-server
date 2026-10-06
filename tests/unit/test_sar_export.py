@@ -182,6 +182,20 @@ async def test_run_export_builds_redacted_archive(indexed):
     assert "Not exported: not in the search index" in index
 
 
+def test_blank_reason_is_left_out(monkeypatch):
+    monkeypatch.setattr(sar_export, "_pdf", str.encode)
+    assert b"Reason for inclusion" not in sar_export.render_document("L", " ", "b")
+    assert b"Reason for inclusion" in sar_export.render_document("L", "why", "b")
+    row = {"n": 1, "title": "Letter", "reason": "", "pages": "", "counts": {}}
+    failed = {"n": 2, "error": "not in the search index", "pages": "", "counts": {}}
+    index = sar_export.render_index("SAR-1", [row, failed])
+    assert b"<td>Letter</td>" in index
+    assert b"<i></i>" not in index
+    assert b"Not exported:</b> not in the search index" in index
+    row["reason"] = "why"
+    assert b"<i>why</i>" in sar_export.render_index("SAR-1", [row])
+
+
 async def test_ner_failure_fails_the_export_and_writes_nothing(indexed):
     webdav = FakeWebDAV()
     nc = FakeClient(webdav)

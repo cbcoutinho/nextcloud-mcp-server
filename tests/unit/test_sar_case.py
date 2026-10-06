@@ -509,16 +509,24 @@ async def test_two_exports_at_once_start_only_one(nc, indexed):
     assert [e.version for e in done.case.exports] == [1]
 
 
-async def test_export_needs_items_with_reasons(nc):
+async def test_export_needs_items(nc):
     created = await _create(nc)
     async with anyio.create_task_group() as tg:
         with pytest.raises(sar_export.ExportError, match="at least one") as info:
             await _export(nc, created.case_id, tg)
         assert info.value.status == 400
-        await sar_case.change_items(nc, created.case_id, _add("1", reason=" "))
-        with pytest.raises(sar_export.ExportError, match="reason"):
-            await _export(nc, created.case_id, tg)
     assert (await sar_case.get_case(nc, created.case_id)).case.state == "open"
+
+
+async def test_export_with_blank_reasons(nc, webdav, indexed):
+    created = await _create(nc)
+    await sar_case.change_items(nc, created.case_id, _add("1", reason=" "))
+    async with anyio.create_task_group() as tg:
+        started, _ = await _export(nc, created.case_id, tg)
+    assert started.case.state == "exporting"
+    assert (await sar_case.get_case(nc, created.case_id)).case.state == (
+        "ready_for_audit"
+    )
 
 
 async def test_export_that_cannot_start_unlocks_case_and_closes_client(nc, indexed):

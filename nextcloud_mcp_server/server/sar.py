@@ -164,10 +164,10 @@ def configure_sar_tools(mcp: MCPServer) -> None:
 
         Args:
             add: Documents to include, using `doc_type` and `id` from search
-                results as `doc_type`/`doc_id`, each with a `reason` (required
-                before export), optionally `title`, `found_by` (the query that
-                found it) and a page range for paged files. Adding a document
-                already in the case updates it.
+                results as `doc_type`/`doc_id`, optionally with a `reason`
+                (printed in the archive when given), `title`, `found_by` (the
+                query that found it) and a page range for paged files. Adding a
+                document already in the case updates it.
             remove: Documents to drop, by `doc_type`/`doc_id`.
             queries: Searches run for the case, including ones that found
                 nothing (`text`, optional `hits`). They are recorded in the archive.

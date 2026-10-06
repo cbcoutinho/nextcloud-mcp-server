@@ -26,8 +26,10 @@ class SarItem(BaseModel):
     )
     doc_id: str = Field(description="Document id as returned by search (`id`).")
     reason: str = Field(
+        default="",
         max_length=2000,
-        description="Why this document is included. Redacted like the documents.",
+        description="Why this document is included (optional). Redacted like the "
+        "documents.",
     )
     page_start: int | None = Field(
         default=None, ge=1, description="First page to include (paged documents)."

@@ -34,7 +34,7 @@ open ──export──▶ exporting ──done──▶ ready_for_audit ──c
 1. **Create** the case in a folder the user can write to, typically a team
    folder, with the subject's identifiers (names, aliases, emails, phone
    numbers, NI numbers, addresses: the **keep list**).
-2. **Search and select.** Add documents with a reason and an optional page
+2. **Search and select.** Add documents with an optional reason and page
    range; remove them; log the searches run, including ones that found
    nothing. Only included documents are recorded. How relevance scores and the
    queries should drive inclusion is left to a follow-up.
