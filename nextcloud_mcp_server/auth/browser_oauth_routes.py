@@ -795,11 +795,15 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
         async with nextcloud_httpx_client() as http_client:
             response = await http_client.post(
                 revocation_endpoint,
+                # client_secret_post, matching our DCR registration; the oidc
+                # app enforces the declared method from 2.5.0 (see
+                # UnifiedTokenVerifier introspection).
                 data={
                     "token": refresh_token,
                     "token_type_hint": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                 },
-                auth=(client_id, client_secret),
             )
             if response.status_code >= 400:
                 logger.warning(

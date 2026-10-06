@@ -322,8 +322,11 @@ async def test_client_cannot_introspect_other_clients_tokens(
         # Test 1: The owning client (shared client) can introspect its own token
         response = await client.post(
             introspection_endpoint,
-            data={"token": access_token},
-            auth=(shared_client_id, shared_client_secret),
+            data={
+                "token": access_token,
+                "client_id": shared_client_id,
+                "client_secret": shared_client_secret,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -335,8 +338,11 @@ async def test_client_cannot_introspect_other_clients_tokens(
         # Test 2: A different client CANNOT introspect the shared client's token
         response = await client.post(
             introspection_endpoint,
-            data={"token": access_token},
-            auth=(different_client_id, different_client_secret),
+            data={
+                "token": access_token,
+                "client_id": different_client_id,
+                "client_secret": different_client_secret,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -403,8 +409,11 @@ async def test_introspection_with_resource_parameter(
         # Test 1: Client A (owner) can introspect its own token
         response = await client.post(
             introspection_endpoint,
-            data={"token": access_token},
-            auth=(client_a_id, client_a_secret),
+            data={
+                "token": access_token,
+                "client_id": client_a_id,
+                "client_secret": client_a_secret,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -416,8 +425,11 @@ async def test_introspection_with_resource_parameter(
         # Test 2: Client B (resource server) can introspect the token
         response = await client.post(
             introspection_endpoint,
-            data={"token": access_token},
-            auth=(client_b_id, client_b_secret),
+            data={
+                "token": access_token,
+                "client_id": client_b_id,
+                "client_secret": client_b_secret,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -432,8 +444,11 @@ async def test_introspection_with_resource_parameter(
         # Test 3: Client C CANNOT introspect the token (not owner, not resource server)
         response = await client.post(
             introspection_endpoint,
-            data={"token": access_token},
-            auth=(client_c_id, client_c_secret),
+            data={
+                "token": access_token,
+                "client_id": client_c_id,
+                "client_secret": client_c_secret,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -462,8 +477,11 @@ async def test_introspection_returns_inactive_for_invalid_token(
         # Test with a fake token
         response = await client.post(
             introspection_endpoint,
-            data={"token": "completely_fake_token_12345"},
-            auth=(client_a_id, client_a_secret),
+            data={
+                "token": "completely_fake_token_12345",
+                "client_id": client_a_id,
+                "client_secret": client_a_secret,
+            },
         )
 
         assert response.status_code == 200

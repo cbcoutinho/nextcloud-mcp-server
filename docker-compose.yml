@@ -51,6 +51,10 @@ services:
       # (before-starting hook creates OIDC client + stores credentials in config.php)
       # Example: MCP_SERVER_URL=http://mcp-login-flow:8004 docker compose --profile login-flow up -d
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+      # Static OIDC client for mcp-login-flow, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh when set.
+      - LOGIN_FLOW_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - LOGIN_FLOW_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
       interval: 10s
@@ -459,13 +463,16 @@ services:
       # the browser-based app-password layer is derived automatically.
       - MCP_DEPLOYMENT_MODE=login_flow
 
-      # NOTE: this dev/test service relies on Dynamic Client Registration for
-      # the MCP server's own OIDC client, which is fine for short-lived CI runs.
-      # For a real self-hosted login_flow deployment, register a STATIC client
-      # in Nextcloud (Administration → OpenID Connect provider) and set
-      # NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET — the built-in
-      # `oidc` app deletes DCR clients after ~1h, which breaks auth (see #907
-      # and docs/login-flow-v2.md → Troubleshooting).
+      # The MCP server's own OIDC client. With LOGIN_FLOW_OIDC_CLIENT_ID/_SECRET
+      # set (CI generates them) it is a STATIC client, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. That is
+      # required from oidc 2.5.0, which never approves an RFC 8707 resource for
+      # a DCR client (`invalid_target`), and it is what a real self-hosted
+      # login_flow deployment should use anyway: the built-in `oidc` app also
+      # deletes DCR clients after ~1h (see #907 and docs/login-flow-v2.md →
+      # Troubleshooting). Unset, the server falls back to DCR (oidc < 2.5.0).
+      - NEXTCLOUD_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - NEXTCLOUD_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
 
       # Token storage (required for app password + session persistence).
       # Source the key from .env — see env.sample. To generate a fresh key:

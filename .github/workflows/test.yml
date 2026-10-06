@@ -236,6 +236,15 @@ jobs:
           KEY=$(openssl rand -base64 32 | tr '+/' '-_')
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
+      # Static OIDC client for mcp-login-flow (oidc >= 2.5.0 never approves an
+      # RFC 8707 resource for a DCR client); created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. The secret
+      # is per run for the same reason as the key above. 32-64 printable chars.
+      - name: Generate ephemeral login-flow OIDC client credentials
+        run: |
+          echo "LOGIN_FLOW_OIDC_CLIENT_ID=nextcloudMcpLoginFlowServer$(openssl rand -hex 4)" >> "$GITHUB_ENV"
+          echo "LOGIN_FLOW_OIDC_CLIENT_SECRET=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+
       # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
@@ -246,8 +255,10 @@ jobs:
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
           NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
-          # Inherited from $GITHUB_ENV via the previous step.
+          # Inherited from $GITHUB_ENV via the previous steps.
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          LOGIN_FLOW_OIDC_CLIENT_ID: ${{ env.LOGIN_FLOW_OIDC_CLIENT_ID }}
+          LOGIN_FLOW_OIDC_CLIENT_SECRET: ${{ env.LOGIN_FLOW_OIDC_CLIENT_SECRET }}
 
       - name: Set up the uv environment
         uses: ./.github/actions/uv-env
