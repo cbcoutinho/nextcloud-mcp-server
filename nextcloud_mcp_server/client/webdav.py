@@ -184,7 +184,8 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     value (RFC 9110 requires strong comparison there anyway). The prefix is now
     removed first.
 
-    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` to the
+    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` (and
+    front ends that compress with zstd append ``-zstd``) to the
     ETag of every compressed response unless ``DeflateAlterETag NoChange`` is
     set; ``AddSuffix`` is the default and the directive did not exist before
     Apache 2.4.15, so many deployments never set it. The etag a caller reads
@@ -198,7 +199,7 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     if cleaned.startswith("W/"):
         cleaned = cleaned[2:]
     cleaned = cleaned.strip('"')
-    for suffix in ("-gzip", "-br", "-deflate"):
+    for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
         if cleaned.endswith(suffix):
             return cleaned[: -len(suffix)]
     return cleaned
