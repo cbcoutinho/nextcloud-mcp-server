@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.198.5 (2026-10-06)
+
+### Fix
+
+- **sar**: render failed index rows, which carry no reason
+- **sar**: allow a blank reason per document on export
+
+### Refactor
+
+- **sar**: name the index reason fragment; assert the title survives
+
 ## v0.198.4 (2026-10-06)
 
 ### Fix
