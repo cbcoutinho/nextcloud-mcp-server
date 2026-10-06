@@ -2,8 +2,12 @@
 
 ## Status
 
-Proposed — 2026-09-24. Replaces an earlier, unmerged design that redacted every
-search and read surface at read time.
+Proposed — 2026-09-24; partially superseded by
+[ADR-041](ADR-041-document-basket.md) (proposed). Replaces an earlier,
+unmerged design that redacted every search and read surface at read time.
+
+ADR-041 supersedes the case model and surfaces: a case becomes a basket of
+kind `sar_redact`. The archive and redaction rules here still apply.
 
 ## Context
 
