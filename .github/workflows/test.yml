@@ -266,9 +266,22 @@ jobs:
       - name: Set up the uv environment
         uses: ./.github/actions/uv-env
 
+      # The install (apt system deps + browser download) intermittently stalls
+      # with no progress; unbounded, a stall holds the job until GitHub's 6h
+      # limit. Each attempt is capped and a stalled or failed one is retried.
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run --no-build --no-sync playwright install chromium --with-deps
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 uv run --no-build --no-sync playwright install chromium --with-deps; then
+              exit 0
+            fi
+            echo "::warning::Playwright install attempt ${attempt} failed or stalled; retrying"
+            sleep 10
+          done
+          echo "::error::Playwright install failed after 3 attempts"
+          exit 1
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud
