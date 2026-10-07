@@ -12,10 +12,15 @@
 # generates them; see .github/workflows/test.yml). The same values reach
 # mcp-login-flow as NEXTCLOUD_OIDC_CLIENT_ID/_SECRET. Without them the service
 # falls back to DCR, which works on oidc < 2.5.0 only.
+#
+# Dev/CI only: the secret is passed on the occ command line (visible in `ps`
+# inside the container), which is fine for a per-run ephemeral value. The URL is
+# the one the server advertises (its NEXTCLOUD_MCP_SERVER_URL), not the internal
+# MCP_SERVER_URL Astrolabe uses -- the resource and callback must match it.
 
 set -e
 
-if [ -z "${LOGIN_FLOW_OIDC_CLIENT_ID:-}" ] || [ -z "${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}" ]; then
+if [[ -z "${LOGIN_FLOW_OIDC_CLIENT_ID:-}" || -z "${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}" ]]; then
   echo "LOGIN_FLOW_OIDC_CLIENT_ID/_SECRET not set, skipping the static mcp-login-flow client"
   exit 0
 fi

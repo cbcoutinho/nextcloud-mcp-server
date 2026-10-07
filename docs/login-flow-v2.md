@@ -81,6 +81,10 @@ When `OIDC_DISCOVERY_URL` is unset, Nextcloud's own **OpenID Connect provider**
 (`oidc`) app is the IdP. Register a **static** client for the MCP server there —
 don't rely on Dynamic Client Registration, because the `oidc` app auto-deletes
 DCR clients after ~1 hour (see [Troubleshooting](#access-forbidden-after-the-connection-worked-for-a-while)).
+From `oidc` 2.5.0 a DCR client also can't get a token for the MCP server's
+resource at all (`invalid_target`): the app accepts an RFC 8707 resource only
+when an admin approved it, which is automatic for a static client's own
+resource URL and never for DCR.
 
 1. Install/enable the **OpenID Connect provider** (`oidc`) app.
 2. Go to **Administration settings → OpenID Connect provider → Add client** and set:
