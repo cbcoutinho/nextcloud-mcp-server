@@ -100,3 +100,24 @@ def test_plugin_scopes_must_be_supported(monkeypatch):
     _install(monkeypatch, extra="nextcloud_mcp_server.plugins:_TEST_PLUGIN")
     with pytest.raises(ValueError, match=r"extra\.read"):
         load_plugins()
+
+
+def test_a_failing_plugin_is_named_at_registration(monkeypatch):
+    """A plugin's own register_tools/routes failure names the plugin, like an
+    entry point that fails to load, rather than a bare traceback."""
+
+    def boom(*_):
+        raise KeyError("missing setting")
+
+    broken = Plugin(
+        name="broken",
+        available=lambda settings: True,
+        register_tools=boom,
+        routes=boom,
+    )
+    monkeypatch.setattr(plugins, "load_plugins", lambda: (broken,))
+
+    with pytest.raises(RuntimeError, match="'broken' failed to register its tools"):
+        register_plugin_tools(SimpleNamespace(), settings=None)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(RuntimeError, match="'broken' failed to build its routes"):
+        plugins.plugin_routes(settings=None)  # ty: ignore[invalid-argument-type]

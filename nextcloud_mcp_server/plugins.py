@@ -26,7 +26,8 @@ the helpers a plugin needs (``get_client``, ``require_scopes``, ...).
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import entry_points
@@ -108,12 +109,32 @@ def available_plugins(settings: Settings) -> list[Plugin]:
     return [p for p in load_plugins() if p.available(settings)]
 
 
+@contextmanager
+def _blame(plugin: Plugin, step: str) -> Iterator[None]:
+    """Re-raise a plugin's own failure naming the plugin, as load_plugins does."""
+    try:
+        yield
+    except Exception as exc:
+        raise RuntimeError(f"plugin {plugin.name!r} failed to {step}") from exc
+
+
 def register_plugin_tools(mcp: MCPServer, settings: Settings) -> None:
     """Register the MCP tools of every available plugin, logging the skipped
     ones. HTTP transport only: the stdio server supports no plugins yet."""
     for plugin in load_plugins():
         if plugin.available(settings):
             logger.info("Plugin %s: registering tools", plugin.name)
-            plugin.register_tools(mcp)
+            with _blame(plugin, "register its tools"):
+                plugin.register_tools(mcp)
         else:
             logger.info("Plugin %s: not available, skipping", plugin.name)
+
+
+def plugin_routes(settings: Settings) -> list[BaseRoute]:
+    """The HTTP routes of every available plugin."""
+    routes: list[BaseRoute] = []
+    for plugin in available_plugins(settings):
+        with _blame(plugin, "build its routes"):
+            routes += plugin.routes()
+        logger.info("Plugin %s: HTTP routes enabled", plugin.name)
+    return routes

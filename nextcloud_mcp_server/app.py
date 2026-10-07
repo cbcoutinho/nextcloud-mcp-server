@@ -115,8 +115,8 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
 from nextcloud_mcp_server.plugins import (
-    available_plugins,
     load_plugins,
+    plugin_routes,
     register_plugin_tools,
 )
 from nextcloud_mcp_server.request_context import current_context
@@ -2921,9 +2921,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Mounted only inside this authenticated-management block: keep it in
         # step with the `served` gate of api.management._plugin_availability,
         # or status would advertise routes that are not mounted.
-        for plugin in available_plugins(settings):
-            routes += plugin.routes()
-            logger.info("Plugin %s: HTTP routes enabled", plugin.name)
+        routes += plugin_routes(settings)
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(
