@@ -352,6 +352,18 @@ async def test_client_cannot_introspect_other_clients_tokens(
         )
 
 
+# TODO(card #1382): rewrite for oidc >= 2.5.0 resource semantics. This test
+# requests `resource=<client B's id>`; since 2.5.0 the oidc app accepts only an
+# absolute URI that an admin approved for the requesting client (automatic for
+# a static client's own resource_url, never for DCR), so the token request ends
+# in `invalid_target`. Rewrite with a static client B registered with a URL
+# resource_url, asserting B (and the owner) can introspect a token issued for
+# that resource and an unrelated client C cannot. Skipped explicitly: the test's
+# own token-acquisition fallback skipped it silently, hiding the lost coverage.
+@pytest.mark.skip(
+    reason="oidc >= 2.5.0 rejects a client id as an RFC 8707 resource; "
+    "rewrite pending (card #1382)"
+)
 async def test_introspection_with_resource_parameter(
     browser,
     oauth_callback_server,
