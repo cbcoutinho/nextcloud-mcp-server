@@ -243,7 +243,10 @@ jobs:
       - name: Generate ephemeral login-flow OIDC client credentials
         run: |
           echo "LOGIN_FLOW_OIDC_CLIENT_ID=nextcloudMcpLoginFlowServer$(openssl rand -hex 4)" >> "$GITHUB_ENV"
-          echo "LOGIN_FLOW_OIDC_CLIENT_SECRET=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          SECRET=$(openssl rand -hex 24)
+          # Ephemeral, but mask it anyway so no later step can print it.
+          echo "::add-mask::${SECRET}"
+          echo "LOGIN_FLOW_OIDC_CLIENT_SECRET=${SECRET}" >> "$GITHUB_ENV"
 
       # Start services with the appropriate profile
       - name: Run docker compose
