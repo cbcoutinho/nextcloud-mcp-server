@@ -321,6 +321,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `todo.read` / `todo.write` | Tasks (VTODO outside Calendar) |
 | `collectives.read` / `collectives.write` | Collectives |
 | `shopping_list.read` / `shopping_list.write` | Shopping List |
+| `social.read` / `social.write` | Social (fediverse microblogging) |
 | `news.read` | News (read-only) |
 | `sharing.write` | Share-link / share-permission management |
 | `semantic.read` | Semantic search + RAG (when enabled) |
