@@ -75,6 +75,8 @@ _DOCUMENT_TYPE_PREFIXES = (
     "application/vnd.oasis.opendocument.",
     "application/vnd.ms-",
     "message/rfc822",
+    # Images are parsed only by the OCR tier, which also needs configuring, but
+    # its client comes from the same extra -- so the hint is deliberately broad.
     "image/",
 )
 
