@@ -9,11 +9,13 @@ try/except per tool.
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Annotated
 
 from httpx import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -34,6 +36,12 @@ from nextcloud_mcp_server.models.lucarne import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+# Lucarne's own limits, applied here so an over-long value is refused before the
+# request instead of coming back as a 422.
+CatalogName = Annotated[str, Field(min_length=1, max_length=100)]
+PlaylistTitle = Annotated[str, Field(min_length=1, max_length=255)]
+YouTubeUrl = Annotated[str, Field(min_length=1, max_length=2048)]
 
 
 @contextmanager
@@ -86,12 +94,14 @@ def configure_lucarne_tools(mcp: MCPServer):
 
     @mcp.tool(
         title="Subscribe to Lucarne Channel",
-        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+        # Create-or-get: subscribing again to the same channel returns the
+        # existing subscription instead of making a second one.
+        annotations=ToolAnnotations(idempotent_hint=True, open_world_hint=True),
     )
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_subscribe_channel(
-        url: str, ctx: Context
+        url: YouTubeUrl, ctx: Context
     ) -> LucarneChannelResponse:
         """Subscribe to a YouTube channel in Lucarne (requires lucarne.write scope).
 
@@ -144,7 +154,7 @@ def configure_lucarne_tools(mcp: MCPServer):
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_create_catalog(
-        name: str, ctx: Context
+        name: CatalogName, ctx: Context
     ) -> LucarneCatalogResponse:
         """Create an empty Lucarne catalogue (requires lucarne.write scope).
 
@@ -162,7 +172,7 @@ def configure_lucarne_tools(mcp: MCPServer):
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_update_catalog(
-        catalog_id: int, name: str, ctx: Context
+        catalog_id: int, name: CatalogName, ctx: Context
     ) -> LucarneCatalogResponse:
         """Rename a Lucarne catalogue (requires lucarne.write scope)."""
         client = await get_client(ctx)
@@ -204,6 +214,10 @@ def configure_lucarne_tools(mcp: MCPServer):
         The channels already in the catalogue are kept. Get channel IDs from
         nc_lucarne_list_channels.
 
+        Lucarne can only replace a catalogue's whole channel set, so this reads
+        the catalogue and writes it back. Two edits to the same catalogue at the
+        same moment can overwrite each other.
+
         Args:
             catalog_id: Catalogue to file the channels into
             channel_ids: IDs of the channels to add
@@ -227,6 +241,10 @@ def configure_lucarne_tools(mcp: MCPServer):
         """Take channels out of a Lucarne catalogue (requires lucarne.write scope).
 
         The channels stay subscribed, they simply stop being in this catalogue.
+
+        Lucarne can only replace a catalogue's whole channel set, so this reads
+        the catalogue and writes it back. Two edits to the same catalogue at the
+        same moment can overwrite each other.
 
         Args:
             catalog_id: Catalogue to take the channels out of
@@ -267,7 +285,7 @@ def configure_lucarne_tools(mcp: MCPServer):
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_create_playlist(
-        title: str, ctx: Context
+        title: PlaylistTitle, ctx: Context
     ) -> LucarnePlaylistResponse:
         """Create an empty personal Lucarne playlist (requires lucarne.write scope)."""
         client = await get_client(ctx)
@@ -282,7 +300,7 @@ def configure_lucarne_tools(mcp: MCPServer):
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_update_playlist(
-        playlist_id: int, title: str, ctx: Context
+        playlist_id: int, title: PlaylistTitle, ctx: Context
     ) -> LucarnePlaylistResponse:
         """Rename a Lucarne playlist (requires lucarne.write scope).
 
@@ -317,6 +335,8 @@ def configure_lucarne_tools(mcp: MCPServer):
         client = await get_client(ctx)
         with _lucarne_errors(f"deleting playlist {playlist_id}"):
             data = await client.lucarne.delete_playlist(playlist_id, delete_videos)
+        # Lucarne answers 202 with {"queued": true}. The fallback only covers a
+        # body without the key, since the 202 itself means the work was queued.
         return DeleteLucarnePlaylistResponse(
             playlist_id=playlist_id, queued=bool(data.get("queued", True))
         )
@@ -328,7 +348,7 @@ def configure_lucarne_tools(mcp: MCPServer):
     @require_scopes("lucarne.write")
     @instrument_tool
     async def nc_lucarne_add_video_to_playlist(
-        playlist_id: int, url: str, ctx: Context
+        playlist_id: int, url: YouTubeUrl, ctx: Context
     ) -> AddLucarnePlaylistVideoResponse:
         """Add a YouTube video to a personal Lucarne playlist (requires lucarne.write scope).
 
@@ -342,6 +362,8 @@ def configure_lucarne_tools(mcp: MCPServer):
         client = await get_client(ctx)
         with _lucarne_errors(f"adding a video to playlist {playlist_id}"):
             data = await client.lucarne.add_playlist_video(playlist_id, url)
+        # {"queued": false} means the video was already known and attached at
+        # once. The fallback only covers a body without the key.
         return AddLucarnePlaylistVideoResponse(
             playlist_id=playlist_id, queued=bool(data.get("queued", True))
         )
