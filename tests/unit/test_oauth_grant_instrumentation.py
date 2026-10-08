@@ -194,10 +194,24 @@ class TestGrantMetricWiring:
 
     @staticmethod
     def _request(form: dict[str, str]):
-        """Minimal Starlette request whose .form() yields *form*."""
+        """Minimal Starlette request whose .form() yields *form*.
+
+        The authorization_code grant records a refresh-token → client binding
+        in ``oauth_context["storage"]``; these tests are about metrics, so the
+        storage accepts the write and keeps nothing.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
         from starlette.datastructures import FormData
 
+        storage = SimpleNamespace(bind_refresh_token_client=AsyncMock())
+
         class _Req:
+            app = SimpleNamespace(
+                state=SimpleNamespace(oauth_context={"storage": storage})
+            )
+
             async def form(self):
                 return FormData(form)
 
