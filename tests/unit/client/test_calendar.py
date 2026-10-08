@@ -1902,3 +1902,52 @@ def test_bulk_targets_never_moves_a_series():
 
     assert targets == []
     assert skipped[0]["status"] == "skipped"
+
+
+def _fake_event(mocker, uid: str, summary: str):
+    """A minimal stand-in for a caldav ``AsyncEvent`` returned by ``calendar.events()``."""
+    ics = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\nSUMMARY:{summary}\r\n"
+        "DTSTART:20260101T100000Z\r\n"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    event = mocker.Mock()
+    # _maybe_await passes a non-coroutine straight through, so a plain Mock is fine.
+    event.load = mocker.Mock(return_value=None)
+    event.data = ics
+    event.url = f"https://cloud.example.org/{uid}.ics"
+    return event
+
+
+async def test_get_calendar_events_filters_before_limit(mocker):
+    """A title match beyond the first ``limit`` events must still be returned.
+
+    Regression: get_calendar_events() truncated the result to ``limit`` before
+    the caller applied title/category/status filters, so on a calendar holding
+    more events than ``limit`` a match that sorted after the cap was silently
+    dropped (search returned 0 for an event that exists).
+    """
+    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice", password="pw")
+
+    events = [_fake_event(mocker, f"filler-{i}", "Daily standup") for i in range(60)]
+    events.append(_fake_event(mocker, "target", "Urodziny Teresy"))
+
+    fake_cal = mocker.Mock()
+    fake_cal.events = mocker.AsyncMock(return_value=events)
+    mocker.patch.object(CalendarClient, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(CalendarClient, "_get_calendar", return_value=fake_cal)
+    mocker.patch.object(
+        CalendarClient, "_collection_etags", mocker.AsyncMock(return_value={})
+    )
+
+    result = await client.get_calendar_events(
+        "personal", limit=50, filters={"title_contains": "Urodziny Teresy"}
+    )
+
+    uids = [e["uid"] for e in result]
+    assert "target" in uids
