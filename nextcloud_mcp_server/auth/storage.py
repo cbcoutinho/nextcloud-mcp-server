@@ -2112,7 +2112,7 @@ class RefreshTokenStorage:
             username: Nextcloud loginName from Login Flow v2 response
 
         Raises:
-            ValueError: If any scope is not in ALL_SUPPORTED_SCOPES
+            ValueError: If any scope is not in supported_scopes()
         """
         if not self._initialized:
             await self.initialize()
@@ -2125,11 +2125,11 @@ class RefreshTokenStorage:
 
         # Defense-in-depth: validate scopes at storage layer
         if scopes is not None:
-            from nextcloud_mcp_server.models.auth import (  # noqa: PLC0415
-                ALL_SUPPORTED_SCOPES,
+            from nextcloud_mcp_server.plugins import (  # noqa: PLC0415
+                supported_scopes,
             )
 
-            invalid = [s for s in scopes if s not in ALL_SUPPORTED_SCOPES]
+            invalid = [s for s in scopes if s not in supported_scopes()]
             if invalid:
                 raise ValueError(f"Invalid scopes: {invalid}")
 

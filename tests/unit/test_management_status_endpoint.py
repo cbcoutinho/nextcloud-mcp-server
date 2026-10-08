@@ -554,17 +554,17 @@ def test_status_advertises_rerank_capability(
         (AuthMode.LOGIN_FLOW, False, False, True, "https://gw.example", False),
         # The route is authenticated: not served in single-user mode.
         (AuthMode.SINGLE_USER_BASIC, False, True, True, "https://gw.example", False),
-        # Names are detected by the gateway; text comes from the index.
-        (AuthMode.LOGIN_FLOW, False, True, True, "", False),
-        (AuthMode.LOGIN_FLOW, False, True, False, "https://gw.example", False),
+        # Enabled without the gateway or the index fails startup instead
+        # (test_redaction.py::test_sar_enabled_without_what_it_needs_fails).
     ],
 )
 def test_status_advertises_sar_export_capability(
     mode, offline_access, sar_enabled, vector_sync, gateway_url, expected
 ):
     """Astrolabe gates its SAR export UI on this (ADR-040). Always present."""
+    from nextcloud_mcp_server.sar_plugin import SarSettings  # noqa: PLC0415
+
     settings = create_mock_settings(vector_sync_enabled=vector_sync)
-    settings.sar_enabled = sar_enabled
     settings.embedding_gateway_url = gateway_url
     settings.enable_offline_access = offline_access
 
@@ -575,6 +575,10 @@ def test_status_advertises_sar_export_capability(
         patch(
             "nextcloud_mcp_server.api.management.detect_auth_mode",
             return_value=mode,
+        ),
+        patch(
+            "nextcloud_mcp_server.sar_plugin.sar_settings",
+            return_value=SarSettings(sar_enabled=sar_enabled),
         ),
     ):
         response = TestClient(create_test_app()).get("/api/v1/status")

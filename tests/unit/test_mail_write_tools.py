@@ -14,7 +14,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
 
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import CORE_SCOPES
 from nextcloud_mcp_server.models.mail import MailActionResponse, MailTagResponse
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 from nextcloud_mcp_server.server.mail import configure_mail_tools
@@ -185,7 +185,7 @@ def test_write_tools_are_registered_with_the_write_scope(mail_tools):
 
 
 def test_every_tool_scope_is_grantable():
-    """Every scope a tool requires must be in ALL_SUPPORTED_SCOPES.
+    """Every scope a tool requires must be in CORE_SCOPES.
 
     A scope missing from that set cannot be granted through the provisioning
     path, so the tool is unreachable in OAuth mode while still working under
@@ -208,6 +208,6 @@ def test_every_tool_scope_is_grantable():
         for tool in mcp._tool_manager.list_tools()
         for scope in getattr(tool.fn, "_required_scopes", ())
     }
-    assert required <= ALL_SUPPORTED_SCOPES, (
-        f"scopes used by tools but not grantable: {sorted(required - ALL_SUPPORTED_SCOPES)}"
+    assert required <= CORE_SCOPES, (
+        f"scopes used by tools but not grantable: {sorted(required - CORE_SCOPES)}"
     )

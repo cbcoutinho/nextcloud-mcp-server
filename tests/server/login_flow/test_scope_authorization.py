@@ -39,7 +39,7 @@ import httpx
 import pytest
 from mcp.types import CallToolResult
 
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.plugins import supported_scopes
 from tests.server.login_flow.conftest import LOGIN_FLOW_MCP_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -303,7 +303,7 @@ async def test_stored_scopes_enforced_on_tool_call(nc_mcp_login_flow_client):
                 password,
                 original_scopes
                 if isinstance(original_scopes, list) and original_scopes
-                else sorted(ALL_SUPPORTED_SCOPES),
+                else sorted(supported_scopes()),
             )
         except Exception:
             logger.exception(

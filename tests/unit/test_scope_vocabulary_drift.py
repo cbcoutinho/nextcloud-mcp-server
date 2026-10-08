@@ -1,6 +1,6 @@
 """Guards against drift between the places that list scopes.
 
-``ALL_SUPPORTED_SCOPES`` is the vocabulary; several other lists must cover it.
+``supported_scopes()`` (core plus plugin scopes) is the vocabulary; several other lists must cover it.
 Each has drifted at least once, and every time the symptom was the same: a tool
 that works under BasicAuth and is permanently uncallable in OAuth / Login Flow
 v2, because the scope it requires can never be granted. ``mail.send`` went that
@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from nextcloud_mcp_server.app import build_dcr_scopes
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
+from nextcloud_mcp_server.plugins import load_plugins, supported_scopes
+from nextcloud_mcp_server.sar_plugin import plugin as sar
 from tests.conftest import DEFAULT_FULL_SCOPES
 
 pytestmark = pytest.mark.unit
@@ -42,11 +43,11 @@ def test_dcr_advertises_every_supported_scope():
         build_dcr_scopes(
             vector_sync_enabled=True,
             offline_access_enabled=True,
-            plugin_scopes=[(SAR_SCOPES, True)],
+            plugin_scopes=[(p.scopes, True) for p in load_plugins()],
         ).split()
     )
-    assert ALL_SUPPORTED_SCOPES <= advertised, (
-        f"not advertised via DCR: {sorted(ALL_SUPPORTED_SCOPES - advertised)}"
+    assert supported_scopes() <= advertised, (
+        f"not advertised via DCR: {sorted(supported_scopes() - advertised)}"
     )
 
 
@@ -75,12 +76,12 @@ def test_dcr_advertises_sar_scopes_only_when_sar_is_available():
     off = build_dcr_scopes(
         vector_sync_enabled=True,
         offline_access_enabled=False,
-        plugin_scopes=[(SAR_SCOPES, False)],
+        plugin_scopes=[(sar.scopes, False)],
     ).split()
     on = build_dcr_scopes(
         vector_sync_enabled=True,
         offline_access_enabled=False,
-        plugin_scopes=[(SAR_SCOPES, True)],
+        plugin_scopes=[(sar.scopes, True)],
     ).split()
     assert "sar.read" not in off and "sar.write" not in off
     assert on.count("sar.read") == 1 and on.count("sar.write") == 1
@@ -93,20 +94,20 @@ def test_astrolabe_oidc_client_allows_every_supported_scope():
     token gates every tool call, those tools silently vanish for Astrolabe
     users. mail.* and talk.* were missing exactly this way.
     """
-    missing = ALL_SUPPORTED_SCOPES - _hook_allowed_scopes()
+    missing = supported_scopes() - _hook_allowed_scopes()
     assert not missing, f"Astrolabe OIDC client cannot grant: {sorted(missing)}"
 
 
 def test_full_access_test_token_carries_every_supported_scope():
     """The "full access" OAuth fixture must not be quietly narrower than the
     vocabulary, or e2e tests pass while real deployments lose those tools."""
-    missing = ALL_SUPPORTED_SCOPES - set(DEFAULT_FULL_SCOPES.split())
+    missing = supported_scopes() - set(DEFAULT_FULL_SCOPES.split())
     assert not missing, f"DEFAULT_FULL_SCOPES is missing: {sorted(missing)}"
 
 
-def test_dcr_withholds_every_plugin_scope_and_advertises_available_ones():
-    """Each plugin's scopes are withheld from the base list and re-added only
-    while that plugin is available -- independently per plugin."""
+def test_dcr_advertises_each_plugins_scopes_independently():
+    """A plugin's scopes are advertised only while that plugin is available --
+    independently per plugin."""
     on, off = frozenset({"sar.read"}), frozenset({"sar.write"})
     scopes = build_dcr_scopes(
         vector_sync_enabled=False,
