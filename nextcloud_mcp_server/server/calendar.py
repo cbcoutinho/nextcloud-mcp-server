@@ -352,12 +352,14 @@ def configure_calendar_tools(mcp: MCPServer):
             )
             events = events[:limit]
         else:
-            # Search in specific calendar
+            # Search in specific calendar. Filters run inside get_calendar_events
+            # (before its limit) so a match past the cap is not dropped.
             events = await client.calendar.get_calendar_events(
                 calendar_name=calendar_name,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 limit=limit,
+                filters=filters if filters else None,
             )
 
             # Enrich events with calendar context for per-event mapping.
@@ -366,10 +368,6 @@ def configure_calendar_tools(mcp: MCPServer):
             # already identifies the calendar for single-calendar queries.
             for event in events:
                 event["calendar_name"] = calendar_name
-
-            # Apply filters if provided
-            if filters:
-                events = client.calendar._apply_event_filters(events, filters)
 
         summaries = [_event_dict_to_summary(e) for e in events]
         return ListEventsResponse(
@@ -886,11 +884,8 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
@@ -985,11 +980,8 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
