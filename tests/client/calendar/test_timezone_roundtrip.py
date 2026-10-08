@@ -549,3 +549,56 @@ def test_update_with_non_utc_offset_is_stored_as_utc(mocker):
     assert "TZID" not in component["DTSTART"].params
     assert component["DTSTART"].to_ical() == b"20261008T180000Z"
     assert component["DTEND"].to_ical() == b"20261008T190000Z"
+
+
+def test_create_offset_event_until_keeps_last_day_in_callers_offset(mocker):
+    """A date-only end date bounds the caller's day, not the UTC day.
+
+    21:00-05:00 on June 30th is 02:00Z on July 1st; anchoring UNTIL at UTC
+    midnight (because DTSTART is now stored as UTC) would drop it.
+    """
+    client = _make_client(mocker)
+    ical = client._create_ical_event(
+        {
+            "title": "Evening series",
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "end_datetime": "2026-06-01T22:00:00-05:00",
+            "recurrence_rule": "FREQ=DAILY",
+            "recurrence_end_date": "2026-06-30",
+        },
+        event_uid="offset-until",
+    )
+
+    assert "UNTIL=20260701T045959Z" in ical
+
+
+def test_update_offset_event_until_keeps_last_day_in_callers_offset(mocker):
+    """Same as the create path, when start and end date arrive in one update."""
+    component = _merge(
+        mocker,
+        "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n",
+        {
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "end_datetime": "2026-06-01T22:00:00-05:00",
+            "recurrence_rule": "FREQ=DAILY",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert b"UNTIL=20260701T045959Z" in component["RRULE"].to_ical()
+
+
+def test_absolute_reminder_with_offset_is_stored_as_utc(mocker):
+    """An absolute TRIGGER must be UTC (RFC 5545 §3.8.6.3), never TZID="UTC-05:00"."""
+    client = _make_client(mocker)
+    ical = client._create_ical_event(
+        {
+            "title": "Reminder",
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "reminders": [{"trigger_at": "2026-06-01T20:00:00-05:00"}],
+        },
+        event_uid="offset-trigger",
+    )
+
+    assert "TRIGGER;VALUE=DATE-TIME:20260602T010000Z" in ical
+    assert "TZID" not in ical

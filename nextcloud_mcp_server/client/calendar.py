@@ -277,6 +277,20 @@ def _format_until(end_date: str, *, all_day: bool, tz: dt.tzinfo | None = None) 
     return parsed.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _until_anchor(dtstart: Any, start_str: str | None) -> Any:
+    """Return DTSTART as the caller wrote it, for anchoring a date-only UNTIL.
+
+    A fixed-offset start (``21:00-05:00``) is stored as UTC, so the stored
+    DTSTART no longer says which day "until June 30th" ends on. The caller's
+    offset still does.
+    """
+    if isinstance(dtstart, dt.datetime) and start_str:
+        caller = dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        if caller.tzinfo is not None:
+            return caller
+    return dtstart
+
+
 def _occurrence_is_done(component: Any) -> bool:
     """True when a VTODO occurrence is finished.
 
@@ -1832,6 +1846,9 @@ class CalendarClient:
             trigger_dt = dt.datetime.fromisoformat(str(reminder["trigger_at"]))
             if trigger_dt.tzinfo is None:
                 trigger_dt = trigger_dt.replace(tzinfo=dt.UTC)
+            # RFC 5545 §3.8.6.3: an absolute trigger MUST be UTC. A fixed offset
+            # would otherwise be emitted as TZID="UTC+02:00".
+            trigger_dt = trigger_dt.astimezone(dt.UTC)
             # RELATED is deliberately dropped here: it has no meaning on an
             # absolute trigger and makes the property invalid.
             alarm.add("trigger", trigger_dt, parameters={"VALUE": "DATE-TIME"})
@@ -2124,7 +2141,9 @@ class CalendarClient:
             recurrence_end_date = event_data.get("recurrence_end_date", "")
             if recurrence_end_date:
                 recurrence_rule = _rrule_with_until(
-                    recurrence_rule, recurrence_end_date, dtstart_value
+                    recurrence_rule,
+                    recurrence_end_date,
+                    _until_anchor(dtstart_value, start_str),
                 )
             event.add("rrule", vRecur.from_ical(recurrence_rule))
 
@@ -2558,7 +2577,10 @@ class CalendarClient:
                             rrule_str = _rrule_with_until(
                                 rrule_str,
                                 end_date,
-                                dtstart.dt if dtstart else None,
+                                _until_anchor(
+                                    dtstart.dt if dtstart else None,
+                                    event_data.get("start_datetime"),
+                                ),
                                 replace=not caller_supplied_rule,
                             )
                         component["RRULE"] = vRecur.from_ical(rrule_str)
