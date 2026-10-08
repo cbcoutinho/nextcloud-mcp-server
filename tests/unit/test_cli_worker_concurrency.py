@@ -56,7 +56,7 @@ def test_startup_sweep_runs_when_streaming_is_enabled(mocker, tmp_path):
     from nextcloud_mcp_server import cli
 
     sweep = mocker.patch(
-        "nextcloud_mcp_server.document_processors.source.sweep_orphaned_spools",
+        "nextcloud_mcp_server.document_source.sweep_orphaned_spools",
         return_value=3,
     )
     settings = SimpleNamespace(
@@ -72,9 +72,7 @@ def test_startup_sweep_skipped_when_streaming_is_disabled(mocker):
     """Nothing spools on the buffered path, so there is nothing to sweep."""
     from nextcloud_mcp_server import cli
 
-    sweep = mocker.patch(
-        "nextcloud_mcp_server.document_processors.source.sweep_orphaned_spools"
-    )
+    sweep = mocker.patch("nextcloud_mcp_server.document_source.sweep_orphaned_spools")
     settings = SimpleNamespace(
         document_stream_download_enabled=False,
         document_spool_dir=None,
@@ -82,3 +80,41 @@ def test_startup_sweep_skipped_when_streaming_is_disabled(mocker):
 
     assert cli._sweep_spools_at_startup(settings) == 0
     sweep.assert_not_called()
+
+
+# --- without the semantic extra -----------------------------------------------
+
+
+def test_worker_refuses_to_start_without_the_semantic_extra(mocker):
+    from click.testing import CliRunner
+
+    from nextcloud_mcp_server import cli
+
+    mocker.patch.object(
+        cli, "get_settings", return_value=SimpleNamespace(ingest_queue="postgres")
+    )
+    mocker.patch.object(cli, "semantic_installed", return_value=False)
+
+    result = CliRunner().invoke(cli.worker, [])
+
+    assert result.exit_code != 0
+    assert "nextcloud-mcp-server[semantic]" in result.output
+
+
+def test_db_upgrade_on_postgres_skips_the_queue_schema_without_the_extra(mocker):
+    """Postgres can back token storage alone; the ingest-queue schema would
+    import the vector stack, so it is skipped rather than failing the upgrade."""
+    from click.testing import CliRunner
+
+    from nextcloud_mcp_server import cli
+
+    upgrade = mocker.patch.object(cli, "upgrade_database")
+    mocker.patch.object(cli, "semantic_installed", return_value=False)
+
+    result = CliRunner().invoke(
+        cli.upgrade, ["--database-url", "postgresql+psycopg://u:p@db/mcp"]
+    )
+
+    assert result.exit_code == 0, result.output
+    upgrade.assert_called_once()
+    assert "Ingest queue schema skipped" in result.output

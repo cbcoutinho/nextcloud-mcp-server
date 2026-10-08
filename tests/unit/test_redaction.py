@@ -4,13 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from nextcloud_mcp_server.features import (
+    ner_endpoint,
+    redaction_available,
+    sar_available,
+)
 from nextcloud_mcp_server.redaction import (
     Redactor,
     counts,
     detect_entities,
-    ner_endpoint,
-    redaction_available,
-    sar_available,
 )
 
 pytestmark = pytest.mark.unit

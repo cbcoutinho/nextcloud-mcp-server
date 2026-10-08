@@ -129,7 +129,7 @@ To set it up, see the [Astrolabe setup guide](https://docs.astrolabecloud.com/us
 
 ## Semantic Search
 
-An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires a vector database and embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
+An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires the `semantic` extra (`pip install 'nextcloud-mcp-server[semantic]'`, included in the Docker image), a vector database and an embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
 
 For result *ordering* — turning the fused rank score into a calibrated relevance score with a cross-encoder, self-hosted via Infinity/vLLM or hosted via Cohere, with or without an embedding gateway — see [docs/reranking.md](docs/reranking.md).
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from nextcloud_mcp_server.app import build_dcr_scopes
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from tests.conftest import DEFAULT_FULL_SCOPES
 
 pytestmark = pytest.mark.unit
@@ -40,7 +40,9 @@ def test_dcr_advertises_every_supported_scope():
     """The DCR registration must cover the whole vocabulary."""
     advertised = set(
         build_dcr_scopes(
-            vector_sync_enabled=True, offline_access_enabled=True, sar_enabled=True
+            vector_sync_enabled=True,
+            offline_access_enabled=True,
+            plugin_scopes=[(SAR_SCOPES, True)],
         ).split()
     )
     assert ALL_SUPPORTED_SCOPES <= advertised, (
@@ -71,10 +73,14 @@ def test_dcr_omits_semantic_read_when_vector_sync_disabled():
 def test_dcr_advertises_sar_scopes_only_when_sar_is_available():
     """Like semantic.read: no SAR scopes for tools that are not registered."""
     off = build_dcr_scopes(
-        vector_sync_enabled=True, offline_access_enabled=False
+        vector_sync_enabled=True,
+        offline_access_enabled=False,
+        plugin_scopes=[(SAR_SCOPES, False)],
     ).split()
     on = build_dcr_scopes(
-        vector_sync_enabled=True, offline_access_enabled=False, sar_enabled=True
+        vector_sync_enabled=True,
+        offline_access_enabled=False,
+        plugin_scopes=[(SAR_SCOPES, True)],
     ).split()
     assert "sar.read" not in off and "sar.write" not in off
     assert on.count("sar.read") == 1 and on.count("sar.write") == 1
@@ -96,3 +102,16 @@ def test_full_access_test_token_carries_every_supported_scope():
     vocabulary, or e2e tests pass while real deployments lose those tools."""
     missing = ALL_SUPPORTED_SCOPES - set(DEFAULT_FULL_SCOPES.split())
     assert not missing, f"DEFAULT_FULL_SCOPES is missing: {sorted(missing)}"
+
+
+def test_dcr_withholds_every_plugin_scope_and_advertises_available_ones():
+    """Each plugin's scopes are withheld from the base list and re-added only
+    while that plugin is available -- independently per plugin."""
+    on, off = frozenset({"sar.read"}), frozenset({"sar.write"})
+    scopes = build_dcr_scopes(
+        vector_sync_enabled=False,
+        offline_access_enabled=False,
+        plugin_scopes=[(on, True), (off, False)],
+    ).split()
+    assert scopes.count("sar.read") == 1
+    assert "sar.write" not in scopes

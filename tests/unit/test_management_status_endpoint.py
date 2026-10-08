@@ -581,3 +581,76 @@ def test_status_advertises_sar_export_capability(
 
     assert response.status_code == 200
     assert response.json()["sar_available"] is expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "offline_access", "available", "expected"),
+    [
+        (AuthMode.LOGIN_FLOW, False, True, True),
+        (AuthMode.LOGIN_FLOW, False, False, False),
+        # Plugin routes mount with the authenticated management API only.
+        (AuthMode.SINGLE_USER_BASIC, False, True, False),
+    ],
+)
+def test_status_reports_each_installed_plugin(
+    mode, offline_access, available, expected
+):
+    """Every installed plugin gets a ``<name>_available`` key (ADR-040's
+    ``sar_available`` is one), present even when false."""
+    from nextcloud_mcp_server.plugins import Plugin  # noqa: PLC0415
+
+    fake = Plugin(
+        name="fake",
+        available=lambda settings: available,
+        register_tools=lambda mcp: None,
+    )
+    settings = create_mock_settings()
+    settings.enable_offline_access = offline_access
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings", return_value=settings
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=mode,
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.load_plugins",
+            return_value=(fake,),
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["fake_available"] is expected
+
+
+def test_status_survives_a_plugin_whose_available_raises():
+    """Astrolabe polls /api/v1/status; one faulty plugin reports unavailable
+    instead of turning the whole response into a 500."""
+    from nextcloud_mcp_server.plugins import Plugin  # noqa: PLC0415
+
+    def boom(settings):
+        raise RuntimeError("misconfigured")
+
+    faulty = Plugin(name="faulty", available=boom, register_tools=lambda mcp: None)
+
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings",
+            return_value=create_mock_settings(),
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=AuthMode.LOGIN_FLOW,
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.load_plugins",
+            return_value=(faulty,),
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.status_code == 200
+    assert response.json()["faulty_available"] is False

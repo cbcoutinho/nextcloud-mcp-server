@@ -14,7 +14,7 @@ from nextcloud_mcp_server.document_processors.docling_serve import (
     docling_pages,
 )
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
-from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
+from nextcloud_mcp_server.document_source import MemoryDocumentSource
 
 pytestmark = pytest.mark.unit
 

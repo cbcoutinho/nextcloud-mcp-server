@@ -14,6 +14,7 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.features import documents_installed
 from nextcloud_mcp_server.links import file_url, with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
@@ -54,9 +55,30 @@ from nextcloud_mcp_server.utils.message_splitter import (
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
     from nextcloud_mcp_server.client import NextcloudClient
-    from nextcloud_mcp_server.document_processors.source import DocumentSource
+    from nextcloud_mcp_server.document_source import DocumentSource
 
 logger = logging.getLogger(__name__)
+
+_DOCUMENTS_HINT = "Install it with: pip install 'nextcloud-mcp-server[documents]'"
+# What the ``documents`` extra would parse (utils.document_parser
+# .is_parseable_document), checked without importing it. Only these get the
+# install hint, so a JSON or XML file -- returned raw either way -- doesn't point
+# at an extra that would not change anything. test_webdav_tools_exclusion.py
+# fails if a processor starts declaring a type this does not cover.
+_DOCUMENT_TYPE_PREFIXES = (
+    "application/pdf",
+    "application/msword",
+    "application/rtf",
+    "application/epub+zip",
+    "application/x-msg",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.oasis.opendocument.",
+    "application/vnd.ms-",
+    "message/rfc822",
+    # Images are parsed only by the OCR tier, which also needs configuring, but
+    # its client comes from the same extra -- so the hint is deliberately broad.
+    "image/",
+)
 
 # move_resource/copy_resource return (rather than raise) on these, since they
 # are conditions a caller reacts to rather than transport failures. They are
@@ -117,7 +139,7 @@ async def _slice_pages(
     from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
         slice_pdf_pages,
     )
-    from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
+    from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
         SpooledDocumentSource,
         spool_target,
     )
@@ -476,14 +498,24 @@ def configure_webdav_tools(mcp: MCPServer):
         # ``parse_document``, and ``from ... import parse_document`` would rebind
         # it and silently discard the caller's choice.
         from nextcloud_mcp_server.client.webdav import OversizeDownload  # noqa: PLC0415
-        from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
-            PdfParseFailed,
-        )
-        from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
         from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
             download_ceiling,
             spooled_document,
         )
+
+        # Parsing needs the optional ``documents`` extra. Without it every file
+        # is returned as it is, and a document says which extra would parse it.
+        parsing = documents_installed()
+        if parsing:
+            from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
+                PdfParseFailed,
+            )
+            from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
+        elif paged:
+            raise ToolError(
+                "page_start/page_end need PDF parsing, which this server does "
+                f"not have installed. {_DOCUMENTS_HINT}"
+            )
 
         settings = get_settings()
         ceiling = download_ceiling(settings)
@@ -566,8 +598,10 @@ def configure_webdav_tools(mcp: MCPServer):
                         )
                     return _stamp_url(response, url)
 
-                if parse_document != "raw" and document_parser.is_parseable_document(
-                    content_type
+                if (
+                    parsing
+                    and parse_document != "raw"
+                    and document_parser.is_parseable_document(content_type)
                 ):
                     # Optional interactive cap (ADR-032): bound the SYNCHRONOUS
                     # parse so a slow VLM/OCR convert returns the raw file quickly
@@ -664,7 +698,17 @@ def configure_webdav_tools(mcp: MCPServer):
                 status: ParseStatus = (
                     "skipped" if parse_document == "raw" else "not_applicable"
                 )
-                return _stamp_url(await _raw_response(source, path, status, []), url)
+                notes = []
+                if (
+                    not parsing
+                    and parse_document != "raw"
+                    and content_type.startswith(_DOCUMENT_TYPE_PREFIXES)
+                ):
+                    notes.append(
+                        "Text extraction for this file type is not installed on "
+                        f"this server, so the raw file is returned. {_DOCUMENTS_HINT}"
+                    )
+                return _stamp_url(await _raw_response(source, path, status, notes), url)
         except OversizeDownload as e:
             # The transfer was aborted mid-flight, so there is no file left to
             # describe -- not even its content type. Say that plainly rather than

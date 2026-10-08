@@ -12,7 +12,6 @@ from .deck import configure_deck_tools
 from .mail import configure_mail_tools
 from .news import configure_news_tools
 from .notes import configure_notes_tools
-from .semantic import configure_semantic_tools
 from .sharing import configure_sharing_tools
 from .shopping_list import configure_shopping_list_tools
 from .tables import configure_tables_tools
@@ -22,7 +21,9 @@ from .webdav import configure_webdav_tools
 # Canonical mapping of app name → tool registration function.
 # Used by app.py (HTTP), stdio.py (stdio), and cli.py (--enable-app choices).
 # Semantic search is excluded here because it is a cross-app feature gated
-# by VECTOR_SYNC_ENABLED, not an individual Nextcloud app.
+# by VECTOR_SYNC_ENABLED, not an individual Nextcloud app. Its module is not
+# imported from this package at all: it pulls in the optional semantic stack
+# (qdrant-client, provider SDKs), and the core server must import without it.
 AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "notes": configure_notes_tools,
     "tables": configure_tables_tools,
@@ -94,7 +95,6 @@ __all__ = [
     "configure_mail_tools",
     "configure_news_tools",
     "configure_notes_tools",
-    "configure_semantic_tools",
     "configure_sharing_tools",
     "configure_shopping_list_tools",
     "configure_tables_tools",

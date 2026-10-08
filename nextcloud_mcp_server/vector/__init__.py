@@ -6,12 +6,8 @@ package init: they transitively import `server.semantic` ->
 `search.algorithms` -> `vector.placeholder` -> `vector/__init__`.
 Consumers that need those symbols import them from their submodules
 directly (e.g. `from nextcloud_mcp_server.vector.processor import ...`).
+
+Nothing is re-exported at all: importing any submodule runs this file, and
+some submodules (``spool``, ``payload_keys``) are used outside the optional
+semantic stack, so the package itself must not import qdrant-client.
 """
-
-from .document_chunker import DocumentChunker
-from .qdrant_client import get_qdrant_client
-
-__all__ = [
-    "get_qdrant_client",
-    "DocumentChunker",
-]

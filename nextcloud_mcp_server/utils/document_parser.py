@@ -27,7 +27,7 @@ from nextcloud_mcp_server.document_processors import (
     get_registry,
 )
 from nextcloud_mcp_server.document_processors.base import EMPTY_DOCUMENT_REASON
-from nextcloud_mcp_server.document_processors.source import DocumentSource
+from nextcloud_mcp_server.document_source import DocumentSource
 from nextcloud_mcp_server.models.webdav import ContentFormat, ParseStatus
 
 logger = logging.getLogger(__name__)

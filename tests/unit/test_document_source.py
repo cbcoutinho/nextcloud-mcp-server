@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nextcloud_mcp_server.document_processors.source import (
+from nextcloud_mcp_server.document_source import (
     SPOOL_PREFIX,
     MemoryDocumentSource,
     SpooledDocumentSource,

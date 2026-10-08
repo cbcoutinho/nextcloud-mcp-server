@@ -20,10 +20,10 @@ dependencies = [
     "uvicorn>=0.30", # cli.py serves the ASGI app
     "cryptography>=42.0", # auth/storage.py token encryption
     "lxml>=5.0", # client/calendar.py CalDAV XML parsing
-    "botocore>=1.35.0", # providers/bedrock.py exception types
-    "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "packaging>=24.0", # capabilities.py compares advertised app versions
-    "pillow (>=10.3.0,<12.0.0)", # Compatible with fastembed
+    # pythonvcard4 imports PIL at module level, so this is core (contacts), not
+    # semantic. Upper bound for fastembed compatibility in the semantic extra.
+    "pillow (>=10.3.0,<12.0.0)",
     "icalendar (>=7.3.0,<7.4.0)",
     "pythonvcard4>=0.2.0", # _parse_vcard works around sharf-shawon/pythonvCard4#2 (GH #1551)
     "pydantic>=2.11.4",
@@ -34,9 +34,6 @@ dependencies = [
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "alembic>=1.14.0", # Database migrations
     "authlib>=1.6.5",
-    "qdrant-client>=1.17.0",
-    "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
-    "boto3>=1.35.0", # For Amazon Bedrock provider (optional)
     # Observability dependencies
     "prometheus-client>=0.21.0", # Prometheus metrics
     "opentelemetry-api>=1.28.2", # OpenTelemetry API
@@ -48,27 +45,9 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.2", # OTLP gRPC exporter
     "python-json-logger>=3.2.0", # Structured JSON logging
     "jinja2>=3.1.6",
-    "langchain-text-splitters>=1.0.0",
-    "markdownify>=0.14.1",  # HTML to Markdown conversion for News items
-    # Pinned exactly, and upgraded deliberately rather than by range. The
-    # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
-    # hard dependency of our page-boundary/citation path, and it is not stable
-    # across releases: 1.27.2.1 made pymupdf4llm initialise pymupdf_layout on
-    # import, which switched the emitting code path from ``pymupdf_rag`` (key
-    # ``page``) to ``document_layout`` (key ``page_number``). Upstream pins its
-    # own pymupdf dependency exactly for the same reason (see their CHANGES for
-    # 1.27.2.1), so the two versions must move together.
-    "pymupdf==1.28.2",
-    "pymupdf4llm==1.28.2",
-    "openai>=2.8.1",
+    "langchain-text-splitters>=1.0.0", # utils/message_splitter.py (Deck/WebDAV comments)
     "dynaconf>=3.2.13,<4.0",
-    "mistralai>=2.4.5",
     "sqlalchemy[asyncio]>=2.0",
-    "pypdfium2>=5.9.0",
-    "python-pptx>=1.0.2",
-    "python-docx>=1.2.0",
-    "openpyxl>=3.1.5",
-    "olefile>=0.47",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -156,6 +135,10 @@ module-root = ""
 
 [dependency-groups]
 dev = [
+    # The test suite covers the semantic stack, an optional extra of the
+    # published package; the dev group (synced by default) pulls it in so a
+    # plain `uv run` / `uv sync` does not strip it from the environment.
+    "nextcloud-mcp-server[semantic]",
     "commitizen>=4.8.2",
     # Imported directly by tests/conftest.py and tests/load/ to build the
     # httpx2.AsyncClient that mcp 2.x's streamable_http_client takes; mcp pulls
@@ -191,10 +174,48 @@ dev = [
     "pyroscope-io>=0.8.0",
 ]
 
+[project.entry-points."nextcloud_mcp_server.plugins"]
+sar = "nextcloud_mcp_server.sar_plugin:plugin"
+
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 
 [project.optional-dependencies]
+# Semantic search, background vector sync and SAR export (includes `documents`).
+# Without it the server runs every Nextcloud app tool, and VECTOR_SYNC_ENABLED
+# is rejected at startup. The core import path never touches these packages;
+# tests/unit/test_core_import_boundary.py enforces that.
+semantic = [
+    "nextcloud-mcp-server[documents]", # ingest parses every indexed document
+    "qdrant-client>=1.17.0",
+    "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
+    "numpy>=1.26", # vector/pca.py, vector/visualization.py
+    "openai>=2.8.1",
+    "boto3>=1.35.0", # Amazon Bedrock provider
+    "botocore>=1.35.0", # providers/bedrock.py exception types
+    "markdownify>=0.14.1", # vector/html_processor.py (News/Mail ingest)
+]
+# PDF/Office text extraction (document_processors/): what nc_webdav_read_file
+# parses with, and what semantic ingest builds on. Without it the read tool
+# returns PDF/Office files raw, with a note naming this extra.
+documents = [
+    "mistralai>=2.4.5", # document_processors/ocr.py (Mistral OCR tier)
+    # Pinned exactly, and upgraded deliberately rather than by range. The
+    # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
+    # hard dependency of our page-boundary/citation path, and it is not stable
+    # across releases: 1.27.2.1 made pymupdf4llm initialise pymupdf_layout on
+    # import, which switched the emitting code path from ``pymupdf_rag`` (key
+    # ``page``) to ``document_layout`` (key ``page_number``). Upstream pins its
+    # own pymupdf dependency exactly for the same reason (see their CHANGES for
+    # 1.27.2.1), so the two versions must move together.
+    "pymupdf==1.28.2",
+    "pymupdf4llm==1.28.2",
+    "pypdfium2>=5.9.0",
+    "python-pptx>=1.0.2",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "olefile>=0.47",
+]
 postgres = [
     "procrastinate>=3.8",
     "psycopg[binary,pool]>=3.2",

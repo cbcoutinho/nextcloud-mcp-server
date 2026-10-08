@@ -25,13 +25,8 @@ from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.redaction import sar_available
-from nextcloud_mcp_server.search.rerank import rerank_available
-from nextcloud_mcp_server.vector.metrics_publisher import (
-    count_indexed,
-    estimate_hybrid_vector_bytes,
-)
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.features import rerank_available
+from nextcloud_mcp_server.plugins import load_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +307,27 @@ def _validate_query_string(query: str, max_length: int = 10000) -> None:
         raise ValueError(f"Query too long: maximum {max_length} characters")
 
 
+def _plugin_availability(settings: Settings, served: bool) -> dict[str, bool]:
+    """``<name>_available`` for every installed plugin, e.g. ``sar_available``
+    for /api/v1/sar/cases (ADR-040). Present even when false, like
+    ``rerank_available``, so Astrolabe can hide a plugin's UI.
+
+    Unlike the startup callers (DCR scopes, tool registration), which let a
+    raising ``available()`` fail the server once, this one reports the plugin
+    unavailable: Astrolabe polls this endpoint, and one faulty plugin must not
+    take the whole status down.
+    """
+    flags = {}
+    for plugin in load_plugins():
+        try:
+            available = plugin.available(settings)
+        except Exception:
+            logger.exception("Plugin %s: available() raised", plugin.name)
+            available = False
+        flags[f"{plugin.name}_available"] = served and available
+    return flags
+
+
 async def get_server_status(request: Request) -> JSONResponse:
     """GET /api/v1/status - Server status and version.
 
@@ -342,7 +358,7 @@ async def get_server_status(request: Request) -> JSONResponse:
     else:
         auth_mode = "unknown"
 
-    response_data = {
+    response_data: dict[str, Any] = {
         "version": __version__,
         "auth_mode": auth_mode,
         "vector_sync_enabled": settings.vector_sync_enabled,
@@ -377,11 +393,9 @@ async def get_server_status(request: Request) -> JSONResponse:
     oauth_provisioning_available = auth_mode == "oauth" or (
         mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access
     )
-    # Whether /api/v1/sar/cases is served (ADR-040). Always present, like
-    # rerank_available, so Astrolabe can hide the SAR UI when it is false.
-    response_data["sar_available"] = bool(
-        oauth_provisioning_available and sar_available(settings)
-    )
+    # Plugin routes mount alongside the authenticated management API, hence
+    # the provisioning gate.
+    response_data |= _plugin_availability(settings, oauth_provisioning_available)
     if oauth_provisioning_available:
         # Provide IdP discovery information for NC PHP app
         oidc_config = {}
@@ -419,8 +433,17 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
     try:
         # Outstanding-work view depends on the queue backend (Deck #183):
         # memory → stream buffer depth; postgres → procrastinate job counts.
+        # Deferred, like everything below: the vector stack is optional and
+        # only importable when vector sync is on.
         from nextcloud_mcp_server.vector.ingest_status import (  # noqa: PLC0415
             get_ingest_pending,
+        )
+        from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+            count_indexed,
+            estimate_hybrid_vector_bytes,
+        )
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
         )
 
         pending = await get_ingest_pending(

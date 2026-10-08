@@ -887,10 +887,18 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
 
         try:
+            # Credentials in the body (client_secret_post), not HTTP Basic: that
+            # is the method our DCR registration declares, and the Nextcloud
+            # oidc app enforces the declared method from 2.5.0 (a mismatch is
+            # 401 invalid_client). Static clients and Keycloak's client-secret
+            # authenticator accept either.
             response = await self.http_client.post(
                 self.introspection_uri,
-                data={"token": token},
-                auth=(client_id, client_secret),
+                data={
+                    "token": token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
             )
 
             if response.status_code == 200:

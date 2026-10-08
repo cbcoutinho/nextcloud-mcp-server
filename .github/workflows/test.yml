@@ -55,8 +55,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # "" is the bare install (app tools only); "documents" adds PDF/Office
+        # text extraction; "semantic" adds the vector stack on top of it.
+        extra: ["", "documents", "semantic"]
     runs-on: ${{ matrix.os }}
-    name: package-smoke (${{ matrix.os }})
+    name: package-smoke (${{ matrix.os }}${{ matrix.extra && format(', {0}', matrix.extra) || '' }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Deliberately NOT ./.github/actions/uv-env: that syncs the dev group,
@@ -80,7 +83,26 @@ jobs:
       # both runners so the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
         shell: bash
-        run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help
+        env:
+          EXTRA: ${{ matrix.extra }}
+          NEXTCLOUD_HOST: http://nextcloud.invalid
+          NEXTCLOUD_USERNAME: admin
+          NEXTCLOUD_PASSWORD: admin
+        run: |
+          wheel=$(ls dist/*.whl)
+          req="nextcloud-mcp-server${EXTRA:+[$EXTRA]} @ ./$wheel"
+          run() { uv run --isolated --no-project --no-build --with "$req" "$@"; }
+          run nextcloud-mcp-server --help
+          # Each extra is either fully there or fully absent (semantic includes
+          # documents), and without semantic, semantic search is refused at
+          # startup with the install hint.
+          docs=False; sem=False
+          [ -n "$EXTRA" ] && docs=True
+          [ "$EXTRA" = semantic ] && sem=True
+          run python -c "from nextcloud_mcp_server.features import documents_installed as d, semantic_installed as s; assert (d(), s()) == ($docs, $sem), (d(), s())"
+          if [ "$sem" = False ]; then
+            (export ENABLE_SEMANTIC_SEARCH=true; run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs")
+          fi
 
   integration-test:
     runs-on: ubuntu-latest
@@ -236,6 +258,18 @@ jobs:
           KEY=$(openssl rand -base64 32 | tr '+/' '-_')
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
+      # Static OIDC client for mcp-login-flow (oidc >= 2.5.0 never approves an
+      # RFC 8707 resource for a DCR client); created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. The secret
+      # is per run for the same reason as the key above. 32-64 printable chars.
+      - name: Generate ephemeral login-flow OIDC client credentials
+        run: |
+          echo "LOGIN_FLOW_OIDC_CLIENT_ID=nextcloudMcpLoginFlowServer$(openssl rand -hex 4)" >> "$GITHUB_ENV"
+          SECRET=$(openssl rand -hex 24)
+          # Ephemeral, but mask it anyway so no later step can print it.
+          echo "::add-mask::${SECRET}"
+          echo "LOGIN_FLOW_OIDC_CLIENT_SECRET=${SECRET}" >> "$GITHUB_ENV"
+
       # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
@@ -246,15 +280,30 @@ jobs:
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
           NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
-          # Inherited from $GITHUB_ENV via the previous step.
+          # Inherited from $GITHUB_ENV via the previous steps.
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          LOGIN_FLOW_OIDC_CLIENT_ID: ${{ env.LOGIN_FLOW_OIDC_CLIENT_ID }}
+          LOGIN_FLOW_OIDC_CLIENT_SECRET: ${{ env.LOGIN_FLOW_OIDC_CLIENT_SECRET }}
 
       - name: Set up the uv environment
         uses: ./.github/actions/uv-env
 
+      # The install (apt system deps + browser download) intermittently stalls
+      # with no progress; unbounded, a stall holds the job until GitHub's 6h
+      # limit. Each attempt is capped and a stalled or failed one is retried.
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run --no-build --no-sync playwright install chromium --with-deps
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 uv run --no-build --no-sync playwright install chromium --with-deps; then
+              exit 0
+            fi
+            echo "::warning::Playwright install attempt ${attempt} failed or stalled; retrying"
+            sleep 10
+          done
+          echo "::error::Playwright install failed after 3 attempts"
+          exit 1
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud

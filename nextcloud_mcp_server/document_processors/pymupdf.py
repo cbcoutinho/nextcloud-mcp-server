@@ -17,11 +17,15 @@ import anyio
 import pymupdf
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import (
+    DocumentSource,
+    MemoryDocumentSource,
+    resolve_path,
+)
 from nextcloud_mcp_server.observability.metrics import record_document_parse_mode
 
 from ._isolation import PdfParseFailed, run_isolated_pdf_parse, uses_markdown
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 

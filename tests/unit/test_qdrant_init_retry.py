@@ -71,7 +71,7 @@ class TestInitQdrantCollectionWithRetry:
         sleep = mocker.patch("nextcloud_mcp_server.app.anyio.sleep")
         mocker.patch("nextcloud_mcp_server.app.get_settings", return_value=_settings(5))
         get_client = mocker.patch(
-            "nextcloud_mcp_server.app.get_qdrant_client",
+            "nextcloud_mcp_server.vector.qdrant_client.get_qdrant_client",
             side_effect=[
                 ResponseHandlingException(httpx.ConnectError("refused")),
                 httpx.ConnectError("refused"),
@@ -88,7 +88,7 @@ class TestInitQdrantCollectionWithRetry:
         sleep = mocker.patch("nextcloud_mcp_server.app.anyio.sleep")
         mocker.patch("nextcloud_mcp_server.app.get_settings", return_value=_settings(5))
         get_client = mocker.patch(
-            "nextcloud_mcp_server.app.get_qdrant_client",
+            "nextcloud_mcp_server.vector.qdrant_client.get_qdrant_client",
             side_effect=ValueError("bad api key"),
         )
 
@@ -102,7 +102,7 @@ class TestInitQdrantCollectionWithRetry:
         mocker.patch("nextcloud_mcp_server.app.anyio.sleep")
         mocker.patch("nextcloud_mcp_server.app.get_settings", return_value=_settings(2))
         get_client = mocker.patch(
-            "nextcloud_mcp_server.app.get_qdrant_client",
+            "nextcloud_mcp_server.vector.qdrant_client.get_qdrant_client",
             side_effect=httpx.ConnectError("refused"),
         )
 
