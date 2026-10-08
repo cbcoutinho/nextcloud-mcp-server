@@ -5,6 +5,37 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.199.0 (2026-10-08)
+
+### BREAKING CHANGE
+
+- the semantic-search dependencies are no longer installed
+by default. Deployments using ENABLE_SEMANTIC_SEARCH / VECTOR_SYNC_ENABLED
+from PyPI must install `nextcloud-mcp-server[semantic]`. The Docker image
+is unaffected.
+
+### Feat
+
+- plugin entry points, with SAR as the first plugin
+
+### Fix
+
+- name the plugin when its tool or route registration fails
+- plugin load errors name the entry point; status survives a faulty plugin
+- harden plugin loading and keep stdio's tool set unchanged
+- hint at the documents extra only for types it would parse
+- guard semantic-only CLI paths on an install without the extra
+- address Sonar shelldre:S7688 in the login-flow client hook; doc oidc 2.5 + DCR
+- **auth**: work with Nextcloud oidc 2.5's stricter client auth and resource policy
+
+### Refactor
+
+- move plugin availability flags out of get_server_status
+- keep the semantic stack out of the core import path
+
+
+- move the semantic-search stack into a `semantic` extra
+
 ## v0.198.5 (2026-10-06)
 
 ### Fix
