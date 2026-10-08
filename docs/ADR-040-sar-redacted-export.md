@@ -148,7 +148,7 @@ search and `EMBEDDING_GATEWAY_URL`, which startup requires once it is set. The
 HTTP routes additionally need an authenticated deployment mode.
 
 The tools, routes, scopes and `sar_available` flag reach the server through a
-single `Plugin` (`nextcloud_mcp_server/sar_plugin.py`), registered under the
+single `Plugin` (`packages/nextcloud-mcp-sar/src/nextcloud_mcp_sar/plugin.py`), registered under the
 `nextcloud_mcp_server.plugins` entry-point group; the server has no SAR-specific
 wiring of its own. See `nextcloud_mcp_server/plugins.py`.
 

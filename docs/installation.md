@@ -76,7 +76,7 @@ Deck, Files, …). Heavier features are opt-in [extras](https://packaging.python
 | Extra | Enables | Pulls in |
 |---|---|---|
 | `documents` | PDF/Office text extraction in `nc_webdav_read_file` (PDF, Word, PowerPoint, Excel, Outlook `.msg`); without it those files are returned raw with an install hint | PyMuPDF, pypdfium2, python-docx/pptx, openpyxl, olefile, Mistral SDK (OCR) |
-| `semantic` | Semantic search, background vector sync, SAR export. Includes `documents` | qdrant-client, fastembed, numpy, OpenAI/Bedrock SDKs |
+| `semantic` | Semantic search and background vector sync. Includes `documents` | qdrant-client, fastembed, numpy, OpenAI/Bedrock SDKs |
 | `postgres` | Postgres-backed ingest queue (ADR-026/028) | procrastinate, psycopg |
 | `observability` | Continuous profiling (Pyroscope) | pyroscope-io (no Windows wheel) |
 
@@ -93,6 +93,15 @@ independent: `postgres` and `observability` work with or without `semantic`.
 If you add `semantic` to an install whose `DATABASE_URL` is Postgres, re-run
 `nextcloud-mcp-server db upgrade`: without the extra it skips the ingest-queue
 schema.
+
+### Plugins
+
+Some features ship as plugins: separate distributions that register into the
+server when installed next to it. SAR cases and redacted export (ADR-040) are
+the `nextcloud-mcp-sar` plugin, in `packages/nextcloud-mcp-sar`. It is not
+published to PyPI. The Docker image includes it, and a source checkout
+(`uv sync`) installs it through the dev group. A plugin is still off until its
+settings enable it (`SAR_ENABLED`).
 
 ### Verify Installation
 

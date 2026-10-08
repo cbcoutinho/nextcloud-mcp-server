@@ -8,13 +8,13 @@ import anyio
 import httpx
 import pymupdf
 import pytest
-
-from nextcloud_mcp_server import sar_export
-from nextcloud_mcp_server.models.sar import (
+from nextcloud_mcp_sar import export as sar_export
+from nextcloud_mcp_sar.models import (
     SarExportStatus,
     SarItem,
 )
-from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_sar.ner import NerError
+
 from nextcloud_mcp_server.vector.oauth_sync import NotProvisionedError
 
 pytestmark = pytest.mark.unit

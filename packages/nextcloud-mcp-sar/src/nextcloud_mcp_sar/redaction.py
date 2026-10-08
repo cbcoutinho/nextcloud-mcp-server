@@ -49,14 +49,14 @@ from typing import Any
 
 import anyio
 
-from nextcloud_mcp_server.plugin_api import build_gateway_token_provider
-from nextcloud_mcp_server.providers.ner import (
+from nextcloud_mcp_sar.ner import (
     ADDRESS_LABEL,
     PERSON_LABEL,
     NerClient,
     windows,
 )
-from nextcloud_mcp_server.sar_plugin import ner_endpoint, sar_settings
+from nextcloud_mcp_sar.plugin import ner_endpoint, sar_settings
+from nextcloud_mcp_server.plugin_api import build_gateway_token_provider
 
 PERSON = "PERSON"
 ADDRESS = "ADDRESS"
@@ -195,7 +195,7 @@ def _reset_ner_state() -> None:
 
 async def get_ner_client(settings: Any) -> NerClient:
     """The shared NER client. Call only when SAR is available
-    (:func:`~nextcloud_mcp_server.sar_plugin.sar_available`)."""
+    (:func:`~nextcloud_mcp_sar.plugin.sar_available`)."""
     global _client, _client_lock
     url = ner_endpoint(settings)
     if url is None:

@@ -26,9 +26,13 @@ runs:
         # our own source -- with build-backend = "uv_build", which ships inside
         # the uv binary, so no third-party code is fetched or executed for it.
         #
+        # The same holds for the workspace members (packages/*, the plugins),
+        # which the dev group pulls in: --no-install-workspace skips them all,
+        # and --all-packages builds a wheel for each.
+        #
         # NOTE: `uv sync` installs the dev group, which carries pyroscope-io --
         # no Windows wheel. Any job on a Windows runner must skip this action
         # and build the wheel directly (see package-smoke).
-        uv sync --frozen --no-build --no-install-project
-        uv build --wheel --out-dir dist
+        uv sync --frozen --no-build --no-install-workspace
+        uv build --wheel --all-packages --out-dir dist
         uv pip install --no-deps --no-build dist/*.whl
