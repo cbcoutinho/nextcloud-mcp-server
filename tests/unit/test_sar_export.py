@@ -319,24 +319,6 @@ def test_item_page_range_validation():
     assert SarItem(doc_type="file", doc_id=7, reason="r").doc_id == "7"
 
 
-class FakePoint:
-    def __init__(self, payload):
-        self.payload = payload
-
-
-class FakeQdrant:
-    """Two scroll pages; chunk 1 is duplicated (indexed under two owners)."""
-
-    def __init__(self, payloads):
-        self.pages = [payloads[:2], payloads[2:]]
-        self.filters = []
-
-    async def scroll(self, *, scroll_filter, offset, **_):
-        self.filters.append(scroll_filter)
-        page = 0 if offset is None else 1
-        return [FakePoint(p) for p in self.pages[page]], (1 if page == 0 else None)
-
-
 def _chunk(i, start, text, page):
     return {
         "title": "Scan",
@@ -347,24 +329,32 @@ def _chunk(i, start, text, page):
     }
 
 
+class FakeIndex:
+    """``indexed_chunks``: the document's chunks, one per index, unordered."""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.calls = []
+
+    async def __call__(self, user_id, owners, doc_id, doc_type, fields):
+        self.calls.append((user_id, owners, doc_id, doc_type))
+        return list(self.chunks)
+
+
 @pytest.fixture
-def qdrant(monkeypatch):
-    fake = FakeQdrant(
+def index(monkeypatch):
+    fake = FakeIndex(
         [
+            _chunk(2, 28, "page three", 3),
             _chunk(0, 0, "page one text", 1),
             _chunk(1, 14, "page two text", 2),
-            _chunk(1, 14, "page two text", 2),
-            _chunk(2, 28, "page three", 3),
         ]
     )
-
-    async def get_qdrant_client():
-        return fake
 
     async def list_accessible_owners(sharing, user_id):
         return [user_id, "owner"]
 
-    monkeypatch.setattr(sar_export, "get_qdrant_client", get_qdrant_client)
+    monkeypatch.setattr(sar_export, "indexed_chunks", fake)
     monkeypatch.setattr(sar_export, "list_accessible_owners", list_accessible_owners)
     return fake
 
@@ -383,15 +373,17 @@ class FakeReader:
         self.sharing = object()
 
 
-async def test_document_text_reassembles_all_pages(qdrant):
+async def test_document_text_reassembles_all_pages(index):
     title, text = await sar_export.document_text(
         FakeReader(), "dpo", SarItem(doc_type="file", doc_id="5", reason="r")
     )
     assert title == "Scan"
     assert text == "page one text\npage two text\npage three"
+    # A file the user can open: the lookup widens to the owners sharing it.
+    assert index.calls == [("dpo", ["dpo", "owner"], "5", "file")]
 
 
-async def test_document_text_honours_page_range(qdrant):
+async def test_document_text_honours_page_range(index):
     _, text = await sar_export.document_text(
         FakeReader(),
         "dpo",
@@ -403,8 +395,8 @@ async def test_document_text_honours_page_range(qdrant):
         await sar_export.document_text(FakeReader(), "dpo", item)
 
 
-async def test_document_text_refuses_inaccessible_file(qdrant):
+async def test_document_text_refuses_inaccessible_file(index):
     item = SarItem(doc_type="file", doc_id="5", reason="r")
     with pytest.raises(sar_export._ItemError, match="not accessible"):
         await sar_export.document_text(FakeReader(accessible=False), "dpo", item)
-    assert qdrant.filters == []  # refused before touching the index
+    assert index.calls == []  # refused before touching the index

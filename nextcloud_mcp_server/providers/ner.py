@@ -20,7 +20,7 @@ import re
 
 import httpx
 
-from .gateway import GatewayTokenProvider
+from nextcloud_mcp_server.plugin_api import GatewayTokenProvider
 
 _NER_CONNECT_TIMEOUT_SECONDS = 5.0
 
