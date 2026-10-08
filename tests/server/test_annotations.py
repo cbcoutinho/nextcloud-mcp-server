@@ -160,7 +160,8 @@ async def test_update_operations_not_idempotent(nc_mcp_client: ClientSession):
     # ADR-017's "HTTP PUT without version control" case applies instead -- the
     # same fields sent twice leave the same end state, because there is no
     # version for the first call to have invalidated. The Shopping List app
-    # stores neither on a list or an item.
+    # stores neither on a list or an item, and neither do Lucarne's catalogues
+    # and playlists.
     idempotent_exceptions = {
         "nc_shopping_list_update_list",
         "nc_shopping_list_update_item",
