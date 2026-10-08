@@ -1749,7 +1749,9 @@ class CalendarClient:
                     dt_str,
                     tz_name,
                 )
-            return parsed, None
+            # fromisoformat gives a fixed-offset tzinfo whose tzname() is e.g.
+            # "UTC+02:00"; icalendar would emit it as an unresolvable TZID.
+            return parsed.astimezone(dt.UTC), None
 
         if zi is not None:
             return parsed.replace(tzinfo=zi), zi
@@ -2621,7 +2623,8 @@ class CalendarClient:
         if parsed_dt.tzinfo is None:
             parsed_dt = parsed_dt.replace(tzinfo=dt.UTC)
 
-        return parsed_dt
+        # Normalize fixed offsets to UTC so no TZID="UTC+02:00" is emitted.
+        return parsed_dt.astimezone(dt.UTC)
 
     @staticmethod
     def _is_date_only(value: str) -> bool:
