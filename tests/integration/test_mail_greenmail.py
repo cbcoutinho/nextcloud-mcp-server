@@ -20,9 +20,11 @@ Requires the `mail` + `single-user` compose profiles:
 """
 
 import base64
+import imaplib
 import json
 import smtplib
 import subprocess
+import uuid
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -144,8 +146,12 @@ def _minimal_pdf_bytes() -> bytes:
     return pdf
 
 
-def _sync_mail_account(account_id: int) -> None:
-    """Force Nextcloud Mail to sync the IMAP account so seeded mail is visible."""
+def _sync_mail_account(account_id: int, *, force: bool = False) -> None:
+    """Force Nextcloud Mail to sync the IMAP account so seeded mail is visible.
+
+    ``force`` bypasses Mail's 2h throttle on mailbox-list discovery, needed to
+    pick up a folder created directly over IMAP.
+    """
     proc = subprocess.run(
         [
             "docker",
@@ -156,6 +162,7 @@ def _sync_mail_account(account_id: int) -> None:
             "php",
             "/var/www/html/occ",
             "mail:account:sync",
+            *(["--force"] if force else []),
             str(account_id),
         ],
         cwd=str(_REPO_ROOT),
@@ -588,3 +595,68 @@ async def test_move_message_between_mailboxes(nc_mcp_client, provisioned_mail_ac
         {"message_id": message_id, "destination_mailbox_id": destination["databaseId"]},
     )
     assert retry.is_error, "expected the stale message id to be rejected on retry"
+
+
+async def test_list_messages_in_uncached_nested_subfolder(
+    nc_mcp_client, provisioned_mail_account
+):
+    """GH #1636: listing a subfolder Mail has never synced must not 400.
+
+    Mail background-syncs only INBOX (and ``syncInBackground`` mailboxes), so a
+    folder created directly over IMAP is discovered but left *uncached*, and
+    Mail's list route rejects it with 400 ``MailboxNotCachedException`` until
+    the folder's initial sync runs. The MCP client must run that sync itself.
+    """
+    parent = f"INBOX.Probe{uuid.uuid4().hex[:8]}"
+    folder = f"{parent}.Sub"
+    subject = f"Subfolder probe {folder}"
+    msg = EmailMessage()
+    msg["From"] = "sender@example.org"
+    msg["To"] = ADMIN_EMAIL
+    msg["Subject"] = subject
+    msg.set_content("in a nested folder")
+    msg.add_alternative("<p>in a nested folder</p>", subtype="html")
+
+    # GreenMail runs with auth disabled: any password logs in as the address.
+    imap = imaplib.IMAP4("localhost", 3143)
+    try:
+        imap.login(ADMIN_EMAIL, "greenmail-test-pw")
+        typ, _ = imap.create(folder)
+        assert typ == "OK", f"IMAP CREATE {folder} failed"
+        typ, _ = imap.append(folder, None, None, msg.as_bytes())
+        assert typ == "OK", f"IMAP APPEND to {folder} failed"
+    finally:
+        imap.logout()
+
+    try:
+        account_id = await _first_account_id(nc_mcp_client)
+        # Discovers the new folder but does not cache its messages: the account
+        # sync only caches INBOX + syncInBackground mailboxes (Mail 5.x). If a
+        # future Mail caches every discovered folder here, this test still
+        # passes but no longer exercises the sync-and-retry path.
+        _sync_mail_account(account_id, force=True)
+
+        mailboxes = _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_list_mailboxes", {"account_id": account_id}
+            )
+        )["results"]
+        subfolder = next((m for m in mailboxes if m["name"] == folder), None)
+        assert subfolder is not None, f"{folder} not discovered in {mailboxes}"
+
+        messages = _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_list_messages",
+                {"mailbox_id": subfolder["databaseId"], "limit": 10},
+            )
+        )["results"]
+        assert subject in [m["subject"] for m in messages]
+    finally:
+        # Don't leave probe folders behind on a persistent GreenMail.
+        imap = imaplib.IMAP4("localhost", 3143)
+        try:
+            imap.login(ADMIN_EMAIL, "greenmail-test-pw")
+            imap.delete(folder)
+            imap.delete(parent)
+        finally:
+            imap.logout()
