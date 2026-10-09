@@ -607,7 +607,8 @@ async def test_list_messages_in_uncached_nested_subfolder(
     Mail's list route rejects it with 400 ``MailboxNotCachedException`` until
     the folder's initial sync runs. The MCP client must run that sync itself.
     """
-    folder = f"INBOX.Probe{uuid.uuid4().hex[:8]}.Sub"
+    parent = f"INBOX.Probe{uuid.uuid4().hex[:8]}"
+    folder = f"{parent}.Sub"
     subject = f"Subfolder probe {folder}"
     msg = EmailMessage()
     msg["From"] = "sender@example.org"
@@ -627,22 +628,35 @@ async def test_list_messages_in_uncached_nested_subfolder(
     finally:
         imap.logout()
 
-    account_id = await _first_account_id(nc_mcp_client)
-    # Discovers the new folder but does not cache its messages.
-    _sync_mail_account(account_id, force=True)
+    try:
+        account_id = await _first_account_id(nc_mcp_client)
+        # Discovers the new folder but does not cache its messages: the account
+        # sync only caches INBOX + syncInBackground mailboxes (Mail 5.x). If a
+        # future Mail caches every discovered folder here, this test still
+        # passes but no longer exercises the sync-and-retry path.
+        _sync_mail_account(account_id, force=True)
 
-    mailboxes = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_mailboxes", {"account_id": account_id}
-        )
-    )["results"]
-    subfolder = next((m for m in mailboxes if m["name"] == folder), None)
-    assert subfolder is not None, f"{folder} not discovered in {mailboxes}"
+        mailboxes = _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_list_mailboxes", {"account_id": account_id}
+            )
+        )["results"]
+        subfolder = next((m for m in mailboxes if m["name"] == folder), None)
+        assert subfolder is not None, f"{folder} not discovered in {mailboxes}"
 
-    messages = _tool_payload(
-        await nc_mcp_client.call_tool(
-            "nc_mail_list_messages",
-            {"mailbox_id": subfolder["databaseId"], "limit": 10},
-        )
-    )["results"]
-    assert subject in [m["subject"] for m in messages]
+        messages = _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_list_messages",
+                {"mailbox_id": subfolder["databaseId"], "limit": 10},
+            )
+        )["results"]
+        assert subject in [m["subject"] for m in messages]
+    finally:
+        # Don't leave probe folders behind on a persistent GreenMail.
+        imap = imaplib.IMAP4("localhost", 3143)
+        try:
+            imap.login(ADMIN_EMAIL, "greenmail-test-pw")
+            imap.delete(folder)
+            imap.delete(parent)
+        finally:
+            imap.logout()

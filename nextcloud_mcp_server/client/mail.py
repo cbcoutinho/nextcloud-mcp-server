@@ -24,6 +24,7 @@ some setups it returns HTTP 200 with an empty, non-JSON body (see GH #989).
 """
 
 import base64
+import logging
 from email.message import Message
 from typing import Any
 from urllib.parse import quote
@@ -36,6 +37,8 @@ from nextcloud_mcp_server.client.ocs import (
     describe_ocs_failure,
     parse_ocs_envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 # Nextcloud's primary blue. Shared with the nc_mail_create_tag tool so the two
 # defaults cannot drift into creating differently-coloured tags for the same
@@ -287,8 +290,14 @@ class MailClient(BaseNextcloudClient):
             # never synced from IMAP. Background sync only covers INBOX, so
             # subfolders stay uncached until opened in the web UI (GH #1636).
             # Do what the UI does — run the initial sync — and retry once.
-            if e.response.status_code != 400:
+            # 400 is overloaded (bad filter/cursor too), so match the exception
+            # type Mail's error middleware puts in the body.
+            if (
+                e.response.status_code != 400
+                or "MailboxNotCachedException" not in e.response.text
+            ):
                 raise
+            logger.debug("Mailbox %s not cached; running initial sync", mailbox_id)
             await self.sync_mailbox(mailbox_id)
             data = await self._api_get("/messages", params=params)
         return data if isinstance(data, list) else []
@@ -309,10 +318,15 @@ class MailClient(BaseNextcloudClient):
                 "POST",
                 f"{self.API_BASE}/mailboxes/{mailbox_id}/sync",
                 json={"init": True},
-                headers={**self._API_HEADERS, "Content-Type": "application/json"},
+                headers=self._API_HEADERS,
             )
             if response.status_code != 202:
                 return
+        logger.warning(
+            "Initial sync of mailbox %s still incomplete after %d rounds",
+            mailbox_id,
+            max_rounds,
+        )
 
     async def get_message(self, message_id: int) -> dict[str, Any]:
         """Get a single message with full body content and metadata.
