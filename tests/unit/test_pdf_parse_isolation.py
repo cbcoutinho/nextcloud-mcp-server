@@ -97,6 +97,18 @@ async def test_broken_worker_classified_as_oom(monkeypatch):
     assert exc.value.reason == "oom"
 
 
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+async def test_interrupted_worker_classified_as_oom(monkeypatch, exc_type):
+    # #1635: a worker's KeyboardInterrupt crossed the boundary and took the
+    # server down with it.
+    async def fake(*args, **kwargs):
+        raise exc_type()
+
+    with pytest.raises(PdfParseFailed) as exc:
+        await _run(monkeypatch, fake)
+    assert exc.value.reason == "oom"
+
+
 async def test_other_exception_classified_as_error(monkeypatch):
     async def fake(*args, **kwargs):
         raise ValueError("not a pdf")
