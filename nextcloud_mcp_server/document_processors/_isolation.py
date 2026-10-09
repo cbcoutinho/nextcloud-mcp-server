@@ -430,7 +430,7 @@ async def _run_classified(
             # Worker died without a clean exception (e.g. SIGKILL from the OS OOM
             # killer beating the rlimit). Treat as an out-of-memory failure.
             raise PdfParseFailed("oom", str(e)) from e
-        except (KeyboardInterrupt, SystemExit) as e:
+        except (KeyboardInterrupt, SystemExit) as e:  # NOSONAR(S5754)
             # The worker was interrupted (e.g. a SIGINT to the process group)
             # and anyio re-raises its BaseException here. Uncaught, it escapes
             # every `except Exception` above us and tears down the lifespan
