@@ -9,6 +9,7 @@ from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
 from .cookbook import configure_cookbook_tools
 from .deck import configure_deck_tools
+from .lucarne import configure_lucarne_tools
 from .mail import configure_mail_tools
 from .news import configure_news_tools
 from .notes import configure_notes_tools
@@ -38,6 +39,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "mail": configure_mail_tools,
     "talk": configure_talk_tools,
     "shopping_list": configure_shopping_list_tools,
+    "lucarne": configure_lucarne_tools,
 }
 
 # App name → the key it publishes on /ocs/v2.php/cloud/capabilities, for apps
@@ -55,6 +57,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
 #   collectives / news / mail        → publish no capability block at all
 #   shopping_list                    → likewise; gating it would hide working
 #                                      tools on every instance that has it
+#   lucarne                          → an AppAPI ExApp, not an app with capabilities
 #   webdav / sharing                 → core `files`/`files_sharing`, always there
 APP_CAPABILITY_KEY: dict[str, str] = {
     "notes": "notes",
@@ -97,6 +100,7 @@ __all__ = [
     "configure_notes_tools",
     "configure_sharing_tools",
     "configure_shopping_list_tools",
+    "configure_lucarne_tools",
     "configure_tables_tools",
     "configure_talk_tools",
     "configure_webdav_tools",
