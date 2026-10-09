@@ -430,6 +430,14 @@ async def _run_classified(
             # Worker died without a clean exception (e.g. SIGKILL from the OS OOM
             # killer beating the rlimit). Treat as an out-of-memory failure.
             raise PdfParseFailed("oom", str(e)) from e
+        except (KeyboardInterrupt, SystemExit) as e:  # NOSONAR(S5754)
+            # The worker was interrupted (e.g. a SIGINT to the process group)
+            # and anyio re-raises its BaseException here. Uncaught, it escapes
+            # every `except Exception` above us and tears down the lifespan
+            # task group, restarting the whole server (#1635). Our own
+            # shutdown arrives as cancellation, not this, so it is the
+            # worker's: treat it like a dead worker -- retryable, not terminal.
+            raise PdfParseFailed("oom", f"worker interrupted: {e!r}") from e
         except PdfWorkerError as e:
             # Already normalised in the worker: its message is
             # "OriginalType: text", so re-prefixing would read
