@@ -28,10 +28,16 @@ from anyio import CapacityLimiter, to_thread
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 
-from nextcloud_mcp_server.models.sar import (
+from nextcloud_mcp_sar.models import (
     SarExportStatus,
     SarFailedItem,
     SarItem,
+)
+from nextcloud_mcp_sar.ner import NerClient
+from nextcloud_mcp_sar.redaction import (
+    Redactor,
+    counts,
+    detect_entities,
 )
 from nextcloud_mcp_server.plugin_api import (
     NextcloudClient,
@@ -39,12 +45,6 @@ from nextcloud_mcp_server.plugin_api import (
     indexed_chunks,
     list_accessible_owners,
     resolve_background_client,
-)
-from nextcloud_mcp_server.providers.ner import NerClient
-from nextcloud_mcp_server.redaction import (
-    Redactor,
-    counts,
-    detect_entities,
 )
 
 logger = logging.getLogger(__name__)

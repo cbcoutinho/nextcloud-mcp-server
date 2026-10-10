@@ -12,9 +12,9 @@ import anyio
 import httpx
 import pymupdf
 import pytest
-
-from nextcloud_mcp_server import sar_case, sar_export
-from nextcloud_mcp_server.models.sar import (
+from nextcloud_mcp_sar import case as sar_case
+from nextcloud_mcp_sar import export as sar_export
+from nextcloud_mcp_sar.models import (
     SarCaseItem,
     SarCaseItemsChange,
     SarCaseUpdate,
@@ -22,7 +22,7 @@ from nextcloud_mcp_server.models.sar import (
     SarQueryIn,
     SarSearchFilters,
 )
-from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_sar.ner import NerError
 
 pytestmark = pytest.mark.unit
 

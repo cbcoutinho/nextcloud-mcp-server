@@ -8,7 +8,7 @@ Importing this module is cheap: the names in ``_LAZY`` import the module that
 defines them (some need the ``semantic`` extra, or the app) on first use, so a
 plugin's entry-point module can import ``plugin_api`` at module level. Import
 the heavy names inside ``register_tools`` / ``routes`` code, as
-``sar_plugin.py`` does.
+``nextcloud_mcp_sar.plugin`` does.
 """
 
 from importlib import import_module
