@@ -101,7 +101,7 @@ from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.features import semantic_installed
 from nextcloud_mcp_server.http import nextcloud_httpx_client
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import CORE_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
@@ -115,6 +115,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
 from nextcloud_mcp_server.plugins import (
+    check_plugins,
     load_plugins,
     plugin_routes,
     register_plugin_tools,
@@ -159,23 +160,21 @@ def build_dcr_scopes(
     required for every tool call, an omission here makes those tools
     permanently uncallable.
 
-    Derived from ALL_SUPPORTED_SCOPES rather than hand-maintained: the two were
+    Derived from CORE_SCOPES rather than hand-maintained: the two were
     a duplicated pair that silently drifted, leaving mail.send (and every mail
     scope) ungrantable in OAuth mode despite being in use. semantic.read is
     subtracted and re-added conditionally so it is advertised only when
     semantic search is enabled — subtracting is what keeps it from being
-    emitted twice now that it is a member of the vocabulary. Each plugin's
-    scopes are handled the same way: ``plugin_scopes`` holds one
-    ``(scopes, available)`` pair per installed plugin, and a plugin's scopes are
-    advertised only while it is available.
+    emitted twice now that it is a member of the vocabulary. Plugin scopes are
+    not in CORE_SCOPES (``load_plugins`` keeps them disjoint): ``plugin_scopes``
+    holds one ``(scopes, available)`` pair per installed plugin, and a plugin's
+    scopes are advertised only while it is available.
     """
-    per_plugin = list(plugin_scopes)
-    withheld = frozenset().union(*(s for s, _ in per_plugin))
     scopes = ["openid", "profile", "email"]
-    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"} - withheld)
+    scopes += sorted(CORE_SCOPES - {"semantic.read"})
     if vector_sync_enabled:
         scopes.append("semantic.read")
-    for plugin_scope_set, available in per_plugin:
+    for plugin_scope_set, available in plugin_scopes:
         if available:
             scopes += sorted(plugin_scope_set)
     if offline_access_enabled:
@@ -1618,10 +1617,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     logger.info("✅ Configuration validated successfully for %s mode", mode.value)
 
-    # Load plugins now so a broken one fails startup, not every later call
-    # (e.g. /api/v1/status) -- load_plugins() caches only a success.
-    for plugin in load_plugins():
-        logger.info("Plugin installed: %s", plugin.name)
+    # Load plugins and check their settings now, so a broken or misconfigured
+    # one fails startup, not every later call (e.g. /api/v1/status) --
+    # load_plugins() caches only a success.
+    check_plugins(settings)
     logger.debug("Mode details:\\n%s", get_mode_summary(mode))
 
     # Derive helper variables for backward compatibility with existing code.

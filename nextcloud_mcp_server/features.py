@@ -1,7 +1,7 @@
 """Whether optional features are configured, answerable without importing them.
 
 The status endpoint, DCR scope registration and tool registration all need to
-know whether reranking or SAR is on. The modules that *implement* those
+know whether optional features such as reranking are on. The modules that *implement* those
 features pull in the optional semantic stack (qdrant-client, provider SDKs), so
 the settings-only predicates live here, where the core server can import them
 on an install without that stack. Everything in this module depends on settings
@@ -27,7 +27,8 @@ def documents_installed() -> bool:
     return find_spec("pymupdf") is not None
 
 
-def _gateway_v1(settings: Any) -> str | None:
+def gateway_v1_url(settings: Any) -> str | None:
+    """``EMBEDDING_GATEWAY_URL`` normalised to end in ``/v1``, or ``None``."""
     gateway = getattr(settings, "embedding_gateway_url", None)
     if not gateway:
         return None
@@ -53,7 +54,7 @@ def rerank_endpoint(settings: Any) -> str | None:
     url = getattr(settings, "search_rerank_url", None)
     if url:
         return url
-    base = _gateway_v1(settings)
+    base = gateway_v1_url(settings)
     return f"{base}/rerank" if base else None
 
 
@@ -66,26 +67,4 @@ def rerank_available(settings: Any) -> bool:
     """
     return bool(
         getattr(settings, "search_rerank_enabled", False) and rerank_endpoint(settings)
-    )
-
-
-def ner_endpoint(settings: Any) -> str | None:
-    """``<gateway>/v1/ner``, or ``None`` without a gateway."""
-    base = _gateway_v1(settings)
-    return f"{base}/ner" if base else None
-
-
-def redaction_available(settings: Any) -> bool:
-    """Whether names can be detected, i.e. an embedding gateway is configured."""
-    return ner_endpoint(settings) is not None
-
-
-def sar_available(settings: Any) -> bool:
-    """Whether SAR cases are served (ADR-040): the deployment opted in with
-    ``SAR_ENABLED``, and has what they need (the index to search and read, and
-    the embedding gateway to detect names)."""
-    return (
-        bool(getattr(settings, "sar_enabled", False))
-        and bool(settings.vector_sync_enabled)
-        and redaction_available(settings)
     )

@@ -24,7 +24,7 @@ from nextcloud_mcp_server.api.access import (
     update_user_scopes,
 )
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.plugins import supported_scopes
 
 pytestmark = pytest.mark.unit
 
@@ -295,6 +295,6 @@ class TestListSupportedScopes:
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
-        assert set(data["scopes"]) == ALL_SUPPORTED_SCOPES
+        assert set(data["scopes"]) == supported_scopes()
         # Verify it's sorted
         assert data["scopes"] == sorted(data["scopes"])
