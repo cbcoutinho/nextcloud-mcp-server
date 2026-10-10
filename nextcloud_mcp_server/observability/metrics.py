@@ -1240,6 +1240,22 @@ _SENSITIVE_ARG_SUBSTRINGS = (
 # MCPServer Context and the concurrency etag every update tool carries.
 _UNINTERESTING_ARGS = ("ctx", "etag")
 
+# Free-text bodies (note/file content, mail and Talk messages) are logged by
+# size only (#1644): logs often have other readers and retention than the
+# Nextcloud data they came from. Substring match, for the same reason as above.
+_BODY_ARG_SUBSTRINGS = (
+    "content",
+    "body",
+    "message",
+    "text",
+    "description",
+    "comment",
+    "instructions",
+    "ingredients",
+    "notes",
+    "value",
+)
+
 # Per value first, so one huge argument (a file body, a note) cannot fill the
 # whole budget and hide every other argument.
 _MAX_ARG_VALUE_CHARS = 200
@@ -1262,6 +1278,12 @@ def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
             continue
         if any(s in key.lower() for s in _SENSITIVE_ARG_SUBSTRINGS):
             rendered = repr("[redacted]")
+        elif any(s in key.lower() for s in _BODY_ARG_SUBSTRINGS) and not isinstance(
+            value, int | float
+        ):
+            # Numbers pass through, so "message_id": 42 stays useful.
+            size = len(value) if isinstance(value, str) else len(repr(value))
+            rendered = f"<{size} chars>"
         else:
             rendered = repr(value)
             if len(rendered) > _MAX_ARG_VALUE_CHARS:

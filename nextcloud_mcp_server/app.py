@@ -801,6 +801,16 @@ class OAuthAppContext:
         return _vector_sync_state.eviction_task_group
 
 
+def _auth_scheme(auth_header: str) -> str:
+    """The Authorization scheme, safe to log; never any credential material.
+
+    Only known schemes are echoed: a header without one may be a bare token, and
+    its first word would then be the secret itself.
+    """
+    scheme = auth_header.split(" ", 1)[0]
+    return scheme if scheme.lower() in ("basic", "bearer") else "<other>"
+
+
 class BasicAuthMiddleware:
     """Middleware to extract BasicAuth credentials from Authorization header.
 
@@ -3177,11 +3187,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         auth_header = request.headers.get("authorization")
         if request.url.path.startswith("/mcp"):
             if auth_header:
-                # Log first 50 chars of token for debugging
-                token_preview = (
-                    auth_header[:50] + "..." if len(auth_header) > 50 else auth_header
+                logger.debug(
+                    "🔑 /mcp request with Authorization scheme: %s",
+                    _auth_scheme(auth_header),
                 )
-                logger.info("🔑 /mcp request with Authorization: %s", token_preview)
             else:
                 # Only warn about missing Authorization in OAuth mode
                 # In BasicAuth mode, /mcp requests without Authorization are expected
