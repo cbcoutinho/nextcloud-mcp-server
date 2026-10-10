@@ -23,6 +23,53 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
 
+_SCROLL_PAGE = 256
+
+
+async def indexed_chunks(
+    user_id: str,
+    owners: list[str] | None,
+    doc_id: str,
+    doc_type: str,
+    fields: list[str],
+) -> list[dict]:
+    """Every indexed chunk of one document visible to ``user_id``, one payload
+    (restricted to ``fields``) per chunk index, in no particular order.
+
+    ``owners`` widens the lookup to documents shared with the user, as
+    :func:`~nextcloud_mcp_server.search.access_filter.list_accessible_owners`
+    returns them; ``None`` means the user's own documents only. Empty when the
+    document is not in the index.
+    """
+    qdrant = await get_qdrant_client()
+    scroll_filter = Filter(
+        must=[
+            build_ownership_filter(user_id, owners),
+            FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+            FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+            get_placeholder_filter(),
+        ]
+    )
+    payloads: dict[int, dict] = {}
+    offset = None
+    while True:
+        points, offset = await qdrant.scroll(
+            collection_name=get_settings().get_collection_name(),
+            scroll_filter=scroll_filter,
+            limit=_SCROLL_PAGE,
+            offset=offset,
+            with_payload=[*fields, "chunk_index"],
+            with_vectors=False,
+        )
+        for point in points:
+            payload = point.payload or {}
+            # One chunk per index: a shared file can be indexed under more
+            # than one owner.
+            payloads.setdefault(int(payload.get("chunk_index", 0)), payload)
+        if offset is None:
+            break
+    return list(payloads.values())
+
 
 async def _get_chunk_from_qdrant(
     user_id: str,

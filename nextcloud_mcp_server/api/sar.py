@@ -24,12 +24,6 @@ from pydantic import BaseModel, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from nextcloud_mcp_server.api.management import (
-    _sanitize_error_for_client,
-    validate_token_and_get_user,
-)
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.models.sar import (
     SarCaseCreate,
     SarCaseExportRequest,
@@ -37,6 +31,15 @@ from nextcloud_mcp_server.models.sar import (
     SarCaseUpdate,
     SarQueryIn,
     SarSearchFilters,
+)
+from nextcloud_mcp_server.plugin_api import (
+    NextcloudClient,
+    authenticate,
+    background_task_group,
+    get_settings,
+    normalize_path_prefixes,
+    sanitize_error_for_client,
+    unified_search,
 )
 from nextcloud_mcp_server.redaction import get_ner_client
 from nextcloud_mcp_server.sar_case import (
@@ -48,7 +51,6 @@ from nextcloud_mcp_server.sar_case import (
     update_case,
 )
 from nextcloud_mcp_server.sar_export import ExportError, background_client
-from nextcloud_mcp_server.search.access_filter import normalize_path_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -88,27 +90,12 @@ def _case_id(request: Request) -> int | JSONResponse:
         return _error(400, "invalid_request", "case_id must be an integer")
 
 
-async def _authorize(request: Request, *scopes: str) -> str | JSONResponse:
-    """The token's user, or a 401 (no valid token) / 403 (lacks a scope)."""
-    try:
-        user_id, validated = await validate_token_and_get_user(request)
-    except Exception as e:
-        logger.warning("Unauthorized access to %s: %s", request.url.path, e)
-        return _error(401, "Unauthorized", _sanitize_error_for_client(e, "sar"))
-    granted = validated.get("scopes") or []
-    if missing := [s for s in scopes if s not in granted]:
-        return _error(
-            403, "insufficient_scope", f"this needs the {', '.join(missing)} scope"
-        )
-    return user_id
-
-
 async def _run(
     request: Request, operation: Operation, scope: str, status: int = 200
 ) -> JSONResponse:
     """Authenticate, require ``scope``, run ``operation`` as the token's user,
     map errors."""
-    user_id = await _authorize(request, scope)
+    user_id = await authenticate(request, scope)
     if isinstance(user_id, JSONResponse):
         return user_id
     try:
@@ -122,7 +109,7 @@ async def _run(
     except Exception as e:
         # The path only: request bodies can hold personal data.
         logger.exception("SAR request failed: %s", request.url.path)
-        return _error(500, "internal_error", _sanitize_error_for_client(e, "sar"))
+        return _error(500, "internal_error", sanitize_error_for_client(e, "sar"))
     finally:
         await nc.close()
     return JSONResponse(result.model_dump(mode="json"), status_code=status)
@@ -191,8 +178,6 @@ async def export_sar_case(request: Request) -> JSONResponse:
     body = await _body(request, SarCaseExportRequest)
     if isinstance(body, JSONResponse):
         return body
-    # Lazy: app imports this module to register the routes.
-    from nextcloud_mcp_server.app import background_task_group  # noqa: PLC0415
 
     async def start(nc: NextcloudClient) -> BaseModel:
         ner = await get_ner_client(get_settings())
@@ -244,14 +229,9 @@ async def search_sar_case(request: Request) -> JSONResponse:
         return case_id
     # Before searching: without the scopes there must be no results either.
     # semantic.read too, as the sar_case_search tool requires.
-    denied = await _authorize(request, _SAR_WRITE, "semantic.read")
+    denied = await authenticate(request, _SAR_WRITE, "semantic.read")
     if isinstance(denied, JSONResponse):
         return denied
-    # Lazy: visualization imports the search stack.
-    from nextcloud_mcp_server.api.visualization import (  # noqa: PLC0415
-        unified_search,
-    )
-
     # The log entry is built before searching, from the folders the search
     # will actually use: once a search has run, logging it cannot fail on its
     # filters. A body unified_search rejects is left for it to answer.
