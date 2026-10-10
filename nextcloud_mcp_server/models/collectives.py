@@ -105,6 +105,16 @@ class GetPageResponse(BaseResponse):
         default=None,
         description="Page markdown content (fetched via WebDAV)",
     )
+    etag: str | None = Field(
+        default=None,
+        description=(
+            "ETag of the page's markdown file as read. Pass it unchanged as "
+            "`if_match` when writing the page back, so an edit made in the "
+            "meantime is refused rather than overwritten (except an edit saved "
+            "within the same second as the previous one, see "
+            "nextcloud/server#63994). None when the content could not be read."
+        ),
+    )
 
 
 class CreatePageResponse(BaseResponse):

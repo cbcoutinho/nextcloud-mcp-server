@@ -103,11 +103,17 @@ def configure_collectives_tools(mcp: MCPServer):
     async def collectives_get_page(
         ctx: Context, collective_id: int, page_id: int
     ) -> GetPageResponse:
-        """Get a page's metadata and markdown content from a Nextcloud Collective.
+        """Get a page's metadata, markdown content and ETag from a Collective.
 
         Content is fetched via WebDAV using the page's file path. To update
         page content, use the nc_webdav_write_file tool with the path
-        collectivePath/filePath/fileName (omit filePath for root-level pages).
+        collectivePath/filePath/fileName (omit filePath for root-level pages)
+        and pass the returned ``etag`` as ``if_match``, so an edit made since
+        you read the page (e.g. in the Nextcloud web UI) is refused rather
+        than overwritten. Nextcloud keeps the etag for two saves within the
+        same second (nextcloud/server#63994), so this does not catch an edit
+        made in that window. If the write is refused, re-read the page and
+        reconcile your changes. Never force-overwrite with ``if_match="*"``.
 
         Args:
             collective_id: ID of the collective
@@ -124,6 +130,7 @@ def configure_collectives_tools(mcp: MCPServer):
         # Path structure: collectivePath/filePath/fileName
         # filePath is empty for root-level pages, contains subdirectory for nested pages
         content = None
+        etag = None
         if page.collectivePath and page.fileName:
             parts = [page.collectivePath]
             if page.filePath:
@@ -131,16 +138,19 @@ def configure_collectives_tools(mcp: MCPServer):
             parts.append(page.fileName)
             webdav_path = "/".join(p.strip("/") for p in parts)
             try:
-                file_bytes, _, _ = await client.webdav.read_file(webdav_path)
+                file_bytes, _, etag = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
             except (HTTPStatusError, OSError, UnicodeDecodeError) as e:
+                # An etag without the content it identifies would invite a
+                # write based on content the caller never saw.
+                etag = None
                 logger.warning(
                     "Failed to read page content via WebDAV: %s: %s",
                     webdav_path,
                     e,
                 )
 
-        return GetPageResponse(page=page, content=content)
+        return GetPageResponse(page=page, content=content, etag=etag)
 
     @mcp.tool(
         title="Search Collective Pages",
@@ -394,9 +404,11 @@ def configure_collectives_tools(mcp: MCPServer):
     ) -> CreatePageResponse:
         """Create a new page in a Nextcloud Collective.
 
-        Pages are created as empty markdown files. Use nc_webdav_write_file
-        with the path collectivePath/filePath/fileName to add content after
-        creation (omit filePath for root-level pages).
+        Pages are created as empty markdown files. To add content, read the
+        new page with collectives_get_page and write it with
+        nc_webdav_write_file at collectivePath/filePath/fileName (omit
+        filePath for root-level pages), passing the page's ``etag`` as
+        ``if_match`` -- the file already exists, so a write without it fails.
 
         Args:
             collective_id: ID of the collective
