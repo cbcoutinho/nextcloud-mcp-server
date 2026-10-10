@@ -108,13 +108,40 @@ class GetPageResponse(BaseResponse):
     etag: str | None = Field(
         default=None,
         description=(
-            "ETag of the page's markdown file as read. Pass it unchanged as "
-            "`if_match` when writing the page back, so an edit made in the "
-            "meantime is refused rather than overwritten (except an edit saved "
-            "within the same second as the previous one, see "
-            "nextcloud/server#63994). None when the content could not be read."
+            "ETag of the page's markdown file as read. Pass it with "
+            "`content_hash` to collectives_update_page_content to change the "
+            "page safely. (As `if_match` to nc_webdav_write_file it misses an "
+            "edit saved within the same second as the previous one, see "
+            "nextcloud/server#63994.) None when the content could not be read."
         ),
     )
+    content_hash: str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 (hex) of the page's markdown as read. Pass it with `etag` "
+            "to collectives_update_page_content, which compares it against the "
+            "current content before writing. None when the content could not "
+            "be read."
+        ),
+    )
+
+
+class UpdatePageContentResponse(StatusResponse):
+    """Response for replacing a page's markdown content."""
+
+    collective_id: int = Field(description="Collective ID")
+    page_id: int = Field(description="ID of the updated page")
+    etag: str | None = Field(
+        default=None,
+        description=(
+            "ETag of the page as written. Pass it with `content_hash` to the "
+            "next collectives_update_page_content call to chain edits without "
+            "re-reading. None if the server did not return one, in which case "
+            "re-read the page with collectives_get_page."
+        ),
+    )
+    content_hash: str = Field(description="SHA-256 (hex) of the content as written")
+    size: int = Field(description="Size of the written content in bytes")
 
 
 class CreatePageResponse(BaseResponse):

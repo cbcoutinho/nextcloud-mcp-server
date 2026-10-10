@@ -79,6 +79,7 @@ async def test_collectives_tools_available(nc_mcp_client: ClientSession):
         "collectives_delete_collective",
         "collectives_get_pages",
         "collectives_get_page",
+        "collectives_update_page_content",
         "collectives_create_page",
         "collectives_move_page",
         "collectives_trash_page",
@@ -638,3 +639,208 @@ async def test_collectives_get_pages_not_found(nc_mcp_client: ClientSession):
     )
     assert result.is_error is True
     logger.info("Non-existent collective correctly returned error")
+
+
+# --- collectives_update_page_content ---
+
+
+async def _update_page(
+    nc_mcp_client: ClientSession,
+    cid: int,
+    page_id: int,
+    content: str,
+    revision: dict,
+):
+    """Update with the etag/content_hash pair from a read or a previous update."""
+    return await nc_mcp_client.call_tool(
+        "collectives_update_page_content",
+        {
+            "collective_id": cid,
+            "page_id": page_id,
+            "content": content,
+            "etag": revision["etag"],
+            "content_hash": revision["content_hash"],
+        },
+    )
+
+
+async def test_collectives_update_page_content_round_trip(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """Read -> update -> chained update without a re-read -> read back."""
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        read = await _get_page(nc_mcp_client, cid, page_id)
+
+        first = await _update_page(nc_mcp_client, cid, page_id, "# v1\n", read)
+        assert first.is_error is False, first.content
+        first_data = json.loads(first.content[0].text)
+
+        # Chain: the update's own etag/content_hash are enough for the next one.
+        second = await _update_page(nc_mcp_client, cid, page_id, "# v2\n", first_data)
+        assert second.is_error is False, second.content
+        second_data = json.loads(second.content[0].text)
+
+        after = await _get_page(nc_mcp_client, cid, page_id)
+        assert after["content"] == "# v2\n"
+        assert after["etag"] == second_data["etag"]
+        assert after["content_hash"] == second_data["content_hash"]
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
+
+
+async def test_collectives_update_refuses_a_concurrent_edit(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_collective: dict,
+):
+    """An edit made after the agent's write must never be overwritten by the
+    agent's next write, including when it lands in the same second.
+
+    The agent chains two updates; a second writer edits in between, right
+    after the first update. Within the same second Nextcloud keeps the etag
+    (nextcloud/server#63994), so If-Match alone would accept the agent's
+    second write. The content check must refuse it every time. Repeated so
+    the same-second case is reliably among the runs.
+    """
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        page = await _get_page(nc_mcp_client, cid, page_id)
+        path = _page_path(page["page"])
+        revision = page
+        for attempt in range(5):
+            mine = await _update_page(
+                nc_mcp_client, cid, page_id, f"agent {attempt}\n", revision
+            )
+            assert mine.is_error is False, mine.content
+            mine_data = json.loads(mine.content[0].text)
+
+            theirs = f"someone else's edit {attempt}\n"
+            written = await nc_client.webdav.write_file(
+                path, theirs.encode(), "text/markdown", if_match=mine_data["etag"]
+            )
+            assert written["status_code"] in (200, 204), written
+
+            stale = await _update_page(
+                nc_mcp_client, cid, page_id, "agent overwrite\n", mine_data
+            )
+            assert stale.is_error is True, (
+                f"run {attempt}: the agent overwrote a concurrent edit"
+            )
+            assert "changed since it was read" in stale.content[0].text
+
+            revision = await _get_page(nc_mcp_client, cid, page_id)
+            assert revision["content"] == theirs
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
+
+
+async def test_collectives_update_follows_a_renamed_page(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """Page identity is collective_id + page_id: an update with the revision
+    read before a rename writes the renamed page, not a file at the old path."""
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        read = await _get_page(nc_mcp_client, cid, page_id)
+        old_path = _page_path(read["page"])
+
+        moved = await nc_mcp_client.call_tool(
+            "collectives_move_page",
+            {
+                "collective_id": cid,
+                "page_id": page_id,
+                "title": f"Renamed {uuid.uuid4().hex[:8]}",
+            },
+        )
+        assert moved.is_error is False, moved.content
+
+        updated = await _update_page(
+            nc_mcp_client, cid, page_id, "after rename\n", read
+        )
+        assert updated.is_error is False, updated.content
+
+        after = await _get_page(nc_mcp_client, cid, page_id)
+        assert after["content"] == "after rename\n"
+        assert _page_path(after["page"]) != old_path
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
+
+
+async def test_collectives_update_follows_a_page_that_gained_a_subpage(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """Adding a subpage turns Page.md into Page/Readme.md. The update must
+    write the moved file."""
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        read = await _get_page(nc_mcp_client, cid, page_id)
+
+        child = await nc_mcp_client.call_tool(
+            "collectives_create_page",
+            {"collective_id": cid, "parent_id": page_id, "title": "Child"},
+        )
+        assert child.is_error is False, child.content
+
+        updated = await _update_page(
+            nc_mcp_client, cid, page_id, "after subpage\n", read
+        )
+        assert updated.is_error is False, updated.content
+
+        after = await _get_page(nc_mcp_client, cid, page_id)
+        assert after["page"]["fileName"] == "Readme.md"
+        assert after["content"] == "after subpage\n"
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
+
+
+async def test_collectives_update_keeps_the_previous_version(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """The content an update replaces stays restorable from version history.
+
+    (Nextcloud stores no version of an empty file, so the page gets content
+    first.)
+    """
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        read = await _get_page(nc_mcp_client, cid, page_id)
+        first = await _update_page(nc_mcp_client, cid, page_id, "# first\n", read)
+        assert first.is_error is False, first.content
+        # A version is keyed by mtime, so let the second write land in a new
+        # second rather than collapse into the first one's version.
+        await anyio.sleep(1.1)
+        second = await _update_page(
+            nc_mcp_client,
+            cid,
+            page_id,
+            "# second\n",
+            json.loads(first.content[0].text),
+        )
+        assert second.is_error is False, second.content
+
+        page = await _get_page(nc_mcp_client, cid, page_id)
+        versions = await nc_mcp_client.call_tool(
+            "nc_webdav_list_versions", {"path": _page_path(page["page"])}
+        )
+        assert versions.is_error is False, versions.content
+        data = json.loads(versions.content[0].text)
+        assert data["total_count"] >= 1
+        assert any(v["size"] == len(b"# first\n") for v in data["versions"])
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )

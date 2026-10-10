@@ -1,15 +1,19 @@
 """MCP tool definitions for Nextcloud Collectives app."""
 
+import hashlib
 import logging
+import re
 from typing import NoReturn
 
 from httpx import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.collectives import OCSError
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.collectives import (
     Collective,
@@ -27,10 +31,36 @@ from nextcloud_mcp_server.models.collectives import (
     PageInfo,
     PageOperationResponse,
     SearchPagesResponse,
+    UpdatePageContentResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.server.tag_exclusion import (
+    get_excluded_file_paths,
+    is_path_excluded,
+)
 
 logger = logging.getLogger(__name__)
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _page_webdav_path(page: PageInfo) -> str | None:
+    """The page's markdown path under the user's files root.
+
+    ``collectivePath/filePath/fileName``, where ``filePath`` is empty for
+    root-level pages. ``None`` when the API did not report a location.
+    """
+    if not (page.collectivePath and page.fileName):
+        return None
+    parts = [page.collectivePath]
+    if page.filePath:
+        parts.append(page.filePath)
+    parts.append(page.fileName)
+    return "/".join(p.strip("/") for p in parts)
+
+
+def _content_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _raise_collectives_error(e: OCSError | HTTPStatusError) -> NoReturn:
@@ -105,15 +135,10 @@ def configure_collectives_tools(mcp: MCPServer):
     ) -> GetPageResponse:
         """Get a page's metadata, markdown content and ETag from a Collective.
 
-        Content is fetched via WebDAV using the page's file path. To update
-        page content, use the nc_webdav_write_file tool with the path
-        collectivePath/filePath/fileName (omit filePath for root-level pages)
-        and pass the returned ``etag`` as ``if_match``, so an edit made since
-        you read the page (e.g. in the Nextcloud web UI) is refused rather
-        than overwritten. Nextcloud keeps the etag for two saves within the
-        same second (nextcloud/server#63994), so this does not catch an edit
-        made in that window. If the write is refused, re-read the page and
-        reconcile your changes. Never force-overwrite with ``if_match="*"``.
+        Content is fetched via WebDAV using the page's file path. To change
+        the content, pass the returned ``etag`` and ``content_hash`` unchanged
+        to collectives_update_page_content, which refuses the write if the
+        page changed since you read it.
 
         Args:
             collective_id: ID of the collective
@@ -126,20 +151,15 @@ def configure_collectives_tools(mcp: MCPServer):
             _raise_collectives_error(e)
         page = PageInfo(**raw_page)
 
-        # Fetch content via WebDAV
-        # Path structure: collectivePath/filePath/fileName
-        # filePath is empty for root-level pages, contains subdirectory for nested pages
         content = None
         etag = None
-        if page.collectivePath and page.fileName:
-            parts = [page.collectivePath]
-            if page.filePath:
-                parts.append(page.filePath)
-            parts.append(page.fileName)
-            webdav_path = "/".join(p.strip("/") for p in parts)
+        content_hash = None
+        webdav_path = _page_webdav_path(page)
+        if webdav_path is not None:
             try:
                 file_bytes, _, etag = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
+                content_hash = _content_hash(file_bytes)
             except (HTTPStatusError, OSError, UnicodeDecodeError) as e:
                 # An etag without the content it identifies would invite a
                 # write based on content the caller never saw.
@@ -150,7 +170,9 @@ def configure_collectives_tools(mcp: MCPServer):
                     e,
                 )
 
-        return GetPageResponse(page=page, content=content, etag=etag)
+        return GetPageResponse(
+            page=page, content=content, etag=etag, content_hash=content_hash
+        )
 
     @mcp.tool(
         title="Search Collective Pages",
@@ -405,10 +427,8 @@ def configure_collectives_tools(mcp: MCPServer):
         """Create a new page in a Nextcloud Collective.
 
         Pages are created as empty markdown files. To add content, read the
-        new page with collectives_get_page and write it with
-        nc_webdav_write_file at collectivePath/filePath/fileName (omit
-        filePath for root-level pages), passing the page's ``etag`` as
-        ``if_match`` -- the file already exists, so a write without it fails.
+        new page with collectives_get_page and pass its ``etag`` and
+        ``content_hash`` to collectives_update_page_content.
 
         Args:
             collective_id: ID of the collective
@@ -426,6 +446,139 @@ def configure_collectives_tools(mcp: MCPServer):
             title=page.title,
             collective_id=collective_id,
             parent_id=page.parentId,
+        )
+
+    @mcp.tool(
+        title="Update Collective Page Content",
+        annotations=ToolAnnotations(
+            # Not idempotent: a successful write changes the page's etag and
+            # content_hash, so repeating the call with the same inputs is
+            # refused as a conflict.
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("collectives.write")
+    @instrument_tool
+    async def collectives_update_page_content(
+        ctx: Context,
+        collective_id: int,
+        page_id: int,
+        content: str,
+        etag: str,
+        content_hash: str,
+    ) -> UpdatePageContentResponse:
+        """Replace a Collective page's markdown content, unless it changed since you read it.
+
+        Read the page first with collectives_get_page and pass its ``etag`` and
+        ``content_hash`` unchanged. The page is located from collective_id and
+        page_id at write time, so a page renamed or moved since you read it is
+        still found. Before writing, the current content is compared with
+        ``content_hash``, and the write itself is conditional on ``etag``.
+        Together they refuse the write if anyone edited the page in the
+        meantime (the content check also catches an edit Nextcloud's etag
+        misses, see nextcloud/server#63994). A refused write changes nothing.
+        Re-read the page, reconcile your changes with the current content and
+        retry with the new values. There is no way to force-overwrite.
+
+        The page's earlier content stays available in its version history.
+
+        Raises ``ToolError`` when the page changed since it was read, when it
+        is locked by another client (e.g. open in an editor with file locking
+        enabled), when ``EXCLUDED_TAGS`` is configured and the page's file
+        carries an excluded tag, or when the content exceeds
+        ``WEBDAV_WRITE_MAX_MB``.
+
+        Args:
+            collective_id: ID of the collective
+            page_id: ID of the page
+            content: The complete new markdown content of the page
+            etag: The page's etag from collectives_get_page (or from the
+                previous collectives_update_page_content)
+            content_hash: The page's content_hash from the same response
+
+        Returns:
+            ``UpdatePageContentResponse`` with the new ``etag`` and
+            ``content_hash``. Pass both to the next update to chain edits
+            without re-reading.
+        """
+        expected_hash = content_hash.strip().lower()
+        if not etag.strip() or etag.strip() == "*":
+            raise ToolError(
+                "etag is required: pass the etag from collectives_get_page. "
+                "Overwriting without it is not supported."
+            )
+        if not _SHA256_HEX.fullmatch(expected_hash):
+            raise ToolError(
+                "content_hash must be the 64-character content_hash returned by "
+                "collectives_get_page."
+            )
+
+        content_bytes = content.encode("utf-8")
+        max_mb = get_settings().webdav_write_max_mb
+        if max_mb and len(content_bytes) / (1024 * 1024) > max_mb:
+            raise ToolError(
+                f"Refusing to write page {page_id}: the content exceeds the "
+                f"configured WEBDAV_WRITE_MAX_MB ({max_mb} MB)."
+            )
+
+        client = await get_client(ctx)
+        # Resolve the page now rather than trusting a path from an earlier
+        # read: page identity is collective_id + page_id, and the file may have
+        # been renamed or moved since.
+        try:
+            raw_page = await client.collectives.get_page(collective_id, page_id)
+        except (OCSError, HTTPStatusError) as e:
+            _raise_collectives_error(e)
+        path = _page_webdav_path(PageInfo(**raw_page))
+        if path is None:
+            raise ToolError(
+                f"Page {page_id} has no markdown file location, so its content "
+                "cannot be written."
+            )
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(
+                f"Access denied: page {page_id} is tagged with an excluded tag"
+            )
+
+        conflict = (
+            f"Page {page_id} changed since it was read. Re-read it with "
+            "collectives_get_page, reconcile your changes with the current "
+            "content, and retry with the new etag and content_hash."
+        )
+
+        # The etag alone misses an edit saved within the same second as the
+        # previous write (nextcloud/server#63994), so compare the content too.
+        # A write landing between this read and the PUT below is still caught
+        # by If-Match unless it also falls in that same second.
+        current_bytes, _, _ = await client.webdav.read_file(path)
+        if _content_hash(current_bytes) != expected_hash:
+            raise ToolError(conflict)
+
+        result = await client.webdav.write_file(
+            path, content_bytes, "text/markdown", if_match=etag
+        )
+        # write_file returns (rather than raises) on 412/423.
+        status_code = result.get("status_code")
+        if status_code == 412:
+            raise ToolError(conflict)
+        if status_code == 423:
+            raise ToolError(
+                f"Page {page_id} is locked by another client (e.g. open in an "
+                "editor with file locking enabled). Nothing was written. Try "
+                "again later."
+            )
+
+        return UpdatePageContentResponse(
+            collective_id=collective_id,
+            page_id=page_id,
+            status_code=status_code,
+            message="Page content updated",
+            etag=result.get("etag"),
+            content_hash=_content_hash(content_bytes),
+            size=len(content_bytes),
         )
 
     @mcp.tool(
