@@ -270,6 +270,7 @@ class TestSanitizeToolArgs:
                 "message": "hi there",
                 "new_description": ["a", "b"],
                 "message_id": 42,
+                "description": None,
                 "path": "/notes/a.md",
             }
         )
@@ -280,6 +281,7 @@ class TestSanitizeToolArgs:
         assert "'message': <8 chars>" in rendered
         assert "'new_description': <10 chars>" in rendered
         assert "'message_id': 42" in rendered
+        assert "'description': None" in rendered
         assert "'path': '/notes/a.md'" in rendered
 
     def test_many_arguments_capped_overall(self):

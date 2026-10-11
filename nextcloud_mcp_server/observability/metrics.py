@@ -1278,10 +1278,10 @@ def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
             continue
         if any(s in key.lower() for s in _SENSITIVE_ARG_SUBSTRINGS):
             rendered = repr("[redacted]")
-        elif any(s in key.lower() for s in _BODY_ARG_SUBSTRINGS) and not isinstance(
-            value, int | float
+        elif any(s in key.lower() for s in _BODY_ARG_SUBSTRINGS) and not (
+            value is None or isinstance(value, int | float)
         ):
-            # Numbers pass through, so "message_id": 42 stays useful.
+            # None and numbers pass through, so "message_id": 42 stays useful.
             size = len(value) if isinstance(value, str) else len(repr(value))
             rendered = f"<{size} chars>"
         else:
