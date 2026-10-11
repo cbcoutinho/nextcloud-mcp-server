@@ -1262,6 +1262,23 @@ _MAX_ARG_VALUE_CHARS = 200
 _MAX_ARGS_CHARS = 1000
 
 
+def _render_arg(key: str, value: Any) -> str:
+    """One argument value: redacted, size-only for a body, else a capped repr."""
+    lowered = key.lower()
+    if any(s in lowered for s in _SENSITIVE_ARG_SUBSTRINGS):
+        return repr("[redacted]")
+    # None and numbers pass through, so "message_id": 42 stays useful.
+    if any(s in lowered for s in _BODY_ARG_SUBSTRINGS) and not (
+        value is None or isinstance(value, int | float)
+    ):
+        size = len(value) if isinstance(value, str) else len(repr(value))
+        return f"<{size} chars>"
+    rendered = repr(value)
+    if len(rendered) > _MAX_ARG_VALUE_CHARS:
+        rendered = rendered[:_MAX_ARG_VALUE_CHARS] + "…"
+    return rendered
+
+
 def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
     """Render tool arguments for a log line or a span attribute.
 
@@ -1272,24 +1289,11 @@ def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
     if not arguments:
         return None
 
-    parts = []
-    for key, value in arguments.items():
-        if key in _UNINTERESTING_ARGS:
-            continue
-        if any(s in key.lower() for s in _SENSITIVE_ARG_SUBSTRINGS):
-            rendered = repr("[redacted]")
-        elif any(s in key.lower() for s in _BODY_ARG_SUBSTRINGS) and not (
-            value is None or isinstance(value, int | float)
-        ):
-            # None and numbers pass through, so "message_id": 42 stays useful.
-            size = len(value) if isinstance(value, str) else len(repr(value))
-            rendered = f"<{size} chars>"
-        else:
-            rendered = repr(value)
-            if len(rendered) > _MAX_ARG_VALUE_CHARS:
-                rendered = rendered[:_MAX_ARG_VALUE_CHARS] + "…"
-        parts.append(f"{key!r}: {rendered}")
-
+    parts = [
+        f"{key!r}: {_render_arg(key, value)}"
+        for key, value in arguments.items()
+        if key not in _UNINTERESTING_ARGS
+    ]
     if not parts:
         return None
     return ("{" + ", ".join(parts) + "}")[:_MAX_ARGS_CHARS]
