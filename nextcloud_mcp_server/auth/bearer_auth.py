@@ -31,4 +31,12 @@ class BearerAuth(Auth):
             The modified request with Authorization header
         """
         request.headers["Authorization"] = f"Bearer {self.token}"
+        # Nextcloud only honours a bearer token on index.php API routes (Deck's
+        # /apps/deck/api/..., Notes, Tables, ...) when the request also carries
+        # OCS-APIRequest: true; without it every such call is a 401, while Basic
+        # auth works either way. Several client methods (e.g. Deck get_stack,
+        # get_archived_stacks, archive/assignLabel) send no app headers, so the
+        # header is set here for every bearer request instead of per method.
+        # setdefault: an explicit per-request value still wins.
+        request.headers.setdefault("OCS-APIRequest", "true")
         yield request

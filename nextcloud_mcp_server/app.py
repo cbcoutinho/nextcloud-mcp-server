@@ -141,6 +141,24 @@ if TYPE_CHECKING:
     from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
+
+
+def describe_authorization(header: str) -> str:
+    """Loggable description of an Authorization header: the scheme and a short
+    sha256 fingerprint, never any part of the credential.
+
+    The old debug line logged the first 50 characters, which for Basic is most
+    of base64(user:app-password) and for Bearer the start of the token.
+    """
+    import hashlib  # noqa: PLC0415
+
+    scheme, _, credential = header.partition(" ")
+    if not credential:
+        return "<malformed>"
+    fingerprint = hashlib.sha256(credential.encode()).hexdigest()[:8]
+    return f"{scheme} sha256:{fingerprint}"
+
+
 HTTPXClientInstrumentor().instrument()
 
 
@@ -802,11 +820,13 @@ class OAuthAppContext:
 
 
 class BasicAuthMiddleware:
-    """Middleware to extract BasicAuth credentials from Authorization header.
+    """Middleware to extract pass-through credentials from Authorization header.
 
     For multi-user BasicAuth pass-through mode, this middleware extracts
     username/password from the Authorization: Basic header and stores them
-    in the request state for use by the context layer.
+    in the request state for use by the context layer. An
+    ``Authorization: Bearer`` token is stored as ``bearer_token`` instead, for
+    the context layer to pass through to Nextcloud as-is.
 
     The credentials are NOT stored persistently - they are passed through
     directly to Nextcloud APIs for each request (stateless).
@@ -841,6 +861,15 @@ class BasicAuthMiddleware:
                     )
                 except Exception as e:
                     logger.warning("Failed to extract BasicAuth credentials: %s", e)
+            elif auth_header[:7].lower() == b"bearer ":
+                # OAuth bearer pass-through: the token is handed to Nextcloud
+                # unchanged, and Nextcloud validates it (user_oidc
+                # --check-bearer). Nothing here trusts or decodes it.
+                token = auth_header[7:].strip().decode("latin-1")
+                if token:
+                    scope.setdefault("state", {})
+                    scope["state"]["bearer_token"] = token
+                    logger.debug("Bearer token stored for pass-through")
 
         await self.app(scope, receive, send)
 
@@ -3177,11 +3206,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         auth_header = request.headers.get("authorization")
         if request.url.path.startswith("/mcp"):
             if auth_header:
-                # Log first 50 chars of token for debugging
-                token_preview = (
-                    auth_header[:50] + "..." if len(auth_header) > 50 else auth_header
+                logger.info(
+                    "🔑 /mcp request with Authorization: %s",
+                    describe_authorization(auth_header),
                 )
-                logger.info("🔑 /mcp request with Authorization: %s", token_preview)
             else:
                 # Only warn about missing Authorization in OAuth mode
                 # In BasicAuth mode, /mcp requests without Authorization are expected

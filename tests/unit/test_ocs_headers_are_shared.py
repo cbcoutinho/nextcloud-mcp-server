@@ -135,6 +135,7 @@ def test_every_ocs_client_imports_the_constant():
         "client/tables.py",
         "client/users.py",
         "client/talk.py",
+        "client/social.py",
         "client/__init__.py",
         "api/apps.py",
         "auth/storage.py",

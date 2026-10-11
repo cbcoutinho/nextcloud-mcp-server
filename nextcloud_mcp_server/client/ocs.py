@@ -36,7 +36,10 @@ from typing import Any, NamedTuple
 #:
 #: Used by every client that calls an ``/ocs/v2.php`` route: sharing,
 #: collectives, mail, deck, groups, tables, users, talk, and the two
-#: capability lookups on ``NextcloudClient`` itself.
+#: capability lookups on ``NextcloudClient`` itself. ``social`` sends it on
+#: plain ``/apps/social`` routes too: Social authenticates a Basic-auth caller
+#: only when the request passes Nextcloud's CSRF check, which this header makes
+#: it do.
 #:
 #: Read-only on purpose. Nine clients share this one object, so an in-place
 #: edit here would be a cross-client bug; ``MappingProxyType`` makes that a

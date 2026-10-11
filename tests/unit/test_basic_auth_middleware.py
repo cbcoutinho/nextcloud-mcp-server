@@ -239,3 +239,72 @@ async def test_basic_auth_middleware_unicode_credentials():
     assert mock_app.called
     assert scope["state"]["basic_auth"]["username"] == "üser"
     assert scope["state"]["basic_auth"]["password"] == "pässwörd"
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_stores_bearer_token():
+    """A Bearer header is stored for pass-through, not parsed as BasicAuth."""
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+
+    scope = {
+        "type": "http",
+        "headers": [(b"authorization", b"Bearer eyJhbGciOi.payload.sig")],
+    }
+
+    await middleware(scope, None, None)  # type: ignore[arg-type]
+
+    assert mock_app.called
+    assert scope["state"]["bearer_token"] == "eyJhbGciOi.payload.sig"
+    assert "basic_auth" not in scope["state"]
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_bearer_scheme_case_insensitive():
+    """The auth scheme is case-insensitive (RFC 9110 11.1)."""
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+
+    scope = {
+        "type": "http",
+        "headers": [(b"authorization", b"bearer abc123")],
+    }
+
+    await middleware(scope, None, None)  # type: ignore[arg-type]
+
+    assert scope["state"]["bearer_token"] == "abc123"
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_empty_bearer_ignored():
+    """An empty bearer token is not stored."""
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+
+    scope = {
+        "type": "http",
+        "headers": [(b"authorization", b"Bearer   ")],
+    }
+
+    await middleware(scope, None, None)  # type: ignore[arg-type]
+
+    assert mock_app.called
+    assert "bearer_token" not in scope.get("state", {})
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_basic_does_not_set_bearer():
+    """BasicAuth requests are unchanged: no bearer_token in state."""
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+
+    credentials = base64.b64encode(b"admin:password123").decode("utf-8")
+    scope = {
+        "type": "http",
+        "headers": [(b"authorization", f"Basic {credentials}".encode())],
+    }
+
+    await middleware(scope, None, None)  # type: ignore[arg-type]
+
+    assert scope["state"]["basic_auth"]["username"] == "admin"
+    assert "bearer_token" not in scope["state"]

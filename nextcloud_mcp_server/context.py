@@ -1,12 +1,15 @@
 """Helper functions for accessing context in MCP tools."""
 
+import hashlib
 import logging
+import time
 from typing import Any, Protocol, runtime_checkable
 
 from httpx import BasicAuth
 from mcp.server.mcpserver import Context
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context
+from nextcloud_mcp_server.auth.grant_ownership import _ocs_whoami
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.client import NextcloudClient
@@ -35,6 +38,7 @@ async def get_client(ctx: Context) -> NextcloudClient:
     1. BasicAuth mode: Returns shared client from lifespan context
     2. Login Flow v2: OAuth for MCP session, app password for Nextcloud API
     3. Multi-user BasicAuth: Credentials passed through from request headers
+       (Basic, or an OAuth Bearer token that Nextcloud validates itself)
     4. OAuth multi-audience: Token contains both MCP and Nextcloud audiences
 
     This function automatically detects the authentication mode by checking
@@ -59,8 +63,13 @@ async def get_client(ctx: Context) -> NextcloudClient:
     """
     settings = get_settings()
 
-    # Multi-user BasicAuth pass-through mode - extract credentials from request
+    # Multi-user pass-through mode - extract credentials from request.
+    # Basic credentials take the original path; a bearer token is passed
+    # through to Nextcloud unchanged.
     if settings.enable_multi_user_basic_auth:
+        bearer = _get_request_state(ctx).get("bearer_token")
+        if bearer:
+            return await _get_client_from_bearer(bearer)
         return _get_client_from_basic_auth(ctx)
 
     lifespan_ctx: Any = ctx.request_context.lifespan_context
@@ -84,6 +93,84 @@ async def get_client(ctx: Context) -> NextcloudClient:
     raise AttributeError(
         f"Lifespan context does not have 'client' or 'nextcloud_host' attribute. "
         f"Type: {type(lifespan_ctx)}"
+    )
+
+
+def _get_request_state(ctx: Context) -> dict[str, Any]:
+    """Request state written by BasicAuthMiddleware, or ``{}`` if absent."""
+    request = getattr(ctx.request_context, "request", None)
+    scope = getattr(request, "scope", None)
+    if not isinstance(scope, dict):
+        return {}
+    state = scope.get("state")
+    return state if isinstance(state, dict) else {}
+
+
+# sha256(token) -> (uid, expires_at). Caches only the UID a token belongs to,
+# never an authorization decision: Nextcloud re-validates the bearer on every
+# API call the client makes, so a revoked token still fails there.
+_BEARER_UID_TTL_SECONDS = 60.0
+_BEARER_UID_CACHE_MAX = 1024
+_bearer_uid_cache: dict[str, tuple[str, float]] = {}
+
+
+async def _resolve_bearer_uid(token: str) -> str | None:
+    """Nextcloud UID a bearer token authenticates as (OCS ``/cloud/user``).
+
+    The UID cannot be read from the token: with an external IdP,
+    ``user_oidc`` may map or hash the ``sub``, so Nextcloud is asked directly.
+    """
+    key = hashlib.sha256(token.encode()).hexdigest()
+    now = time.monotonic()
+    cached = _bearer_uid_cache.get(key)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    uid = await _ocs_whoami(bearer=token)
+    if uid:
+        if len(_bearer_uid_cache) >= _BEARER_UID_CACHE_MAX:
+            for k in [k for k, (_, exp) in _bearer_uid_cache.items() if exp <= now]:
+                del _bearer_uid_cache[k]
+            if len(_bearer_uid_cache) >= _BEARER_UID_CACHE_MAX:
+                _bearer_uid_cache.clear()
+        _bearer_uid_cache[key] = (uid, now + _BEARER_UID_TTL_SECONDS)
+    return uid
+
+
+async def _get_client_from_bearer(token: str) -> NextcloudClient:
+    """Create a NextcloudClient that passes an OAuth bearer through to Nextcloud.
+
+    For multi-user pass-through mode when the request carries
+    ``Authorization: Bearer``. The MCP server does not validate the token;
+    Nextcloud does (``user_oidc --check-bearer=1``), first on the
+    ``/cloud/user`` lookup that resolves the UID and then on every API call.
+
+    Raises:
+        ValueError: If NEXTCLOUD_HOST is not configured, or Nextcloud does not
+                   accept the token.
+    """
+    settings = get_settings()
+    if not settings.nextcloud_host:
+        raise ValueError(
+            "NEXTCLOUD_HOST environment variable must be set for multi-user BasicAuth mode"
+        )
+
+    username = await _resolve_bearer_uid(token)
+    if not username:
+        raise ValueError(
+            "Bearer token was not accepted by Nextcloud. "
+            "Ensure the token is valid and Nextcloud accepts bearer tokens "
+            "from the IdP (user_oidc --check-bearer=1)."
+        )
+
+    logger.debug(
+        "Creating multi-user bearer pass-through client for %s as %s",
+        settings.nextcloud_host,
+        username,
+    )
+    # Same construction the OAuth mode uses (auth/context_helper.py).
+    return NextcloudClient.from_token(
+        base_url=settings.nextcloud_host, token=token, username=username
     )
 
 
