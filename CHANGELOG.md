@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.199.4 (2026-10-12)
+
+### Fix
+
+- **logging**: render a None body argument as None, not its size
+- **logging**: never log Authorization credentials or tool-call bodies
+
+### Refactor
+
+- **logging**: extract per-argument rendering to cut complexity
+
 ## v0.199.3 (2026-10-09)
 
 ### Fix
