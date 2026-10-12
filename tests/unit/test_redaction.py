@@ -4,16 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from nextcloud_mcp_server.features import (
-    ner_endpoint,
-    redaction_available,
-    sar_available,
-)
+from nextcloud_mcp_server import sar_plugin
 from nextcloud_mcp_server.redaction import (
     Redactor,
     counts,
     detect_entities,
 )
+from nextcloud_mcp_server.sar_plugin import SarSettings, ner_endpoint, sar_available
 
 pytestmark = pytest.mark.unit
 
@@ -130,28 +127,50 @@ def test_no_names_is_identity():
     assert Redactor({"X Y"}).redact(None) is None
 
 
-def test_redaction_available_needs_gateway():
-    assert redaction_available(SimpleNamespace(embedding_gateway_url="https://gw"))
-    assert not redaction_available(SimpleNamespace(embedding_gateway_url=None))
+def _sar(monkeypatch, **values) -> None:
+    monkeypatch.setattr(sar_plugin, "sar_settings", lambda: SarSettings(**values))
 
 
-@pytest.mark.parametrize(
-    "enabled,vector_sync,gateway,expected",
-    [
-        (True, True, "https://gw", True),
-        # Opt-in: everything SAR needs is there, but the deployment did not ask.
-        (False, True, "https://gw", False),
-        (True, False, "https://gw", False),
-        (True, True, None, False),
-    ],
-)
-def test_sar_available_is_opt_in(enabled, vector_sync, gateway, expected):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_sar_available_is_opt_in(monkeypatch, enabled):
+    """Everything SAR needs is there; it is served only if the deployment asked."""
+    _sar(monkeypatch, sar_enabled=enabled)
+    settings = SimpleNamespace(vector_sync_enabled=True, embedding_gateway_url="g")
+    assert sar_available(settings) is enabled
+
+
+@pytest.mark.parametrize("vector_sync,gateway", [(False, "https://gw"), (True, None)])
+def test_sar_enabled_without_what_it_needs_fails(monkeypatch, vector_sync, gateway):
+    """Opting in without the index or the gateway fails startup rather than
+    silently advertising nothing."""
+    _sar(monkeypatch, sar_enabled=True)
     settings = SimpleNamespace(
-        sar_enabled=enabled,
-        vector_sync_enabled=vector_sync,
-        embedding_gateway_url=gateway,
+        vector_sync_enabled=vector_sync, embedding_gateway_url=gateway
     )
-    assert sar_available(settings) is expected
+    with pytest.raises(ValueError, match="SAR_ENABLED requires"):
+        sar_available(settings)
+
+
+def test_sar_settings_read_env_and_validate(monkeypatch):
+    sar_plugin.sar_settings.cache_clear()
+    monkeypatch.setenv("SAR_ENABLED", "true")
+    monkeypatch.setenv("NER_BATCH_SIZE", "32")
+    try:
+        ner = sar_plugin.sar_settings()
+        assert ner.sar_enabled is True
+        assert ner.ner_batch_size == 32
+        assert ner.ner_threshold == pytest.approx(0.5)
+    finally:
+        sar_plugin.sar_settings.cache_clear()
+
+
+def test_sar_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("SAR_ENABLED", raising=False)
+    sar_plugin.sar_settings.cache_clear()
+    try:
+        assert sar_plugin.sar_settings().sar_enabled is False
+    finally:
+        sar_plugin.sar_settings.cache_clear()
 
 
 def test_emails_phones_and_ni_numbers_are_redacted_except_the_subjects():
@@ -268,28 +287,31 @@ def test_a_street_without_the_subjects_house_number_is_redacted():
     )
 
 
-def test_settings_validate_ner():
-    from nextcloud_mcp_server.config import Settings
-
-    with pytest.raises(ValueError, match="NER_THRESHOLD"):
-        Settings(ner_threshold=0)
-    with pytest.raises(ValueError, match="NER_BATCH_SIZE"):
-        Settings(ner_batch_size=0)
-    with pytest.raises(ValueError, match="NER_TIMEOUT_SECONDS"):
-        Settings(ner_timeout_seconds=0)
+@pytest.mark.parametrize(
+    "field", ["ner_threshold", "ner_batch_size", "ner_timeout_seconds"]
+)
+def test_settings_validate_ner(field):
+    with pytest.raises(ValueError, match=field):
+        SarSettings.model_validate({field: 0})
 
 
-async def test_get_ner_client_targets_gateway_and_is_cached():
+async def test_get_ner_client_targets_gateway_and_is_cached(monkeypatch):
     from nextcloud_mcp_server import redaction
 
     redaction._reset_ner_state()
+    monkeypatch.setattr(
+        redaction,
+        "sar_settings",
+        lambda: SarSettings(
+            ner_model="local/m",
+            ner_timeout_seconds=5,
+            ner_threshold=0.3,
+            ner_batch_size=4,
+        ),
+    )
     settings = SimpleNamespace(
         embedding_gateway_url="https://gw",
         embedding_gateway_client_id=None,
-        ner_model="local/m",
-        ner_timeout_seconds=5,
-        ner_threshold=0.3,
-        ner_batch_size=4,
     )
     try:
         client = await redaction.get_ner_client(settings)

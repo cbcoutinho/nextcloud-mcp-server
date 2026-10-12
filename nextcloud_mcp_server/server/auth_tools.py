@@ -30,12 +30,12 @@ from nextcloud_mcp_server.auth.token_utils import (
 )
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 from nextcloud_mcp_server.models.auth import (
-    ALL_SUPPORTED_SCOPES,
     ProvisionAccessResponse,
     ProvisionStatusResponse,
     UpdateScopesResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.plugins import supported_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +126,13 @@ def register_auth_tools(mcp: MCPServer) -> None:
 
         # Validate requested scopes
         invalid_scopes = [
-            s for s in (requested_scopes or []) if s not in ALL_SUPPORTED_SCOPES
+            s for s in (requested_scopes or []) if s not in supported_scopes()
         ]
         if invalid_scopes:
             return ProvisionAccessResponse(
                 status="error",
                 message=f"Invalid scopes: {', '.join(invalid_scopes)}. "
-                f"Valid scopes: {', '.join(sorted(ALL_SUPPORTED_SCOPES))}",
+                f"Valid scopes: {', '.join(sorted(supported_scopes()))}",
                 success=False,
             )
 
@@ -484,10 +484,10 @@ def register_auth_tools(mcp: MCPServer) -> None:
         # The escape hatch is the same as before — re-run
         # nc_auth_provision_access to return to an unrestricted grant.
         current_set = (
-            set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
+            set(previous_scopes) if previous_scopes else set(supported_scopes())
         )
         if add_scopes:
-            invalid = [s for s in add_scopes if s not in ALL_SUPPORTED_SCOPES]
+            invalid = [s for s in add_scopes if s not in supported_scopes()]
             if invalid:
                 return UpdateScopesResponse(
                     status="error",
@@ -509,7 +509,7 @@ def register_auth_tools(mcp: MCPServer) -> None:
 
         # No-op detection: skip Login Flow if scopes are unchanged
         previous_scopes_set = (
-            set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
+            set(previous_scopes) if previous_scopes else set(supported_scopes())
         )
         if set(new_scopes) == previous_scopes_set:
             # A NULL stored grant already places no restriction, so adding to it

@@ -49,7 +49,6 @@ from typing import Any
 
 import anyio
 
-from nextcloud_mcp_server.features import ner_endpoint
 from nextcloud_mcp_server.providers.gateway import build_gateway_token_provider
 from nextcloud_mcp_server.providers.ner import (
     ADDRESS_LABEL,
@@ -57,6 +56,7 @@ from nextcloud_mcp_server.providers.ner import (
     NerClient,
     windows,
 )
+from nextcloud_mcp_server.sar_plugin import ner_endpoint, sar_settings
 
 PERSON = "PERSON"
 ADDRESS = "ADDRESS"
@@ -194,8 +194,8 @@ def _reset_ner_state() -> None:
 
 
 async def get_ner_client(settings: Any) -> NerClient:
-    """The shared NER client. Call only when
-    :func:`~nextcloud_mcp_server.features.redaction_available`."""
+    """The shared NER client. Call only when SAR is available
+    (:func:`~nextcloud_mcp_server.sar_plugin.sar_available`)."""
     global _client, _client_lock
     url = ner_endpoint(settings)
     if url is None:
@@ -206,13 +206,14 @@ async def get_ner_client(settings: Any) -> NerClient:
         _client_lock = anyio.Lock()
     async with _client_lock:
         if _client is None:
+            ner = sar_settings()
             _client = NerClient(
                 url=url,
-                model=settings.ner_model,
+                model=ner.ner_model,
                 token_provider=build_gateway_token_provider(settings),
-                threshold=float(settings.ner_threshold),
-                timeout_seconds=float(settings.ner_timeout_seconds),
-                batch_size=int(settings.ner_batch_size),
+                threshold=ner.ner_threshold,
+                timeout_seconds=ner.ner_timeout_seconds,
+                batch_size=ner.ner_batch_size,
             )
     return _client
 

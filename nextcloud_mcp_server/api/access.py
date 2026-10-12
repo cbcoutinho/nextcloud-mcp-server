@@ -15,7 +15,7 @@ from nextcloud_mcp_server.api.passwords import (
     _get_app_password_storage,
 )
 from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.plugins import supported_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +127,13 @@ async def update_user_scopes(request: Request) -> JSONResponse:
         )
 
     # Validate scopes
-    invalid = [s for s in scopes if s not in ALL_SUPPORTED_SCOPES]
+    invalid = [s for s in scopes if s not in supported_scopes()]
     if invalid:
         return JSONResponse(
             {
                 "success": False,
                 "error": f"Invalid scopes: {', '.join(invalid)}",
-                "valid_scopes": sorted(ALL_SUPPORTED_SCOPES),
+                "valid_scopes": sorted(supported_scopes()),
             },
             status_code=400,
         )
@@ -182,6 +182,6 @@ async def list_supported_scopes(_: Request) -> JSONResponse:
     return JSONResponse(
         {
             "success": True,
-            "scopes": sorted(ALL_SUPPORTED_SCOPES),
+            "scopes": sorted(supported_scopes()),
         }
     )
