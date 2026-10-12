@@ -1240,10 +1240,43 @@ _SENSITIVE_ARG_SUBSTRINGS = (
 # MCPServer Context and the concurrency etag every update tool carries.
 _UNINTERESTING_ARGS = ("ctx", "etag")
 
+# Free-text bodies (note/file content, mail and Talk messages) are logged by
+# size only (#1644): logs often have other readers and retention than the
+# Nextcloud data they came from. Substring match, for the same reason as above.
+_BODY_ARG_SUBSTRINGS = (
+    "content",
+    "body",
+    "message",
+    "text",
+    "description",
+    "comment",
+    "instructions",
+    "ingredients",
+    "notes",
+    "value",
+)
+
 # Per value first, so one huge argument (a file body, a note) cannot fill the
 # whole budget and hide every other argument.
 _MAX_ARG_VALUE_CHARS = 200
 _MAX_ARGS_CHARS = 1000
+
+
+def _render_arg(key: str, value: Any) -> str:
+    """One argument value: redacted, size-only for a body, else a capped repr."""
+    lowered = key.lower()
+    if any(s in lowered for s in _SENSITIVE_ARG_SUBSTRINGS):
+        return repr("[redacted]")
+    # None and numbers pass through, so "message_id": 42 stays useful.
+    if any(s in lowered for s in _BODY_ARG_SUBSTRINGS) and not (
+        value is None or isinstance(value, int | float)
+    ):
+        size = len(value) if isinstance(value, str) else len(repr(value))
+        return f"<{size} chars>"
+    rendered = repr(value)
+    if len(rendered) > _MAX_ARG_VALUE_CHARS:
+        rendered = rendered[:_MAX_ARG_VALUE_CHARS] + "…"
+    return rendered
 
 
 def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
@@ -1256,18 +1289,11 @@ def _sanitize_tool_args(arguments: Mapping[str, Any] | None) -> str | None:
     if not arguments:
         return None
 
-    parts = []
-    for key, value in arguments.items():
-        if key in _UNINTERESTING_ARGS:
-            continue
-        if any(s in key.lower() for s in _SENSITIVE_ARG_SUBSTRINGS):
-            rendered = repr("[redacted]")
-        else:
-            rendered = repr(value)
-            if len(rendered) > _MAX_ARG_VALUE_CHARS:
-                rendered = rendered[:_MAX_ARG_VALUE_CHARS] + "…"
-        parts.append(f"{key!r}: {rendered}")
-
+    parts = [
+        f"{key!r}: {_render_arg(key, value)}"
+        for key, value in arguments.items()
+        if key not in _UNINTERESTING_ARGS
+    ]
     if not parts:
         return None
     return ("{" + ", ".join(parts) + "}")[:_MAX_ARGS_CHARS]

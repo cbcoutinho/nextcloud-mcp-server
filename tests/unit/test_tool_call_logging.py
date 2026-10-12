@@ -256,10 +256,32 @@ class TestSanitizeToolArgs:
         assert "hunter2" not in _sanitize_tool_args({"password": "hunter2"})
 
     def test_long_value_capped_without_hiding_later_arguments(self):
-        rendered = _sanitize_tool_args({"content": "x" * 5000, "path": "/notes/a.md"})
+        rendered = _sanitize_tool_args({"query": "x" * 5000, "path": "/notes/a.md"})
 
         assert "x" * 150 in rendered
         assert "x" * 300 not in rendered
+        assert "'path': '/notes/a.md'" in rendered
+
+    def test_free_text_bodies_logged_by_size_only(self):
+        """#1644: note/file bodies and messages never reach the log line."""
+        rendered = _sanitize_tool_args(
+            {
+                "content": "private page text",
+                "message": "hi there",
+                "new_description": ["a", "b"],
+                "message_id": 42,
+                "description": None,
+                "path": "/notes/a.md",
+            }
+        )
+
+        assert "private page text" not in rendered
+        assert "hi there" not in rendered
+        assert "'content': <17 chars>" in rendered
+        assert "'message': <8 chars>" in rendered
+        assert "'new_description': <10 chars>" in rendered
+        assert "'message_id': 42" in rendered
+        assert "'description': None" in rendered
         assert "'path': '/notes/a.md'" in rendered
 
     def test_many_arguments_capped_overall(self):
@@ -272,3 +294,19 @@ class TestSanitizeToolArgs:
         assert _sanitize_tool_args(None) is None
         # ctx and etag are dropped as noise, leaving nothing
         assert _sanitize_tool_args({"ctx": object(), "etag": "abc"}) is None
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("Basic dXNlcjphcHAtcGFzc3dvcmQ=", "Basic"),
+        ("Bearer eyJhbGciOi.payload.sig", "Bearer"),
+        ("bare-token-without-scheme", "<other>"),
+        ("Token abc123", "<other>"),
+    ],
+)
+def test_auth_scheme_never_echoes_credentials(header, expected):
+    """The /mcp auth log line carries the scheme only, never credentials."""
+    from nextcloud_mcp_server.app import _auth_scheme
+
+    assert _auth_scheme(header) == expected
