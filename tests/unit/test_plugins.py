@@ -46,7 +46,7 @@ def test_sar_is_registered_through_the_entry_point():
 
 
 def test_entry_point_must_name_a_plugin(monkeypatch):
-    _install(monkeypatch, bogus="nextcloud_mcp_server.sar_plugin:sar_available")
+    _install(monkeypatch, bogus="nextcloud_mcp_sar.plugin:sar_available")
     with pytest.raises(TypeError, match="bogus"):
         load_plugins()
 
@@ -54,8 +54,8 @@ def test_entry_point_must_name_a_plugin(monkeypatch):
 def test_plugin_names_must_be_unique(monkeypatch):
     _install(
         monkeypatch,
-        a="nextcloud_mcp_server.sar_plugin:plugin",
-        b="nextcloud_mcp_server.sar_plugin:plugin",
+        a="nextcloud_mcp_sar.plugin:plugin",
+        b="nextcloud_mcp_sar.plugin:plugin",
     )
     with pytest.raises(ValueError, match="sar"):
         load_plugins()

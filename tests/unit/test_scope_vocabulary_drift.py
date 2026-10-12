@@ -14,10 +14,10 @@ import re
 from pathlib import Path
 
 import pytest
+from nextcloud_mcp_sar.plugin import plugin as sar
 
 from nextcloud_mcp_server.app import build_dcr_scopes
 from nextcloud_mcp_server.plugins import load_plugins, supported_scopes
-from nextcloud_mcp_server.sar_plugin import plugin as sar
 from tests.conftest import DEFAULT_FULL_SCOPES
 
 pytestmark = pytest.mark.unit

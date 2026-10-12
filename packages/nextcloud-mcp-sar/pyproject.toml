@@ -1,0 +1,28 @@
+[project]
+name = "nextcloud-mcp-sar"
+version = "0.1.0"
+description = "Subject access request cases and redacted export (ADR-040), a nextcloud-mcp-server plugin"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-only" }
+dependencies = [
+    # Searches and reads documents from the index: needs the semantic extra.
+    "nextcloud-mcp-server[semantic]",
+    # Imported directly. The server pins them; no bounds of our own.
+    "anyio",
+    "httpx",
+    "mcp",
+    "pydantic",
+    "pymupdf",
+    "starlette",
+]
+
+[project.entry-points."nextcloud_mcp_server.plugins"]
+sar = "nextcloud_mcp_sar.plugin:plugin"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+nextcloud-mcp-server = { workspace = true }

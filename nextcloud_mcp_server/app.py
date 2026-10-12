@@ -127,8 +127,8 @@ from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 
 # The vector/semantic-search stack (vector/, search/, document_processors/,
-# admin/payload_backfill, api/{visualization,vector_sync,sar}, server/{semantic,
-# sar}) is NEVER imported at module level here. It pulls in optional heavy
+# admin/payload_backfill, api/{visualization,vector_sync}, server/semantic) is
+# NEVER imported at module level here. It pulls in optional heavy
 # dependencies (qdrant-client, fastembed, pymupdf, provider SDKs), and the core
 # server must start without them. Each use imports it inside the branch that is
 # already gated on VECTOR_SYNC_ENABLED / a plugin being available, or via _lazy_endpoint

@@ -9,8 +9,7 @@ import json
 
 import httpx
 import pytest
-
-from nextcloud_mcp_server.providers.ner import (
+from nextcloud_mcp_sar.ner import (
     MAX_TEXT_CHARS,
     NerClient,
     NerError,

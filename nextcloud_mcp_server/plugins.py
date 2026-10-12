@@ -2,10 +2,10 @@
 
 A plugin is a :class:`Plugin` instance published under the
 ``nextcloud_mcp_server.plugins`` entry-point group by any installed
-distribution, this one included::
+distribution (SAR ships as ``nextcloud-mcp-sar``, in ``packages/``)::
 
     [project.entry-points."nextcloud_mcp_server.plugins"]
-    sar = "nextcloud_mcp_server.sar_plugin:plugin"
+    sar = "nextcloud_mcp_sar.plugin:plugin"
 
 The server loads every plugin at startup and, for each one whose
 ``available(settings)`` is true, registers its MCP tools, mounts its HTTP
@@ -16,7 +16,7 @@ routes and advertises its OAuth scopes. ``/api/v1/status`` reports
 every start, including deployments where the plugin is unavailable or its
 optional dependencies are not installed. Keep heavy imports inside
 ``register_tools`` / ``routes``, which only run when ``available`` is true —
-see ``sar_plugin.py``.
+see ``packages/nextcloud-mcp-sar``.
 
 A plugin owns its OAuth scopes (``<prefix>.<action>``, e.g. ``sar.read``):
 they join :func:`supported_scopes`, the vocabulary every grant and validation

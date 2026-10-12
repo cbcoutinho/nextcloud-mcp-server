@@ -9,7 +9,7 @@ This package is organized into modules by domain:
 - passwords.py: App password provisioning for multi-user BasicAuth
 - apps.py: Installed Nextcloud apps
 
-The semantic-search endpoints (visualization.py, vector_sync.py, sar.py) are
+The semantic-search endpoints (visualization.py, vector_sync.py) are
 deliberately not re-exported: they import the optional vector stack, and this
 package must stay importable without it. Import them from their modules.
 """

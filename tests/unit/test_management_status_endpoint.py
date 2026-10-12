@@ -562,7 +562,7 @@ def test_status_advertises_sar_export_capability(
     mode, offline_access, sar_enabled, vector_sync, gateway_url, expected
 ):
     """Astrolabe gates its SAR export UI on this (ADR-040). Always present."""
-    from nextcloud_mcp_server.sar_plugin import SarSettings  # noqa: PLC0415
+    from nextcloud_mcp_sar.plugin import SarSettings  # noqa: PLC0415
 
     settings = create_mock_settings(vector_sync_enabled=vector_sync)
     settings.embedding_gateway_url = gateway_url
@@ -577,7 +577,7 @@ def test_status_advertises_sar_export_capability(
             return_value=mode,
         ),
         patch(
-            "nextcloud_mcp_server.sar_plugin.sar_settings",
+            "nextcloud_mcp_sar.plugin.sar_settings",
             return_value=SarSettings(sar_enabled=sar_enabled),
         ),
     ):

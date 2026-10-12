@@ -90,6 +90,7 @@ markers = [
 ]
 testpaths = [
     "tests",
+    "packages/nextcloud-mcp-sar/tests",
 ]
 # Timeout settings to prevent tests from hanging indefinitely
 timeout = 180  # 3 minutes default timeout per test (includes fixture setup)
@@ -108,6 +109,7 @@ extend-select = ["I", "PLC0415", "G004"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLC0415"]
+"packages/*/tests/**" = ["PLC0415"]
 
 # Guard against undeclared ("phantom") dependencies — a module imported at
 # runtime but absent from [project.dependencies], which only works while some
@@ -120,6 +122,8 @@ extend-select = ["I", "PLC0415", "G004"]
 # (re-exports, plugin-only deps like pyroscope-io) and stay off.
 [tool.deptry]
 ignore = ["DEP002", "DEP004"]
+# Workspace members declare their own dependencies.
+extend_exclude = ["packages"]
 
 [tool.deptry.per_rule_ignores]
 # Optional local-OCR extra, imported inside a try/except ImportError.
@@ -139,6 +143,8 @@ dev = [
     # published package; the dev group (synced by default) pulls it in so a
     # plain `uv run` / `uv sync` does not strip it from the environment.
     "nextcloud-mcp-server[semantic]",
+    # The in-repo plugins (workspace members), so the suite covers them.
+    "nextcloud-mcp-sar",
     "commitizen>=4.8.2",
     # Imported directly by tests/conftest.py and tests/load/ to build the
     # httpx2.AsyncClient that mcp 2.x's streamable_http_client takes; mcp pulls
@@ -173,9 +179,6 @@ dev = [
     # syncs the dev group -- a comment on the job says so.
     "pyroscope-io>=0.8.0",
 ]
-
-[project.entry-points."nextcloud_mcp_server.plugins"]
-sar = "nextcloud_mcp_server.sar_plugin:plugin"
 
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
@@ -229,6 +232,14 @@ postgres = [
 observability = [
     "pyroscope-io>=0.8.0",
 ]
+
+# Plugins developed in this repository, each its own distribution
+# (packages/<name>). They reach the server only through plugin_api.
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+nextcloud-mcp-sar = { workspace = true }
 
 [[tool.uv.index]]
 name = "testpypi"

@@ -76,13 +76,13 @@ def sar_available(settings: Any) -> bool:
 
 
 def _register_tools(mcp: MCPServer) -> None:
-    from nextcloud_mcp_server.server.sar import configure_sar_tools  # noqa: PLC0415
+    from nextcloud_mcp_sar.tools import configure_sar_tools  # noqa: PLC0415
 
     configure_sar_tools(mcp)
 
 
 def _routes() -> list[BaseRoute]:
-    from nextcloud_mcp_server.api.sar import (  # noqa: PLC0415
+    from nextcloud_mcp_sar.api import (  # noqa: PLC0415
         change_sar_case_items,
         create_sar_case,
         export_sar_case,

@@ -3,14 +3,13 @@
 from types import SimpleNamespace
 
 import pytest
-
-from nextcloud_mcp_server import sar_plugin
-from nextcloud_mcp_server.redaction import (
+from nextcloud_mcp_sar import plugin as sar_plugin
+from nextcloud_mcp_sar.plugin import SarSettings, ner_endpoint, sar_available
+from nextcloud_mcp_sar.redaction import (
     Redactor,
     counts,
     detect_entities,
 )
-from nextcloud_mcp_server.sar_plugin import SarSettings, ner_endpoint, sar_available
 
 pytestmark = pytest.mark.unit
 
@@ -296,7 +295,7 @@ def test_settings_validate_ner(field):
 
 
 async def test_get_ner_client_targets_gateway_and_is_cached(monkeypatch):
-    from nextcloud_mcp_server import redaction
+    from nextcloud_mcp_sar import redaction
 
     redaction._reset_ner_state()
     monkeypatch.setattr(
