@@ -21,8 +21,12 @@ see ``sar_plugin.py``.
 A plugin owns its OAuth scopes (``<prefix>.<action>``, e.g. ``sar.read``):
 they join :func:`supported_scopes`, the vocabulary every grant and validation
 path checks, whether or not the plugin is available. A plugin also owns its
-settings, read with :func:`nextcloud_mcp_server.config.plugin_setting`; when they
-are invalid, ``available`` raises, which fails startup.
+settings, read with ``plugin_setting``; when they are invalid, ``available``
+raises, which fails startup.
+
+A plugin imports from the server only through
+:mod:`nextcloud_mcp_server.plugin_api` -- the stable surface; everything else
+is internal.
 """
 
 import logging

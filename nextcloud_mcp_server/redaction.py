@@ -49,7 +49,7 @@ from typing import Any
 
 import anyio
 
-from nextcloud_mcp_server.providers.gateway import build_gateway_token_provider
+from nextcloud_mcp_server.plugin_api import build_gateway_token_provider
 from nextcloud_mcp_server.providers.ner import (
     ADDRESS_LABEL,
     PERSON_LABEL,

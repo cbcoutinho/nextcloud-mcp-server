@@ -27,14 +27,18 @@ import pymupdf
 from anyio import CapacityLimiter, to_thread
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
-from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.models.sar import (
     SarExportStatus,
     SarFailedItem,
     SarItem,
+)
+from nextcloud_mcp_server.plugin_api import (
+    NextcloudClient,
+    NotProvisionedError,
+    indexed_chunks,
+    list_accessible_owners,
+    resolve_background_client,
 )
 from nextcloud_mcp_server.providers.ner import NerClient
 from nextcloud_mcp_server.redaction import (
@@ -42,22 +46,11 @@ from nextcloud_mcp_server.redaction import (
     counts,
     detect_entities,
 )
-from nextcloud_mcp_server.search.access_filter import (
-    build_ownership_filter,
-    list_accessible_owners,
-)
-from nextcloud_mcp_server.vector.oauth_sync import (
-    NotProvisionedError,
-    resolve_background_client,
-)
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
 
 # An archive name becomes two file names; keep it to one plain path segment.
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,99}")
-_SCROLL_PAGE = 256
 _PAGE_MARGIN = 50  # points
 
 
@@ -197,43 +190,16 @@ async def _indexed_chunks(
     user_id: str, owners: list[str] | None, item: SarItem
 ) -> list[dict[str, Any]]:
     """The item's indexed chunks, one per chunk index."""
-    qdrant = await get_qdrant_client()
-    scroll_filter = Filter(
-        must=[
-            build_ownership_filter(user_id, owners),
-            FieldCondition(key="doc_id", match=MatchValue(value=item.doc_id)),
-            FieldCondition(key="doc_type", match=MatchValue(value=item.doc_type)),
-            get_placeholder_filter(),
-        ]
+    chunks = await indexed_chunks(
+        user_id,
+        owners,
+        item.doc_id,
+        item.doc_type,
+        ["title", "excerpt", "chunk_start_offset", "page_number", "page_end"],
     )
-    payloads: dict[int, dict[str, Any]] = {}
-    offset = None
-    while True:
-        points, offset = await qdrant.scroll(
-            collection_name=get_settings().get_collection_name(),
-            scroll_filter=scroll_filter,
-            limit=_SCROLL_PAGE,
-            offset=offset,
-            with_payload=[
-                "title",
-                "excerpt",
-                "chunk_index",
-                "chunk_start_offset",
-                "page_number",
-                "page_end",
-            ],
-            with_vectors=False,
-        )
-        for point in points:
-            payload = point.payload or {}
-            # One chunk per index: a shared file can be indexed under more than
-            # one owner.
-            payloads.setdefault(int(payload.get("chunk_index", 0)), payload)
-        if offset is None:
-            break
-    if not payloads:
+    if not chunks:
         raise _ItemError("not in the search index")
-    return list(payloads.values())
+    return chunks
 
 
 def _in_requested_pages(

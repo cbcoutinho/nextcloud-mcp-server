@@ -4,8 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..search.access_filter import MAX_PATH_PREFIXES
-from .base import BaseResponse
+from nextcloud_mcp_server.plugin_api import MAX_PATH_PREFIXES, BaseResponse
 
 MAX_KEEP = 50
 MAX_QUERIES = 200

@@ -9,9 +9,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.sar import (
     MAX_ITEMS_PER_CALL,
     MAX_QUERIES,
@@ -25,8 +22,15 @@ from nextcloud_mcp_server.models.sar import (
     SarSearchFilters,
     SubjectList,
 )
-from nextcloud_mcp_server.models.semantic import SemanticSearchResponse
-from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.plugin_api import (
+    MAX_PATH_PREFIXES,
+    SemanticSearchResponse,
+    get_client,
+    get_settings,
+    instrument_tool,
+    require_scopes,
+    semantic_search,
+)
 from nextcloud_mcp_server.redaction import get_ner_client
 from nextcloud_mcp_server.sar_case import (
     change_items,
@@ -37,7 +41,6 @@ from nextcloud_mcp_server.sar_case import (
     update_case,
 )
 from nextcloud_mcp_server.sar_export import ExportError, background_client
-from nextcloud_mcp_server.search.access_filter import MAX_PATH_PREFIXES
 
 _WRITE = ToolAnnotations(idempotent_hint=False, open_world_hint=True)
 _READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
@@ -208,11 +211,6 @@ def configure_sar_tools(mcp: MCPServer) -> None:
         in the archive. Results default to one row per document. Add the ones
         to disclose with `sar_case_items`.
         """
-        # Lazy: the semantic tools module pulls in the search stack.
-        from nextcloud_mcp_server.server.semantic import (  # noqa: PLC0415
-            nc_semantic_search,
-        )
-
         filters = SarSearchFilters(
             doc_types=doc_types,
             path_prefixes=path_prefixes,
@@ -224,7 +222,7 @@ def configure_sar_tools(mcp: MCPServer) -> None:
             rerank=rerank,
             granularity=granularity,
         )
-        result = await nc_semantic_search(
+        result = await semantic_search(
             query=query,
             ctx=ctx,
             limit=limit,

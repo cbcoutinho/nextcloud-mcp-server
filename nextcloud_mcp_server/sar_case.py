@@ -32,8 +32,6 @@ from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 from pydantic import ValidationError
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.models.sar import (
     MAX_CASE_ITEMS,
     MAX_CASE_QUERIES,
@@ -48,6 +46,7 @@ from nextcloud_mcp_server.models.sar import (
     SarQueryIn,
     SarQueryLog,
 )
+from nextcloud_mcp_server.plugin_api import NextcloudClient, like_predicate
 from nextcloud_mcp_server.providers.ner import NerClient
 from nextcloud_mcp_server.sar_export import (
     ExportError,
