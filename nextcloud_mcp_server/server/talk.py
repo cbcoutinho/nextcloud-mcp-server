@@ -3,6 +3,7 @@
 import logging
 import uuid
 
+from httpx import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -132,6 +133,7 @@ def configure_talk_tools(mcp: MCPServer) -> None:
         limit: int = 50,
         last_known_message_id: int | None = None,
         include_last_known: bool = False,
+        thread_id: int | None = None,
     ) -> ListMessagesResponse:
         """Read chat history for a Talk conversation.
 
@@ -146,19 +148,36 @@ def configure_talk_tools(mcp: MCPServer) -> None:
                 clamped. Default 50.
             last_known_message_id: Pagination cursor — pass the
                 ``last_known_message_id`` from the previous response to
-                fetch the next (older) page.
+                fetch the next (older) page. An empty page with no
+                ``last_known_message_id`` means there is no older history.
             include_last_known: Include the cursor message in the page
                 instead of starting just before it.
+            thread_id: Optional ID of a thread (its root message ID) to read
+                only that thread: the root message plus every message posted
+                inside it. Use a message's ``threadId``, or the ``id`` of the
+                root returned by ``talk_send_message`` with ``thread_title``.
+                Pagination with ``last_known_message_id`` works the same
+                within the thread. The thread is complete once the root
+                message (``id`` equal to ``thread_id``) has been returned.
         """
         client = await get_client(ctx)
-        messages, last_given = await client.talk.get_messages(
-            token,
-            limit=limit,
-            last_known_message_id=last_known_message_id,
-            look_into_future=False,
-            set_read_marker=False,
-            include_last_known=include_last_known,
-        )
+        try:
+            messages, last_given = await client.talk.get_messages(
+                token,
+                limit=limit,
+                last_known_message_id=last_known_message_id,
+                look_into_future=False,
+                set_read_marker=False,
+                include_last_known=include_last_known,
+                thread_id=thread_id,
+            )
+        except HTTPStatusError as e:
+            # spreed answers 404 {"error": "thread"} for an unknown thread.
+            if thread_id is not None and e.response.status_code == 404:
+                raise ToolError(
+                    f"Thread {thread_id} not found in conversation {token}"
+                ) from e
+            raise
         return ListMessagesResponse(
             conversation_token=token,
             results=messages,
