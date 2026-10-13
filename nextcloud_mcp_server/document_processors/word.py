@@ -204,8 +204,6 @@ def _extract_document(content: bytes) -> tuple[list[str], list[tuple[int, Pictur
     of the block it follows. Runs in a worker thread; captioning is network I/O
     and happens afterwards, in the async ``process()``."""
     from docx import Document  # noqa: PLC0415 -- keep the import off the hot path
-    from docx.table import Table  # noqa: PLC0415
-    from docx.text.paragraph import Paragraph  # noqa: PLC0415
 
     check_zip_size(content)
     doc = Document(io.BytesIO(content))
@@ -215,25 +213,49 @@ def _extract_document(content: bytes) -> tuple[list[str], list[tuple[int, Pictur
 
     # ponytail: body only -- headers/footers (usually logos and page numbers)
     # and pictures inside table cells are skipped.
-    def walk(container: Any) -> None:
-        for element in container:
-            if element.tag == _W + "tbl":
-                block = _table_markdown(Table(element, doc.part))
-                if block:
-                    blocks.append(block)
-            elif element.tag == _W + "p":
-                item = Paragraph(element, doc.part)
-                block = _paragraph_markdown(item)
-                if block:
-                    blocks.append(block)
-                for picture in _paragraph_pictures(item, doc.part):
-                    # A picture-only paragraph has no block of its own; it
-                    # follows whatever came before it (-1 = the start).
-                    pictures.append((len(blocks) - 1, picture))
-            elif element.tag in _TRANSPARENT:
-                # A block-level content control wraps whole paragraphs and
-                # tables, which iter_inner_content() would not yield.
-                walk(element)
-
-    walk(doc.element.body)
+    _walk_blocks(doc.element.body, doc.part, blocks, pictures)
     return blocks, pictures
+
+
+def _walk_blocks(
+    container: Any,
+    part: Any,
+    blocks: list[str],
+    pictures: list[tuple[int, Picture]],
+) -> None:
+    """Append the markdown of every paragraph and table under ``container``
+    in body order, descending into content controls and other transparent
+    wrappers that ``iter_inner_content()`` would not yield."""
+    for element in container:
+        if element.tag == _W + "tbl":
+            _append_table(element, part, blocks)
+        elif element.tag == _W + "p":
+            _append_paragraph(element, part, blocks, pictures)
+        elif element.tag in _TRANSPARENT:
+            _walk_blocks(element, part, blocks, pictures)
+
+
+def _append_table(element: Any, part: Any, blocks: list[str]) -> None:
+    from docx.table import Table  # noqa: PLC0415
+
+    block = _table_markdown(Table(element, part))
+    if block:
+        blocks.append(block)
+
+
+def _append_paragraph(
+    element: Any,
+    part: Any,
+    blocks: list[str],
+    pictures: list[tuple[int, Picture]],
+) -> None:
+    from docx.text.paragraph import Paragraph  # noqa: PLC0415
+
+    item = Paragraph(element, part)
+    block = _paragraph_markdown(item)
+    if block:
+        blocks.append(block)
+    for picture in _paragraph_pictures(item, part):
+        # A picture-only paragraph has no block of its own; it follows
+        # whatever came before it (-1 = the start of the document).
+        pictures.append((len(blocks) - 1, picture))
