@@ -259,6 +259,8 @@ class TalkClient(BaseNextcloudClient):
         message: str,
         *,
         reply_to: int | None = None,
+        thread_id: int | None = None,
+        thread_title: str | None = None,
         reference_id: str | None = None,
         silent: bool = False,
     ) -> TalkMessage:
@@ -268,6 +270,17 @@ class TalkClient(BaseNextcloudClient):
             token: Conversation token.
             message: Message text (max 32000 chars per spreed docs/chat.md).
             reply_to: Optional parent message ID to thread this reply.
+            thread_id: Optional ID of an existing thread's root message.
+                Posts this message inside that thread. Not documented in
+                docs/chat.md at the time of writing (only covered, and
+                incompletely, in the file-sharing section) -- confirmed
+                against a live Talk v24.0.5 instance with the "threads"
+                spreed capability enabled.
+            thread_title: Optional title. Sent alone (without reply_to),
+                starts a brand-new thread with this message as its root --
+                spreed then reports `isThread: true` and sets `threadId` on
+                the response to this message's own id. Same docs/chat.md
+                caveat as thread_id.
             reference_id: Optional client-provided UUID for idempotency on
                 retry (spreed dedupes on this within the conversation).
             silent: When True, the message is delivered without push
@@ -277,6 +290,10 @@ class TalkClient(BaseNextcloudClient):
         body: dict[str, Any] = {"message": message}
         if reply_to is not None:
             body["replyTo"] = reply_to
+        if thread_id is not None:
+            body["threadId"] = thread_id
+        if thread_title is not None:
+            body["threadTitle"] = thread_title
         if reference_id is not None:
             body["referenceId"] = reference_id
         if silent:
