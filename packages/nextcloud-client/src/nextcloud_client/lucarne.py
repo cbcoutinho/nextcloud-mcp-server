@@ -91,19 +91,36 @@ class LucarneClient(BaseNextcloudClient):
         )
         return response.json()
 
-    async def replace_catalog_channels(
-        self, catalog_id: int, channel_ids: list[int]
+    async def add_channel_to_catalog(
+        self, catalog_id: int, channel_id: int
     ) -> dict[str, Any]:
-        """Replace the whole set of channels in a catalogue.
+        """File one channel into a catalogue and return the catalogue.
+
+        Filing a channel that is already there changes nothing. Needs
+        Lucarne 1.3.0 or later.
 
         Raises:
-            HTTPStatusError: 404 if the catalogue is not found, 4xx if a
-                channel does not belong to the user
+            HTTPStatusError: 404 if the catalogue or the channel is not found
+                (or Lucarne is older than 1.3.0)
         """
         response = await self._make_request(
-            "PUT",
-            f"{self.API_BASE}/catalogs/{catalog_id}/channels",
-            json={"channel_ids": channel_ids},
+            "PUT", f"{self.API_BASE}/catalogs/{catalog_id}/channels/{channel_id}"
+        )
+        return response.json()
+
+    async def remove_channel_from_catalog(
+        self, catalog_id: int, channel_id: int
+    ) -> dict[str, Any]:
+        """Take one channel out of a catalogue and return the catalogue.
+
+        The channel stays subscribed. Needs Lucarne 1.3.0 or later.
+
+        Raises:
+            HTTPStatusError: 404 if the catalogue is not found (or Lucarne is
+                older than 1.3.0)
+        """
+        response = await self._make_request(
+            "DELETE", f"{self.API_BASE}/catalogs/{catalog_id}/channels/{channel_id}"
         )
         return response.json()
 
