@@ -1217,6 +1217,8 @@ def configure_calendar_tools(mcp: MCPServer):
         due: str = "",
         dtstart: str = "",
         categories: str = "",
+        recurrence_rule: str = "",
+        recurrence_end_date: str = "",
         reminders: list[Reminder] | None = None,
     ):
         """Create a new todo/task in a calendar.
@@ -1234,6 +1236,13 @@ def configure_calendar_tools(mcp: MCPServer):
                 RFC 5545 requires both to be the same kind, so a time on
                 either side makes both date-times.
             categories: Comma-separated categories (e.g., "work,urgent")
+            recurrence_rule: RFC5545 RRULE (e.g., "FREQ=WEEKLY;BYDAY=MO").
+                Same shape as ``nc_calendar_create_event``; a non-empty rule
+                is itself the intent to recur.
+            recurrence_end_date: Date (or ISO datetime) the series stops
+                recurring, written as the rule's ``UNTIL``. Inclusive: a
+                date-only value keeps that day's occurrence. Rejected if
+                ``recurrence_rule`` already carries ``UNTIL`` or ``COUNT``.
             reminders: Ordered list of alarms. See ``nc_calendar_create_event``
                 for the shape.
 
@@ -1250,6 +1259,8 @@ def configure_calendar_tools(mcp: MCPServer):
             "due": due,
             "dtstart": dtstart,
             "categories": categories,
+            "recurrence_rule": recurrence_rule,
+            "recurrence_end_date": recurrence_end_date,
         }
         if reminders is not None:
             todo_data["reminders"] = _reminders_to_dicts(reminders)
