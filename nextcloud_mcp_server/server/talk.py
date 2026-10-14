@@ -44,6 +44,33 @@ def _validate_message_text(message: str) -> None:
         )
 
 
+def _validate_thread_params(
+    thread_id: int | None, thread_title: str | None, reply_to: int | None
+) -> None:
+    """Reject thread parameter combinations spreed's semantics can't satisfy.
+
+    Not documented in docs/chat.md at the time of writing -- confirmed
+    against a live Talk v24.0.5 instance: sending `threadTitle` (no
+    `replyTo`) starts a brand-new thread with this message as its root;
+    sending `threadId` posts a follow-up message inside an existing one.
+    A caller cannot ask for both a brand-new thread and an existing one,
+    and a thread's root message is not itself a reply.
+    """
+    if thread_id is not None and thread_title is not None:
+        raise ToolError(
+            "thread_id and thread_title are mutually exclusive: thread_id "
+            "posts into an existing thread, thread_title starts a new one"
+        )
+    if thread_title is not None:
+        if not thread_title.strip():
+            raise ToolError("thread_title must not be empty or whitespace-only")
+        if reply_to is not None:
+            raise ToolError(
+                "thread_title and reply_to are mutually exclusive: a new "
+                "thread is started as a root message, not as a reply"
+            )
+
+
 def configure_talk_tools(mcp: MCPServer) -> None:
     """Configure Nextcloud Talk (spreed) MCP tools."""
 
@@ -177,6 +204,8 @@ def configure_talk_tools(mcp: MCPServer) -> None:
         token: str,
         message: str,
         reply_to: int | None = None,
+        thread_id: int | None = None,
+        thread_title: str | None = None,
         silent: bool = False,
     ) -> SendMessageResponse:
         """Post a chat message into a Talk conversation as the user.
@@ -188,15 +217,28 @@ def configure_talk_tools(mcp: MCPServer) -> None:
             token: Conversation token.
             message: Message text (max 32000 characters).
             reply_to: Optional parent message ID to thread the reply.
+            thread_id: Optional ID of an existing thread to post into (the
+                thread's root message ID). Mutually exclusive with
+                thread_title.
+            thread_title: Optional title that starts a brand-new thread,
+                with this message as its root. Mutually exclusive with
+                thread_id and with reply_to. Instances that do not
+                advertise the "threads" feature under the spreed OCS
+                capability are expected to ignore it rather than error, so
+                this is not gated client-side -- normal message sending
+                and reply_to must keep working regardless.
             silent: When True the message is delivered without push
                 notifications (e.g. for status updates).
         """
         _validate_message_text(message)
+        _validate_thread_params(thread_id, thread_title, reply_to)
         client = await get_client(ctx)
         posted = await client.talk.send_message(
             token,
             message,
             reply_to=reply_to,
+            thread_id=thread_id,
+            thread_title=thread_title,
             # 32 hex chars, no dashes — spreed accepts either UUID format.
             reference_id=uuid.uuid4().hex,
             silent=silent,

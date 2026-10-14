@@ -359,6 +359,46 @@ async def test_talk_send_message_with_reference_id_and_reply(mocker):
     }
 
 
+async def test_talk_send_message_with_thread_title_starts_new_thread(mocker):
+    """send_message forwards thread_title, which starts a real new thread."""
+    mock_response = create_mock_talk_message_response(
+        message_id=2001,
+        token="abc",
+        text="Kickoff",
+        threadId=2001,
+        isThread=True,
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    posted = await client.send_message("abc", "Kickoff", thread_title="Budget Q3")
+
+    body = mock_make_request.call_args[1]["json"]
+    assert body == {"message": "Kickoff", "threadTitle": "Budget Q3"}
+    assert posted.threadId == 2001
+    assert posted.isThread is True
+
+
+async def test_talk_send_message_with_thread_id_posts_into_existing_thread(mocker):
+    """send_message forwards thread_id to post a follow-up inside a thread."""
+    mock_response = create_mock_talk_message_response(
+        message_id=2002, token="abc", text="Reply in thread", threadId=2001
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    posted = await client.send_message("abc", "Reply in thread", thread_id=2001)
+
+    body = mock_make_request.call_args[1]["json"]
+    assert body == {"message": "Reply in thread", "threadId": 2001}
+    assert posted.threadId == 2001
+    assert posted.isThread is None
+
+
 async def test_talk_mark_as_read_no_message(mocker):
     """mark_as_read with no message ID sends no body (json=None)."""
     mock_response = create_mock_response(

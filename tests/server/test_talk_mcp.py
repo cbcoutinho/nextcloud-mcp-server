@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
 
+async def _skip_unless_threads_supported(nc_client: NextcloudClient) -> None:
+    """Skip when this Nextcloud instance's spreed app doesn't advertise threads."""
+    payload = await nc_client.capabilities()
+    features = (
+        payload.get("ocs", {})
+        .get("data", {})
+        .get("capabilities", {})
+        .get("spreed", {})
+        .get("features", [])
+    )
+    if "threads" not in features:
+        pytest.skip("Nextcloud Talk instance does not advertise 'threads'")
+
+
 EXPECTED_TALK_TOOLS = {
     "talk_list_conversations",
     "talk_get_conversation",
@@ -90,6 +104,79 @@ async def test_talk_send_and_read_workflow(
     assert mark_payload["success"] is True
     assert mark_payload["conversation_token"] == token
     assert mark_payload["last_read_message"] == posted_id
+
+
+async def test_talk_send_message_thread_title_creates_real_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """A thread_title with no reply_to starts a new, real Talk thread."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Kickoff", "thread_title": "Budget Q3 review"},
+    )
+    assert result.is_error is False, result.content[0].text
+    posted = json.loads(result.content[0].text)["message"]
+    assert posted["isThread"] is True
+    assert posted["threadId"] == posted["id"]
+
+
+async def test_talk_send_message_thread_id_posts_into_existing_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """A thread_id posts a follow-up message inside that thread."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    root = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Root", "thread_title": "Follow-up thread"},
+    )
+    thread_id = json.loads(root.content[0].text)["message"]["threadId"]
+
+    reply = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Reply inside thread", "thread_id": thread_id},
+    )
+    assert reply.is_error is False, reply.content[0].text
+    reply_payload = json.loads(reply.content[0].text)["message"]
+    assert reply_payload["threadId"] == thread_id
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_snippet"),
+    [
+        ({"thread_id": 1, "thread_title": "x"}, "mutually exclusive"),
+        ({"thread_title": "x", "reply_to": 1}, "mutually exclusive"),
+        ({"thread_title": "   "}, "whitespace"),
+    ],
+    ids=["thread_id-and-title", "title-and-reply_to", "blank-title"],
+)
+async def test_talk_send_message_thread_param_validation(
+    nc_mcp_client: ClientSession,
+    temporary_conversation: dict,
+    arguments: dict,
+    expected_snippet: str,
+):
+    """Contradictory or blank thread parameters are rejected client-side.
+
+    These never reach the network, so they don't need the threads-capability
+    skip: the ToolError fires before any request is built.
+    """
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "irrelevant", **arguments},
+    )
+    assert result.is_error is True
+    assert expected_snippet in result.content[0].text.lower()
 
 
 async def test_talk_list_conversations_includes_temp_room(
