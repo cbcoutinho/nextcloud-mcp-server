@@ -32,6 +32,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from httpx import HTTPStatusError
 from mcp.server.mcpserver.exceptions import ToolError
 from packaging.version import InvalidVersion, Version
 
@@ -60,6 +61,15 @@ _CACHE_TTL_SECONDS = 30.0
 _CACHE_MAXSIZE = 1024
 # user_id -> (monotonic_ts, raw OCS payload as returned by client.capabilities())
 _cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+
+# Credentials Nextcloud rejected (401/403), remembered per user for a while.
+# Unlike an OCS hiccup, a rejected app password does not start working on the
+# next call, and every retry is another failed login that Nextcloud's
+# brute-force throttle (and a fail2ban jail on its log) counts. So stop asking
+# until the window passes; gates fail open meanwhile, as for any other failure.
+_AUTH_FAILURE_TTL_SECONDS = 60.0
+# user_id -> monotonic_ts of the rejection
+_auth_failures: OrderedDict[str, float] = OrderedDict()
 
 
 class _CapabilitiesClientProtocol(Protocol):
@@ -106,7 +116,9 @@ async def _capabilities(
     """The OCS capabilities payload for ``user_id``, or ``None`` if unavailable.
 
     Cached per user with a short TTL (+ LRU eviction). Failures are not cached so
-    a transient OCS hiccup retries on the next call.
+    a transient OCS hiccup retries on the next call -- except rejected
+    credentials (401/403), which are remembered for ``_AUTH_FAILURE_TTL_SECONDS``
+    so a bad app password does not turn every request into another failed login.
     """
     now = time.monotonic()
     cached = _cache.get(user_id)
@@ -114,14 +126,37 @@ async def _capabilities(
         _cache.move_to_end(user_id)  # mark recently used (LRU)
         return cached[1]
 
+    rejected_at = _auth_failures.get(user_id)
+    if rejected_at is not None and now - rejected_at < _AUTH_FAILURE_TTL_SECONDS:
+        return None  # fail open without another login attempt
+
     try:
         payload = await client.capabilities()
+    except HTTPStatusError as exc:
+        if exc.response.status_code not in (401, 403):
+            logger.warning(
+                "Nextcloud capabilities unavailable for user %s (%s)", user_id, exc
+            )
+            return None  # don't cache failures — retry next call
+        _auth_failures[user_id] = now
+        _auth_failures.move_to_end(user_id)
+        while len(_auth_failures) > _CACHE_MAXSIZE:
+            _auth_failures.popitem(last=False)
+        logger.warning(
+            "Nextcloud rejected the credentials of user %s (HTTP %s); not asking "
+            "for capabilities again for %ds",
+            user_id,
+            exc.response.status_code,
+            _AUTH_FAILURE_TTL_SECONDS,
+        )
+        return None
     except Exception as exc:  # noqa: BLE001 — degrade gracefully (fail-open)
         logger.warning(
             "Nextcloud capabilities unavailable for user %s (%s)", user_id, exc
         )
         return None  # don't cache failures — retry next call
 
+    _auth_failures.pop(user_id, None)
     _cache[user_id] = (now, payload)
     # Needed only for an existing (expired) key: __setitem__ updates it in place,
     # keeping its old position, so move it to the end to preserve LRU order. For
@@ -163,6 +198,7 @@ def is_doc_type_allowed(doc_type: str, allowed: frozenset[str] | None) -> bool:
 def clear_cache() -> None:
     """Test hook: drop all cached entries."""
     _cache.clear()
+    _auth_failures.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +358,13 @@ async def filter_by_capability(mcp: Any, tools: list) -> list:
 
     try:
         client, user_id = await _gate_client(mcp)
+        # One lookup per listing. When the payload is unavailable every gate
+        # fails open anyway, and the loop below would repeat the failing request
+        # once per gated tool: with a rejected app password, a single tools/list
+        # became one failed login per gated tool and tripped brute-force
+        # protection on the Nextcloud side.
+        if await _capabilities(client, user_id) is None:
+            return tools
         hidden = {
             tool.name
             for tool, (app, min_version, feature) in gated

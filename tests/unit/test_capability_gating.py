@@ -14,6 +14,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from httpx import HTTPStatusError, Request, Response
 from mcp.server.mcpserver.exceptions import ToolError
 from packaging.version import InvalidVersion
 
@@ -461,3 +462,100 @@ async def test_both_conditions_failing_still_closes_the_gate():
 
     assert reason is not None
     assert "reactions" in reason
+
+
+# ---------------------------------------------------------------------------
+# Failed lookups must not multiply into failed logins
+# ---------------------------------------------------------------------------
+
+
+def _rejected(status: int = 401) -> HTTPStatusError:
+    request = Request("GET", "https://nc.example.com/ocs/v2.php/cloud/capabilities")
+    return HTTPStatusError(
+        f"{status}", request=request, response=Response(status, request=request)
+    )
+
+
+def _server_with_gated_tools(client) -> NextcloudMCPServer:
+    """Several gated tools, the way a real deployment registers dozens."""
+    mcp = NextcloudMCPServer("test")
+
+    @mcp.tool()
+    @require_capability("deck", min_version="1.18.0")
+    async def deck_assign_dependent_card() -> str:
+        return "assigned"
+
+    @mcp.tool()
+    @require_capability("notes")
+    async def nc_notes_get_note() -> str:
+        return "note"
+
+    @mcp.tool()
+    @require_capability("tables")
+    async def nc_tables_list_tables() -> str:
+        return "tables"
+
+    return mcp
+
+
+async def test_list_tools_asks_for_capabilities_once_when_the_lookup_fails(mocker):
+    """A failing lookup used to be repeated once per gated tool in a single
+    tools/list. With a rejected app password every repeat is a failed login,
+    so one listing could trip Nextcloud's brute-force protection by itself."""
+    client = _client(raises=RuntimeError("ocs down"))
+    mcp = _server_with_gated_tools(client)
+    _patch_gate_client(mocker, client)
+
+    names = {tool.name for tool in await mcp.list_tools()}
+
+    assert client.capabilities.await_count == 1
+    assert names == {
+        "deck_assign_dependent_card",
+        "nc_notes_get_note",
+        "nc_tables_list_tables",
+    }
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_rejected_credentials_are_not_retried_within_the_window(status):
+    """A rejected password won't work on the next call either, and each retry is
+    another failed login: remember the rejection instead of asking again."""
+    client = _client(raises=_rejected(status))
+
+    assert await unmet_capability(client, "alice", "deck", None) is None
+    assert await unmet_capability(client, "alice", "notes", None) is None
+
+    assert client.capabilities.await_count == 1
+
+
+async def test_rejected_credentials_are_retried_after_the_window(monkeypatch):
+    client = _client(raises=_rejected(401))
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(cap.time, "monotonic", lambda: clock["now"])
+
+    await unmet_capability(client, "alice", "deck", None)
+    clock["now"] += cap._AUTH_FAILURE_TTL_SECONDS + 1
+    await unmet_capability(client, "alice", "deck", None)
+
+    assert client.capabilities.await_count == 2
+
+
+async def test_a_rejection_is_per_user():
+    rejected = _client(raises=_rejected(401))
+    fine = _client(_payload(deck={"version": "1.18.0"}))
+
+    await unmet_capability(rejected, "alice", "deck", None)
+    assert await unmet_capability(fine, "bob", "deck", "1.18.0") is None
+
+    assert fine.capabilities.await_count == 1
+
+
+async def test_other_http_errors_are_still_retried_on_the_next_call():
+    """Only rejected credentials are remembered; a 5xx is treated like any other
+    transient failure and retried."""
+    client = _client(raises=_rejected(503))
+
+    await unmet_capability(client, "alice", "deck", None)
+    await unmet_capability(client, "alice", "deck", None)
+
+    assert client.capabilities.await_count == 2
