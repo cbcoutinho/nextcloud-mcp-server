@@ -188,15 +188,21 @@ async def test_talk_get_messages_unknown_thread_id(
     nc_client: NextcloudClient,
     temporary_conversation: dict,
 ):
-    """An unknown thread_id is reported as not found, not a bare HTTP error."""
+    """An unknown thread_id is reported as not found, not a bare HTTP error.
+
+    Talk 22 (nc32) advertises "threads" but has no thread 404 in
+    receiveMessages -- it answers with an empty page instead.
+    """
     await _skip_unless_threads_supported(nc_client)
     token = temporary_conversation["token"]
 
     result = await nc_mcp_client.call_tool(
         "talk_get_messages", {"token": token, "thread_id": 999999999}
     )
-    assert result.is_error is True
-    assert "not found" in result.content[0].text.lower()
+    if result.is_error:
+        assert "not found" in result.content[0].text.lower()
+    else:
+        assert json.loads(result.content[0].text)["results"] == []
 
 
 @pytest.mark.parametrize(
