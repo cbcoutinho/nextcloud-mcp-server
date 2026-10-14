@@ -188,3 +188,52 @@ async def test_two_pictures_in_one_paragraph_keep_their_order(mocker, monkeypatc
     result = await _captioning().process(_save(doc), DOCX_MIME, "two.docx")
 
     assert result.text == "intro\n\n*Image: first*\n\n*Image: second*\n\noutro\n"
+
+
+def _wrap_in_content_control(element) -> None:
+    """Move ``element`` into a ``w:sdt``/``w:sdtContent`` at its own place,
+    the shape Word templates leave around filled-in text."""
+    from docx.oxml import OxmlElement
+
+    sdt, content = OxmlElement("w:sdt"), OxmlElement("w:sdtContent")
+    sdt.append(OxmlElement("w:sdtPr"))
+    sdt.append(content)
+    element.addprevious(sdt)
+    content.append(element)
+
+
+async def test_text_inside_content_controls_is_read():
+    doc = Document()
+    doc.add_heading("Letter", level=1)
+    _wrap_in_content_control(doc.add_paragraph("Block-level control text.")._p)
+    run_level = doc.add_paragraph("Dear ")
+    run = run_level.add_run("Ms Example")
+    _wrap_in_content_control(run._r)
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Amount"
+    _wrap_in_content_control(table.cell(0, 1).add_paragraph("CHF 2'500")._p)
+    _wrap_in_content_control(doc.add_table(rows=1, cols=1)._tbl)
+
+    result = await DocxProcessor().process(_save(doc), DOCX_MIME, "c.docx")
+
+    assert "Block-level control text." in result.text
+    assert "Dear Ms Example" in result.text
+    assert "| Amount | CHF 2'500 |" in result.text
+
+
+async def test_deleted_text_of_a_tracked_change_is_not_read():
+    from docx.oxml import OxmlElement
+
+    doc = Document()
+    paragraph = doc.add_paragraph("kept ")
+    deleted = OxmlElement("w:del")
+    run = OxmlElement("w:r")
+    text = OxmlElement("w:delText")
+    text.text = "removed"
+    run.append(text)
+    deleted.append(run)
+    paragraph._p.append(deleted)
+
+    result = await DocxProcessor().process(_save(doc), DOCX_MIME, "t.docx")
+
+    assert result.text == "kept\n"
