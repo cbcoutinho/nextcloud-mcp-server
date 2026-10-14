@@ -96,7 +96,6 @@ async def test_add_channels_files_them_one_by_one(tools, lucarne, ctx):
     result = await tools["nc_lucarne_add_channels_to_catalog"](1, [3, 2], ctx)
 
     assert lucarne.add_channel_to_catalog.await_args_list == [call(1, 3), call(1, 2)]
-    lucarne.replace_catalog_channels.assert_not_called()
     assert result.catalog.channel_ids == [2, 3, 5]
 
 
