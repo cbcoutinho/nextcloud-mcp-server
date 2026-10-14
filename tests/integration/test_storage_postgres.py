@@ -310,3 +310,31 @@ async def test_concurrent_initialize_serialized_by_advisory_lock(
             assert count == 1, f"expected 1 alembic_version row, got {count}"
     finally:
         await engine.dispose()
+
+
+async def test_engine_never_creates_named_prepared_statements(
+    storage: RefreshTokenStorage,
+):
+    """psycopg auto-prepares a query as ``_pg3_N`` on its 6th run; behind a
+    transaction-mode PgBouncer that name collides across clients and the whole
+    usage batch is dropped (Deck #1374). With ``prepare_threshold=None`` the
+    session must hold no prepared statements after 10 identical executions."""
+    from nextcloud_mcp_server.usage.store import UsageEvent, UsageEventStore
+
+    # pg_prepared_statements is per-session, so the executions and the check
+    # must share one connection -- one acquire() block (NullPool reconnects on
+    # the next acquire). The batch below then checks the user-visible symptom.
+    async with storage.acquire() as db:
+        for _ in range(10):
+            await db.execute("SELECT COUNT(*) FROM usage_events")
+        cursor = await db.execute("SELECT COUNT(*) FROM pg_prepared_statements")
+        row = await cursor.fetchone()
+    assert row[0] == 0
+
+    await UsageEventStore(storage).record_usage_events(
+        [UsageEvent("tokens_embedded", i) for i in range(10)], enabled=True
+    )
+    async with storage.acquire() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM usage_events")
+        row = await cursor.fetchone()
+    assert row[0] == 10

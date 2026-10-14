@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 def _source(content: bytes = b"%PDF", filename: str = "f.pdf"):
     """A file-backed handle standing in for a spooled download."""
-    from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
+    from nextcloud_mcp_server.document_source import MemoryDocumentSource
 
     return MemoryDocumentSource(content, "application/pdf", filename)
 

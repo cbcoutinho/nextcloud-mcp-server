@@ -3,7 +3,7 @@ services:
   # https://hub.docker.com/_/mariadb
   db:
     # Note: Check the recommend version here: https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html#server
-    image: docker.io/library/mariadb:12.3.3-noble@sha256:805c8e104bd563d5bfa24fadd3f31cd419ea859cb5277f32b5dbf2db714f9ed1
+    image: docker.io/library/mariadb:12.3.3-noble@sha256:2bdff1534a7e569fecaf4b10b66ad0d410806e382d9db29ba305448addda97c4
     restart: always
     command: --transaction-isolation=READ-COMMITTED
     volumes:
@@ -19,11 +19,11 @@ services:
   # Note: Redis is an external service. You can find more information about the configuration here:
   # https://hub.docker.com/_/redis
   redis:
-    image: docker.io/library/redis:8.10.2-alpine@sha256:72cedd9603038893af961e90ac5e1a1a0d8377d5e338dbdad8fe284ea25de18f
+    image: docker.io/library/redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.15@sha256:64f3fe9cf4185bdaa44595d67f8e4aad1e31c52d9f36c3b39318f3d364a19619}
+    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.15@sha256:29335791322254d4b17d8a8ca1a969f9fa13d83b096a2e7891627d094dfb5d58}
     restart: always
     ports:
       - 127.0.0.1:8080:80
@@ -51,6 +51,10 @@ services:
       # (before-starting hook creates OIDC client + stores credentials in config.php)
       # Example: MCP_SERVER_URL=http://mcp-login-flow:8004 docker compose --profile login-flow up -d
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+      # Static OIDC client for mcp-login-flow, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh when set.
+      - LOGIN_FLOW_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - LOGIN_FLOW_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
       interval: 10s
@@ -58,14 +62,14 @@ services:
       retries: 30
 
   recipes:
-    image: docker.io/library/nginx:1.31.6-alpine@sha256:d10753d9289b8e3f884386351f73554ce72b631378949deddd75e83ee296c427
+    image: docker.io/library/nginx:1.31.6-alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
       - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   unstructured:
-    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.11@sha256:023f27de17bd3a809390acfa147cb6373104eadca4120b36eb154fc1de8a61ca
+    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.11@sha256:b1f0eb6be87dbb15edff568a99f6dd2e57072240faff04729e8d91d283f5b86b
     restart: always
     ports:
       - 127.0.0.1:8005:8000
@@ -82,7 +86,7 @@ services:
   # runs on plain GitHub-hosted runners. CPU OCR is slow; give it a generous
   # DOCLING_TIMEOUT.
   docling:
-    image: ghcr.io/docling-project/docling-serve-cpu:v1.34.0@sha256:0525640504db7ed8a53e0e443882727888f6a3746948b1b7a8820efe95567bd3
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.37.0@sha256:6eda9c524992147c1b0b06a1a9be4894bd68b1f43c86d92c32f996c4c60d18a3
     restart: always
     ports:
       - 127.0.0.1:5001:5001
@@ -111,7 +115,7 @@ services:
   # the MCP server reaches it on the compose network. The image ships no shell,
   # so there is no container healthcheck; poll /hosting/capabilities instead.
   collabora:
-    image: docker.io/collabora/code:26.04.4.1.1@sha256:1efda3043e8b9cb437d1b6c6efe20cc3753760e634de012b8dac391da488bf97
+    image: docker.io/collabora/code:26.04.4.2.1@sha256:4e983196eb9878f339cc506c38c21f1cc3473bca3d6de883c5de08f9c0cc3a6c
     restart: always
     ports:
       - 127.0.0.1:9980:9980
@@ -169,6 +173,18 @@ services:
       start_period: 300s
     profiles:
       - infinity
+
+  # Canned stand-in for the embedding gateway's POST /v1/ner, so the login-flow
+  # tests exercise SAR export redaction (ADR-040) without a model. It detects
+  # only the synthetic names hard-coded in tests/fixtures/ner_stub.py.
+  ner-stub:
+    image: docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+    restart: always
+    command: ["python", "/stub/ner_stub.py"]
+    volumes:
+      - ./tests/fixtures/ner_stub.py:/stub/ner_stub.py:ro
+    profiles:
+      - login-flow
 
   mcp:
     build: .
@@ -348,7 +364,7 @@ services:
       - multi-user-basic
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command:
       - "start-dev"
       - "--import-realm"
@@ -433,6 +449,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      ner-stub:
+        condition: service_started
     ports:
       - 127.0.0.1:8004:8004
     environment:
@@ -445,13 +463,16 @@ services:
       # the browser-based app-password layer is derived automatically.
       - MCP_DEPLOYMENT_MODE=login_flow
 
-      # NOTE: this dev/test service relies on Dynamic Client Registration for
-      # the MCP server's own OIDC client, which is fine for short-lived CI runs.
-      # For a real self-hosted login_flow deployment, register a STATIC client
-      # in Nextcloud (Administration → OpenID Connect provider) and set
-      # NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET — the built-in
-      # `oidc` app deletes DCR clients after ~1h, which breaks auth (see #907
-      # and docs/login-flow-v2.md → Troubleshooting).
+      # The MCP server's own OIDC client. With LOGIN_FLOW_OIDC_CLIENT_ID/_SECRET
+      # set (CI generates them) it is a STATIC client, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. That is
+      # required from oidc 2.5.0, which never approves an RFC 8707 resource for
+      # a DCR client (`invalid_target`), and it is what a real self-hosted
+      # login_flow deployment should use anyway: the built-in `oidc` app also
+      # deletes DCR clients after ~1h (see #907 and docs/login-flow-v2.md →
+      # Troubleshooting). Unset, the server falls back to DCR (oidc < 2.5.0).
+      - NEXTCLOUD_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - NEXTCLOUD_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
 
       # Token storage (required for app password + session persistence).
       # Source the key from .env — see env.sample. To generate a fresh key:
@@ -473,6 +494,13 @@ services:
       # against this profile too.
       - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
 
+      # SAR export (ADR-040): opt-in, enabled here for the SAR tests. Names are
+      # detected via the gateway's /v1/ner, stubbed here like the `mcp`
+      # service. OCR and reranking are off by default, so nothing else routes
+      # through the gateway.
+      - SAR_ENABLED=${SAR_ENABLED:-true}
+      - EMBEDDING_GATEWAY_URL=${EMBEDDING_GATEWAY_URL:-http://ner-stub:8080}
+
       # Observability -- same host passthrough as the `mcp` service. This is the
       # profile Astrolabe drives, so it is the one to point at a collector when
       # tracing the search/chunk-context path end to end.
@@ -485,7 +513,7 @@ services:
       - login-flow
 
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    image: docker.io/qdrant/qdrant:v1.19.2@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
@@ -509,7 +537,7 @@ services:
   # Bring up with:  docker compose --profile postgres up -d postgres-test
   # See ADR-026 for the pluggable-database-backend design.
   postgres-test:
-    image: docker.io/library/postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
+    image: docker.io/library/postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
     environment:
       POSTGRES_USER: mcp
@@ -558,7 +586,7 @@ services:
   # backends can't produce. Bootstrapped fresh on every `up` (no data volume),
   # so the custom LDIF is always applied.
   openldap:
-    image: docker.io/vegardit/openldap:2.6.10@sha256:b81f6c360830b21b9e6d8878563e3e11bd81e243693c83fa371efeee34556ce9
+    image: docker.io/vegardit/openldap:2.6.10@sha256:ffe216e09673d9b3f561a6b02e691bab44a2f9849f7d3bb8be16957f6f826dae
     environment:
       - LDAP_INIT_ORG_DN=dc=example,dc=org
       - LDAP_INIT_ORG_NAME=Example Org

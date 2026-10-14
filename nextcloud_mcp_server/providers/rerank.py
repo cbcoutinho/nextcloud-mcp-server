@@ -6,7 +6,7 @@ One wire format covers every backend we care about — Cohere itself
 embedding gateway (``POST /v1/rerank``): request ``{model, query, documents,
 top_n}``, response ``{"results": [{"index", "relevance_score"}]}``. So this is a
 single client and *which* reranker you use is configuration
-(:func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`), not a code path.
+(:func:`nextcloud_mcp_server.features.rerank_endpoint`), not a code path.
 
 A plain-httpx client rather than a :class:`~.base.Provider`: the ``Provider`` ABC
 is an embedding contract (``embed``/``embed_batch``/``get_dimension``) and a
@@ -106,7 +106,7 @@ class RerankClient:
                 backend (``/rerank``, ``/v1/rerank``, ``/v2/rerank``) and
                 guessing wrong degrades silently to retrieval order rather than
                 erroring. Callers derive it in one place — see
-                :func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`.
+                :func:`nextcloud_mcp_server.features.rerank_endpoint`.
             model: Model id as the endpoint expects it. The Astrolabe gateway
                 needs a ``<provider>/`` prefix; a direct Infinity/vLLM/Cohere
                 endpoint wants the bare id.

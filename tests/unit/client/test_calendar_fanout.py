@@ -161,5 +161,28 @@ async def test_one_broken_calendar_does_not_sink_todos(client, mocker):
     assert len(todos) == len(CALENDARS) - 1
 
 
+async def test_skipped_calendars_are_reported_to_the_caller(client, mocker):
+    """An empty slot is indistinguishable from an empty calendar, so a lenient
+    caller gets told which calendars were skipped and why."""
+
+    async def broken_cal2(name, *args, **kwargs):
+        if name == "cal2":
+            raise RuntimeError("calendar is on fire")
+        return [{"uid": f"{name}-1"}]
+
+    mocker.patch.object(client, "get_calendar_events", side_effect=broken_cal2)
+    mocker.patch.object(client, "list_todos", side_effect=broken_cal2)
+
+    event_failures: list[dict[str, str]] = []
+    events = await client.search_events_across_calendars(failures=event_failures)
+    todo_failures: list[dict[str, str]] = []
+    todos = await client.search_todos_across_calendars(failures=todo_failures)
+
+    expected = [{"calendar_name": "cal2", "error": "calendar is on fire"}]
+    assert event_failures == expected
+    assert todo_failures == expected
+    assert len(events) == len(todos) == len(CALENDARS) - 1
+
+
 async def _one(name: str, *args, **kwargs):
     return [{"uid": f"{name}-1"}]

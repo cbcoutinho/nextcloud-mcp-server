@@ -241,6 +241,8 @@ async def test_mcp_contacts_surfaces_structured_fields_and_survives_bad_cards(
         # listing down with it.
         assert rich_uid in by_uid, "structured contact missing from listing"
         assert geo_uid in by_uid, "unparseable contact took down the whole listing"
+        # Only the bad property is dropped, not the whole projection (#1551).
+        assert by_uid[geo_uid]["fn"] == "Geo Person"
 
         rich = by_uid[rich_uid]
         assert rich["given_name"] == "Alice"

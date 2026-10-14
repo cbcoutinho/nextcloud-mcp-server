@@ -116,6 +116,59 @@ async def test_valid_document_checks_redirect_uri_and_is_cached():
     fetch.assert_awaited_once()
 
 
+LOOPBACK_DOCUMENT = {
+    "client_id": CLIENT_ID,
+    "redirect_uris": [
+        "http://localhost/callback",
+        "http://127.0.0.1/callback",
+        "http://[::1]/callback",
+        "http://localhost:3000/fixed",
+        REDIRECT,
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "http://localhost/callback",
+        "http://localhost:54321/callback",
+        "http://127.0.0.1:61000/callback",
+        "http://[::1]:61000/callback",
+        "http://localhost:3000/fixed",
+        REDIRECT,
+    ],
+)
+async def test_portless_loopback_redirect_matches_any_port(redirect_uri):
+    fetch = AsyncMock(return_value=json.dumps(LOOPBACK_DOCUMENT).encode())
+    with patch.object(cimd, "_fetch", new=fetch):
+        assert await cimd.validate_cimd_client(CLIENT_ID, redirect_uri) is None
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "http://localhost:54321/other",  # different path
+        "http://localhost:54321/callback?x=1",  # different query
+        "http://localhost:54321/callback#frag",
+        "https://localhost:54321/callback",  # different scheme
+        "http://127.0.0.1:54321/other",
+        "http://example.com:54321/callback",  # not loopback
+        "http://localhost.evil.example:54321/callback",
+        "http://user@localhost:54321/callback",
+        "http://localhost:99999/callback",  # out of range
+        "http://localhost:abc/callback",
+        "http://localhost:4000/fixed",  # registered with a port: exact only
+        "https://client.example.com:8443/callback",  # only loopback is relaxed
+    ],
+)
+async def test_loopback_port_relaxation_is_narrow(redirect_uri):
+    fetch = AsyncMock(return_value=json.dumps(LOOPBACK_DOCUMENT).encode())
+    with patch.object(cimd, "_fetch", new=fetch):
+        error = await cimd.validate_cimd_client(CLIENT_ID, redirect_uri)
+    assert error is not None and "redirect_uri" in error
+
+
 async def test_slow_fetch_is_bounded_by_one_overall_deadline(monkeypatch):
     async def slow_resolve(host: str, port: int) -> str:
         await anyio.sleep(10)

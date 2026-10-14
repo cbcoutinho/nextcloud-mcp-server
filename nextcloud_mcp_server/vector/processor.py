@@ -32,7 +32,7 @@ from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.document_processors.source import (
+from nextcloud_mcp_server.document_source import (
     DocumentSource,
     MemoryDocumentSource,
 )
@@ -1198,7 +1198,7 @@ async def _index_document(
     embedding and bbox extraction, then be removed however this call ends. The
     exit stack scopes exactly that, so the file cannot outlive the document it
     belongs to and no caller has to remember to unlink it (see
-    ``document_processors.source.spool_target``).
+    ``document_source.spool_target``).
     """
     async with AsyncExitStack() as stack:
         return await _index_document_inner(

@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from nextcloud_mcp_server.document_processors.source import (
+from nextcloud_mcp_server.document_source import (
     SpooledDocumentSource,
     spool_target,
 )

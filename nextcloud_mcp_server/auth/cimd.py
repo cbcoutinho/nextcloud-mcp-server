@@ -229,17 +229,69 @@ async def get_client_metadata(client_id: str) -> dict[str, Any]:
     return document
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _redirect_uri_matches(redirect_uri: str, registered: list[str]) -> bool:
+    """Whether *redirect_uri* is one of the document's *registered* URIs.
+
+    Exact string match (draft §4.3), with one exception: a loopback redirect
+    registered without a port matches the same URI on any port. Native clients
+    such as Claude Code listen on an ephemeral port chosen at request time, so
+    their documents list ``http://localhost/callback`` and
+    ``http://127.0.0.1/callback``; RFC 8252 §7.3 (and OAuth 2.1) require
+    the AS to allow any port for loopback redirects.
+
+    Only the port is relaxed: scheme (``http``), host, path and query must
+    equal a registered portless loopback URI, and userinfo or a fragment is
+    refused. A registered URI that carries a port still matches exactly.
+    """
+    if redirect_uri in registered:
+        return True
+    try:
+        got = urlsplit(redirect_uri)
+        _ = got.port  # ValueError on a non-numeric or out-of-range port
+    except ValueError:
+        return False
+    if (
+        got.scheme != "http"
+        or got.hostname not in _LOOPBACK_HOSTS
+        or got.username is not None
+        or got.password is not None
+        or got.fragment
+    ):
+        return False
+    for uri in registered:
+        try:
+            reg = urlsplit(uri)
+            reg_port = reg.port
+        except ValueError:
+            continue
+        if (
+            reg.scheme == "http"
+            and reg.hostname == got.hostname
+            and reg_port is None
+            and reg.username is None
+            and reg.path == got.path
+            and reg.query == got.query
+        ):
+            return True
+    return False
+
+
 async def validate_cimd_client(client_id: str, redirect_uri: str) -> str | None:
     """Validate an authorization request from a CIMD client.
 
     Returns ``None`` when *redirect_uri* is one the document lists (exact
-    match, draft §4.3), otherwise a client-safe error message.
+    match, draft §4.3, except that a portless loopback redirect matches any
+    port, RFC 8252 §7.3 -- see ``_redirect_uri_matches``), otherwise a
+    client-safe error message.
     """
     try:
         document = await get_client_metadata(client_id)
     except CIMDError as e:
         logger.warning("CIMD: rejected client_id %s: %s", client_id, e)
         return str(e)
-    if redirect_uri not in document["redirect_uris"]:
+    if not _redirect_uri_matches(redirect_uri, document["redirect_uris"]):
         return f"Invalid redirect_uri for client {client_id}"
     return None

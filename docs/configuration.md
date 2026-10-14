@@ -306,6 +306,8 @@ The probe reports each dependency under `checks` (`ok` / `embedded` / `pending` 
 
 The MCP server includes semantic search capabilities powered by vector embeddings. This feature requires a vector database (Qdrant) and an embedding service.
 
+> **Install the `semantic` extra.** A PyPI install needs `pip install 'nextcloud-mcp-server[semantic]'` (the Docker image already includes it). With `ENABLE_SEMANTIC_SEARCH=true` and the extra missing, the server refuses to start and names this command. See [Installation → Optional features](installation.md#optional-features-extras).
+
 ### Quick Start
 
 **Single-User Mode:**
@@ -386,23 +388,32 @@ Notes:
 
 ### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
 
-Tagged-file discovery enqueues **PDF plus the OOXML office formats that have a
-native reader** (`.pdf`, `.docx`, `.xlsx`, `.pptx`; ADR-036/038). A tagged file of
-any other type is ignored. The list is an explicit allowlist rather than "whatever the
-processor registry can parse", so enabling an optional processor cannot widen
-the corpus — and its embedding bill — without someone choosing to.
+By default, tagged-file discovery enqueues **every type an enabled processor can
+read**: PDF, `.docx`/`.xlsx`/`.pptx` (ADR-036/038), Outlook `.msg`, plain text,
+Markdown and CSV, plus legacy Office and ODF when Collabora is configured
+(`COLLABORA_URL`, ADR-039). Enabling a processor is what opts its types in; a
+tagged file of a type no processor reads is ignored. That includes the optional
+processors: configuring Unstructured, Tesseract, Docling or a custom HTTP
+processor also indexes the types they claim (images, EPUB, RTF, …) in tagged
+folders, with the OCR and embedding cost that brings. Set the variable below to
+keep them to the types you want.
 
-> **Upgrading from a PDF-only release changes what you pay to embed.** Before
-> this setting existed, discovery was hard-filtered to `application/pdf`. On
-> upgrade, any `.docx`/`.xlsx`/`.pptx` file already sitting under a `vector-index`
-> (or `keyword-index`) tag — including everything beneath a tagged folder —
-> becomes eligible and will be indexed on the next scan. Nothing is removed and
-> no API changes, so this is not a breaking change; but if you tagged folders
-> broadly and only meant PDFs, narrow it back before upgrading:
->
-> ```dotenv
-> VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
-> ```
+Plain text, Markdown and CSV files are picked up by the polling scanner only,
+not on the change webhook: editors such as Text save them on every few
+keystrokes.
+
+Set `VECTOR_SYNC_INDEXABLE_MIME_TYPES` to a comma-separated list to narrow that,
+for example to PDF only:
+
+```dotenv
+VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
+```
+
+> **Upgrading changes what you pay to embed.** Previously the default was PDF and
+> `.docx`/`.xlsx`/`.pptx` only. On upgrade, `.msg`, `.txt`, `.md` and `.csv` files
+> (and ODF/legacy Office with Collabora) already under a `vector-index` or
+> `keyword-index` tag, including everything beneath a tagged folder, are indexed
+> on the next scan. Set the list above before upgrading to keep the old scope.
 >
 > Setting it **empty** does not mean "no filter" — it means *index nothing*, and
 > discovery logs a warning saying so.
@@ -1401,7 +1412,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
 | `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
-| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | `application/pdf`, `…wordprocessingml.document`, `…spreadsheetml.sheet`, `…presentationml.presentation` | Comma-separated MIME types that tagged-file discovery will enqueue — PDF plus `.docx`/`.xlsx`/`.pptx`. A tagged file of any other type is ignored. Deliberately an explicit allowlist rather than "whatever the processor registry can parse", so enabling an optional processor cannot silently widen the corpus (and its embedding bill). Set to `application/pdf` alone to restore PDF-only indexing. Adding a type with no processor (e.g. legacy `.doc`/`.xls`) makes each discovered file of that type fail once as "no processor for type" |
+| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | *(unset)*: every type a registered processor reads | Comma-separated MIME types that tagged-file discovery will enqueue. Unset, it is every type an enabled processor can read (PDF, `.docx`/`.xlsx`/`.pptx`, `.msg`, plain text, Markdown, CSV, plus ODF and legacy Office with `COLLABORA_URL` and whatever an optional processor claims), so enabling a processor opts its types in. Set it to narrow that, e.g. `application/pdf` for PDF only; set it empty to index no files. See "Which file types get indexed" above. |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
@@ -1410,7 +1421,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `QDRANT_INIT_BACKOFF_BASE` | ⚠️ Optional | `1.0` | Base delay (seconds) for the first Qdrant-init retry; subsequent retries grow exponentially (`base * 2**n`) with full jitter. |
 | `QDRANT_INIT_BACKOFF_MAX` | ⚠️ Optional | `10.0` | Per-retry cap (seconds) for the Qdrant-init backoff. Size your k8s `startupProbe` accordingly (worst case ≈ `max_attempts × backoff_max` of waiting on a persistently-down Qdrant before startup finally fails). |
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
-| `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero (while Qdrant still holds points for it) before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty (a genuine mass-untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
+| `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero, or fewer than half of the points Qdrant holds for it (a partial read, e.g. one tagged folder's walk failing), before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty or partial read (a genuine bulk untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
 | `VECTOR_SYNC_MAX_INDEX_FAILURES` | ⚠️ Optional | `5` | Consecutive failed **index** attempts before a document is dead-lettered instead of re-queued by the next scan (GH #1345). A hard *parse* failure at the deepest tier is terminal on its first attempt; an embedding / Qdrant / transport failure is treated as transient at first, so parking it takes this many rounds — otherwise a backend outage would drop every in-flight document. The count is per content-version (`etag` + escalation-tier signature) and is cleared by a successful index, so it bounds only *persistent* failure. Each attempt already costs the in-process retries, so the default spans roughly 5 scan cycles. Must be `>= 1`; `1` parks on the first exhausted-retry round. |
 | `VECTOR_SYNC_FAST_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **fast** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Resolution precedence: the worker `--concurrency` flag > this tier override > `VECTOR_SYNC_PROCESSOR_WORKERS`. |
@@ -1449,6 +1460,11 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `SEARCH_RERANK_POOL_SIZE` | ⚠️ Optional | `200` | Candidates handed to the reranker. Reranking can only reorder what retrieval supplied, so this depth — not the caller's `limit` — bounds how much it can improve; reranking only the rows a normal search returns captures little of the available gain. Treat as a ceiling rather than a starting point: under `granularity="document"` the grouped prefetch is bounded, and requesting more groups than it can fill makes Qdrant reorder the head of the result set before the reranker sees it. Never drops below the request's own over-fetch. Must be `>= 1`. |
 | `SEARCH_RERANK_TIMEOUT_SECONDS` | ⚠️ Optional | `30.0` | Per-request rerank timeout. Generous headroom rather than a target — on expiry the search returns retrieval ordering with `reranked: false` rather than failing. Must be `> 0`. |
 | `SEARCH_RERANK_MAX_CONCURRENCY` | ⚠️ Optional | `1` | Concurrent rerank calls in flight, process-wide. Bounds how many rerank requests this process keeps in flight against the reranker, so a burst of searches cannot queue unbounded work on a service that may also serve this server's embedding traffic and other callers. A client-side courtesy rather than a throughput control — raise it if yours has headroom, which a CPU cross-encoder almost certainly does not. Must be `>= 1`. |
+| `SAR_ENABLED` | ⚠️ Optional | `false` | Serve subject access request cases and redacted export (ADR-040): the `sar_case_*` tools, `/api/v1/sar/*`, the `sar.read`/`sar.write` scopes, and `sar_available: true` on `GET /api/v1/status`, which is what makes Astrolabe show its SAR page. Opt-in per deployment. Requires semantic search (`ENABLE_SEMANTIC_SEARCH`) and `EMBEDDING_GATEWAY_URL`; the server refuses to start with it set and either missing. |
+| `NER_MODEL` | ⚠️ Optional | `local/urchade/gliner_multi_pii-v1` | Name-detection model for SAR export redaction (ADR-040), addressed the gateway way (`<provider>/<model>`). Names are detected by the embedding gateway's `POST /v1/ner`, so SAR export needs `EMBEDDING_GATEWAY_URL`. |
+| `NER_TIMEOUT_SECONDS` | ⚠️ Optional | `120` | Per-request NER budget. Export runs in the background, so this only has to cover one batch on the slowest backend. A document whose detection fails is reported as failed in the archive, never exported unredacted. |
+| `NER_BATCH_SIZE` | ⚠️ Optional | `8` | Texts (up to 2,000 characters each) per `/v1/ner` request. Keep it small on a CPU backend, which must finish a batch inside the gateway's own upstream timeout; raise it (e.g. `32`) on a GPU. Must be `>= 1`. |
+| `NER_THRESHOLD` | ⚠️ Optional | `0.5` | Minimum model confidence, in `(0, 1]`, for a span to count as a person name. Lower it to raise recall; the cost is over-redaction, which is the safe direction for a disclosure. |
 
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)

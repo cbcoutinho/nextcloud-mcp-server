@@ -21,6 +21,7 @@ from typing import Any
 
 import anyio
 
+from nextcloud_mcp_server.features import rerank_available, rerank_endpoint
 from nextcloud_mcp_server.observability.metrics import (
     record_rerank_documents,
     record_search_stage,
@@ -73,45 +74,6 @@ def _reset_rerank_state() -> None:
     _client_lock = None
     _limiter = None
     _cooldown_until = 0.0
-
-
-def rerank_endpoint(settings: Any) -> str | None:
-    """The rerank URL this deployment should POST to, or ``None`` if it has
-    none configured.
-
-    Two ways to get here, and they are not symmetric:
-
-    * ``SEARCH_RERANK_URL`` is used **verbatim** — a full endpoint, path and
-      all. Backends disagree on the path (Infinity ``/rerank``, vLLM
-      ``/v1/rerank``, Cohere ``/v2/rerank``) and a wrong guess degrades to
-      retrieval order rather than erroring, so guessing is worse than asking.
-    * Otherwise it is derived from ``EMBEDDING_GATEWAY_URL``, which is a bare
-      origin in some deployments and already ``/v1``-suffixed in others. That
-      normalisation lives here rather than in the client so the client stays a
-      plain Cohere-protocol client with no gateway knowledge.
-    """
-    url = getattr(settings, "search_rerank_url", None)
-    if url:
-        return url
-    gateway = getattr(settings, "embedding_gateway_url", None)
-    if not gateway:
-        return None
-    base = gateway.rstrip("/")
-    if not base.endswith("/v1"):
-        base = f"{base}/v1"
-    return f"{base}/rerank"
-
-
-def rerank_available(settings: Any) -> bool:
-    """Whether reranking can run at all on this deployment.
-
-    The capability gate the request parameter is checked against, and what
-    ``/api/v1/status`` advertises — so a caller can discover the feature instead
-    of probing it and eating an error.
-    """
-    return bool(
-        getattr(settings, "search_rerank_enabled", False) and rerank_endpoint(settings)
-    )
 
 
 async def _get_client(settings: Any) -> RerankClient | None:

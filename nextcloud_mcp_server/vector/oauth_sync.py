@@ -220,6 +220,30 @@ async def get_user_client_basic_auth(
     )
 
 
+async def resolve_background_client(user_id: str) -> NextcloudClient:
+    """An authenticated NextcloudClient for ``user_id`` outside a request.
+
+    Background work (the ingest worker, SAR export) cannot use a request's
+    credentials. Single-user BasicAuth uses the shared env credentials; every
+    multi-user mode resolves the user's locally-stored app password (BasicAuth).
+
+    Raises:
+        NotProvisionedError: the user has not provisioned background access.
+    """
+    from nextcloud_mcp_server.config_validators import (  # noqa: PLC0415
+        AuthMode,
+        detect_auth_mode,
+    )
+
+    settings = get_settings()
+    if detect_auth_mode(settings) == AuthMode.SINGLE_USER_BASIC:
+        return NextcloudClient.from_env()
+    host = settings.nextcloud_host
+    if not host:
+        raise ValueError("NEXTCLOUD_HOST is required for multi-user background work")
+    return await get_user_client_basic_auth(user_id, host)
+
+
 async def user_scanner_task(
     user_id: str,
     send_stream: TaskProducer,

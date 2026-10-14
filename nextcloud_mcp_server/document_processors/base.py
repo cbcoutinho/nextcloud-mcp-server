@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
-    from .source import DocumentSource
+    from nextcloud_mcp_server.document_source import DocumentSource
 
 from pydantic import BaseModel
 

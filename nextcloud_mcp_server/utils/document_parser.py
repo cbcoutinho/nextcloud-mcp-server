@@ -27,7 +27,7 @@ from nextcloud_mcp_server.document_processors import (
     get_registry,
 )
 from nextcloud_mcp_server.document_processors.base import EMPTY_DOCUMENT_REASON
-from nextcloud_mcp_server.document_processors.source import DocumentSource
+from nextcloud_mcp_server.document_source import DocumentSource
 from nextcloud_mcp_server.models.webdav import ContentFormat, ParseStatus
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ def is_parseable_document(content_type: Optional[str]) -> bool:
     this MIME type", which the caller cannot know.
     """
     if not content_type:
+        return False
+    # Text needs no extraction: the raw file already is the text. A processor
+    # claims text/* for indexing, not to change what reading a file returns.
+    if content_type.split(";")[0].strip().lower().startswith("text/"):
         return False
 
     registry = get_registry()
@@ -71,9 +75,14 @@ async def parse_document_source(
     Never raises for a processor-level failure: a failed parse comes back as a
     ``ProcessingResult`` with ``success=False`` and a ``parse_failed_reason``, so
     the caller can say what went wrong instead of guessing from an exception.
+
+    Always asks for a one-shot parse subprocess: this is the interactive path,
+    and a pooled worker would outlive the call holding its peak memory.
     """
     registry = get_registry()
-    options = {"prefer_markdown": True} if prefer_markdown else None
+    options: dict[str, Any] = {"one_shot_parse": True}
+    if prefer_markdown:
+        options["prefer_markdown"] = True
 
     logger.debug(
         "Parsing document of type '%s'%s",

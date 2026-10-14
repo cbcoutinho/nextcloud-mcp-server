@@ -45,6 +45,11 @@ result.parse_notes      # non-empty => say what degraded; this is not the whole 
 # Ask for structure (headings, tables) instead of a flat text layer
 await nc_webdav_read_file("Documents/report.pdf", parse_document="markdown")
 
+# Read part of a long PDF: only these pages are parsed and returned
+result = await nc_webdav_read_file("Documents/report.pdf", page_start=21, page_end=40)
+result.page_count       # total pages in the document -- read on while page_end < page_count
+result.page_start, result.page_end   # the pages this content covers (21, 40)
+
 # Or take the file itself, unparsed
 await nc_webdav_read_file("Documents/report.pdf", parse_document="raw")
 

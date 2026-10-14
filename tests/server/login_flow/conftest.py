@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import time
 from typing import Any, AsyncGenerator
 from urllib.parse import quote, urlparse, urlunparse
@@ -37,20 +38,72 @@ logger = logging.getLogger(__name__)
 LOGIN_FLOW_MCP_URL = "http://localhost:8004/mcp"
 LOGIN_FLOW_MCP_BASE_URL = "http://localhost:8004"
 
+_OCC = ["docker", "compose", "exec", "-T", "app", "php", "/var/www/html/occ"]
+
+
+def _occ_remove_client(client_id: str) -> None:
+    """Delete an OIDC client; a client that does not exist is not an error."""
+    subprocess.run([*_OCC, "oidc:remove", client_id], check=False, capture_output=True)
+
+
+def _occ_create_client(
+    name: str,
+    client_id: str,
+    callback_url: str,
+    *,
+    resource_url: str,
+    token_type: str | None = None,
+    allowed_scopes: str | None = None,
+) -> str:
+    """Create a static (admin-registered) confidential OIDC client via occ and
+    return its secret. Any leftover client with the same id is removed first.
+
+    Static, not DCR: from oidc 2.5.0 an RFC 8707 ``resource`` is accepted only
+    if the admin approved it for the client, which happens automatically for a
+    static client's own ``resource_url`` and never for a DCR client
+    (``ResourcePolicyService::isAllowed``) -- so a DCR client sending the
+    resource the MCP server advertises gets ``invalid_target``.
+    """
+    _occ_remove_client(client_id)
+    cmd = [
+        *_OCC,
+        "oidc:create",
+        name,
+        callback_url,
+        "--client_id",
+        client_id,
+        "--type",
+        "confidential",
+        "--flow",
+        "code",
+        "--resource_url",
+        resource_url,
+    ]
+    if token_type:
+        cmd += ["--token_type", token_type]
+    if allowed_scopes:
+        cmd += ["--allowed_scopes", allowed_scopes]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    try:
+        client_output = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"occ oidc:create returned non-JSON output: {result.stdout[:200]!r}"
+        ) from e
+    client_secret = client_output.get("client_secret")
+    if not client_secret:
+        raise ValueError("occ oidc:create did not return client_secret in JSON output")
+    return client_secret
+
 
 @pytest.fixture(scope="session")
 async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """Create OAuth client credentials for the login-flow MCP server (port 8004).
 
-    Uses Dynamic Client Registration against Nextcloud's OIDC endpoint.
-    The client only needs openid/profile/email scopes since Login Flow v2
-    uses app passwords for Nextcloud API access, not OAuth tokens.
+    A static client (``occ oidc:create``) registered for the resource the
+    server advertises in its protected-resource metadata, which the token
+    fixtures then request -- see ``_occ_create_client`` for why not DCR.
     """
-    from nextcloud_mcp_server.auth.client_registration import (
-        delete_client,
-        register_client,
-    )
-
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Login Flow tests require NEXTCLOUD_HOST")
@@ -69,44 +122,38 @@ async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_serv
 
         token_endpoint = oidc_config["token_endpoint"]
         authorization_endpoint = oidc_config["authorization_endpoint"]
-        registration_endpoint = oidc_config["registration_endpoint"]
 
-    # Login flow only needs identity scopes for the MCP session;
-    # we also request resource scopes so the token passes the MCP server's
-    # scope validation (the server advertises these scopes).
-    client_info = await register_client(
-        nextcloud_url=nextcloud_host,
-        registration_endpoint=registration_endpoint,
-        client_name="Pytest - Login Flow Test Client",
-        redirect_uris=[callback_url],
-        scopes=DEFAULT_FULL_SCOPES,
-        token_type="Bearer",
+    # The client must be registered for exactly the resource the token fixtures
+    # request (the oidc app matches it as a string), i.e. the advertised one.
+    resource_url = (await get_mcp_server_resource_metadata(LOGIN_FLOW_MCP_BASE_URL))[
+        "resource"
+    ]
+    client_id = f"pytestLoginFlowClient{secrets.token_hex(8)}"
+    # Login flow only needs identity scopes for the MCP session; we also allow
+    # resource scopes so the token passes the MCP server's scope validation.
+    client_secret = _occ_create_client(
+        "Pytest - Login Flow Test Client",
+        client_id,
+        callback_url,
+        resource_url=resource_url,
+        allowed_scopes=DEFAULT_FULL_SCOPES,
     )
 
-    logger.info("Login Flow OAuth client ready: %s...", client_info.client_id[:16])
+    logger.info(
+        "Login Flow OAuth client ready: %s... (resource %s)",
+        client_id[:16],
+        resource_url,
+    )
 
     yield (
-        client_info.client_id,
-        client_info.client_secret,
+        client_id,
+        client_secret,
         callback_url,
         token_endpoint,
         authorization_endpoint,
     )
 
-    # Cleanup
-    try:
-        await delete_client(
-            nextcloud_url=nextcloud_host,
-            client_id=client_info.client_id,
-            registration_access_token=client_info.registration_access_token,
-            client_secret=client_info.client_secret,
-            registration_client_uri=client_info.registration_client_uri,
-        )
-        logger.info(
-            "Cleaned up Login Flow OAuth client: %s...", client_info.client_id[:16]
-        )
-    except Exception as e:
-        logger.warning("Failed to clean up Login Flow OAuth client: %s", e)
+    _occ_remove_client(client_id)
 
 
 @pytest.fixture(scope="session")
@@ -1031,9 +1078,6 @@ async def login_flow_static_client_credentials(anyio_backend, oauth_callback_ser
 
     Yields: (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
-    import json
-    import subprocess
-
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Static client tests require NEXTCLOUD_HOST")
@@ -1041,64 +1085,17 @@ async def login_flow_static_client_credentials(anyio_backend, oauth_callback_ser
     auth_states, callback_url = oauth_callback_server
     client_id = STATIC_MGMT_CLIENT_ID
 
-    # Idempotent: remove if a previous session left one behind
-    subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "app",
-            "php",
-            "/var/www/html/occ",
-            "oidc:remove",
-            client_id,
-        ],
-        check=False,
-        capture_output=True,
-    )
-
     logger.info(
         "Creating static OIDC client %s with callback %s", client_id, callback_url
     )
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "app",
-            "php",
-            "/var/www/html/occ",
-            "oidc:create",
-            "Login Flow Static Client (test)",
-            callback_url,
-            "--client_id",
-            client_id,
-            "--type",
-            "confidential",
-            "--flow",
-            "code",
-            "--token_type",
-            "jwt",
-            "--resource_url",
-            LOGIN_FLOW_MCP_BASE_URL,
-            "--allowed_scopes",
-            DEFAULT_FULL_SCOPES,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    client_secret = _occ_create_client(
+        "Login Flow Static Client (test)",
+        client_id,
+        callback_url,
+        resource_url=LOGIN_FLOW_MCP_BASE_URL,
+        token_type="jwt",
+        allowed_scopes=DEFAULT_FULL_SCOPES,
     )
-    try:
-        client_output = json.loads(result.stdout.strip())
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"occ oidc:create returned non-JSON output: {result.stdout[:200]!r}"
-        ) from e
-    client_secret = client_output.get("client_secret")
-    if not client_secret:
-        raise ValueError("occ oidc:create did not return client_secret in JSON output")
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         discovery_response = await http_client.get(
@@ -1115,21 +1112,7 @@ async def login_flow_static_client_credentials(anyio_backend, oauth_callback_ser
         oidc_config["authorization_endpoint"],
     )
 
-    subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "app",
-            "php",
-            "/var/www/html/occ",
-            "oidc:remove",
-            client_id,
-        ],
-        check=False,
-        capture_output=True,
-    )
+    _occ_remove_client(client_id)
 
 
 @pytest.fixture(scope="session")

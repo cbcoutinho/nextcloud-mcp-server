@@ -180,6 +180,81 @@ async def test_list_messages_omits_optional_params(mocker):
     assert "view" not in params
 
 
+def _http_error(status_code: int, body: dict | None = None) -> httpx.HTTPStatusError:
+    response = create_mock_response(status_code=status_code, json_data=body or {})
+    return httpx.HTTPStatusError("err", request=response.request, response=response)
+
+
+# What Mail's ErrorMiddleware returns for an uncached mailbox (JsonResponse::failWith).
+_NOT_CACHED_BODY = {
+    "status": "fail",
+    "data": {
+        "message": "mailbox 2 is not cached",
+        "type": "OCA\\Mail\\Exception\\MailboxNotCachedException",
+    },
+}
+
+
+async def test_list_messages_syncs_uncached_mailbox_and_retries(mocker):
+    """A 400 (MailboxNotCachedException, GH #1636) triggers an initial sync —
+    repeated while Mail answers 202 — then one retry of the listing."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[
+            _http_error(400, _NOT_CACHED_BODY),
+            create_mock_response(status_code=202, json_data={}),
+            create_mock_response(status_code=200, json_data={}),
+            create_mock_response(json_data=[{"databaseId": 7}]),
+        ],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    messages = await client.list_messages(2)
+
+    assert messages == [{"databaseId": 7}]
+    calls = [c.args for c in mock_make_request.call_args_list]
+    assert calls == [
+        ("GET", "/apps/mail/api/messages"),
+        ("POST", "/apps/mail/api/mailboxes/2/sync"),
+        ("POST", "/apps/mail/api/mailboxes/2/sync"),
+        ("GET", "/apps/mail/api/messages"),
+    ]
+    assert mock_make_request.call_args_list[1].kwargs["json"] == {"init": True}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _http_error(403),
+        # A 400 for anything else (bad filter/cursor) must not trigger a sync.
+        _http_error(400, {"status": "fail", "data": {"message": "bad filter"}}),
+    ],
+)
+async def test_list_messages_other_errors_are_not_retried(mocker, error):
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", side_effect=error
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.list_messages(2)
+    assert mock_make_request.call_count == 1
+
+
+async def test_sync_mailbox_stops_after_max_rounds(mocker):
+    """A sync that never completes (always 202) is bounded, not an endless loop."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=202, json_data={}),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.sync_mailbox(2, max_rounds=3)
+    assert mock_make_request.call_count == 3
+
+
 async def test_get_message_unwraps_full_message(mocker):
     """get_message returns the full message dict from the OCS route."""
     mock_response = _ocs_response(

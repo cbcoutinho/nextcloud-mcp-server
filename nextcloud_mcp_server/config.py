@@ -167,18 +167,10 @@ _DEFAULTS: dict[str, Any] = {
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
     # wins if a file carries both. Set empty to disable the second tag entirely.
     "vector_sync_keyword_tag": "keyword-index",
-    # Which MIME types tagged-file discovery will enqueue. Comma-separated, and
-    # deliberately an explicit list rather than "whatever the registry can
-    # parse": enabling an optional processor (unstructured claims pptx, epub,
-    # images) would otherwise silently widen what gets indexed and billed.
-    # Adding a type here without a processor for it is harmless -- the file is
-    # discovered, fails to parse once, and is reported.
-    "vector_sync_indexable_mime_types": (
-        "application/pdf,"
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ),
+    # Which MIME types tagged-file discovery will enqueue. None (unset) means
+    # every type a registered processor can read; a comma-separated list
+    # narrows it, and an empty string indexes no files.
+    "vector_sync_indexable_mime_types": None,
     # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
     # (the default) indexes every message in every mailbox, which is the
     # behaviour before this setting existed. Set it to a tag display name and
@@ -313,6 +305,26 @@ _DEFAULTS: dict[str, Any] = {
     # else it serves, is its business. Raise it if yours has headroom — a CPU
     # cross-encoder almost certainly does not.
     "search_rerank_max_concurrency": 1,
+    # --- SAR export redaction (ADR-040) -------------------------------------
+    # Names are detected by the embedding gateway's ``POST /v1/ner``, so SAR
+    # export is available only with EMBEDDING_GATEWAY_URL set.
+    # NER model, addressed the gateway way (``<provider>/<model>``).
+    # Subject access request cases and redacted export (ADR-040). Off by
+    # default: a deployment opts in, since only some need it. Also requires
+    # vector sync and EMBEDDING_GATEWAY_URL (for name detection).
+    "sar_enabled": False,
+    "ner_model": "local/urchade/gliner_multi_pii-v1",
+    # Per-request budget. Export runs in the background, so this only needs to
+    # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
+    "ner_timeout_seconds": 120.0,
+    # Texts (of up to 2,000 chars) per /v1/ner request. Small for CPU GLiNER,
+    # which must finish a batch inside the gateway's own upstream timeout; raise
+    # it (e.g. 32) on a GPU backend.
+    "ner_batch_size": 8,
+    # Minimum model confidence for a span to count as a person. Lower raises
+    # recall at the cost of over-redaction, which is the safe direction for a
+    # disclosure; 0.5 is GLiNER's customary operating point.
+    "ner_threshold": 0.5,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -1270,21 +1282,23 @@ class Settings:
     # Set empty to disable the second tag entirely.
     vector_sync_keyword_tag: str = "keyword-index"
 
-    # Comma-separated MIME types that tagged-file discovery enqueues. Explicit
-    # rather than derived from the processor registry: turning on an optional
-    # processor would otherwise silently widen the corpus (and its embedding
-    # bill). Defaults to PDF plus the OOXML formats with a native reader
-    # (.docx/.xlsx/.pptx, ADR-036/038).
-    vector_sync_indexable_mime_types: str = (
-        "application/pdf,"
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    )
+    # Comma-separated MIME types that tagged-file discovery enqueues. Unset
+    # (the default) means every type an enabled processor can read, so enabling
+    # a processor (e.g. Collabora for ODF) is what opts its types in. Set it to
+    # narrow that; set it empty to index no files at all.
+    vector_sync_indexable_mime_types: str | None = None
 
     @property
     def indexable_mime_types(self) -> tuple[str, ...]:
-        """``vector_sync_indexable_mime_types`` as a tuple, blanks dropped."""
+        """The MIME types discovery enqueues, sorted, blanks dropped."""
+        if self.vector_sync_indexable_mime_types is None:
+            # Imported here: the processor package registers its processors on
+            # import, which is kept off the startup path (#877).
+            from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+                get_registry,
+            )
+
+            return tuple(sorted(get_registry().supported_mime_types()))
         return tuple(
             t.strip()
             for t in self.vector_sync_indexable_mime_types.split(",")
@@ -1392,6 +1406,12 @@ class Settings:
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
     search_rerank_max_concurrency: int = 1
+    # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
+    sar_enabled: bool = False
+    ner_model: str = "local/urchade/gliner_multi_pii-v1"
+    ner_timeout_seconds: float = 120.0
+    ner_batch_size: int = 8
+    ner_threshold: float = 0.5
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1810,6 +1830,16 @@ class Settings:
                 "of a Cohere-protocol rerank endpoint — Infinity, vLLM, Cohere) "
                 "or EMBEDDING_GATEWAY_URL"
             )
+        # SAR cases search and read documents from the index and detect names
+        # through the gateway. Opting in without either would advertise nothing
+        # and look like the feature is broken: fail at startup instead.
+        if self.sar_enabled and not (
+            self.vector_sync_enabled and self.embedding_gateway_url
+        ):
+            raise ValueError(
+                "SAR_ENABLED requires semantic search (ENABLE_SEMANTIC_SEARCH) and "
+                "EMBEDDING_GATEWAY_URL (names are detected through its /v1/ner)"
+            )
         # The default model id is namespaced for the gateway's routing layer. A
         # direct endpoint has no such layer and will 404/422 on `local/...`,
         # which degrades to retrieval order with `reranked: false` — i.e. it
@@ -1829,6 +1859,21 @@ class Settings:
                     f"{_prefix}/",
                     _bare,
                 )
+        self.ner_threshold = float(self.ner_threshold)
+        if not 0.0 < self.ner_threshold <= 1.0:
+            raise ValueError(
+                f"NER_THRESHOLD must be in (0, 1]; got {self.ner_threshold!r}"
+            )
+        self.ner_batch_size = int(self.ner_batch_size)
+        if self.ner_batch_size < 1:
+            raise ValueError(f"NER_BATCH_SIZE must be >= 1; got {self.ner_batch_size}")
+        # 0 would give httpx no time budget: every NER call would time out at
+        # request time instead of failing here with a clear message.
+        self.ner_timeout_seconds = float(self.ner_timeout_seconds)
+        if self.ner_timeout_seconds <= 0:
+            raise ValueError(
+                f"NER_TIMEOUT_SECONDS must be > 0; got {self.ner_timeout_seconds}"
+            )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is

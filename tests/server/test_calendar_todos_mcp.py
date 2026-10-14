@@ -260,6 +260,18 @@ async def test_mcp_search_todos_across_calendars(
         found_uids = {t["uid"] for t in data["todos"]}
         assert result1["uid"] in found_uids
         assert result2["uid"] in found_uids
+        # Every calendar was readable, so nothing was silently skipped
+        assert data["errors"] == []
+
+        # A percent-encoded calendar name (as it appears in hrefs) resolves to
+        # the same calendar instead of being encoded a second time.
+        encoded_name = "".join(f"%{b:02X}" for b in cal1_name.encode())
+        encoded_result = await nc_mcp_client.call_tool(
+            "nc_calendar_list_todos", {"calendar_name": encoded_name}
+        )
+        assert encoded_result.is_error is False
+        encoded_data = json.loads(encoded_result.content[0].text)
+        assert result1["uid"] in {t["uid"] for t in encoded_data["todos"]}
 
         # Verify calendar_name is included
         our_todos = [

@@ -6,7 +6,7 @@ just Nextcloud's default ~100-result SEARCH page (which silently truncated large
 folders and left documents unindexed).
 
 The behaviour we pin:
-  * offset paging when the server honours ``<d:firstresult>``;
+  * offset paging when the server honours ``<sd:firstresult>``;
   * automatic fallback to a single bounded fetch when the server *ignores*
     offset (the real Nextcloud 31 behaviour -- a page repeats already-seen rows);
   * a single short page terminates immediately;
@@ -187,7 +187,9 @@ def test_build_search_xml_emits_offset_only_when_set(mocker):
         offset=200,
     )
     assert "<d:nresults>100</d:nresults>" in paged
-    assert "<d:firstresult>200</d:firstresult>" in paged
+    # searchdav reads firstresult from its own namespace; <d:firstresult> is ignored.
+    assert "<sd:firstresult>200</sd:firstresult>" in paged
+    assert 'xmlns:sd="https://github.com/icewind1991/SearchDAV/ns"' in paged
 
     unlimited = client._build_search_xml(
         scope="dir",

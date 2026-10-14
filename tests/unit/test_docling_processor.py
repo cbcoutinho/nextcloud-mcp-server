@@ -14,7 +14,7 @@ from nextcloud_mcp_server.document_processors.docling_serve import (
     docling_pages,
 )
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
-from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
+from nextcloud_mcp_server.document_source import MemoryDocumentSource
 
 pytestmark = pytest.mark.unit
 
@@ -399,5 +399,5 @@ async def test_parse_document_source_threads_prefer_markdown(monkeypatch):
     source = MemoryDocumentSource(b"x", "application/pdf", "f.pdf")
     result = await document_parser.parse_document_source(source, prefer_markdown=True)
 
-    assert captured["options"] == {"prefer_markdown": True}
+    assert captured["options"] == {"prefer_markdown": True, "one_shot_parse": True}
     assert result.text == "ok"

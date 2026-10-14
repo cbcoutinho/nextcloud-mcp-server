@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import DocumentSource
 from nextcloud_mcp_server.observability.metrics import (
     record_document_classification,
     record_document_escalation,
@@ -23,7 +24,6 @@ from .classifier import (
 )
 from .escalation import TIER_LADDER, EscalationDecision
 from .ocr import OCR_BATCH_PENDING_KEY
-from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,14 @@ class ProcessorRegistry:
             List of processor names (highest priority first)
         """
         return list(self._priority_order)
+
+    def supported_mime_types(self) -> set[str]:
+        """Every MIME type some registered processor can read."""
+        return {
+            mime
+            for p, _ in self._processors.values()
+            for mime in p.supported_mime_types
+        }
 
     async def process(
         self,

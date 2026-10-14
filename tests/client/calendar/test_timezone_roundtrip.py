@@ -325,10 +325,9 @@ def test_explicit_offset_does_not_inherit_and_does_not_warn(mocker, caplog):
     The warning previously fired on *every* offset-bearing update of a TZID-bound
     event, because the stored zone was about to be passed as ``tz_name``.
 
-    Only the wall-clock is asserted: icalendar renders a fixed-offset tzinfo as
-    ``TZID="UTC-04:00"`` with no matching VTIMEZONE, so the offset is dropped on
-    re-parse. That is pre-existing behaviour shared with the create path
-    (``_create_ical_event``) and out of scope here — see the follow-up card.
+    The offset-bearing value is stored as UTC, so the instant survives re-parse
+    (a fixed-offset tzinfo would otherwise render as an unresolvable
+    ``TZID="UTC-04:00"`` with no VTIMEZONE).
     """
     import logging
 
@@ -340,11 +339,9 @@ def test_explicit_offset_does_not_inherit_and_does_not_warn(mocker, caplog):
             mocker, vevent, {"start_datetime": "2026-03-10T09:00:00-04:00"}
         )
 
-    # Wall-clock is the caller's, and America/New_York was NOT inherited onto it.
-    assert component["DTSTART"].dt.replace(tzinfo=None).isoformat() == (
-        "2026-03-10T09:00:00"
-    )
-    assert str(component["DTSTART"].dt.tzinfo) != "America/New_York"
+    # The caller's instant is kept, and America/New_York was NOT inherited onto it.
+    assert "TZID" not in component["DTSTART"].params
+    assert component["DTSTART"].to_ical() == b"20260310T130000Z"
     assert not any("ignoring timezone" in r.message for r in caplog.records)
 
 
@@ -495,3 +492,113 @@ def test_explicit_unknown_timezone_still_warns(mocker, caplog):
         )
 
     assert any("Unknown IANA timezone" in r.message for r in caplog.records)
+
+
+# ============= Fixed-offset input must not leak as TZID="UTC+02:00" =============
+
+
+def test_create_ical_event_non_utc_offset_is_stored_as_utc(mocker):
+    """A ``+02:00`` input must be written as UTC, not as ``TZID="UTC+02:00"``.
+
+    ``fromisoformat`` yields a fixed-offset tzinfo whose ``tzname()`` is
+    ``UTC+02:00``; icalendar used it as a TZID without a VTIMEZONE, which
+    clients (e.g. Home Assistant CalDAV) cannot resolve.
+    """
+    client = _make_client(mocker)
+    event_data = {
+        "title": "Offset event",
+        "start_datetime": "2026-10-08T20:00:00+02:00",
+        "end_datetime": "2026-10-08T21:00:00+02:00",
+    }
+
+    ical = client._create_ical_event(event_data, event_uid="offset-uid")
+
+    assert "DTSTART:20261008T180000Z" in ical
+    assert "DTEND:20261008T190000Z" in ical
+    assert "TZID" not in ical
+
+
+def test_create_ical_todo_non_utc_offset_is_stored_as_utc(mocker):
+    """Todo ``due``/``dtstart`` with a ``+01:00`` offset are written as UTC."""
+    client = _make_client(mocker)
+    todo_data = {
+        "summary": "Offset todo",
+        "due": "2026-12-01T09:00:00+01:00",
+        "dtstart": "2026-12-01T08:00:00+01:00",
+    }
+
+    ical = client._create_ical_todo(todo_data, todo_uid="offset-todo")
+
+    assert "DUE:20261201T080000Z" in ical
+    assert "DTSTART:20261201T070000Z" in ical
+    assert "TZID" not in ical
+
+
+def test_update_with_non_utc_offset_is_stored_as_utc(mocker):
+    """The update path must not write ``TZID="UTC+02:00"`` either."""
+    vevent = "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n"
+    component = _merge(
+        mocker,
+        vevent,
+        {
+            "start_datetime": "2026-10-08T20:00:00+02:00",
+            "end_datetime": "2026-10-08T21:00:00+02:00",
+        },
+    )
+
+    assert "TZID" not in component["DTSTART"].params
+    assert component["DTSTART"].to_ical() == b"20261008T180000Z"
+    assert component["DTEND"].to_ical() == b"20261008T190000Z"
+
+
+def test_create_offset_event_until_keeps_last_day_in_callers_offset(mocker):
+    """A date-only end date bounds the caller's day, not the UTC day.
+
+    21:00-05:00 on June 30th is 02:00Z on July 1st; anchoring UNTIL at UTC
+    midnight (because DTSTART is now stored as UTC) would drop it.
+    """
+    client = _make_client(mocker)
+    ical = client._create_ical_event(
+        {
+            "title": "Evening series",
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "end_datetime": "2026-06-01T22:00:00-05:00",
+            "recurrence_rule": "FREQ=DAILY",
+            "recurrence_end_date": "2026-06-30",
+        },
+        event_uid="offset-until",
+    )
+
+    assert "UNTIL=20260701T045959Z" in ical
+
+
+def test_update_offset_event_until_keeps_last_day_in_callers_offset(mocker):
+    """Same as the create path, when start and end date arrive in one update."""
+    component = _merge(
+        mocker,
+        "DTSTART:20260101T090000Z\r\nDTEND:20260101T100000Z\r\n",
+        {
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "end_datetime": "2026-06-01T22:00:00-05:00",
+            "recurrence_rule": "FREQ=DAILY",
+            "recurrence_end_date": "2026-06-30",
+        },
+    )
+
+    assert b"UNTIL=20260701T045959Z" in component["RRULE"].to_ical()
+
+
+def test_absolute_reminder_with_offset_is_stored_as_utc(mocker):
+    """An absolute TRIGGER must be UTC (RFC 5545 §3.8.6.3), never TZID="UTC-05:00"."""
+    client = _make_client(mocker)
+    ical = client._create_ical_event(
+        {
+            "title": "Reminder",
+            "start_datetime": "2026-06-01T21:00:00-05:00",
+            "reminders": [{"trigger_at": "2026-06-01T20:00:00-05:00"}],
+        },
+        event_uid="offset-trigger",
+    )
+
+    assert "TRIGGER;VALUE=DATE-TIME:20260602T010000Z" in ical
+    assert "TZID" not in ical

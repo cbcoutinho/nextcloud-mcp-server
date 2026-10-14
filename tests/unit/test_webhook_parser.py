@@ -97,7 +97,10 @@ def test_node_id_is_normalized_to_string():
 
 
 @pytest.mark.unit
-def test_path_outside_notes_returns_none():
+def test_markdown_outside_notes_is_left_to_the_scanner():
+    """Only the Notes folder holds notes. Elsewhere a .md is a text file, which
+    the polling scanner indexes when tagged: editors save .md files too often
+    to queue a discovery per write."""
     payload = {
         "user": {"uid": "admin"},
         "time": 1,
@@ -406,8 +409,11 @@ def _file_written(path: str) -> dict:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", ["contract.docx", "sheet.xlsx", "deck.pptx"])
-def test_office_files_are_indexable_by_default(name):
+@pytest.mark.parametrize(
+    "name",
+    ["contract.docx", "sheet.xlsx", "deck.pptx", "mail.msg"],
+)
+def test_readable_files_are_indexable_by_default(name):
     task = extract_document_task(_file_written(f"/alice/files/Docs/{name}"))
 
     assert task is not None

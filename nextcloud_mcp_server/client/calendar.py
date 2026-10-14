@@ -277,6 +277,20 @@ def _format_until(end_date: str, *, all_day: bool, tz: dt.tzinfo | None = None) 
     return parsed.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _until_anchor(dtstart: Any, start_str: str | None) -> Any:
+    """Return DTSTART as the caller wrote it, for anchoring a date-only UNTIL.
+
+    A fixed-offset start (``21:00-05:00``) is stored as UTC, so the stored
+    DTSTART no longer says which day "until June 30th" ends on. The caller's
+    offset still does.
+    """
+    if isinstance(dtstart, dt.datetime) and start_str:
+        caller = dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        if caller.tzinfo is not None:
+            return caller
+    return dtstart
+
+
 def _occurrence_is_done(component: Any) -> bool:
     """True when a VTODO occurrence is finished.
 
@@ -559,8 +573,13 @@ class CalendarClient:
             component.add("attendee", guest)
 
     def _get_calendar_url(self, calendar_name: str) -> str:
-        """Get the full URL for a calendar."""
-        return encode_dav_url(f"{self._calendar_home_url}{calendar_name}/")
+        """Get the full URL for a calendar.
+
+        Names arrive decoded or percent-encoded (as they appear in hrefs), so
+        normalise to decoded before encoding once. Nextcloud calendar URIs never
+        contain a literal ``%``, so the ``unquote`` is lossless in practice.
+        """
+        return encode_dav_url(f"{self._calendar_home_url}{unquote(calendar_name)}/")
 
     def _get_calendar(self, calendar_name: str) -> AsyncCalendar:
         """Get an AsyncCalendar object for the given calendar name."""
@@ -1341,7 +1360,7 @@ class CalendarClient:
         slots: list[list[dict[str, Any]]],
         index: int,
         limit: int = 50,
-        failures: list[str] | None = None,
+        failures: list[dict[str, str]] | None = None,
     ) -> None:
         """One calendar's events, annotated, written into its own slot.
 
@@ -1362,7 +1381,9 @@ class CalendarClient:
                     "Error getting events from calendar %s: %s", calendar["name"], e
                 )
                 if failures is not None:
-                    failures.append(f"{calendar['name']} ({e})")
+                    failures.append(
+                        {"calendar_name": calendar["name"], "error": str(e)}
+                    )
                 return
 
         # Apply filters if provided
@@ -1389,6 +1410,7 @@ class CalendarClient:
         filters: dict[str, Any] | None = None,
         limit: int = 50,
         strict: bool = False,
+        failures: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
 
@@ -1402,6 +1424,8 @@ class CalendarClient:
         load contributes no busy time and therefore reads as free, which is the
         confidently-wrong answer this whole path exists to avoid. Such a caller
         passes ``strict=True`` and gets a ``ValueError`` naming the calendars.
+        A lenient caller can pass a ``failures`` list to learn which calendars
+        were skipped (``{"calendar_name", "error"}`` dicts).
 
         The per-calendar REPORTs are fanned out via ``anyio.create_task_group``
         instead of awaited one after another. The serial loop cost one full
@@ -1420,7 +1444,8 @@ class CalendarClient:
         depend on which REPORT happens to finish first.
         """
         await self._ensure_calendar_home()
-        failures: list[str] = []
+        if failures is None:
+            failures = []
         try:
             calendars = await self.list_calendars()
             slots: list[list[dict[str, Any]]] = [[] for _ in calendars]
@@ -1449,7 +1474,8 @@ class CalendarClient:
 
         if strict and failures:
             raise ValueError(
-                f"Could not read {len(failures)} calendar(s): {'; '.join(failures)}"
+                f"Could not read {len(failures)} calendar(s): "
+                + "; ".join(f"{f['calendar_name']} ({f['error']})" for f in failures)
             )
         return events
 
@@ -1600,6 +1626,7 @@ class CalendarClient:
         limiter: anyio.CapacityLimiter,
         slots: list[list[dict[str, Any]]],
         index: int,
+        failures: list[dict[str, str]] | None = None,
     ) -> None:
         """One calendar's todos, annotated. Failure is contained per calendar."""
         async with limiter:
@@ -1609,6 +1636,10 @@ class CalendarClient:
                 logger.warning(
                     "Error getting todos from calendar %s: %s", calendar["name"], e
                 )
+                if failures is not None:
+                    failures.append(
+                        {"calendar_name": calendar["name"], "error": str(e)}
+                    )
                 return
 
         # Add calendar info to each todo
@@ -1621,12 +1652,15 @@ class CalendarClient:
         slots[index] = todos
 
     async def search_todos_across_calendars(
-        self, filters: dict[str, Any] | None = None
+        self,
+        filters: dict[str, Any] | None = None,
+        failures: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Search todos across all calendars.
 
         Fanned out like :meth:`search_events_across_calendars` - same serial
-        round-trip problem, same bounded task group, same stable ordering.
+        round-trip problem, same bounded task group, same stable ordering, and
+        the same optional ``failures`` list for calendars that were skipped.
         """
         await self._ensure_calendar_home()
         try:
@@ -1643,6 +1677,7 @@ class CalendarClient:
                         limiter,
                         slots,
                         index,
+                        failures,
                     )
 
             return [todo for todos in slots for todo in todos]
@@ -1728,7 +1763,9 @@ class CalendarClient:
                     dt_str,
                     tz_name,
                 )
-            return parsed, None
+            # fromisoformat gives a fixed-offset tzinfo whose tzname() is e.g.
+            # "UTC+02:00"; icalendar would emit it as an unresolvable TZID.
+            return parsed.astimezone(dt.UTC), None
 
         if zi is not None:
             return parsed.replace(tzinfo=zi), zi
@@ -1809,6 +1846,9 @@ class CalendarClient:
             trigger_dt = dt.datetime.fromisoformat(str(reminder["trigger_at"]))
             if trigger_dt.tzinfo is None:
                 trigger_dt = trigger_dt.replace(tzinfo=dt.UTC)
+            # RFC 5545 §3.8.6.3: an absolute trigger MUST be UTC. A fixed offset
+            # would otherwise be emitted as TZID="UTC+02:00".
+            trigger_dt = trigger_dt.astimezone(dt.UTC)
             # RELATED is deliberately dropped here: it has no meaning on an
             # absolute trigger and makes the property invalid.
             alarm.add("trigger", trigger_dt, parameters={"VALUE": "DATE-TIME"})
@@ -2101,7 +2141,9 @@ class CalendarClient:
             recurrence_end_date = event_data.get("recurrence_end_date", "")
             if recurrence_end_date:
                 recurrence_rule = _rrule_with_until(
-                    recurrence_rule, recurrence_end_date, dtstart_value
+                    recurrence_rule,
+                    recurrence_end_date,
+                    _until_anchor(dtstart_value, start_str),
                 )
             event.add("rrule", vRecur.from_ical(recurrence_rule))
 
@@ -2535,7 +2577,10 @@ class CalendarClient:
                             rrule_str = _rrule_with_until(
                                 rrule_str,
                                 end_date,
-                                dtstart.dt if dtstart else None,
+                                _until_anchor(
+                                    dtstart.dt if dtstart else None,
+                                    event_data.get("start_datetime"),
+                                ),
                                 replace=not caller_supplied_rule,
                             )
                         component["RRULE"] = vRecur.from_ical(rrule_str)
@@ -2600,7 +2645,8 @@ class CalendarClient:
         if parsed_dt.tzinfo is None:
             parsed_dt = parsed_dt.replace(tzinfo=dt.UTC)
 
-        return parsed_dt
+        # Normalize fixed offsets to UTC so no TZID="UTC+02:00" is emitted.
+        return parsed_dt.astimezone(dt.UTC)
 
     @staticmethod
     def _is_date_only(value: str) -> bool:

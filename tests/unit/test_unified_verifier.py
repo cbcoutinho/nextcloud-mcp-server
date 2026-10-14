@@ -1953,3 +1953,23 @@ class TestRejectionObservability:
         # Exactly one event, from _introspect_token, attributed to introspect.
         assert metric_sample(self.VALIDATIONS, inactive) - before_inactive == 1
         assert metric_sample(self.VALIDATIONS, no_validator) == before_nv
+
+
+async def test_introspection_sends_client_credentials_in_the_body(base_settings):
+    """client_secret_post, the method our DCR registration declares: the
+    Nextcloud oidc app rejects any other method from 2.5.0 (401
+    invalid_client), so HTTP Basic must not be used here."""
+    verifier = UnifiedTokenVerifier(base_settings)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"active": False}
+    verifier.http_client = MagicMock(post=AsyncMock(return_value=response))
+
+    await verifier._introspect_token("tok")
+
+    kwargs = verifier.http_client.post.await_args.kwargs
+    assert kwargs["data"] == {
+        "token": "tok",
+        "client_id": "test-client-id",
+        "client_secret": "test-client-secret",
+    }
+    assert "auth" not in kwargs

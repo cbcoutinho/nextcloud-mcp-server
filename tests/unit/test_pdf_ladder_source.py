@@ -18,7 +18,7 @@ import pytest
 
 from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.document_processors.pymupdf import PyMuPDFProcessor
-from nextcloud_mcp_server.document_processors.source import (
+from nextcloud_mcp_server.document_source import (
     MemoryDocumentSource,
     SpooledDocumentSource,
 )

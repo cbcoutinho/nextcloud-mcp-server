@@ -473,6 +473,12 @@ async def test_revoke_helper_posts_to_revocation_endpoint():
     body = received[0].content.decode()
     assert "token=rt-secret" in body
     assert "token_type_hint=refresh_token" in body
+    # client_secret_post, the method our DCR registration declares: the
+    # Nextcloud oidc app rejects any other method from 2.5.0, so the
+    # credentials go in the body and never in an HTTP Basic header.
+    assert "client_id=test-client" in body
+    assert "client_secret=test-secret" in body
+    assert "authorization" not in received[0].headers
 
 
 async def test_revoke_helper_skips_when_no_revocation_endpoint():

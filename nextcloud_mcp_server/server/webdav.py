@@ -14,6 +14,7 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.features import documents_installed
 from nextcloud_mcp_server.links import file_url, with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
@@ -54,9 +55,30 @@ from nextcloud_mcp_server.utils.message_splitter import (
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
     from nextcloud_mcp_server.client import NextcloudClient
-    from nextcloud_mcp_server.document_processors.source import DocumentSource
+    from nextcloud_mcp_server.document_source import DocumentSource
 
 logger = logging.getLogger(__name__)
+
+_DOCUMENTS_HINT = "Install it with: pip install 'nextcloud-mcp-server[documents]'"
+# What the ``documents`` extra would parse (utils.document_parser
+# .is_parseable_document), checked without importing it. Only these get the
+# install hint, so a JSON or XML file -- returned raw either way -- doesn't point
+# at an extra that would not change anything. test_webdav_tools_exclusion.py
+# fails if a processor starts declaring a type this does not cover.
+_DOCUMENT_TYPE_PREFIXES = (
+    "application/pdf",
+    "application/msword",
+    "application/rtf",
+    "application/epub+zip",
+    "application/x-msg",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.oasis.opendocument.",
+    "application/vnd.ms-",
+    "message/rfc822",
+    # Images are parsed only by the OCR tier, which also needs configuring, but
+    # its client comes from the same extra -- so the hint is deliberately broad.
+    "image/",
+)
 
 # move_resource/copy_resource return (rather than raise) on these, since they
 # are conditions a caller reacts to rather than transport failures. They are
@@ -84,6 +106,74 @@ def _stamp_url(response: ReadFileResponse, url: str | None) -> ReadFileResponse:
     """
     response.url = url
     return response
+
+
+#: Stand-in for "to the last page" when page_end is omitted. The slice worker
+#: clamps to the real page count, so any value past it behaves the same.
+_LAST_PAGE = 2**31 - 1
+
+
+async def _slice_pages(
+    source: "DocumentSource",
+    path: str,
+    page_start: int | None,
+    page_end: int | None,
+    settings: Any,
+    scratch: contextlib.AsyncExitStack,
+) -> tuple["DocumentSource", int, int, int, list[str]]:
+    """Cut the requested pages of a spooled PDF into their own spool file.
+
+    Returns ``(slice_source, first, last, page_count, notes)``, pages 1-based and
+    inclusive. The slice file's lifetime is bound to ``scratch``.
+
+    Slicing BEFORE the pipeline, rather than teaching each tier to take a page
+    range, means every tier (fast, structured, OCR) parses only these pages with
+    no change of its own, the markdown page gate counts the requested pages
+    rather than the whole document, and per-page bookkeeping such as the
+    under-extraction recovery stays index-aligned. Page numbers in the result are
+    slice-relative and are shifted back by the caller.
+
+    Raises ``ToolError`` for a start past the end, ``PdfParseFailed`` when the
+    document cannot be sliced at all.
+    """
+    from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
+        slice_pdf_pages,
+    )
+    from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
+        SpooledDocumentSource,
+        spool_target,
+    )
+
+    first = page_start or 1
+    target = scratch.enter_context(spool_target(settings.document_spool_dir))
+    page_count = await slice_pdf_pages(
+        str(source.path()),
+        str(target),
+        first,
+        page_end or _LAST_PAGE,
+        timeout_seconds=settings.document_parse_timeout_seconds,
+        mem_limit_mb=settings.document_parse_mem_limit_mb,
+        process_slots=settings.document_parse_process_slots,
+    )
+    if first > page_count:
+        raise ToolError(
+            f"page_start={first} is past the end of {path!r}, which has "
+            f"{page_count} page(s)."
+        )
+    last = min(page_end or page_count, page_count)
+    notes = []
+    if page_end is not None and page_end > page_count:
+        notes.append(
+            f"page_end={page_end} is past the end of the document, so pages "
+            f"{first}-{last} of {page_count} are returned."
+        )
+    slice_source = SpooledDocumentSource(
+        spool_path=target,
+        content_type=source.content_type,
+        filename=source.filename,
+        etag=getattr(source, "etag", None),
+    )
+    return slice_source, first, last, page_count, notes
 
 
 async def _raw_response(
@@ -288,6 +378,8 @@ def configure_webdav_tools(mcp: MCPServer):
         path: str,
         ctx: Context,
         parse_document: Literal["auto", "markdown", "raw"] = "auto",
+        page_start: int | None = None,
+        page_end: int | None = None,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
@@ -310,6 +402,15 @@ def configure_webdav_tools(mcp: MCPServer):
 
                 Files no processor handles (plain text, JSON, archives) are
                 unaffected by this argument.
+            page_start: PDF only. First page to read (1-based). Omit it, and
+                page_end, to read the whole document. Use a range for a long
+                PDF: only those pages are parsed and returned, which is faster
+                and keeps the response to a size you can use. The markdown page
+                ceiling then counts only the requested pages.
+            page_end: PDF only. Last page to read (1-based, inclusive). Omitted
+                means through the last page. A value past the end is clamped to
+                the last page and noted in parse_notes. Neither argument can be
+                combined with parse_document="raw".
 
         Returns:
             ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
@@ -331,7 +432,33 @@ def configure_webdav_tools(mcp: MCPServer):
             - ``url``: a link that opens the file in Nextcloud. Offer it when
               reporting on the file, and especially when ``parse_notes`` says
               the extraction degraded.
+            - ``page_count``: total pages in a parsed PDF. With ``page_start``/
+              ``page_end`` (the pages actually returned) it tells you whether
+              more remains to read.
         """
+        paged = page_start is not None or page_end is not None
+        if paged:
+            if parse_document == "raw":
+                raise ToolError(
+                    "page_start/page_end select pages to parse, so they cannot be "
+                    "combined with parse_document='raw'."
+                )
+            for name, value in (("page_start", page_start), ("page_end", page_end)):
+                if value is not None and value < 1:
+                    raise ToolError(
+                        f"Invalid page range: {name}={value}, but pages are "
+                        f"numbered from 1."
+                    )
+            if (
+                page_start is not None
+                and page_end is not None
+                and page_end < page_start
+            ):
+                raise ToolError(
+                    f"Invalid page range: page_end={page_end} precedes "
+                    f"page_start={page_start}."
+                )
+
         client = await get_client(ctx)
 
         # Block reads of paths carrying an excluded tag.
@@ -371,11 +498,24 @@ def configure_webdav_tools(mcp: MCPServer):
         # ``parse_document``, and ``from ... import parse_document`` would rebind
         # it and silently discard the caller's choice.
         from nextcloud_mcp_server.client.webdav import OversizeDownload  # noqa: PLC0415
-        from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
         from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
             download_ceiling,
             spooled_document,
         )
+
+        # Parsing needs the optional ``documents`` extra. Without it every file
+        # is returned as it is, and a document says which extra would parse it.
+        parsing = documents_installed()
+        if parsing:
+            from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
+                PdfParseFailed,
+            )
+            from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
+        elif paged:
+            raise ToolError(
+                "page_start/page_end need PDF parsing, which this server does "
+                f"not have installed. {_DOCUMENTS_HINT}"
+            )
 
         settings = get_settings()
         ceiling = download_ceiling(settings)
@@ -386,19 +526,82 @@ def configure_webdav_tools(mcp: MCPServer):
         # straight from the path (page-windowed) once it is there. The ceiling is
         # the same one ingest streams under, so a runaway transfer is aborted
         # rather than filling the disk. The block owns the spool file: everything
-        # that touches the document must happen inside it.
+        # that touches the document must happen inside it. ``scratch`` owns any
+        # page-range slice of it, and exits first.
         try:
-            async with spooled_document(
-                client,
-                path,
-                spool_dir=settings.document_spool_dir,
-                max_bytes=ceiling,
-            ) as source:
+            async with (
+                spooled_document(
+                    client,
+                    path,
+                    spool_dir=settings.document_spool_dir,
+                    max_bytes=ceiling,
+                ) as source,
+                contextlib.AsyncExitStack() as scratch,
+            ):
                 content_type = source.content_type
                 etag = source.etag
 
-                if parse_document != "raw" and document_parser.is_parseable_document(
-                    content_type
+                # What the pipeline parses: the whole spool, or just the pages
+                # asked for. ``source`` stays the whole file for the raw fallback.
+                parse_source: "DocumentSource" = source
+                page_range: tuple[int, int] | None = None
+                page_count: int | None = None
+                range_notes: list[str] = []
+                if paged:
+                    if content_type != "application/pdf":
+                        raise ToolError(
+                            f"page_start/page_end apply to PDFs only, and {path!r} "
+                            f"is {content_type!r}. Read it without a page range."
+                        )
+                    try:
+                        (
+                            parse_source,
+                            first,
+                            last,
+                            page_count,
+                            range_notes,
+                        ) = await _slice_pages(
+                            source, path, page_start, page_end, settings, scratch
+                        )
+                    except PdfParseFailed as e:
+                        return _stamp_url(
+                            await _raw_response(
+                                source,
+                                path,
+                                "failed",
+                                [
+                                    f"The requested pages could not be extracted "
+                                    f"({e.reason}: {e}); the raw file is returned "
+                                    f"instead."
+                                ],
+                            ),
+                            url,
+                        )
+                    page_range = (first, last)
+
+                async def _parse_failed(notes: list[str], **kwargs: Any):
+                    """Raw fallback for a failed parse, scoped to what was asked for.
+
+                    ``parse_source`` is the slice on a range read (else the whole
+                    file), so a caller who asked for pages 5-10 gets those pages
+                    back rather than the entire document, and is told so.
+                    """
+                    response = await _raw_response(
+                        parse_source, path, "failed", range_notes + notes, **kwargs
+                    )
+                    if page_range is not None:
+                        response.page_count = page_count
+                        response.page_start, response.page_end = page_range
+                        response.parse_notes.append(
+                            f"The raw content is a PDF of pages {page_range[0]}-"
+                            f"{page_range[1]} only, not the whole document."
+                        )
+                    return _stamp_url(response, url)
+
+                if (
+                    parsing
+                    and parse_document != "raw"
+                    and document_parser.is_parseable_document(content_type)
                 ):
                     # Optional interactive cap (ADR-032): bound the SYNCHRONOUS
                     # parse so a slow VLM/OCR convert returns the raw file quickly
@@ -420,7 +623,7 @@ def configure_webdav_tools(mcp: MCPServer):
                         )
                         with cap_ctx:
                             result = await document_parser.parse_document_source(
-                                source,
+                                parse_source,
                                 prefer_markdown=(parse_document == "markdown"),
                                 progress_callback=ctx.report_progress,
                             )
@@ -438,22 +641,14 @@ def configure_webdav_tools(mcp: MCPServer):
                             f"instead."
                         )
                         logger.warning("Parsing document %r timed out: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(source, path, "failed", [note]), url
-                        )
+                        return await _parse_failed([note])
                     except Exception as e:
                         logger.warning("Failed to parse document %r: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                [
-                                    f"Parsing failed ({type(e).__name__}: {e}); the "
-                                    f"raw file is returned instead."
-                                ],
-                            ),
-                            url,
+                        return await _parse_failed(
+                            [
+                                f"Parsing failed ({type(e).__name__}: {e}); the "
+                                f"raw file is returned instead."
+                            ]
                         )
 
                     summary = document_parser.summarize_parse(
@@ -464,18 +659,21 @@ def configure_webdav_tools(mcp: MCPServer):
                     if summary.status == "failed":
                         # An unsuccessful parse is never reported as content: hand
                         # back the raw file with the reason attached.
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                summary.notes,
-                                parse_tier=summary.tier,
-                                parse_processor=summary.processor,
-                                parsing_metadata=result.metadata,
-                            ),
-                            url,
+                        return await _parse_failed(
+                            summary.notes,
+                            parse_tier=summary.tier,
+                            parse_processor=summary.processor,
+                            parsing_metadata=result.metadata,
                         )
+                    metadata = result.metadata or {}
+                    if page_range is not None:
+                        # The slice numbers its pages from 1. Shift them back so
+                        # citations and highlights point at the real pages.
+                        for boundary in metadata.get("page_boundaries") or []:
+                            if isinstance(boundary.get("page"), int):
+                                boundary["page"] += page_range[0] - 1
+                    else:
+                        page_count = metadata.get("page_count")
                     return _stamp_url(
                         ReadFileResponse(
                             path=path,
@@ -487,8 +685,11 @@ def configure_webdav_tools(mcp: MCPServer):
                             parse_tier=summary.tier,
                             parse_processor=summary.processor,
                             content_format=summary.content_format,
-                            parse_notes=summary.notes,
+                            parse_notes=range_notes + summary.notes,
                             parsing_metadata=result.metadata,
+                            page_count=page_count,
+                            page_start=page_range[0] if page_range else None,
+                            page_end=page_range[1] if page_range else None,
                             etag=etag,
                         ),
                         url,
@@ -497,7 +698,17 @@ def configure_webdav_tools(mcp: MCPServer):
                 status: ParseStatus = (
                     "skipped" if parse_document == "raw" else "not_applicable"
                 )
-                return _stamp_url(await _raw_response(source, path, status, []), url)
+                notes = []
+                if (
+                    not parsing
+                    and parse_document != "raw"
+                    and content_type.startswith(_DOCUMENT_TYPE_PREFIXES)
+                ):
+                    notes.append(
+                        "Text extraction for this file type is not installed on "
+                        f"this server, so the raw file is returned. {_DOCUMENTS_HINT}"
+                    )
+                return _stamp_url(await _raw_response(source, path, status, notes), url)
         except OversizeDownload as e:
             # The transfer was aborted mid-flight, so there is no file left to
             # describe -- not even its content type. Say that plainly rather than

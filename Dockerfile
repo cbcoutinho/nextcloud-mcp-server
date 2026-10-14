@@ -1,6 +1,6 @@
-FROM docker.io/library/python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+FROM docker.io/library/python:3.14-slim-trixie@sha256:0741d101873c12ab927e6f8653feb8862b9bd58771177acb1b885b95141f91b4
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.22@sha256:f513a91fc62fe7c17567eee97230dd198e43edb8a9fbecca843714a4358fe1bc /uv /uvx /bin/
 
 # Install dependencies
 # 1. curl (required for container healthcheck probes)
@@ -25,11 +25,12 @@ COPY pyproject.toml uv.lock README.md .
 # dependency's setup.py executes at image-build time (docker:S8541). This is
 # the sync that installs them all; the second one only adds the project itself,
 # which by definition has to be built and cannot carry the flag.
-RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache \
+    --extra semantic --extra postgres --extra observability
 
 COPY . .
 
-RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-editable --no-cache --extra semantic --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault

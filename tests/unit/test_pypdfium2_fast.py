@@ -112,7 +112,7 @@ async def test_process_source_parses_from_a_path_not_bytes(tmp_path):
     PdfDocument(bytes) uses FPDF_LoadMemDocument64 and pins the buffer for the
     document's lifetime.
     """
-    from nextcloud_mcp_server.document_processors.source import SpooledDocumentSource
+    from nextcloud_mcp_server.document_source import SpooledDocumentSource
 
     content = _digital_pdf(pages=4)
     spool = tmp_path / "doc.pdf"

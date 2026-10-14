@@ -224,6 +224,60 @@ def test_first_miss_starts_grace_without_deleting():
     assert grace == {(USER, "9", "file"): 2000.0}
 
 
+def test_partial_discovery_suppresses_deletions():
+    """Deck #1373: a truncated read (2,096 of 11,722) deletes nothing."""
+    indexed = {str(i) for i in range(11_722)}
+    found = {str(i) for i in range(2_096)}
+    # Every missing id is already past grace -- only the gate can stop it.
+    grace: dict = {(USER, i, "file"): 0.0 for i in indexed - found}
+    streak: dict = {}
+    plan = _plan(
+        indexed_by_mode={HYB: indexed},
+        nextcloud_file_ids=found,
+        discovered_by_mode={HYB: len(found)},
+        attempted_modes={HYB},
+        grace_state=grace,
+        streak_state=streak,
+        now=10_000.0,
+    )
+    assert plan.to_delete == []
+    assert plan.suppressed_by_mode == {HYB: 11_722 - 2_096}
+    assert streak == {(USER, HYB): 1}
+
+
+@pytest.mark.parametrize(("discovered", "suppressed"), [(5, False), (4, True)])
+def test_ratio_boundary_is_strict(discovered, suppressed):
+    """Exactly half discovered is healthy; just under half is implausible."""
+    streak: dict = {}
+    _plan(
+        indexed_by_mode={HYB: {str(i) for i in range(10)}},
+        nextcloud_file_ids={str(i) for i in range(discovered)},
+        discovered_by_mode={HYB: discovered},
+        attempted_modes={HYB},
+        grace_state={},
+        streak_state=streak,
+    )
+    assert ((USER, HYB) in streak) is suppressed
+
+
+def test_sustained_bulk_untag_still_purges():
+    """A real bulk untag (<50% left) purges once the streak hits the threshold."""
+    grace: dict = {(USER, str(i), "file"): 0.0 for i in range(2, 10)}
+    streak: dict = {}
+    common = {
+        "indexed_by_mode": {HYB: {str(i) for i in range(10)}},
+        "nextcloud_file_ids": {"0", "1"},
+        "discovered_by_mode": {HYB: 2},
+        "attempted_modes": {HYB},
+        "grace_state": grace,
+        "streak_state": streak,
+        "now": 10_000.0,
+    }
+    assert _plan(**common).to_delete == []
+    assert _plan(**common).to_delete == []
+    assert sorted(_plan(**common).to_delete) == [str(i) for i in range(2, 10)]
+
+
 def test_attempted_but_nothing_indexed_is_not_suppressed():
     """0 discovered with 0 indexed is not implausible -> no suppression, no streak."""
     grace: dict = {}

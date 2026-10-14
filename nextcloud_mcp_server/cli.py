@@ -18,6 +18,7 @@ from nextcloud_mcp_server.config import (
     is_ephemeral_token_db,
     set_override,
 )
+from nextcloud_mcp_server.features import semantic_installed
 from nextcloud_mcp_server.migrations import (
     create_migration,
     downgrade_database,
@@ -526,7 +527,7 @@ def _sweep_spools_at_startup(settings) -> int:
     if not settings.document_stream_download_enabled:
         return 0
 
-    from nextcloud_mcp_server.document_processors.source import (  # noqa: PLC0415
+    from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
         sweep_orphaned_spools,
     )
 
@@ -609,6 +610,11 @@ def worker(concurrency: int | None, tier: str | None):
         raise click.ClickException(
             "worker requires INGEST_QUEUE=postgres (a PostgreSQL DATABASE_URL); "
             f"resolved INGEST_QUEUE={settings.ingest_queue!r}"
+        )
+    if not semantic_installed():
+        raise click.ClickException(
+            "worker requires the semantic extra: "
+            "pip install 'nextcloud-mcp-server[semantic]'"
         )
 
     # Initialize observability here, not in a lifespan — the worker never runs
@@ -775,7 +781,13 @@ def upgrade(database_url: str | None, database_path: str | None, revision: str):
         # (Deck #183). Idempotent + lazy import (Postgres-only extra).
         from nextcloud_mcp_server.config import is_sqlite_url  # noqa: PLC0415
 
-        if not is_sqlite_url(url):
+        # The ingest queue only exists for semantic ingest, and its module
+        # imports the vector stack, so without the extra there is nothing to
+        # provision (Postgres can still back token storage alone).
+        postgres = not is_sqlite_url(url)
+        if postgres and not semantic_installed():
+            click.echo("Ingest queue schema skipped (semantic extra not installed)")
+        elif postgres:
             import anyio  # noqa: PLC0415
 
             from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415

@@ -24,6 +24,7 @@ some setups it returns HTTP 200 with an empty, non-JSON body (see GH #989).
 """
 
 import base64
+import logging
 from email.message import Message
 from typing import Any
 from urllib.parse import quote
@@ -36,6 +37,8 @@ from nextcloud_mcp_server.client.ocs import (
     describe_ocs_failure,
     parse_ocs_envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 # Nextcloud's primary blue. Shared with the nc_mail_create_tag tool so the two
 # defaults cannot drift into creating differently-coloured tags for the same
@@ -280,8 +283,50 @@ class MailClient(BaseNextcloudClient):
         if view is not None:
             params["view"] = view
 
-        data = await self._api_get("/messages", params=params)
+        try:
+            data = await self._api_get("/messages", params=params)
+        except HTTPStatusError as e:
+            # Mail answers 400 (MailboxNotCachedException) for a mailbox it has
+            # never synced from IMAP. Background sync only covers INBOX, so
+            # subfolders stay uncached until opened in the web UI (GH #1636).
+            # Do what the UI does — run the initial sync — and retry once.
+            # 400 is overloaded (bad filter/cursor too), so match the exception
+            # type Mail's error middleware puts in the body.
+            if (
+                e.response.status_code != 400
+                or "MailboxNotCachedException" not in e.response.text
+            ):
+                raise
+            logger.debug("Mailbox %s not cached; running initial sync", mailbox_id)
+            await self.sync_mailbox(mailbox_id)
+            data = await self._api_get("/messages", params=params)
         return data if isinstance(data, list) else []
+
+    async def sync_mailbox(self, mailbox_id: int, max_rounds: int = 20) -> None:
+        """Run Mail's initial IMAP→DB sync for a mailbox so it can be listed.
+
+        Uses ``POST /index.php/apps/mail/api/mailboxes/{id}/sync`` with
+        ``init=true``. A large mailbox is cached in chunks: Mail answers 202
+        until the initial sync completes, so repeat until it stops.
+
+        Args:
+            mailbox_id: The mailbox database ID.
+            max_rounds: Upper bound on 202 retries.
+        """
+        for _ in range(max_rounds):
+            response = await self._make_request(
+                "POST",
+                f"{self.API_BASE}/mailboxes/{mailbox_id}/sync",
+                json={"init": True},
+                headers=self._API_HEADERS,
+            )
+            if response.status_code != 202:
+                return
+        logger.warning(
+            "Initial sync of mailbox %s still incomplete after %d rounds",
+            mailbox_id,
+            max_rounds,
+        )
 
     async def get_message(self, message_id: int) -> dict[str, Any]:
         """Get a single message with full body content and metadata.

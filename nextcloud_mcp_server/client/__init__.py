@@ -311,9 +311,9 @@ class NextcloudClient:
         list where it used to cost one, and discovery latency scales with the
         number of tagged folders.
 
-        Returns the descendants found plus whether any type's walk failed. A
-        failure for one type does not discard the types that succeeded: those
-        files are indexable now, and a partial folder beats an empty one.
+        Returns the descendants found plus whether any type's walk failed; each
+        failure is logged per type, and ``find_files_by_tag`` turns any failure
+        into an error rather than a partial result.
         """
         results: list[list[dict]] = [[] for _ in mime_types]
         failed = False
@@ -396,8 +396,13 @@ class NextcloudClient:
                 descendants, walk_failed = await self._walk_tagged_dir(
                     dir_path, mime_types, tag_name
                 )
-                if walk_failed and not descendants:
-                    continue
+                # Never return a short list as if complete: the scanner treats
+                # every indexed file missing from it as deleted (Deck #1373).
+                if walk_failed:
+                    raise RuntimeError(
+                        f"Tag {tag_name!r} discovery incomplete: walk of "
+                        f"{dir_path!r} failed"
+                    )
 
                 added = 0
                 for d in descendants:

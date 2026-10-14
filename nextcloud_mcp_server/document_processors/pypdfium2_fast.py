@@ -22,9 +22,9 @@ from typing import Any
 import anyio
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import DocumentSource, resolve_path
 
 from .base import DocumentProcessor, ProcessingResult
-from .source import DocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 

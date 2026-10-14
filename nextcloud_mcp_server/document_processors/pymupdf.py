@@ -17,11 +17,15 @@ import anyio
 import pymupdf
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import (
+    DocumentSource,
+    MemoryDocumentSource,
+    resolve_path,
+)
 from nextcloud_mcp_server.observability.metrics import record_document_parse_mode
 
 from ._isolation import PdfParseFailed, run_isolated_pdf_parse, uses_markdown
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .source import DocumentSource, MemoryDocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +63,15 @@ def _record_parse_mode(
         metadata["markdown_skipped_reason"] = (
             "disabled" if settings.document_markdown_max_pages <= 0 else "page_ceiling"
         )
+
+
+def _wants_one_shot(options: Optional[dict[str, Any]]) -> bool:
+    """Whether the caller asked for a parse subprocess that exits with the call.
+
+    Interactive reads set ``one_shot_parse`` so no worker stays pooled on the API
+    pod (see _isolation's module docstring). Ingest leaves it unset.
+    """
+    return bool(options and options.get("one_shot_parse"))
 
 
 class PyMuPDFProcessor(DocumentProcessor):
@@ -325,6 +338,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
                     process_slots=settings.document_parse_process_slots,
                     markdown_max_pages=settings.document_markdown_max_pages,
+                    one_shot=_wants_one_shot(options),
                 )
             except PdfParseFailed as exc:
                 logger.warning(

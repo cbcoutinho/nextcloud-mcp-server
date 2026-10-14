@@ -1319,6 +1319,8 @@ async def test_write_file_etag_is_none_when_absent(mocker):
         ('"abc-gzip"', "abc"),
         ("abc-br", "abc"),
         ("abc-deflate", "abc"),
+        ("abc-zstd", "abc"),
+        ('"abc-zstd"', "abc"),
         ('W/"abc-gzip"', "abc"),
         # Only a trailing suffix counts: a name that merely contains one
         # survives untouched.

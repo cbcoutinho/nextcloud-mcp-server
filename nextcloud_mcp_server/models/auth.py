@@ -98,5 +98,15 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         # same way, so it lives in the same vocabulary. Advertised in DCR only
         # when vector sync is enabled — see app.py.
         "semantic.read",
+        # Subject access request cases (ADR-040): reading cases, and changing
+        # them, searching for them and exporting redacted archives. Their own
+        # scopes because exporting personal data about someone is a distinct
+        # grant from reading files. Advertised in DCR only when SAR is
+        # available.
+        "sar.read",
+        "sar.write",
     }
 )
+
+# Scopes advertised only while the feature behind them is enabled.
+SAR_SCOPES: frozenset[str] = frozenset({"sar.read", "sar.write"})

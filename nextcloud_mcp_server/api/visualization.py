@@ -708,8 +708,11 @@ async def unified_search(request: Request) -> JSONResponse:
             if include_chunks and result.excerpt:
                 result_data["excerpt"] = result.excerpt
 
-            # Include navigation metadata from result.metadata
+            # Include navigation metadata from result.metadata: whole, as
+            # vector-viz/search returns it (Astrolabe's result list reads it
+            # there), and the common fields flattened as before.
             if result.metadata:
+                result_data["metadata"] = result.metadata
                 # File path and mimetype for files
                 if "path" in result.metadata:
                     result_data["path"] = result.metadata["path"]

@@ -12,6 +12,7 @@ from .pymupdf import PyMuPDFProcessor
 from .pypdfium2_fast import Pypdfium2FastProcessor
 from .registry import ProcessorRegistry, get_registry
 from .spreadsheet import XlsxProcessor
+from .text import TextProcessor
 from .word import DocxProcessor
 
 # Register processors at module initialization. The tiered PDF pipeline selects
@@ -78,6 +79,9 @@ for _reader in _readers.values():
 # Outlook .msg is OLE2, read in-process with olefile -- no service needed.
 _registry.register(MsgProcessor(), priority=15)
 
+# Plain text, Markdown and CSV only need decoding.
+_registry.register(TextProcessor(), priority=15)
+
 # Legacy .doc/.xls/.ppt and ODF .odt/.ods/.odp go to a shared Collabora Online
 # service for conversion to OOXML, then to the readers above (ADR-039). Only
 # registered when a URL is configured, so an absent service means "no processor
@@ -102,6 +106,7 @@ __all__ = [
     "DocxProcessor",
     "MsgProcessor",
     "PptxProcessor",
+    "TextProcessor",
     "XlsxProcessor",
     "PyMuPDFProcessor",
     "Pypdfium2FastProcessor",
