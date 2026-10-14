@@ -15,6 +15,8 @@ import logging
 import re
 from typing import Any
 
+from httpx import HTTPStatusError, codes
+
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 from nextcloud_mcp_server.models.talk import (
@@ -191,6 +193,7 @@ class TalkClient(BaseNextcloudClient):
         look_into_future: bool = False,
         set_read_marker: bool = False,
         include_last_known: bool = False,
+        thread_id: int | None = None,
     ) -> tuple[list[TalkMessage], int | None]:
         """Fetch chat messages for a conversation.
 
@@ -211,12 +214,20 @@ class TalkClient(BaseNextcloudClient):
                 ``mark_as_read`` explicitly.
             include_last_known: Include the message identified by
                 ``last_known_message_id`` itself in the page.
+            thread_id: Optional ID of a thread's root message. Limits the
+                page to that root and the messages posted inside the thread.
+                Not documented in docs/chat.md at the time of writing --
+                spreed's ``receiveMessages`` has accepted ``threadId`` since
+                Talk v22.0.0 (when the "threads" capability was introduced),
+                and responds 404 when the thread does not exist in the room.
+                spreed silently ignores it where threads are unsupported
+                (e.g. federated rooms), so the page is also filtered here.
 
         Returns:
             ``(messages, x_chat_last_given)`` where the integer is the
             value of the ``X-Chat-Last-Given`` response header (or None
             if the header was absent or unparseable), suitable for
-            pagination.
+            pagination. ``([], None)`` once there is no older history.
         """
         _validate_token(token)
         clamped_limit = min(max(1, limit), 200)
@@ -228,16 +239,24 @@ class TalkClient(BaseNextcloudClient):
         }
         if last_known_message_id is not None:
             params["lastKnownMessageId"] = last_known_message_id
-        response = await self._make_request(
-            "GET",
-            f"{self._CHAT_BASE}/{token}",
-            params=params,
-            headers=self._talk_headers(),
-        )
-        # 200 OK → JSON body with messages; 304 Not Modified → no body.
-        # _make_request's raise_for_status() lets 3xx through for GET, but
-        # spreed returns 200 with an empty data list when there's nothing
-        # new, so we trust the JSON body here.
+        if thread_id is not None:
+            _validate_message_id(thread_id)
+            params["threadId"] = thread_id
+        try:
+            response = await self._make_request(
+                "GET",
+                f"{self._CHAT_BASE}/{token}",
+                params=params,
+                headers=self._talk_headers(),
+            )
+        except HTTPStatusError as e:
+            # spreed answers 304 Not Modified, with no body, once there is no
+            # older history before the cursor -- and _make_request's
+            # raise_for_status() raises on it. That is the end of the
+            # history, not an error.
+            if e.response.status_code == codes.NOT_MODIFIED:
+                return [], None
+            raise
         last_given_header = response.headers.get("X-Chat-Last-Given")
         last_given: int | None = None
         if last_given_header:
@@ -251,7 +270,21 @@ class TalkClient(BaseNextcloudClient):
                     last_given_header,
                 )
         data = response.json()["ocs"]["data"]
-        return [TalkMessage(**msg) for msg in data], last_given
+        messages = [TalkMessage(**msg) for msg in data]
+        if thread_id is not None:
+            # The pagination cursor above still comes from the unfiltered
+            # page, so callers keep advancing even if this page empties out.
+            in_thread = [msg for msg in messages if msg.threadId == thread_id]
+            if len(in_thread) != len(messages):
+                logger.debug(
+                    "spreed ignored threadId=%s for %s; filtered %d of %d messages",
+                    thread_id,
+                    token,
+                    len(messages) - len(in_thread),
+                    len(messages),
+                )
+            messages = in_thread
+        return messages, last_given
 
     async def send_message(
         self,

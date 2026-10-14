@@ -285,6 +285,44 @@ async def test_talk_get_messages_pagination_cursor(mocker):
     assert params["includeLastKnown"] == 1
 
 
+async def test_talk_get_messages_end_of_history(mocker):
+    """spreed's 304 once no older history remains is an empty last page."""
+    mocker.patch.object(
+        TalkClient,
+        "_make_request",
+        side_effect=httpx.HTTPStatusError(
+            "304 Not Modified",
+            request=httpx.Request("GET", "http://test.local"),
+            response=httpx.Response(304),
+        ),
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    messages, last_given = await client.get_messages(
+        "abc", last_known_message_id=1, thread_id=42
+    )
+
+    assert messages == []
+    assert last_given is None
+
+
+async def test_talk_get_messages_other_http_errors_propagate(mocker):
+    """Only 304 is treated as end of history; other errors still raise."""
+    mocker.patch.object(
+        TalkClient,
+        "_make_request",
+        side_effect=httpx.HTTPStatusError(
+            "404 Not Found",
+            request=httpx.Request("GET", "http://test.local"),
+            response=create_mock_error_response(404, "Thread not found"),
+        ),
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_messages("abc", thread_id=42)
+
+
 async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     """A non-numeric X-Chat-Last-Given falls back to None and logs a warning."""
     mock_response = create_mock_response(
@@ -303,6 +341,82 @@ async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     assert any(
         "Invalid X-Chat-Last-Given" in record.message for record in caplog.records
     ), "Expected a warning log for the malformed header"
+
+
+def _chat_message(message_id: int, thread_id: int) -> dict:
+    return {
+        "id": message_id,
+        "token": "abc",
+        "actorType": "users",
+        "actorId": "alice",
+        "actorDisplayName": "Alice",
+        "timestamp": 1700000000 + message_id,
+        "messageType": "comment",
+        "message": f"Message {message_id}",
+        "threadId": thread_id,
+    }
+
+
+async def test_talk_get_messages_thread_id_param(mocker):
+    """thread_id is forwarded as spreed's threadId and omitted when unset."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.get_messages("abc", thread_id=42)
+    assert mock_make_request.call_args[1]["params"]["threadId"] == 42
+
+    await client.get_messages("abc")
+    assert "threadId" not in mock_make_request.call_args[1]["params"]
+
+
+async def test_talk_get_messages_thread_id_filters_ignored_param(mocker):
+    """Messages outside the thread are dropped when spreed ignores threadId.
+
+    spreed ignores threadId where threads are unsupported (e.g. federated
+    rooms) and returns the whole chat; the cursor must still come from the
+    unfiltered page so pagination keeps advancing.
+    """
+    mock_response = create_mock_response(
+        status_code=200,
+        headers={"X-Chat-Last-Given": "40"},
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok"},
+                "data": [
+                    _chat_message(40, 40),
+                    _chat_message(41, 41),
+                    _chat_message(42, 42),
+                    _chat_message(43, 42),
+                    _chat_message(44, 41),
+                ],
+            }
+        },
+    )
+    mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    messages, last_given = await client.get_messages("abc", thread_id=42)
+
+    assert [m.id for m in messages] == [42, 43]
+    assert last_given == 40
+
+
+@pytest.mark.parametrize("bad_thread_id", [0, -5, True])
+async def test_talk_get_messages_invalid_thread_id(mocker, bad_thread_id):
+    """Invalid thread ids are rejected before any request is made."""
+    mock_make_request = mocker.patch.object(TalkClient, "_make_request")
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(ValueError):
+        await client.get_messages("abc", thread_id=bad_thread_id)
+
+    mock_make_request.assert_not_called()
 
 
 async def test_talk_send_message(mocker):

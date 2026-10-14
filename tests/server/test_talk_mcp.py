@@ -149,6 +149,56 @@ async def test_talk_send_message_thread_id_posts_into_existing_thread(
     assert reply_payload["threadId"] == thread_id
 
 
+async def test_talk_get_messages_thread_id_reads_only_that_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """thread_id returns the thread's root and replies, nothing else."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    async def send(arguments: dict) -> dict:
+        result = await nc_mcp_client.call_tool(
+            "talk_send_message", {"token": token, **arguments}
+        )
+        assert result.is_error is False, result.content[0].text
+        return json.loads(result.content[0].text)["message"]
+
+    root_a = await send({"message": "Root A", "thread_title": "Thread A"})
+    root_b = await send({"message": "Root B", "thread_title": "Thread B"})
+    reply_a = await send({"message": "Reply A", "thread_id": root_a["threadId"]})
+    await send({"message": "Reply B", "thread_id": root_b["threadId"]})
+    await send({"message": "Outside any thread"})
+
+    result = await nc_mcp_client.call_tool(
+        "talk_get_messages",
+        {"token": token, "limit": 50, "thread_id": root_a["threadId"]},
+    )
+    assert result.is_error is False, result.content[0].text
+    messages = json.loads(result.content[0].text)["results"]
+
+    assert all(m["threadId"] == root_a["threadId"] for m in messages)
+    comment_ids = {m["id"] for m in messages if m["messageType"] == "comment"}
+    assert comment_ids == {root_a["id"], reply_a["id"]}
+
+
+async def test_talk_get_messages_unknown_thread_id(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """An unknown thread_id is reported as not found, not a bare HTTP error."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_get_messages", {"token": token, "thread_id": 999999999}
+    )
+    assert result.is_error is True
+    assert "not found" in result.content[0].text.lower()
+
+
 @pytest.mark.parametrize(
     ("arguments", "expected_snippet"),
     [
