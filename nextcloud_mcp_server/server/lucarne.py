@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
 
-from httpx import HTTPStatusError, RequestError
+from httpx import HTTPStatusError, RequestError, Response
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -44,24 +44,40 @@ PlaylistTitle = Annotated[str, Field(min_length=1, max_length=255)]
 YouTubeUrl = Annotated[str, Field(min_length=1, max_length=2048)]
 
 
+def _reason(response: Response) -> str | None:
+    """The readable message Lucarne puts in ``{"error": ...}``, if there is one."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    reason = body.get("error") if isinstance(body, dict) else None
+    return reason if isinstance(reason, str) and reason else None
+
+
 @contextmanager
 def _lucarne_errors(action: str) -> Iterator[None]:
-    """Re-raise a Lucarne failure as the message the model should act on."""
+    """Re-raise a Lucarne failure as the message the model should act on.
+
+    Lucarne explains its own 400, 404 and 409 answers, so that text is passed
+    through and stays accurate as the API grows. A bare 404 carries none: it is
+    what the AppAPI proxy returns when Lucarne is missing, and what a route that
+    an older Lucarne lacks returns.
+    """
     try:
         yield
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error {action}: {e}")
     except HTTPStatusError as e:
         status = e.response.status_code
-        if status == 404:
-            detail = "not found (or the Lucarne app is not installed or enabled)"
-        elif status == 409:
-            detail = "conflict (a catalogue with this name may already exist)"
-        elif status in (400, 422):
-            detail = "rejected as invalid (check the IDs and names)"
-        else:
-            detail = f"server error ({status})"
-        raise MCPError(code=-1, message=f"Failed {action}: {detail}")
+        reason = _reason(e.response)
+        if status == 404 and not reason:
+            reason = (
+                "not found (or the Lucarne app is not installed or enabled, "
+                "or is too old for this tool)"
+            )
+        raise MCPError(
+            code=-1, message=f"Failed {action}: {reason or f'HTTP {status}'}"
+        )
 
 
 def configure_lucarne_tools(mcp: MCPServer):
@@ -211,22 +227,27 @@ def configure_lucarne_tools(mcp: MCPServer):
     ) -> LucarneCatalogResponse:
         """File channels into a Lucarne catalogue (requires lucarne.write scope).
 
-        The channels already in the catalogue are kept. Get channel IDs from
-        nc_lucarne_list_channels.
-
-        Lucarne can only replace a catalogue's whole channel set, so this reads
-        the catalogue and writes it back. Two edits to the same catalogue at the
-        same moment can overwrite each other.
+        The channels already in the catalogue are kept, and filing a channel
+        that is already there changes nothing. Get channel IDs from
+        nc_lucarne_list_channels. Needs Lucarne 1.3.0 or later.
 
         Args:
             catalog_id: Catalogue to file the channels into
             channel_ids: IDs of the channels to add
         """
         client = await get_client(ctx)
-        with _lucarne_errors(f"filing channels into catalogue {catalog_id}"):
-            current = await client.lucarne.get_catalog(catalog_id)
-            merged = sorted({*(current.get("channel_ids") or []), *channel_ids})
-            data = await client.lucarne.replace_catalog_channels(catalog_id, merged)
+        # Read first: a missing catalogue fails before anything is filed, and
+        # an empty list still has a catalogue to answer with.
+        with _lucarne_errors(f"getting catalogue {catalog_id}"):
+            data = await client.lucarne.get_catalog(catalog_id)
+        for done, channel_id in enumerate(channel_ids):
+            with _lucarne_errors(
+                f"filing channel {channel_id} into catalogue {catalog_id} "
+                f"({done} of {len(channel_ids)} filed before it)"
+            ):
+                data = await client.lucarne.add_channel_to_catalog(
+                    catalog_id, channel_id
+                )
         return LucarneCatalogResponse(catalog=LucarneCatalog(**data))
 
     @mcp.tool(
@@ -241,23 +262,23 @@ def configure_lucarne_tools(mcp: MCPServer):
         """Take channels out of a Lucarne catalogue (requires lucarne.write scope).
 
         The channels stay subscribed, they simply stop being in this catalogue.
-
-        Lucarne can only replace a catalogue's whole channel set, so this reads
-        the catalogue and writes it back. Two edits to the same catalogue at the
-        same moment can overwrite each other.
+        Needs Lucarne 1.3.0 or later.
 
         Args:
             catalog_id: Catalogue to take the channels out of
             channel_ids: IDs of the channels to remove
         """
         client = await get_client(ctx)
-        with _lucarne_errors(f"removing channels from catalogue {catalog_id}"):
-            current = await client.lucarne.get_catalog(catalog_id)
-            removed = set(channel_ids)
-            kept = [
-                cid for cid in current.get("channel_ids") or [] if cid not in removed
-            ]
-            data = await client.lucarne.replace_catalog_channels(catalog_id, kept)
+        with _lucarne_errors(f"getting catalogue {catalog_id}"):
+            data = await client.lucarne.get_catalog(catalog_id)
+        for done, channel_id in enumerate(channel_ids):
+            with _lucarne_errors(
+                f"removing channel {channel_id} from catalogue {catalog_id} "
+                f"({done} of {len(channel_ids)} removed before it)"
+            ):
+                data = await client.lucarne.remove_channel_from_catalog(
+                    catalog_id, channel_id
+                )
         return LucarneCatalogResponse(catalog=LucarneCatalog(**data))
 
     # --- Playlists ---

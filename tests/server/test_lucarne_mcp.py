@@ -113,7 +113,8 @@ async def test_mcp_lucarne_catalog_round_trip(nc_mcp_client: ClientSession, luca
             "nc_lucarne_create_catalog", {"name": f"{name} RENAMED"}
         )
         assert duplicate.is_error is True
-        assert "conflict" in duplicate.content[0].text
+        # Lucarne explains the clash itself (in the user's language).
+        assert "Failed creating catalogue" in duplicate.content[0].text
     finally:
         if catalog_id is not None:
             await lucarne.delete_catalog(catalog_id)
@@ -187,4 +188,6 @@ async def test_mcp_lucarne_unknown_ids_read_as_not_found(
     )
 
     assert result.is_error is True
-    assert "not found" in result.content[0].text
+    # Lucarne words the reason itself, in the user's language, so only the part
+    # this server writes is asserted.
+    assert result.content[0].text.startswith("Failed getting catalogue 999999: ")

@@ -77,14 +77,21 @@ async def test_update_catalog(mocker):
     request.assert_called_once_with("PUT", f"{API}/catalogs/3", json={"name": "Jazz"})
 
 
-async def test_replace_catalog_channels(mocker):
-    client, request = _client(mocker, {"id": 3, "name": "Jazz", "channel_ids": [1, 2]})
+async def test_add_channel_to_catalog(mocker):
+    client, request = _client(mocker, {"id": 3, "name": "Jazz", "channel_ids": [7]})
 
-    await client.replace_catalog_channels(3, [1, 2])
+    catalog = await client.add_channel_to_catalog(3, 7)
 
-    request.assert_called_once_with(
-        "PUT", f"{API}/catalogs/3/channels", json={"channel_ids": [1, 2]}
-    )
+    assert catalog["channel_ids"] == [7]
+    request.assert_called_once_with("PUT", f"{API}/catalogs/3/channels/7")
+
+
+async def test_remove_channel_from_catalog(mocker):
+    client, request = _client(mocker, {"id": 3, "name": "Jazz", "channel_ids": []})
+
+    await client.remove_channel_from_catalog(3, 7)
+
+    request.assert_called_once_with("DELETE", f"{API}/catalogs/3/channels/7")
 
 
 async def test_delete_catalog(mocker):

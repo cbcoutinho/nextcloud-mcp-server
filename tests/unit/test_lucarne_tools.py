@@ -8,7 +8,7 @@ than replacing them, and how HTTP failures read to the model.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import httpx
 import pytest
@@ -56,11 +56,14 @@ def ctx() -> SimpleNamespace:
     return SimpleNamespace()
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
+def _http_error(status: int, body: dict | str | None = None) -> httpx.HTTPStatusError:
+    """An HTTP failure, optionally with the JSON (or raw) body Lucarne would send."""
     request = httpx.Request("GET", "http://nc/test")
-    return httpx.HTTPStatusError(
-        "boom", request=request, response=httpx.Response(status, request=request)
-    )
+    if isinstance(body, dict):
+        response = httpx.Response(status, json=body, request=request)
+    else:
+        response = httpx.Response(status, text=body or "", request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
 def test_registers_the_expected_tools(tools):
@@ -82,53 +85,129 @@ def test_registers_the_expected_tools(tools):
     }
 
 
-async def test_add_channels_keeps_the_ones_already_filed(tools, lucarne, ctx):
-    lucarne.get_catalog.return_value = {"id": 1, "name": "Tech", "channel_ids": [5, 2]}
-    lucarne.replace_catalog_channels.return_value = {
-        "id": 1,
-        "name": "Tech",
-        "channel_ids": [2, 3, 5],
-    }
+async def test_add_channels_files_them_one_by_one(tools, lucarne, ctx):
+    """Each channel is filed on its own, so no concurrent edit can be lost."""
+    lucarne.get_catalog.return_value = {"id": 1, "name": "Tech", "channel_ids": [5]}
+    lucarne.add_channel_to_catalog.side_effect = [
+        {"id": 1, "name": "Tech", "channel_ids": [3, 5]},
+        {"id": 1, "name": "Tech", "channel_ids": [2, 3, 5]},
+    ]
 
     result = await tools["nc_lucarne_add_channels_to_catalog"](1, [3, 2], ctx)
 
-    lucarne.replace_catalog_channels.assert_awaited_once_with(1, [2, 3, 5])
+    assert lucarne.add_channel_to_catalog.await_args_list == [call(1, 3), call(1, 2)]
+    lucarne.replace_catalog_channels.assert_not_called()
     assert result.catalog.channel_ids == [2, 3, 5]
 
 
-async def test_remove_channels_only_takes_out_the_named_ones(tools, lucarne, ctx):
+async def test_add_no_channels_answers_with_the_catalogue(tools, lucarne, ctx):
+    """An empty list is a read of the catalogue, and files nothing."""
+    lucarne.get_catalog.return_value = {"id": 1, "name": "Tech", "channel_ids": [5]}
+
+    result = await tools["nc_lucarne_add_channels_to_catalog"](1, [], ctx)
+
+    lucarne.add_channel_to_catalog.assert_not_awaited()
+    assert result.catalog.channel_ids == [5]
+
+
+async def test_add_channels_to_unknown_catalog_files_nothing(tools, lucarne, ctx):
+    """A missing catalogue is reported before any channel is filed."""
+    lucarne.get_catalog.side_effect = _http_error(404)
+    add = tools["nc_lucarne_add_channels_to_catalog"]
+
+    with pytest.raises(MCPError, match="not found"):
+        await add(1, [3], ctx)
+
+    lucarne.add_channel_to_catalog.assert_not_awaited()
+
+
+async def test_add_channels_failing_midway_says_how_many_were_filed(
+    tools, lucarne, ctx
+):
+    """The model learns where the batch stopped, so it can resume."""
+    lucarne.get_catalog.return_value = {"id": 1, "name": "Tech", "channel_ids": []}
+    lucarne.add_channel_to_catalog.side_effect = [
+        {"id": 1, "name": "Tech", "channel_ids": [3]},
+        _http_error(400, {"error": "One or more channels do not belong to you."}),
+    ]
+    add = tools["nc_lucarne_add_channels_to_catalog"]
+
+    with pytest.raises(MCPError, match=r"channel 4 .*\(1 of 3 filed before it\)"):
+        await add(1, [3, 4, 5], ctx)
+
+
+async def test_remove_channels_takes_out_only_the_named_ones(tools, lucarne, ctx):
+    """Each channel is taken out on its own, and the others stay."""
     lucarne.get_catalog.return_value = {
         "id": 1,
         "name": "Tech",
         "channel_ids": [2, 3, 5],
     }
-    lucarne.replace_catalog_channels.return_value = {
-        "id": 1,
-        "name": "Tech",
-        "channel_ids": [2, 5],
-    }
+    lucarne.remove_channel_from_catalog.side_effect = [
+        {"id": 1, "name": "Tech", "channel_ids": [2, 5]},
+        {"id": 1, "name": "Tech", "channel_ids": [2, 5]},
+    ]
 
-    await tools["nc_lucarne_remove_channels_from_catalog"](1, [3, 99], ctx)
+    result = await tools["nc_lucarne_remove_channels_from_catalog"](1, [3, 99], ctx)
 
-    lucarne.replace_catalog_channels.assert_awaited_once_with(1, [2, 5])
+    assert lucarne.remove_channel_from_catalog.await_args_list == [
+        call(1, 3),
+        call(1, 99),
+    ]
+    assert result.catalog.channel_ids == [2, 5]
 
 
-async def test_remove_channels_from_unknown_catalog_does_not_write(tools, lucarne, ctx):
+async def test_remove_channels_from_unknown_catalog_removes_nothing(
+    tools, lucarne, ctx
+):
     lucarne.get_catalog.side_effect = _http_error(404)
     remove = tools["nc_lucarne_remove_channels_from_catalog"]
 
     with pytest.raises(MCPError, match="not found"):
         await remove(1, [3], ctx)
 
-    lucarne.replace_catalog_channels.assert_not_awaited()
+    lucarne.remove_channel_from_catalog.assert_not_awaited()
 
 
-async def test_create_catalog_name_clash_reads_as_conflict(tools, lucarne, ctx):
-    lucarne.create_catalog.side_effect = _http_error(409)
+async def test_lucarnes_own_error_message_is_passed_through(tools, lucarne, ctx):
+    """A 409 reads as what Lucarne says, not as a guess about the cause."""
+    lucarne.add_playlist_video.side_effect = _http_error(
+        409, {"error": "A YouTube playlist is managed by the collection agent."}
+    )
+    add = tools["nc_lucarne_add_video_to_playlist"]
+
+    with pytest.raises(MCPError, match="managed by the collection agent"):
+        await add(2, "https://youtu.be/x", ctx)
+
+
+async def test_a_name_clash_reads_as_lucarne_says_it(tools, lucarne, ctx):
+    lucarne.create_catalog.side_effect = _http_error(
+        409, {"error": "A catalogue with this name already exists."}
+    )
     create = tools["nc_lucarne_create_catalog"]
 
-    with pytest.raises(MCPError, match="conflict"):
+    with pytest.raises(MCPError, match="already exists"):
         await create("Tech", ctx)
+
+
+async def test_a_bare_404_keeps_the_not_installed_hint(tools, lucarne, ctx):
+    """The AppAPI proxy answers 404 with no message when Lucarne is missing."""
+    lucarne.get_catalogs.side_effect = _http_error(404, '{"detail": "Not Found"}')
+    list_catalogs = tools["nc_lucarne_list_catalogs"]
+
+    with pytest.raises(MCPError, match="not installed or enabled, or is too old"):
+        await list_catalogs(ctx)
+
+
+@pytest.mark.parametrize("body", [None, "<html>oops</html>", '["not", "a", "dict"]'])
+async def test_an_error_without_a_message_falls_back_to_the_status(
+    tools, lucarne, ctx, body
+):
+    lucarne.get_catalogs.side_effect = _http_error(502, body)
+    list_catalogs = tools["nc_lucarne_list_catalogs"]
+
+    with pytest.raises(MCPError, match="HTTP 502"):
+        await list_catalogs(ctx)
 
 
 async def test_network_error_is_reported(tools, lucarne, ctx):
@@ -175,14 +254,6 @@ async def test_subscribe_channel_returns_the_new_channel(tools, lucarne, ctx):
 
     lucarne.add_channel.assert_awaited_once_with("https://www.youtube.com/@a")
     assert result.channel.id == 3
-
-
-async def test_add_video_to_youtube_playlist_reads_as_conflict(tools, lucarne, ctx):
-    lucarne.add_playlist_video.side_effect = _http_error(409)
-    add = tools["nc_lucarne_add_video_to_playlist"]
-
-    with pytest.raises(MCPError, match="conflict"):
-        await add(2, "https://youtu.be/x", ctx)
 
 
 async def test_get_catalog_returns_the_channel_ids(tools, lucarne, ctx):
