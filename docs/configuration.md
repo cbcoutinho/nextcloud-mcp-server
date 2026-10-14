@@ -1609,6 +1609,7 @@ MCP_DISABLE_CAPABILITY_GATING=true    # list and run every registered tool
 Set this if tools you expect are missing; it restores the pre-gating behaviour
 so you can confirm gating is the cause (and please open an issue).
 
+
 ### Verifying it
 
 ```bash
@@ -1652,6 +1653,18 @@ that condition. Whole-app
 presence gates are applied automatically from `APP_CAPABILITY_KEY` in
 `nextcloud_mcp_server/server/__init__.py`; only add an app there after confirming
 it publishes a capability block, because a missing key is what closes the gate.
+
+## Disabling Destructive Tools
+
+```bash
+MCP_DISABLE_DESTRUCTIVE_TOOLS=true    # hide and refuse permanent deletes
+```
+
+Hides every tool annotated `destructive_hint=True` (permanent deletes, see
+ADR-017) from `tools/list` and refuses it in `tools/call`. Recoverable
+operations, such as moving to trash, restoring or removing a tag, are not marked
+destructive and stay available. Useful when an agent gets broad write access but
+deletes should remain a human action. Off by default.
 
 ## Tag-Based File Exclusion (Optional)
 

@@ -29,6 +29,10 @@ from nextcloud_mcp_server.capabilities import (
     enforce_capability,
     filter_by_capability,
 )
+from nextcloud_mcp_server.destructive_tools import (
+    hide_destructive_tools,
+    refuse_destructive_tool,
+)
 from nextcloud_mcp_server.request_context import (
     reset_request_context,
     set_request_context,
@@ -242,7 +246,7 @@ class NextcloudMCPServer(MCPServer):
             reset_request_context(token)
 
     async def list_tools(self) -> list[MCPTool]:
-        tools = await super().list_tools()
+        tools = hide_destructive_tools(await super().list_tools())
         return await filter_by_capability(self, tools)
 
     async def call_tool(
@@ -251,6 +255,7 @@ class NextcloudMCPServer(MCPServer):
         arguments: dict[str, Any],
         context: Context[Any, Any] | None = None,
     ) -> CallToolResult | InputRequiredResult:
+        refuse_destructive_tool(self, name)
         await enforce_capability(self, name)
         # The three clauses below are ordered by the SDK's hierarchy, and the
         # order is load-bearing: ``UnexpectedToolError`` subclasses ``ToolError``
