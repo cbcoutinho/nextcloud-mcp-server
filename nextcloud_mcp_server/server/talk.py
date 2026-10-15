@@ -74,6 +74,17 @@ def _validate_thread_params(
             )
 
 
+def _ocs_error(e: HTTPStatusError) -> str | None:
+    """Return spreed's ``ocs.data.error`` code from a 404, if it sent one."""
+    if e.response.status_code != 404:
+        return None
+    try:
+        data = e.response.json()["ocs"]["data"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return data.get("error") if isinstance(data, dict) else None
+
+
 async def _get_messages(
     talk: TalkClient,
     token: str,
@@ -99,8 +110,10 @@ async def _get_messages(
             thread_id=thread_id,
         )
     except HTTPStatusError as e:
-        # spreed answers 404 {"error": "thread"} for an unknown thread.
-        if thread_id is not None and e.response.status_code == 404:
+        # spreed answers 404 {"error": "thread"} for an unknown thread (Talk
+        # 23+). An unknown room or non-participant is also a 404, with no
+        # "error" key, and must not be reported as a missing thread.
+        if thread_id is not None and _ocs_error(e) == "thread":
             raise ToolError(
                 f"Thread {thread_id} not found in conversation {token}"
             ) from e
@@ -194,6 +207,8 @@ def configure_talk_tools(mcp: MCPServer) -> None:
                 Pagination with ``last_known_message_id`` works the same
                 within the thread. The thread is complete once the root
                 message (``id`` equal to ``thread_id``) has been returned.
+                An unknown thread is an error on Talk 23+, while Talk 22
+                returns an empty page instead.
         """
         client = await get_client(ctx)
         messages, last_given = await _get_messages(
