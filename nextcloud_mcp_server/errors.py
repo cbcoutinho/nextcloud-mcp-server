@@ -14,6 +14,7 @@ the tool boundary fixes every tool at once -- see :class:`NextcloudMCPServer`.
 
 import json
 import re
+from importlib.metadata import version
 from typing import Any
 from urllib.parse import unquote
 
@@ -222,6 +223,10 @@ class NextcloudMCPServer(MCPServer):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # serverInfo.version is required by the MCP spec, but the SDK defaults
+        # it to "" -- which strict clients (Astrolabe's PHP SDK) reject at
+        # initialize. Default it here so every construction site advertises it.
+        kwargs.setdefault("version", version("nextcloud-mcp-server"))
         super().__init__(*args, **kwargs)
         self.middleware.append(self._publish_request_context)
 
