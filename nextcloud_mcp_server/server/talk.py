@@ -207,8 +207,8 @@ def configure_talk_tools(mcp: MCPServer) -> None:
                 Pagination with ``last_known_message_id`` works the same
                 within the thread. The thread is complete once the root
                 message (``id`` equal to ``thread_id``) has been returned.
-                An unknown thread is an error on Talk 23+; Talk 22 returns
-                an empty page instead.
+                An unknown thread is an error on Talk 23+, while Talk 22
+                returns an empty page instead.
         """
         client = await get_client(ctx)
         messages, last_given = await _get_messages(
