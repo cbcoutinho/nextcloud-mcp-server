@@ -1232,6 +1232,26 @@ def _verify_pkce_s256(code_verifier: str, code_challenge: str) -> bool:
     return secrets.compare_digest(computed_challenge, code_challenge)
 
 
+# How long a refresh-token → client binding is kept when the IdP's token
+# response has no ``refresh_expires_in`` (the Nextcloud oidc app does send
+# it). A binding that expires before its token only makes the token unbound
+# again, the behaviour before bindings existed, not a refusal.
+_REFRESH_BINDING_DEFAULT_TTL = 90 * 24 * 3600
+
+
+def _refresh_token_hash(refresh_token: str) -> str:
+    """Key a refresh token in ``refresh_token_clients`` without storing it."""
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def _refresh_binding_ttl(token_response: dict[str, Any]) -> int:
+    """Lifetime of a binding: the token's own, when the IdP reports it."""
+    value = token_response.get("refresh_expires_in")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return _REFRESH_BINDING_DEFAULT_TTL
+
+
 async def oauth_token_endpoint(request: Request) -> JSONResponse:
     """
     OAuth token endpoint for AS proxy (ADR-023).
@@ -1449,6 +1469,16 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     has_refresh = bool(entry.nc_token_response.get("refresh_token"))
+    if has_refresh:
+        # The IdP sees only the MCP server's own client on refresh, so the
+        # binding to the MCP client has to be recorded here (RFC 6749 §6).
+        storage: RefreshTokenStorage = request.app.state.oauth_context["storage"]
+        await storage.bind_refresh_token_client(
+            _refresh_token_hash(entry.nc_token_response["refresh_token"]),
+            entry.client_id,
+            _refresh_binding_ttl(entry.nc_token_response),
+        )
+
     logger.info(
         "AS proxy token: returning IdP token to client %s: refresh_token=%s "
         "scope=%s expires_in=%s fields=%s",
@@ -1467,13 +1497,35 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
 
 
 async def _token_refresh(request: Request, form) -> JSONResponse:
-    """Handle refresh_token grant type by proxying to Nextcloud."""
+    """Handle refresh_token grant type by proxying to Nextcloud.
+
+    The refresh token must have been issued to the requesting ``client_id``
+    (RFC 6749 §6). The IdP cannot check this: the proxy refreshes with the
+    MCP server's own credentials, so the binding recorded at the
+    authorization_code grant is checked here, before the IdP is contacted.
+    Proxying first would let any client rotate, and so invalidate, a token
+    that belongs to another.
+    """
     refresh_token = form.get("refresh_token")
     if not refresh_token:
         return JSONResponse(
             {
                 "error": "invalid_request",
                 "error_description": "refresh_token is required",
+            },
+            status_code=400,
+        )
+
+    client_id = form.get("client_id")
+    # RFC 6749 §2.3.1: clients may authenticate via HTTP Basic Auth
+    if not client_id:
+        client_id, _ = _extract_basic_auth(request)
+    if not client_id:
+        logger.warning("AS proxy refresh: Missing 'client_id' parameter")
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "client_id is required",
             },
             status_code=400,
         )
@@ -1487,6 +1539,37 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
                 "error_description": "OAuth not configured on server",
             },
             status_code=500,
+        )
+
+    storage: RefreshTokenStorage = oauth_ctx["storage"]
+    token_hash = _refresh_token_hash(refresh_token)
+    bound_client_id = await storage.get_refresh_token_client(token_hash)
+    if bound_client_id is None:
+        # Fail-open, deliberately. Only tokens issued before bindings were
+        # recorded should get here (or ones that outlived their binding).
+        # Rejecting them would force every existing client to re-authorize
+        # at once, so the first client to refresh one claims it, and from
+        # then on it is checked like any other.
+        logger.warning(
+            "AS proxy refresh: no client binding for refresh token %s; "
+            "binding it to %s",
+            _fingerprint(refresh_token),
+            client_id,
+        )
+    elif bound_client_id != client_id:
+        logger.warning(
+            "AS proxy refresh: client_id mismatch for refresh token %s "
+            "(got=%s, expected=%s)",
+            _fingerprint(refresh_token),
+            client_id,
+            bound_client_id,
+        )
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "refresh_token was not issued to this client",
+            },
+            status_code=400,
         )
 
     oauth_config = oauth_ctx["config"]
@@ -1564,6 +1647,17 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
         refreshed.get("expires_in"),
         _redact(refreshed),
     )
+    # Bind whichever token the client holds now: the rotated one, or the same
+    # one again, which also renews the binding of a non-rotating IdP.
+    current_refresh_token = refreshed.get("refresh_token") or refresh_token
+    await storage.bind_refresh_token_client(
+        _refresh_token_hash(current_refresh_token),
+        client_id,
+        _refresh_binding_ttl(refreshed),
+    )
+    if current_refresh_token != refresh_token:
+        await storage.delete_refresh_token_client(token_hash)
+
     record_oauth_grant(
         "refresh_token", "success", "issued" if has_refresh else "absent"
     )

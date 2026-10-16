@@ -1851,6 +1851,85 @@ class RefreshTokenStorage:
         return deleted
 
     # ============================================================================
+    # AS Proxy Refresh Token → Client Bindings (ADR-023)
+    # ============================================================================
+
+    async def bind_refresh_token_client(
+        self,
+        token_hash: str,
+        client_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        """Record that the refresh token hashing to *token_hash* belongs to *client_id*.
+
+        Expired rows are swept on every bind. The AS proxy also runs outside
+        login_flow mode, where the hourly cleanup loop does not, and the row
+        of a client that never refreshes again is never looked up, so lazy
+        deletion on lookup alone would leave it behind.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        expires_at = now + ttl_seconds
+
+        async with self._db() as db:
+            await db.execute(
+                "DELETE FROM refresh_token_clients WHERE expires_at < ?", (now,)
+            )
+            await db.execute(
+                """
+                INSERT INTO refresh_token_clients
+                (token_hash, client_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (token_hash) DO UPDATE SET
+                    client_id = EXCLUDED.client_id,
+                    created_at = EXCLUDED.created_at,
+                    expires_at = EXCLUDED.expires_at
+                """,
+                (token_hash, client_id, now, expires_at),
+            )
+            await db.commit()
+
+    async def get_refresh_token_client(self, token_hash: str) -> str | None:
+        """Return the client_id bound to *token_hash*, or None if unbound or expired.
+
+        Expired rows are deleted on encounter.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with self._db() as db:
+            async with db.execute(
+                "SELECT client_id, expires_at FROM refresh_token_clients "
+                "WHERE token_hash = ?",
+                (token_hash,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        if row["expires_at"] < time.time():
+            await self.delete_refresh_token_client(token_hash)
+            return None
+
+        return row["client_id"]
+
+    async def delete_refresh_token_client(self, token_hash: str) -> bool:
+        """Delete a binding. Returns True when a row was removed."""
+        if not self._initialized:
+            await self.initialize()
+
+        async with self._db() as db:
+            cursor = await db.execute(
+                "DELETE FROM refresh_token_clients WHERE token_hash = ?",
+                (token_hash,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    # ============================================================================
     # App Password Storage (multi-user BasicAuth mode)
     # ============================================================================
 

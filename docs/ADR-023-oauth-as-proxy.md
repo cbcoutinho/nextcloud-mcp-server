@@ -104,6 +104,17 @@ Client registration requests at `/oauth/register` are proxied to Nextcloud's DCR
 
 The `ClientRegistry` — and therefore `ALLOWED_MCP_CLIENTS` — gates **only** these AS-proxy endpoints. `/mcp` never consults it: it authorizes by audience and `sub`, so a client that obtains its token straight from the IdP (as the Astrolabe Nextcloud app does) needs no entry. See [ADR-005 → *Client Identity Is Not an Authorization Gate on `/mcp`*](ADR-005-token-audience-validation.md#client-identity-is-not-an-authorization-gate-on-mcp).
 
+#### 5. Refresh Tokens Are Bound to Their Client
+
+The refresh grant is proxied with the MCP server's own client credentials, so the IdP cannot tell which MCP client a refresh token was issued to. RFC 6749 §6 requires the authorization server to check that binding, so the proxy keeps it itself (#1618):
+
+- The `authorization_code` grant records `sha256(refresh_token) → client_id` in the `refresh_token_clients` table (migration 011). The token itself is never stored.
+- The `refresh_token` grant requires a `client_id` (form field or HTTP Basic) and refuses a mismatch with `invalid_grant`, **before** contacting the IdP. Proxying first would let another client rotate the token and leave its owner holding a dead one.
+- On success, the binding moves to the rotated token. With an IdP that does not rotate, it is renewed on the same token. Bindings expire with the token's `refresh_expires_in` (90 days if the IdP does not send it).
+- A token with no binding (issued before this existed) is accepted, and the first client to refresh it claims it. Rejecting those would have forced every existing client to re-authorize at once.
+
+Unlike proxy codes, these rows outlive the OAuth flow and must survive restarts, so they are in the token database and not in memory.
+
 ## Alternatives Considered
 
 ### 1. Relax Audience Validation
