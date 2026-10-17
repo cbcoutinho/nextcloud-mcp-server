@@ -100,6 +100,10 @@ _DEFAULTS: dict[str, Any] = {
     # deck tools disappear?" without a code read. Read via cfg(), not a
     # Settings field: nothing but the two gate helpers looks at it.
     "mcp_disable_capability_gating": False,
+    # Comma-separated tool names to unregister at startup, whatever the user,
+    # token scopes or client (server/disabled_tools.py). Empty = every
+    # registered tool stays available. Read via cfg(), like the flag above.
+    "mcp_disabled_tools": "",
     "enable_semantic_search": False,
     "enable_background_operations": False,
     "vector_sync_enabled": False,

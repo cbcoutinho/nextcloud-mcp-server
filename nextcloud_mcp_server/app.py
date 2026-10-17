@@ -123,6 +123,7 @@ from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
+from nextcloud_mcp_server.server.disabled_tools import remove_disabled_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 
 # The vector/semantic-search stack (vector/, search/, document_processors/,
@@ -1937,6 +1938,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if settings.enable_login_flow:
         logger.info("Registering Login Flow v2 auth tools")
         register_auth_tools(mcp)
+
+    # Operator denylist: must run after the last registration above and before
+    # the scope filter below captures the tool manager's list_tools.
+    remove_disabled_tools(mcp)
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:
