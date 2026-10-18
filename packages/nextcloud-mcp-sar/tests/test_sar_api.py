@@ -2,28 +2,27 @@
 
 Drives the real Starlette handlers, so the HTTP contract (routes, status codes,
 error shape, validation) is pinned; the case operations themselves are covered
-in tests/unit/test_sar_case.py.
+in test_sar_case.py.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from nextcloud_mcp_sar import api
+from nextcloud_mcp_sar.export import ExportError
+from nextcloud_mcp_sar.models import (
+    SarCase,
+    SarCaseListResponse,
+    SarCaseResponse,
+)
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api import sar as api
-from nextcloud_mcp_server.models.sar import (
-    SarCase,
-    SarCaseListResponse,
-    SarCaseResponse,
-)
-from nextcloud_mcp_server.sar_export import ExportError
-
 pytestmark = pytest.mark.unit
 
-_MOD = "nextcloud_mcp_server.api.sar"
+_MOD = "nextcloud_mcp_sar.api"
 # authenticate() validates the token through here.
 _AUTH = "nextcloud_mcp_server.api.management"
 CASES = "/api/v1/sar/cases"

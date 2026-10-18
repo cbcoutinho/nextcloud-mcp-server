@@ -1,20 +1,19 @@
 """Consumer contract: nextcloud-mcp-server -> embedding-gateway NER.
 
-Redaction (:mod:`nextcloud_mcp_server.redaction`, ADR-040) POSTs text to
+Redaction (:mod:`nextcloud_mcp_sar.redaction`, ADR-040) POSTs text to
 ``POST /v1/ner`` and reads back ``results[].index`` plus, per entity, ``start``,
 ``end`` and ``label``. Those offsets are the fields the client depends on: it
 takes each name from the SUBMITTED text by offset, so the provider must keep
 returning character offsets into the text it was sent.
 
 Deliberately NOT pinned: the client's strict handling of missing, duplicate and
-out-of-range indices (``tests/unit/providers/test_ner_client.py``). The gateway is
+out-of-range indices (``packages/nextcloud-mcp-sar/tests/test_sar_ner_client.py``). The gateway is
 unauthenticated today, so no bearer is sent. See ADR-029.
 """
 
 import pytest
+from nextcloud_mcp_sar.ner import NerClient
 from pact import match
-
-from nextcloud_mcp_server.providers.ner import NerClient
 
 pytestmark = pytest.mark.contract
 
