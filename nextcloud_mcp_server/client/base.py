@@ -286,6 +286,22 @@ class BaseNextcloudClient(ABC):
             return "/index.php" + url
         return url
 
+    @staticmethod
+    def _ensure_ocs_api_request_header(kwargs: dict) -> None:
+        """Ensure every outbound request carries ``OCS-APIRequest: true``.
+
+        Nextcloud's CSRF check treats that header as the opt-in for authenticated
+        app API calls. OCS and WebDAV already send it at their call sites, but
+        non-OCS ``/apps/<app>/api/...`` routes (for example Tables v1
+        ``get_table_rows`` / ``get_table_schema``) historically did not. On
+        Nextcloud 33 with BasicAuth those calls come back as an empty HTTP 404
+        unless the header is present (#1664). WebDAV and OCS accept the header,
+        so defaulting it here is safe and removes the need for every new app
+        client to remember it. Caller-supplied headers still win on conflict.
+        """
+        incoming = kwargs.get("headers") or {}
+        kwargs["headers"] = {"OCS-APIRequest": "true", **dict(incoming)}
+
     @asynccontextmanager
     async def _stream_request(self, method: str, url: str, **kwargs):
         """Streaming sibling of :meth:`_make_request`, yielding an unread Response.
@@ -301,6 +317,7 @@ class BaseNextcloudClient(ABC):
         transport error it already is.
         """
         url = self._resolve_url(url)
+        self._ensure_ocs_api_request_header(kwargs)
         logger.debug("Making streaming %s request to %s", method, url)
 
         # Tell the response event hook to keep its hands off this body. Without
@@ -378,6 +395,7 @@ class BaseNextcloudClient(ABC):
             Response object
         """
         url = self._resolve_url(url)
+        self._ensure_ocs_api_request_header(kwargs)
         logger.debug("Making %s request to %s", method, url)
 
         # Start timer for metrics
