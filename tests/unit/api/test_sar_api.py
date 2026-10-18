@@ -24,6 +24,8 @@ from nextcloud_mcp_server.sar_export import ExportError
 pytestmark = pytest.mark.unit
 
 _MOD = "nextcloud_mcp_server.api.sar"
+# authenticate() validates the token through here.
+_AUTH = "nextcloud_mcp_server.api.management"
 CASES = "/api/v1/sar/cases"
 # What validate_token_and_get_user returns for a token with the SAR scopes
 # (and semantic.read, which a case search also needs).
@@ -65,7 +67,9 @@ def nc():
     """Authenticated as "dpo", with a background client per request."""
     client = MagicMock(username="dpo", close=AsyncMock())
     with (
-        patch(f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)),
+        patch(
+            f"{_AUTH}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)
+        ),
         patch(f"{_MOD}.background_client", AsyncMock(return_value=client)),
     ):
         yield client
@@ -158,7 +162,7 @@ def test_export_returns_202_with_its_own_job_client(nc):
     with (
         patch(f"{_MOD}.export_case", export),
         patch(f"{_MOD}.get_ner_client", AsyncMock(return_value="ner")),
-        patch("nextcloud_mcp_server.app.background_task_group", return_value="tg"),
+        patch(f"{_MOD}.background_task_group", return_value="tg"),
     ):
         response = _client().post(f"{CASES}/101/exports", json={})
     assert response.status_code == 202
@@ -169,7 +173,7 @@ def test_export_returns_202_with_its_own_job_client(nc):
 
 def test_unauthenticated_is_401():
     with patch(
-        f"{_MOD}.validate_token_and_get_user",
+        f"{_AUTH}.validate_token_and_get_user",
         AsyncMock(side_effect=ValueError("Missing Authorization header")),
     ):
         response = _client().get(CASES)
@@ -178,7 +182,9 @@ def test_unauthenticated_is_401():
 
 def test_not_provisioned_is_403():
     with (
-        patch(f"{_MOD}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)),
+        patch(
+            f"{_AUTH}.validate_token_and_get_user", AsyncMock(return_value=SAR_TOKEN)
+        ),
         patch(
             f"{_MOD}.background_client",
             AsyncMock(side_effect=ExportError("needs background access", 403)),
@@ -190,7 +196,7 @@ def test_not_provisioned_is_403():
 
 def _token(*scopes: str):
     return patch(
-        f"{_MOD}.validate_token_and_get_user",
+        f"{_AUTH}.validate_token_and_get_user",
         AsyncMock(return_value=("dpo", {"scopes": list(scopes)})),
     )
 
@@ -225,7 +231,7 @@ def test_case_search_without_sar_write_runs_no_search():
     ran = AsyncMock()
     with (
         _token("sar.read", "semantic.read"),
-        patch("nextcloud_mcp_server.api.visualization.unified_search", ran),
+        patch(f"{_MOD}.unified_search", ran),
     ):
         response = _client().post(CASES + "/101/search", json={"query": "q"})
     assert response.status_code == 403
@@ -236,7 +242,7 @@ def test_case_search_needs_semantic_read_like_the_mcp_tool():
     ran = AsyncMock()
     with (
         _token("sar.read", "sar.write"),
-        patch("nextcloud_mcp_server.api.visualization.unified_search", ran),
+        patch(f"{_MOD}.unified_search", ran),
     ):
         response = _client().post(CASES + "/101/search", json={"query": "q"})
     assert response.status_code == 403
@@ -251,7 +257,7 @@ def _search_returns(status: int = 200, body: dict | None = None):
         await request.json()
         return JSONResponse(body or {"results": [], "total_found": 3}, status)
 
-    return patch("nextcloud_mcp_server.api.visualization.unified_search", search)
+    return patch(f"{_MOD}.unified_search", search)
 
 
 FILTERED = {
@@ -298,7 +304,7 @@ def test_search_logs_the_folders_the_search_used(nc):
 
 def test_filters_the_log_cannot_hold_are_refused_before_searching(nc):
     ran = AsyncMock()
-    with patch("nextcloud_mcp_server.api.visualization.unified_search", ran):
+    with patch(f"{_MOD}.unified_search", ran):
         response = _client().post(
             CASES + "/101/search",
             json={**FILTERED, "doc_types": [f"t{i}" for i in range(101)]},

@@ -235,6 +235,35 @@ async def require_admin_scope(request: Request) -> str:
     return user_id
 
 
+async def authenticate(request: Request, *scopes: str) -> str | JSONResponse:
+    """The bearer token's user, or the response to return instead: a 401 (no
+    valid token) or a 403 (the token lacks one of ``scopes``), as
+    ``{"error", "message"}``. For plugin routes, which authenticate their own
+    requests; authorizing access to a particular resource stays the caller's
+    job (see :func:`validate_token_and_get_user`)."""
+    try:
+        user_id, validated = await validate_token_and_get_user(request)
+    except Exception as e:
+        logger.warning("Unauthorized access to %s: %s", request.url.path, e)
+        return JSONResponse(
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, request.url.path),
+            },
+            status_code=401,
+        )
+    granted = validated.get("scopes") or []
+    if missing := [s for s in scopes if s not in granted]:
+        return JSONResponse(
+            {
+                "error": "insufficient_scope",
+                "message": f"this needs the {', '.join(missing)} scope",
+            },
+            status_code=403,
+        )
+    return user_id
+
+
 def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
     """
     Return a safe, generic error message for clients.

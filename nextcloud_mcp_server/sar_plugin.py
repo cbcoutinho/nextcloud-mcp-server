@@ -13,9 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 from starlette.routing import BaseRoute, Route
 
-from nextcloud_mcp_server.config import plugin_setting
-from nextcloud_mcp_server.features import gateway_v1_url
-from nextcloud_mcp_server.plugins import Plugin
+from nextcloud_mcp_server.plugin_api import Plugin, gateway_v1_url, plugin_setting
 
 
 class SarSettings(BaseModel):
