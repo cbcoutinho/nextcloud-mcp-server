@@ -18,10 +18,11 @@ optional dependencies are not installed. Keep heavy imports inside
 ``register_tools`` / ``routes``, which only run when ``available`` is true —
 see ``sar_plugin.py``.
 
-Known gaps before a plugin can live outside this repository (Deck #1381):
-the scopes a plugin declares must also be in ``models.auth.ALL_SUPPORTED_SCOPES``
-(``load_plugins`` rejects any other), and there is no stable import surface for
-the helpers a plugin needs (``get_client``, ``require_scopes``, ...).
+A plugin owns its OAuth scopes (``<prefix>.<action>``, e.g. ``sar.read``):
+they join :func:`supported_scopes`, the vocabulary every grant and validation
+path checks, whether or not the plugin is available. A plugin also owns its
+settings, read with :func:`nextcloud_mcp_server.config.plugin_setting`; when they
+are invalid, ``available`` raises, which fails startup.
 """
 
 import logging
@@ -36,7 +37,7 @@ from mcp.server.mcpserver import MCPServer
 from starlette.routing import BaseRoute
 
 from nextcloud_mcp_server.config import Settings
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import CORE_SCOPES
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ ENTRY_POINT_GROUP = "nextcloud_mcp_server.plugins"
 # must be identifier-like and must not shadow a key the server already reports.
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
 _RESERVED_NAMES = frozenset({"rerank"})
+_SCOPE = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 
 
 def _no_routes() -> list[BaseRoute]:
@@ -59,14 +61,17 @@ class Plugin:
 
     name: str
     available: Callable[[Settings], bool]
-    """Whether the feature is configured and usable, from settings alone."""
+    """Whether the feature is configured and usable, from settings alone. Raises
+    ``ValueError`` when the plugin is enabled but misconfigured: it is first
+    called at startup, so that fails the server rather than hiding the feature."""
     register_tools: Callable[[MCPServer], None]
     routes: Callable[[], list[BaseRoute]] = _no_routes
     """HTTP routes, mounted alongside the authenticated management API (so only
     in OAuth and multi-user BasicAuth-with-offline-access modes). Handlers
     authenticate requests themselves."""
     scopes: frozenset[str] = field(default_factory=frozenset)
-    """OAuth scopes advertised via DCR only while the plugin is available."""
+    """The plugin's own OAuth scopes, ``<prefix>.<action>``. Always grantable,
+    advertised via DCR only while the plugin is available."""
 
 
 @cache
@@ -90,18 +95,25 @@ def load_plugins() -> tuple[Plugin, ...]:
                 f"entry point {ep.name!r} ({ep.value}): invalid plugin name "
                 f"{plugin.name!r}"
             )
-        # ponytail: until scopes are a registry plugins extend (Deck #1381), a
-        # plugin may only declare scopes the server already validates; anything
-        # else would be advertised via DCR yet rejected everywhere it is used.
-        if unknown := plugin.scopes - ALL_SUPPORTED_SCOPES:
-            raise ValueError(
-                f"plugin {plugin.name!r} declares scopes the server does not "
-                f"support: {sorted(unknown)}"
-            )
         if plugin.name in plugins:
             raise ValueError(f"two installed plugins are named {plugin.name!r}")
+        # A plugin's scopes are its own: withholding one from DCR while the
+        # plugin is unavailable must not withhold a core or another plugin's.
+        taken = CORE_SCOPES.union(*(p.scopes for p in plugins.values()))
+        if bad := sorted(
+            s for s in plugin.scopes if s in taken or not _SCOPE.fullmatch(s)
+        ):
+            raise ValueError(
+                f"plugin {plugin.name!r}: scopes {bad} are malformed or already "
+                "taken by the server or another plugin"
+            )
         plugins[plugin.name] = plugin
     return tuple(plugins.values())
+
+
+def supported_scopes() -> frozenset[str]:
+    """Every grantable scope: the server's own plus each installed plugin's."""
+    return CORE_SCOPES.union(*(p.scopes for p in load_plugins()))
 
 
 def available_plugins(settings: Settings) -> list[Plugin]:
@@ -116,6 +128,15 @@ def _blame(plugin: Plugin, step: str) -> Iterator[None]:
         yield
     except Exception as exc:
         raise RuntimeError(f"plugin {plugin.name!r} failed to {step}") from exc
+
+
+def check_plugins(settings: Settings) -> None:
+    """Load every plugin and check its settings, logging each. Run at startup,
+    so a broken or misconfigured plugin fails it."""
+    for plugin in load_plugins():
+        with _blame(plugin, "check its settings"):
+            available = plugin.available(settings)
+        logger.info("Plugin installed: %s (available: %s)", plugin.name, available)
 
 
 def register_plugin_tools(mcp: MCPServer, settings: Settings) -> None:

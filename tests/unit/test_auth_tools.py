@@ -15,7 +15,8 @@ from mcp.server.mcpserver import MCPServer
 
 from nextcloud_mcp_server.auth.login_flow import LoginFlowPollResult
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.models.auth import CORE_SCOPES
+from nextcloud_mcp_server.plugins import supported_scopes
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 
 pytestmark = pytest.mark.unit
@@ -229,7 +230,7 @@ async def test_delete_expired_login_flow_sessions(temp_storage):
 
 
 def test_all_supported_scopes():
-    """Test that ALL_SUPPORTED_SCOPES contains expected scopes.
+    """Test that CORE_SCOPES contains expected scopes.
 
     Read/write pairing is deliberately not asserted: it is not a property of
     this set (mail.send pairs with nothing, News is read-only in practice), and
@@ -238,12 +239,12 @@ def test_all_supported_scopes():
     passed vacuously for months. Coverage of the invariant that actually
     matters lives in tests/unit/test_scope_vocabulary_drift.py.
     """
-    assert "notes.read" in ALL_SUPPORTED_SCOPES
-    assert "notes.write" in ALL_SUPPORTED_SCOPES
-    assert "calendar.read" in ALL_SUPPORTED_SCOPES
-    assert "files.read" in ALL_SUPPORTED_SCOPES
-    assert "deck.read" in ALL_SUPPORTED_SCOPES
-    assert "semantic.read" in ALL_SUPPORTED_SCOPES
+    assert "notes.read" in CORE_SCOPES
+    assert "notes.write" in CORE_SCOPES
+    assert "calendar.read" in CORE_SCOPES
+    assert "files.read" in CORE_SCOPES
+    assert "deck.read" in CORE_SCOPES
+    assert "semantic.read" in CORE_SCOPES
 
 
 # ── Provisioning defaults ──
@@ -439,7 +440,7 @@ async def test_update_scopes_remove_on_unrestricted_grant_materialises_a_list(mo
     assert response.status != "unchanged"
     assert response.new_scopes is not None
     assert "mail.send" not in response.new_scopes
-    assert set(response.new_scopes) == ALL_SUPPORTED_SCOPES - {"mail.send"}
+    assert set(response.new_scopes) == supported_scopes() - {"mail.send"}
 
 
 # ── Background-sync wake on provisioning ──

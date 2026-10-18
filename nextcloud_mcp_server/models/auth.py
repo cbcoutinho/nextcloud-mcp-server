@@ -56,14 +56,16 @@ class UpdateScopesResponse(BaseResponse):
     new_scopes: list[str] | None = Field(None, description="Updated scope set")
 
 
-# All supported application-level scopes (frozenset for O(1) membership tests).
+# The server's own application-level scopes. Plugins add theirs:
+# ``plugins.supported_scopes()`` is the full vocabulary, and what every
+# grant/validation path checks against.
 #
-# Every scope named in a ``@require_scopes`` decorator must be a member: a scope
-# outside this set cannot be granted by any provisioning path, so the tool
-# requiring it is permanently unreachable in Login Flow v2 mode. That is how
-# ``semantic.read`` shipped dead (GH #1277) and how ``mail.send`` did before it.
-# ``test_every_tool_scope_is_grantable`` enforces the invariant.
-ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
+# Every scope named in a ``@require_scopes`` decorator must be supported: a
+# scope outside the vocabulary cannot be granted by any provisioning path, so
+# the tool requiring it is permanently unreachable in Login Flow v2 mode. That is
+# how ``semantic.read`` shipped dead (GH #1277) and how ``mail.send`` did before
+# it. ``test_every_tool_scope_is_grantable`` enforces the invariant.
+CORE_SCOPES: frozenset[str] = frozenset(
     {
         "notes.read",
         "notes.write",
@@ -98,15 +100,5 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         # same way, so it lives in the same vocabulary. Advertised in DCR only
         # when vector sync is enabled — see app.py.
         "semantic.read",
-        # Subject access request cases (ADR-040): reading cases, and changing
-        # them, searching for them and exporting redacted archives. Their own
-        # scopes because exporting personal data about someone is a distinct
-        # grant from reading files. Advertised in DCR only when SAR is
-        # available.
-        "sar.read",
-        "sar.write",
     }
 )
-
-# Scopes advertised only while the feature behind them is enabled.
-SAR_SCOPES: frozenset[str] = frozenset({"sar.read", "sar.write"})
