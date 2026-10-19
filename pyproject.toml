@@ -208,8 +208,8 @@ documents = [
     # ``page``) to ``document_layout`` (key ``page_number``). Upstream pins its
     # own pymupdf dependency exactly for the same reason (see their CHANGES for
     # 1.27.2.1), so the two versions must move together.
-    "pymupdf==1.28.2",
-    "pymupdf4llm==1.28.2",
+    "pymupdf==2.0",
+    "pymupdf4llm==2.0",
     "pypdfium2>=5.9.0",
     "python-pptx>=1.0.2",
     "python-docx>=1.2.0",
