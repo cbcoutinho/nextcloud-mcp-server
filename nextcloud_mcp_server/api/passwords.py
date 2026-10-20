@@ -232,7 +232,6 @@ async def _validate_nextcloud_credentials(
                 f"{nextcloud_host}/ocs/v2.php/cloud/user",
                 auth=(login_name, password),
                 params={"format": "json"},
-                headers={"OCS-APIRequest": "true"},
             )
     except httpx.RequestError as e:
         logger.error("Failed to reach Nextcloud for credential validation: %s", e)

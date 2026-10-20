@@ -1,9 +1,8 @@
 """Mocked unit tests for the Shopping List client.
 
 What these pin down is the OCS-specific behaviour the rest of the codebase
-cannot see: that the envelope is unwrapped, that the ``OCS-APIRequest`` header
-goes out on every call (without it Nextcloud answers 997, not a 4xx), and that
-an empty 204 body does not blow up on ``.json()``.
+cannot see: that the envelope is unwrapped and that an empty 204 body does not
+blow up on ``.json()``.
 """
 
 import httpx
@@ -76,15 +75,6 @@ async def test_get_lists_unwraps_ocs_envelope(mocker):
     assert lists == [LIST_FIXTURE]
     method, url = make_request.call_args.args
     assert (method, url) == ("GET", f"{API}/lists")
-
-
-async def test_every_request_sends_the_ocs_header(mocker):
-    """Without ``OCS-APIRequest`` Nextcloud answers 997, not a 4xx."""
-    client, make_request = _client(mocker, json_data=_ocs(LIST_FIXTURE))
-
-    await client.get_list(3)
-
-    assert make_request.call_args.kwargs["headers"]["OCS-APIRequest"] == "true"
 
 
 async def test_create_list_posts_title(mocker):

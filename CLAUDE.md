@@ -103,6 +103,14 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   - Don't reimplement `_make_request` in a subclass — a private copy silently skips
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
+  - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx client
+    sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
+    `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
+    Nextcloud-bound `httpx.AsyncClient` through that factory. Pass only
+    request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
+    `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
+    both rules (GH #1664: the per-call opt-in left the Tables v1 routes without
+    the header, and Nextcloud 33 answers those with an empty 404).
   - **Known exception**: `CalendarClient` talks CalDAV via its own `caldav` session,
     not the shared Nextcloud HTTP client, so it does not extend `BaseNextcloudClient`.
     This is intentional — do not "fix" it.

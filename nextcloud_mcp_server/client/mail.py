@@ -118,11 +118,11 @@ class MailClient(BaseNextcloudClient):
     # as bare ``/apps/...`` paths (``_resolve_url`` prepends ``/index.php``).
     API_BASE = "/apps/mail/api"
 
-    # The OCS-APIRequest header authenticates the OCS routes and exempts the
-    # direct routes from CSRF, so both families use the same headers.
-    # Shared with the other OCS clients -- see collectives for why the header
-    # set has a single home.
-    _API_HEADERS = dict(OCS_REQUEST_HEADERS)
+    # Both route families want JSON, so they share this ``Accept``-only set. The
+    # OCS-APIRequest header that authenticates the OCS routes and CSRF-exempts
+    # the direct ones is not in it: the httpx client sends that on every request
+    # (``http.NEXTCLOUD_DEFAULT_HEADERS``).
+    _API_JSON_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"
 
@@ -148,7 +148,7 @@ class MailClient(BaseNextcloudClient):
             "GET",
             f"{self.OCS_BASE}{path}",
             params=query,
-            headers=self._API_HEADERS,
+            headers=self._API_JSON_HEADERS,
         )
         # ``_make_request`` (base) already raised on any non-2xx status; an OCS
         # meta failure arrives as HTTP 200 and is handled by ``_ocs_response``.
@@ -168,7 +168,7 @@ class MailClient(BaseNextcloudClient):
             "GET",
             f"{self.API_BASE}{path}",
             params=params,
-            headers=self._API_HEADERS,
+            headers=self._API_JSON_HEADERS,
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
         return response.json()
@@ -193,7 +193,7 @@ class MailClient(BaseNextcloudClient):
         # Only declare a JSON content type when there is actually a body: the
         # tag assign/remove and delete routes take none, and announcing
         # application/json for a bodyless request is misleading.
-        headers = dict(self._API_HEADERS)
+        headers = dict(self._API_JSON_HEADERS)
         if json_data is not None:
             headers["Content-Type"] = "application/json"
 
@@ -318,7 +318,7 @@ class MailClient(BaseNextcloudClient):
                 "POST",
                 f"{self.API_BASE}/mailboxes/{mailbox_id}/sync",
                 json={"init": True},
-                headers=self._API_HEADERS,
+                headers=self._API_JSON_HEADERS,
             )
             if response.status_code != 202:
                 return
@@ -369,11 +369,10 @@ class MailClient(BaseNextcloudClient):
         safe_id = quote(attachment_id, safe="")
         # Binary download: unlike the JSON helpers, don't send
         # ``Accept: application/json`` (mirrors ``DeckClient.get_attachment_file``).
-        # The ``OCS-APIRequest`` header still CSRF-exempts this direct route.
+        # The client-wide ``OCS-APIRequest`` header still CSRF-exempts this route.
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
-            headers={"OCS-APIRequest": "true"},
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
         raw = response.content

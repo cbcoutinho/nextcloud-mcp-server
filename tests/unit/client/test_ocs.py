@@ -9,7 +9,6 @@ server failure.
 import pytest
 
 from nextcloud_mcp_server.client.ocs import (
-    OCS_REQUEST_HEADERS,
     OCS_STATUS_UNAUTHENTICATED,
     describe_ocs_failure,
     parse_ocs_envelope,
@@ -115,12 +114,6 @@ def test_missing_data_key_is_distinguishable_from_null_data():
 
     assert not absent.has_data
     assert present.has_data
-
-
-def test_request_headers_carry_the_csrf_header():
-    """Shipping the header from one place is what stops a new call site
-    forgetting it and then hitting the 997 it just made confusing."""
-    assert OCS_REQUEST_HEADERS["OCS-APIRequest"] == "true"
 
 
 @pytest.mark.parametrize("raw", [0, "", None])

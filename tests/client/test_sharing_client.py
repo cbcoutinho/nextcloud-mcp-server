@@ -69,9 +69,6 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
         "shareWith": "123",
         "permissions": 1,
     }
-    # Nextcloud demands this header on OCS endpoints; without it the request
-    # is rejected as a CSRF risk.
-    assert call.kwargs["headers"]["OCS-APIRequest"] == "true"
 
 
 async def test_create_public_link_payload(sharing_client, mocker):
@@ -110,7 +107,6 @@ async def test_create_public_link_payload(sharing_client, mocker):
     }
     # Public link: no recipient is sent.
     assert "shareWith" not in call.kwargs["data"]
-    assert call.kwargs["headers"]["OCS-APIRequest"] == "true"
 
 
 async def test_create_public_link_omits_expire_date_when_none(sharing_client, mocker):
