@@ -36,6 +36,11 @@
       "matchPackageNames": ["docker.io/library/nextcloud"],
       "matchFileNames": ["docker-compose.yml"],
       "allowedVersions": "/^32\\./"
+    },
+    {
+      "description": "Cap Python at 3.14 until psycopg-binary ships cp315 wheels — 3.15 broke bump-version",
+      "matchPackageNames": ["python", "actions/python-versions", "docker.io/library/python"],
+      "allowedVersions": "<3.15"
     }
   ],
   "customManagers": [
