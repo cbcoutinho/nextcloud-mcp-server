@@ -829,12 +829,16 @@ class BasicAuthMiddleware:
 
     The credentials are NOT stored persistently. A successful check is
     remembered for ``_VALID_TTL`` seconds, keyed by a hash of the header, so
-    each request doesn't cost a Nextcloud round-trip.
+    each request doesn't cost a Nextcloud round-trip. Failures are not cached:
+    a negative cache only dedupes an identical bad header, not varied guesses,
+    and before this check every bad tool call already reached Nextcloud, whose
+    brute-force protection remains the throttle.
     """
 
     # ponytail: a revoked password stays accepted for up to this long; lower it
     # if revocation latency matters more than one OCS call per request.
     _VALID_TTL = 60.0
+    _PRUNE_AT = 256
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -859,7 +863,8 @@ class BasicAuthMiddleware:
             return error
 
         # Drop expired entries so the map is bounded by recently-active users.
-        self._validated = {k: t for k, t in self._validated.items() if t > now}
+        if len(self._validated) >= self._PRUNE_AT:
+            self._validated = {k: t for k, t in self._validated.items() if t > now}
         self._validated[key] = now + self._VALID_TTL
         return None
 
@@ -879,22 +884,25 @@ class BasicAuthMiddleware:
                     username, password = decoded.split(":", 1)
                 except Exception as e:
                     logger.warning("Failed to extract BasicAuth credentials: %s", e)
+                    error = JSONResponse(
+                        {"success": False, "error": "Malformed credentials"},
+                        status_code=401,
+                    )
                 else:
                     error = await self._verify(auth_header, username, password)
-                    if error is not None:
-                        error.headers["WWW-Authenticate"] = 'Basic realm="nextcloud"'
-                        await error(scope, receive, send)
-                        return
 
-                    # Store in request state
-                    scope.setdefault("state", {})
-                    scope["state"]["basic_auth"] = {
-                        "username": username,
-                        "password": password,
-                    }
-                    logger.debug(
-                        "BasicAuth credentials extracted for user: %s", username
-                    )
+                if error is not None:
+                    error.headers["WWW-Authenticate"] = 'Basic realm="nextcloud"'
+                    await error(scope, receive, send)
+                    return
+
+                # Store in request state
+                scope.setdefault("state", {})
+                scope["state"]["basic_auth"] = {
+                    "username": username,
+                    "password": password,
+                }
+                logger.debug("BasicAuth credentials extracted for user: %s", username)
 
         await self.app(scope, receive, send)
 
