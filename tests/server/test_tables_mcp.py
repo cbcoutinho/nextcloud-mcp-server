@@ -34,13 +34,20 @@ async def temporary_table(nc_client: NextcloudClient):
     """A table owned by the test user, plus a text column id; deleted afterwards.
 
     Built from Tables' ``todo`` template, which ships text columns -- creating a
-    column via ``POST /api/2/columns/text`` 500s on Tables 2.3.2.
+    column via ``POST /api/2/columns/text`` 500s on Tables 2.3.2. The emoji is
+    load-bearing: the Tables release installed on Nextcloud 32 builds its
+    ``TableScheme`` with a non-nullable ``$emoji``, so ``/scheme`` 500s on an
+    emoji-less table.
     """
     http = nc_client._client
     headers = dict(OCS_REQUEST_HEADERS)
     response = await http.post(
         f"{_TABLES_OCS}/tables",
-        json={"title": f"MCP Test Table {uuid.uuid4().hex[:8]}", "template": "todo"},
+        json={
+            "title": f"MCP Test Table {uuid.uuid4().hex[:8]}",
+            "emoji": "🧪",
+            "template": "todo",
+        },
         headers=headers,
     )
     response.raise_for_status()
