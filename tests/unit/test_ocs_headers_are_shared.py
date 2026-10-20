@@ -147,6 +147,12 @@ def test_factory_sends_default_headers_and_merges_caller_headers():
     assert dict(NEXTCLOUD_DEFAULT_HEADERS) == {"OCS-APIRequest": "true"}
 
 
+def test_factory_override_is_case_insensitive_and_accepts_tuple_lists():
+    """A caller's header replaces the default whatever its case or shape."""
+    client = nextcloud_httpx_client(headers=[("ocs-apirequest", "false")])
+    assert client.headers.get_list("OCS-APIRequest") == ["false"]
+
+
 def test_nextcloud_client_sends_the_header():
     client = NextcloudClient(
         base_url="https://nc.example.com",

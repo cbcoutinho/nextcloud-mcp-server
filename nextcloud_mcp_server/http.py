@@ -46,7 +46,11 @@ def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
         Configured ``httpx.AsyncClient``.
     """
     kwargs.setdefault("verify", get_nextcloud_ssl_verify())
-    kwargs["headers"] = {**NEXTCLOUD_DEFAULT_HEADERS, **(kwargs.get("headers") or {})}
+    # httpx.Headers: case-insensitive override, and accepts every header shape
+    # httpx does (mapping, Headers, list of tuples).
+    headers = httpx.Headers(NEXTCLOUD_DEFAULT_HEADERS)
+    headers.update(kwargs.get("headers") or {})
+    kwargs["headers"] = headers
     return httpx.AsyncClient(**kwargs)
 
 
