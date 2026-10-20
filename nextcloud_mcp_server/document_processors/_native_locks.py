@@ -27,7 +27,7 @@ concurrent jobs stay attributable in traces/logs.
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 
 from nextcloud_mcp_server.observability.metrics import record_pdf_native_lock_wait
@@ -39,7 +39,7 @@ PYMUPDF_LOCK = threading.Lock()
 
 
 @contextmanager
-def _serialized(lock: threading.Lock, library: str) -> Iterator[None]:
+def _serialized(lock: threading.Lock, library: str) -> Generator[None]:
     start = time.perf_counter()
     lock.acquire()
     record_pdf_native_lock_wait(library, time.perf_counter() - start)

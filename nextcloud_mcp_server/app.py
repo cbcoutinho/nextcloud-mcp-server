@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -965,7 +965,7 @@ async def load_oauth_client_credentials(
 
 
 @asynccontextmanager
-async def app_lifespan_basic(server: MCPServer) -> AsyncIterator[AppContext]:
+async def app_lifespan_basic(server: MCPServer) -> AsyncGenerator[AppContext]:
     """
     Manage application lifecycle for BasicAuth mode (MCPServer session lifespan).
 
@@ -1816,7 +1816,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Create lifespan function with captured OAuth context (closure)
         @asynccontextmanager
-        async def oauth_lifespan(server: MCPServer) -> AsyncIterator[OAuthAppContext]:
+        async def oauth_lifespan(server: MCPServer) -> AsyncGenerator[OAuthAppContext]:
             """
             Lifespan context for OAuth mode - captures OAuth configuration from outer scope.
             """
