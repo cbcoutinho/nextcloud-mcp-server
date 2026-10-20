@@ -26,7 +26,7 @@ the helpers a plugin needs (``get_client``, ``require_scopes``, ...).
 
 import logging
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import cache
@@ -110,7 +110,7 @@ def available_plugins(settings: Settings) -> list[Plugin]:
 
 
 @contextmanager
-def _blame(plugin: Plugin, step: str) -> Iterator[None]:
+def _blame(plugin: Plugin, step: str) -> Generator[None]:
     """Re-raise a plugin's own failure naming the plugin, as load_plugins does."""
     try:
         yield

@@ -10,7 +10,7 @@ metrics are wired in, mirroring ``app.py``, since they cost nothing here.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -42,7 +42,7 @@ class StdioContext(BasicAuthLifespanContext):
 
 
 @asynccontextmanager
-async def stdio_lifespan(server: MCPServer) -> AsyncIterator[StdioContext]:
+async def stdio_lifespan(server: MCPServer) -> AsyncGenerator[StdioContext]:
     """Create and tear down a single :class:`NextcloudClient`."""
     logger.info("Starting MCP server in stdio mode (single-user BasicAuth)")
     client = NextcloudClient.from_env()

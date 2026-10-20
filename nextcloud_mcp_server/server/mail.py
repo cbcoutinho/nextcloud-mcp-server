@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _mail_errors(action: str) -> Iterator[None]:
+def _mail_errors(action: str) -> Generator[None]:
     """Map client transport errors onto ``MCPError`` with a consistent message.
 
     Args:

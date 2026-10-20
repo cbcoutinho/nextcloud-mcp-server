@@ -13,7 +13,7 @@ the layering note in ``document_processors/escalation.py``).
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -32,7 +32,7 @@ async def spooled_document(
     *,
     spool_dir: str | None = None,
     max_bytes: int | None = None,
-) -> AsyncIterator[SpooledDocumentSource]:
+) -> AsyncGenerator[SpooledDocumentSource]:
     """Stream ``file_path`` to a spool file and yield it as a document source.
 
     The block owns the spool for its whole duration and removes it on exit,

@@ -32,10 +32,11 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, ClassVar, Iterator, Protocol, runtime_checkable
+from typing import IO, ClassVar, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ async def resolve_path(source: DocumentSource) -> Path:
 
 
 @contextmanager
-def spool_target(spool_dir: str | None = None) -> Iterator[Path]:
+def spool_target(spool_dir: str | None = None) -> Generator[Path]:
     """Yield a fresh spool path; the file is removed when the block exits.
 
     **This block owns the file for its whole lifetime**, on success as well as

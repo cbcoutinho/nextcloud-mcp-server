@@ -44,7 +44,9 @@ def upgrade() -> None:
         # both backends (see usage/store.py).
         sa.Column(
             "event_id",
-            postgresql.UUID(as_uuid=False) if is_pg else sa.Text(),
+            postgresql.UUID(as_uuid=False)  # ty: ignore[no-matching-overload]  # ty 0.0.89 rejects the Literal[False] overload's self-type
+            if is_pg
+            else sa.Text(),
             primary_key=True,
         ),
         # Operation completion time (UTC). Real TIMESTAMPTZ on Postgres so the
