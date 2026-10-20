@@ -34,6 +34,11 @@ def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
     takes precedence if explicitly provided. ``NEXTCLOUD_DEFAULT_HEADERS``
     are client defaults; caller-supplied ``headers`` are merged over them.
 
+    Nextcloud-specific: build clients for other services (Qdrant, the
+    embedding gateway, document processors, ...) with ``httpx.AsyncClient``
+    directly. The configured OIDC provider is the one sanctioned exception,
+    because it shares Nextcloud's TLS settings; it ignores the extra header.
+
     Args:
         **kwargs: Forwarded to ``httpx.AsyncClient()``.
 

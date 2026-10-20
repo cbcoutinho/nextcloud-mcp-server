@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
+_XML_CONTENT_TYPE = "text/xml"
 
 
 class OversizeDownload(Exception):
@@ -715,7 +716,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "1", "Content-Type": "text/xml"}
+        headers = {"Depth": "1", "Content-Type": _XML_CONTENT_TYPE}
 
         try:
             response = await self._make_request(
@@ -1319,7 +1320,7 @@ class WebDAVClient(BaseNextcloudClient):
         # The SEARCH endpoint is at the dav root
         search_path = "/remote.php/dav/"
 
-        headers = {"Content-Type": "text/xml"}
+        headers = {"Content-Type": _XML_CONTENT_TYPE}
 
         logger.debug("Searching files in scope: %s", scope)
 
@@ -2010,7 +2011,7 @@ class WebDAVClient(BaseNextcloudClient):
             '<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
             "<d:prop><oc:fileid/></d:prop></d:propfind>"
         )
-        headers = {"Depth": "0", "Content-Type": "text/xml"}
+        headers = {"Depth": "0", "Content-Type": _XML_CONTENT_TYPE}
         try:
             response = await self._make_request(
                 "PROPFIND", webdav_path, content=propfind_body, headers=headers
@@ -2065,7 +2066,7 @@ class WebDAVClient(BaseNextcloudClient):
             content=body,
             headers={
                 "Depth": "0",
-                "Content-Type": "text/xml",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
         )
 
@@ -2146,7 +2147,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "0", "Content-Type": "text/xml"}
+        headers = {"Depth": "0", "Content-Type": _XML_CONTENT_TYPE}
 
         response = await self._make_request(
             "PROPFIND", meta_path, content=propfind_body, headers=headers
@@ -2245,7 +2246,7 @@ class WebDAVClient(BaseNextcloudClient):
             "/remote.php/dav/systemtags/",
             headers={
                 "Depth": "1",
-                "Content-Type": "text/xml",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
             content=propfind_body,
         )
@@ -2335,7 +2336,7 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
-            headers={"Content-Type": "text/xml"},
+            headers={"Content-Type": _XML_CONTENT_TYPE},
             content=report_body,
         )
         # Redundant after _make_request (which raises on non-2xx) but
@@ -2880,7 +2881,7 @@ class WebDAVClient(BaseNextcloudClient):
             "/remote.php/dav/systemtags/",
             headers={
                 "Depth": "1",
-                "Content-Type": "text/xml",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
             content=self._TAG_PROPFIND,
         )
@@ -2936,7 +2937,7 @@ class WebDAVClient(BaseNextcloudClient):
             f"/remote.php/dav/systemtags-relations/files/{file_id}",
             headers={
                 "Depth": "1",
-                "Content-Type": "text/xml",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
             content=self._TAG_PROPFIND,
         )
