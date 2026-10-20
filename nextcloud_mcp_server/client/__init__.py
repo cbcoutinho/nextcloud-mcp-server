@@ -8,6 +8,7 @@ from httpx import (
     Auth,
     BasicAuth,
     Request,
+    RequestNotRead,
     Response,
     Timeout,
 )
@@ -35,13 +36,27 @@ from .webdav import WebDAVClient
 logger = logging.getLogger(__name__)
 
 
-async def log_request(request: Request):
+async def log_request(request: Request) -> None:
+    """Log the outgoing request at DEBUG, without touching a streamed body.
+
+    httpx only buffers a request body up front when it is given as bytes, str,
+    form data or JSON. For a streamed body (an async iterable, or multipart
+    ``files=``) ``request.content`` raises ``RequestNotRead`` instead. It used
+    to be evaluated as a log argument even with DEBUG off, so any such request
+    on the shared client would fail in this hook before it was sent.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     logger.debug(
         "Request event hook: %s %s - Waiting for content",
         request.method,
         request.url,
     )
-    logger.debug("Request body: %s", request.content)
+    try:
+        body: object = request.content
+    except RequestNotRead:
+        body = "<streaming; body not read>"
+    logger.debug("Request body: %s", body)
     logger.debug("Headers: %s", request.headers)
 
 
