@@ -694,6 +694,26 @@ async def test_verify_files_under_tagged_folder_is_kept(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_files_row_without_fileid_is_skipped(mocker):
+    """A SEARCH row missing its fileid is skipped, not a KeyError that would
+    fail the whole page open: the other rows are still verified."""
+    _patch_excluded(mocker)
+    client = _file_client(
+        mocker,
+        tagged=[_tagged_folder("/Cases")],
+        in_tree=[{"path": "Cases/x.pdf", "content_type": "application/pdf"}],
+    )
+
+    result = await _verify_files(
+        client,
+        [_make_result(300, doc_type="file"), _make_result(400, doc_type="file")],
+        _sem(),
+    )
+
+    assert result == set()
+
+
+@pytest.mark.unit
 async def test_verify_files_folder_prefix_is_not_a_match(mocker):
     """`Cases` being tagged must not cover a sibling `Cases-old`."""
     _patch_excluded(mocker)

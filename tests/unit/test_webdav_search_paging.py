@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_mcp_server.client.webdav import FILE_ID_BATCH, WebDAVClient
 
 pytestmark = pytest.mark.unit
 
@@ -200,3 +200,31 @@ def test_build_search_xml_emits_offset_only_when_set(mocker):
         offset=None,
     )
     assert "<d:limit>" not in unlimited
+
+
+async def test_find_files_by_ids_batches_and_ors_the_ids(mocker):
+    """One SEARCH per FILE_ID_BATCH ids, OR-ing an oc:fileid match per id; a
+    single id is sent as a bare match (no one-operand <d:or>)."""
+    client = _make_client(mocker)
+    client.search_files = AsyncMock(return_value=[])
+    ids = list(range(1, FILE_ID_BATCH + 2))
+
+    await client.find_files_by_ids(ids)
+
+    first, second = (c.kwargs for c in client.search_files.await_args_list)
+    assert first["where_conditions"].startswith("<d:or>")
+    assert first["where_conditions"].count("<oc:fileid/>") == FILE_ID_BATCH
+    assert first["limit"] == 2 * FILE_ID_BATCH
+    assert second["where_conditions"] == (
+        f"<d:eq><d:prop><oc:fileid/></d:prop><d:literal>{ids[-1]}</d:literal></d:eq>"
+    )
+
+
+async def test_find_files_by_ids_full_page_raises(mocker):
+    """A full page may be truncated, and a missing row would read as
+    inaccessible and evict a live file, so it raises (the verifier fails open)."""
+    client = _make_client(mocker)
+    client.search_files = AsyncMock(return_value=_corpus(4))
+
+    with pytest.raises(RuntimeError, match="truncated"):
+        await client.find_files_by_ids([1, 2])

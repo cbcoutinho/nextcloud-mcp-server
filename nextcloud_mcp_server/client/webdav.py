@@ -2026,17 +2026,26 @@ class WebDAVClient(BaseNextcloudClient):
                 f"<d:literal>{int(file_id)}</d:literal></d:eq>"
                 for file_id in batch
             )
-            found += await self.search_files(
+            # Headroom over len(batch): a file mounted at two paths (shared to
+            # the user twice) returns one row per path.
+            limit = 2 * len(batch)
+            page = await self.search_files(
                 scope="",
                 where_conditions=matches
                 if len(batch) == 1
                 else f"<d:or>{matches}</d:or>",
                 properties=["fileid", "getcontenttype"],
-                # Headroom over len(batch): a file mounted at two paths (shared
-                # to the user twice) returns one row per path, and a truncated
-                # page would read as "inaccessible" and evict a live file.
-                limit=2 * len(batch),
+                limit=limit,
             )
+            if len(page) >= limit:
+                # A full page may be truncated, and a missing row reads as
+                # "inaccessible", which evicts a live file. Raise instead so
+                # the caller fails open.
+                raise RuntimeError(
+                    f"SEARCH-by-fileid returned a full page ({limit} rows) "
+                    f"for {len(batch)} ids; result may be truncated"
+                )
+            found += page
         return found
 
     async def get_fileid(self, path: str) -> str | None:

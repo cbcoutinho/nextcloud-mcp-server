@@ -35,8 +35,9 @@ Failure policy (notes / deck_card / news_item — the per-access verifiers):
 The ``file`` verifier is the exception to the first rule: it gates on current
 index-tag membership (direct or via a tagged folder), so a file is
 dropped+evicted when it is not tagged, not in the user's tree (deleted or
-unshared), or under an ``EXCLUDED_TAGS`` folder — not on a per-file 403/404. A failed tag
-fetch still fails open. See ``_verify_files`` for the full contract.
+unshared), or under an ``EXCLUDED_TAGS`` folder — not on a per-file 403/404.
+A failed tag fetch still fails open. See ``_verify_files`` for the full
+contract.
 """
 
 import logging
@@ -158,19 +159,38 @@ async def _tagged_index_items(
     if not indexable:
         # Empty allowlist = index nothing (see _discover_tagged_files).
         return files, folders
-    for tag_name in (settings.vector_sync_tag, settings.vector_sync_keyword_tag):
-        if not tag_name:
-            continue
+
+    async def collect(tag_name: str) -> None:
         tag = await client.webdav.get_tag_by_name(tag_name)
         if not tag:
-            continue
+            return
         for item in await client.webdav.get_files_by_tag(tag["id"]):
             path = item.get("path", "").strip("/")
             if item.get("is_directory"):
                 folders.add(path)
             elif item.get("content_type", "").startswith(indexable):
                 files[str(item["id"])] = path
+
+    # The tags are independent, so look them up concurrently. A failure
+    # surfaces as an ExceptionGroup, which the caller's fail-open catches.
+    async with anyio.create_task_group() as tg:
+        for tag_name in (settings.vector_sync_tag, settings.vector_sync_keyword_tag):
+            if tag_name:
+                tg.start_soon(collect, tag_name)
     return files, folders
+
+
+def _under_any(path: str, folders: set[str]) -> bool:
+    """Whether ``path`` is at or under one of ``folders`` (slash-stripped).
+
+    ``is_path_excluded`` is exactly that test; it is named for its first use.
+    """
+    # Lazy import: same import cycle as in _verify_files.
+    from nextcloud_mcp_server.server.tag_exclusion import (  # noqa: PLC0415
+        is_path_excluded,
+    )
+
+    return is_path_excluded(path, folders)
 
 
 async def _verify_files(
@@ -238,14 +258,18 @@ async def _verify_files(
             pending = sorted(int(i) for i in valid_ids - visible.keys())
             if tagged_folders and pending:
                 for row in await client.webdav.find_files_by_ids(pending):
+                    file_id = row.get("file_id")
                     path = row.get("path", "")
-                    if row.get("content_type", "").startswith(
-                        settings.indexable_mime_types
-                    ) and is_path_excluded(path, tagged_folders):
-                        # is_path_excluded is the generic "path is at or under
-                        # one of these folders" test; here the folders are the
-                        # *tagged* ones.
-                        visible[str(row["file_id"])] = path
+                    # A row without a fileid is skipped rather than raising:
+                    # a KeyError would fail the whole page open.
+                    if (
+                        file_id is not None
+                        and row.get("content_type", "").startswith(
+                            settings.indexable_mime_types
+                        )
+                        and _under_any(path, tagged_folders)
+                    ):
+                        visible[str(file_id)] = path
         except Exception as e:
             logger.warning(
                 "Error checking index tags for file verification: %s; keeping "
