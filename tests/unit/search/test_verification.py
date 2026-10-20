@@ -8,7 +8,6 @@ import httpx
 import pytest
 from httpx import HTTPStatusError
 
-from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import (
@@ -595,41 +594,67 @@ def _patch_excluded(mocker, paths: set[str] | None = None, *, side_effect=None):
     )
 
 
-def _file_client(mocker, *, tagged=None, find_side_effect=None, username="alice"):
-    """Build a client whose find_files_by_tag returns the given tagged files."""
+def _tagged_file(file_id, path, content_type="application/pdf"):
+    """A directly-tagged file row, as get_files_by_tag returns it."""
+    return {"id": file_id, "path": path, "content_type": content_type}
+
+
+def _tagged_folder(path):
+    return {"id": 1, "path": path, "is_directory": True, "content_type": ""}
+
+
+def _tree_row(file_id, path, content_type="application/pdf"):
+    """A find_files_by_ids row: user-relative path, no leading slash."""
+    return {"file_id": file_id, "path": path, "content_type": content_type}
+
+
+def _file_client(
+    mocker,
+    *,
+    tagged=None,
+    in_tree=None,
+    find_side_effect=None,
+    username="alice",
+):
+    """A client whose tag REPORT returns ``tagged`` (for every index tag) and
+    whose SEARCH-by-fileid returns ``in_tree``."""
     if find_side_effect is not None:
-        find = mocker.AsyncMock(side_effect=find_side_effect)
+        by_tag = mocker.AsyncMock(side_effect=find_side_effect)
     else:
-        find = mocker.AsyncMock(return_value=tagged if tagged is not None else [])
+        by_tag = mocker.AsyncMock(return_value=tagged if tagged is not None else [])
     return SimpleNamespace(
-        find_files_by_tag=find,
-        webdav=SimpleNamespace(),
+        webdav=SimpleNamespace(
+            get_tag_by_name=mocker.AsyncMock(
+                side_effect=lambda name: {"id": 9, "name": name}
+            ),
+            get_files_by_tag=by_tag,
+            find_files_by_ids=mocker.AsyncMock(return_value=in_tree or []),
+        ),
         username=username,
     )
 
 
 @pytest.mark.unit
 async def test_verify_files_tagged_is_kept(mocker):
-    """A file currently carrying an index tag is kept, and the tagged set is
-    fetched with one batch call per tag (not one per result). Both tags are
-    queried by default (keyword-index is on by default)."""
+    """A directly-tagged file is kept from the tag REPORT alone: no per-result
+    lookup. Both index tags are queried (keyword-index is on by default)."""
     _patch_excluded(mocker)
-    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
+    client = _file_client(mocker, tagged=[_tagged_file(100, "/Documents/foo.pdf")])
 
     result = await _verify_files(client, [_make_result(100, doc_type="file")], _sem())
 
     assert result == {"100"}
-    client.find_files_by_tag.assert_any_await(
-        "vector-index", mime_type_filter=Settings().indexable_mime_types
-    )
+    names = [c.args[0] for c in client.webdav.get_tag_by_name.await_args_list]
+    assert names == ["vector-index", "keyword-index"]
+    client.webdav.find_files_by_ids.assert_not_awaited()
 
 
 @pytest.mark.unit
 async def test_verify_files_untagged_drops(mocker):
-    """A file removed from the vector-index tag (absent from the tagged set) is
-    dropped even though it may still exist and be readable by the user."""
+    """A file removed from the index tags is dropped even though it may still
+    exist and be readable by the user."""
     _patch_excluded(mocker)
-    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
+    client = _file_client(mocker, tagged=[_tagged_file(100, "/Documents/foo.pdf")])
 
     result = await _verify_files(
         client,
@@ -642,8 +667,50 @@ async def test_verify_files_untagged_drops(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_files_under_tagged_folder_is_kept(mocker):
+    """A file inheriting the tag from an ancestor folder is kept, found by one
+    batched SEARCH-by-fileid over just the results — never a folder walk."""
+    _patch_excluded(mocker)
+    client = _file_client(
+        mocker,
+        tagged=[_tagged_folder("/Cases")],
+        in_tree=[
+            _tree_row(300, "Cases/2026/a.pdf"),
+            _tree_row(400, "Elsewhere/b.pdf"),  # in the tree, not under a tag
+            _tree_row(500, "Cases/c.mp4", content_type="video/mp4"),
+        ],
+    )
+
+    result = await _verify_files(
+        client,
+        [_make_result(i, doc_type="file") for i in (300, 400, 500, 600)],
+        _sem(),
+    )
+
+    # 400: not under a tagged folder; 500: not an indexable type; 600: not in
+    # the user's tree (deleted/unshared).
+    assert result == {"300"}
+    client.webdav.find_files_by_ids.assert_awaited_once_with([300, 400, 500, 600])
+
+
+@pytest.mark.unit
+async def test_verify_files_folder_prefix_is_not_a_match(mocker):
+    """`Cases` being tagged must not cover a sibling `Cases-old`."""
+    _patch_excluded(mocker)
+    client = _file_client(
+        mocker,
+        tagged=[_tagged_folder("/Cases")],
+        in_tree=[_tree_row(300, "Cases-old/a.pdf")],
+    )
+
+    result = await _verify_files(client, [_make_result(300, doc_type="file")], _sem())
+
+    assert result == set()
+
+
+@pytest.mark.unit
 async def test_verify_files_deleted_drops(mocker):
-    """A deleted file is absent from the tagged set → dropped (caller evicts)."""
+    """A deleted file is in no tag listing → dropped (caller evicts)."""
     _patch_excluded(mocker)
     client = _file_client(mocker, tagged=[])
 
@@ -653,11 +720,10 @@ async def test_verify_files_deleted_drops(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_files_empty_tag_set_skips_exclusion_lookup(mocker):
-    """When the tag REPORT returns no files, the EXCLUDED_TAGS lookup is skipped
-    entirely: an empty tagged set drops every valid-id result regardless of
-    exclusions, so the lookup's 2xN WebDAV fan-out is wasted work. Malformed
-    doc_ids are still kept (fail-open), exactly as on the non-empty path."""
+async def test_verify_files_nothing_visible_skips_lookups(mocker):
+    """With no tagged folders there is nothing to inherit, so no SEARCH; and
+    with nothing visible the EXCLUDED_TAGS fan-out cannot change the outcome,
+    so it is skipped. Malformed doc_ids are still kept (fail-open)."""
     excluded = _patch_excluded(mocker, {"Secret"})
     client = _file_client(mocker, tagged=[])
 
@@ -670,29 +736,31 @@ async def test_verify_files_empty_tag_set_skips_exclusion_lookup(mocker):
         _sem(),
     )
 
-    # Valid id absent from the (empty) tagged set → dropped; malformed id kept.
     assert result == {"not-a-file-id"}
-    # The optimization: no exclusion fan-out when there is nothing to filter.
+    client.webdav.find_files_by_ids.assert_not_awaited()
     excluded.assert_not_awaited()
 
 
 @pytest.mark.unit
 async def test_verify_files_excluded_path_drops(mocker):
-    """A tagged file under an EXCLUDED_TAGS folder must not surface — exclusion
-    wins, parity with the scanner's defense-in-depth filter."""
+    """A tagged file under an EXCLUDED_TAGS folder must not surface — whether
+    tagged directly or through a folder. Exclusion wins, parity with the
+    scanner's defense-in-depth filter."""
     # get_excluded_file_paths returns slash-stripped (normalised) paths.
     _patch_excluded(mocker, {"Secret"})
     client = _file_client(
         mocker,
         tagged=[
-            {"id": 100, "path": "/Documents/foo.pdf"},
-            {"id": 200, "path": "/Secret/bar.pdf"},
+            _tagged_file(100, "/Documents/foo.pdf"),
+            _tagged_file(200, "/Secret/bar.pdf"),
+            _tagged_folder("/Secret"),
         ],
+        in_tree=[_tree_row(300, "Secret/baz.pdf")],
     )
 
     result = await _verify_files(
         client,
-        [_make_result(100, doc_type="file"), _make_result(200, doc_type="file")],
+        [_make_result(i, doc_type="file") for i in (100, 200, 300)],
         _sem(),
     )
 
@@ -729,11 +797,27 @@ async def test_verify_files_tag_fetch_failure_keeps_all(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_files_id_lookup_failure_keeps_all(mocker):
+    """A failed SEARCH-by-fileid is a blip, not a denial: keep everything."""
+    _patch_excluded(mocker)
+    client = _file_client(mocker, tagged=[_tagged_folder("/Cases")])
+    client.webdav.find_files_by_ids.side_effect = _http_error(503)
+
+    result = await _verify_files(
+        client,
+        [_make_result(7, doc_type="file"), _make_result(8, doc_type="file")],
+        _sem(),
+    )
+
+    assert result == {"7", "8"}
+
+
+@pytest.mark.unit
 async def test_verify_files_exclusion_lookup_failure_proceeds(mocker):
     """If the EXCLUDED_TAGS lookup fails, proceed without the exclusion filter
     rather than dropping legitimate tagged hits."""
     _patch_excluded(mocker, side_effect=RuntimeError("ocs down"))
-    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
+    client = _file_client(mocker, tagged=[_tagged_file(100, "/Documents/foo.pdf")])
 
     result = await _verify_files(client, [_make_result(100, doc_type="file")], _sem())
 
@@ -742,8 +826,8 @@ async def test_verify_files_exclusion_lookup_failure_proceeds(mocker):
 
 @pytest.mark.unit
 async def test_verify_files_non_numeric_id_keeps(mocker):
-    """A malformed (non-numeric) doc_id cannot be matched against the numeric
-    tag REPORT, so it is kept (defense-in-depth, false-positive preferred)."""
+    """A malformed (non-numeric) doc_id cannot be looked up by fileid, so it is
+    kept (defense-in-depth, false-positive preferred)."""
     _patch_excluded(mocker)
     client = _file_client(mocker, tagged=[])
 
@@ -1071,8 +1155,8 @@ async def test_verify_evicts_cross_user_file_under_querying_user_id(mocker):
     mocker.patch.object(verification, "delete_document_points", spy_evict)
     _patch_excluded(mocker)
 
-    # The shared file is no longer in bob's tagged set (share revoked → absent
-    # from his vector-index tag REPORT), so the file verifier drops it.
+    # The shared file is no longer in bob's tree (share revoked → absent from
+    # his tag REPORT), so the file verifier drops it.
     client = _file_client(mocker, tagged=[], username="bob")
 
     kept, dropped_count = await verify_search_results(

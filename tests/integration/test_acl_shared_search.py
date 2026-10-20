@@ -25,6 +25,7 @@ import os
 import uuid
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from httpx import BasicAuth
 from qdrant_client import AsyncQdrantClient
@@ -37,9 +38,13 @@ from nextcloud_mcp_server.search.access_filter import (
     clear_accessible_owners_cache,
     list_accessible_owners,
 )
+from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
-from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.search.verification import (
+    _verify_files,
+    verify_search_results,
+)
 from tests.integration.conftest import PDF_BYTES
 
 pytestmark = pytest.mark.integration
@@ -292,3 +297,62 @@ async def test_cross_user_file_chunk_context(acl_users, seeded_semantic):
         accessible_owners=diana_owners,
     )
     assert denied is None, "Diana (no share) must not get cross-user chunk context"
+
+
+async def test_find_files_by_ids_resolves_shares_in_one_batch(acl_users, shared_file):
+    """The batched OR-of-fileid SEARCH that file verify-on-read now runs: the
+    owner and the share recipient both resolve the file among other ids, with
+    a user-relative path; a missing id and a non-recipient resolve nothing."""
+    file_id, _path = shared_file
+    missing = 2_000_000_000
+
+    for user in ("alice", "bob"):
+        rows = await acl_users[user].webdav.find_files_by_ids([int(file_id), missing])
+        assert [r["file_id"] for r in rows] == [int(file_id)], user
+        assert rows[0]["path"].endswith("budget.pdf")
+        assert rows[0]["content_type"] == "application/pdf"
+
+    assert await acl_users["diana"].webdav.find_files_by_ids([int(file_id)]) == []
+
+
+async def test_verify_files_inherits_tag_from_shared_folder(acl_users):
+    """End-to-end: a file whose *folder* carries the index tag is verified by
+    path inheritance (no folder walk) for the owner and for a recipient of the
+    folder share, and is dropped once the folder is untagged."""
+    alice = acl_users["alice"]
+    folder = f"acl_tagdir_{uuid.uuid4().hex[:8]}"
+    path = f"{folder}/inner/doc.pdf"
+    await alice.webdav.create_directory(folder)
+    await alice.webdav.create_directory(f"{folder}/inner")
+    await alice.webdav.write_file(path, PDF_BYTES, "application/pdf")
+    file_id = str((await alice.webdav.get_file_info(path))["id"])
+    folder_id = (await alice.webdav.get_file_info(folder))["id"]
+    tag = await alice.webdav.get_or_create_tag(
+        name=get_settings().vector_sync_tag, user_visible=True, user_assignable=True
+    )
+    await alice.webdav.assign_tag_to_file(folder_id, tag["id"])
+    await alice.sharing.create_share(
+        path=f"/{folder}", share_with="bob", share_type=0, permissions=1
+    )
+    result = [
+        SearchResult(
+            id=file_id, doc_type="file", title="doc.pdf", excerpt="", score=1.0
+        )
+    ]
+    try:
+        for user in ("alice", "bob"):
+            assert await _verify_files(acl_users[user], result, anyio.Semaphore(1)) == {
+                file_id
+            }, user
+        assert (
+            await _verify_files(acl_users["diana"], result, anyio.Semaphore(1)) == set()
+        )
+
+        await alice.webdav.remove_tag_from_file(folder_id, tag["id"])
+        assert await _verify_files(alice, result, anyio.Semaphore(1)) == set()
+    finally:
+        try:
+            await alice.webdav.remove_tag_from_file(folder_id, tag["id"])
+        except Exception:
+            pass
+        await alice.webdav.delete_resource(folder)
