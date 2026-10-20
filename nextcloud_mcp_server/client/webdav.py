@@ -141,6 +141,9 @@ SEARCHDAV_NS = "https://github.com/icewind1991/SearchDAV/ns"
 # Crossing it is logged as a truncation warning (and surfaced via a metric) so the
 # cap can never again silently hide files.
 WEBDAV_SEARCH_MAX_RESULTS = 50000
+# ids OR-ed into one ``find_files_by_ids`` SEARCH. A search page verifies at most
+# a few hundred files, so this is usually a single request.
+FILE_ID_BATCH = 100
 
 
 def _reject_path_traversal(path: str) -> str:
@@ -2004,6 +2007,46 @@ class WebDAVClient(BaseNextcloudClient):
             limit=1,
         )
         return len(results) > 0
+
+    async def find_files_by_ids(self, file_ids: list[int]) -> list[dict[str, Any]]:
+        """The files among ``file_ids`` the user can currently reach.
+
+        Batched form of :meth:`file_accessible_by_id`: one SEARCH over the
+        user's whole files tree (incl. mounted shares) per ``FILE_ID_BATCH``
+        ids, OR-ing an ``oc:fileid`` match per id. Each row carries ``file_id``,
+        the user-relative ``path`` and ``content_type``; an id absent from the
+        result is not in the user's tree. Raises on transport/server errors,
+        like ``file_accessible_by_id``.
+        """
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(file_ids), FILE_ID_BATCH):
+            batch = file_ids[start : start + FILE_ID_BATCH]
+            matches = "".join(
+                "<d:eq><d:prop><oc:fileid/></d:prop>"
+                f"<d:literal>{int(file_id)}</d:literal></d:eq>"
+                for file_id in batch
+            )
+            # Headroom over len(batch): a file mounted at two paths (shared to
+            # the user twice) returns one row per path.
+            limit = 2 * len(batch)
+            page = await self.search_files(
+                scope="",
+                where_conditions=matches
+                if len(batch) == 1
+                else f"<d:or>{matches}</d:or>",
+                properties=["fileid", "getcontenttype"],
+                limit=limit,
+            )
+            if len(page) >= limit:
+                # A full page may be truncated, and a missing row reads as
+                # "inaccessible", which evicts a live file. Raise instead so
+                # the caller fails open.
+                raise RuntimeError(
+                    f"SEARCH-by-fileid returned a full page ({limit} rows) "
+                    f"for {len(batch)} ids; result may be truncated"
+                )
+            found += page
+        return found
 
     async def get_fileid(self, path: str) -> str | None:
         """Return the Nextcloud fileid of a file/folder path, or None if absent.

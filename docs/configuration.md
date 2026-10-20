@@ -1359,23 +1359,21 @@ aware of:
   search that surfaces news results. Disabling News in the indexer or running
   with a smaller backlog mitigates this; per-item paginated verification is
   tracked as a future improvement.
-- **Files caveat**: `file` results are gated on current **`vector-index` tag
-  membership**, not bare access — the verifier issues a single
-  `find_files_by_tag(<tag>, mime_type_filter="application/pdf")` REPORT per
-  search that contains any file result (plus a one-shot `EXCLUDED_TAGS`
-  lookup), then keeps only files in that set. This matches exactly what the
-  scanner indexes, so a file removed from the tag (or deleted, or moved under
-  an excluded folder) drops out of results immediately rather than waiting for
-  the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
-  SEARCH, so deployments that tag whole directory trees pay that walk once per
-  search; configure `VECTOR_SYNC_TAG` to change the tag name. The `file`
-  verifier's latency therefore scales with **both** the `Depth: infinity` folder
-  expansion **and** the `EXCLUDED_TAGS` lookup: that lookup fans out ~2 WebDAV
-  calls (1 PROPFIND + 1 REPORT) *per excluded tag*, concurrently, while holding
-  a single verification slot — so a deployment with a long `EXCLUDED_TAGS` list
-  and/or deeply tagged trees issues many parallel Nextcloud requests per search.
-  Operators in that situation may want to **lower `VERIFICATION_CONCURRENCY`** so
-  the file verifier's internal fan-out does not overwhelm the backend.
+- **Files caveat**: `file` results are gated on current **index-tag
+  membership** (`VECTOR_SYNC_TAG` / `VECTOR_SYNC_KEYWORD_TAG`), not bare access.
+  A file counts as tagged if it carries the tag itself or sits under a tagged
+  folder. For each search that contains a file result, the verifier issues one
+  tag REPORT per index tag (directly-tagged items only, no folder walk) plus one
+  batched SEARCH-by-fileid for the results that are not directly tagged. It
+  then matches those results against the tagged folders by path. Its cost
+  therefore follows the result page, not the size of the tagged corpus. This
+  matches what the scanner indexes, so a file removed from the tag (or deleted,
+  unshared, or moved under an excluded folder) drops out of results immediately
+  rather than waiting for the scanner sweep. The `EXCLUDED_TAGS` lookup (run
+  only when some file survives) fans out ~2 WebDAV calls (1 PROPFIND + 1
+  REPORT) *per excluded tag*, concurrently, while holding a single verification
+  slot. A deployment with a long `EXCLUDED_TAGS` list may want to **lower
+  `VERIFICATION_CONCURRENCY`** so that fan-out does not overwhelm the backend.
 - **Shared files**: a file an owner tagged and shared with the searcher only
   survives verification if the owner's **`userVisible`** tag surfaces in the
   *searcher's* tag REPORT. The MCP server's own tag-creation path

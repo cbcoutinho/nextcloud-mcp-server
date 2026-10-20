@@ -13,9 +13,9 @@ whatever metadata they need (e.g. deck card board/stack ids) directly from the
 SearchResult — these fields are populated at index-time and propagated by
 the algorithm layer (see ``search/bm25_hybrid.py`` and ``search/semantic.py``)
 so verification adds zero extra Qdrant round-trips. The file verifier is the
-exception: it gates results on current ``vector-index`` tag membership via a
-single batch tag REPORT (which also confirms access), so it does not read
-per-result metadata.
+exception: it gates results on current index-tag membership (direct, or via a
+tagged folder) using one tag REPORT per index tag plus one batched
+SEARCH-by-fileid, so it does not read per-result metadata.
 
 Concurrency is bounded by a shared semaphore (default 20) so a large search
 result page (or a multi-doc_type query) cannot exhaust the httpx connection
@@ -33,10 +33,11 @@ Failure policy (notes / deck_card / news_item — the per-access verifiers):
   failure, not a search failure.
 
 The ``file`` verifier is the exception to the first rule: it gates on current
-``vector-index`` tag membership (a single batch tag REPORT), so a file is
-dropped+evicted when it is absent from the tag set — untagged, deleted, or
-under an ``EXCLUDED_TAGS`` folder — not on a per-file 403/404. A failed tag
-fetch still fails open. See ``_verify_files`` for the full contract.
+index-tag membership (direct or via a tagged folder), so a file is
+dropped+evicted when it is not tagged, not in the user's tree (deleted or
+unshared), or under an ``EXCLUDED_TAGS`` folder — not on a per-file 403/404.
+A failed tag fetch still fails open. See ``_verify_files`` for the full
+contract.
 """
 
 import logging
@@ -46,7 +47,7 @@ import anyio
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 
-from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.search.algorithms import (
     NextcloudClientProtocol,
     SearchResult,
@@ -140,6 +141,58 @@ async def _verify_notes(
     return accessible
 
 
+async def _tagged_index_items(
+    client: NextcloudClientProtocol, settings: Settings
+) -> tuple[dict[str, str], set[str]]:
+    """Items carrying an index tag *directly*, from one REPORT per tag.
+
+    Returns ``(files, folders)``: indexable directly-tagged files as
+    ``{file_id: path}``, and the paths of tagged folders (whose descendants
+    the scanner indexes). Unlike the scanner's discovery this never walks the
+    folders, so its cost does not grow with the corpus. Both index tags count
+    (``vector-index`` → hybrid, ``keyword-index`` → keyword): membership is all
+    that matters here, not the mode.
+    """
+    indexable = settings.indexable_mime_types
+    files: dict[str, str] = {}
+    folders: set[str] = set()
+    if not indexable:
+        # Empty allowlist = index nothing (see _discover_tagged_files).
+        return files, folders
+
+    async def collect(tag_name: str) -> None:
+        tag = await client.webdav.get_tag_by_name(tag_name)
+        if not tag:
+            return
+        for item in await client.webdav.get_files_by_tag(tag["id"]):
+            path = item.get("path", "").strip("/")
+            if item.get("is_directory"):
+                folders.add(path)
+            elif item.get("content_type", "").startswith(indexable):
+                files[str(item["id"])] = path
+
+    # The tags are independent, so look them up concurrently. A failure
+    # surfaces as an ExceptionGroup, which the caller's fail-open catches.
+    async with anyio.create_task_group() as tg:
+        for tag_name in (settings.vector_sync_tag, settings.vector_sync_keyword_tag):
+            if tag_name:
+                tg.start_soon(collect, tag_name)
+    return files, folders
+
+
+def _under_any(path: str, folders: set[str]) -> bool:
+    """Whether ``path`` is at or under one of ``folders`` (slash-stripped).
+
+    ``is_path_excluded`` is exactly that test; it is named for its first use.
+    """
+    # Lazy import: same import cycle as in _verify_files.
+    from nextcloud_mcp_server.server.tag_exclusion import (  # noqa: PLC0415
+        is_path_excluded,
+    )
+
+    return is_path_excluded(path, folders)
+
+
 async def _verify_files(
     client: NextcloudClientProtocol,
     results: list[SearchResult],
@@ -147,25 +200,29 @@ async def _verify_files(
 ) -> set[str]:
     """Return the doc_ids of file results this user may currently see.
 
-    A file is included iff it *currently* carries the ``vector-index`` tag (the
-    same tag the scanner indexes on) AND is not under an ``EXCLUDED_TAGS``
-    folder — full parity with the indexing rules. The tag REPORT runs over the
-    querying user's own files tree (including mounted shares), so membership in
-    the tagged set already implies the file is *accessible*; this single batch
-    fetch therefore subsumes the old per-file ``file_accessible_by_id`` check
-    and replaces N round-trips with one.
+    A file is included iff it is in the user's tree (owned or shared), it
+    *currently* carries an index tag — directly, or through a tagged ancestor
+    folder — and it is not under an ``EXCLUDED_TAGS`` folder: parity with the
+    scanner's indexing rules.
 
     This is the verify-on-read fix for stale tags (ADR-019): a file removed from
-    both index tags (``vector-index``/``keyword-index``) — or outright deleted —
-    drops out of the tagged set, so it is dropped from results and scheduled for
-    eviction by the caller immediately, rather than lingering until the scanner's
-    grace-period sweep reconciles it.
+    both index tags (``vector-index``/``keyword-index``), moved out of a tagged
+    folder, unshared or deleted is dropped and scheduled for eviction by the
+    caller immediately, rather than lingering until the scanner's grace-period
+    sweep reconciles it.
 
-    Failure policy mirrors ``_verify_news_items``: if the tag fetch itself
+    Only the result ids are checked, so the cost is bounded by the result page,
+    not the corpus: one REPORT per index tag lists the directly-tagged items,
+    and one batched SEARCH-by-fileid (``find_files_by_ids``) locates the
+    results that are not directly tagged, which are then matched against the
+    tagged folders by path. (This used to re-walk every tagged folder on every
+    search — tens of seconds on a large tenant, and past Astrolabe's timeout.)
+
+    Failure policy mirrors ``_verify_news_items``: if a tag or file lookup
     fails we keep every file result (fail-open, the next query re-verifies),
-    and malformed/non-numeric doc_ids are kept (defense-in-depth — the numeric
-    tag REPORT cannot match them, and producer-side validation is the real
-    boundary, so false-positive is preferred over false-negative).
+    and malformed/non-numeric doc_ids are kept (defense-in-depth — producer-
+    side validation is the real boundary, so false-positive is preferred over
+    false-negative).
     """
     # Lazy import to break an import cycle: ``server/__init__`` imports
     # ``server.semantic`` which imports this module, so importing
@@ -176,55 +233,47 @@ async def _verify_files(
         is_path_excluded,
     )
 
-    # Lazy import (same import-cycle reason as tag_exclusion above): scanner pulls
-    # this module in indirectly via the server package.
-    from nextcloud_mcp_server.vector.scanner import (  # noqa: PLC0415
-        _discover_tagged_files,
-    )
-
     settings = get_settings()
+    valid_ids = {r.id for r in results if is_valid_nextcloud_doc_id(r.id)}
+    # Malformed ids cannot be looked up by fileid; keep them (see docstring).
+    accessible = {r.id for r in results} - valid_ids
+    for doc_id in accessible:
+        logger.warning(
+            "Malformed file doc_id %r in verifier; keeping to avoid dropping a "
+            "potentially legitimate result (cannot look it up by fileid)",
+            doc_id,
+        )
 
-    # One semaphore slot is held for both Nextcloud round-trips: the tagged-file
-    # REPORT (plus optional Depth:infinity folder expansion) and — only when the
-    # REPORT returned files — the EXCLUDED_TAGS lookup. Both are batched once per
-    # search, not once per result (same backpressure rationale as
-    # _verify_news_items).
-    #
-    # The slot caps how many *searches* verify files concurrently, but it does
-    # NOT bound the fan-out *within* one verification: get_excluded_file_paths
-    # internally spawns a task group issuing 2×len(EXCLUDED_TAGS) concurrent
-    # WebDAV calls (1 PROPFIND + 1 REPORT per excluded tag), so the live
-    # Nextcloud connection count can exceed VERIFICATION_CONCURRENCY when
-    # excluded tags are configured. See configuration.md → "Files caveat" for
-    # the latency/tuning guidance.
-    #
-    # The pure-Python intersection that builds tagged_ids/accessible runs
-    # *outside* the slot — it needs no Nextcloud round-trip (mirrors the
-    # post-fetch present_ids build in _verify_news_items).
-    #
-    # TODO(perf): if folder expansion dominates query latency, cache the
-    # tagged-id set per user with a short TTL (mirroring the
-    # list_accessible_owners cache in search/access_filter.py). Skipped here so
-    # an untag is reflected on the very next search rather than after a TTL.
+    # One semaphore slot for the whole verification, as in _verify_news_items:
+    # it caps how many *searches* verify files concurrently. The EXCLUDED_TAGS
+    # lookup fans out 2×len(EXCLUDED_TAGS) WebDAV calls within it — see
+    # configuration.md → "Files caveat".
     async with semaphore:
         try:
-            # Union of BOTH index tags (vector-index → hybrid, keyword-index →
-            # keyword): a result stays verified if its file still carries either
-            # tag, so untagging from whichever tag indexed it drops it from
-            # results. Membership is all that matters here, not the mode.
-            tagged = await _discover_tagged_files(client, settings)
-        except HTTPStatusError as e:
-            logger.warning(
-                "Transient error fetching index-tagged files for verification: "
-                "%s %s; keeping all file results",
-                e.response.status_code,
-                e,
-            )
-            return {r.id for r in results}
+            tagged_files, tagged_folders = await _tagged_index_items(client, settings)
+            # {doc_id: path} of the results the user can reach. Directly-tagged
+            # files already carry their path, so only the rest — candidates for
+            # folder inheritance — need the SEARCH, and none do without folders.
+            visible = {i: tagged_files[i] for i in valid_ids if i in tagged_files}
+            pending = sorted(int(i) for i in valid_ids - visible.keys())
+            if tagged_folders and pending:
+                for row in await client.webdav.find_files_by_ids(pending):
+                    file_id = row.get("file_id")
+                    path = row.get("path", "")
+                    # A row without a fileid is skipped rather than raising:
+                    # a KeyError would fail the whole page open.
+                    if (
+                        file_id is not None
+                        and row.get("content_type", "").startswith(
+                            settings.indexable_mime_types
+                        )
+                        and _under_any(path, tagged_folders)
+                    ):
+                        visible[str(file_id)] = path
         except Exception as e:
             logger.warning(
-                "Unexpected error fetching index-tagged files for verification: "
-                "%s; keeping all file results",
+                "Error checking index tags for file verification: %s; keeping "
+                "all file results",
                 e,
             )
             return {r.id for r in results}
@@ -232,15 +281,9 @@ async def _verify_files(
         # Exclusion wins: a tagged file under an EXCLUDED_TAGS folder must not
         # surface, matching the scanner's defense-in-depth filter. A failure
         # here degrades to "no exclusion" rather than dropping legitimate hits.
-        #
-        # Skip the lookup entirely when the tag REPORT returned nothing: an empty
-        # `tagged` yields an empty `tagged_ids` regardless of the exclusion set,
-        # so the lookup's 2×len(EXCLUDED_TAGS) WebDAV fan-out cannot change the
-        # outcome — avoid it in the common "this tag matched nothing" case. The
-        # per-result loop below still runs, so malformed doc_ids are still kept
-        # (fail-open), exactly as when `tagged` is non-empty.
+        # Skipped when nothing survived: it could not change the outcome.
         excluded_paths: set[str] = set()
-        if tagged:
+        if visible:
             try:
                 excluded_paths = await get_excluded_file_paths(client.webdav)
             except Exception as e:
@@ -250,32 +293,13 @@ async def _verify_files(
                     e,
                 )
 
-    tagged_ids: set[str] = set()
-    for f in tagged:
-        file_id = f.get("id")
-        if file_id is None:
-            continue
-        if excluded_paths and is_path_excluded(f.get("path", ""), excluded_paths):
-            continue
-        # Normalise to str — Qdrant doc_id payload is keyword-indexed and the
-        # scanner stringifies file ids on write, so SearchResult.id is a str.
-        tagged_ids.add(str(file_id))
-
-    accessible: set[str] = set()
-    for r in results:
-        doc_id = r.id
-        if doc_id in tagged_ids:
-            accessible.add(doc_id)
-        elif not is_valid_nextcloud_doc_id(doc_id):
-            logger.warning(
-                "Malformed file doc_id %r in verifier; keeping to avoid "
-                "dropping a potentially legitimate result (cannot match "
-                "against the numeric tag REPORT)",
-                doc_id,
-            )
-            accessible.add(doc_id)
-        # else: a valid file id absent from the tagged set is untagged/deleted/
-        # excluded — drop it and let the caller schedule eviction.
+    # A valid id absent from `visible` is untagged/deleted/unshared — drop it
+    # and let the caller schedule eviction.
+    accessible.update(
+        doc_id
+        for doc_id, path in visible.items()
+        if not is_path_excluded(path, excluded_paths)
+    )
     return accessible
 
 
