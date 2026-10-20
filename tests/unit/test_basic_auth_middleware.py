@@ -3,8 +3,25 @@
 import base64
 
 import pytest
+from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.app import BasicAuthMiddleware
+
+
+@pytest.fixture(autouse=True)
+def validate(mocker):
+    """Stub the Nextcloud credential check; accept by default."""
+    return mocker.patch(
+        "nextcloud_mcp_server.app._validate_nextcloud_credentials",
+        return_value=("uid", None),
+    )
+
+
+def _basic_scope(creds: bytes) -> dict:
+    return {
+        "type": "http",
+        "headers": [(b"authorization", b"Basic " + base64.b64encode(creds))],
+    }
 
 
 class MockApp:
@@ -239,3 +256,44 @@ async def test_basic_auth_middleware_unicode_credentials():
     assert mock_app.called
     assert scope["state"]["basic_auth"]["username"] == "üser"
     assert scope["state"]["basic_auth"]["password"] == "pässwörd"
+
+
+class _Sent:
+    """Collect ASGI messages sent by a short-circuited response."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def __call__(self, message):
+        self.messages.append(message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", [401, 502])
+async def test_basic_auth_middleware_rejects_unverified_credentials(validate, status):
+    """A credential Nextcloud rejects (or can't check) never reaches a handler."""
+    validate.return_value = (None, JSONResponse({}, status_code=status))
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+    send = _Sent()
+
+    await middleware(_basic_scope(b"alice:wrong"), None, send)  # type: ignore[arg-type]
+
+    assert not mock_app.called
+    start = send.messages[0]
+    assert start["status"] == status
+    assert (b"www-authenticate", b'Basic realm="nextcloud"') in start["headers"]
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_caches_valid_credentials(validate):
+    """A verified credential is not re-checked within the TTL; a different
+    password for the same user is."""
+    middleware = BasicAuthMiddleware(MockApp())
+
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+    assert validate.call_count == 1
+
+    await middleware(_basic_scope(b"alice:other"), None, None)  # type: ignore[arg-type]
+    assert validate.call_count == 2

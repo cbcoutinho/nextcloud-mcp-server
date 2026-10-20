@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
 import logging
@@ -51,6 +52,7 @@ from nextcloud_mcp_server.api import (
     revoke_user_access,
     update_user_scopes,
 )
+from nextcloud_mcp_server.api.passwords import _validate_nextcloud_credentials
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     discover_all_scopes,
@@ -812,18 +814,54 @@ def _auth_scheme(auth_header: str) -> str:
 
 
 class BasicAuthMiddleware:
-    """Middleware to extract BasicAuth credentials from Authorization header.
+    """Middleware to extract and verify BasicAuth credentials.
 
     For multi-user BasicAuth pass-through mode, this middleware extracts
-    username/password from the Authorization: Basic header and stores them
-    in the request state for use by the context layer.
+    username/password from the Authorization: Basic header, verifies them
+    against Nextcloud, and stores them in the request state for use by the
+    context layer.
 
-    The credentials are NOT stored persistently - they are passed through
-    directly to Nextcloud APIs for each request (stateless).
+    Verification happens here, once, before any handler runs: some handlers
+    serve server-side state keyed by the username without themselves calling
+    Nextcloud, so they cannot be relied on to reject a bad credential. A
+    failed check is rejected with 401 (or 502 when Nextcloud is unreachable) —
+    fail closed.
+
+    The credentials are NOT stored persistently. A successful check is
+    remembered for ``_VALID_TTL`` seconds, keyed by a hash of the header, so
+    each request doesn't cost a Nextcloud round-trip.
     """
+
+    # ponytail: a revoked password stays accepted for up to this long; lower it
+    # if revocation latency matters more than one OCS call per request.
+    _VALID_TTL = 60.0
 
     def __init__(self, app: ASGIApp):
         self.app = app
+        self._validated: dict[bytes, float] = {}
+
+    async def _verify(
+        self, auth_header: bytes, username: str, password: str
+    ) -> JSONResponse | None:
+        """Return ``None`` if the credential is valid, else the error response."""
+        key = hashlib.sha256(auth_header).digest()
+        now = time.monotonic()
+        if self._validated.get(key, 0.0) > now:
+            return None
+
+        _, error = await _validate_nextcloud_credentials(
+            get_settings().nextcloud_host or "",
+            username,
+            password,
+            invalid_credential_error="Invalid credentials",
+        )
+        if error is not None:
+            return error
+
+        # Drop expired entries so the map is bounded by recently-active users.
+        self._validated = {k: t for k, t in self._validated.items() if t > now}
+        self._validated[key] = now + self._VALID_TTL
+        return None
 
     async def __call__(
         self, scope: StarletteScope, receive: Receive, send: Send
@@ -839,6 +877,14 @@ class BasicAuthMiddleware:
                     encoded = auth_header[6:]  # Skip "Basic "
                     decoded = base64.b64decode(encoded).decode("utf-8")
                     username, password = decoded.split(":", 1)
+                except Exception as e:
+                    logger.warning("Failed to extract BasicAuth credentials: %s", e)
+                else:
+                    error = await self._verify(auth_header, username, password)
+                    if error is not None:
+                        error.headers["WWW-Authenticate"] = 'Basic realm="nextcloud"'
+                        await error(scope, receive, send)
+                        return
 
                     # Store in request state
                     scope.setdefault("state", {})
@@ -849,8 +895,6 @@ class BasicAuthMiddleware:
                     logger.debug(
                         "BasicAuth credentials extracted for user: %s", username
                     )
-                except Exception as e:
-                    logger.warning("Failed to extract BasicAuth credentials: %s", e)
 
         await self.app(scope, receive, send)
 
