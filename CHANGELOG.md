@@ -5,6 +5,27 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.200.0 (2026-10-20)
+
+### Feat
+
+- **talk**: filter talk_get_messages by thread
+- **talk**: support creating and posting into Talk threads
+
+### Fix
+
+- **ci**: keep release smoke test on Python 3.11 (project floor)
+- **ci**: pin Python to 3.14 and cap Renovate below 3.15
+- **lint**: satisfy ty 0.0.89
+- **talk**: drop semicolon from talk_get_messages description
+- **talk**: only map spreed's thread 404 to "thread not found"
+- **documents**: read text inside Word content controls (w:sdt)
+
+### Refactor
+
+- **documents**: split the docx block walk into helpers (cognitive complexity)
+- **talk**: move thread 404 handling out of configure_talk_tools
+
 ## v0.199.4 (2026-10-12)
 
 ### Fix
