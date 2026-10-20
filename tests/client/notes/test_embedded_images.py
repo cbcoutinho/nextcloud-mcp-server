@@ -86,7 +86,7 @@ async def test_note_with_embedded_image(
     attachment_dir_path = (
         f"{webdav_base}/Notes/{category_path_part}.attachments.{note_id}"
     )
-    propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+    propfind_headers = {"Depth": "0"}
     try:
         propfind_resp = await nc_client._client.request(
             "PROPFIND", attachment_dir_path, headers=propfind_headers

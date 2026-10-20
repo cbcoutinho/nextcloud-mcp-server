@@ -76,10 +76,10 @@ async def test_list_accounts_unwraps_direct_payload(mocker):
     assert accounts[0]["id"] == 1
     assert accounts[0]["emailAddress"] == "alice@example.com"
 
-    # Direct resource route; CSRF-exempt via the OCS-APIRequest header (no token).
+    # Direct resource route; CSRF-exempt via the client-wide OCS-APIRequest
+    # header (no token).
     args, kwargs = mock_make_request.call_args
     assert args == ("GET", "/apps/mail/api/accounts")
-    assert kwargs["headers"]["OCS-APIRequest"] == "true"
     assert "requesttoken" not in kwargs["headers"]
 
 
@@ -559,11 +559,9 @@ async def test_delete_message_issues_delete(mocker):
     )
 
 
-async def test_write_helpers_send_the_csrf_exempting_header(mocker):
-    """Writes need ``OCS-APIRequest`` too — the Mail write routes are CSRF-gated.
-
-    None of ``setFlags``/``setTag``/``move`` carries ``@NoCSRFRequired``, so the
-    header is what makes them reachable with an app password.
+async def test_write_helpers_send_a_json_body(mocker):
+    """Writes send JSON. Their CSRF exemption (``OCS-APIRequest``) is a client
+    default, pinned in ``tests/unit/test_ocs_headers_are_shared``.
     """
     mock_make_request = mocker.patch.object(
         MailClient,
@@ -575,7 +573,6 @@ async def test_write_helpers_send_the_csrf_exempting_header(mocker):
     await client.set_flags(42, {"seen": True})
 
     headers = mock_make_request.call_args.kwargs["headers"]
-    assert headers["OCS-APIRequest"] == "true"
     assert headers["Content-Type"] == "application/json"
 
 

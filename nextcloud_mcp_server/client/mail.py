@@ -118,10 +118,9 @@ class MailClient(BaseNextcloudClient):
     # as bare ``/apps/...`` paths (``_resolve_url`` prepends ``/index.php``).
     API_BASE = "/apps/mail/api"
 
-    # The OCS-APIRequest header authenticates the OCS routes and exempts the
-    # direct routes from CSRF, so both families use the same headers.
-    # Shared with the other OCS clients -- see collectives for why the header
-    # set has a single home.
+    # The OCS-APIRequest header (sent client-wide, see ``http.py``) authenticates
+    # the OCS routes and exempts the direct routes from CSRF; both families
+    # also want JSON, so they share these headers.
     _API_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"
@@ -369,11 +368,10 @@ class MailClient(BaseNextcloudClient):
         safe_id = quote(attachment_id, safe="")
         # Binary download: unlike the JSON helpers, don't send
         # ``Accept: application/json`` (mirrors ``DeckClient.get_attachment_file``).
-        # The ``OCS-APIRequest`` header still CSRF-exempts this direct route.
+        # The client-wide ``OCS-APIRequest`` header still CSRF-exempts this route.
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
-            headers={"OCS-APIRequest": "true"},
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
         raw = response.content

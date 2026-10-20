@@ -71,9 +71,10 @@ class DeckClient(BaseNextcloudClient):
         constant sends ``Accept``. That difference is left alone on purpose:
         the endpoints work as-is, and swapping the header would be a
         behaviour change riding along in a de-duplication pass. If it is ever
-        revisited, it is a change to Deck's REST calls only.
+        revisited, it is a change to Deck's REST calls only. ``OCS-APIRequest``
+        comes from the shared httpx client, as for every other call.
         """
-        headers = {"OCS-APIRequest": "true", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
         if additional_headers:
             headers.update(additional_headers)
         return headers

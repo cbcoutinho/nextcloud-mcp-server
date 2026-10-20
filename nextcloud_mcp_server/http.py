@@ -11,13 +11,23 @@ import httpx
 
 from .config import get_nextcloud_http_keepalive, get_nextcloud_ssl_verify
 
+#: Sent on every request to Nextcloud. ``OCS-APIRequest: true`` is how a
+#: non-browser client identifies itself: OCS routes refuse requests without it
+#: (``meta.statuscode: 997``), it exempts app routes from the CSRF check, and on
+#: ``#[CORS]`` app routes it stops ``CORSMiddleware`` from logging the session
+#: out and re-authenticating -- the path that 404s Tables v1 on Nextcloud 33
+#: (GH #1664). This is the only place the header is spelled; per-request
+#: headers merge over it.
+NEXTCLOUD_DEFAULT_HEADERS = {"OCS-APIRequest": "true"}
+
 
 def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
-    """Create an httpx.AsyncClient with Nextcloud SSL settings applied.
+    """Create an httpx.AsyncClient with Nextcloud SSL settings and headers applied.
 
     Reads NEXTCLOUD_VERIFY_SSL and NEXTCLOUD_CA_BUNDLE from the environment
     via ``get_nextcloud_ssl_verify()``. Caller-supplied ``verify`` kwarg
-    takes precedence if explicitly provided.
+    takes precedence if explicitly provided. ``NEXTCLOUD_DEFAULT_HEADERS``
+    are client defaults; caller-supplied ``headers`` are merged over them.
 
     Args:
         **kwargs: Forwarded to ``httpx.AsyncClient()``.
@@ -26,6 +36,7 @@ def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
         Configured ``httpx.AsyncClient``.
     """
     kwargs.setdefault("verify", get_nextcloud_ssl_verify())
+    kwargs["headers"] = {**NEXTCLOUD_DEFAULT_HEADERS, **(kwargs.get("headers") or {})}
     return httpx.AsyncClient(**kwargs)
 
 

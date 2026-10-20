@@ -22,16 +22,11 @@ from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
-# The ``{"OCS-APIRequest": "true"}`` headers throughout this module are
-# deliberately NOT ``ocs.OCS_REQUEST_HEADERS``. These are DAV requests
-# (PROPFIND / PUT / MKCOL / REPORT / MOVE / COPY), not OCS ones: they send the
-# header only to identify themselves as API traffic to Nextcloud's CSRF check,
-# and Sabre answers them in XML. The OCS constant also carries
-# ``Accept: application/json``, which would be a lie here. Most of these sites
-# additionally carry request-specific ``Depth`` / ``Content-Type`` values, so
-# there is nothing shared left to hoist -- keep writing them inline. The guard
-# in ``tests/unit/test_ocs_headers_are_shared`` only rejects the OCS+JSON
-# pairing, so these stay legal by construction rather than by exemption.
+# ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx
+# client sends it on every request (``http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
+# requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
+# ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
+# Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
 
 
 class OversizeDownload(Exception):
@@ -449,10 +444,9 @@ class WebDAVClient(BaseNextcloudClient):
         webdav_path = self._webdav_path(path_with_slash)
         logger.debug("Deleting WebDAV resource: %s", webdav_path)
 
-        headers = {"OCS-APIRequest": "true"}
         try:
             # First try a PROPFIND to verify resource exists
-            propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+            propfind_headers = {"Depth": "0"}
             try:
                 propfind_resp = await self._make_request(
                     "PROPFIND", webdav_path, headers=propfind_headers
@@ -469,7 +463,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # For other errors, continue with deletion attempt
 
             # Proceed with deletion
-            response = await self._make_request("DELETE", webdav_path, headers=headers)
+            response = await self._make_request("DELETE", webdav_path)
             logger.debug("Successfully deleted WebDAV resource '%s'", path)
             return {"status_code": response.status_code}
 
@@ -588,11 +582,11 @@ class WebDAVClient(BaseNextcloudClient):
             if not mime_type:
                 mime_type = "application/octet-stream"
 
-        headers = {"Content-Type": mime_type, "OCS-APIRequest": "true"}
+        headers = {"Content-Type": mime_type}
         try:
             # First check if we can access WebDAV at all
             notes_dir_path = self._webdav_path("Notes")
-            propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+            propfind_headers = {"Depth": "0"}
             notes_dir_response = await self._make_request(
                 "PROPFIND", notes_dir_path, headers=propfind_headers
             )
@@ -612,10 +606,7 @@ class WebDAVClient(BaseNextcloudClient):
                 notes_dir_response.raise_for_status()
 
             # Ensure the parent directory exists using MKCOL
-            mkcol_headers = {"OCS-APIRequest": "true"}
-            mkcol_response = await self._make_request(
-                "MKCOL", parent_dir_path, headers=mkcol_headers
-            )
+            mkcol_response = await self._make_request("MKCOL", parent_dir_path)
 
             # MKCOL should return 201 Created or 405 Method Not Allowed (if directory already exists)
             if mkcol_response.status_code not in [201, 405]:
@@ -724,7 +715,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "1", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "1", "Content-Type": "text/xml"}
 
         try:
             response = await self._make_request(
@@ -983,7 +974,7 @@ class WebDAVClient(BaseNextcloudClient):
             if not content_type:
                 content_type = "application/octet-stream"
 
-        headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
+        headers = {"Content-Type": content_type}
         # Always send a precondition so a write can never silently clobber an
         # existing file. The server (Sabre checkPreconditions) evaluates it
         # atomically before the PUT, so this is race-free.
@@ -1031,10 +1022,8 @@ class WebDAVClient(BaseNextcloudClient):
 
         logger.debug("Creating directory: %s", path)
 
-        headers = {"OCS-APIRequest": "true"}
-
         try:
-            response = await self._make_request("MKCOL", webdav_path, headers=headers)
+            response = await self._make_request("MKCOL", webdav_path)
             response.raise_for_status()
 
             logger.debug("Successfully created directory '%s'", path)
@@ -1151,7 +1140,6 @@ class WebDAVClient(BaseNextcloudClient):
         _validate_destination_precondition(if_destination_match, overwrite)
 
         headers = {
-            "OCS-APIRequest": "true",
             "Destination": destination_webdav_path,
             "Overwrite": "T" if overwrite else "F",
         }
@@ -1331,7 +1319,7 @@ class WebDAVClient(BaseNextcloudClient):
         # The SEARCH endpoint is at the dav root
         search_path = "/remote.php/dav/"
 
-        headers = {"Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Content-Type": "text/xml"}
 
         logger.debug("Searching files in scope: %s", scope)
 
@@ -2022,7 +2010,7 @@ class WebDAVClient(BaseNextcloudClient):
             '<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
             "<d:prop><oc:fileid/></d:prop></d:propfind>"
         )
-        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "0", "Content-Type": "text/xml"}
         try:
             response = await self._make_request(
                 "PROPFIND", webdav_path, content=propfind_body, headers=headers
@@ -2078,7 +2066,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "0",
                 "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
             },
         )
 
@@ -2117,7 +2104,6 @@ class WebDAVClient(BaseNextcloudClient):
             "POST",
             f"{_COMMENTS_PATH}/{int(file_id)}",
             json={"actorType": "users", "verb": "comment", "message": message},
-            headers={"OCS-APIRequest": "true"},
         )
 
         location = response.headers.get("Content-Location", "")
@@ -2160,7 +2146,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "0", "Content-Type": "text/xml"}
 
         response = await self._make_request(
             "PROPFIND", meta_path, content=propfind_body, headers=headers
@@ -2260,7 +2246,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "1",
                 "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
             },
             content=propfind_body,
         )
@@ -2350,7 +2335,7 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
-            headers={"Content-Type": "text/xml", "OCS-APIRequest": "true"},
+            headers={"Content-Type": "text/xml"},
             content=report_body,
         )
         # Redundant after _make_request (which raises on non-2xx) but
@@ -2765,7 +2750,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "1",
                 "Content-Type": "application/xml",
-                "OCS-APIRequest": "true",
             },
         )
 
@@ -2800,7 +2784,6 @@ class WebDAVClient(BaseNextcloudClient):
             source,
             headers={
                 "Destination": self._resolve_url(destination),
-                "OCS-APIRequest": "true",
             },
         )
         return {"restored": entry_id}
@@ -2828,7 +2811,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "1",
                 "Content-Type": "application/xml",
-                "OCS-APIRequest": "true",
             },
         )
 
@@ -2872,7 +2854,6 @@ class WebDAVClient(BaseNextcloudClient):
             source,
             headers={
                 "Destination": self._resolve_url(destination),
-                "OCS-APIRequest": "true",
             },
         )
         return {"path": path, "restored_version": version_id}
@@ -2900,7 +2881,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "1",
                 "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
             },
             content=self._TAG_PROPFIND,
         )
@@ -2957,7 +2937,6 @@ class WebDAVClient(BaseNextcloudClient):
             headers={
                 "Depth": "1",
                 "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
             },
             content=self._TAG_PROPFIND,
         )

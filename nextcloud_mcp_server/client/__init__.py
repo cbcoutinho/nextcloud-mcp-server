@@ -5,7 +5,6 @@ from email.utils import parsedate_to_datetime
 import anyio
 from httpx import (
     AsyncBaseTransport,
-    AsyncClient,
     Auth,
     BasicAuth,
     Request,
@@ -14,7 +13,7 @@ from httpx import (
 )
 
 from ..controllers.notes_search import NotesSearchController
-from ..http import nextcloud_httpx_transport
+from ..http import nextcloud_httpx_client, nextcloud_httpx_transport
 from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
 from .collectives import CollectivesClient
@@ -163,7 +162,7 @@ class NextcloudClient:
         # which builds its own auth object from the raw credential.
         self.username = username
         auth_username = auth_username or username
-        self._client = AsyncClient(
+        self._client = nextcloud_httpx_client(
             base_url=base_url,
             auth=auth,
             transport=AsyncDisableCookieTransport(nextcloud_httpx_transport()),

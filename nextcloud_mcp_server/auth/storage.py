@@ -58,6 +58,7 @@ from nextcloud_mcp_server.config import (
     is_sqlite_url,
     mask_db_password,
 )
+from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import (
     record_db_connect,
@@ -2058,7 +2059,7 @@ class RefreshTokenStorage:
                 # the UID for legacy rows without a stored loginName.
                 login_name = app_data.get("username") or user_id
 
-                async with httpx.AsyncClient(
+                async with nextcloud_httpx_client(
                     base_url=nextcloud_host,
                     auth=httpx.BasicAuth(login_name, app_password),
                     timeout=10.0,
