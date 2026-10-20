@@ -5,6 +5,8 @@ these factories to ensure consistent SSL/TLS configuration from environment
 variables (NEXTCLOUD_VERIFY_SSL, NEXTCLOUD_CA_BUNDLE).
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 import httpx
@@ -17,8 +19,11 @@ from .config import get_nextcloud_http_keepalive, get_nextcloud_ssl_verify
 #: ``#[CORS]`` app routes it stops ``CORSMiddleware`` from logging the session
 #: out and re-authenticating -- the path that 404s Tables v1 on Nextcloud 33
 #: (GH #1664). This is the only place the header is spelled; per-request
-#: headers merge over it.
-NEXTCLOUD_DEFAULT_HEADERS = {"OCS-APIRequest": "true"}
+#: headers merge over it. Read-only for the same reason as
+#: ``ocs.OCS_REQUEST_HEADERS``: every client shares this one object.
+NEXTCLOUD_DEFAULT_HEADERS: Mapping[str, str] = MappingProxyType(
+    {"OCS-APIRequest": "true"}
+)
 
 
 def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:

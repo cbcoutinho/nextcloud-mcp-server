@@ -179,3 +179,9 @@ def test_the_ocs_json_constant_cannot_be_mutated():
 
     with pytest.raises(TypeError):
         OCS_REQUEST_HEADERS["Accept"] = "text/xml"  # ty: ignore[unsupported-operation]
+
+
+def test_the_default_headers_cannot_be_mutated():
+    """Every Nextcloud client shares NEXTCLOUD_DEFAULT_HEADERS."""
+    with pytest.raises(TypeError):
+        NEXTCLOUD_DEFAULT_HEADERS["OCS-APIRequest"] = "false"  # ty: ignore[unsupported-operation]
