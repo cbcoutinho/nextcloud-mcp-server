@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.200.5 (2026-10-21)
+
+### Fix
+
+- **client**: don't read a streamed request body in the request log hook
+
 ## v0.200.4 (2026-10-21)
 
 ### Fix
