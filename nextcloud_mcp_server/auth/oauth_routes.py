@@ -22,6 +22,7 @@ Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from base64 import b64decode, urlsafe_b64encode
@@ -30,6 +31,7 @@ from typing import Any
 from urllib.parse import unquote, urlencode
 from urllib.parse import urlparse as parse_url
 
+import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -178,6 +180,102 @@ def _redact_error_body(text: str) -> dict[str, Any] | str:
         return _redact(json.loads(text))
     except (ValueError, TypeError):
         return f"<unparseable len={len(text)}>"
+
+
+# RFC 6749 §5.2 codes that describe the grant the client itself presented, so
+# relaying them lets the client react correctly, for example by re-authorizing
+# on ``invalid_grant``. ``invalid_target`` (RFC 8707) is included although the
+# proxy sets ``resource`` itself: it means the IdP will not issue a token for
+# this MCP server, and clients fail the request on it without discarding
+# their tokens. Every other code from the IdP (``invalid_client``,
+# ``unauthorized_client``, ``unsupported_grant_type``, anything unknown) is
+# about the MCP server's own client credentials or the IdP's configuration,
+# which the downstream client can neither see nor fix.
+_REFRESH_PASSTHROUGH_ERRORS = frozenset(
+    {"invalid_request", "invalid_grant", "invalid_scope", "invalid_target"}
+)
+
+# RFC 6749 §5.2 limits error_description to this character set. A bounded
+# length keeps an IdP from relaying an arbitrary payload through the proxy.
+_ERROR_DESCRIPTION_RE = re.compile(r"[\x20-\x21\x23-\x5b\x5d-\x7e]{1,200}")
+
+
+def _is_absolute_http_url(value: Any) -> bool:
+    """True for a string that is an absolute ``http://`` or ``https://`` URL.
+
+    Same rule as ``provision_routes._validate_redirect_uri``: an http(s)
+    scheme and a host.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = parse_url(value)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _refresh_unavailable() -> JSONResponse:
+    """Refresh failed for a reason that may clear on retry.
+
+    ``temporarily_unavailable`` rather than ``invalid_grant``: the TypeScript
+    MCP SDK discards its tokens on ``invalid_grant`` and starts a new browser
+    login, so a brief IdP outage would log the user out even though the
+    refresh token is still good. On ``temporarily_unavailable`` it keeps the
+    tokens and fails only the current request.
+    """
+    return JSONResponse(
+        {
+            "error": "temporarily_unavailable",
+            "error_description": "The identity provider is unavailable, try again later",
+        },
+        status_code=503,
+    )
+
+
+def _refresh_error_response(response: httpx.Response) -> JSONResponse:
+    """Translate the IdP's non-200 refresh answer for the downstream client.
+
+    - 429 or 5xx: transient, see ``_refresh_unavailable``.
+    - 4xx with an OAuth error in ``_REFRESH_PASSTHROUGH_ERRORS``: relayed with
+      status 400, and with ``error_description`` only when it fits the RFC
+      character set and length bound.
+    - Anything else, including a 3xx and an ``error`` that is not a string:
+      ``server_error`` with 502, because the IdP refused the MCP server itself
+      or answered with something that is not an OAuth error.
+    """
+    status = response.status_code
+    if status == 429 or status >= 500:
+        return _refresh_unavailable()
+
+    body = None
+    if 400 <= status < 500:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+    error = body.get("error") if isinstance(body, dict) else None
+
+    if (
+        isinstance(body, dict)
+        and isinstance(error, str)
+        and error in _REFRESH_PASSTHROUGH_ERRORS
+    ):
+        payload = {"error": error}
+        description = body.get("error_description")
+        if isinstance(description, str) and _ERROR_DESCRIPTION_RE.fullmatch(
+            description
+        ):
+            payload["error_description"] = description
+        return JSONResponse(payload, status_code=400)
+
+    return JSONResponse(
+        {
+            "error": "server_error",
+            "error_description": "The identity provider rejected the token refresh",
+        },
+        status_code=502,
+    )
 
 
 def _fingerprint(value: str) -> str:
@@ -1518,9 +1616,6 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             status_code=500,
         )
 
-    discovery = await get_oidc_discovery(discovery_url)
-    token_endpoint = discovery["token_endpoint"]
-
     # Proxy refresh request to Nextcloud
     token_params = {
         "grant_type": "refresh_token",
@@ -1532,8 +1627,37 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
 
     logger.info("AS proxy refresh: proxying to IdP: %s", _redact(token_params))
 
-    async with nextcloud_httpx_client() as http_client:
-        response = await http_client.post(token_endpoint, data=token_params)
+    # Discovery and the token request both fail over to temporarily_unavailable.
+    # Log only the exception type: the message can carry the IdP's URL and says
+    # nothing the type does not about whether to retry.
+    try:
+        discovery = await get_oidc_discovery(discovery_url)
+        token_endpoint = discovery["token_endpoint"]
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, KeyError, TypeError) as exc:
+        # HTTPError: unreachable or non-2xx. ValueError: not JSON. KeyError,
+        # TypeError: JSON without a token_endpoint, or not an object.
+        logger.warning(
+            "AS proxy token refresh: OIDC discovery failed: %s", type(exc).__name__
+        )
+        return _refresh_unavailable()
+
+    # The discovery document is admin-controlled, but a token_endpoint that is
+    # not an absolute http(s) URL would only fail later, inside the POST, as a
+    # 500. The URL itself stays out of the log, as above.
+    if not _is_absolute_http_url(token_endpoint):
+        logger.warning(
+            "AS proxy token refresh: OIDC discovery has an unusable token_endpoint"
+        )
+        return _refresh_unavailable()
+
+    try:
+        async with nextcloud_httpx_client() as http_client:
+            response = await http_client.post(token_endpoint, data=token_params)
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        logger.warning(
+            "AS proxy token refresh: IdP unreachable: %s", type(exc).__name__
+        )
+        return _refresh_unavailable()
 
     if response.status_code != 200:
         logger.error(
@@ -1542,13 +1666,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             _redact_error_body(response.text),
         )
         # Counted by oauth_token_endpoint, which sees every failure exit.
-        return JSONResponse(
-            {
-                "error": "invalid_grant",
-                "error_description": "Token refresh failed",
-            },
-            status_code=response.status_code,
-        )
+        return _refresh_error_response(response)
 
     refreshed = response.json()
     # An absent refresh_token here is not necessarily a fault: an IdP that does
