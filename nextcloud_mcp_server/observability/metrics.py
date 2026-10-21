@@ -787,7 +787,8 @@ document_download_truncated_total = Counter(
 search_requests_total = Counter(
     "astrolabe_search_requests_total",
     "Total semantic searches, by entrypoint and configuration",
-    # surface: mcp | http — algorithm: bm25_hybrid_rrf | bm25_hybrid_dbsf | semantic
+    # surface: mcp | http — algorithm: bm25_hybrid_rrf | bm25_hybrid_dbsf | bm25
+    #   | semantic (bm25 = keyword-only, HTTP surfaces)
     # granularity: chunk | document — reranked: true | false | unavailable
     # status: success | error
     ["surface", "algorithm", "granularity", "reranked", "status"],

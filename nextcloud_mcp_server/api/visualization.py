@@ -798,7 +798,7 @@ async def unified_search(request: Request) -> JSONResponse:
         # (bm25) search has no embedding, and embedding one here would put the
         # embedding service back on the path that search exists to avoid.
         query_embedding = search_algo.query_embedding
-        if include_pca and len(paginated_results) >= 2 and query_embedding:
+        if include_pca and len(paginated_results) >= 2 and query_embedding is not None:
             try:
                 pca_data = await compute_pca_coordinates(
                     paginated_results, query_embedding
@@ -1150,7 +1150,7 @@ async def vector_search(request: Request) -> JSONResponse:
         # Plotted only when the search itself embedded the query; see
         # unified_search. A keyword (bm25) search gets the empty plot below.
         query_embedding = search_algo.query_embedding
-        if include_pca and len(all_results) >= 2 and query_embedding:
+        if include_pca and len(all_results) >= 2 and query_embedding is not None:
             try:
                 pca_data = await compute_pca_coordinates(all_results, query_embedding)
                 response_data["coordinates_3d"] = pca_data["coordinates_3d"]

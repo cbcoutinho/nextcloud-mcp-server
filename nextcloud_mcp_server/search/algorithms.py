@@ -42,9 +42,9 @@ async def embed_query(embed: Callable[[], Awaitable[T]], timeout: float) -> T:
             return await embed()
     except Exception as exc:
         raise QueryEmbeddingUnavailable(
-            f"The embedding service did not return a query embedding within "
-            f"{timeout:g}s ({type(exc).__name__}). Keyword search "
-            '(algorithm "bm25") does not need it.'
+            f"The search query could not be embedded ({type(exc).__name__}; "
+            f"search limit {timeout:g}s). Keyword search (algorithm "
+            '"bm25") does not need the embedding service.'
         ) from exc
 
 

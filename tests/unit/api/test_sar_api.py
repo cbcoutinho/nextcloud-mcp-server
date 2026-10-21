@@ -325,12 +325,25 @@ def test_search_for_a_closed_case_returns_no_results(nc):
     assert "results" not in response.json()
 
 
-def test_search_errors_pass_through_unlogged(nc):
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (422, {"error": "unsupported"}),
+        # The embedding service is down: the client needs the code to offer
+        # keyword search, and a search that did not run is not logged.
+        (
+            503,
+            {"error": "Embedding service unavailable", "code": "embedding_unavailable"},
+        ),
+    ],
+)
+def test_search_errors_pass_through_unlogged(nc, status, body):
     change = AsyncMock()
     with (
-        _search_returns(422, {"error": "unsupported"}),
+        _search_returns(status, body),
         patch(f"{_MOD}.change_items", change),
     ):
         response = _client().post(CASES + "/101/search", json=FILTERED)
-    assert response.status_code == 422
+    assert response.status_code == status
+    assert response.json() == body
     change.assert_not_called()

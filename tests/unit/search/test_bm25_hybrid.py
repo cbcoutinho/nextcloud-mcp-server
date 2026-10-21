@@ -485,7 +485,7 @@ async def test_hung_query_embedding_fails_fast(monkeypatch):
     embed.side_effect = _hang
 
     with anyio.fail_after(5):
-        with pytest.raises(QueryEmbeddingUnavailable, match="0.05s"):
+        with pytest.raises(QueryEmbeddingUnavailable, match=r"TimeoutError.*0\.05s"):
             await BM25HybridSearchAlgorithm().search(query="hello", user_id="alice")
     qdrant.query_points.assert_not_awaited()
 
