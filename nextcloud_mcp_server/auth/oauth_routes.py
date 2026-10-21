@@ -200,21 +200,6 @@ _REFRESH_PASSTHROUGH_ERRORS = frozenset(
 _ERROR_DESCRIPTION_RE = re.compile(r"[\x20-\x21\x23-\x5b\x5d-\x7e]{1,200}")
 
 
-def _is_absolute_http_url(value: Any) -> bool:
-    """True for a string that is an absolute ``http://`` or ``https://`` URL.
-
-    Same rule as ``provision_routes._validate_redirect_uri``: an http(s)
-    scheme and a host.
-    """
-    if not isinstance(value, str):
-        return False
-    try:
-        parsed = parse_url(value)
-    except ValueError:
-        return False
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-
-
 def _refresh_unavailable() -> JSONResponse:
     """Refresh failed for a reason that may clear on retry.
 
@@ -1641,19 +1626,12 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
         )
         return _refresh_unavailable()
 
-    # The discovery document is admin-controlled, but a token_endpoint that is
-    # not an absolute http(s) URL would only fail later, inside the POST, as a
-    # 500. The URL itself stays out of the log, as above.
-    if not _is_absolute_http_url(token_endpoint):
-        logger.warning(
-            "AS proxy token refresh: OIDC discovery has an unusable token_endpoint"
-        )
-        return _refresh_unavailable()
-
     try:
         async with nextcloud_httpx_client() as http_client:
             response = await http_client.post(token_endpoint, data=token_params)
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+    # TypeError: a token_endpoint that is not a string. A relative or non-http(s)
+    # one raises UnsupportedProtocol, an HTTPError.
+    except (httpx.HTTPError, httpx.InvalidURL, TypeError) as exc:
         logger.warning(
             "AS proxy token refresh: IdP unreachable: %s", type(exc).__name__
         )

@@ -336,11 +336,16 @@ class TestTransientFailures:
             "get_oidc_discovery",
             mocker.AsyncMock(return_value={"token_endpoint": token_endpoint}),
         )
+        # The real transport: it rejects these URLs before any I/O, where
+        # MockTransport would hand them to the handler.
+        mocker.patch.object(
+            oauth_routes, "nextcloud_httpx_client", lambda **kw: httpx.AsyncClient()
+        )
         caplog.set_level(logging.DEBUG, logger="nextcloud_mcp_server.auth.oauth_routes")
         response = await _refresh(idp, lambda r: httpx.Response(200, json={}))
         assert response.status_code == 503
         assert _body(response)["error"] == "temporarily_unavailable"
-        assert "unusable token_endpoint" in caplog.text
+        assert "IdP unreachable" in caplog.text
         assert "/apps/oidc/token" not in caplog.text
 
 
