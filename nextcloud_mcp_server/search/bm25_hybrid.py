@@ -19,7 +19,7 @@ from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
     build_search_result_from_point,
-    embed_query,
+    query_embedding_budget,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -174,10 +174,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation("search.dense_embedding"):
             if self.query_embedding is not None and self._embedded_query == query:
                 return self.query_embedding
-            dense_embedding, query_tokens = await embed_query(
-                lambda: provider.embed_with_usage(query),
-                settings.search_embedding_timeout_seconds,
-            )
+            with query_embedding_budget(settings.search_embedding_timeout_seconds):
+                dense_embedding, query_tokens = await provider.embed_with_usage(query)
             # Store for reuse by callers (e.g. the PCA projection in
             # vector/visualization.py) and for the usage-metering hook in
             # server/semantic.py (token count).

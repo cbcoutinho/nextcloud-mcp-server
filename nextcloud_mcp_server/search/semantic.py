@@ -15,7 +15,7 @@ from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
     build_search_result_from_point,
-    embed_query,
+    query_embedding_budget,
 )
 from nextcloud_mcp_server.search.bm25_hybrid import GRANULARITY_CHUNK
 from nextcloud_mcp_server.vector.payload_keys import ACL_HASH
@@ -134,9 +134,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
 
         # Generate embedding for query
         provider = get_provider()
-        query_embedding = await embed_query(
-            lambda: provider.embed(query), settings.search_embedding_timeout_seconds
-        )
+        with query_embedding_budget(settings.search_embedding_timeout_seconds):
+            query_embedding = await provider.embed(query)
         # Store for reuse by callers (e.g. the PCA projection in
         # vector/visualization.py)
         self.query_embedding = query_embedding

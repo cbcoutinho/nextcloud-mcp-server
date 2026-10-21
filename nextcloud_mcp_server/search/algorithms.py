@@ -2,9 +2,10 @@
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import anyio
 from qdrant_client.models import Filter, ScoredPoint
@@ -15,8 +16,6 @@ from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 
 class QueryEmbeddingUnavailable(RuntimeError):
@@ -30,20 +29,25 @@ class QueryEmbeddingUnavailable(RuntimeError):
     """
 
 
-async def embed_query(embed: Callable[[], Awaitable[T]], timeout: float) -> T:
-    """Run a query-embedding call, failing fast after ``timeout`` seconds.
+@contextmanager
+def query_embedding_budget(seconds: float) -> Generator[None]:
+    """Bound the query-embedding call in the block to ``seconds``, failing fast.
 
-    Any failure (timeout, a gateway 5xx after the provider's retries, a
-    misconfigured provider) becomes :class:`QueryEmbeddingUnavailable`, so every
-    search surface reports one condition the same way.
+    Any failure in the block (the limit, a gateway 5xx after the provider's
+    retries, a misconfigured provider) becomes
+    :class:`QueryEmbeddingUnavailable`, so every search surface reports one
+    condition the same way. That deliberately includes programming errors
+    raised by the provider: they surface as a 503 too, with the original
+    exception chained as ``__cause__`` and logged by the API handler.
+    Cancellation is a ``BaseException`` and passes through untouched.
     """
     try:
-        with anyio.fail_after(timeout):
-            return await embed()
+        with anyio.fail_after(seconds):
+            yield
     except Exception as exc:
         raise QueryEmbeddingUnavailable(
             f"The search query could not be embedded ({type(exc).__name__}; "
-            f"search limit {timeout:g}s). Keyword search (algorithm "
+            f"search limit {seconds:g}s). Keyword search (algorithm "
             '"bm25") does not need the embedding service.'
         ) from exc
 
