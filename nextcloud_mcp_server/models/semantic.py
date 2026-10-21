@@ -153,7 +153,8 @@ class SemanticSearchResponse(BaseResponse):
         description=(
             "Search method used, e.g. 'bm25_hybrid_<fusion>' (dense + BM25 sparse "
             "fused). Keyword-only documents contribute via the sparse side of the "
-            "same fused query."
+            "same fused query. 'bm25' means the query ran on BM25 alone and the "
+            "embedding service was not used."
         ),
     )
     granularity: str = Field(

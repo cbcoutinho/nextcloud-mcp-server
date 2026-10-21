@@ -22,6 +22,7 @@ proves the real share → accessible_owners → filter → verify chain.
 """
 
 import os
+import re
 import uuid
 from unittest.mock import AsyncMock
 
@@ -309,7 +310,10 @@ async def test_find_files_by_ids_resolves_shares_in_one_batch(acl_users, shared_
     for user in ("alice", "bob"):
         rows = await acl_users[user].webdav.find_files_by_ids([int(file_id), missing])
         assert [r["file_id"] for r in rows] == [int(file_id)], user
-        assert rows[0]["path"].endswith("budget.pdf")
+        # The recipient's copy is mounted under a de-duplicated name
+        # ("budget (2).pdf") when another share already put a budget.pdf in
+        # their home, so match the name loosely; the file id is the identity.
+        assert re.search(r"budget( \(\d+\))?\.pdf$", rows[0]["path"]), rows[0]
         assert rows[0]["content_type"] == "application/pdf"
 
     assert await acl_users["diana"].webdav.find_files_by_ids([int(file_id)]) == []

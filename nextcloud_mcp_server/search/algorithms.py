@@ -2,10 +2,12 @@
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+import anyio
 from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
@@ -14,6 +16,40 @@ from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
+
+
+class QueryEmbeddingUnavailable(RuntimeError):
+    """The search query could not be embedded within the search budget.
+
+    Raised instead of waiting: the embedding provider's own timeout (120 s) and
+    retries are sized for ingest, where riding out a GPU cold start is right,
+    but a search that waits that long has outlived its caller. The HTTP API maps
+    this to a 503 with ``code: "embedding_unavailable"``; keyword search
+    (``algorithm: "bm25"``) does not embed and still works.
+    """
+
+
+@contextmanager
+def query_embedding_budget(seconds: float) -> Generator[None]:
+    """Bound the query-embedding call in the block to ``seconds``, failing fast.
+
+    Any failure in the block (the limit, a gateway 5xx after the provider's
+    retries, a misconfigured provider) becomes
+    :class:`QueryEmbeddingUnavailable`, so every search surface reports one
+    condition the same way. That deliberately includes programming errors
+    raised by the provider: they surface as a 503 too, with the original
+    exception chained as ``__cause__`` and logged by the API handler.
+    Cancellation is a ``BaseException`` and passes through untouched.
+    """
+    try:
+        with anyio.fail_after(seconds):
+            yield
+    except Exception as exc:
+        raise QueryEmbeddingUnavailable(
+            f"The search query could not be embedded ({type(exc).__name__}; "
+            f"search limit {seconds:g}s). Keyword search (algorithm "
+            '"bm25") does not need the embedding service.'
+        ) from exc
 
 
 @runtime_checkable

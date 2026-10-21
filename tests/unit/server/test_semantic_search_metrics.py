@@ -198,3 +198,24 @@ def test_valid_fusion_is_reported_verbatim():
     spy, _ = _run(fusion="dbsf")
 
     assert spy.call_args.kwargs["algorithm"] == "bm25_hybrid_dbsf"
+
+
+def test_unavailable_query_embedding_is_a_tool_error_naming_keyword_search():
+    """nc_semantic_search has no status code to fail with, so the message is
+    the contract: it must say what happened and that keyword search works."""
+    from nextcloud_mcp_server.search.algorithms import (  # noqa: PLC0415
+        QueryEmbeddingUnavailable,
+    )
+
+    spy, err = _run(
+        search_side_effect=QueryEmbeddingUnavailable(
+            "The search query could not be embedded (TimeoutError; search limit "
+            '10s). Keyword search (algorithm "bm25") does not need the embedding '
+            "service."
+        )
+    )
+
+    assert isinstance(err, MCPError)
+    assert "could not be embedded" in str(err)
+    assert '"bm25"' in str(err)
+    assert spy.call_args.kwargs["status"] == "error"
