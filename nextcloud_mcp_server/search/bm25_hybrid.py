@@ -19,6 +19,7 @@ from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
     build_search_result_from_point,
+    embed_query,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -111,7 +112,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
     single unified query covers both without any mode branch.
     """
 
-    def __init__(self, score_threshold: float = 0.0, fusion: str = "rrf"):
+    def __init__(
+        self, score_threshold: float = 0.0, fusion: str = "rrf", *, dense: bool = True
+    ):
         """
         Initialize BM25 hybrid search algorithm.
 
@@ -125,6 +128,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                            via ``limit``.
             fusion: Fusion algorithm to use: "rrf" (Reciprocal Rank Fusion, default)
                    or "dbsf" (Distribution-Based Score Fusion).
+            dense: ``False`` runs the BM25 (sparse) prefetch alone and never
+                   embeds the query — the ``bm25`` algorithm, which must keep
+                   working while the embedding service is down.
 
         Raises:
             ValueError: If fusion is not "rrf" or "dbsf"
@@ -140,6 +146,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         self.score_threshold = score_threshold
         self.fusion = models.Fusion.RRF if fusion == "rrf" else models.Fusion.DBSF
         self.fusion_name = fusion
+        self.dense = dense
         # ``_embedded_query`` is the query string whose dense embedding is held
         # in ``query_embedding`` — repeated search() calls on this per-request
         # instance (the doc_types loop) reuse it instead of re-embedding.
@@ -167,7 +174,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation("search.dense_embedding"):
             if self.query_embedding is not None and self._embedded_query == query:
                 return self.query_embedding
-            dense_embedding, query_tokens = await provider.embed_with_usage(query)
+            dense_embedding, query_tokens = await embed_query(
+                lambda: provider.embed_with_usage(query),
+                settings.search_embedding_timeout_seconds,
+            )
             # Store for reuse by callers (e.g. the PCA projection in
             # vector/visualization.py) and for the usage-metering hook in
             # server/semantic.py (token count).
@@ -244,13 +254,6 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 prefetch_limit * DOCUMENT_PREFETCH_FACTOR, MAX_DOCUMENT_PREFETCH
             )
         prefetches = [
-            # Dense semantic search
-            models.Prefetch(
-                query=dense_embedding,
-                using="dense",
-                limit=prefetch_limit,
-                filter=query_filter,
-            ),
             # Sparse BM25 search
             models.Prefetch(
                 query=sparse_query,
@@ -259,6 +262,19 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 filter=query_filter,
             ),
         ]
+        # Dense semantic search. Skipped for the keyword-only (``dense=False``)
+        # algorithm; fusing the sparse prefetch alone keeps grouping, dedup and
+        # the score scale identical to a hybrid search.
+        if dense_embedding is not None:
+            prefetches.insert(
+                0,
+                models.Prefetch(
+                    query=dense_embedding,
+                    using="dense",
+                    limit=prefetch_limit,
+                    filter=query_filter,
+                ),
+            )
         with trace_operation(
             "search.qdrant_query",
             attributes={
@@ -392,9 +408,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
         # Self-describing label reused across every log line below and the result
-        # metadata: always "bm25_hybrid_<fusion>" — the query fuses dense + sparse
-        # prefetches; keyword-only documents simply contribute via the sparse side.
-        method_label = f"bm25_hybrid_{self.fusion_name}"
+        # metadata: "bm25_hybrid_<fusion>" when the query fuses dense + sparse
+        # prefetches (keyword-only documents simply contribute via the sparse
+        # side), "bm25" when it runs the sparse prefetch alone.
+        method_label = f"bm25_hybrid_{self.fusion_name}" if self.dense else "bm25"
 
         logger.info(
             "%s: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",
@@ -407,7 +424,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         )
 
         # Dense query embedding (fused with the sparse prefetch below).
-        dense_embedding = await self._embed_query_dense(query, settings)
+        dense_embedding = (
+            await self._embed_query_dense(query, settings) if self.dense else None
+        )
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):

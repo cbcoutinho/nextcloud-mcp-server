@@ -34,7 +34,6 @@ from nextcloud_mcp_server.observability.metrics import (
     record_search_request,
     record_search_stage,
 )
-from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.search import (
     GRANULARITY_CHUNK,
     GRANULARITY_DOCUMENT,
@@ -49,6 +48,7 @@ from nextcloud_mcp_server.search.access_filter import (
     list_accessible_scope,
     normalize_path_prefixes,
 )
+from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
 from nextcloud_mcp_server.search.bm25_hybrid import search_method_label
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
@@ -97,11 +97,30 @@ def _search_algorithm_label(algorithm: str, fusion: str) -> str:
     Matches the MCP tool's ``search_method`` convention
     (``bm25_hybrid_<fusion>``) so the two entrypoints stay comparable.
     """
-    if algorithm == "semantic":
+    if algorithm in ("semantic", "bm25"):
         return algorithm
     # Shared helper: clamps an unrecognised fusion so a caller-supplied string
     # can never reach a Prometheus label from either surface.
     return search_method_label(fusion)
+
+
+def _embedding_unavailable_response(e: QueryEmbeddingUnavailable) -> JSONResponse:
+    """503 for a search whose query could not be embedded in time.
+
+    A distinct ``code`` rather than the generic 500, so a client can tell "the
+    embedding service is down, keyword search still works" apart from a fault —
+    the same choice Astrolabe makes for its own ``search_timeout``. The message
+    is ours (no upstream detail), so it is safe to return as-is.
+    """
+    logger.warning("Search failed fast: %s", e.__cause__ or e)
+    return JSONResponse(
+        {
+            "error": "Embedding service unavailable",
+            "code": "embedding_unavailable",
+            "message": str(e),
+        },
+        status_code=503,
+    )
 
 
 def _unsupported_search_type_response(e: UnsupportedSearchType) -> JSONResponse:
@@ -246,11 +265,17 @@ def _build_search_algorithm(
             algorithm,
             fusion,
         )
-    # Both "bm25" and "hybrid" run BM25HybridSearchAlgorithm — it fuses dense
-    # semantic + sparse BM25; keyword-only documents contribute via the sparse
-    # side of the same query.
+    # "hybrid" fuses dense semantic + sparse BM25 (keyword-only documents
+    # contribute via the sparse side of the same query). "bm25" runs the sparse
+    # prefetch alone and never embeds the query, so it keeps working while the
+    # embedding service is down — it is what Astrolabe offers when a search
+    # times out.
     return (
-        BM25HybridSearchAlgorithm(score_threshold=score_threshold, fusion=fusion),
+        BM25HybridSearchAlgorithm(
+            score_threshold=score_threshold,
+            fusion=fusion,
+            dense=algorithm != "bm25",
+        ),
         algorithm,
         fusion,
     )
@@ -769,14 +794,12 @@ async def unified_search(request: Request) -> JSONResponse:
         # dense embedding. Keyword-only result chunks (``keyword-index`` tag) carry
         # no dense vector, so compute_pca_coordinates places them at the origin
         # (they can't be positioned) — the hybrid chunks still plot normally.
-        if include_pca and len(paginated_results) >= 2:
+        # Plotted only when the search itself embedded the query: a keyword
+        # (bm25) search has no embedding, and embedding one here would put the
+        # embedding service back on the path that search exists to avoid.
+        query_embedding = search_algo.query_embedding
+        if include_pca and len(paginated_results) >= 2 and query_embedding:
             try:
-                if search_algo.query_embedding is not None:
-                    query_embedding = search_algo.query_embedding
-                else:
-                    provider = get_provider()
-                    query_embedding = await provider.embed(query)
-
                 pca_data = await compute_pca_coordinates(
                     paginated_results, query_embedding
                 )
@@ -812,6 +835,15 @@ async def unified_search(request: Request) -> JSONResponse:
 
         return JSONResponse(response_data)
 
+    except QueryEmbeddingUnavailable as e:
+        record_search_request(
+            surface="http",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=granularity,
+            reranked="false",
+            status="error",
+        )
+        return _embedding_unavailable_response(e)
     except Exception as e:
         # exception() over error(): keeps the traceback and satisfies Sonar
         # python:S8572 (logging.error with the exception object in an except).
@@ -1115,15 +1147,11 @@ async def vector_search(request: Request) -> JSONResponse:
         # plots chunks around the query's dense embedding; keyword-only chunks
         # (``keyword-index`` tag) have no dense vector and are placed at the origin
         # by compute_pca_coordinates while hybrid chunks plot normally.
-        if include_pca and len(all_results) >= 2:
+        # Plotted only when the search itself embedded the query; see
+        # unified_search. A keyword (bm25) search gets the empty plot below.
+        query_embedding = search_algo.query_embedding
+        if include_pca and len(all_results) >= 2 and query_embedding:
             try:
-                # Get query embedding from search algorithm or generate it
-                if search_algo.query_embedding is not None:
-                    query_embedding = search_algo.query_embedding
-                else:
-                    provider = get_provider()
-                    query_embedding = await provider.embed(query)
-
                 pca_data = await compute_pca_coordinates(all_results, query_embedding)
                 response_data["coordinates_3d"] = pca_data["coordinates_3d"]
                 response_data["query_coords"] = pca_data["query_coords"]
@@ -1134,7 +1162,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 response_data["coordinates_3d"] = []
                 response_data["query_coords"] = []
         elif include_pca:
-            # Not enough results for PCA
+            # Not enough results for PCA, or no query embedding to plot around
             response_data["coordinates_3d"] = []
             response_data["query_coords"] = []
 
@@ -1163,6 +1191,15 @@ async def vector_search(request: Request) -> JSONResponse:
 
         return JSONResponse(response_data)
 
+    except QueryEmbeddingUnavailable as e:
+        record_search_request(
+            surface="http_viz",
+            algorithm=_search_algorithm_label(algorithm, fusion),
+            granularity=GRANULARITY_CHUNK,
+            reranked="false",
+            status="error",
+        )
+        return _embedding_unavailable_response(e)
     except Exception as e:
         # The client only ever sees a sanitized message, so without this the
         # traceback is lost entirely and a 500 leaves no trace anywhere.

@@ -24,6 +24,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 
 pytestmark = pytest.mark.integration
@@ -83,6 +84,7 @@ async def granularity_collection(monkeypatch):
     settings.get_collection_name.return_value = _COLLECTION
     settings.get_embedding_provider_family.return_value = "test"
     settings.vector_search_rrf_k = 60
+    settings.search_embedding_timeout_seconds = 10.0
     settings.acl_prefilter_enabled = False
 
     provider = MagicMock()
@@ -219,3 +221,48 @@ async def test_limit_counts_documents_not_chunks(granularity_collection):
 
     assert len(results) == 3
     assert len({r.id for r in results}) == 3
+
+
+def _break_embeddings(monkeypatch) -> AsyncMock:
+    """The embedding service is down: every embed fails, as it does while the
+    gateway answers 502."""
+    embed = AsyncMock(side_effect=RuntimeError("502 Bad Gateway"))
+    provider = MagicMock()
+    provider.embed_with_usage = embed
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_provider", lambda: provider
+    )
+    return embed
+
+
+@pytest.mark.parametrize("granularity", ["chunk", "document"])
+async def test_keyword_search_works_with_the_embedding_service_down(
+    granularity_collection, monkeypatch, granularity
+):
+    """``bm25`` (``dense=False``) answers from the sparse vectors alone — through
+    a real Qdrant, including the grouped query — without calling the embedder."""
+    embed = _break_embeddings(monkeypatch)
+
+    results = await BM25HybridSearchAlgorithm(dense=False).search(
+        query="anything", user_id="alice", limit=10, granularity=granularity
+    )
+
+    embed.assert_not_awaited()
+    doc_ids = {r.id for r in results}
+    assert doc_ids == {"bundle", *_SINGLE_DOCS}
+    if granularity == "document":
+        assert len(results) == len(doc_ids)
+    assert {(r.metadata or {}).get("search_method") for r in results} == {"bm25"}
+
+
+async def test_hybrid_search_fails_fast_with_the_embedding_service_down(
+    granularity_collection, monkeypatch
+):
+    """The same outage fails a hybrid search immediately instead of waiting out
+    the provider's ingest-sized timeout and retries."""
+    _break_embeddings(monkeypatch)
+
+    with pytest.raises(QueryEmbeddingUnavailable):
+        await BM25HybridSearchAlgorithm().search(
+            query="anything", user_id="alice", limit=10
+        )

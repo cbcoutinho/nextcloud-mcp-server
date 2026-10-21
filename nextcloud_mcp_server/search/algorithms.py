@@ -2,10 +2,11 @@
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
+import anyio
 from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
@@ -14,6 +15,37 @@ from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+class QueryEmbeddingUnavailable(RuntimeError):
+    """The search query could not be embedded within the search budget.
+
+    Raised instead of waiting: the embedding provider's own timeout (120 s) and
+    retries are sized for ingest, where riding out a GPU cold start is right,
+    but a search that waits that long has outlived its caller. The HTTP API maps
+    this to a 503 with ``code: "embedding_unavailable"``; keyword search
+    (``algorithm: "bm25"``) does not embed and still works.
+    """
+
+
+async def embed_query(embed: Callable[[], Awaitable[T]], timeout: float) -> T:
+    """Run a query-embedding call, failing fast after ``timeout`` seconds.
+
+    Any failure (timeout, a gateway 5xx after the provider's retries, a
+    misconfigured provider) becomes :class:`QueryEmbeddingUnavailable`, so every
+    search surface reports one condition the same way.
+    """
+    try:
+        with anyio.fail_after(timeout):
+            return await embed()
+    except Exception as exc:
+        raise QueryEmbeddingUnavailable(
+            f"The embedding service did not return a query embedding within "
+            f"{timeout:g}s ({type(exc).__name__}). Keyword search "
+            '(algorithm "bm25") does not need it.'
+        ) from exc
 
 
 @runtime_checkable

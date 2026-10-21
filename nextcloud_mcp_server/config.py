@@ -294,6 +294,11 @@ _DEFAULTS: dict[str, Any] = {
     # Generous headroom over a normal rerank, not a target. Exceeding it
     # degrades to retrieval order rather than failing the search.
     "search_rerank_timeout_seconds": 30.0,
+    # How long a search waits for its query embedding before failing fast with
+    # 503 embedding_unavailable. The provider's own timeout (120 s) and retries
+    # are sized for ingest; a search must answer well inside Astrolabe's 30 s
+    # HTTP timeout, and a healthy query embed takes well under a second.
+    "search_embedding_timeout_seconds": 10.0,
     # Concurrent rerank calls this process keeps in flight against the reranker.
     #
     # Conservative at 1 because reranking is the heaviest request this server
@@ -778,6 +783,7 @@ _dynaconf = Dynaconf(
         Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
         Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
         Validator("SEARCH_RERANK_TIMEOUT_SECONDS", gt=0),
+        Validator("SEARCH_EMBEDDING_TIMEOUT_SECONDS", gt=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
@@ -1405,6 +1411,7 @@ class Settings:
     search_rerank_model: str = "local/BAAI/bge-reranker-v2-m3"
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
+    search_embedding_timeout_seconds: float = 10.0
     search_rerank_max_concurrency: int = 1
     # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
     sar_enabled: bool = False

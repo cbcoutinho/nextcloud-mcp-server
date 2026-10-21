@@ -2,9 +2,12 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from qdrant_client import models
 
+from nextcloud_mcp_server.search import bm25_hybrid
+from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
 from nextcloud_mcp_server.search.bm25_hybrid import (
     DOCUMENT_PREFETCH_FACTOR,
     MAX_DOCUMENT_PREFETCH,
@@ -62,8 +65,8 @@ def test_bm25_hybrid_requires_vector_db():
 
 def _make_search_deps(monkeypatch):
     """Stub the embedding / BM25 / Qdrant / settings deps of ``search()`` and
-    return ``(embed, qdrant)`` mocks. The query always fuses dense + sparse
-    (there is no keyword-only mode), so a single builder serves every test."""
+    return ``(embed, qdrant)`` mocks. One builder serves both modes: the
+    keyword-only (``dense=False``) tests assert the embed mock is never used."""
     embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7))
     svc = MagicMock()
     svc.embed_with_usage = embed
@@ -96,6 +99,8 @@ def _make_search_deps(monkeypatch):
     # exercise k=1 (the most degenerate ranking constant) instead of the
     # configured default. Pin it explicitly.
     settings.vector_search_rrf_k = 60
+    # Also a real number: anyio.fail_after() rejects a MagicMock deadline.
+    settings.search_embedding_timeout_seconds = 10.0
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.bm25_hybrid.get_settings", lambda: settings
     )
@@ -173,8 +178,10 @@ async def test_hybrid_query_uses_dense_prefetch_and_fusion(patched_search, monke
 
 @pytest.mark.unit
 async def test_search_method_label_is_always_bm25_hybrid(patched_search, monkeypatch):
-    """Results are tagged search_method='bm25_hybrid_<fusion>' — the query always
-    fuses dense + sparse, so there is no keyword-only label anymore."""
+    """Hybrid results are tagged search_method='bm25_hybrid_<fusion>' — the
+    query fuses dense + sparse; keyword-only documents do not change the label.
+    (Only the request-level ``bm25`` algorithm, ``dense=False``, reports
+    ``bm25``.)"""
     captured: dict = {}
 
     def fake_build(point, metadata_extras):
@@ -435,3 +442,62 @@ class TestGranularity:
 
         with pytest.raises(ValueError, match="Invalid granularity"):
             await algo.search(query="hello", user_id="alice", granularity="documnet")
+
+
+@pytest.mark.unit
+async def test_keyword_only_never_embeds_and_queries_sparse_alone(monkeypatch):
+    """``dense=False`` (the ``bm25`` algorithm) must not touch the embedding
+    service at all — it is what still works while that service is down."""
+    embed, qdrant = _make_search_deps(monkeypatch)
+    algo = BM25HybridSearchAlgorithm(dense=False)
+
+    await algo.search(query="hello", user_id="alice")
+
+    embed.assert_not_awaited()
+    prefetch = qdrant.query_points.await_args.kwargs["prefetch"]
+    assert [p.using for p in prefetch] == ["sparse"]
+    assert algo.query_embedding is None
+
+
+@pytest.mark.unit
+async def test_hybrid_queries_dense_and_sparse(monkeypatch):
+    """The default still fuses both prefetches."""
+    _, qdrant = _make_search_deps(monkeypatch)
+
+    await BM25HybridSearchAlgorithm().search(query="hello", user_id="alice")
+
+    prefetch = qdrant.query_points.await_args.kwargs["prefetch"]
+    assert [p.using for p in prefetch] == ["dense", "sparse"]
+
+
+@pytest.mark.unit
+async def test_hung_query_embedding_fails_fast(monkeypatch):
+    """An embedding call that never answers must not hold the search: it is
+    cut at ``search_embedding_timeout_seconds`` and reported as unavailable,
+    before Qdrant is queried."""
+    embed, qdrant = _make_search_deps(monkeypatch)
+    # The patched get_settings() returns the stub _make_search_deps built.
+    bm25_hybrid.get_settings().search_embedding_timeout_seconds = 0.05
+
+    async def _hang(*_args, **_kwargs):
+        await anyio.sleep(60)
+
+    embed.side_effect = _hang
+
+    with anyio.fail_after(5):
+        with pytest.raises(QueryEmbeddingUnavailable, match="0.05s"):
+            await BM25HybridSearchAlgorithm().search(query="hello", user_id="alice")
+    qdrant.query_points.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_failing_query_embedding_is_reported_as_unavailable(monkeypatch):
+    """A gateway error (here: what the provider raises once its retries give
+    up) becomes the same condition as a timeout, with the cause chained."""
+    embed, _ = _make_search_deps(monkeypatch)
+    boom = RuntimeError("502 Bad Gateway")
+    embed.side_effect = boom
+
+    with pytest.raises(QueryEmbeddingUnavailable) as exc_info:
+        await BM25HybridSearchAlgorithm().search(query="hello", user_id="alice")
+    assert exc_info.value.__cause__ is boom
