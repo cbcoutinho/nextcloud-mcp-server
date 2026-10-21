@@ -5,8 +5,10 @@ import random
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from functools import wraps
+from typing import Any
 from urllib.parse import unquote
 
 import anyio
@@ -84,6 +86,39 @@ def _lock_backoff(attempt: int) -> float:
     return ceiling / 2 + random.uniform(0, ceiling / 2)  # NOSONAR
 
 
+def _body_is_replayable(kwargs: dict[str, Any]) -> bool:
+    """Whether a retry of this request would send the same body again.
+
+    Each attempt builds a fresh httpx request from the same keyword arguments.
+    Bytes, str, form data and JSON are rebuilt whole, and httpx seeks a
+    multipart file back to the start. Any other body may be one-shot: an async
+    generator is used up by the first attempt, and a chunk-encoded retry then
+    goes out EMPTY without raising -- a 429 then 204 on a PUT would overwrite
+    the file with zero bytes. So only bytes and str count as replayable
+    ``content=``; a streamed body never does, since a one-shot stream can't be
+    told apart from one that starts over. A non-mapping ``data=`` is httpx's
+    deprecated alias for ``content=`` and is judged the same way. A multipart
+    file that cannot be rewound is not replayable either.
+
+    ``files=`` must already be a mapping or a list (see ``retry_on_429``), so
+    reading it here doesn't use up a one-shot iterable of file tuples.
+    """
+    data = kwargs.get("data")
+    for body in (kwargs.get("content"), None if isinstance(data, Mapping) else data):
+        if body is not None and not isinstance(body, (bytes, str)):
+            return False
+    files = kwargs.get("files") or ()
+    for value in (
+        files.values() if isinstance(files, Mapping) else (f[1] for f in files)
+    ):
+        fileobj = value[1] if isinstance(value, tuple) else value
+        if hasattr(fileobj, "read") and not (
+            hasattr(fileobj, "seekable") and fileobj.seekable()
+        ):
+            return False
+    return True
+
+
 def retry_on_429(func):
     """Retry the two Nextcloud responses that mean "not now" rather than "no".
 
@@ -103,6 +138,10 @@ def retry_on_429(func):
     attempt, and spending one on the other would make either failure arrive
     early.
 
+    A request whose body cannot be sent twice (see :func:`_body_is_replayable`)
+    is not retried at all: the original 429/423 is re-raised, because a retry
+    would silently send an empty body in its place.
+
     (The name predates the 423 handling and is kept because every client
     imports it.)
     """
@@ -111,6 +150,12 @@ def retry_on_429(func):
     async def wrapper(*args, **kwargs):
         retries = 0
         lock_retries = 0
+        # Every attempt reuses these kwargs, so a one-shot iterable of file
+        # tuples must become a list once, before anything iterates it.
+        files = kwargs.get("files")
+        if files is not None and not isinstance(files, Mapping):
+            kwargs["files"] = list(files)
+        replayable = _body_is_replayable(kwargs)
 
         while True:
             try:
@@ -119,6 +164,19 @@ def retry_on_429(func):
                 break
 
             except HTTPStatusError as e:
+                if not replayable and e.response.status_code in (
+                    codes.TOO_MANY_REQUESTS,
+                    codes.LOCKED,
+                ):
+                    # Method and path only: the full URL can carry userinfo
+                    # or a token in its query string.
+                    logger.warning(
+                        "%s on %s %s, whose body cannot be replayed; not retrying",
+                        e.response.status_code,
+                        e.request.method,
+                        e.request.url.path,
+                    )
+                    raise
                 # If we get a '429 Client Error: Too Many Requests'
                 # error we wait a couple of seconds and do a retry
                 if e.response.status_code == codes.TOO_MANY_REQUESTS:
