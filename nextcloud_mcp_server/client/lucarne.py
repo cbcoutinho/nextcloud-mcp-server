@@ -1,0 +1,197 @@
+"""Client for the Lucarne app (a Nextcloud AppAPI external application).
+
+Lucarne runs in its own container, so its REST API is reached through the
+AppAPI proxy, which authenticates the request as the Nextcloud user and
+forwards it to the ExApp.
+"""
+
+import logging
+from typing import Any
+
+from .base import BaseNextcloudClient
+
+logger = logging.getLogger(__name__)
+
+
+class LucarneClient(BaseNextcloudClient):
+    """Client for the Lucarne catalogue and playlist API."""
+
+    app_name = "lucarne"
+    API_BASE = "/apps/app_api/proxy/lucarne/api"
+
+    # --- Channels (subscriptions) ---
+
+    async def get_channels(
+        self, catalog_id: int | None = None, uncategorized: bool = False
+    ) -> list[dict[str, Any]]:
+        """List the user's channel subscriptions.
+
+        Args:
+            catalog_id: Only channels in this catalogue
+            uncategorized: Only channels that belong to no catalogue
+        """
+        params: dict[str, Any] = {}
+        if catalog_id is not None:
+            params["catalog_id"] = catalog_id
+        if uncategorized:
+            params["uncategorized"] = "true"
+        response = await self._make_request(
+            "GET", f"{self.API_BASE}/channels", params=params
+        )
+        return response.json()
+
+    async def add_channel(self, url: str) -> dict[str, Any]:
+        """Subscribe to a YouTube channel.
+
+        Lucarne answers 202 at once and finishes initialising the channel (title,
+        videos) in the background.
+        """
+        response = await self._make_request(
+            "POST", f"{self.API_BASE}/channels", json={"url": url}
+        )
+        return response.json()
+
+    # --- Catalogues ---
+
+    async def get_catalogs(self) -> list[dict[str, Any]]:
+        """List the user's catalogues, each with its channel count."""
+        response = await self._make_request("GET", f"{self.API_BASE}/catalogs")
+        return response.json()
+
+    async def get_catalog(self, catalog_id: int) -> dict[str, Any]:
+        """Get a catalogue, including the IDs of the channels it contains.
+
+        Raises:
+            HTTPStatusError: 404 if the catalogue does not exist
+        """
+        response = await self._make_request(
+            "GET", f"{self.API_BASE}/catalogs/{catalog_id}"
+        )
+        return response.json()
+
+    async def create_catalog(self, name: str) -> dict[str, Any]:
+        """Create a catalogue.
+
+        Raises:
+            HTTPStatusError: 409 if a catalogue with this name already exists
+        """
+        response = await self._make_request(
+            "POST", f"{self.API_BASE}/catalogs", json={"name": name}
+        )
+        return response.json()
+
+    async def update_catalog(self, catalog_id: int, name: str) -> dict[str, Any]:
+        """Rename a catalogue.
+
+        Raises:
+            HTTPStatusError: 404 if not found, 409 if the name is taken
+        """
+        response = await self._make_request(
+            "PUT", f"{self.API_BASE}/catalogs/{catalog_id}", json={"name": name}
+        )
+        return response.json()
+
+    async def add_channel_to_catalog(
+        self, catalog_id: int, channel_id: int
+    ) -> dict[str, Any]:
+        """File one channel into a catalogue and return the catalogue.
+
+        Filing a channel that is already there changes nothing. Needs
+        Lucarne 1.3.0 or later.
+
+        Raises:
+            HTTPStatusError: 404 if the catalogue or the channel is not found
+                (or Lucarne is older than 1.3.0)
+        """
+        response = await self._make_request(
+            "PUT", f"{self.API_BASE}/catalogs/{catalog_id}/channels/{channel_id}"
+        )
+        return response.json()
+
+    async def remove_channel_from_catalog(
+        self, catalog_id: int, channel_id: int
+    ) -> dict[str, Any]:
+        """Take one channel out of a catalogue and return the catalogue.
+
+        The channel stays subscribed. Needs Lucarne 1.3.0 or later.
+
+        Raises:
+            HTTPStatusError: 404 if the catalogue is not found (or Lucarne is
+                older than 1.3.0)
+        """
+        response = await self._make_request(
+            "DELETE", f"{self.API_BASE}/catalogs/{catalog_id}/channels/{channel_id}"
+        )
+        return response.json()
+
+    async def delete_catalog(self, catalog_id: int) -> None:
+        """Delete a catalogue. Its channels stay subscribed, uncatalogued.
+
+        Raises:
+            HTTPStatusError: 404 if the catalogue is not found
+        """
+        await self._make_request("DELETE", f"{self.API_BASE}/catalogs/{catalog_id}")
+
+    # --- Playlists ---
+
+    async def get_playlists(self) -> list[dict[str, Any]]:
+        """List the user's playlists, each with its video count."""
+        response = await self._make_request("GET", f"{self.API_BASE}/playlists")
+        return response.json()
+
+    async def create_playlist(self, title: str) -> dict[str, Any]:
+        """Create a personal playlist."""
+        response = await self._make_request(
+            "POST", f"{self.API_BASE}/playlists", json={"title": title}
+        )
+        return response.json()
+
+    async def update_playlist(self, playlist_id: int, title: str) -> dict[str, Any]:
+        """Rename a playlist.
+
+        Lucarne keeps a YouTube-imported playlist's title and silently ignores
+        the new one; the returned playlist shows the title actually stored.
+
+        Raises:
+            HTTPStatusError: 404 if the playlist is not found
+        """
+        response = await self._make_request(
+            "PUT", f"{self.API_BASE}/playlists/{playlist_id}", json={"title": title}
+        )
+        return response.json()
+
+    async def delete_playlist(
+        self, playlist_id: int, delete_videos: bool = False
+    ) -> dict[str, Any]:
+        """Queue a playlist for deletion (Lucarne deletes it asynchronously).
+
+        Args:
+            playlist_id: Playlist ID
+            delete_videos: Also delete the videos that were only in this playlist
+
+        Raises:
+            HTTPStatusError: 404 if the playlist is not found
+        """
+        response = await self._make_request(
+            "DELETE",
+            f"{self.API_BASE}/playlists/{playlist_id}",
+            json={"delete_videos": delete_videos},
+        )
+        return response.json()
+
+    async def add_playlist_video(self, playlist_id: int, url: str) -> dict[str, Any]:
+        """Add a YouTube video to a personal playlist, by URL.
+
+        Lucarne inspects the video in the background, so it joins the playlist
+        a moment later.
+
+        Raises:
+            HTTPStatusError: 404 if the playlist is not found, 409 if it is a
+                YouTube playlist, which only the collection agent may change
+        """
+        response = await self._make_request(
+            "POST",
+            f"{self.API_BASE}/playlists/{playlist_id}/videos",
+            json={"url": url},
+        )
+        return response.json()
