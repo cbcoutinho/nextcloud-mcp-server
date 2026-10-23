@@ -90,7 +90,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
 | **News** | 8 | Feeds, folders, items, feed health monitoring |
-| **Mail** | 13 | Accounts, mailboxes, messages, attachments, send; flags (read/unread, star), tags, move, delete |
+| **Mail** | 14 | Accounts, mailboxes, messages, attachments, send, drafts (saved without sending); flags (read/unread, star), tags, move, delete |
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
 | **Shopping List** | 12 | Lists and items — add a whole recipe's ingredients in one call, tick items off, clear checked |
