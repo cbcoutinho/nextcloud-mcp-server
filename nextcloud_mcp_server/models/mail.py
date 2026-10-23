@@ -225,6 +225,12 @@ class SaveDraftResponse(BaseResponse):
         description="The Mail app's confirmation that the draft was written to "
         "IMAP, e.g. 'Message moved to IMAP'",
     )
+    marked_ai_generated: bool = Field(
+        False,
+        description="Whether the server asked the Mail app to mark the draft as "
+        "AI-generated (setting MAIL_DRAFT_MARK_AI_GENERATED). Mail versions "
+        "before 5.12 ignore the request.",
+    )
     message: str = Field(description="Human-readable summary")
 
 

@@ -418,6 +418,7 @@ class MailClient(BaseNextcloudClient):
         cc: list[dict[str, str]] | None,
         bcc: list[dict[str, str]] | None,
         in_reply_to: str | None = None,
+        ai_generated: bool = False,
     ) -> dict[str, Any]:
         """Build the request body shared by ``POST /api/outbox`` and ``POST /api/drafts``.
 
@@ -425,6 +426,8 @@ class MailClient(BaseNextcloudClient):
         (``OutboxController::create`` / ``DraftsController::create``), so one
         builder keeps the two from drifting apart. ``bodyPlain``/``bodyHtml``
         exist since Mail 4.2.0; earlier versions took a single ``body``.
+        ``isAiGenerated`` exists since Mail 5.12.0 and is sent only when set,
+        so the body for older versions stays as it was.
         """
         payload: dict[str, Any] = {
             "accountId": account_id,
@@ -444,6 +447,8 @@ class MailClient(BaseNextcloudClient):
             payload["bcc"] = bcc
         if in_reply_to:
             payload["inReplyToMessageId"] = in_reply_to
+        if ai_generated:
+            payload["isAiGenerated"] = True
         return payload
 
     async def send_message(
@@ -522,6 +527,7 @@ class MailClient(BaseNextcloudClient):
         is_html: bool = False,
         cc: list[dict[str, str]] | None = None,
         bcc: list[dict[str, str]] | None = None,
+        ai_generated: bool = False,
     ) -> dict[str, Any]:
         """Stage a draft in the Mail app's database. Never sends anything.
 
@@ -543,6 +549,9 @@ class MailClient(BaseNextcloudClient):
             is_html: Whether ``body`` contains HTML.
             cc: Optional CC recipients (same format as ``to``).
             bcc: Optional BCC recipients (same format as ``to``).
+            ai_generated: Mark the draft as AI-generated (Mail 5.12+ writes an
+                ``X-AI-Generated: 1`` header into the IMAP draft; older
+                versions ignore it).
 
         Returns:
             The staged ``LocalMessage`` dict (``id``, ``accountId``, ``subject``, ...).
@@ -551,7 +560,14 @@ class MailClient(BaseNextcloudClient):
             RequestError: If the response carries no numeric draft id.
         """
         payload = self._local_message_payload(
-            account_id, to, subject, body, is_html, cc=cc, bcc=bcc
+            account_id,
+            to,
+            subject,
+            body,
+            is_html,
+            cc=cc,
+            bcc=bcc,
+            ai_generated=ai_generated,
         )
         result = await self._api_write("POST", "/drafts", json_data=payload)
         draft = result.get("data") if isinstance(result, dict) else None
@@ -604,6 +620,7 @@ class MailClient(BaseNextcloudClient):
         is_html: bool = False,
         cc: list[dict[str, str]] | None = None,
         bcc: list[dict[str, str]] | None = None,
+        ai_generated: bool = False,
     ) -> dict[str, Any]:
         """Save a draft to the account's IMAP Drafts mailbox without sending it.
 
@@ -624,6 +641,7 @@ class MailClient(BaseNextcloudClient):
             is_html: Whether ``body`` contains HTML.
             cc: Optional CC recipients (same format as ``to``).
             bcc: Optional BCC recipients (same format as ``to``).
+            ai_generated: Mark the draft as AI-generated (see :meth:`create_draft`).
 
         Returns:
             ``{"draft_id", "draft", "response"}``: the id the draft was staged
@@ -631,7 +649,14 @@ class MailClient(BaseNextcloudClient):
             move step's response body.
         """
         draft = await self.create_draft(
-            account_id, to, subject, body, is_html=is_html, cc=cc, bcc=bcc
+            account_id,
+            to,
+            subject,
+            body,
+            is_html=is_html,
+            cc=cc,
+            bcc=bcc,
+            ai_generated=ai_generated,
         )
         draft_id = draft["id"]
         try:

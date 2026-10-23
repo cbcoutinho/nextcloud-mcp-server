@@ -177,6 +177,10 @@ _DEFAULTS: dict[str, Any] = {
     # only messages carrying that tag are indexed — the mail analogue of
     # ``vector_sync_tag`` for files.
     "mail_index_tag": "",
+    # Mark drafts saved by nc_mail_save_draft as AI-generated (Mail 5.12+:
+    # an ``X-AI-Generated`` header plus a pre-ticked "Mark as AI generated"
+    # box when the draft is opened in Nextcloud Mail). Off by default.
+    "mail_draft_mark_ai_generated": False,
     # Fail-safe against a flaky/empty tag-discovery read: number of *consecutive*
     # scan cycles for which a given index mode's tag discovery must return zero
     # files (while Qdrant still holds indexed points for that mode) before the
@@ -792,6 +796,11 @@ _dynaconf = Dynaconf(
         # Mail app rejects display names over 128 characters — catch that at
         # startup instead of failing every mail scan with an HTTP 400.
         Validator("MAIL_INDEX_TAG", len_max=128),
+        # A bool must arrive as one. dynaconf turns true/false/True/False into
+        # bools but leaves spellings like FALSE, off or 0 as strings, and any
+        # non-empty string is truthy, so MAIL_DRAFT_MARK_AI_GENERATED=off would
+        # otherwise switch the marker on. Fail at startup instead.
+        Validator("MAIL_DRAFT_MARK_AI_GENERATED", is_type_of=bool),
         # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
         # but when set it must be long enough to resist guessing. Surfaces a
         # weak/placeholder secret at startup rather than in a later audit.
@@ -1319,6 +1328,13 @@ class Settings:
     # out of search on the next query. Max 128 characters (the Mail app rejects
     # longer display names).
     mail_index_tag: str = ""
+
+    # Whether nc_mail_save_draft marks drafts as AI-generated. The Mail app
+    # (5.12+) then writes an ``X-AI-Generated: 1`` header into the draft and
+    # pre-ticks "Mark as AI generated" when the draft is opened in Nextcloud
+    # Mail, where the person sending it can untick it. Older Mail versions
+    # ignore the flag. Off by default.
+    mail_draft_mark_ai_generated: bool = False
 
     # Fail-safe against a flaky/empty tag-discovery read. Number of *consecutive*
     # scan cycles for which an index mode's tag discovery must return zero files
