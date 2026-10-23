@@ -590,3 +590,230 @@ async def test_bodyless_writes_declare_no_json_content_type(mocker):
     call = mock_make_request.call_args
     assert call.kwargs["json"] is None
     assert "Content-Type" not in call.kwargs["headers"]
+
+
+async def test_send_message_outbox_payload(mocker):
+    """Pin the outbox create body, which send_message shares with create_draft."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[
+            create_mock_response(json_data={"data": {"id": 42}}),
+            create_mock_response(status_code=204, content=b""),
+        ],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.send_message(
+        1,
+        [{"email": "a@b.com", "label": "A"}],
+        "Hi",
+        "body",
+        cc=[{"email": "c@d.com"}],
+        references="<orig@example.com>",
+    )
+
+    assert mock_make_request.call_args_list[0].kwargs["json"] == {
+        "accountId": 1,
+        "subject": "Hi",
+        "isHtml": False,
+        "smimeSign": False,
+        "smimeEncrypt": False,
+        "to": [{"email": "a@b.com", "label": "A"}],
+        "bodyPlain": "body",
+        "cc": [{"email": "c@d.com"}],
+        "inReplyToMessageId": "<orig@example.com>",
+    }
+
+
+# --- Drafts -----------------------------------------------------------------
+
+
+def _staged_draft_response(draft_id: int = 42) -> httpx.Response:
+    """The 201 ``DraftsController::create`` answers with: a LocalMessage in ``data``."""
+    return create_mock_response(
+        status_code=201,
+        json_data={
+            "status": "success",
+            "data": {"id": draft_id, "type": 1, "accountId": 1, "subject": "Hi"},
+        },
+    )
+
+
+def _moved_response() -> httpx.Response:
+    """The 202 ``DraftsController::move`` answers with."""
+    return create_mock_response(
+        status_code=202,
+        json_data={"status": "success", "data": "Message moved to IMAP"},
+    )
+
+
+async def test_create_draft_posts_a_local_message(mocker):
+    """POST /drafts takes the same LocalMessage body as the outbox, minus the reply id.
+
+    ``inReplyToMessageId`` is not sent: Mail does not carry it into the IMAP
+    draft, so it would be dropped by the move anyway.
+    """
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=_staged_draft_response()
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    draft = await client.create_draft(
+        1,
+        [{"email": "a@b.com", "label": "A"}],
+        "Hi",
+        "body",
+        bcc=[{"email": "c@d.com"}],
+    )
+
+    assert draft["id"] == 42
+    call = mock_make_request.call_args
+    assert call.args == ("POST", "/apps/mail/api/drafts")
+    assert call.kwargs["json"] == {
+        "accountId": 1,
+        "subject": "Hi",
+        "isHtml": False,
+        "smimeSign": False,
+        "smimeEncrypt": False,
+        "to": [{"email": "a@b.com", "label": "A"}],
+        "bodyPlain": "body",
+        "bcc": [{"email": "c@d.com"}],
+    }
+    assert call.kwargs["headers"]["Content-Type"] == "application/json"
+
+
+async def test_create_draft_sends_html_as_body_html(mocker):
+    """An HTML body goes in ``bodyHtml``, and an empty recipient list is allowed."""
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=_staged_draft_response()
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.create_draft(1, [], "Hi", "<p>body</p>", is_html=True)
+
+    body = mock_make_request.call_args.kwargs["json"]
+    assert body["isHtml"] is True
+    assert body["bodyHtml"] == "<p>body</p>"
+    assert "bodyPlain" not in body
+    assert body["to"] == []
+
+
+async def test_create_draft_without_id_raises(mocker):
+    """A create response without ``data.id`` raises instead of moving nothing."""
+    mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(
+            status_code=201, json_data={"status": "success", "data": None}
+        ),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.RequestError):
+        await client.create_draft(1, [], "Hi", "body")
+
+
+async def test_move_draft_to_imap_is_a_bodyless_post(mocker):
+    """The move route takes no body, so it must not claim to send JSON."""
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=_moved_response()
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.move_draft_to_imap(42)
+
+    assert result["data"] == "Message moved to IMAP"
+    call = mock_make_request.call_args
+    assert call.args == ("POST", "/apps/mail/api/drafts/move/42")
+    assert call.kwargs["json"] is None
+    assert "Content-Type" not in call.kwargs["headers"]
+
+
+async def test_delete_local_draft_issues_delete(mocker):
+    """Only the staging record is addressed: ``/drafts/{id}``, never a message."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        return_value=create_mock_response(
+            status_code=202, json_data={"status": "success", "data": "Message deleted"}
+        ),
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_local_draft(42)
+
+    assert mock_make_request.call_args.args == ("DELETE", "/apps/mail/api/drafts/42")
+
+
+async def test_save_draft_stages_then_moves_and_never_touches_the_outbox(mocker):
+    """The draft flow is create + move; no outbox route may appear in it."""
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[_staged_draft_response(42), _moved_response()],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.save_draft(1, [{"email": "a@b.com"}], "Hi", "body")
+
+    assert result["draft_id"] == 42
+    assert result["response"]["data"] == "Message moved to IMAP"
+    paths = [call.args for call in mock_make_request.call_args_list]
+    assert paths == [
+        ("POST", "/apps/mail/api/drafts"),
+        ("POST", "/apps/mail/api/drafts/move/42"),
+    ]
+    assert not any("/outbox" in path for _, path in paths)
+
+
+async def test_save_draft_discards_the_staged_draft_when_the_move_fails(mocker):
+    """A failed move must not leave an orphaned local draft behind.
+
+    Mail keeps such a draft marked ``failed``; nothing lists local drafts and
+    its background move skips failed ones, so it would never surface.
+    """
+    move_error = _http_error(500)
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[
+            _staged_draft_response(42),
+            move_error,
+            create_mock_response(status_code=202, json_data={"status": "success"}),
+        ],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await client.save_draft(1, [], "Hi", "body")
+
+    assert exc_info.value is move_error
+    assert mock_make_request.call_args_list[-1].args == (
+        "DELETE",
+        "/apps/mail/api/drafts/42",
+    )
+
+
+async def test_save_draft_reports_the_move_error_when_cleanup_also_fails(
+    mocker, caplog
+):
+    """The cleanup is best-effort: its failure is logged, the move error raised."""
+    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.client.mail")
+    move_error = _http_error(500)
+    mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[
+            _staged_draft_response(42),
+            move_error,
+            _http_error(404),
+        ],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await client.save_draft(1, [], "Hi", "body")
+
+    assert exc_info.value is move_error
+    assert "Could not discard staged mail draft 42" in caplog.text
