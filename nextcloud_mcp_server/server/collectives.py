@@ -106,7 +106,8 @@ def configure_collectives_tools(mcp: MCPServer):
         """Get a page's metadata and markdown content from a Nextcloud Collective.
 
         Content is fetched via WebDAV using the page's file path. To update
-        page content, use the nc_webdav_write_file tool with the path
+        page content, use nc_webdav_edit_file for a partial change, or
+        nc_webdav_write_file to replace it all, with the path
         collectivePath/filePath/fileName (omit filePath for root-level pages).
 
         Args:
