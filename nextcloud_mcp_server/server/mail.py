@@ -1,4 +1,4 @@
-"""MCP tools for Nextcloud Mail app (read, send, flags, tags, move, delete)."""
+"""MCP tools for Nextcloud Mail app (read, send, drafts, flags, tags, move, delete)."""
 
 import json
 import logging
@@ -14,6 +14,7 @@ from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.mail import DEFAULT_TAG_COLOR
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.mail import (
     GetAttachmentResponse,
@@ -29,6 +30,7 @@ from nextcloud_mcp_server.models.mail import (
     MailMessageSummary,
     MailTag,
     MailTagResponse,
+    SaveDraftResponse,
     SendMessageResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -303,6 +305,148 @@ async def nc_mail_send_message(
         raise MCPError(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
 
 
+def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
+    """Parse a JSON recipient list (``[{"label": "...", "email": "..."}]``).
+
+    Runs before any request is made, so a malformed list fails with an error
+    naming the parameter instead of a half-finished call to the Mail app.
+
+    Args:
+        raw: The JSON string as passed to the tool; ``None`` or ``""`` means
+            no recipients.
+        field: Parameter name for error messages (``to``, ``cc``, ``bcc``).
+
+    Returns:
+        One ``{"email", "label"?}`` dict per recipient. ``label`` is left out
+        when absent, so the Mail app falls back to the address itself.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
+    if not isinstance(parsed, list):
+        raise MCPError(
+            code=-1,
+            message=f"{field} must be a JSON array, got {type(parsed).__name__}",
+        )
+
+    recipients: list[dict[str, str]] = []
+    for entry in parsed:
+        email = entry.get("email") if isinstance(entry, dict) else None
+        if not isinstance(email, str) or not email.strip():
+            raise MCPError(
+                code=-1,
+                message=f"Each {field} entry needs an 'email' string, got {entry!r}",
+            )
+        recipient = {"email": email}
+        label = entry.get("label")
+        if isinstance(label, str) and label:
+            recipient["label"] = label
+        recipients.append(recipient)
+    return recipients
+
+
+@require_scopes("mail.draft")
+@instrument_tool
+async def nc_mail_save_draft(
+    account_id: int,
+    to: str,
+    subject: str,
+    body: str,
+    ctx: Context,
+    is_html: bool = False,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> SaveDraftResponse:
+    """Save an email as a draft WITHOUT sending it (requires mail.draft scope).
+
+    Nothing is delivered to anyone. The draft is written to the account's
+    Drafts mailbox (created as "Drafts" if the account has none), where the
+    user can review, edit and send it from Nextcloud Mail or any other mail
+    client. Use this to prepare a message, for example a reply, that a person
+    sends themselves.
+
+    The ``From:`` identity is derived by the Mail app from ``account_id``.
+    Recipients are JSON arrays of ``{"label": "...", "email": "..."}`` objects,
+    as for nc_mail_send_message. Example for ``to``::
+
+        [{"label": "John Doe", "email": "john@example.com"}]
+
+    To draft a reply, set the subject (e.g. "Re: <original subject>") and the
+    recipients yourself. There is no reply-reference parameter: the Mail app
+    does not keep In-Reply-To/References on drafts it writes to the Drafts
+    mailbox, so a reply sent from the draft is not linked to the original
+    message by those headers.
+
+    Every call saves a new draft. A saved draft cannot be changed through this
+    tool. To revise one, save a new draft and ask the user to discard the old
+    one.
+
+    If the server operator enabled it, the draft is marked as AI-generated,
+    which Nextcloud Mail shows when the draft is opened. ``marked_ai_generated``
+    in the response says whether the marker was requested.
+
+    Args:
+        account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
+        to: JSON array of To recipients (``[]`` for none yet)
+        subject: Email subject
+        body: Email body (plain text unless is_html is true)
+        is_html: Whether body contains HTML (default false)
+        cc: Optional JSON array of CC recipients
+        bcc: Optional JSON array of BCC recipients
+
+    Returns:
+        SaveDraftResponse confirming the draft was saved. Its ``draft_id`` is
+        stale on return: look for the draft in the account's Drafts mailbox.
+    """
+    to_list = _parse_recipients(to, "to")
+    cc_list = _parse_recipients(cc, "cc")
+    bcc_list = _parse_recipients(bcc, "bcc")
+    # An operator setting, not a tool parameter: whether drafts carry the
+    # marker is the deployment's decision, not the calling agent's.
+    ai_generated = get_settings().mail_draft_mark_ai_generated
+
+    client = await get_client(ctx)
+    try:
+        result = await client.mail.save_draft(
+            account_id=account_id,
+            to=to_list,
+            subject=subject,
+            body=body,
+            is_html=is_html,
+            cc=cc_list or None,
+            bcc=bcc_list or None,
+            ai_generated=ai_generated,
+        )
+    except RequestError as e:
+        raise MCPError(
+            code=-1, message=f"Network error saving draft: {e}. Nothing was sent."
+        ) from e
+    except HTTPStatusError as e:
+        raise MCPError(
+            code=-1,
+            message=f"Failed to save draft: {e.response.status_code} "
+            f"{e.response.text[:500]}. Nothing was sent.",
+        ) from e
+
+    # Mail 3.3-6.0 answer the move with {"status", "data": "Message moved to
+    # IMAP"}. The confirmation is informational only, so an unexpected shape
+    # leaves it empty rather than failing a save that already succeeded.
+    move_response = result.get("response")
+    move_result = move_response.get("data") if isinstance(move_response, dict) else None
+    return SaveDraftResponse(
+        draft_id=result["draft_id"],
+        account_id=account_id,
+        subject=subject,
+        move_result=move_result if isinstance(move_result, str) else None,
+        marked_ai_generated=ai_generated,
+        message=f"Draft saved to the Drafts mailbox of account {account_id}. "
+        "Nothing was sent.",
+    )
+
+
 @require_scopes("mail.read")
 @instrument_tool
 async def nc_mail_get_attachment(
@@ -553,7 +697,7 @@ async def nc_mail_delete_message(message_id: int, ctx: Context) -> MailActionRes
 
 
 def configure_mail_tools(mcp: MCPServer):
-    """Configure Mail app MCP tools (read, send, flags, tags, move, delete)."""
+    """Configure Mail app MCP tools (read, send, drafts, flags, tags, move, delete)."""
 
     mcp.tool(
         title="List Mail Accounts",
@@ -582,6 +726,17 @@ def configure_mail_tools(mcp: MCPServer):
             open_world_hint=True,
         ),
     )(nc_mail_send_message)
+
+    mcp.tool(
+        title="Save Mail Draft",
+        annotations=ToolAnnotations(
+            # MCP defaults destructive_hint to true for any tool that is not
+            # read-only, so say explicitly that this one only adds a draft.
+            destructive_hint=False,
+            idempotent_hint=False,  # Saves a new draft each call (ADR-017)
+            open_world_hint=True,
+        ),
+    )(nc_mail_save_draft)
 
     mcp.tool(
         title="Get Mail Attachment",

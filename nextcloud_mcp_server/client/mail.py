@@ -8,9 +8,9 @@ Uses two endpoint types:
    ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages, downloading attachments, the two-step outbox send, and
-   every write operation (flags, tags, move, delete), none of which has an OCS
-   equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
+   mailboxes, and messages, downloading attachments, the two-step outbox send, the
+   two-step draft save, and every write operation (flags, tags, move, delete),
+   none of which has an OCS equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
    are CSRF-gated for browser sessions, but Nextcloud exempts any request carrying
    the ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
    Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
@@ -407,6 +407,50 @@ class MailClient(BaseNextcloudClient):
         msg["content-disposition"] = header
         return msg.get_filename()
 
+    @staticmethod
+    def _local_message_payload(
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool,
+        *,
+        cc: list[dict[str, str]] | None,
+        bcc: list[dict[str, str]] | None,
+        in_reply_to: str | None = None,
+        ai_generated: bool = False,
+    ) -> dict[str, Any]:
+        """Build the request body shared by ``POST /api/outbox`` and ``POST /api/drafts``.
+
+        Both routes create a Mail ``LocalMessage`` and take the same parameters
+        (``OutboxController::create`` / ``DraftsController::create``), so one
+        builder keeps the two from drifting apart. ``bodyPlain``/``bodyHtml``
+        exist since Mail 4.2.0; earlier versions took a single ``body``.
+        ``isAiGenerated`` exists since Mail 5.12.0 and is sent only when set,
+        so the body for older versions stays as it was.
+        """
+        payload: dict[str, Any] = {
+            "accountId": account_id,
+            "subject": subject,
+            "isHtml": is_html,
+            "smimeSign": False,
+            "smimeEncrypt": False,
+            "to": to,
+        }
+        if is_html:
+            payload["bodyHtml"] = body
+        else:
+            payload["bodyPlain"] = body
+        if cc:
+            payload["cc"] = cc
+        if bcc:
+            payload["bcc"] = bcc
+        if in_reply_to:
+            payload["inReplyToMessageId"] = in_reply_to
+        if ai_generated:
+            payload["isAiGenerated"] = True
+        return payload
+
     async def send_message(
         self,
         account_id: int,
@@ -442,24 +486,16 @@ class MailClient(BaseNextcloudClient):
         Returns:
             The response dict from the send step.
         """
-        create_data: dict[str, Any] = {
-            "accountId": account_id,
-            "subject": subject,
-            "isHtml": is_html,
-            "smimeSign": False,
-            "smimeEncrypt": False,
-            "to": to,
-        }
-        if is_html:
-            create_data["bodyHtml"] = body
-        else:
-            create_data["bodyPlain"] = body
-        if cc:
-            create_data["cc"] = cc
-        if bcc:
-            create_data["bcc"] = bcc
-        if references:
-            create_data["inReplyToMessageId"] = references
+        create_data = self._local_message_payload(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html,
+            cc=cc,
+            bcc=bcc,
+            in_reply_to=references,
+        )
 
         create_result = await self._api_write("POST", "/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
@@ -481,6 +517,170 @@ class MailClient(BaseNextcloudClient):
             "outbox_id": outbox_id,
             "response": send_result,
         }
+
+    async def create_draft(
+        self,
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        cc: list[dict[str, str]] | None = None,
+        bcc: list[dict[str, str]] | None = None,
+        ai_generated: bool = False,
+    ) -> dict[str, Any]:
+        """Stage a draft in the Mail app's database. Never sends anything.
+
+        Uses ``POST /index.php/apps/mail/api/drafts`` (``DraftsController::create``,
+        Mail 2.2.0+), which answers 201 with the new ``LocalMessage`` wrapped in
+        ``data``. At this point the draft exists only in Nextcloud's database;
+        no mail client, including the Mail web UI, lists it until
+        :meth:`move_draft_to_imap` writes it to the account's Drafts mailbox.
+
+        No reply reference is sent. Mail would store ``inReplyToMessageId`` on
+        the local record, but writing the draft to IMAP does not turn it into
+        ``In-Reply-To``/``References`` headers, so the move drops it.
+
+        Args:
+            account_id: The mail account the draft belongs to.
+            to: Recipients ``[{"label": "...", "email": "..."}]`` (may be empty).
+            subject: Subject line.
+            body: Message body (plain text or HTML depending on ``is_html``).
+            is_html: Whether ``body`` contains HTML.
+            cc: Optional CC recipients (same format as ``to``).
+            bcc: Optional BCC recipients (same format as ``to``).
+            ai_generated: Mark the draft as AI-generated (Mail 5.12+ writes an
+                ``X-AI-Generated: 1`` header into the IMAP draft; older
+                versions ignore it).
+
+        Returns:
+            The staged ``LocalMessage`` dict (``id``, ``accountId``, ``subject``, ...).
+
+        Raises:
+            RequestError: If the response carries no numeric draft id.
+        """
+        payload = self._local_message_payload(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html,
+            cc=cc,
+            bcc=bcc,
+            ai_generated=ai_generated,
+        )
+        result = await self._api_write("POST", "/drafts", json_data=payload)
+        draft = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(draft, dict) or not isinstance(draft.get("id"), int):
+            # Raise rather than return, for the same reason as send_message: the
+            # caller would otherwise go on to move a draft that does not exist.
+            raise RequestError(f"Draft create returned no id; response: {result!r}")
+        return draft
+
+    async def move_draft_to_imap(self, draft_id: int) -> dict[str, Any]:
+        """Write a staged draft to the account's IMAP Drafts mailbox.
+
+        Uses ``POST /index.php/apps/mail/api/drafts/move/{id}`` (Mail 3.3.0+),
+        bodyless, answering 202. Nothing is sent, even though the controller
+        calls ``DraftsService::sendMessage``: Mail APPENDs the message to the
+        Drafts mailbox with the ``\\Draft`` flag. An account without a Drafts
+        mailbox gets one named ``Drafts`` created on the spot.
+
+        On success Mail deletes the local record, so ``draft_id`` is stale
+        afterwards: update, delete and a second move all answer 404. On failure
+        Mail keeps the record but marks it ``failed``, which also excludes it
+        from Mail's own background move (``DraftsJob``).
+
+        Args:
+            draft_id: The staged draft's id from :meth:`create_draft`.
+
+        Returns:
+            The response body, ``{"status": "success", "data": "Message moved to IMAP"}``.
+        """
+        return await self._api_write("POST", f"/drafts/move/{draft_id}")
+
+    async def delete_local_draft(self, draft_id: int) -> None:
+        """Delete a draft that is still staged in the Mail app's database.
+
+        Uses ``DELETE /index.php/apps/mail/api/drafts/{id}``. This only reaches
+        the local record: it never touches IMAP, and it answers 404 once
+        :meth:`move_draft_to_imap` has succeeded.
+
+        Args:
+            draft_id: The staged draft's id from :meth:`create_draft`.
+        """
+        await self._api_write("DELETE", f"/drafts/{draft_id}")
+
+    async def save_draft(
+        self,
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        cc: list[dict[str, str]] | None = None,
+        bcc: list[dict[str, str]] | None = None,
+        ai_generated: bool = False,
+    ) -> dict[str, Any]:
+        """Save a draft to the account's IMAP Drafts mailbox without sending it.
+
+        The same two steps the Mail web UI takes when its composer closes:
+        :meth:`create_draft` stages the draft, :meth:`move_draft_to_imap`
+        writes it to IMAP. Neither step sends anything.
+
+        If the move fails, the staged record is deleted before the error is
+        re-raised. Mail would keep it marked ``failed``, and since nothing lists
+        local drafts and the background move skips failed ones, it would be
+        orphaned in the database.
+
+        Args:
+            account_id: The mail account the draft belongs to.
+            to: Recipients ``[{"label": "...", "email": "..."}]`` (may be empty).
+            subject: Subject line.
+            body: Message body (plain text or HTML depending on ``is_html``).
+            is_html: Whether ``body`` contains HTML.
+            cc: Optional CC recipients (same format as ``to``).
+            bcc: Optional BCC recipients (same format as ``to``).
+            ai_generated: Mark the draft as AI-generated (see :meth:`create_draft`).
+
+        Returns:
+            ``{"draft_id", "draft", "response"}``: the id the draft was staged
+            under (stale once moved), the staged ``LocalMessage`` dict, and the
+            move step's response body.
+        """
+        draft = await self.create_draft(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html=is_html,
+            cc=cc,
+            bcc=bcc,
+            ai_generated=ai_generated,
+        )
+        draft_id = draft["id"]
+        try:
+            move_result = await self.move_draft_to_imap(draft_id)
+        except (HTTPStatusError, RequestError):
+            await self._discard_staged_draft(draft_id)
+            raise
+        return {"draft_id": draft_id, "draft": draft, "response": move_result}
+
+    async def _discard_staged_draft(self, draft_id: int) -> None:
+        """Best-effort removal of a staged draft after its move failed.
+
+        Fail-open on purpose: the move error is what the caller needs to see,
+        so a cleanup failure is logged instead of replacing it. A 404 here
+        usually means the move did complete and only its response was lost.
+        """
+        try:
+            await self.delete_local_draft(draft_id)
+        except (HTTPStatusError, RequestError) as e:
+            logger.warning(
+                "Could not discard staged mail draft %s after a failed move: %s",
+                draft_id,
+                e,
+            )
 
     async def set_flags(self, message_id: int, flags: dict[str, bool]) -> None:
         """Set IMAP flags on a message.
