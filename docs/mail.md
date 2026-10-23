@@ -71,6 +71,14 @@ Things worth knowing:
   reply-reference parameter. Set the subject (`Re: ...`) and recipients
   yourself. A reply sent from the draft is not linked to the original by
   headers; only clients that also thread by subject will group it.
+- **Marking drafts as AI-generated is opt-in.** With
+  `MAIL_DRAFT_MARK_AI_GENERATED=true` the server asks the Mail app to mark
+  every saved draft (Mail 5.12+; older versions ignore it). Mail then writes an
+  `X-AI-Generated: 1` header into the draft and pre-ticks "Mark as AI
+  generated" when the draft is opened in Nextcloud Mail; the person sending it
+  can untick it there. It is a server setting, not a tool parameter, so the
+  agent cannot switch it off. See
+  [configuration.md](configuration.md#mail-drafts--mail_draft_mark_ai_generated).
 - **A failed save leaves no staging record behind.** If writing to IMAP fails,
   the tool deletes the staging record before reporting the error. Mail would
   otherwise keep it, marked failed, where nothing lists it.

@@ -1570,6 +1570,38 @@ Notes:
 
 ---
 
+## Mail Drafts — `MAIL_DRAFT_MARK_AI_GENERATED`
+
+Controls whether `nc_mail_save_draft` marks the drafts it saves as
+AI-generated. Off by default.
+
+| Value | Behaviour |
+|-------|-----------|
+| `false` (default) | Drafts are saved unmarked. |
+| `true` | Every saved draft is marked as AI-generated. |
+
+```dotenv
+MAIL_DRAFT_MARK_AI_GENERATED=true
+```
+
+What the marker does is up to the Mail app (5.12+). It writes an
+`X-AI-Generated: 1` header into the IMAP draft. When the draft is opened in
+Nextcloud Mail, the composer's "Mark as AI generated" box is ticked, and if it
+stays ticked the sent message carries the header too; Nextcloud Mail shows
+"Contains AI content" on such messages. The person sending can untick the box.
+Other mail clients may keep or drop the header when they send the draft.
+
+Notes:
+
+- **Server-wide.** It applies to every user and every draft; the calling agent
+  cannot override it per call.
+- **Older Mail versions ignore it.** Before 5.12.0 the Mail app has no such
+  flag and the draft is saved unmarked. `marked_ai_generated` in the tool
+  response reports what the server requested, not what Mail did with it.
+- Only `true`/`false` (or `True`/`False`) are accepted. Any other spelling,
+  such as `off` or `0`, stops the server at startup instead of being read as
+  "on".
+
 ## Capability-Gated Tools
 
 Some tools need an upstream Nextcloud app that may be missing, disabled for the
