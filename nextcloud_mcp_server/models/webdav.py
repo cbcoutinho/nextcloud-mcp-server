@@ -133,6 +133,20 @@ class ReadFileResponse(BaseResponse):
         None,
         description="Last page (1-based, inclusive) the content covers, for a page-range read",
     )
+    line_start: int | None = Field(
+        None,
+        description="First line (1-based) the content covers, for a line-range read",
+    )
+    line_end: int | None = Field(
+        None,
+        description=(
+            "Last line (1-based, inclusive) the content covers, for a line-range "
+            "read. Compare with total_lines to see whether more remains."
+        ),
+    )
+    total_lines: int | None = Field(
+        None, description="Number of lines in the whole file, for a line-range read"
+    )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")
     url: str | None = Field(
@@ -166,6 +180,52 @@ class WriteFileResponse(StatusResponse):
             "did not return one (some proxies strip it) — re-read the file to "
             "obtain it in that case."
         ),
+    )
+
+
+class FileEdit(BaseModel):
+    """One replacement for ``nc_webdav_edit_file``."""
+
+    old_string: str = Field(
+        min_length=1,
+        description=(
+            "Exact text to replace, including whitespace, indentation and line "
+            "breaks. Must occur exactly once unless replace_all is true."
+        ),
+    )
+    new_string: str = Field(
+        description="Replacement text. An empty string deletes old_string."
+    )
+    replace_all: bool = Field(
+        False, description="Replace every occurrence instead of exactly one"
+    )
+
+
+class EditFileResponse(BaseResponse):
+    """Response model for an in-place text edit."""
+
+    path: str = Field(description="File path that was edited")
+    etag: str | None = Field(
+        None,
+        description=(
+            "ETag of the file as written. Pass it as if_match to the next edit or "
+            "write to make sure nobody changed the file in between. None if the "
+            "server did not return one."
+        ),
+    )
+    edits_applied: int = Field(description="Number of edits applied, in order")
+    replacements: int = Field(
+        description="Occurrences replaced in total (more than edits_applied when "
+        "replace_all matched several)"
+    )
+    size: int = Field(description="Size of the file as written, in bytes")
+    diff: str = Field(
+        description="Unified diff of the change with two lines of context, to "
+        "check it without re-reading the file"
+    )
+    diff_truncated: bool = Field(
+        False,
+        description="Whether the diff was cut short. The edit itself is complete.",
     )
 
 

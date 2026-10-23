@@ -1,17 +1,23 @@
 import base64
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 import anyio
 from anyio.to_thread import run_sync
+from httpx import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.webdav import like_predicate
+from nextcloud_mcp_server.client.webdav import (
+    OversizeDownload,
+    _normalize_etag,
+    like_predicate,
+)
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.features import documents_installed
@@ -29,6 +35,8 @@ from nextcloud_mcp_server.models import (
     WriteFileResponse,
 )
 from nextcloud_mcp_server.models.webdav import (
+    EditFileResponse,
+    FileEdit,
     FilesByTagResponse,
     FileTagsResponse,
     FileVersion,
@@ -51,6 +59,15 @@ from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
     is_blank_comment,
     measured_length,
+)
+from nextcloud_mcp_server.utils.text_edit import (
+    EditError,
+    LineRangeError,
+    LineWindow,
+    TextEdit,
+    apply_edits,
+    line_window,
+    unified_diff,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
@@ -267,6 +284,64 @@ async def _raw_response(
     )
 
 
+async def _line_range_response(
+    source: "DocumentSource",
+    path: str,
+    start: int,
+    end: int | None,
+    *,
+    numbered: bool,
+    parse_status: ParseStatus,
+) -> ReadFileResponse:
+    """Return lines ``start`` to ``end`` of a spooled text file.
+
+    Iterates the spool line by line, so only the window is held in memory and a
+    long log file can be read in parts. The window is capped at
+    :data:`RAW_CONTENT_MAX_BYTES` like any other inline content.
+
+    Raises:
+        ToolError: ``start`` lies past the end, or the window is not UTF-8.
+    """
+
+    def _read() -> LineWindow:
+        with source.open() as fh:
+            return line_window(
+                fh, start, end, numbered=numbered, max_bytes=RAW_CONTENT_MAX_BYTES
+            )
+
+    try:
+        window = await run_sync(_read)
+    except LineRangeError as e:
+        raise ToolError(f"{e} ({path!r})") from e
+    except UnicodeDecodeError as e:
+        raise ToolError(
+            f"{path!r} is not UTF-8 text, so it cannot be read by lines. Read it "
+            f"without line_start/line_end."
+        ) from e
+
+    notes = []
+    if window.truncated:
+        notes.append(
+            f"Only lines {window.first}-{window.last} fit into one response "
+            f"({RAW_CONTENT_MAX_BYTES // (1024 * 1024)} MB). Continue with "
+            f"line_start={window.last + 1}."
+        )
+    return ReadFileResponse(
+        path=path,
+        content=window.content,
+        content_type=source.content_type,
+        size=source.size,
+        parse_status=parse_status,
+        parse_notes=notes,
+        line_start=window.first,
+        line_end=window.last,
+        total_lines=window.total,
+        # getattr for the same reason as in _raw_response: only a spooled
+        # source carries the origin's etag, the DocumentSource type does not.
+        etag=getattr(source, "etag", None),
+    )
+
+
 def _as_int(raw: Any) -> Optional[int]:
     """DAV numbers arrive as text; a non-numeric one costs that field, not the row."""
     try:
@@ -380,6 +455,9 @@ def configure_webdav_tools(mcp: MCPServer):
         parse_document: Literal["auto", "markdown", "raw"] = "auto",
         page_start: int | None = None,
         page_end: int | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        line_numbers: bool = False,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
 
@@ -411,6 +489,18 @@ def configure_webdav_tools(mcp: MCPServer):
                 means through the last page. A value past the end is clamped to
                 the last page and noted in parse_notes. Neither argument can be
                 combined with parse_document="raw".
+            line_start: Text files only. First line to read (1-based). Use a
+                line range to look at part of a long text file instead of
+                loading all of it, for example to find the passage to change
+                with nc_webdav_edit_file. Cannot be combined with page_start or
+                page_end.
+            line_end: Text files only. Last line to read (1-based, inclusive).
+                Omitted means through the last line. A value past the end is
+                clamped. ``total_lines`` in the response says how long the file
+                is.
+            line_numbers: Prefix each returned line with its number and a tab,
+                for a line-range read. Strip that prefix again before quoting
+                text in nc_webdav_edit_file.
 
         Returns:
             ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
@@ -457,6 +547,29 @@ def configure_webdav_tools(mcp: MCPServer):
                 raise ToolError(
                     f"Invalid page range: page_end={page_end} precedes "
                     f"page_start={page_start}."
+                )
+
+        lined = line_start is not None or line_end is not None
+        if lined:
+            if paged:
+                raise ToolError(
+                    "A read takes either a page range (PDFs) or a line range "
+                    "(text files), not both."
+                )
+            for name, value in (("line_start", line_start), ("line_end", line_end)):
+                if value is not None and value < 1:
+                    raise ToolError(
+                        f"Invalid line range: {name}={value}, but lines are "
+                        f"numbered from 1."
+                    )
+            if (
+                line_start is not None
+                and line_end is not None
+                and line_end < line_start
+            ):
+                raise ToolError(
+                    f"Invalid line range: line_end={line_end} precedes "
+                    f"line_start={line_start}."
                 )
 
         client = await get_client(ctx)
@@ -540,6 +653,33 @@ def configure_webdav_tools(mcp: MCPServer):
             ):
                 content_type = source.content_type
                 etag = source.etag
+
+                if lined:
+                    if (
+                        parsing
+                        and parse_document != "raw"
+                        and document_parser.is_parseable_document(content_type)
+                    ):
+                        raise ToolError(
+                            f"line_start/line_end apply to text files, and {path!r} "
+                            f"is {content_type!r}. Use page_start/page_end for a "
+                            f"PDF, or read it without a range."
+                        )
+                    return _stamp_url(
+                        await _line_range_response(
+                            source,
+                            path,
+                            line_start or 1,
+                            line_end,
+                            numbered=line_numbers,
+                            parse_status=(
+                                "skipped"
+                                if parse_document == "raw"
+                                else "not_applicable"
+                            ),
+                        ),
+                        url,
+                    )
 
                 # What the pipeline parses: the whole spool, or just the pages
                 # asked for. ``source`` stays the whole file for the raw fallback.
@@ -741,6 +881,9 @@ def configure_webdav_tools(mcp: MCPServer):
     ) -> WriteFileResponse:
         """Write content to a file in NextCloud.
 
+        To change part of an existing text file, use nc_webdav_edit_file
+        instead: it takes only the passage to replace, not the whole file.
+
         Writes are **fail-closed**: an existing file is never silently
         overwritten. What happens depends on ``if_match`` (see below).
 
@@ -824,6 +967,174 @@ def configure_webdav_tools(mcp: MCPServer):
             created=status_code == 201,
             size=len(content_bytes),
             etag=result.get("etag"),
+        )
+
+    @mcp.tool(
+        title="Edit File",
+        annotations=ToolAnnotations(
+            # NOT idempotent (ADR-017 update): a repeat no longer finds
+            # old_string and fails, and every successful edit changes the etag.
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_edit_file(
+        path: str,
+        edits: Annotated[list[FileEdit], Field(min_length=1, max_length=100)],
+        ctx: Context,
+        if_match: str | None = None,
+    ) -> EditFileResponse:
+        """Change part of a text file in place, by exact text replacement.
+
+        Prefer this over nc_webdav_write_file for changing an existing text
+        file: send only the passage to replace and its replacement, not the
+        whole file. Works for any UTF-8 text file, including Collectives pages
+        (Markdown files).
+
+        Each edit replaces ``old_string`` with ``new_string``. ``old_string``
+        must match the file exactly, including whitespace, indentation and
+        line breaks, and must occur exactly once unless ``replace_all`` is
+        true, so quote enough surrounding text to make it unique. Strip the
+        line-number prefix if you copied the text from a read with
+        line_numbers. To delete text, use an empty ``new_string``.
+
+        Several edits are applied in order, each to the result of the previous
+        one, and saved as a single change (one new file version). If any edit
+        cannot be applied, nothing is saved and the error says which one and
+        why.
+
+        The file is read and written back guarded by its etag, so a change
+        made elsewhere at the same moment is never overwritten. Pass
+        ``if_match`` (an etag from nc_webdav_read_file) to also refuse the edit
+        if the file changed since you read it. Windows line endings (CRLF) and
+        a byte-order mark are kept as they are.
+
+        Raises ``ToolError`` when the file does not exist, is not UTF-8 text,
+        is larger than ``WEBDAV_WRITE_MAX_MB``, carries an excluded tag, is
+        locked, changed concurrently, or when an edit cannot be applied.
+
+        Args:
+            path: Full path of the file to edit
+            edits: Replacements, applied in order. Each has ``old_string``,
+                ``new_string`` and optionally ``replace_all``.
+            if_match: Optional etag from an earlier read. The edit fails if
+                the file has changed since.
+
+        Returns:
+            ``EditFileResponse`` with the new ``etag``, the number of
+            ``replacements`` and a unified ``diff`` of the change, to check it
+            without re-reading the file.
+        """
+        client = await get_client(ctx)
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        # Imported lazily for the same reason as in nc_webdav_read_file: the
+        # spool helpers live in the ingest layer, which startup must not load.
+        from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
+            download_ceiling,
+            spooled_document,
+        )
+
+        settings = get_settings()
+        # The edited file is written back in one PUT, so the write limit is
+        # also the useful download limit: a bigger file could not be saved.
+        max_mb = settings.webdav_write_max_mb
+        max_bytes = int(max_mb * 1024 * 1024) if max_mb else download_ceiling(settings)
+
+        try:
+            async with spooled_document(
+                client,
+                path,
+                spool_dir=settings.document_spool_dir,
+                max_bytes=max_bytes,
+            ) as source:
+                content_type = source.content_type
+                etag = source.etag
+
+                def _read_all() -> bytes:
+                    with source.open() as fh:
+                        return fh.read()
+
+                original = await run_sync(_read_all)
+        except OversizeDownload as e:
+            limit = (
+                f"WEBDAV_WRITE_MAX_MB ({max_mb} MB)"
+                if max_mb
+                else f"the {max_bytes} byte download ceiling"
+            )
+            raise ToolError(
+                f"{path!r} is too large to edit: it exceeds {limit}."
+            ) from e
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise ToolError(f"File not found: {path!r}") from e
+            raise ToolError(
+                f"Failed to read {path!r} for editing: HTTP {e.response.status_code}"
+            ) from e
+
+        if etag is None:
+            # Without an etag the write-back could not be made conditional,
+            # and an edit that might clobber a concurrent change is refused.
+            raise ToolError(
+                f"Nextcloud returned no ETag for {path!r} (a proxy may strip "
+                "it), so the edit cannot be protected against concurrent "
+                "changes. Use nc_webdav_write_file instead."
+            )
+        if if_match is not None and _normalize_etag(if_match) != etag:
+            raise ToolError(
+                f"{path!r} has changed since you read it. Read it again and "
+                "base the edit on the current content."
+            )
+
+        try:
+            before = original.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ToolError(
+                f"{path!r} is not a UTF-8 text file, so it cannot be edited by "
+                "text replacement. Use nc_webdav_write_file to replace it."
+            ) from e
+
+        try:
+            result = apply_edits(
+                before,
+                [TextEdit(e.old_string, e.new_string, e.replace_all) for e in edits],
+            )
+        except EditError as e:
+            raise ToolError(f"{e} Nothing was changed in {path!r}.") from e
+
+        updated = result.text.encode("utf-8")
+        if max_mb and len(updated) > max_mb * 1024 * 1024:
+            raise ToolError(
+                f"The edited {path!r} would exceed WEBDAV_WRITE_MAX_MB "
+                f"({max_mb} MB). Nothing was changed."
+            )
+
+        write = await client.webdav.write_file(
+            path, updated, content_type, if_match=etag
+        )
+        status_code = write.get("status_code")
+        if status_code == 412:
+            raise ToolError(
+                f"{path!r} was changed by someone else while it was being "
+                "edited. Nothing was saved. Read it again and retry."
+            )
+        if status_code == 423:
+            raise ToolError(f"{write['message']} ({path!r})")
+
+        diff, diff_truncated = unified_diff(before, result.text, path)
+        return EditFileResponse(
+            path=path,
+            etag=write.get("etag"),
+            edits_applied=len(edits),
+            replacements=result.replacements,
+            size=len(updated),
+            diff=diff,
+            diff_truncated=diff_truncated,
         )
 
     @mcp.tool(

@@ -7,6 +7,7 @@
 | `nc_webdav_list_directory` | List files and directories in any NextCloud path |
 | `nc_webdav_read_file` | Read file content (documents extracted to text/markdown, text decoded, other binary as base64) |
 | `nc_webdav_write_file` | Create or update files in NextCloud |
+| `nc_webdav_edit_file` | Change part of a text file by exact text replacement, without resending the whole file |
 | `nc_webdav_create_directory` | Create new directories |
 | `nc_webdav_delete_resource` | Delete files or directories |
 | `nc_webdav_move_resource` | Move or rename files and directories |
@@ -52,6 +53,12 @@ result.page_start, result.page_end   # the pages this content covers (21, 40)
 
 # Or take the file itself, unparsed
 await nc_webdav_read_file("Documents/report.pdf", parse_document="raw")
+
+# Read part of a long text file, with line numbers
+result = await nc_webdav_read_file(
+    "Logs/import.log", line_start=200, line_end=260, line_numbers=True
+)
+# result.total_lines says how long the file is
 
 # Create a new directory
 await nc_webdav_create_directory("NewProject/docs")
@@ -147,6 +154,51 @@ await nc_webdav_write_file("Documents/notes.md", "# Regenerated", if_match="*")
 > now fails with a `ToolError` rather than overwriting it (the previous
 > last-write-wins behaviour). Pass the file's `etag`, or `if_match="*"` to
 > force the overwrite.
+
+### Editing Text Files in Place
+
+`nc_webdav_edit_file` changes part of a text file without the caller sending
+the whole file back. With `nc_webdav_write_file`, a one-line change to a long
+Markdown page means the model has to reproduce the entire page as output:
+slow, expensive, and an easy way to lose text it was not asked to touch. The
+edit tool takes only the passage and its replacement, in the `str_replace`
+form models are trained on:
+
+```python
+await nc_webdav_edit_file(
+    "Collectives/Team/Plan.md",
+    edits=[
+        {"old_string": "- [ ] Draft agenda", "new_string": "- [x] Draft agenda"},
+        {"old_string": "Owner: TBD", "new_string": "Owner: Alice"},
+    ],
+)
+```
+
+- **Exact, unique matches.** `old_string` must match the file exactly,
+  whitespace and line breaks included, and occur exactly once. Otherwise the
+  call fails and says why (not found, or found N times on which lines). Set
+  `replace_all` on an edit to replace every occurrence deliberately.
+- **All or nothing.** Several edits are applied in order and saved in one PUT,
+  so they make one new file version. If any edit cannot be applied, nothing
+  is written.
+- **Safe against concurrent changes.** The server downloads the file and
+  writes it back with `If-Match` on the etag it just read, so a change made
+  elsewhere in between makes the edit fail instead of being overwritten. Pass
+  `if_match` (an etag from an earlier read) to also refuse the edit if the file
+  changed since you looked at it.
+- **Line endings and BOM are kept.** In a CRLF file, edits written with `\n`
+  are matched and written with CRLF.
+- **Checkable without re-reading.** The response carries the new `etag` and a
+  unified `diff` of the change.
+- **Limits.** UTF-8 text only. Files over `WEBDAV_WRITE_MAX_MB` are refused,
+  since they could not be written back. Nextcloud's WebDAV has no partial
+  writes, so the server still rewrites the whole file. That transfer is cheap,
+  the saving is in what the model has to send.
+
+To find the passage, `nc_webdav_read_file` takes `line_start`/`line_end` for
+text files (any UTF-8 file, including JSON or YAML) and returns `total_lines`.
+With `line_numbers=True` each line carries its number and a tab, which has to
+be stripped again before quoting the text in an edit.
 
 ### Write Size Limit
 
