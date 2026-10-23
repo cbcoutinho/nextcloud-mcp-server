@@ -699,6 +699,34 @@ async def test_create_draft_sends_html_as_body_html(mocker):
     assert body["to"] == []
 
 
+async def test_create_draft_can_mark_the_draft_ai_generated(mocker):
+    """``isAiGenerated`` is sent only when asked for (Mail 5.12+ honours it)."""
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=_staged_draft_response()
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.create_draft(1, [], "Hi", "body", ai_generated=True)
+    await client.create_draft(1, [], "Hi", "body")
+
+    marked, unmarked = (c.kwargs["json"] for c in mock_make_request.call_args_list)
+    assert marked["isAiGenerated"] is True
+    assert "isAiGenerated" not in unmarked
+
+
+async def test_save_draft_passes_the_ai_marker_to_the_create_step(mocker):
+    mock_make_request = mocker.patch.object(
+        MailClient,
+        "_make_request",
+        side_effect=[_staged_draft_response(42), _moved_response()],
+    )
+
+    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.save_draft(1, [], "Hi", "body", ai_generated=True)
+
+    assert mock_make_request.call_args_list[0].kwargs["json"]["isAiGenerated"] is True
+
+
 async def test_create_draft_without_id_raises(mocker):
     """A create response without ``data.id`` raises instead of moving nothing."""
     mocker.patch.object(
