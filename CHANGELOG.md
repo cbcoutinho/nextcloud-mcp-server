@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.201.1 (2026-10-24)
+
+### Fix
+
+- **server**: default serverInfo.version in NextcloudMCPServer itself
+- **server**: advertise serverInfo.version in the MCP handshake
+
 ## v0.201.0 (2026-10-24)
 
 ### Feat
