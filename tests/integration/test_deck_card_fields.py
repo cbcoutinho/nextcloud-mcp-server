@@ -3,7 +3,8 @@
 
 Deck's card update nulls ``startdate`` whenever the key is omitted, so these
 check that update and cross-board move carry it over, and that both fields
-round-trip through the MCP tools.
+round-trip through the MCP tools. On Deck < 1.18, which ignores the keys, the
+tools must refuse them instead.
 """
 
 import json
@@ -18,20 +19,24 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 pytestmark = pytest.mark.integration
 
-# startdate and color both first ship in Deck v1.18.0. Older Deck ignores the
-# keys, so there is nothing to assert there.
+# startdate and color both first ship in Deck v1.18.0 (Nextcloud 34).
 DECK_CARD_FIELDS_MIN_VERSION = "1.18.0"
 
 START = "2030-05-01T08:00:00Z"
 
 
-@pytest.fixture(autouse=True)
-async def _skip_without_card_fields(nc_client: NextcloudClient):
-    reason = await unmet_capability(
+@pytest.fixture
+async def card_fields_unsupported(nc_client: NextcloudClient) -> str | None:
+    """Why this Deck can't store startdate/color, or None if it can."""
+    return await unmet_capability(
         nc_client, nc_client.username, "deck", DECK_CARD_FIELDS_MIN_VERSION
     )
-    if reason:
-        pytest.skip(reason)
+
+
+@pytest.fixture
+async def card_fields_supported(card_fields_unsupported: str | None) -> None:
+    if card_fields_unsupported:
+        pytest.skip(card_fields_unsupported)
 
 
 def _iso(value) -> str | None:
@@ -40,6 +45,7 @@ def _iso(value) -> str | None:
     )
 
 
+@pytest.mark.usefixtures("card_fields_supported")
 async def test_startdate_and_color_round_trip_via_mcp(
     nc_mcp_client: ClientSession, temporary_board_with_stack: tuple
 ):
@@ -88,6 +94,7 @@ async def test_startdate_and_color_round_trip_via_mcp(
     assert card["color"] is None
 
 
+@pytest.mark.usefixtures("card_fields_supported")
 async def test_move_card_to_board_preserves_startdate_and_color(
     nc_client: NextcloudClient, temporary_board_with_stack: tuple
 ):
@@ -112,3 +119,34 @@ async def test_move_card_to_board_preserves_startdate_and_color(
         assert moved.color == "00FF00"
     finally:
         await nc_client.deck.delete_board(target.id)
+
+
+async def test_new_fields_are_refused_on_old_deck(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_board_with_card: tuple,
+    card_fields_unsupported: str | None,
+):
+    """Runs on the nc32/nc33 lanes: Deck < 1.18 would silently drop the
+    fields, so the tool errors and leaves the card untouched."""
+    if not card_fields_unsupported:
+        pytest.skip("Deck supports startdate/color here")
+    board_data, stack_data, card_data = temporary_board_with_card
+
+    result = await nc_mcp_client.call_tool(
+        "deck_update_card",
+        {
+            "board_id": board_data["id"],
+            "stack_id": stack_data["id"],
+            "card_id": card_data["id"],
+            "title": "Should not be applied",
+            "color": "FF0000",
+        },
+    )
+
+    assert result.is_error is True
+    assert "color cannot be set" in result.content[0].text
+    card = await nc_client.deck.get_card(
+        board_data["id"], stack_data["id"], card_data["id"]
+    )
+    assert card.title == card_data["title"]

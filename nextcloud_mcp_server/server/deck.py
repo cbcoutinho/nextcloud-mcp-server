@@ -9,7 +9,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.capabilities import require_capability
+from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
@@ -75,6 +75,36 @@ def _validate_positive_length(
     """
     if value is not None and value <= 0:
         raise ToolError(f"{name} must be positive, got {value}")
+
+
+# Card startdate and color first ship in Deck 1.18.0 (Nextcloud 34).
+_CARD_FIELDS_MIN_DECK_VERSION = "1.18.0"
+
+
+async def _require_card_fields_supported(
+    client: NextcloudClient, startdate: str | None, color: str | None
+) -> None:
+    """Refuse startdate/color on Deck < 1.18 instead of silently dropping them.
+
+    Older Deck ignores the keys, so the write would "succeed" with the field
+    unset. Checked before writing, so nothing is half-applied. Fail-open like
+    the tool gates: unknown capabilities let the write through.
+    """
+    requested = [
+        name
+        for name, value in (("startdate", startdate), ("color", color))
+        if value is not None
+    ]
+    if not requested:
+        return
+    reason = await unmet_capability(
+        client, client.username, "deck", _CARD_FIELDS_MIN_DECK_VERSION
+    )
+    if reason:
+        raise ToolError(
+            f"{' and '.join(requested)} cannot be set on this Deck: {reason}. "
+            "Retry without it."
+        )
 
 
 # Nextcloud's core comment cap (see COMMENT_MAX_LENGTH). Deck adds no check of
@@ -1267,9 +1297,8 @@ async def deck_create_card(
         startdate: Start date of the card (ISO-8601 format)
         color: Card color as hex RGB, e.g. "FF0000"
     """
-    # startdate and color need Deck >= 1.18 (Nextcloud 34). Older Deck
-    # ignores the keys, so they are silently no-ops there.
     client = await get_client(ctx)
+    await _require_card_fields_supported(client, startdate, color)
     card = await client.deck.create_card(
         board_id,
         stack_id,
@@ -1326,9 +1355,8 @@ async def deck_update_card(
         color: New card color as hex RGB, e.g. "FF0000".
             Pass an empty string to clear it.
     """
-    # startdate and color need Deck >= 1.18 (Nextcloud 34). Older Deck
-    # ignores the keys, so they are silently no-ops there.
     client = await get_client(ctx)
+    await _require_card_fields_supported(client, startdate, color)
     await client.deck.update_card(
         board_id,
         stack_id,
