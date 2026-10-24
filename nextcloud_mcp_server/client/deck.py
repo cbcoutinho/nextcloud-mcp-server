@@ -53,6 +53,10 @@ def _normalize_duedate(duedate: Optional[str]) -> Optional[str]:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _isoformat(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
 def _normalize_color(color: Optional[str]) -> Optional[str]:
     """Strip a leading ``#``: Deck stores card colors as bare hex (``FF0000``)
     and its frontend prepends the ``#`` itself.
@@ -402,14 +406,10 @@ class DeckClient(BaseNextcloudClient):
             else (current.description or ""),
             "order": order if order is not None else current.order,
             "duedate": _normalize_duedate(
-                duedate
-                if duedate is not None
-                else (current.duedate.isoformat() if current.duedate else None)
+                duedate if duedate is not None else _isoformat(current.duedate)
             ),
             "startdate": _normalize_duedate(
-                startdate
-                if startdate is not None
-                else (current.startdate.isoformat() if current.startdate else None)
+                startdate if startdate is not None else _isoformat(current.startdate)
             ),
             "archived": archived if archived is not None else current.archived,
             **({"done": done} if done is not None else {}),
@@ -651,13 +651,9 @@ class DeckClient(BaseNextcloudClient):
             # Sent explicitly as None when absent (update_card omits the key);
             # both are equivalent here — the route reads duedate and there's
             # nothing to clear on a card that never had one.
-            "duedate": _normalize_duedate(
-                current.duedate.isoformat() if current.duedate else None
-            ),
+            "duedate": _normalize_duedate(_isoformat(current.duedate)),
             # Deck 1.18.x nulls startdate and color when the key is omitted.
-            "startdate": _normalize_duedate(
-                current.startdate.isoformat() if current.startdate else None
-            ),
+            "startdate": _normalize_duedate(_isoformat(current.startdate)),
             "color": current.color,
             # 0 keeps the card live (a positive value would soft-delete it)
             "deletedAt": current.deletedAt or 0,
