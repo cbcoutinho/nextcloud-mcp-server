@@ -1264,9 +1264,11 @@ async def deck_create_card(
         order: Order for sorting the cards
         description: Description of the card
         duedate: Due date of the card (ISO-8601 format)
-        startdate: Start date of the card (ISO-8601 format, Deck >= 1.18)
-        color: Card color as hex RGB, e.g. "FF0000" (Deck >= 1.18)
+        startdate: Start date of the card (ISO-8601 format)
+        color: Card color as hex RGB, e.g. "FF0000"
     """
+    # startdate and color need Deck >= 1.18 (Nextcloud 34). Older Deck
+    # ignores the keys, so they are silently no-ops there.
     client = await get_client(ctx)
     card = await client.deck.create_card(
         board_id,
@@ -1319,11 +1321,13 @@ async def deck_update_card(
         duedate: New due date for the card (ISO-8601 format)
         archived: Whether the card should be archived
         done: Completion date for the card (ISO-8601 format)
-        startdate: New start date for the card (ISO-8601 format, Deck >= 1.18).
+        startdate: New start date for the card (ISO-8601 format).
             Pass an empty string to clear it.
-        color: New card color as hex RGB, e.g. "FF0000" (Deck >= 1.18).
+        color: New card color as hex RGB, e.g. "FF0000".
             Pass an empty string to clear it.
     """
+    # startdate and color need Deck >= 1.18 (Nextcloud 34). Older Deck
+    # ignores the keys, so they are silently no-ops there.
     client = await get_client(ctx)
     await client.deck.update_card(
         board_id,
