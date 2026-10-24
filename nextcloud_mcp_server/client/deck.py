@@ -30,6 +30,8 @@ def _normalize_duedate(duedate: Optional[str]) -> Optional[str]:
     not validate, and rejecting a format Deck might accept would be worse than
     forwarding it.
 
+    Also used for ``startdate``, which Deck parses the same way.
+
     An empty string maps to ``None`` so "clear the due date" is expressible;
     previously it went on the wire as ``""``, where Deck's behaviour is undefined.
 
@@ -48,6 +50,16 @@ def _normalize_duedate(duedate: Optional[str]) -> Optional[str]:
     if parsed.tzinfo is None:
         return duedate
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_color(color: Optional[str]) -> Optional[str]:
+    """Strip a leading ``#``: Deck stores card colors as bare hex (``FF0000``)
+    and its frontend prepends the ``#`` itself.
+
+    An empty string maps to ``None`` so "clear the color" stores NULL; Deck
+    1.18.x would otherwise store ``""`` verbatim.
+    """
+    return (color or "").removeprefix("#") or None
 
 
 class DeckClient(BaseNextcloudClient):
@@ -307,6 +319,8 @@ class DeckClient(BaseNextcloudClient):
         order: int = 999,
         description: Optional[str] = None,
         duedate: Optional[str] = None,
+        startdate: Optional[str] = None,
+        color: Optional[str] = None,
     ) -> DeckCard:
         json_data = {
             "title": title,
@@ -317,6 +331,10 @@ class DeckClient(BaseNextcloudClient):
             json_data["description"] = description
         if duedate is not None:
             json_data["duedate"] = _normalize_duedate(duedate)
+        if startdate is not None:
+            json_data["startdate"] = _normalize_duedate(startdate)
+        if color:
+            json_data["color"] = _normalize_color(color)
         headers = self._get_deck_headers()
         response = await self._make_request(
             "POST",
@@ -338,6 +356,8 @@ class DeckClient(BaseNextcloudClient):
         duedate: Optional[str] = None,
         archived: Optional[bool] = None,
         done: Optional[str] = None,
+        startdate: Optional[str] = None,
+        color: Optional[str] = None,
     ) -> dict[str, Any]:
         """Build the full-replacement body for a card update.
 
@@ -357,6 +377,10 @@ class DeckClient(BaseNextcloudClient):
         value, so the two routes genuinely differ here; preserving it blind could
         re-stamp a done timestamp. Left as an explicit omission pending an
         integration test that shows whether this route clears it.
+
+        ``startdate`` and ``color`` (Deck >= 1.18) are carried over like
+        ``duedate``: the 1.18.x ``CardService::update`` nulls both when the key
+        is omitted. Older Deck ignores both keys.
         """
         return {
             # Title is required by the API
@@ -375,8 +399,14 @@ class DeckClient(BaseNextcloudClient):
                 if duedate is not None
                 else (current.duedate.isoformat() if current.duedate else None)
             ),
+            "startdate": _normalize_duedate(
+                startdate
+                if startdate is not None
+                else (current.startdate.isoformat() if current.startdate else None)
+            ),
             "archived": archived if archived is not None else current.archived,
             **({"done": done} if done is not None else {}),
+            "color": _normalize_color(color if color is not None else current.color),
         }
 
     async def update_card(
@@ -392,6 +422,8 @@ class DeckClient(BaseNextcloudClient):
         duedate: Optional[str] = None,
         archived: Optional[bool] = None,
         done: Optional[str] = None,
+        startdate: Optional[str] = None,
+        color: Optional[str] = None,
     ) -> None:
         # Deck PUT API is a full replacement - all required fields must be sent.
         # Fetch current card to preserve values for fields not being updated.
@@ -407,6 +439,8 @@ class DeckClient(BaseNextcloudClient):
             duedate=duedate,
             archived=archived,
             done=done,
+            startdate=startdate,
+            color=color,
         )
         headers = self._get_deck_headers()
         await self._make_request(
@@ -563,8 +597,8 @@ class DeckClient(BaseNextcloudClient):
         the same-titled label on the destination board, or cloning it there
         when the user has board-manage permission — instead of leaving orphaned
         labels behind. This mirrors Deck's native "Move/copy card" action. Card
-        identity (id, comments, attachments), ``archived`` state, the due date
-        and ``assignedUsers`` are preserved — the move does not re-validate
+        identity (id, comments, attachments), ``archived`` state, the start and due
+        dates and ``assignedUsers`` are preserved — the move does not re-validate
         assignees against the destination board, so an assigned user without
         access to the target board stays assigned but may not be able to act on
         the card.
@@ -612,6 +646,11 @@ class DeckClient(BaseNextcloudClient):
             "duedate": _normalize_duedate(
                 current.duedate.isoformat() if current.duedate else None
             ),
+            # Deck 1.18.x nulls startdate and color when the key is omitted.
+            "startdate": _normalize_duedate(
+                current.startdate.isoformat() if current.startdate else None
+            ),
+            "color": _normalize_color(current.color),
             # 0 keeps the card live (a positive value would soft-delete it)
             "deletedAt": current.deletedAt or 0,
         }

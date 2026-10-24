@@ -151,3 +151,57 @@ async def test_create_card_normalizes_duedate(mocker):
 )
 def test_normalize_duedate(raw, expected):
     assert _normalize_duedate(raw) == expected
+
+
+async def test_title_only_update_preserves_startdate(mocker):
+    """Deck >= 1.18 nulls ``startdate`` when the key is omitted (GH #1530)."""
+    mock = _patch_get_then_put(mocker, startdate="2030-05-01T08:00:00+00:00")
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+
+    await client.update_card(1, 1, 1, title="Renamed")
+
+    assert _put_body(mock)["startdate"] == "2030-05-01T08:00:00Z"
+
+
+async def test_empty_startdate_clears_it(mocker):
+    mock = _patch_get_then_put(mocker, startdate="2030-05-01T08:00:00+00:00")
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+
+    await client.update_card(1, 1, 1, startdate="")
+
+    assert _put_body(mock)["startdate"] is None
+
+
+async def test_color_is_carried_over_and_clearable(mocker):
+    """Deck 1.18.x nulls the color when the key is omitted, so it is carried
+    over; ``""`` clears it and goes on the wire as ``null``."""
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+
+    mock = _patch_get_then_put(mocker, color="00FF00")
+    await client.update_card(1, 1, 1, title="Renamed")
+    assert _put_body(mock)["color"] == "00FF00"
+
+    mock = _patch_get_then_put(mocker, color="00FF00")
+    await client.update_card(1, 1, 1, color="#ff0000")
+    assert _put_body(mock)["color"] == "ff0000"
+
+    mock = _patch_get_then_put(mocker, color="00FF00")
+    await client.update_card(1, 1, 1, color="")
+    assert _put_body(mock)["color"] is None
+
+
+async def test_create_card_sends_startdate_and_color(mocker):
+    mock_make_request = mocker.patch.object(
+        DeckClient,
+        "_make_request",
+        return_value=create_mock_deck_card_response(),
+    )
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+
+    await client.create_card(
+        1, 1, "New", startdate="2030-06-01T14:00:00-04:00", color="#FF0000"
+    )
+
+    body = mock_make_request.call_args.kwargs["json"]
+    assert body["startdate"] == "2030-06-01T18:00:00Z"
+    assert body["color"] == "FF0000"

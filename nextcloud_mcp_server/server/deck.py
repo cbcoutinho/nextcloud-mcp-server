@@ -506,11 +506,14 @@ def _summarize_card(card: DeckCard, description_preview_length: int) -> DeckCard
         stackId=card.stackId,
         archived=card.archived,
         duedate=card.duedate,
+        startdate=card.startdate,
         done=card.done,
+        color=card.color,
         labels=[lbl.title for lbl in (card.labels or [])],
         assignedUsers=assignees,
         attachmentCount=card.attachmentCount,
         commentsUnread=card.commentsUnread,
+        commentsCount=card.commentsCount,
         hasDescription=has_description,
         descriptionPreview=preview,
     )
@@ -1248,6 +1251,8 @@ async def deck_create_card(
     order: int = 999,
     description: str | None = None,
     duedate: str | None = None,
+    startdate: str | None = None,
+    color: str | None = None,
 ) -> CreateCardResponse:
     """Create a new card in a Nextcloud Deck stack
 
@@ -1259,10 +1264,20 @@ async def deck_create_card(
         order: Order for sorting the cards
         description: Description of the card
         duedate: Due date of the card (ISO-8601 format)
+        startdate: Start date of the card (ISO-8601 format; Deck >= 1.18)
+        color: Card color as hex RGB, e.g. "FF0000" (Deck >= 1.18)
     """
     client = await get_client(ctx)
     card = await client.deck.create_card(
-        board_id, stack_id, title, type, order, description, duedate
+        board_id,
+        stack_id,
+        title,
+        type,
+        order,
+        description,
+        duedate,
+        startdate=startdate,
+        color=color,
     )
     return CreateCardResponse(
         id=card.id,
@@ -1287,6 +1302,8 @@ async def deck_update_card(
     duedate: str | None = None,
     archived: bool | None = None,
     done: str | None = None,
+    startdate: str | None = None,
+    color: str | None = None,
 ) -> CardOperationResponse:
     """Update a Nextcloud Deck card
 
@@ -1302,6 +1319,10 @@ async def deck_update_card(
         duedate: New due date for the card (ISO-8601 format)
         archived: Whether the card should be archived
         done: Completion date for the card (ISO-8601 format)
+        startdate: New start date for the card (ISO-8601 format; Deck >= 1.18).
+            Pass an empty string to clear it.
+        color: New card color as hex RGB, e.g. "FF0000" (Deck >= 1.18).
+            Pass an empty string to clear it.
     """
     client = await get_client(ctx)
     await client.deck.update_card(
@@ -1316,6 +1337,8 @@ async def deck_update_card(
         duedate,
         archived,
         done,
+        startdate=startdate,
+        color=color,
     )
     return CardOperationResponse(
         success=True,

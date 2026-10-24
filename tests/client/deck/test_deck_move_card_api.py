@@ -76,7 +76,7 @@ async def test_move_card_to_board_sends_id_and_target_stack(mocker):
     assert mock_make_request.call_count == 3
 
 
-async def test_move_card_to_board_preserves_duedate(mocker):
+async def test_move_card_to_board_preserves_duedate_and_startdate(mocker):
     """A due date on the source card is forwarded, normalised to UTC "Z" form.
 
     move_card_to_board now shares `_normalize_duedate` with create_card and
@@ -90,7 +90,11 @@ async def test_move_card_to_board_preserves_duedate(mocker):
         side_effect=[
             _stacks_list_response([99]),
             create_mock_deck_card_response(
-                card_id=7, stack_id=10, duedate="2030-01-02T03:04:05+00:00"
+                card_id=7,
+                stack_id=10,
+                duedate="2030-01-02T03:04:05+00:00",
+                startdate="2030-01-01T00:00:00+00:00",
+                color="00FF00",
             ),
             create_mock_deck_card_response(card_id=7, stack_id=99),
         ],
@@ -107,6 +111,9 @@ async def test_move_card_to_board_preserves_duedate(mocker):
 
     body = mock_make_request.call_args_list[2].kwargs["json"]
     assert body["duedate"] == "2030-01-02T03:04:05Z"
+    # Deck 1.18.x nulls startdate and color when omitted, so both are carried over.
+    assert body["startdate"] == "2030-01-01T00:00:00Z"
+    assert body["color"] == "00FF00"
 
 
 async def test_move_card_to_board_restores_done_state(mocker):
