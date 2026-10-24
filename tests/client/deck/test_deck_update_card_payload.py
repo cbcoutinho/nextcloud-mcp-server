@@ -12,7 +12,11 @@ checked fields they had just set, which is why the bug survived.
 import httpx
 import pytest
 
-from nextcloud_mcp_server.client.deck import DeckClient, _normalize_duedate
+from nextcloud_mcp_server.client.deck import (
+    DeckClient,
+    _normalize_color,
+    _normalize_duedate,
+)
 from tests.client.conftest import create_mock_deck_card_response, create_mock_response
 
 pytestmark = pytest.mark.unit
@@ -205,3 +209,10 @@ async def test_create_card_sends_startdate_and_color(mocker):
     body = mock_make_request.call_args.kwargs["json"]
     assert body["startdate"] == "2030-06-01T18:00:00Z"
     assert body["color"] == "FF0000"
+
+
+@pytest.mark.parametrize("bad", ["red", "#", "FF00", "#GG0000"])
+def test_invalid_color_is_rejected(bad):
+    """Deck stores any string verbatim, so non-hex input is refused up front."""
+    with pytest.raises(ValueError, match="6-digit hex"):
+        _normalize_color(bad)

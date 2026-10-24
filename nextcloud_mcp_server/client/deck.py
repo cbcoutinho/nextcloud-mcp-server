@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -57,9 +58,15 @@ def _normalize_color(color: Optional[str]) -> Optional[str]:
     and its frontend prepends the ``#`` itself.
 
     An empty string maps to ``None`` so "clear the color" stores NULL; Deck
-    1.18.x would otherwise store ``""`` verbatim.
+    1.18.x would otherwise store ``""`` verbatim. Anything else must be 6-digit
+    hex: Deck does not validate card colors and would store ``"red"`` as-is.
     """
-    return (color or "").removeprefix("#") or None
+    if not color:
+        return None
+    bare = color.removeprefix("#")
+    if not re.fullmatch(r"[0-9A-Fa-f]{6}", bare):
+        raise ValueError(f"color must be 6-digit hex like 'FF0000', got {color!r}")
+    return bare
 
 
 class DeckClient(BaseNextcloudClient):
@@ -406,7 +413,8 @@ class DeckClient(BaseNextcloudClient):
             ),
             "archived": archived if archived is not None else current.archived,
             **({"done": done} if done is not None else {}),
-            "color": _normalize_color(color if color is not None else current.color),
+            # current.color is sent back as Deck stored it, unvalidated.
+            "color": _normalize_color(color) if color is not None else current.color,
         }
 
     async def update_card(
@@ -650,7 +658,7 @@ class DeckClient(BaseNextcloudClient):
             "startdate": _normalize_duedate(
                 current.startdate.isoformat() if current.startdate else None
             ),
-            "color": _normalize_color(current.color),
+            "color": current.color,
             # 0 keeps the card live (a positive value would soft-delete it)
             "deletedAt": current.deletedAt or 0,
         }
