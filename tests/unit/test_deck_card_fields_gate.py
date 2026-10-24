@@ -52,3 +52,13 @@ async def test_skips_the_lookup_when_no_new_field_is_passed(mocker):
     await _require_card_fields_supported(mocker.Mock(username="alice"), None, None)
 
     gate.assert_not_awaited()
+
+
+async def test_malformed_color_is_a_tool_error_without_a_lookup(mocker):
+    gate = _patch_gate(mocker, None)
+    client = mocker.Mock(username="alice")
+
+    with pytest.raises(ToolError, match="6-digit hex"):
+        await _require_card_fields_supported(client, None, "red")
+
+    gate.assert_not_awaited()

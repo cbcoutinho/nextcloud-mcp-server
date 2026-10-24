@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.client.deck import _normalize_color
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.deck import (
@@ -89,7 +90,14 @@ async def _require_card_fields_supported(
     Older Deck ignores the keys, so the write would "succeed" with the field
     unset. Checked before writing, so nothing is half-applied. Fail-open like
     the tool gates: unknown capabilities let the write through.
+
+    Also surfaces a malformed color as a ``ToolError`` rather than the client
+    layer's bare ``ValueError``.
     """
+    try:
+        _normalize_color(color)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
     requested = [
         name
         for name, value in (("startdate", startdate), ("color", color))
