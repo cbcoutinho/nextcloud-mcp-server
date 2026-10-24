@@ -100,6 +100,9 @@ _DEFAULTS: dict[str, Any] = {
     # deck tools disappear?" without a code read. Read via cfg(), not a
     # Settings field: nothing but the two gate helpers looks at it.
     "mcp_disable_capability_gating": False,
+    # Hide and refuse every tool annotated destructive_hint=True (permanent
+    # deletes) -- see destructive_tools.py. Read via cfg(), like the gate above.
+    "mcp_disable_destructive_tools": False,
     "enable_semantic_search": False,
     "enable_background_operations": False,
     "vector_sync_enabled": False,
