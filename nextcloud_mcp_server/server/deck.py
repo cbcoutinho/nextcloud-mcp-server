@@ -1264,7 +1264,7 @@ async def deck_create_card(
         order: Order for sorting the cards
         description: Description of the card
         duedate: Due date of the card (ISO-8601 format)
-        startdate: Start date of the card (ISO-8601 format; Deck >= 1.18)
+        startdate: Start date of the card (ISO-8601 format, Deck >= 1.18)
         color: Card color as hex RGB, e.g. "FF0000" (Deck >= 1.18)
     """
     client = await get_client(ctx)
@@ -1319,7 +1319,7 @@ async def deck_update_card(
         duedate: New due date for the card (ISO-8601 format)
         archived: Whether the card should be archived
         done: Completion date for the card (ISO-8601 format)
-        startdate: New start date for the card (ISO-8601 format; Deck >= 1.18).
+        startdate: New start date for the card (ISO-8601 format, Deck >= 1.18).
             Pass an empty string to clear it.
         color: New card color as hex RGB, e.g. "FF0000" (Deck >= 1.18).
             Pass an empty string to clear it.
