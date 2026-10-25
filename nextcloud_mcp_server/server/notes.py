@@ -217,10 +217,10 @@ async def nc_notes_list_notes(
     """List notes, returning id, title, and category, plus the total count.
 
     Without ``category``, ``total_found`` is the user's total number of notes, so
-    this answers "how many notes do I have" exactly; search tools only return the
+    this answers "how many notes do I have" exactly. Search tools only return the
     best matches. With ``category``, it counts that category only: the match is
     exact and case-sensitive, and does not include nested ``category/sub``
-    categories. ``results`` holds at most ``limit`` notes; ``total_found`` is
+    categories. ``results`` holds at most ``limit`` notes, but ``total_found`` is
     never limited. Requires notes.read scope.
     """
     client = await get_client(ctx)
