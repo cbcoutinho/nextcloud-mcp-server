@@ -208,17 +208,20 @@ async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse
 @with_links
 @instrument_tool
 async def nc_notes_list_notes(
-    ctx: Context, category: str | None = None
+    ctx: Context, category: str | None = None, limit: int = 100
 ) -> ListNotesResponse:
-    """List all notes, or those in one category, returning id, title, and category.
+    """List notes, returning id, title, and category, plus the total count.
 
-    ``total_found`` is the number of notes, so this answers "how many notes do I
-    have" exactly; search tools only return the best matches. Requires notes.read
-    scope.
+    Without ``category``, ``total_found`` is the user's total number of notes, so
+    this answers "how many notes do I have" exactly; search tools only return the
+    best matches. With ``category``, it counts that category only: the match is
+    exact and case-sensitive, and does not include nested ``category/sub``
+    categories. ``results`` holds at most ``limit`` notes; ``total_found`` is
+    never limited. Requires notes.read scope.
     """
     client = await get_client(ctx)
     try:
-        results = [
+        matching = [
             NoteSearchResult(
                 id=note["id"],
                 title=note.get("title", ""),
@@ -228,10 +231,12 @@ async def nc_notes_list_notes(
             if category is None or note.get("category", "") == category
         ]
         return ListNotesResponse(
-            results=results, category=category, total_found=len(results)
+            total_found=len(matching),
+            category=category,
+            results=matching[: max(limit, 0)],
         )
     except RequestError as e:
-        raise MCPError(code=-1, message=f"Network error listing notes: {str(e)}")
+        raise MCPError(code=-1, message=f"Network error listing notes: {e}")
     except HTTPStatusError as e:
         if e.response.status_code == 403:
             raise MCPError(

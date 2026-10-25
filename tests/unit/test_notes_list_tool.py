@@ -7,8 +7,10 @@ return best matches only, so ``total_found`` here must be the full count.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.models.notes import ListNotesResponse
 from nextcloud_mcp_server.server.notes import configure_notes_tools
@@ -62,6 +64,48 @@ async def test_lists_every_note_and_counts_them(list_notes):
     assert [n.id for n in result.results] == [1, 2, 3]
     assert result.results[2].category == ""
     assert result.category is None
+
+
+async def test_limit_caps_results_but_not_the_count(list_notes):
+    result = await list_notes(
+        ctx=SimpleNamespace(request_context=SimpleNamespace()), limit=1
+    )
+
+    assert result.total_found == 3
+    assert [n.id for n in result.results] == [1]
+
+
+def test_count_serializes_before_results():
+    """A client that truncates a long result must still see the count."""
+    dumped = ListNotesResponse(total_found=0, results=[]).model_dump_json()
+    assert dumped.index('"total_found"') < dumped.index('"results"')
+
+
+async def test_access_denied_is_reported_as_mcp_error(mocker):
+    mcp = MCPServer(name="test-notes-tools")
+    configure_notes_tools(mcp)
+    tool = {t.name: t for t in mcp._tool_manager.list_tools()}["nc_notes_list_notes"]
+
+    async def get_all_notes():
+        raise httpx.HTTPStatusError(
+            "forbidden",
+            request=httpx.Request("GET", "http://nc/notes"),
+            response=httpx.Response(403),
+        )
+        yield  # pragma: no cover - makes this an async generator
+
+    client = SimpleNamespace(notes=SimpleNamespace(get_all_notes=get_all_notes))
+
+    async def fake_get_client(ctx):
+        return client
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.notes.get_client", side_effect=fake_get_client
+    )
+    ctx = SimpleNamespace(request_context=SimpleNamespace())
+
+    with pytest.raises(MCPError, match="Access denied"):
+        await tool.fn(ctx=ctx)
 
 
 async def test_filters_by_category(list_notes):

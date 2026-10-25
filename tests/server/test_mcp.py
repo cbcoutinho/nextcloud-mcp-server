@@ -285,15 +285,25 @@ async def test_mcp_notes_crud_workflow(
 
         # 8b. List notes via MCP: unfiltered includes ours, and the count matches
         # the Notes API; the category filter narrows to it.
-        list_result = await nc_mcp_client.call_tool("nc_notes_list_notes", {})
+        list_result = await nc_mcp_client.call_tool(
+            "nc_notes_list_notes", {"limit": 100000}
+        )
         assert list_result.is_error is False, (
             f"MCP note list failed: {list_result.content}"
         )
         list_response = json.loads(list_result.content[0].text)
         assert note_id in [n["id"] for n in list_response["results"]]
-        assert list_response["total_found"] == len(list_response["results"])
         direct_count = len([n async for n in nc_client.notes.get_all_notes()])
         assert list_response["total_found"] == direct_count
+
+        # limit caps the listing, never the count.
+        limited = json.loads(
+            (await nc_mcp_client.call_tool("nc_notes_list_notes", {"limit": 1}))
+            .content[0]
+            .text
+        )
+        assert len(limited["results"]) == 1
+        assert limited["total_found"] == direct_count
 
         filtered_result = await nc_mcp_client.call_tool(
             "nc_notes_list_notes", {"category": test_category}
