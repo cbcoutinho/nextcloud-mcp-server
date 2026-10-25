@@ -113,5 +113,6 @@ class ListNotesResponse(BaseResponse):
         default=None, description="The category filter applied, if any"
     )
     results: List[NoteSearchResult] = Field(
-        description="Notes (id, title, category), at most `limit` of them"
+        description="Notes (id, title, category); may be fewer than total_found "
+        "when the listing is capped"
     )

@@ -1,9 +1,11 @@
 import logging
+from typing import Annotated
 
 from httpx import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -208,7 +210,9 @@ async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse
 @with_links
 @instrument_tool
 async def nc_notes_list_notes(
-    ctx: Context, category: str | None = None, limit: int = 100
+    ctx: Context,
+    category: str | None = None,
+    limit: Annotated[int, Field(ge=0)] = 100,
 ) -> ListNotesResponse:
     """List notes, returning id, title, and category, plus the total count.
 
@@ -221,20 +225,23 @@ async def nc_notes_list_notes(
     """
     client = await get_client(ctx)
     try:
-        matching = [
-            NoteSearchResult(
-                id=note["id"],
-                title=note.get("title", ""),
-                category=note.get("category", ""),
-            )
-            async for note in client.notes.get_all_notes()
-            if category is None or note.get("category", "") == category
-        ]
-        return ListNotesResponse(
-            total_found=len(matching),
-            category=category,
-            results=matching[: max(limit, 0)],
-        )
+        # Count every match but keep only the first `limit`: the count needs the
+        # full pass, the listing does not.
+        total = 0
+        results: list[NoteSearchResult] = []
+        async for note in client.notes.get_all_notes():
+            if category is not None and note.get("category", "") != category:
+                continue
+            total += 1
+            if len(results) < limit:
+                results.append(
+                    NoteSearchResult(
+                        id=note["id"],
+                        title=note.get("title", ""),
+                        category=note.get("category", ""),
+                    )
+                )
+        return ListNotesResponse(total_found=total, category=category, results=results)
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error listing notes: {e}")
     except HTTPStatusError as e:
