@@ -96,3 +96,13 @@ class SearchNotesResponse(BaseResponse):
     results: List[NoteSearchResult] = Field(description="Search results")
     query: str = Field(description="The search query used")
     total_found: int = Field(description="Total number of notes found")
+
+
+class ListNotesResponse(BaseResponse):
+    """Response model for listing notes."""
+
+    results: List[NoteSearchResult] = Field(description="Notes (id, title, category)")
+    category: str | None = Field(
+        default=None, description="The category filter applied, if any"
+    )
+    total_found: int = Field(description="Number of notes listed")

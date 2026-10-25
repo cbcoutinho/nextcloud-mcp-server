@@ -12,6 +12,7 @@ from nextcloud_mcp_server.models.notes import (
     AppendContentResponse,
     CreateNoteResponse,
     DeleteNoteResponse,
+    ListNotesResponse,
     Note,
     NoteSearchResult,
     NotesSettings,
@@ -206,6 +207,46 @@ async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse
 @require_scopes("notes.read")
 @with_links
 @instrument_tool
+async def nc_notes_list_notes(
+    ctx: Context, category: str | None = None
+) -> ListNotesResponse:
+    """List all notes, or those in one category, returning id, title, and category.
+
+    ``total_found`` is the number of notes, so this answers "how many notes do I
+    have" exactly; search tools only return the best matches. Requires notes.read
+    scope.
+    """
+    client = await get_client(ctx)
+    try:
+        results = [
+            NoteSearchResult(
+                id=note["id"],
+                title=note.get("title", ""),
+                category=note.get("category", ""),
+            )
+            async for note in client.notes.get_all_notes()
+            if category is None or note.get("category", "") == category
+        ]
+        return ListNotesResponse(
+            results=results, category=category, total_found=len(results)
+        )
+    except RequestError as e:
+        raise MCPError(code=-1, message=f"Network error listing notes: {str(e)}")
+    except HTTPStatusError as e:
+        if e.response.status_code == 403:
+            raise MCPError(
+                code=-1,
+                message="Access denied: insufficient permissions to list notes",
+            )
+        raise MCPError(
+            code=-1,
+            message=f"Listing notes failed: server error ({e.response.status_code})",
+        )
+
+
+@require_scopes("notes.read")
+@with_links
+@instrument_tool
 async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
     """Get a specific note by its ID (requires notes.read scope)"""
     client = await get_client(ctx)
@@ -387,6 +428,14 @@ def configure_notes_tools(mcp: MCPServer):
             open_world_hint=True,
         ),
     )(nc_notes_search_notes)
+
+    mcp.tool(
+        title="List Notes",
+        annotations=ToolAnnotations(
+            read_only_hint=True,  # Read operation only
+            open_world_hint=True,
+        ),
+    )(nc_notes_list_notes)
 
     mcp.tool(
         title="Get Note",
