@@ -19,7 +19,7 @@ Root cause analysis identifies two fundamental issues:
 words = content.split()  # Naive whitespace splitting
 chunk_size = 512  # words
 overlap = 50  # words
-chunks = [words[i:i+chunk_size] for i in range(0, len(words), chunk_size-overlap)]
+chunks = [words[i : i + chunk_size] for i in range(0, len(words), chunk_size - overlap)]
 ```
 
 **Problems**:
@@ -137,8 +137,8 @@ for child_idx, child in enumerate(child_chunks):
         payload={
             "chunk": child,
             "parent_chunk": parent_chunks[parent_idx],
-            "chunk_type": "child"
-        }
+            "chunk_type": "child",
+        },
     )
 ```
 
@@ -165,16 +165,17 @@ for child_idx, child in enumerate(child_chunks):
 ```python
 import mistune  # Markdown parser
 
+
 def structure_aware_chunk(markdown_content: str) -> list[str]:
-    ast = mistune.create_markdown(renderer='ast')(markdown_content)
+    ast = mistune.create_markdown(renderer="ast")(markdown_content)
 
     chunks = []
     for node in ast:
-        if node['type'] == 'heading':
+        if node["type"] == "heading":
             # Start new chunk at each header
-            current_chunk = node['children'][0]['raw']
-        elif node['type'] == 'paragraph':
-            current_chunk += "\n" + node['children'][0]['raw']
+            current_chunk = node["children"][0]["raw"]
+        elif node["type"] == "paragraph":
+            current_chunk += "\n" + node["children"][0]["raw"]
             if len(current_chunk) > 2048:
                 chunks.append(current_chunk)
                 current_chunk = ""
@@ -230,6 +231,7 @@ def structure_aware_chunk(markdown_content: str) -> list[str]:
 ```python
 # config.py
 OLLAMA_EMBEDDING_MODEL = "mxbai-embed-large-v1"  # Changed from nomic-embed-text
+
 
 # ollama_provider.py
 async def get_dimension(self) -> int:
@@ -405,6 +407,7 @@ Implement both improvements together to maximize recall improvement:
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+
 class DocumentChunker:
     """Chunk documents into semantically coherent pieces."""
 
@@ -421,14 +424,14 @@ class DocumentChunker:
             chunk_overlap=chunk_overlap,
             separators=[
                 "\n\n",  # Paragraphs (highest priority)
-                "\n",    # Lines
-                ". ",    # Sentences
+                "\n",  # Lines
+                ". ",  # Sentences
                 "! ",
                 "? ",
-                "; ",    # Clauses
+                "; ",  # Clauses
                 ": ",
-                ", ",    # Phrases
-                " ",     # Words (last resort)
+                ", ",  # Phrases
+                " ",  # Words (last resort)
             ],
             length_function=len,
             is_separator_regex=False,
@@ -485,6 +488,7 @@ dependencies = [
 ```python
 # nextcloud_mcp_server/providers/ollama.py (was embedding/ollama_provider.py)
 
+
 class OllamaEmbeddingProvider(EmbeddingProvider):
     def __init__(self, base_url: str, model: str, verify_ssl: bool = True):
         self.base_url = base_url
@@ -511,7 +515,9 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
                     self._dimension = len(test_emb)
 
             except Exception as e:
-                logger.warning(f"Failed to get dimension from Ollama: {e}, using fallback")
+                logger.warning(
+                    f"Failed to get dimension from Ollama: {e}, using fallback"
+                )
                 # Fallback dimensions by model name
                 if "mxbai-embed-large" in self.model:
                     self._dimension = 1024
@@ -625,6 +631,7 @@ async def migrate_to_new_embeddings():
 ```python
 # tests/benchmarks/chunking_embedding_comparison.py
 
+
 async def benchmark_chunking_embeddings():
     """
     Compare old vs. new chunking and embeddings on test queries.
@@ -659,8 +666,9 @@ async def benchmark_chunking_embeddings():
         },
         "improvement": {
             "recall_improvement": (new_recall - baseline_recall) / baseline_recall,
-            "precision_improvement": (new_precision - baseline_precision) / baseline_precision,
-        }
+            "precision_improvement": (new_precision - baseline_precision)
+            / baseline_precision,
+        },
     }
 
     return comparison

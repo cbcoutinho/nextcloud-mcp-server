@@ -196,7 +196,7 @@ removed — `get_provider()` is the only entry point.
     "anthropic_version": "bedrock-2023-05-31",
     "max_tokens": max_tokens,
     "temperature": 0.7,
-    "messages": [{"role": "user", "content": prompt}]
+    "messages": [{"role": "user", "content": prompt}],
 }
 ```
 
@@ -330,10 +330,10 @@ class CombinedProvider:
 Dynamic provider registration via entry points:
 ```python
 # setup.py
-entry_points={
-    'nextcloud_mcp.providers': [
-        'ollama = nextcloud_mcp_server.providers.ollama:OllamaProvider',
-        'bedrock = nextcloud_mcp_server.providers.bedrock:BedrockProvider',
+entry_points = {
+    "nextcloud_mcp.providers": [
+        "ollama = nextcloud_mcp_server.providers.ollama:OllamaProvider",
+        "bedrock = nextcloud_mcp_server.providers.bedrock:BedrockProvider",
     ]
 }
 ```

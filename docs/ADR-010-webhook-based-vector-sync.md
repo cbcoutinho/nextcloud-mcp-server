@@ -132,6 +132,7 @@ A new Starlette HTTP route will be added to receive webhook notifications from N
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+
 @app.route("/webhooks/nextcloud", methods=["POST"])
 async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     """
@@ -143,12 +144,13 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     # 1. Optional authentication validation
     if settings.webhook_secret:
         auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer ") or \
-           auth_header[7:] != settings.webhook_secret:
+        if (
+            not auth_header.startswith("Bearer ")
+            or auth_header[7:] != settings.webhook_secret
+        ):
             logger.warning("Webhook authentication failed")
             return JSONResponse(
-                {"status": "error", "message": "Unauthorized"},
-                status_code=401
+                {"status": "error", "message": "Unauthorized"}, status_code=401
             )
 
     # 2. Parse webhook payload
@@ -168,10 +170,7 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
         return JSONResponse({"status": "queued"})
     except Exception as e:
         logger.error(f"Failed to queue webhook document: {e}")
-        return JSONResponse(
-            {"status": "error", "message": str(e)},
-            status_code=500
-        )
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 ```
 
 The endpoint:
@@ -217,8 +216,10 @@ def extract_document_task(event_class: str, payload: dict) -> DocumentTask | Non
         )
 
     # Calendar events
-    elif "CalendarObjectCreatedEvent" in event_class or \
-         "CalendarObjectUpdatedEvent" in event_class:
+    elif (
+        "CalendarObjectCreatedEvent" in event_class
+        or "CalendarObjectUpdatedEvent" in event_class
+    ):
         return DocumentTask(
             user_id=user_id,
             doc_id=str(event_data["objectData"]["id"]),
@@ -228,9 +229,11 @@ def extract_document_task(event_class: str, payload: dict) -> DocumentTask | Non
         )
 
     # Deletion events (use BeforeNodeDeletedEvent for files to get node.id)
-    elif "BeforeNodeDeletedEvent" in event_class or \
-         "NodeDeletedEvent" in event_class or \
-         "CalendarObjectDeletedEvent" in event_class:
+    elif (
+        "BeforeNodeDeletedEvent" in event_class
+        or "NodeDeletedEvent" in event_class
+        or "CalendarObjectDeletedEvent" in event_class
+    ):
         # Similar logic for delete operations
         ...
 
@@ -370,8 +373,8 @@ async def test_webhook_endpoint_parses_note_created_event():
         "time": 1704067200,
         "event": {
             "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-            "node": {"id": "123", "path": "/alice/files/test.md"}
-        }
+            "node": {"id": "123", "path": "/alice/files/test.md"},
+        },
     }
     # Mock send_stream and verify DocumentTask is queued
     ...
@@ -519,10 +522,12 @@ async def delete_document_by_path(user_id: str, path: str):
     """Delete document from Qdrant using path (when ID unavailable)."""
     points = await qdrant.scroll(
         collection_name=collection,
-        scroll_filter=Filter(must=[
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-            FieldCondition(key="metadata.path", match=MatchValue(value=path)),
-        ]),
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                FieldCondition(key="metadata.path", match=MatchValue(value=path)),
+            ]
+        ),
     )
     # Delete found points...
 ```

@@ -10,7 +10,7 @@ license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.11"
 keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude", "webdav", "caldav", "carddav"]
 dependencies = [
-    "mcp[cli] (>=2.1,<3)",
+    "mcp[cli] (>=2.3,<2.4)",
     "httpx (>=0.28.1,<0.29.0)",
     # Imported directly at runtime. Each was previously reachable only because
     # some other dependency happened to pull it in — the accident that broke
@@ -104,6 +104,9 @@ update_changelog_on_bump = true
 major_version_zero = true
 
 [tool.ruff.lint]
+# ruff 0.17 widened the default rule set (1698 new findings); pin the pre-0.17
+# defaults so adopting the new rules is a deliberate, separate change.
+select = ["E4", "E7", "E9", "F"]
 extend-select = ["I", "PLC0415", "G004"]
 
 [tool.ruff.lint.per-file-ignores]

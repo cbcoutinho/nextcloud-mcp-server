@@ -378,9 +378,7 @@ Following ADR-003's design:
 
 ```python
 def reciprocal_rank_fusion(
-    results: dict[str, list[SearchResult]],
-    weights: dict[str, float],
-    k: int = 60
+    results: dict[str, list[SearchResult]], weights: dict[str, float], k: int = 60
 ) -> list[SearchResult]:
     """
     Combine multiple ranked result lists using RRF.
@@ -523,10 +521,10 @@ async def nc_hybrid_search(query: str, ctx: Context, weights: dict, ...) -> Sear
 
 ```python
 # .env configuration
-SEARCH_ALGORITHM=hybrid
-SEMANTIC_WEIGHT=0.5
-KEYWORD_WEIGHT=0.3
-FUZZY_WEIGHT=0.2
+SEARCH_ALGORITHM = hybrid
+SEMANTIC_WEIGHT = 0.5
+KEYWORD_WEIGHT = 0.3
+FUZZY_WEIGHT = 0.2
 ```
 
 **Rejected because**:
@@ -572,9 +570,7 @@ FUZZY_WEIGHT=0.2
 
 ```python
 def validate_weights(
-    semantic_weight: float,
-    keyword_weight: float,
-    fuzzy_weight: float
+    semantic_weight: float, keyword_weight: float, fuzzy_weight: float
 ) -> None:
     """Validate hybrid search weights."""
     if semantic_weight < 0 or keyword_weight < 0 or fuzzy_weight < 0:

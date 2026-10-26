@@ -70,7 +70,7 @@ class BM25SparseEmbeddingProvider:
         """
 
         # Run CPU-bound BM25 encoding in thread pool
-        return await anyio.to_thread.run_sync(lambda: self.encode(text))  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+        return await anyio.to_thread.run_sync(lambda: self.encode(text))  # type: ignore[attr-defined]
 
     async def encode_batch(self, texts: list[str]) -> list[dict[str, Any]]:
         """
@@ -84,7 +84,7 @@ class BM25SparseEmbeddingProvider:
         """
 
         # Run CPU-bound BM25 encoding in thread pool to avoid blocking event loop
-        sparse_embeddings = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+        sparse_embeddings = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
             lambda: list(self.model.embed(texts))
         )
 
@@ -133,7 +133,7 @@ async def get_bm25_service() -> BM25SparseEmbeddingProvider:
     """
     global _bm25_service
     if _bm25_service is None:
-        _bm25_service = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+        _bm25_service = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
             BM25SparseEmbeddingProvider
         )
     return _bm25_service

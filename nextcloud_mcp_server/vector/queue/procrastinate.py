@@ -517,7 +517,7 @@ def _build_ingest_blueprint() -> Blueprint:
     # retry loop in process_document is disabled on this path via max_retries=1.
     # The task's default queue is the cheapest tier; the producer defers there
     # explicitly and the strategy hops a job up the ladder on a poor parse.
-    bp.task(  # type: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+    bp.task(  # type: ignore[no-matching-overload]
         name="process_document",
         queue=DEFAULT_INGEST_QUEUE,
         pass_context=True,

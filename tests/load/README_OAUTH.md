@@ -325,34 +325,38 @@ class PermissionEscalationWorkflow(Workflow):
 
         # Step 1: Owner creates note
         create_result = await self._execute_step(
-            "create_note",
-            owner,
-            lambda: owner.call_tool("nc_notes_create_note", {...})
+            "create_note", owner, lambda: owner.call_tool("nc_notes_create_note", {...})
         )
 
         # Step 2: Share read-only
         await self._execute_step(
             "share_readonly",
             owner,
-            lambda: owner.call_tool("nc_share_create", {
-                "permissions": 1  # Read-only
-            })
+            lambda: owner.call_tool(
+                "nc_share_create",
+                {
+                    "permissions": 1  # Read-only
+                },
+            ),
         )
 
         # Step 3: Upgrade to edit permissions
         await self._execute_step(
             "upgrade_permissions",
             owner,
-            lambda: owner.call_tool("nc_share_update", {
-                "permissions": 15  # Read+update+create+delete
-            })
+            lambda: owner.call_tool(
+                "nc_share_update",
+                {
+                    "permissions": 15  # Read+update+create+delete
+                },
+            ),
         )
 
         # Step 4: Collaborator edits
         await self._execute_step(
             "collaborator_edit",
             collaborator,
-            lambda: collaborator.call_tool("nc_notes_update_note", {...})
+            lambda: collaborator.call_tool("nc_notes_update_note", {...}),
         )
 
         return self._finish(success=True)
@@ -441,8 +445,7 @@ Step 5/6: Creating 4 users and acquiring OAuth tokens...
 ```python
 # Create tasks for all users
 tasks = [
-    create_user_task(i, browser, callback_server.auth_states)
-    for i in range(num_users)
+    create_user_task(i, browser, callback_server.auth_states) for i in range(num_users)
 ]
 # Run all concurrently
 results = await asyncio.gather(*tasks, return_exceptions=True)

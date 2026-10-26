@@ -91,13 +91,13 @@ async def nc_semantic_search_answer(
 **Response Model**:
 ```python
 class SamplingSearchResponse(BaseResponse):
-    query: str                              # Original user query
-    generated_answer: str                   # LLM-generated answer
-    sources: list[SemanticSearchResult]     # Supporting documents
-    total_found: int                        # Total matching documents
+    query: str  # Original user query
+    generated_answer: str  # LLM-generated answer
+    sources: list[SemanticSearchResult]  # Supporting documents
+    total_found: int  # Total matching documents
     search_method: str = "semantic_sampling"
-    model_used: str | None = None           # Model that generated answer
-    stop_reason: str | None = None          # Why generation stopped
+    model_used: str | None = None  # Model that generated answer
+    stop_reason: str | None = None  # Why generation stopped
 ```
 
 The response includes both the generated answer (for direct user consumption) and the source documents (for verification and citation). The `model_used` field records which LLM generated the answer, allowing users to understand which model provided the response.
@@ -274,6 +274,7 @@ Add to `nextcloud_mcp_server/models/semantic.py` (new file for semantic search m
 ```python
 from pydantic import Field
 
+
 class SamplingSearchResponse(BaseResponse):
     """Response from semantic search with LLM-generated answer via MCP sampling.
 
@@ -294,25 +295,21 @@ class SamplingSearchResponse(BaseResponse):
 
     query: str = Field(..., description="Original user query")
     generated_answer: str = Field(
-        ...,
-        description="LLM-generated answer based on retrieved documents"
+        ..., description="LLM-generated answer based on retrieved documents"
     )
     sources: list[SemanticSearchResult] = Field(
         default_factory=list,
-        description="Source documents with excerpts and relevance scores"
+        description="Source documents with excerpts and relevance scores",
     )
     total_found: int = Field(..., description="Total matching documents")
     search_method: str = Field(
-        default="semantic_sampling",
-        description="Search method used"
+        default="semantic_sampling", description="Search method used"
     )
     model_used: str | None = Field(
-        default=None,
-        description="Model that generated the answer"
+        default=None, description="Model that generated the answer"
     )
     stop_reason: str | None = Field(
-        default=None,
-        description="Reason generation stopped"
+        default=None, description="Reason generation stopped"
     )
 ```
 
@@ -491,8 +488,7 @@ async def nc_semantic_search_answer(
     except Exception as e:
         # Fallback: Return documents without generated answer
         logger.warning(
-            f"Sampling failed ({type(e).__name__}: {e}), "
-            f"returning search results only"
+            f"Sampling failed ({type(e).__name__}: {e}), returning search results only"
         )
 
         return SamplingSearchResponse(

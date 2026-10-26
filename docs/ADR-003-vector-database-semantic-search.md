@@ -137,14 +137,14 @@ class EmbeddingService:
         if os.getenv("OPENAI_API_KEY"):
             return OpenAIEmbedding(
                 model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-                api_key=os.getenv("OPENAI_API_KEY")
+                api_key=os.getenv("OPENAI_API_KEY"),
             )
 
         # Tier 2: Self-hosted embedding service (good quality, privacy-preserving)
         if os.getenv("EMBEDDING_SERVICE_URL"):
             return HTTPEmbedding(
                 url=os.getenv("EMBEDDING_SERVICE_URL"),
-                model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+                model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
             )
 
         # Tier 3: Local model (fallback, CPU-only)
@@ -174,18 +174,12 @@ class OpenAIEmbedding(EmbeddingProvider):
         self.dimension = 1536 if "3-small" in model else 1536  # Model-dependent
 
     async def embed(self, text: str) -> list[float]:
-        response = await self.client.embeddings.create(
-            model=self.model,
-            input=text
-        )
+        response = await self.client.embeddings.create(model=self.model, input=text)
         return response.data[0].embedding
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         # OpenAI supports batch up to 2048 inputs
-        response = await self.client.embeddings.create(
-            model=self.model,
-            input=texts
-        )
+        response = await self.client.embeddings.create(model=self.model, input=texts)
         return [item.embedding for item in response.data]
 ```
 
@@ -207,8 +201,7 @@ class HTTPEmbedding(EmbeddingProvider):
 
     async def embed(self, text: str) -> list[float]:
         response = await self.client.post(
-            f"{self.url}/embeddings",
-            json={"input": text, "model": self.model}
+            f"{self.url}/embeddings", json={"input": text, "model": self.model}
         )
         response.raise_for_status()
         return response.json()["data"][0]["embedding"]
@@ -227,17 +220,14 @@ class LocalEmbedding(EmbeddingProvider):
 
     def __init__(self, model: str):
         from sentence_transformers import SentenceTransformer
+
         self.model = SentenceTransformer(model)
         self.dimension = self.model.get_sentence_embedding_dimension()
 
     async def embed(self, text: str) -> list[float]:
         # Run in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        embedding = await loop.run_in_executor(
-            None,
-            self.model.encode,
-            text
-        )
+        embedding = await loop.run_in_executor(None, self.model.encode, text)
         return embedding.tolist()
 ```
 
@@ -254,31 +244,31 @@ collection_config = {
     "collection_name": "nextcloud_content",
     "vectors_config": {
         "size": 384,  # Embedding dimension (model-dependent)
-        "distance": "Cosine"  # Cosine similarity for semantic search
+        "distance": "Cosine",  # Cosine similarity for semantic search
     },
     "optimizers_config": {
         "indexing_threshold": 10000  # Start indexing after 10k vectors
     },
     "hnsw_config": {
         "m": 16,  # Number of edges per node (balance speed/accuracy)
-        "ef_construct": 100  # Quality of index construction
-    }
+        "ef_construct": 100,  # Quality of index construction
+    },
 }
 
 # Payload schema (metadata)
 payload_schema = {
-    "user_id": str,           # Required: owner of content
-    "content_type": str,      # "note", "file", "calendar_event"
-    "content_id": str,        # Source ID (note_id, file_path, event_id)
-    "title": str,             # Searchable title
-    "excerpt": str,           # First 200 chars for preview
-    "category": str,          # Optional: category/folder
-    "mime_type": str,         # Optional: file MIME type
-    "shared_with": list[str], # Optional: list of user_ids with access
-    "tags": list[str],        # Optional: user tags
-    "created_at": int,        # Unix timestamp
-    "modified_at": int,       # Unix timestamp
-    "indexed_at": int         # Unix timestamp (for sync tracking)
+    "user_id": str,  # Required: owner of content
+    "content_type": str,  # "note", "file", "calendar_event"
+    "content_id": str,  # Source ID (note_id, file_path, event_id)
+    "title": str,  # Searchable title
+    "excerpt": str,  # First 200 chars for preview
+    "category": str,  # Optional: category/folder
+    "mime_type": str,  # Optional: file MIME type
+    "shared_with": list[str],  # Optional: list of user_ids with access
+    "tags": list[str],  # Optional: user tags
+    "created_at": int,  # Unix timestamp
+    "modified_at": int,  # Unix timestamp
+    "indexed_at": int,  # Unix timestamp (for sync tracking)
 }
 ```
 
@@ -295,24 +285,21 @@ search_results = await qdrant_client.search(
             models.Filter(
                 should=[
                     models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=current_user_id)
+                        key="user_id", match=models.MatchValue(value=current_user_id)
                     ),
                     models.FieldCondition(
-                        key="shared_with",
-                        match=models.MatchAny(any=[current_user_id])
-                    )
+                        key="shared_with", match=models.MatchAny(any=[current_user_id])
+                    ),
                 ]
             ),
             # Optional: filter by content type
             models.FieldCondition(
-                key="content_type",
-                match=models.MatchValue(value="note")
-            )
+                key="content_type", match=models.MatchValue(value="note")
+            ),
         ]
     ),
     limit=20,
-    score_threshold=0.7  # Only return confident matches
+    score_threshold=0.7,  # Only return confident matches
 )
 ```
 
@@ -328,7 +315,7 @@ async def nc_notes_hybrid_search(
     ctx: Context,
     limit: int = 10,
     semantic_weight: float = 0.7,
-    keyword_weight: float = 0.3
+    keyword_weight: float = 0.3,
 ) -> SearchNotesResponse:
     """
     Hybrid search combining semantic understanding with keyword precision.
@@ -347,9 +334,7 @@ async def nc_notes_hybrid_search(
     semantic_task = asyncio.create_task(
         semantic_search(query, username, limit=limit * 2)
     )
-    keyword_task = asyncio.create_task(
-        keyword_search(query, username, limit=limit * 2)
-    )
+    keyword_task = asyncio.create_task(keyword_search(query, username, limit=limit * 2))
 
     semantic_results, keyword_results = await asyncio.gather(
         semantic_task, keyword_task
@@ -360,19 +345,21 @@ async def nc_notes_hybrid_search(
         semantic_results,
         keyword_results,
         semantic_weight=semantic_weight,
-        keyword_weight=keyword_weight
+        keyword_weight=keyword_weight,
     )
 
     # Verify permissions via Nextcloud API (dual-phase authorization)
     verified_results = []
-    for result in fused_results[:limit * 2]:  # Get extra for filtering
+    for result in fused_results[: limit * 2]:  # Get extra for filtering
         try:
             note = await client.notes.get_note(result["note_id"])
-            verified_results.append({
-                "note": note,
-                "score": result["score"],
-                "match_type": result["match_type"]  # "semantic", "keyword", "both"
-            })
+            verified_results.append(
+                {
+                    "note": note,
+                    "score": result["score"],
+                    "match_type": result["match_type"],  # "semantic", "keyword", "both"
+                }
+            )
             if len(verified_results) >= limit:
                 break
         except HTTPStatusError as e:
@@ -384,15 +371,16 @@ async def nc_notes_hybrid_search(
         results=verified_results,
         query=query,
         total_found=len(verified_results),
-        search_method="hybrid"
+        search_method="hybrid",
     )
+
 
 def reciprocal_rank_fusion(
     semantic_results: list[dict],
     keyword_results: list[dict],
     semantic_weight: float = 0.7,
     keyword_weight: float = 0.3,
-    k: int = 60  # RRF constant
+    k: int = 60,  # RRF constant
 ) -> list[dict]:
     """
     Reciprocal Rank Fusion for combining search results.
@@ -424,11 +412,13 @@ def reciprocal_rank_fusion(
             keyword_score = keyword_weight / (k + keyword_ranks[note_id])
             match_type.append("keyword")
 
-        fused.append({
-            "note_id": note_id,
-            "score": semantic_score + keyword_score,
-            "match_type": "+".join(match_type)
-        })
+        fused.append(
+            {
+                "note_id": note_id,
+                "score": semantic_score + keyword_score,
+                "match_type": "+".join(match_type),
+            }
+        )
 
     # Sort by fused score
     fused.sort(key=lambda x: x["score"], reverse=True)
@@ -447,11 +437,7 @@ class DocumentChunker:
         self.chunk_size = chunk_size  # tokens
         self.overlap = overlap  # overlapping tokens
 
-    def chunk_document(
-        self,
-        content: str,
-        metadata: dict
-    ) -> list[tuple[str, dict]]:
+    def chunk_document(self, content: str, metadata: dict) -> list[tuple[str, dict]]:
         """
         Split document into overlapping chunks with metadata.
 
@@ -479,7 +465,7 @@ class DocumentChunker:
                 "chunk_index": len(chunks),
                 "chunk_start": start,
                 "chunk_end": end,
-                "is_chunk": True
+                "is_chunk": True,
             }
 
             chunks.append((chunk_text, chunk_metadata))
@@ -488,6 +474,7 @@ class DocumentChunker:
             start = end - self.overlap
 
         return chunks
+
 
 # Usage in sync worker
 async def index_document(doc: Document, user_id: str):
@@ -501,8 +488,8 @@ async def index_document(doc: Document, user_id: str):
             "content_type": "file",
             "content_id": doc.path,
             "title": doc.title,
-            "mime_type": doc.mime_type
-        }
+            "mime_type": doc.mime_type,
+        },
     )
 
     # Generate embeddings in batch
@@ -518,15 +505,12 @@ async def index_document(doc: Document, user_id: str):
                 vector=embedding,
                 payload={
                     **chunk_metadata,
-                    "excerpt": chunk_text[:200]  # Preview
-                }
+                    "excerpt": chunk_text[:200],  # Preview
+                },
             )
         )
 
-    await qdrant_client.upsert(
-        collection_name="nextcloud_content",
-        points=points
-    )
+    await qdrant_client.upsert(collection_name="nextcloud_content", points=points)
 ```
 
 ### 6. Background Sync Worker
@@ -540,7 +524,7 @@ class VectorIndexer:
         self,
         qdrant_client: AsyncQdrantClient,
         embedding_service: EmbeddingService,
-        auth_provider: SyncAuthProvider  # From ADR-002
+        auth_provider: SyncAuthProvider,  # From ADR-002
     ):
         self.qdrant = qdrant_client
         self.embeddings = embedding_service
@@ -559,7 +543,8 @@ class VectorIndexer:
         # Check which notes need updating
         existing_ids = await self._get_indexed_note_ids(user_id)
         notes_to_update = [
-            n for n in notes
+            n
+            for n in notes
             if f"note_{n.id}" not in existing_ids
             or n.modified > existing_ids[f"note_{n.id}"]
         ]
@@ -589,16 +574,13 @@ class VectorIndexer:
                         "category": note.category,
                         "created_at": note.created,
                         "modified_at": note.modified,
-                        "indexed_at": int(time.time())
-                    }
+                        "indexed_at": int(time.time()),
+                    },
                 )
             )
 
         # Upsert to Qdrant
-        await self.qdrant.upsert(
-            collection_name="nextcloud_content",
-            points=points
-        )
+        await self.qdrant.upsert(collection_name="nextcloud_content", points=points)
 
         logger.info(f"Indexed {len(points)} notes for {user_id}")
 
@@ -611,17 +593,15 @@ class VectorIndexer:
             scroll_filter=models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=user_id)
+                        key="user_id", match=models.MatchValue(value=user_id)
                     ),
                     models.FieldCondition(
-                        key="content_type",
-                        match=models.MatchValue(value="note")
-                    )
+                        key="content_type", match=models.MatchValue(value="note")
+                    ),
                 ]
             ),
             with_payload=["content_id", "modified_at"],
-            limit=10000
+            limit=10000,
         )
 
         return {
@@ -638,16 +618,14 @@ class VectorIndexer:
                 filter=models.Filter(
                     must=[
                         models.FieldCondition(
-                            key="user_id",
-                            match=models.MatchValue(value=user_id)
+                            key="user_id", match=models.MatchValue(value=user_id)
                         ),
                         models.FieldCondition(
-                            key="note_id",
-                            match=models.MatchValue(value=note_id)
-                        )
+                            key="note_id", match=models.MatchValue(value=note_id)
+                        ),
                     ]
                 )
-            )
+            ),
         )
 ```
 
@@ -773,33 +751,32 @@ volumes:
 ```python
 # Batch embedding generation
 async def embed_batch_chunked(
-    texts: list[str],
-    batch_size: int = 100
+    texts: list[str], batch_size: int = 100
 ) -> list[list[float]]:
     """Generate embeddings in chunks to avoid memory issues"""
 
     embeddings = []
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
+        batch = texts[i : i + batch_size]
         batch_embeddings = await embedding_service.embed_batch(batch)
         embeddings.extend(batch_embeddings)
         await asyncio.sleep(0.1)  # Rate limiting
 
     return embeddings
 
+
 # Parallel upsert with batching
 async def upsert_points_batched(
-    points: list[models.PointStruct],
-    batch_size: int = 100
+    points: list[models.PointStruct], batch_size: int = 100
 ):
     """Upsert points in batches"""
 
     for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
+        batch = points[i : i + batch_size]
         await qdrant_client.upsert(
             collection_name="nextcloud_content",
             points=batch,
-            wait=False  # Don't wait for indexing
+            wait=False,  # Don't wait for indexing
         )
 ```
 
@@ -816,8 +793,8 @@ search_results = await qdrant_client.search(
     with_vectors=False,  # Don't return vectors (saves bandwidth)
     search_params=models.SearchParams(
         hnsw_ef=128,  # Higher = more accurate but slower
-        exact=False   # Use HNSW index
-    )
+        exact=False,  # Use HNSW index
+    ),
 )
 ```
 
@@ -827,9 +804,11 @@ search_results = await qdrant_client.search(
 # Cache embeddings for common queries
 from functools import lru_cache
 
+
 @lru_cache(maxsize=1000)
 def cache_key(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
 
 async def embed_with_cache(text: str) -> list[float]:
     """Generate embedding with caching"""
@@ -845,11 +824,7 @@ async def embed_with_cache(text: str) -> list[float]:
     embedding = await embedding_service.embed(text)
 
     # Cache for 1 hour
-    await redis.setex(
-        f"embedding:{key}",
-        3600,
-        json.dumps(embedding)
-    )
+    await redis.setex(f"embedding:{key}", 3600, json.dumps(embedding))
 
     return embedding
 ```
@@ -862,40 +837,36 @@ from prometheus_client import Counter, Histogram, Gauge
 
 # Search metrics
 semantic_search_count = Counter(
-    'semantic_search_total',
-    'Total semantic searches',
-    ['user_id', 'content_type']
+    "semantic_search_total", "Total semantic searches", ["user_id", "content_type"]
 )
 
 semantic_search_latency = Histogram(
-    'semantic_search_duration_seconds',
-    'Semantic search latency',
-    ['phase']  # 'embedding', 'vector_search', 'verification'
+    "semantic_search_duration_seconds",
+    "Semantic search latency",
+    ["phase"],  # 'embedding', 'vector_search', 'verification'
 )
 
 # Indexing metrics
 documents_indexed = Counter(
-    'documents_indexed_total',
-    'Total documents indexed',
-    ['user_id', 'content_type']
+    "documents_indexed_total", "Total documents indexed", ["user_id", "content_type"]
 )
 
 index_queue_size = Gauge(
-    'index_queue_size',
-    'Number of documents waiting to be indexed'
+    "index_queue_size", "Number of documents waiting to be indexed"
 )
+
 
 # Usage
 async def semantic_search(query: str, user_id: str):
-    semantic_search_count.labels(user_id=user_id, content_type='note').inc()
+    semantic_search_count.labels(user_id=user_id, content_type="note").inc()
 
-    with semantic_search_latency.labels(phase='embedding').time():
+    with semantic_search_latency.labels(phase="embedding").time():
         embedding = await embed(query)
 
-    with semantic_search_latency.labels(phase='vector_search').time():
+    with semantic_search_latency.labels(phase="vector_search").time():
         results = await qdrant.search(...)
 
-    with semantic_search_latency.labels(phase='verification').time():
+    with semantic_search_latency.labels(phase="verification").time():
         verified = await verify_access(results)
 
     return verified

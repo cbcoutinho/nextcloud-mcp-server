@@ -64,29 +64,31 @@ We'll implement a scoring function that:
 - Factors in the frequency of matches
 
 ```python
-def calculate_score(query_tokens: list[str], title_tokens: list[str], content_tokens: list[str]) -> float:
+def calculate_score(
+    query_tokens: list[str], title_tokens: list[str], content_tokens: list[str]
+) -> float:
     # Constants for weighting
     TITLE_WEIGHT = 3.0
     CONTENT_WEIGHT = 1.0
-    
+
     score = 0.0
-    
+
     # Count matches in title
     title_matches = sum(1 for qt in query_tokens if qt in title_tokens)
     if query_tokens:  # Avoid division by zero
         title_match_ratio = title_matches / len(query_tokens)
         score += TITLE_WEIGHT * title_match_ratio
-    
+
     # Count matches in content
     content_matches = sum(1 for qt in query_tokens if qt in content_tokens)
     if query_tokens:  # Avoid division by zero
         content_match_ratio = content_matches / len(query_tokens)
         score += CONTENT_WEIGHT * content_match_ratio
-    
+
     # If no tokens matched at all, return zero
     if title_matches == 0 and content_matches == 0:
         return 0.0
-        
+
     return score
 ```
 
@@ -100,37 +102,39 @@ def notes_search_notes(self, *, query: str):
     """
     all_notes = self.notes_get_all()
     search_results = []
-    
+
     # Process the query
     query_tokens = process_query(query)
-    
+
     # If empty query after processing, return empty results
     if not query_tokens:
         return []
-    
+
     # Process and score each note
     for note in all_notes:
         title_tokens, content_tokens = process_note_content(note)
         score = calculate_score(query_tokens, title_tokens, content_tokens)
-        
+
         # Only include notes with a non-zero score
         if score > 0:
-            search_results.append({
-                "id": note.get("id"),
-                "title": note.get("title"),
-                "category": note.get("category"),
-                "modified": note.get("modified"),
-                "_score": score  # Include score for sorting (optional field)
-            })
-    
+            search_results.append(
+                {
+                    "id": note.get("id"),
+                    "title": note.get("title"),
+                    "category": note.get("category"),
+                    "modified": note.get("modified"),
+                    "_score": score,  # Include score for sorting (optional field)
+                }
+            )
+
     # Sort by score in descending order
     search_results.sort(key=lambda x: x["_score"], reverse=True)
-    
+
     # Remove score field before returning (optional)
     for result in search_results:
         if "_score" in result:
             del result["_score"]
-    
+
     return search_results
 ```
 
