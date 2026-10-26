@@ -2126,7 +2126,7 @@ async def _index_document_inner(
                             full_text=content,
                         )
 
-                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                     _compute_bboxes
                 )
 

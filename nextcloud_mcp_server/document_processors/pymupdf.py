@@ -266,7 +266,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                 await progress_callback(0, 100, "Opening PDF document")
 
             try:
-                metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                metadata, page_count = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                     self._read_metadata_sync, source_path, filename, source.size
                 )
             except pymupdf.FileDataError as exc:
