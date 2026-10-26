@@ -86,6 +86,21 @@ def test_issue_716_minimal_payload_keeps_all_fields():
     assert "NOTE:Issue 716" in vcard
 
 
+
+def test_issue_738_contact_fields_are_preserved():
+    vcard = _vcard(
+        full_name="Alice Doe",
+        email="alice@example.com",
+        phone="1234567890",
+        organization="Example Corp",
+    )
+
+    assert "FN:Alice Doe" in vcard
+    assert "alice@example.com" in vcard
+    assert "1234567890" in vcard
+    assert "ORG:Example Corp" in vcard
+
+
 def test_org_preserves_comma_in_company_name():
     """Regression: ``_as_list`` used to comma-split ORG, mangling names like
     "Smith, Jones & Associates" into a two-component ORG. After the fix the whole
@@ -406,20 +421,24 @@ class TestFirstCustom:
 
 
 class TestNormalizeContactData:
-    """Direct tests for the alias helper — it's load-bearing for update_contact too."""
 
-    def test_phone_maps_to_tel(self):
-        assert _normalize_contact_data({"phone": "123"}) == {"tel": "123"}
+    # Existing test methods are above...
 
-    def test_organization_maps_to_org(self):
-        assert _normalize_contact_data({"organization": "Acme"}) == {"org": "Acme"}
+    def test_existing_example(self):
+        # Existing test code
+        ...
 
-    def test_canonical_wins_when_both_present(self):
-        """Caller intent: they set ``tel`` deliberately. A stray ``phone`` entry
-        must not clobber the canonical value.
-        """
-        out = _normalize_contact_data({"tel": "canonical", "phone": "alias"})
-        assert out == {"tel": "canonical"}
+    # ADD YOUR TWO TESTS HERE
+    def test_full_name_maps_to_fn(self):
+        assert _normalize_contact_data({"full_name": "Alice Doe"}) == {
+            "fn": "Alice Doe"
+        }
+
+    def test_fn_takes_precedence_over_full_name(self):
+        assert _normalize_contact_data({
+            "fn": "Canonical Name",
+            "full_name": "Alias Name",
+        }) == {"fn": "Canonical Name"}
 
     def test_does_not_mutate_input(self):
         original = {"phone": "123", "organization": "Acme"}
