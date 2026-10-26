@@ -41,21 +41,21 @@ calendars = await nc_calendar_list_calendars()
 # Create a simple event
 await nc_calendar_create_event(
     calendar_name="personal",
-    title="Team Meeting", 
+    title="Team Meeting",
     start_datetime="2025-07-28T14:00:00",
     end_datetime="2025-07-28T15:00:00",
     description="Weekly team sync",
-    location="Conference Room A"
+    location="Conference Room A",
 )
 
 # Create a recurring weekly meeting
 await nc_calendar_create_event(
     calendar_name="work",
     title="Weekly Standup",
-    start_datetime="2025-07-28T09:00:00", 
+    start_datetime="2025-07-28T09:00:00",
     end_datetime="2025-07-28T09:30:00",
     recurring=True,
-    recurrence_rule="FREQ=WEEKLY;BYDAY=MO"
+    recurrence_rule="FREQ=WEEKLY;BYDAY=MO",
 )
 
 # Quick meeting creation. `timezone` defaults to the user's Nextcloud
@@ -65,10 +65,10 @@ await nc_calendar_create_meeting(
     date="2025-07-28",
     time="15:00",
     duration_minutes=60,
-    attendees="client@example.com,colleague@company.com"
+    attendees="client@example.com,colleague@company.com",
 )
 
-# Get upcoming events  
+# Get upcoming events
 events = await nc_calendar_get_upcoming_events(days_ahead=7)
 
 # Advanced search - find all meetings with 5+ attendees lasting 2+ hours
@@ -76,10 +76,10 @@ long_meetings = await nc_calendar_list_events(
     calendar_name="",  # Search all calendars
     search_all_calendars=True,
     start_date="2025-07-01",
-    end_date="2025-07-31", 
+    end_date="2025-07-31",
     min_attendees=5,
     min_duration_minutes=120,
-    title_contains="meeting"
+    title_contains="meeting",
 )
 
 # Find availability for a 1-hour meeting with specific attendees
@@ -98,10 +98,10 @@ availability = await nc_calendar_find_availability(
 bulk_result = await nc_calendar_bulk_operations(
     operation="update",
     title_contains="team meeting",
-    start_date="2025-08-01", 
+    start_date="2025-08-01",
     end_date="2025-08-31",
     new_location="Conference Room B",
-    new_reminder_minutes=15
+    new_reminder_minutes=15,
 )
 # Each stored event is acted on once. A matched occurrence of a recurring
 # event stands for its whole series, so update/delete skip it (status
@@ -113,7 +113,7 @@ new_calendar = await nc_calendar_manage_calendar(
     calendar_name="project-alpha",
     display_name="Project Alpha Calendar",
     description="Calendar for Project Alpha team",
-    color="#FF5722"
+    color="#FF5722",
 )
 ```
 

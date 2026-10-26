@@ -275,6 +275,7 @@ DEPLOYMENT_MODE=basic_multiuser
 ```python
 # nextcloud_mcp_server/context.py
 
+
 async def _get_basic_multiuser_client(ctx: Context) -> NextcloudClient:
     """Create client using BasicAuth credentials from request context.
 
@@ -308,6 +309,7 @@ async def _get_basic_multiuser_client(ctx: Context) -> NextcloudClient:
 
 # nextcloud_mcp_server/app.py - BasicAuth extraction middleware
 
+
 class BasicAuthMiddleware:
     """Extract BasicAuth credentials and store in request context."""
 
@@ -322,8 +324,8 @@ class BasicAuthMiddleware:
             if auth_header.startswith("Basic "):
                 try:
                     encoded = auth_header[6:]
-                    decoded = base64.b64decode(encoded).decode('utf-8')
-                    username, password = decoded.split(':', 1)
+                    decoded = base64.b64decode(encoded).decode("utf-8")
+                    username, password = decoded.split(":", 1)
 
                     # Store in scope for MCP context
                     scope.setdefault("state", {})
@@ -536,6 +538,7 @@ from starlette.routing import Route
 from starlette.responses import JSONResponse
 from nextcloud_mcp_server.auth.management_auth import require_admin_or_self
 
+
 @app.get("/api/v1/status")
 async def get_server_status(request: Request) -> JSONResponse:
     """Server health and version info.
@@ -548,17 +551,20 @@ async def get_server_status(request: Request) -> JSONResponse:
 
     settings = get_settings()
 
-    return JSONResponse({
-        "version": __version__,
-        "auth_mode": "oauth" if settings.enable_oauth else "basic",
-        "vector_sync_enabled": settings.vector_sync_enabled,
-        # Whether the /webhooks/nextcloud receiver is active (gated on
-        # WEBHOOK_SECRET — GHSA-8vh3-g2qg-2h2c). Lets the UI show webhook sync
-        # as available/unavailable.
-        "webhooks_enabled": bool(settings.webhook_secret),
-        "uptime_seconds": get_uptime(),
-        "management_api_version": "v1",
-    })
+    return JSONResponse(
+        {
+            "version": __version__,
+            "auth_mode": "oauth" if settings.enable_oauth else "basic",
+            "vector_sync_enabled": settings.vector_sync_enabled,
+            # Whether the /webhooks/nextcloud receiver is active (gated on
+            # WEBHOOK_SECRET — GHSA-8vh3-g2qg-2h2c). Lets the UI show webhook sync
+            # as available/unavailable.
+            "webhooks_enabled": bool(settings.webhook_secret),
+            "uptime_seconds": get_uptime(),
+            "management_api_version": "v1",
+        }
+    )
+
 
 @app.get("/api/v1/users/{user_id}/session")
 @require_admin_or_self
@@ -580,25 +586,30 @@ async def get_user_session(request: Request, user_id: str) -> JSONResponse:
     refresh_token_data = await storage.get_refresh_token(user_id)
 
     if not refresh_token_data:
-        return JSONResponse({
-            "session_id": user_id,
-            "background_access_granted": False,
-        })
+        return JSONResponse(
+            {
+                "session_id": user_id,
+                "background_access_granted": False,
+            }
+        )
 
     # Get cached user profile
     profile = await storage.get_user_profile(user_id)
 
-    return JSONResponse({
-        "session_id": user_id,
-        "background_access_granted": True,
-        "background_access_details": {
-            "flow_type": refresh_token_data.get("flow_type", "unknown"),
-            "provisioned_at": refresh_token_data.get("provisioned_at"),
-            "scopes": refresh_token_data.get("scopes", "N/A"),
-            "token_audience": refresh_token_data.get("token_audience", "unknown"),
-        },
-        "idp_profile": profile,
-    })
+    return JSONResponse(
+        {
+            "session_id": user_id,
+            "background_access_granted": True,
+            "background_access_details": {
+                "flow_type": refresh_token_data.get("flow_type", "unknown"),
+                "provisioned_at": refresh_token_data.get("provisioned_at"),
+                "scopes": refresh_token_data.get("scopes", "N/A"),
+                "token_audience": refresh_token_data.get("token_audience", "unknown"),
+            },
+            "idp_profile": profile,
+        }
+    )
+
 
 @app.post("/api/v1/users/{user_id}/revoke")
 @require_admin_or_self
@@ -616,10 +627,13 @@ async def revoke_user_access(request: Request, user_id: str) -> JSONResponse:
 
     logger.info(f"Revoked background access for user: {user_id}")
 
-    return JSONResponse({
-        "success": True,
-        "message": f"Background access revoked for user {user_id}",
-    })
+    return JSONResponse(
+        {
+            "success": True,
+            "message": f"Background access revoked for user {user_id}",
+        }
+    )
+
 
 @app.get("/api/v1/vector-sync/status")
 async def get_vector_sync_status(request: Request) -> JSONResponse:
@@ -635,8 +649,7 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
     settings = get_settings()
     if not settings.vector_sync_enabled:
         return JSONResponse(
-            {"error": "Vector sync is disabled on this server"},
-            status_code=404
+            {"error": "Vector sync is disabled on this server"}, status_code=404
         )
 
     # Get metrics from document manager
@@ -644,14 +657,17 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
 
     metrics = await get_indexing_metrics()
 
-    return JSONResponse({
-        "status": metrics.get("status", "unknown"),
-        "indexed_documents": metrics.get("indexed_count", 0),
-        "pending_documents": metrics.get("pending_count", 0),
-        "last_sync_time": metrics.get("last_sync_time"),
-        "documents_per_second": metrics.get("docs_per_second", 0),
-        "errors_24h": metrics.get("error_count_24h", 0),
-    })
+    return JSONResponse(
+        {
+            "status": metrics.get("status", "unknown"),
+            "indexed_documents": metrics.get("indexed_count", 0),
+            "pending_documents": metrics.get("pending_count", 0),
+            "last_sync_time": metrics.get("last_sync_time"),
+            "documents_per_second": metrics.get("docs_per_second", 0),
+            "errors_24h": metrics.get("error_count_24h", 0),
+        }
+    )
+
 
 @app.post("/api/v1/vector-viz/search")
 @require_authenticated_user  # Requires valid OAuth token
@@ -678,8 +694,7 @@ async def vector_search(request: Request) -> JSONResponse:
     settings = get_settings()
     if not settings.vector_sync_enabled:
         return JSONResponse(
-            {"error": "Vector sync is disabled on this server"},
-            status_code=404
+            {"error": "Vector sync is disabled on this server"}, status_code=404
         )
 
     # Get authenticated user from OAuth token
@@ -714,6 +729,7 @@ The management API supports authentication methods corresponding to each deploym
 
 ```python
 # nextcloud_mcp_server/api/management.py
+
 
 async def get_user_from_request(request: Request) -> tuple[str, dict]:
     """Authenticate request using deployment-appropriate method.
@@ -788,8 +804,8 @@ async def validate_basic_auth(request: Request) -> tuple[str, str]:
 
     try:
         encoded = auth_header[6:]
-        decoded = base64.b64decode(encoded).decode('utf-8')
-        username, password = decoded.split(':', 1)
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        username, password = decoded.split(":", 1)
     except Exception:
         raise ValueError("Invalid BasicAuth encoding")
 
@@ -841,13 +857,19 @@ if settings.management_api_enabled:
         vector_search,
     )
 
-    routes.extend([
-        Route("/api/v1/status", get_server_status, methods=["GET"]),
-        Route("/api/v1/users/{user_id}/session", get_user_session, methods=["GET"]),
-        Route("/api/v1/users/{user_id}/revoke", revoke_user_access, methods=["POST"]),
-        Route("/api/v1/vector-sync/status", get_vector_sync_status, methods=["GET"]),
-        Route("/api/v1/vector-viz/search", vector_search, methods=["POST"]),
-    ])
+    routes.extend(
+        [
+            Route("/api/v1/status", get_server_status, methods=["GET"]),
+            Route("/api/v1/users/{user_id}/session", get_user_session, methods=["GET"]),
+            Route(
+                "/api/v1/users/{user_id}/revoke", revoke_user_access, methods=["POST"]
+            ),
+            Route(
+                "/api/v1/vector-sync/status", get_vector_sync_status, methods=["GET"]
+            ),
+            Route("/api/v1/vector-viz/search", vector_search, methods=["POST"]),
+        ]
+    )
 
     logger.info("Management API enabled at /api/v1/*")
 ```
@@ -1885,10 +1907,10 @@ To support searching shared content, additional metadata must be indexed:
 ```python
 # Extended metadata for sharing support
 document_metadata = {
-    "user_id": "alice",           # Owner
+    "user_id": "alice",  # Owner
     "shared_with_users": ["bob", "charlie"],  # Direct shares
-    "shared_with_groups": ["developers"],      # Group shares
-    "is_public": False,           # Public link exists
+    "shared_with_groups": ["developers"],  # Group shares
+    "is_public": False,  # Public link exists
     "share_permissions": "read",  # read, write, reshare
 }
 ```
@@ -1896,10 +1918,10 @@ document_metadata = {
 Search filter becomes:
 ```python
 filter = (
-    (metadata.user_id == searching_user) |
-    (searching_user in metadata.shared_with_users) |
-    (any(g in user_groups for g in metadata.shared_with_groups)) |
-    (metadata.is_public == True)
+    (metadata.user_id == searching_user)
+    | (searching_user in metadata.shared_with_users)
+    | (any(g in user_groups for g in metadata.shared_with_groups))
+    | (metadata.is_public == True)
 )
 ```
 
@@ -2460,10 +2482,7 @@ async def unified_search(request: Request) -> JSONResponse:
 
     settings = get_settings()
     if not settings.vector_sync_enabled:
-        return JSONResponse(
-            {"error": "Vector sync is disabled"},
-            status_code=404
-        )
+        return JSONResponse({"error": "Vector sync is disabled"}, status_code=404)
 
     # Extract user_id from validated OAuth token
     user_id, _ = await validate_token_and_get_user(request)
@@ -2490,13 +2509,15 @@ async def unified_search(request: Request) -> JSONResponse:
         include_chunks=data.get("include_chunks", True),
     )
 
-    return JSONResponse({
-        "results": results["results"],
-        "total_found": results.get("total_found", len(results["results"])),
-        "algorithm_used": results.get("algorithm_used", "hybrid"),
-        # Visualization data (only if requested)
-        "pca_data": results.get("pca_data") if data.get("include_pca") else None,
-    })
+    return JSONResponse(
+        {
+            "results": results["results"],
+            "total_found": results.get("total_found", len(results["results"])),
+            "algorithm_used": results.get("algorithm_used", "hybrid"),
+            # Visualization data (only if requested)
+            "pca_data": results.get("pca_data") if data.get("include_pca") else None,
+        }
+    )
 ```
 
 **Updated McpServerClient.php:**

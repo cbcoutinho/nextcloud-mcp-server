@@ -183,10 +183,7 @@ class TokenExchangeCache:
         self._ttl = ttl_seconds
 
     async def get_or_exchange(
-        self,
-        subject_token: str,
-        token_hash: str,
-        exchange_func: Callable
+        self, subject_token: str, token_hash: str, exchange_func: Callable
     ) -> str:
         """Get cached token or perform exchange."""
         now = time.time()
@@ -195,24 +192,22 @@ class TokenExchangeCache:
         if token_hash in self._cache:
             cached_token, expiry = self._cache[token_hash]
             if expiry > now:
-                logger.debug(f"Using cached exchanged token (expires in {expiry - now:.1f}s)")
+                logger.debug(
+                    f"Using cached exchanged token (expires in {expiry - now:.1f}s)"
+                )
                 return cached_token
 
         # Perform exchange
         logger.debug("Exchanging token for Nextcloud audience")
         nextcloud_token = await exchange_func(
-            subject_token=subject_token,
-            requested_audience=self.nextcloud_resource_uri
+            subject_token=subject_token, requested_audience=self.nextcloud_resource_uri
         )
 
         # Cache with TTL
         self._cache[token_hash] = (nextcloud_token, now + self._ttl)
 
         # Clean expired entries
-        self._cache = {
-            k: v for k, v in self._cache.items()
-            if v[1] > now
-        }
+        self._cache = {k: v for k, v in self._cache.items() if v[1] > now}
 
         return nextcloud_token
 ```
@@ -378,14 +373,14 @@ class TokenValidationError(Exception):
         self.details = details or {}
         self.http_status = 401  # Unauthorized
 
+
 async def _verify_jwt_token(self, token: str) -> AccessToken:
     """Verify JWT token with proper audience validation."""
     try:
         payload = jwt.decode(token, options={"verify_signature": False})
     except jwt.InvalidTokenError as e:
         raise TokenValidationError(
-            "Invalid JWT token format",
-            details={"error": str(e)}
+            "Invalid JWT token format", details={"error": str(e)}
         )
 
     # Validate audiences
@@ -394,9 +389,12 @@ async def _verify_jwt_token(self, token: str) -> AccessToken:
             "Token audiences do not meet requirements",
             details={
                 "got": payload.get("aud"),
-                "need_mcp": [self.settings.oidc_client_id, self.settings.mcp_resource_uri],
-                "need_nextcloud": self.settings.nextcloud_resource_uri
-            }
+                "need_mcp": [
+                    self.settings.oidc_client_id,
+                    self.settings.mcp_resource_uri,
+                ],
+                "need_nextcloud": self.settings.nextcloud_resource_uri,
+            },
         )
 
     # Additional validation (expiry, issuer, etc.)
@@ -419,14 +417,17 @@ def validate_oauth_configuration(settings: Settings):
         raise ValueError("NEXTCLOUD_RESOURCE_URI is required for audience validation")
 
     if settings.enable_token_exchange:
-        logger.info("Token exchange mode enabled - using RFC 8693 for strict audience separation")
+        logger.info(
+            "Token exchange mode enabled - using RFC 8693 for strict audience separation"
+        )
         if not settings.oidc_discovery_url:
             logger.warning(
-                "No OIDC_DISCOVERY_URL configured. "
-                "Token endpoint discovery may fail."
+                "No OIDC_DISCOVERY_URL configured. Token endpoint discovery may fail."
             )
     else:
-        logger.info("Multi-audience mode enabled - tokens must contain both MCP and Nextcloud audiences")
+        logger.info(
+            "Multi-audience mode enabled - tokens must contain both MCP and Nextcloud audiences"
+        )
 ```
 
 ### 5. OAuth Resource Parameters and PRM Discovery
@@ -476,7 +477,9 @@ async with httpx.AsyncClient() as client:
     resource_identifier = prm_data.get("resource")
 
 # Use discovered resource in OAuth request
-auth_url = f"{authorization_endpoint}?resource={quote(resource_identifier, safe='')}&..."
+auth_url = (
+    f"{authorization_endpoint}?resource={quote(resource_identifier, safe='')}&..."
+)
 ```
 
 ### 6. Context Helper Updates
@@ -545,7 +548,7 @@ async def get_session_client_from_context(
     # Cache the exchanged token
     _exchange_cache[cache_key] = (
         exchanged_token,
-        time.time() + min(expires_in, settings.token_exchange_cache_ttl)
+        time.time() + min(expires_in, settings.token_exchange_cache_ttl),
     )
 
     # Create client with exchanged token
@@ -566,7 +569,7 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
     return NextcloudClient.from_token(
         base_url=base_url,
         token=access_token.token,
-        username=access_token.resource  # Username from verifier
+        username=access_token.resource,  # Username from verifier
     )
 ```
 
@@ -646,7 +649,7 @@ async def test_multi_audience_validation():
     validator = UnifiedTokenVerifier(
         nextcloud_mcp_server_url="http://localhost:8000",
         nextcloud_resource_uri="http://localhost:8080",
-        oidc_client_id="test-client"
+        oidc_client_id="test-client",
     )
 
     # Valid: Both resource URIs
@@ -664,6 +667,7 @@ async def test_multi_audience_validation():
     # Invalid: Missing MCP
     token = {"aud": ["http://localhost:8080"]}
     assert not await validator.validate_token_audiences(token)
+
 
 @pytest.mark.unit
 async def test_token_exchange_caching():
@@ -706,6 +710,7 @@ async def test_multi_audience_e2e(nc_mcp_oauth_client):
     assert "Token exchange" not in logs
     assert "Multi-audience validation passed" in logs
 
+
 @pytest.mark.integration
 async def test_token_exchange_e2e(nc_mcp_keycloak_client):
     """Test end-to-end token exchange flow."""
@@ -724,6 +729,7 @@ async def test_token_exchange_e2e(nc_mcp_keycloak_client):
     logs2 = await get_server_logs()
     assert "Using cached exchanged token" in logs2
 
+
 @pytest.mark.integration
 async def test_invalid_audience_rejection(nc_mcp_oauth_client):
     """Test that invalid audiences are rejected with clear errors."""
@@ -731,10 +737,7 @@ async def test_invalid_audience_rejection(nc_mcp_oauth_client):
     invalid_token = create_test_token(aud=["wrong-audience"])
 
     with pytest.raises(TokenValidationError) as exc_info:
-        await nc_mcp_oauth_client.call_tool(
-            "nc_notes_list_notes",
-            token=invalid_token
-        )
+        await nc_mcp_oauth_client.call_tool("nc_notes_list_notes", token=invalid_token)
 
     assert exc_info.value.http_status == 401
     assert "Token audiences do not meet requirements" in str(exc_info.value)
@@ -755,20 +758,21 @@ async def test_token_validation_performance():
 
         start = time.time()
         await run_concurrent_requests(
-            num_workers=50,
-            requests_per_worker=100,
-            operation="nc_notes_list_notes"
+            num_workers=50, requests_per_worker=100, operation="nc_notes_list_notes"
         )
         duration = time.time() - start
 
         results[mode] = {
             "total_time": duration,
             "requests_per_second": 5000 / duration,
-            "avg_latency_ms": (duration / 5000) * 1000
+            "avg_latency_ms": (duration / 5000) * 1000,
         }
 
     # Multi-audience should be faster (no exchange)
-    assert results["multi-audience"]["avg_latency_ms"] < results["exchange"]["avg_latency_ms"]
+    assert (
+        results["multi-audience"]["avg_latency_ms"]
+        < results["exchange"]["avg_latency_ms"]
+    )
 
     # But both should be acceptable for LLM context
     assert results["exchange"]["avg_latency_ms"] < 200  # Max 200ms overhead
@@ -1030,12 +1034,14 @@ If you have custom code using the old verifiers:
 **Before**:
 ```python
 from nextcloud_mcp_server.auth.token_verifier import NextcloudTokenVerifier
+
 verifier = NextcloudTokenVerifier(...)
 ```
 
 **After**:
 ```python
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
+
 verifier = UnifiedTokenVerifier(settings)
 ```
 

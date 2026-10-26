@@ -142,7 +142,8 @@ duration of every inbound message.
 ```python
 from nextcloud_mcp_server.request_context import current_context
 
-@mcp.resource("nc://capabilities")          # static: no ctx parameter allowed
+
+@mcp.resource("nc://capabilities")  # static: no ctx parameter allowed
 async def nc_get_capabilities():
     client = await get_client(current_context(mcp))
     return await client.capabilities()
@@ -623,8 +624,11 @@ For client-layer response parsing tests, use mocked HTTP responses:
 async def test_notes_api_get_note(mocker):
     """Test that get_note correctly parses the API response."""
     mock_response = create_mock_note_response(
-        note_id=123, title="Test Note", content="Test content",
-        category="Test", etag="abc123"
+        note_id=123,
+        title="Test Note",
+        content="Test content",
+        category="Test",
+        etag="abc123",
     )
 
     mock_make_request = mocker.patch.object(

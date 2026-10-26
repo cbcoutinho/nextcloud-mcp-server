@@ -18,7 +18,9 @@ Require users to have scopes for each app they want to search:
 
 ```python
 @mcp.tool()
-@require_scopes("notes:read", "calendar:read", "deck:read", "files:read", "contacts:read")
+@require_scopes(
+    "notes:read", "calendar:read", "deck:read", "files:read", "contacts:read"
+)
 async def nc_semantic_search(query: str, ctx: Context) -> SemanticSearchResponse:
     """Search across all indexed apps"""
 ```
@@ -65,7 +67,9 @@ Support both: semantic search works with either `semantic:read` OR all app-speci
 
 ```python
 @mcp.tool()
-@require_scopes("semantic:read", alternative_scopes=["notes:read", "calendar:read", ...])
+@require_scopes(
+    "semantic:read", alternative_scopes=["notes:read", "calendar:read", ...]
+)
 async def nc_semantic_search(query: str, ctx: Context) -> SemanticSearchResponse:
     """Search across all indexed apps"""
 ```
@@ -91,13 +95,19 @@ These scopes are **independent** of app-specific scopes (notes:read, calendar:re
 ```python
 @mcp.tool()
 @require_scopes("semantic:read")
-async def nc_semantic_search(query: str, ctx: Context, limit: int = 10, score_threshold: float = 0.7) -> SemanticSearchResponse:
+async def nc_semantic_search(
+    query: str, ctx: Context, limit: int = 10, score_threshold: float = 0.7
+) -> SemanticSearchResponse:
     """Semantic search across all indexed Nextcloud apps"""
+
 
 @mcp.tool()
 @require_scopes("semantic:read")
-async def nc_semantic_search_answer(query: str, ctx: Context, limit: int = 5, max_answer_tokens: int = 500) -> SamplingSearchResponse:
+async def nc_semantic_search_answer(
+    query: str, ctx: Context, limit: int = 5, max_answer_tokens: int = 500
+) -> SamplingSearchResponse:
     """Semantic search with LLM-generated answer via MCP sampling"""
+
 
 @mcp.tool()
 @require_scopes("semantic:read")
@@ -111,6 +121,7 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
 @require_scopes("semantic:write")
 async def nc_enable_vector_sync(ctx: Context) -> VectorSyncResponse:
     """Enable background vector synchronization for this user"""
+
 
 @mcp.tool()
 @require_scopes("semantic:write")

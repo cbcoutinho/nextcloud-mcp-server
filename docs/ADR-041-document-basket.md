@@ -200,14 +200,15 @@ In-process, in the MCP server, a plain mapping of id → processor:
 
 ```python
 class Processor(Protocol):
-    id: str                      # "sar_redact", "tag", "copy", "move", "nc_task"
+    id: str  # "sar_redact", "tag", "copy", "move", "nc_task"
     title: str
     binds_at: Literal["create", "run"]
-    item_types: frozenset[str]   # {"file"}, or {"*"} for any doc_type
+    item_types: frozenset[str]  # {"file"}, or {"*"} for any doc_type
     basket_schema: dict[str, Any] | None  # JSON Schema, binds_at == "create" only
-    options_schema: dict[str, Any]        # JSON Schema for the run's options
-    scopes: tuple[str, ...]      # extra token scopes the run needs
-    destructive: bool            # move
+    options_schema: dict[str, Any]  # JSON Schema for the run's options
+    scopes: tuple[str, ...]  # extra token scopes the run needs
+    destructive: bool  # move
+
     def available(self, settings: Settings) -> bool: ...
     async def run(
         self, nc: NextcloudClient, basket: Basket, options: dict, report: RunReport
@@ -215,9 +216,14 @@ class Processor(Protocol):
 
 
 class RunReport(Protocol):
-    async def item(self, item: BasketItem,
-                   outcome: Literal["ok", "failed", "skipped"],
-                   detail: str = "", **result: str | int | float) -> None: ...
+    async def item(
+        self,
+        item: BasketItem,
+        outcome: Literal["ok", "failed", "skipped"],
+        detail: str = "",
+        **result: str | int | float,
+    ) -> None: ...
+
     # buffered into the run status file; `result` carries per-item facts
     # such as copy/move's `from_path` and `to_path`
 ```

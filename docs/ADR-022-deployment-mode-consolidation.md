@@ -364,7 +364,10 @@ The server checks client capabilities and falls back to a message-based approach
 ```python
 from mcp.types import ElicitResult, ElicitRequest
 
-async def handle_nextcloud_access(ctx: Context, user_id: str) -> ElicitResult | ProvisioningRequiredError:
+
+async def handle_nextcloud_access(
+    ctx: Context, user_id: str
+) -> ElicitResult | ProvisioningRequiredError:
     """Check if user needs to provision access, return elicitation or error with URL."""
 
     app_password = await storage.get_app_password_with_scopes(user_id)
@@ -542,7 +545,9 @@ async def nc_auth_update_scopes(
 
     # Revoke old app password (will be replaced)
     if existing:
-        await _revoke_nextcloud_app_password(existing["username"], existing["app_password"])
+        await _revoke_nextcloud_app_password(
+            existing["username"], existing["app_password"]
+        )
         await storage.delete_app_password(user_id)
 
     # Initiate new Login Flow v2 with merged scopes
@@ -890,13 +895,14 @@ def require_scopes(*required_scopes: str):
                 raise InsufficientScopeError(
                     list(missing),
                     f"Access denied to {func_name}: Missing scopes {missing}. "
-                    f"Re-provision with nc_auth_provision_access to request additional scopes."
+                    f"Re-provision with nc_auth_provision_access to request additional scopes.",
                 )
 
             logger.debug(f"App password scope check passed for {func_name}")
             return await func(*args, **kwargs)
 
         return wrapper
+
     return decorator
 ```
 
@@ -924,7 +930,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             "enable_semantic_search": ["qdrant_url OR qdrant_location"],
         },
         description="Single-user deployment with app password in environment. "
-                   "Suitable for personal instances and development.",
+        "Suitable for personal instances and development.",
     ),
     AuthMode.MULTI_USER: ModeRequirements(
         required=["nextcloud_host", "token_encryption_key", "token_storage_db"],
@@ -938,7 +944,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             "enable_semantic_search": ["qdrant_url OR qdrant_location"],
         },
         description="Multi-user deployment with per-user app passwords via Login Flow v2. "
-                   "App passwords acquired through browser-based authorization.",
+        "App passwords acquired through browser-based authorization.",
     ),
 }
 ```
@@ -1041,15 +1047,15 @@ All authentication and scope-related events are logged:
 
 ```python
 AUDIT_EVENTS = [
-    "login_flow_initiated",      # User started provisioning
-    "login_flow_completed",      # User completed provisioning
-    "login_flow_failed",         # Provisioning failed (timeout, rejection)
-    "login_flow_expired",        # Session expired before completion
-    "scope_enforcement_allowed", # Tool execution allowed
+    "login_flow_initiated",  # User started provisioning
+    "login_flow_completed",  # User completed provisioning
+    "login_flow_failed",  # Provisioning failed (timeout, rejection)
+    "login_flow_expired",  # Session expired before completion
+    "scope_enforcement_allowed",  # Tool execution allowed
     "scope_enforcement_denied",  # Tool execution denied (missing scopes)
-    "app_password_stored",       # App password saved
-    "app_password_deleted",      # App password revoked
-    "app_password_used",         # App password used for API call
+    "app_password_stored",  # App password saved
+    "app_password_deleted",  # App password revoked
+    "app_password_used",  # App password used for API call
 ]
 ```
 
@@ -1067,7 +1073,9 @@ async def handle_api_response(response: httpx.Response, user_id: str) -> None:
 
     if response.status_code == 401:
         # App password was revoked or invalidated by Nextcloud
-        logger.warning(f"App password invalid for user {user_id}, marking for re-provisioning")
+        logger.warning(
+            f"App password invalid for user {user_id}, marking for re-provisioning"
+        )
         await storage.mark_app_password_invalid(user_id)
         await audit_log("app_password_invalidated", user_id=user_id)
 
@@ -1090,9 +1098,7 @@ Abandoned Login Flow v2 sessions (where the user never completes browser authori
 ```python
 async def cleanup_expired_login_flow_sessions() -> int:
     """Remove expired login flow sessions. Returns count of rows deleted."""
-    result = await storage.delete_expired_login_flow_sessions(
-        cutoff=int(time.time())
-    )
+    result = await storage.delete_expired_login_flow_sessions(cutoff=int(time.time()))
     if result > 0:
         logger.info(f"Cleaned up {result} expired login flow sessions")
     return result
@@ -1131,8 +1137,12 @@ async def check_app_password_age(user_id: str) -> None:
 
     age_days = (time.time() - app_password_data["created_at"]) / 86400
     if age_days > settings.app_password_max_age_days:
-        logger.info(f"App password for user {user_id} exceeded max age ({age_days:.0f} days)")
-        await audit_log("app_password_rotation_triggered", user_id=user_id, age_days=age_days)
+        logger.info(
+            f"App password for user {user_id} exceeded max age ({age_days:.0f} days)"
+        )
+        await audit_log(
+            "app_password_rotation_triggered", user_id=user_id, age_days=age_days
+        )
 
         # Invalidate old password, same path as revocation
         await storage.mark_app_password_invalid(user_id)

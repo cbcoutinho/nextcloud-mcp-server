@@ -211,14 +211,11 @@ Both fusion algorithms are exposed via the `fusion` parameter in MCP tools:
 # Use RRF (default)
 response = await nc_semantic_search(
     query="async programming",
-    fusion="rrf"  # Can be omitted, RRF is default
+    fusion="rrf",  # Can be omitted, RRF is default
 )
 
 # Use DBSF
-response = await nc_semantic_search(
-    query="async programming",
-    fusion="dbsf"
-)
+response = await nc_semantic_search(query="async programming", fusion="dbsf")
 ```
 
 The `nc_semantic_search_answer` tool also supports the `fusion` parameter and passes it through to the underlying search.
@@ -234,7 +231,7 @@ When Qdrant adds weight support, the `fusion` parameter can be extended to accep
 response = await nc_semantic_search(
     query="async programming",
     fusion="rrf",
-    fusion_weights={"dense": 0.7, "sparse": 0.3}  # Not yet implemented
+    fusion_weights={"dense": 0.7, "sparse": 0.3},  # Not yet implemented
 )
 ```
 

@@ -316,10 +316,7 @@ async def check_token_exchange_support(discovery_url: str) -> bool:
 #### 2.2 Delegation Token Exchange
 ```python
 async def exchange_for_user_token(
-    service_token: str,
-    target_user_id: str,
-    audience: str,
-    scopes: list[str]
+    service_token: str, target_user_id: str, audience: str, scopes: list[str]
 ) -> str:
     """Exchange service token for user-scoped token via RFC 8693"""
 
@@ -332,9 +329,9 @@ async def exchange_for_user_token(
                 "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
                 "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
                 "audience": audience,  # Target resource server (e.g., "nextcloud")
-                "scope": " ".join(scopes)
+                "scope": " ".join(scopes),
             },
-            auth=(client_id, client_secret)
+            auth=(client_id, client_secret),
         )
 
         if response.status_code != 200:
@@ -433,13 +430,13 @@ class VectorSyncWorker:
                 subject_token=service_token_data["access_token"],
                 target_user_id=user_id,
                 audience="nextcloud",
-                scopes=["notes:read", "files:read", "calendar:read"]
+                scopes=["notes:read", "files:read", "calendar:read"],
             )
 
             return NextcloudClient.from_token(
                 base_url=nextcloud_host,
                 token=user_token_data["access_token"],
-                username=user_id
+                username=user_id,
             )
 
         elif self.auth_method == "service_account":
@@ -449,7 +446,7 @@ class VectorSyncWorker:
             return NextcloudClient.from_token(
                 base_url=nextcloud_host,
                 token=service_token_data["access_token"],
-                username="service-account"
+                username="service-account",
             )
 
         raise RuntimeError(f"Unknown auth method: {self.auth_method}")
@@ -474,8 +471,8 @@ class VectorSyncWorker:
                         "content_type": "note",
                         "note_id": note.id,
                         "title": note.title,
-                        "category": note.category
-                    }
+                        "category": note.category,
+                    },
                 )
 
             logger.info(f"Synced {len(notes)} notes for user: {user_id}")
@@ -518,9 +515,7 @@ class VectorSyncWorker:
 @mcp.tool()
 @require_scopes("notes:read")
 async def nc_notes_semantic_search(
-    query: str,
-    ctx: Context,
-    limit: int = 10
+    query: str, ctx: Context, limit: int = 10
 ) -> SemanticSearchResponse:
     """Semantic search with permission verification"""
 
@@ -538,13 +533,13 @@ async def nc_notes_semantic_search(
                 {
                     "should": [
                         {"key": "user_id", "match": {"value": username}},
-                        {"key": "shared_with", "match": {"any": [username]}}
+                        {"key": "shared_with", "match": {"any": [username]}},
                     ]
                 },
-                {"key": "content_type", "match": {"value": "note"}}
+                {"key": "content_type", "match": {"value": "note"}},
             ]
         },
-        limit=limit * 2  # Get extra candidates
+        limit=limit * 2,  # Get extra candidates
     )
 
     # Phase 2: Verify access via Nextcloud API (authoritative)
@@ -554,10 +549,7 @@ async def nc_notes_semantic_search(
         try:
             # This uses user's OAuth token - will fail if no access
             note = await user_client.notes.get_note(note_id)
-            verified_results.append({
-                "note": note,
-                "score": candidate.score
-            })
+            verified_results.append({"note": note, "score": candidate.score})
             if len(verified_results) >= limit:
                 break
         except HTTPStatusError as e:
@@ -630,11 +622,7 @@ async def manage_service_token_lifecycle():
 #### 5.3 Audit Logging
 ```python
 async def audit_log(
-    event: str,
-    user_id: str,
-    resource_type: str,
-    resource_id: str,
-    auth_method: str
+    event: str, user_id: str, resource_type: str, resource_id: str, auth_method: str
 ):
     """Log sync operations for audit trail"""
 
@@ -647,8 +635,8 @@ async def audit_log(
             resource_type,
             resource_id,
             auth_method,
-            socket.gethostname()
-        )
+            socket.gethostname(),
+        ),
     )
 ```
 

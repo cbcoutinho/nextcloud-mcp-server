@@ -340,8 +340,7 @@ Each MCP tool is decorated with `@require_scopes(...)`:
 ```python
 @mcp.tool()
 @require_scopes("notes.read")
-async def nc_notes_get_note(note_id: int, ctx: Context):
-    ...
+async def nc_notes_get_note(note_id: int, ctx: Context): ...
 ```
 
 Two layers apply, and **both** must permit a scope:

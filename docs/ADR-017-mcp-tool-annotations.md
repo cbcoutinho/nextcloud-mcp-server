@@ -33,10 +33,10 @@ from mcp.types import ToolAnnotations
 
 ToolAnnotations(
     title="Alternative Title",  # Decorator title takes precedence
-    read_only_hint=True,         # Tool doesn't modify data
-    destructive_hint=True,       # Tool may delete/overwrite data
-    idempotent_hint=True,        # Repeated calls with same args are safe
-    open_world_hint=True          # Interacts with external entities
+    read_only_hint=True,  # Tool doesn't modify data
+    destructive_hint=True,  # Tool may delete/overwrite data
+    idempotent_hint=True,  # Repeated calls with same args are safe
+    open_world_hint=True,  # Interacts with external entities
 )
 ```
 

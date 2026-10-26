@@ -186,6 +186,7 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     4. OAuth single-audience (default OAuth mode)
     """
 
+
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
     """Validate configuration for detected mode.
 

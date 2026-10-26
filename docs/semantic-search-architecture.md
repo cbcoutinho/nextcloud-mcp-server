@@ -615,12 +615,12 @@ VECTOR_SYNC_INTERVAL=3600  # Scan interval in seconds (default: 1 hour)
 **`nc_get_vector_sync_status`** - Check sync status
 ```python
 {
-  "total_documents": 1234,
-  "indexed_documents": 1200,
-  "pending_documents": 34,
-  "sync_enabled": true,
-  "last_scan": "2025-01-15T14:30:00Z",
-  "status": "syncing"  # idle | syncing | error
+    "total_documents": 1234,
+    "indexed_documents": 1200,
+    "pending_documents": 34,
+    "sync_enabled": true,
+    "last_scan": "2025-01-15T14:30:00Z",
+    "status": "syncing",  # idle | syncing | error
 }
 ```
 
