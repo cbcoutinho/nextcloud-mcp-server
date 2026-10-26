@@ -107,6 +107,7 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
     expected_read_tools = [
         "nc_notes_get_note",  # notes.read
         "nc_notes_search_notes",  # notes.read
+        "nc_notes_list_notes",  # notes.read
         "nc_calendar_list_calendars",  # calendar.read
         "nc_calendar_get_event",  # calendar.read
     ]
@@ -379,6 +380,7 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
     expected_read_tools = [
         "nc_notes_get_note",  # notes.read
         "nc_notes_search_notes",  # notes.read
+        "nc_notes_list_notes",  # notes.read
         "nc_calendar_list_calendars",  # calendar.read
     ]
 

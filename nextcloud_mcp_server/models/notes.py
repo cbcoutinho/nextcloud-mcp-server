@@ -96,3 +96,23 @@ class SearchNotesResponse(BaseResponse):
     results: List[NoteSearchResult] = Field(description="Search results")
     query: str = Field(description="The search query used")
     total_found: int = Field(description="Total number of notes found")
+
+
+class ListNotesResponse(BaseResponse):
+    """Response model for listing notes.
+
+    ``total_found`` precedes ``results`` on purpose: clients that truncate a long
+    tool result (Astrolabe cuts at 8 KB) must still see the count.
+    """
+
+    total_found: int = Field(
+        description="Number of notes matching the filter (all notes when no "
+        "category is given), even when results is cut short by limit"
+    )
+    category: str | None = Field(
+        default=None, description="The category filter applied, if any"
+    )
+    results: List[NoteSearchResult] = Field(
+        description="Notes (id, title, category); may be fewer than total_found "
+        "when the listing is capped"
+    )

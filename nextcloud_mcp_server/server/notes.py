@@ -1,9 +1,11 @@
 import logging
+from typing import Annotated
 
 from httpx import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -12,6 +14,7 @@ from nextcloud_mcp_server.models.notes import (
     AppendContentResponse,
     CreateNoteResponse,
     DeleteNoteResponse,
+    ListNotesResponse,
     Note,
     NoteSearchResult,
     NotesSettings,
@@ -206,6 +209,56 @@ async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse
 @require_scopes("notes.read")
 @with_links
 @instrument_tool
+async def nc_notes_list_notes(
+    ctx: Context,
+    category: str | None = None,
+    limit: Annotated[int, Field(ge=0)] = 100,
+) -> ListNotesResponse:
+    """List notes, returning id, title, and category, plus the total count.
+
+    Without ``category``, ``total_found`` is the user's total number of notes, so
+    this answers "how many notes do I have" exactly. Search tools only return the
+    best matches. With ``category``, it counts that category only: the match is
+    exact and case-sensitive, and does not include nested ``category/sub``
+    categories. ``results`` holds at most ``limit`` notes, but ``total_found`` is
+    never limited. Requires notes.read scope.
+    """
+    client = await get_client(ctx)
+    try:
+        # Count every match but keep only the first `limit`: the count needs the
+        # full pass, the listing does not.
+        total = 0
+        results: list[NoteSearchResult] = []
+        async for note in client.notes.get_all_notes():
+            if category is not None and note.get("category", "") != category:
+                continue
+            total += 1
+            if len(results) < limit:
+                results.append(
+                    NoteSearchResult(
+                        id=note["id"],
+                        title=note.get("title", ""),
+                        category=note.get("category", ""),
+                    )
+                )
+        return ListNotesResponse(total_found=total, category=category, results=results)
+    except RequestError as e:
+        raise MCPError(code=-1, message=f"Network error listing notes: {e}")
+    except HTTPStatusError as e:
+        if e.response.status_code == 403:
+            raise MCPError(
+                code=-1,
+                message="Access denied: insufficient permissions to list notes",
+            )
+        raise MCPError(
+            code=-1,
+            message=f"Listing notes failed: server error ({e.response.status_code})",
+        )
+
+
+@require_scopes("notes.read")
+@with_links
+@instrument_tool
 async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
     """Get a specific note by its ID (requires notes.read scope)"""
     client = await get_client(ctx)
@@ -387,6 +440,14 @@ def configure_notes_tools(mcp: MCPServer):
             open_world_hint=True,
         ),
     )(nc_notes_search_notes)
+
+    mcp.tool(
+        title="List Notes",
+        annotations=ToolAnnotations(
+            read_only_hint=True,  # Read operation only
+            open_world_hint=True,
+        ),
+    )(nc_notes_list_notes)
 
     mcp.tool(
         title="Get Note",
