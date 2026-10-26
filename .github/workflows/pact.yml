@@ -19,7 +19,12 @@ on:
       - master
 
 concurrency:
-  group: pact-${{ github.ref }}
+  # PR runs supersede each other; master pushes get a group per SHA so none is
+  # cancelled. A cancelled push never publishes its version, and
+  # pact-record-deployment then 404s on the broker. (Per-ref with
+  # cancel-in-progress: false is not enough: a newer queued run still evicts
+  # the older pending one.)
+  group: pact-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 env:
