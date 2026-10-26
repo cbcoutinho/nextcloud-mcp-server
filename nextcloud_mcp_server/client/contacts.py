@@ -31,22 +31,31 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
 )
 
 
+
 def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     """Map documented aliases to canonical keys.
 
-    ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
-    are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
-    Returns a new dict — does not mutate the caller's argument.
+    ``full_name`` → ``fn``, ``phone`` → ``tel``, ``organization`` → ``org``.
+    The canonical key wins if both are supplied. Returns a new dict without
+    mutating the caller's argument.
     """
     normalised = dict(contact_data)
+
+    if "full_name" in normalised and "fn" not in normalised:
+        normalised["fn"] = normalised.pop("full_name")
+    else:
+        normalised.pop("full_name", None)
+
     if "phone" in normalised and "tel" not in normalised:
         normalised["tel"] = normalised.pop("phone")
     else:
         normalised.pop("phone", None)
+
     if "organization" in normalised and "org" not in normalised:
         normalised["org"] = normalised.pop("organization")
     else:
         normalised.pop("organization", None)
+
     return normalised
 
 
