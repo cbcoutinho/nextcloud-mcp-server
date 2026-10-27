@@ -273,16 +273,18 @@ class BaseNextcloudClient(ABC):
 
     @staticmethod
     def _resolve_url(url: str) -> str:
-        """Prefix bare ``/apps/...`` paths with ``/index.php``.
+        """Prefix bare ``/apps/...`` and ``/core/...`` paths with ``/index.php``.
 
         Pretty URLs (URL rewriting that strips ``index.php``) are an opt-in
         Nextcloud feature; without them, ``/apps/<app>/...`` returns 404 — see
         issue #732. ``/index.php/apps/<app>/...`` is the universal entry point
         and works on every Nextcloud install regardless of web-server config,
-        so we route all app-API calls through it. ``/remote.php/dav/...`` and
-        ``/ocs/...`` have their own dedicated entry points and are unaffected.
+        so we route all app-API calls through it. Core routes such as
+        ``/core/preview.png`` go through the same front controller and need the
+        same prefix. ``/remote.php/dav/...`` and ``/ocs/...`` have their own
+        dedicated entry points and are unaffected.
         """
-        if url.startswith("/apps/"):
+        if url.startswith(("/apps/", "/core/")):
             return "/index.php" + url
         return url
 

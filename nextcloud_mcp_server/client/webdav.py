@@ -927,6 +927,47 @@ class WebDAVClient(BaseNextcloudClient):
             logger.error("Unexpected error reading file '%s': %s", path, e)
             raise e
 
+    async def get_preview(self, path: str, size: int) -> tuple[bytes, str]:
+        """Fetch Nextcloud's preview of a file, scaled to fit ``size`` x ``size``.
+
+        Uses ``GET /index.php/core/preview.png?file=<path>``, the route the
+        Files app loads thumbnails from. Despite the name it answers with what
+        the preview provider produces: JPEG for photos, PNG for images with
+        transparency. Nextcloud keeps the aspect ratio (``a=1``), applies the
+        EXIF orientation, never upscales, and only renders a few sizes,
+        rounding the request up to the next one (256, 1024, or the largest
+        preview the server allows).
+
+        ``forceIcon=0`` and ``mimeFallback=false`` make a file without a
+        preview provider answer 404 instead of a generic file-type icon.
+
+        Args:
+            path: File path relative to the user's files root.
+            size: Requested bounding box edge, in pixels.
+
+        Returns:
+            ``(content, content_type)`` of the preview image.
+
+        Raises:
+            HTTPStatusError: 404 when the file does not exist or Nextcloud
+                cannot render a preview for it.
+        """
+        response = await self._make_request(
+            "GET",
+            "/core/preview.png",
+            params={
+                "file": "/" + path.lstrip("/"),
+                "x": size,
+                "y": size,
+                "a": 1,
+                "forceIcon": 0,
+                "mimeFallback": "false",
+            },
+        )
+        content = _read_complete_body(response, path)
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        return content, content_type
+
     async def write_file(
         self,
         path: str,
