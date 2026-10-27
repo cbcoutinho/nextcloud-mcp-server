@@ -110,7 +110,10 @@ await nc_webdav_view_image("Photos/2026/whiteboard.jpg", max_size=512)
   the Claude API refuses any image larger than that.
 - **Fallback to the original.** When Nextcloud has no preview for a file, the
   original (up to 40 MB) is downloaded and decoded locally (JPEG, PNG, GIF,
-  WebP, BMP, TIFF).
+  WebP, BMP, TIFF). A JPEG may have up to 80 megapixels, because the decoder
+  skips resolution that would be scaled away. Every other format is decoded
+  in full and is refused above 24 megapixels. Nextcloud previews are at most
+  4096x4096 (16.8 megapixels), so the preview path never reaches either limit.
 - **Images only.** Files whose name says they are something else (text, PDF,
   Markdown) are refused before any request, since Nextcloud would happily
   render them as pictures. Files without an extension are tried.

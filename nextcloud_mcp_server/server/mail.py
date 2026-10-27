@@ -7,7 +7,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
 
-from anyio.to_thread import run_sync
 from httpx import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
@@ -41,7 +40,7 @@ from nextcloud_mcp_server.utils.image_view import (
     ImageError,
     PreparedImage,
     image_tool_result,
-    prepare_image,
+    prepare_image_in_thread,
 )
 
 logger = logging.getLogger(__name__)
@@ -381,7 +380,7 @@ async def nc_mail_view_attachment(
     ctx: Context,
     max_size: Annotated[int, Field(ge=64, le=MAX_SIZE)] = DEFAULT_MAX_SIZE,
 ) -> Annotated[CallToolResult, ViewMailAttachmentResponse]:
-    """Show an image attachment of a mail message so you can look at it (requires mail.read scope).
+    """Show an image attachment so you can look at it (requires mail.read scope).
 
     Returns the image itself, which a vision model sees as a picture, not as
     text. Use this instead of nc_mail_get_attachment for images (photos,
@@ -394,7 +393,8 @@ async def nc_mail_view_attachment(
     upright according to its orientation data.
 
     The attachment is decoded on the MCP server (JPEG, PNG, GIF, WebP, BMP,
-    TIFF). Formats such as HEIC are not supported for mail attachments, since
+    TIFF), which takes at most 80 megapixels for JPEG and 24 for the other
+    formats. Formats such as HEIC are not supported for mail attachments, since
     Nextcloud renders no preview for them. Attachments that are not images are
     refused. Use nc_mail_get_attachment for those. Inline body parts
     (attachments with ``id: null``) cannot be fetched, as with
@@ -436,7 +436,7 @@ async def nc_mail_view_attachment(
         )
 
     try:
-        prepared: PreparedImage = await run_sync(prepare_image, raw, max_size)
+        prepared: PreparedImage = await prepare_image_in_thread(raw, max_size)
     except ImageError as e:
         raise MCPError(code=-1, message=f"Cannot show attachment {name!r}: {e}.") from e
 

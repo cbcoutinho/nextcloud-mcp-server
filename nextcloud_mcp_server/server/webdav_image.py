@@ -39,7 +39,7 @@ from nextcloud_mcp_server.utils.image_view import (
     ImageError,
     PreparedImage,
     image_tool_result,
-    prepare_image,
+    prepare_image_in_thread,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, as in server/webdav.py
@@ -48,7 +48,9 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard, as in server/webdav.
 logger = logging.getLogger(__name__)
 
 #: Preview sizes Nextcloud renders (it rounds a request up to the next one).
-#: The last is the largest preview it allows by default.
+#: Nextcloud clamps a preview request to its ``preview_max_x`` / ``preview_max_y``
+#: config, 4096 by default, which is why the last step is 4096 and why a
+#: preview never exceeds 4096x4096.
 _PREVIEW_STEPS = (256, 1024, 4096)
 
 #: Cap on the original file, downloaded only when Nextcloud has no preview.
@@ -134,7 +136,8 @@ async def nc_webdav_view_image(
 
     Nextcloud renders the image, so formats such as HEIC work when the
     Nextcloud server can preview them. Otherwise the original is decoded here
-    (JPEG, PNG, GIF, WebP, BMP, TIFF). Files that are not images are refused.
+    (JPEG, PNG, GIF, WebP, BMP, TIFF), which takes at most 80 megapixels for
+    JPEG and 24 for the other formats. Files that are not images are refused.
     Raises ``ToolError`` for those, for files that do not exist or cannot be
     decoded, and when ``EXCLUDED_TAGS`` hides the file.
 
@@ -176,7 +179,7 @@ async def nc_webdav_view_image(
         raw = await _fetch_original(client, path)
 
     try:
-        prepared: PreparedImage = await run_sync(prepare_image, raw, max_size)
+        prepared: PreparedImage = await prepare_image_in_thread(raw, max_size)
     except ImageError as e:
         raise ToolError(f"Cannot show {path!r}: {e}.") from e
 

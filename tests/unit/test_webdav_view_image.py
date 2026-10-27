@@ -25,6 +25,7 @@ from nextcloud_mcp_server.client.webdav import OversizeDownload, WebDAVClient
 from nextcloud_mcp_server.models.webdav import ViewImageResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 from nextcloud_mcp_server.server.webdav_image import nc_webdav_view_image
+from nextcloud_mcp_server.utils.image_view import prepare_image_in_thread
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit
@@ -198,6 +199,18 @@ async def test_oversized_original_is_refused(webdav, mocker):
 
     with pytest.raises(ToolError, match="no preview"):
         await nc_webdav_view_image(path="huge.tif", ctx=ctx)
+
+
+async def test_the_image_is_decoded_through_the_bounded_helper(webdav, mocker):
+    """Not run_sync directly: that would lift the limit on concurrent decodes."""
+    spy = mocker.patch(
+        f"{_MODULE}.prepare_image_in_thread", wraps=prepare_image_in_thread
+    )
+
+    await nc_webdav_view_image(path="a.jpg", ctx=_ctx(), max_size=512)
+
+    spy.assert_awaited_once()
+    assert spy.await_args.args[1] == 512
 
 
 async def test_undecodable_original_is_refused(webdav):

@@ -1,21 +1,25 @@
 """Prepare an image for a vision model: decode, orient, downscale, re-encode.
 
-Pure functions, no I/O. ``nc_webdav_view_image`` and
-``nc_mail_view_attachment`` hand the bytes of an image to :func:`prepare_image`
-and wrap the result with :func:`image_tool_result`, which returns it as an MCP
-image block that clients pass to the model as an image rather than as text.
+No network or disk I/O. ``nc_webdav_view_image`` and
+``nc_mail_view_attachment`` hand the bytes of an image to
+:func:`prepare_image_in_thread` (the blocking :func:`prepare_image` on a bounded
+number of worker threads) and wrap the result with :func:`image_tool_result`,
+which returns it as an MCP image block that clients pass to the model as an
+image rather than as text.
 """
 
 import base64
 import io
-import json
 import math
 from dataclasses import dataclass
 
+import anyio
+from anyio.to_thread import run_sync
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from nextcloud_mcp_server.models.base import BaseResponse
+from nextcloud_mcp_server.serialization import compact_json_dumps
 
 #: Longest edge sent by default. Every Claude model takes an image this size
 #: without downscaling it, and it stays under the 2000 px per-image limit the
@@ -28,16 +32,43 @@ DEFAULT_MAX_SIZE = 1568
 #: anything larger, so more pixels would only cost transfer.
 MAX_SIZE = 2576
 
-#: Pixel count refused before decoding. A photo from a phone has 12-50
-#: megapixels, and decoding one this large to RGB already takes several
-#: hundred MB of memory.
+#: Pixel count refused before decoding, for the formats that ``draft()``
+#: decodes at reduced size (:data:`_DRAFT_FORMATS`: JPEG, and MPO, the
+#: multi-picture JPEG an iPhone writes). The decoder skips the resolution we
+#: throw away anyway, so an image this large peaks at about 140 MB. A photo
+#: from a phone has 12-50 megapixels.
 MAX_SOURCE_PIXELS = 80_000_000
+
+#: Pixel count refused before decoding, for every other format (PNG, GIF, WebP,
+#: BMP, TIFF). Those are decoded in full: 24 MP of RGBA is 96 MB per copy, and
+#: ``exif_transpose`` and ``thumbnail`` each make another, so an image at the
+#: cap peaks at about 300 MB. The 80 MP allowed for JPEG would take about 1 GB
+#: for a PNG that compresses to a few hundred KB, which anyone who can send the
+#: user an email can attach. Nextcloud previews are at most 4096x4096 (16.8 MP),
+#: so the preview path of ``nc_webdav_view_image`` always fits under this.
+MAX_FULL_DECODE_PIXELS = 24_000_000
+
+#: Pillow format names whose ``draft()`` shrinks the decode, so that
+#: :data:`MAX_SOURCE_PIXELS` applies to them. ``MPO`` is a ``JpegImageFile``
+#: subclass and inherits ``draft()``.
+_DRAFT_FORMATS = frozenset({"JPEG", "MPO"})
 
 #: Encoded size an image is kept under, by sending PNG as JPEG and lowering
 #: the JPEG quality. Base64 inflates it by a third, which keeps it under the
 #: strictest per-image limit Claude has (5 MB on Amazon Bedrock; the Claude
 #: API allows 10 MB).
 MAX_ENCODED_BYTES = 3_500_000
+
+#: Decodes allowed to run at once, across all tools and sessions. Each takes
+#: up to :data:`MAX_FULL_DECODE_PIXELS` worth of memory (about 300 MB), and the
+#: default anyio thread pool would let 40 of them run side by side. Two keep the
+#: worst case near 600 MB and still use two cores.
+MAX_CONCURRENT_DECODES = 2
+
+#: Shared by every call of :func:`prepare_image_in_thread`. Created at import,
+#: outside any event loop: anyio then hands out an adapter that builds the real
+#: limiter on first use, which holds no loop-bound state while uncontended.
+_decode_limiter = anyio.CapacityLimiter(MAX_CONCURRENT_DECODES)
 
 #: JPEG qualities tried in turn until the image fits MAX_ENCODED_BYTES.
 #: The first is used for nearly every photo at these sizes.
@@ -101,7 +132,8 @@ def prepare_image(raw: bytes, max_size: int = DEFAULT_MAX_SIZE) -> PreparedImage
 
     Raises:
         ImageError: The bytes are not an image Pillow can decode, or the image
-            has more than :data:`MAX_SOURCE_PIXELS` pixels.
+            has more pixels than it is decoded with: :data:`MAX_SOURCE_PIXELS`
+            for JPEG, :data:`MAX_FULL_DECODE_PIXELS` for every other format.
     """
     try:
         image = Image.open(io.BytesIO(raw))
@@ -112,16 +144,22 @@ def prepare_image(raw: bytes, max_size: int = DEFAULT_MAX_SIZE) -> PreparedImage
         ) from e
     except Image.DecompressionBombError as e:
         # Pillow's own guard, which fires in open() for images far beyond
-        # MAX_SOURCE_PIXELS, before the check below gets to run.
+        # either cap, before the check below gets to run.
         raise ImageError(f"the image has too many pixels to decode ({e})") from e
 
     with image:
         # Image.open only reads the header, so this is checked before any
         # pixel data is decoded.
-        if image.width * image.height > MAX_SOURCE_PIXELS:
+        image_format = image.format or "unknown"
+        max_pixels = (
+            MAX_SOURCE_PIXELS
+            if image_format in _DRAFT_FORMATS
+            else MAX_FULL_DECODE_PIXELS
+        )
+        if image.width * image.height > max_pixels:
             raise ImageError(
                 f"the image has {image.width}x{image.height} pixels, more than "
-                f"the {MAX_SOURCE_PIXELS:,} this server decodes"
+                f"the {max_pixels:,} this server decodes for {image_format} images"
             )
         source_width, source_height = image.size
         if image.getexif().get(0x0112) in _TRANSPOSING_ORIENTATIONS:
@@ -162,6 +200,18 @@ def prepare_image(raw: bytes, max_size: int = DEFAULT_MAX_SIZE) -> PreparedImage
     )
 
 
+async def prepare_image_in_thread(
+    raw: bytes, max_size: int = DEFAULT_MAX_SIZE
+) -> PreparedImage:
+    """Run :func:`prepare_image` on a worker thread, a few at a time.
+
+    At most :data:`MAX_CONCURRENT_DECODES` run at once, process-wide. Further
+    callers wait their turn, so a burst of requests queues up instead of
+    holding a decoded image each in memory.
+    """
+    return await run_sync(prepare_image, raw, max_size, limiter=_decode_limiter)
+
+
 def image_tool_result(
     prepared: PreparedImage, response: BaseResponse
 ) -> CallToolResult:
@@ -170,8 +220,8 @@ def image_tool_result(
     A tool that declares ``Annotated[CallToolResult, <Response>]`` returns this.
     The image block comes first, which is what a client hands to the model as a
     picture. The text block carries the same JSON as ``structured_content``,
-    for clients that read only text; the SDK validates the structured part
-    against the response model.
+    compact like the rest of the server's JSON, for clients that read only
+    text. The SDK validates the structured part against the response model.
     """
     structured = response.model_dump(mode="json", by_alias=True)
     return CallToolResult(
@@ -181,7 +231,7 @@ def image_tool_result(
                 data=base64.b64encode(prepared.data).decode("ascii"),
                 mime_type=prepared.mime_type,
             ),
-            TextContent(type="text", text=json.dumps(structured, indent=2)),
+            TextContent(type="text", text=compact_json_dumps(structured)),
         ],
         structured_content=structured,
     )

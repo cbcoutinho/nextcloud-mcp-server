@@ -31,7 +31,11 @@ from PIL import Image
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.models.mail import ViewMailAttachmentResponse
 from nextcloud_mcp_server.server.mail import configure_mail_tools
-from nextcloud_mcp_server.utils.image_view import prepare_image
+from nextcloud_mcp_server.utils import image_view
+from nextcloud_mcp_server.utils.image_view import (
+    prepare_image,
+    prepare_image_in_thread,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -102,7 +106,7 @@ def mail(mocker):
 @pytest.fixture
 def prepare(mocker):
     """The decoder, wrapped: it still runs, and a test can ask whether it did."""
-    return mocker.patch(f"{_MODULE}.prepare_image", wraps=prepare_image)
+    return mocker.patch.object(image_view, "prepare_image", wraps=prepare_image)
 
 
 @pytest.fixture
@@ -242,6 +246,35 @@ async def test_attachments_that_are_not_images_are_refused_before_decoding(
     prepare.assert_not_called()
 
 
+async def test_png_above_the_lower_pixel_cap_is_refused(mcp, mail, monkeypatch):
+    """A PNG is decoded in full, so anyone who can send a mail could otherwise
+    make the server decode a huge one. JPEG gets the higher cap."""
+    monkeypatch.setattr(image_view, "MAX_FULL_DECODE_PIXELS", 1_000)
+    mail["attachment"] = (_transparent_png(), "image/png", "logo.png")
+
+    with pytest.raises(
+        MCPError,
+        match=r"Cannot show attachment 'logo.png': .*300x200 pixels.*for PNG images",
+    ):
+        await mcp.call_tool("nc_mail_view_attachment", _ARGS)
+
+    mail["attachment"] = (_jpeg((300, 200)), "image/jpeg", "photo.jpg")
+    result = await mcp.call_tool("nc_mail_view_attachment", _ARGS)
+    assert isinstance(result.content[0], ImageContent)
+
+
+async def test_the_image_is_decoded_through_the_bounded_helper(mcp, mail, mocker):
+    """Not run_sync directly: that would lift the limit on concurrent decodes."""
+    spy = mocker.patch(
+        f"{_MODULE}.prepare_image_in_thread", wraps=prepare_image_in_thread
+    )
+
+    await mcp.call_tool("nc_mail_view_attachment", {**_ARGS, "max_size": 512})
+
+    spy.assert_awaited_once()
+    assert spy.await_args.args[1] == 512
+
+
 async def test_undecodable_image_is_refused(mcp, mail):
     """E.g. HEIC: Pillow cannot read it, and Nextcloud has no mail preview."""
     mail["attachment"] = (b"ftypheic not decodable here", "image/heic", "IMG_1.heic")
@@ -363,6 +396,7 @@ def test_the_description_says_what_agents_need_to_choose_it(mcp):
         "2576",
         "upright",
         "HEIC",
+        "80 megapixels for",
         "are not images",
         "id: null",
     ):

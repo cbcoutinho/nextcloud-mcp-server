@@ -56,6 +56,12 @@ The `attachment_id` is the `id` of an entry in the message's `attachments` list
   WebP, BMP and TIFF work. HEIC does not: unlike files in the Files app, mail
   attachments get no Nextcloud-rendered preview to fall back on, so the tool
   says it cannot show the attachment.
+- **Size limits.** A JPEG may have up to 80 megapixels, because the decoder
+  skips resolution that would be scaled away. Any other format (PNG, GIF, WebP,
+  BMP, TIFF) is decoded in full and is refused above 24 megapixels, which is
+  checked from the header before decoding. At most two images are decoded at a
+  time (a limit shared with `nc_webdav_view_image`), so a burst of requests
+  queues up instead of using memory in parallel.
 - **Images only.** An attachment whose type is not `image/*` is refused before
   it is decoded, with a pointer to `nc_mail_get_attachment`. When the mail
   client sent it as the generic `application/octet-stream`, the file name
