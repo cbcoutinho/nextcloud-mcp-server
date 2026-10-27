@@ -21,6 +21,7 @@ Requires the `mail` + `single-user` compose profiles:
 
 import base64
 import imaplib
+import io
 import json
 import smtplib
 import subprocess
@@ -29,6 +30,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 pytestmark = [pytest.mark.integration]
 
@@ -313,6 +315,86 @@ async def test_get_pdf_attachment_roundtrip(nc_mcp_client, provisioned_mail_acco
     assert decoded == payload
     assert decoded.startswith(b"%PDF")
     assert fetched["size"] == len(payload)
+
+
+def _jpeg_bytes(size: tuple[int, int]) -> bytes:
+    """A solid-colour JPEG of ``size``, for the image-attachment tests."""
+    out = io.BytesIO()
+    Image.new("RGB", size, (20, 100, 180)).save(out, format="JPEG")
+    return out.getvalue()
+
+
+async def test_view_image_attachment_arrives_as_a_scaled_image(
+    nc_mcp_client, provisioned_mail_account
+):
+    """A photo attachment comes back as an MCP image block a vision model can see.
+
+    Goes through the real Mail app: the bytes are downloaded from the direct
+    attachment route, decoded and scaled on the MCP server, and the image block
+    is decoded here to assert what a model would actually receive.
+    """
+    subject = "Image attachment integration probe"
+    _seed_message_with_attachment(
+        subject,
+        _jpeg_bytes((3000, 2000)),
+        "photo.jpg",
+        maintype="image",
+        subtype="jpeg",
+    )
+
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
+    attachments = full["attachments"]
+    assert attachments, f"no attachments on message {full}"
+    att = attachments[0]
+    assert att["fileName"] == "photo.jpg"
+
+    result = await nc_mcp_client.call_tool(
+        "nc_mail_view_attachment",
+        {"message_id": full["id"], "attachment_id": att["id"]},
+    )
+
+    assert result.is_error is False, f"tool failed: {result.content}"
+    block = result.content[0]
+    assert block.type == "image", f"first block is {block.type}, not an image"
+    assert block.mime_type == "image/jpeg"
+    image = Image.open(io.BytesIO(base64.b64decode(block.data)))
+    assert image.size == (1568, 1045)
+    data = result.structured_content
+    assert data["name"] == "photo.jpg"
+    assert data["message_id"] == full["id"]
+    assert data["attachment_id"] == att["id"]
+    assert data["mime_type"] == "image/jpeg"
+    assert (data["width"], data["height"]) == (1568, 1045)
+    assert (data["source_width"], data["source_height"]) == (3000, 2000)
+    assert data["size"] == len(base64.b64decode(block.data))
+
+
+async def test_view_attachment_refuses_a_pdf(nc_mcp_client, provisioned_mail_account):
+    """A non-image attachment is refused, and the error names the right tool."""
+    subject = "PDF view-attachment integration probe"
+    _seed_message_with_attachment(
+        subject,
+        _minimal_pdf_bytes(),
+        "sample.pdf",
+        maintype="application",
+        subtype="pdf",
+    )
+
+    full = await _sync_and_fetch_message(nc_mcp_client, subject)
+    attachments = full["attachments"]
+    assert attachments, f"no attachments on message {full}"
+    att = attachments[0]
+
+    result = await nc_mcp_client.call_tool(
+        "nc_mail_view_attachment",
+        {"message_id": full["id"], "attachment_id": att["id"]},
+    )
+
+    assert result.is_error is True
+    text = result.content[0].text
+    assert "not an image" in text
+    assert "sample.pdf" in text
+    assert "nc_mail_get_attachment" in text
 
 
 @pytest.mark.xfail(
