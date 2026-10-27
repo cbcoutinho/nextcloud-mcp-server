@@ -197,6 +197,105 @@ async def test_non_utf8_file_is_refused(tools, webdav):
     webdav["client"].webdav.write_file.assert_not_awaited()
 
 
+# An all-ASCII body decodes as UTF-8, so the decode check alone would let it by.
+_ASCII_PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 1\n"
+
+
+@pytest.mark.parametrize(
+    ("content_type", "path"),
+    [
+        ("application/pdf", "/Documents/report.pdf"),
+        ("application/pdf; charset=binary", "/Documents/report.pdf"),
+        ("application/msword", "/Documents/letter.doc"),
+        (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "/Documents/letter.docx",
+        ),
+        ("application/vnd.oasis.opendocument.text", "/Documents/letter.odt"),
+        ("image/png", "/Pictures/photo.png"),
+        ("audio/mpeg", "/Music/song.mp3"),
+        ("video/mp4", "/Videos/clip.mp4"),
+        ("application/zip", "/Backups/site.zip"),
+        # Nextcloud has no mapping for the type: the file name decides.
+        ("application/octet-stream", "/Documents/report.pdf"),
+        ("application/octet-stream", "/Documents/letter.docx"),
+        ("application/octet-stream", "/Backups/site.tar.gz"),
+    ],
+)
+async def test_non_text_files_are_refused_before_any_write(
+    tools, webdav, content_type, path
+):
+    """The gate is an allow-list on the type, whatever the bytes decode to."""
+    webdav["body"] = _ASCII_PDF
+    webdav["content_type"] = content_type
+    edit_file = tools["nc_webdav_edit_file"].fn
+    ctx = _ctx()
+    edits = [_edit("Catalog", "Pages")]
+
+    with pytest.raises(ToolError, match="nc_webdav_write_file") as excinfo:
+        await edit_file(path=path, edits=edits, ctx=ctx)
+
+    assert repr(path) in str(excinfo.value)
+    assert content_type.split(";")[0] in str(excinfo.value)
+    webdav["client"].webdav.write_file.assert_not_awaited()
+
+
+async def test_type_gate_comes_before_the_utf8_check(tools, webdav):
+    """A binary PDF is refused for its type, not for failing to decode."""
+    webdav["body"] = b"%PDF-1.7\n\xff\xfe\x80binary"
+    webdav["content_type"] = "application/pdf"
+    edit_file = tools["nc_webdav_edit_file"].fn
+    ctx = _ctx()
+    edits = [_edit("PDF", "XXX")]
+
+    with pytest.raises(ToolError, match="application/pdf") as excinfo:
+        await edit_file(path="/report.pdf", edits=edits, ctx=ctx)
+
+    assert "not a UTF-8" not in str(excinfo.value)
+
+
+async def test_type_gate_comes_before_the_etag_checks(tools, webdav):
+    webdav["body"] = _ASCII_PDF
+    webdav["content_type"] = "application/pdf"
+    webdav["etag"] = None
+    edit_file = tools["nc_webdav_edit_file"].fn
+    ctx = _ctx()
+    edits = [_edit("Catalog", "Pages")]
+
+    with pytest.raises(ToolError, match="nc_webdav_write_file") as excinfo:
+        await edit_file(path="/report.pdf", edits=edits, ctx=ctx)
+
+    assert "no ETag" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "path"),
+    [
+        ("text/markdown", "/Notes/page.md"),
+        ("text/plain", "/Config/app.yaml"),
+        ("application/json", "/Config/app.json"),
+        ("application/yaml", "/Config/app.yml"),
+        ("image/svg+xml", "/Images/logo.svg"),
+        ("application/octet-stream", "/Project/Makefile"),
+        ("application/octet-stream", "/Project/Dockerfile"),
+        ("application/octet-stream", "/Project/.env"),
+        ("application/octet-stream", "/Project/src/app.ts"),
+    ],
+)
+async def test_text_files_pass_the_gate(tools, webdav, content_type, path):
+    webdav["body"] = b"name=old\n"
+    webdav["content_type"] = content_type
+
+    result = await tools["nc_webdav_edit_file"].fn(
+        path=path, edits=[_edit("old", "new")], ctx=_ctx()
+    )
+
+    assert result.replacements == 1
+    webdav["client"].webdav.write_file.assert_awaited_once_with(
+        path, b"name=new\n", content_type, if_match="e1"
+    )
+
+
 @pytest.mark.parametrize("given", ["e1", '"e1"', 'W/"e1"'])
 async def test_matching_if_match_is_accepted_in_any_quoting(tools, webdav, given):
     webdav["body"] = b"a\n"
@@ -371,3 +470,65 @@ async def test_invalid_line_ranges_are_rejected_before_any_download(
         await read_file(path="/f.txt", ctx=ctx, **kwargs)
 
     webdav["client"].webdav.stream_to_file.assert_not_awaited()
+
+
+async def test_read_line_range_cuts_a_single_oversized_line(tools, webdav, mocker):
+    """A minified one-liner is returned up to the response cap, not in full."""
+    cap = 1024 * 1024
+    mocker.patch("nextcloud_mcp_server.server.webdav.RAW_CONTENT_MAX_BYTES", cap)
+    # The 2-byte "é" is shifted by one byte, so the cap falls inside a character.
+    webdav["body"] = ("a" + "é" * 700_000 + "\nnext\n").encode()
+    webdav["content_type"] = "application/json"
+
+    result = await tools["nc_webdav_read_file"].fn(
+        path="/min.json", ctx=_ctx(), line_start=1
+    )
+
+    assert 0 < len(result.content.encode("utf-8")) <= cap
+    assert result.content.startswith("aé")
+    assert not result.content.endswith("\n")
+    assert (result.line_start, result.line_end, result.total_lines) == (1, 1, 2)
+    (note,) = result.parse_notes
+    assert "Line 1" in note
+    assert "1 MB" in note
+    assert "line_start=2" in note
+
+
+async def test_read_line_range_cut_line_at_the_end_does_not_point_past_it(
+    tools, webdav, mocker
+):
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.RAW_CONTENT_MAX_BYTES", 1024 * 1024
+    )
+    webdav["body"] = b"x" * (2 * 1024 * 1024)
+    webdav["content_type"] = "text/plain"
+
+    result = await tools["nc_webdav_read_file"].fn(
+        path="/one-line.txt", ctx=_ctx(), line_start=1
+    )
+
+    assert len(result.content) == 1024 * 1024
+    assert (result.line_end, result.total_lines) == (1, 1)
+    (note,) = result.parse_notes
+    assert "cut off" in note
+    assert "line_start" not in note
+
+
+async def test_read_line_range_stops_before_a_big_line_after_small_ones(
+    tools, webdav, mocker
+):
+    """Several lines fit, the next is too big: the usual continue-from note."""
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.RAW_CONTENT_MAX_BYTES", 1024 * 1024
+    )
+    webdav["body"] = b"small\n" + b"y" * (2 * 1024 * 1024) + b"\n"
+    webdav["content_type"] = "text/plain"
+
+    result = await tools["nc_webdav_read_file"].fn(
+        path="/f.txt", ctx=_ctx(), line_start=1
+    )
+
+    assert result.content == "small\n"
+    assert (result.line_end, result.total_lines) == (1, 2)
+    (note,) = result.parse_notes
+    assert "Continue with line_start=2" in note

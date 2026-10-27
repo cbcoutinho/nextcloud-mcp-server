@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import logging
+import posixpath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 import anyio
@@ -15,8 +16,8 @@ from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.webdav import (
     OversizeDownload,
-    _normalize_etag,
     like_predicate,
+    normalize_etag,
 )
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
@@ -66,7 +67,9 @@ from nextcloud_mcp_server.utils.text_edit import (
     LineWindow,
     TextEdit,
     apply_edits,
+    is_editable_text,
     line_window,
+    normalize_content_type,
     unified_diff,
 )
 
@@ -297,7 +300,9 @@ async def _line_range_response(
 
     Iterates the spool line by line, so only the window is held in memory and a
     long log file can be read in parts. The window is capped at
-    :data:`RAW_CONTENT_MAX_BYTES` like any other inline content.
+    :data:`RAW_CONTENT_MAX_BYTES` like any other inline content, even when a
+    single line is bigger than that (minified JSON): that line is returned cut
+    off, ``line_end`` names it, and ``parse_notes`` says so.
 
     Raises:
         ToolError: ``start`` lies past the end, or the window is not UTF-8.
@@ -319,12 +324,26 @@ async def _line_range_response(
             f"without line_start/line_end."
         ) from e
 
+    limit_mb = RAW_CONTENT_MAX_BYTES // (1024 * 1024)
+    more_lines = window.last < window.total and (end is None or window.last < end)
     notes = []
-    if window.truncated:
+    if window.last_line_cut:
+        # The window holds a single, incomplete line. Pointing at the next
+        # line is right, since the rest of this one cannot be fetched by range.
+        notes.append(
+            f"Line {window.last} is longer than the {limit_mb} MB one response "
+            f"can carry, so only its start is returned and the rest of it is "
+            f"cut off."
+            + (
+                f" The lines after it start at line_start={window.last + 1}."
+                if more_lines
+                else ""
+            )
+        )
+    elif window.truncated:
         notes.append(
             f"Only lines {window.first}-{window.last} fit into one response "
-            f"({RAW_CONTENT_MAX_BYTES // (1024 * 1024)} MB). Continue with "
-            f"line_start={window.last + 1}."
+            f"({limit_mb} MB). Continue with line_start={window.last + 1}."
         )
     return ReadFileResponse(
         path=path,
@@ -339,6 +358,23 @@ async def _line_range_response(
         # getattr for the same reason as in _raw_response: only a spooled
         # source carries the origin's etag, the DocumentSource type does not.
         etag=getattr(source, "etag", None),
+    )
+
+
+def _not_editable_message(path: str, content_type: str | None) -> str:
+    """Why ``nc_webdav_edit_file`` refuses ``path``, and what to do instead."""
+    media_type = normalize_content_type(content_type)
+    what = f"content type {media_type!r}" if media_type else "no content type"
+    # For a generic type (octet-stream) the file name decides, so show it.
+    extension = posixpath.splitext(posixpath.basename(path))[1]
+    if extension:
+        what += f" and the extension {extension!r}"
+    return (
+        f"{path!r} has {what}, which nc_webdav_edit_file does not edit. It only "
+        "edits plain UTF-8 text files such as Markdown, YAML, JSON, configuration "
+        "files and source code, because a text edit would corrupt a PDF, an "
+        "Office or OpenDocument file, an image, audio, video or an archive. To "
+        "replace the whole file, use nc_webdav_write_file."
     )
 
 
@@ -497,7 +533,8 @@ def configure_webdav_tools(mcp: MCPServer):
             line_end: Text files only. Last line to read (1-based, inclusive).
                 Omitted means through the last line. A value past the end is
                 clamped. ``total_lines`` in the response says how long the file
-                is.
+                is. A single line longer than the response limit is returned
+                cut off, and parse_notes says so.
             line_numbers: Prefix each returned line with its number and a tab,
                 for a line-range read. Strip that prefix again before quoting
                 text in nc_webdav_edit_file.
@@ -990,8 +1027,11 @@ def configure_webdav_tools(mcp: MCPServer):
 
         Prefer this over nc_webdav_write_file for changing an existing text
         file: send only the passage to replace and its replacement, not the
-        whole file. Works for any UTF-8 text file, including Collectives pages
-        (Markdown files).
+        whole file. Plain UTF-8 text files only, such as Markdown (including
+        Collectives pages), YAML, JSON, XML, CSV, configuration files and
+        source code. PDFs, Office and OpenDocument files, images other than
+        SVG, audio, video and archives are refused, because a text edit would
+        corrupt them. Replace those as a whole with nc_webdav_write_file.
 
         Each edit replaces ``old_string`` with ``new_string``. ``old_string``
         must match the file exactly, including whitespace, indentation and
@@ -1011,9 +1051,9 @@ def configure_webdav_tools(mcp: MCPServer):
         if the file changed since you read it. Windows line endings (CRLF) and
         a byte-order mark are kept as they are.
 
-        Raises ``ToolError`` when the file does not exist, is not UTF-8 text,
-        is larger than ``WEBDAV_WRITE_MAX_MB``, carries an excluded tag, is
-        locked, changed concurrently, or when an edit cannot be applied.
+        Raises ``ToolError`` when the file does not exist, is not a plain UTF-8
+        text file, is larger than ``WEBDAV_WRITE_MAX_MB``, carries an excluded
+        tag, is locked, changed concurrently, or when an edit cannot be applied.
 
         Args:
             path: Full path of the file to edit
@@ -1056,6 +1096,15 @@ def configure_webdav_tools(mcp: MCPServer):
                 content_type = source.content_type
                 etag = source.etag
 
+                # Before anything is decoded or read into memory. UTF-8 validity
+                # is no proof of text: an all-ASCII PDF decodes, and an edit
+                # would shift the offsets in its xref table. The type is the
+                # download's Content-Type. The check is an allow-list rather
+                # than is_parseable_document, which depends on which document
+                # processors this deployment registered.
+                if not is_editable_text(content_type, path):
+                    raise ToolError(_not_editable_message(path, content_type))
+
                 def _read_all() -> bytes:
                     with source.open() as fh:
                         return fh.read()
@@ -1085,7 +1134,7 @@ def configure_webdav_tools(mcp: MCPServer):
                 "it), so the edit cannot be protected against concurrent "
                 "changes. Use nc_webdav_write_file instead."
             )
-        if if_match is not None and _normalize_etag(if_match) != etag:
+        if if_match is not None and normalize_etag(if_match) != etag:
             raise ToolError(
                 f"{path!r} has changed since you read it. Read it again and "
                 "base the edit on the current content."

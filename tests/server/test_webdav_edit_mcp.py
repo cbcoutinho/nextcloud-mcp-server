@@ -149,6 +149,46 @@ async def test_crlf_line_endings_survive_an_edit(nc_mcp_client, nc_client, text_
     assert await _content(nc_client, path) == b"1st\r\n2nd\r\nthird\r\n"
 
 
+async def test_ascii_pdf_is_refused_and_left_untouched(
+    nc_mcp_client, nc_client, text_file
+):
+    """An all-ASCII PDF decodes as UTF-8, so only the type gate protects it."""
+    original = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 1\n"
+    path = await text_file(original, suffix=".pdf")
+
+    text = _error_text(
+        await nc_mcp_client.call_tool(
+            "nc_webdav_edit_file",
+            {
+                "path": path,
+                "edits": [{"old_string": "Catalog", "new_string": "Pages"}],
+            },
+        )
+    )
+
+    assert "application/pdf" in text
+    assert "nc_webdav_write_file" in text
+    assert await _content(nc_client, path) == original
+
+
+async def test_edit_in_an_lf_region_of_a_mixed_file(
+    nc_mcp_client, nc_client, text_file
+):
+    path = await text_file(b"lf one\nlf two\ncrlf one\r\ncrlf two\r\n", suffix=".txt")
+
+    _payload(
+        await nc_mcp_client.call_tool(
+            "nc_webdav_edit_file",
+            {
+                "path": path,
+                "edits": [{"old_string": "lf one\nlf two", "new_string": "1\n2"}],
+            },
+        )
+    )
+
+    assert await _content(nc_client, path) == b"1\n2\ncrlf one\r\ncrlf two\r\n"
+
+
 async def test_read_line_range(nc_mcp_client, text_file):
     path = await text_file(b"l1\nl2\nl3\nl4\nl5\n", suffix=".txt")
 

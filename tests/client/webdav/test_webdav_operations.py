@@ -337,7 +337,7 @@ async def test_write_returns_etag_usable_without_reread(
     content, _, read_etag = await nc_client.webdav.read_file(path)
     assert content == b"v2-longer-body"
     # read_file and write_file must agree on the representation — the reason both
-    # go through _normalize_etag.
+    # go through normalize_etag.
     assert read_etag == second["etag"]
 
     # A value that was never this file's etag must be refused, and must not
