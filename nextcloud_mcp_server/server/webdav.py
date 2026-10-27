@@ -47,6 +47,7 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+from nextcloud_mcp_server.server.webdav_image import configure_webdav_image_tools
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
     is_blank_comment,
@@ -382,6 +383,10 @@ def configure_webdav_tools(mcp: MCPServer):
         page_end: int | None = None,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
+
+        For photos, screenshots and other images, use nc_webdav_view_image
+        instead: it shows you the image itself, while this tool returns it as
+        base64 text or OCR output.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
         file (or an ancestor folder) carries an excluded system tag.
@@ -1653,3 +1658,5 @@ def configure_webdav_tools(mcp: MCPServer):
             raise ToolError(f"No tag named {tag!r} exists")
         await client.webdav.remove_tag_from_file(file_id, found["id"])
         return TagFileResponse(path=path, tag=tag, tag_id=found["id"], assigned=False)
+
+    configure_webdav_image_tools(mcp)
