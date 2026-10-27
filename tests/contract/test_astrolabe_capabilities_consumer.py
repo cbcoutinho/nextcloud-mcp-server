@@ -33,6 +33,7 @@ See ADR-029 for the overall contract-testing architecture.
 
 import pytest
 from httpx import BasicAuth
+from pact import match
 
 from nextcloud_mcp_server.capabilities import allowed_doc_types, clear_cache
 from nextcloud_mcp_server.client import NextcloudClient
@@ -40,7 +41,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 pytestmark = pytest.mark.contract
 
 
-def _ocs_capabilities(enabled_doc_types: list[str]) -> dict:
+def _ocs_capabilities(enabled_doc_types: object) -> dict:
     """Minimal OCS envelope carrying just astrolabe's semantic_search block.
 
     Intentionally omits the rest of a real OCS response (other apps'
@@ -75,7 +76,9 @@ async def test_capabilities_report_admin_approved_doc_types(consumer_pact):
         .with_header("OCS-APIRequest", "true")
         .will_respond_with(200)
         .with_body(
-            _ocs_capabilities(["file", "note"]),
+            # The consumer reads this as a set, and a real astrolabe lists every
+            # approved source in its own catalog order, so pin membership only.
+            _ocs_capabilities(match.array_containing(["file", "note"])),
             content_type="application/json",
         )
     )
