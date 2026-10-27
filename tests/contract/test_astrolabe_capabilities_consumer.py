@@ -74,6 +74,8 @@ async def test_capabilities_report_admin_approved_doc_types(consumer_pact):
         .given("astrolabe has approved file and note for semantic search")
         .with_request("GET", "/ocs/v2.php/cloud/capabilities")
         .with_header("OCS-APIRequest", "true")
+        # Without it Nextcloud answers OCS in XML.
+        .with_header("Accept", "application/json")
         .will_respond_with(200)
         .with_body(
             # The consumer reads this as a set, and a real astrolabe lists every
@@ -104,6 +106,8 @@ async def test_capabilities_report_all_sources_disabled(consumer_pact):
         .given("astrolabe has disabled all sources for semantic search")
         .with_request("GET", "/ocs/v2.php/cloud/capabilities")
         .with_header("OCS-APIRequest", "true")
+        # Without it Nextcloud answers OCS in XML.
+        .with_header("Accept", "application/json")
         .will_respond_with(200)
         .with_body(
             _ocs_capabilities([]),
@@ -139,6 +143,8 @@ async def test_capabilities_reflect_per_user_narrowing(consumer_pact):
         .given("astrolabe reports effective sources for a user who disabled notes")
         .with_request("GET", "/ocs/v2.php/cloud/capabilities")
         .with_header("OCS-APIRequest", "true")
+        # Without it Nextcloud answers OCS in XML.
+        .with_header("Accept", "application/json")
         .will_respond_with(200)
         .with_body(
             # Admin allows file+note tenant-wide; this user narrowed out note,
