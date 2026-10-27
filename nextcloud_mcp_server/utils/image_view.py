@@ -1,16 +1,21 @@
 """Prepare an image for a vision model: decode, orient, downscale, re-encode.
 
-Pure function, no I/O. ``nc_webdav_view_image`` hands the bytes of a Nextcloud
-preview (or of the original file) to :func:`prepare_image` and returns the
-result as an MCP image block, which clients pass to the model as an image
-rather than as text.
+Pure functions, no I/O. ``nc_webdav_view_image`` and
+``nc_mail_view_attachment`` hand the bytes of an image to :func:`prepare_image`
+and wrap the result with :func:`image_tool_result`, which returns it as an MCP
+image block that clients pass to the model as an image rather than as text.
 """
 
+import base64
 import io
+import json
 import math
 from dataclasses import dataclass
 
+from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+from nextcloud_mcp_server.models.base import BaseResponse
 
 #: Longest edge sent by default. Every Claude model takes an image this size
 #: without downscaling it, and it stays under the 2000 px per-image limit the
@@ -154,4 +159,29 @@ def prepare_image(raw: bytes, max_size: int = DEFAULT_MAX_SIZE) -> PreparedImage
         height=oriented.height,
         source_width=source_width,
         source_height=source_height,
+    )
+
+
+def image_tool_result(
+    prepared: PreparedImage, response: BaseResponse
+) -> CallToolResult:
+    """The result of an image tool: the image, then ``response`` as JSON.
+
+    A tool that declares ``Annotated[CallToolResult, <Response>]`` returns this.
+    The image block comes first, which is what a client hands to the model as a
+    picture. The text block carries the same JSON as ``structured_content``,
+    for clients that read only text; the SDK validates the structured part
+    against the response model.
+    """
+    structured = response.model_dump(mode="json", by_alias=True)
+    return CallToolResult(
+        content=[
+            ImageContent(
+                type="image",
+                data=base64.b64encode(prepared.data).decode("ascii"),
+                mime_type=prepared.mime_type,
+            ),
+            TextContent(type="text", text=json.dumps(structured, indent=2)),
+        ],
+        structured_content=structured,
     )

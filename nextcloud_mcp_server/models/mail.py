@@ -248,3 +248,28 @@ class GetAttachmentResponse(BaseResponse):
     mime: str | None = Field(None, description="MIME type")
     size: int | None = Field(None, description="Size in bytes")
     content: str | None = Field(None, description="Attachment content, base64-encoded")
+
+
+class ViewMailAttachmentResponse(BaseResponse):
+    """Structured part of ``nc_mail_view_attachment``. The image itself travels
+    alongside it as an MCP image block."""
+
+    message_id: int = Field(description="Message the attachment belongs to")
+    attachment_id: str = Field(description="ID of the attachment")
+    name: str = Field(description="File name of the attachment")
+    mime_type: str = Field(
+        description="Format of the image sent: image/jpeg or image/png"
+    )
+    width: int = Field(description="Width of the image sent, in pixels")
+    height: int = Field(description="Height of the image sent, in pixels")
+    source_width: int = Field(
+        description=(
+            "Width of the attachment as decoded, after orientation. Larger than "
+            "width when the image was scaled down, so a larger max_size would "
+            "show more detail."
+        )
+    )
+    source_height: int = Field(
+        description="Height of the attachment as decoded, after orientation"
+    )
+    size: int = Field(description="Size of the image sent, in bytes")

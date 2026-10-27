@@ -1,12 +1,22 @@
 """Unit tests for preparing images for a vision model (utils/image_view)."""
 
+import base64
 import io
+import json
 
 import pytest
+from mcp.types import ImageContent, TextContent
 from PIL import Image
+from pydantic import ConfigDict, Field
 
+from nextcloud_mcp_server.models.base import BaseResponse
 from nextcloud_mcp_server.utils import image_view
-from nextcloud_mcp_server.utils.image_view import ImageError, prepare_image
+from nextcloud_mcp_server.utils.image_view import (
+    ImageError,
+    PreparedImage,
+    image_tool_result,
+    prepare_image,
+)
 
 
 def _encode(image: Image.Image, fmt: str, **kwargs) -> bytes:
@@ -124,3 +134,38 @@ def test_too_many_pixels_are_refused_before_decoding(monkeypatch):
 
     with pytest.raises(ImageError, match="20x20 pixels"):
         prepare_image(raw)
+
+
+class _Response(BaseResponse):
+    """A response with an aliased field, to show the dump uses the alias."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    mime_type: str = Field(alias="mimeType")
+
+
+def test_image_tool_result_is_the_image_then_the_response_as_json():
+    prepared = PreparedImage(
+        data=b"\xff\xd8jpeg bytes",
+        mime_type="image/jpeg",
+        width=10,
+        height=5,
+        source_width=20,
+        source_height=10,
+    )
+    response = _Response(name="a.jpg", mime_type="image/jpeg")
+
+    result = image_tool_result(prepared, response)
+
+    image, text = result.content
+    assert isinstance(image, ImageContent)
+    assert image.mime_type == "image/jpeg"
+    assert base64.b64decode(image.data) == prepared.data
+    expected = response.model_dump(mode="json", by_alias=True)
+    assert result.structured_content == expected
+    assert expected["mimeType"] == "image/jpeg"
+    assert isinstance(text, TextContent)
+    assert json.loads(text.text) == expected
+    assert text.text == json.dumps(expected, indent=2)
+    assert result.is_error is False

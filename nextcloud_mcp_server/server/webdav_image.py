@@ -10,8 +10,6 @@ Kept apart from ``server/webdav.py`` because it brings its own concerns
 (Pillow, image content blocks); it registers as part of the WebDAV tools.
 """
 
-import base64
-import json
 import logging
 import mimetypes
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -20,7 +18,7 @@ from anyio.to_thread import run_sync
 from httpx import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
@@ -40,6 +38,7 @@ from nextcloud_mcp_server.utils.image_view import (
     MAX_SIZE,
     ImageError,
     PreparedImage,
+    image_tool_result,
     prepare_image,
 )
 
@@ -192,18 +191,7 @@ async def nc_webdav_view_image(
         size=len(prepared.data),
         url=await _file_link(client, path),
     )
-    structured = response.model_dump(mode="json", by_alias=True)
-    return CallToolResult(
-        content=[
-            ImageContent(
-                type="image",
-                data=base64.b64encode(prepared.data).decode("ascii"),
-                mime_type=prepared.mime_type,
-            ),
-            TextContent(type="text", text=json.dumps(structured, indent=2)),
-        ],
-        structured_content=structured,
-    )
+    return image_tool_result(prepared, response)
 
 
 def configure_webdav_image_tools(mcp: MCPServer) -> None:
