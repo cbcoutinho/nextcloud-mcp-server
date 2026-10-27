@@ -397,6 +397,10 @@ async def test_save_draft_lands_in_drafts_and_delivers_nothing(
         assert len(ids) == 1, f"expected one draft {subject!r} in {drafts_name}"
         _, flags = imap.fetch(ids[0], "(FLAGS)")
         assert b"\\Draft" in flags[0], f"draft lacks the \\Draft flag: {flags}"
+        # Every draft the tool saves is marked as AI-generated, which Mail
+        # (5.12+) writes into the IMAP draft as a header.
+        _, header = imap.fetch(ids[0], "(BODY.PEEK[HEADER.FIELDS (X-AI-GENERATED)])")
+        assert b"X-AI-Generated: 1" in header[0][1], f"draft not marked: {header}"
     finally:
         imap.logout()
 

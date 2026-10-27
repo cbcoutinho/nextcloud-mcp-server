@@ -10,12 +10,12 @@ Uses two endpoint types:
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
    mailboxes, and messages, downloading attachments, the two-step outbox send, the
    two-step draft save, and every write operation (flags, tags, move, delete),
-   none of which has an OCS equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
-   are CSRF-gated for browser sessions, but Nextcloud exempts any request carrying
-   the ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
-   Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
-   (verified end-to-end against a live Mail 5.x backend; see the GreenMail
-   integration tests).
+   none of which has an OCS equivalent. These REST resource routes (from
+   ``'resources'`` in ``routes.php``) are CSRF-gated for browser sessions, but
+   Nextcloud exempts any request carrying the ``OCS-APIRequest: true`` header from
+   the CSRF check — so Basic Auth (App Password) + that header is sufficient. No
+   ``requesttoken`` round-trip is needed (verified end-to-end against a live Mail
+   5.x backend; see the GreenMail integration tests).
 
 Attachment downloads use the direct route ``/api/messages/{id}/attachment/{id}``,
 which returns the raw file bytes (via core's ``DownloadResponse``). The OCS
@@ -426,8 +426,8 @@ class MailClient(BaseNextcloudClient):
         (``OutboxController::create`` / ``DraftsController::create``), so one
         builder keeps the two from drifting apart. ``bodyPlain``/``bodyHtml``
         exist since Mail 4.2.0; earlier versions took a single ``body``.
-        ``isAiGenerated`` exists since Mail 5.12.0 and is sent only when set,
-        so the body for older versions stays as it was.
+        ``isAiGenerated`` exists since Mail 5.12.0 and is sent only for drafts
+        (``ai_generated``), so the outbox body stays as it was.
         """
         payload: dict[str, Any] = {
             "accountId": account_id,
@@ -527,7 +527,6 @@ class MailClient(BaseNextcloudClient):
         is_html: bool = False,
         cc: list[dict[str, str]] | None = None,
         bcc: list[dict[str, str]] | None = None,
-        ai_generated: bool = False,
     ) -> dict[str, Any]:
         """Stage a draft in the Mail app's database. Never sends anything.
 
@@ -541,6 +540,11 @@ class MailClient(BaseNextcloudClient):
         the local record, but writing the draft to IMAP does not turn it into
         ``In-Reply-To``/``References`` headers, so the move drops it.
 
+        The draft is always marked as AI-generated (``isAiGenerated``): every
+        draft this client writes comes from an agent. Mail 5.12+ writes an
+        ``X-AI-Generated: 1`` header into the IMAP draft and shows the marker,
+        which the person sending can remove. Older versions ignore the field.
+
         Args:
             account_id: The mail account the draft belongs to.
             to: Recipients ``[{"label": "...", "email": "..."}]`` (may be empty).
@@ -549,9 +553,6 @@ class MailClient(BaseNextcloudClient):
             is_html: Whether ``body`` contains HTML.
             cc: Optional CC recipients (same format as ``to``).
             bcc: Optional BCC recipients (same format as ``to``).
-            ai_generated: Mark the draft as AI-generated (Mail 5.12+ writes an
-                ``X-AI-Generated: 1`` header into the IMAP draft; older
-                versions ignore it).
 
         Returns:
             The staged ``LocalMessage`` dict (``id``, ``accountId``, ``subject``, ...).
@@ -567,7 +568,7 @@ class MailClient(BaseNextcloudClient):
             is_html,
             cc=cc,
             bcc=bcc,
-            ai_generated=ai_generated,
+            ai_generated=True,
         )
         result = await self._api_write("POST", "/drafts", json_data=payload)
         draft = result.get("data") if isinstance(result, dict) else None
@@ -620,7 +621,6 @@ class MailClient(BaseNextcloudClient):
         is_html: bool = False,
         cc: list[dict[str, str]] | None = None,
         bcc: list[dict[str, str]] | None = None,
-        ai_generated: bool = False,
     ) -> dict[str, Any]:
         """Save a draft to the account's IMAP Drafts mailbox without sending it.
 
@@ -641,12 +641,11 @@ class MailClient(BaseNextcloudClient):
             is_html: Whether ``body`` contains HTML.
             cc: Optional CC recipients (same format as ``to``).
             bcc: Optional BCC recipients (same format as ``to``).
-            ai_generated: Mark the draft as AI-generated (see :meth:`create_draft`).
 
         Returns:
-            ``{"draft_id", "draft", "response"}``: the id the draft was staged
-            under (stale once moved), the staged ``LocalMessage`` dict, and the
-            move step's response body.
+            ``{"draft", "response"}``: the staged ``LocalMessage`` dict, and the
+            move step's response body. The staged record's ``id`` is stale once
+            the move succeeds, since Mail deletes the record.
         """
         draft = await self.create_draft(
             account_id,
@@ -656,7 +655,6 @@ class MailClient(BaseNextcloudClient):
             is_html=is_html,
             cc=cc,
             bcc=bcc,
-            ai_generated=ai_generated,
         )
         draft_id = draft["id"]
         try:
@@ -664,7 +662,7 @@ class MailClient(BaseNextcloudClient):
         except (HTTPStatusError, RequestError):
             await self._discard_staged_draft(draft_id)
             raise
-        return {"draft_id": draft_id, "draft": draft, "response": move_result}
+        return {"draft": draft, "response": move_result}
 
     async def _discard_staged_draft(self, draft_id: int) -> None:
         """Best-effort removal of a staged draft after its move failed.

@@ -57,10 +57,10 @@ Things worth knowing:
 
 - **No Drafts mailbox?** Mail creates one named `Drafts` on the first save and
   assigns it as the account's drafts mailbox.
-- **The returned `draft_id` is stale.** Writing the draft to IMAP deletes the
-  staging record, so that id cannot address the draft afterwards. Look for the
-  draft in the Drafts mailbox instead (`nc_mail_list_mailboxes` →
-  `specialUse` contains `drafts`).
+- **Find the draft in the Drafts mailbox.** Writing the draft to IMAP deletes
+  the staging record, so the tool returns no id for it. Look for the draft in
+  the Drafts mailbox (`nc_mail_list_mailboxes` → `specialUse` contains
+  `drafts`).
 - **No update or delete tool.** The Mail app's draft update and delete routes
   only reach the staging record, which no longer exists once the draft is on
   IMAP. To revise a draft, save a new one and discard the old one in the mail
@@ -71,14 +71,11 @@ Things worth knowing:
   reply-reference parameter. Set the subject (`Re: ...`) and recipients
   yourself. A reply sent from the draft is not linked to the original by
   headers; only clients that also thread by subject will group it.
-- **Marking drafts as AI-generated is opt-in.** With
-  `MAIL_DRAFT_MARK_AI_GENERATED=true` the server asks the Mail app to mark
-  every saved draft (Mail 5.12+; older versions ignore it). Mail then writes an
+- **Every draft is marked as AI-generated.** The tool always asks the Mail app
+  to mark the draft (Mail 5.12+; older versions ignore it). Mail then writes an
   `X-AI-Generated: 1` header into the draft and pre-ticks "Mark as AI
-  generated" when the draft is opened in Nextcloud Mail; the person sending it
-  can untick it there. It is a server setting, not a tool parameter, so the
-  agent cannot switch it off. See
-  [configuration.md](configuration.md#mail-drafts--mail_draft_mark_ai_generated).
+  generated" when the draft is opened in Nextcloud Mail. The person sending it
+  can untick it there.
 - **A failed save leaves no staging record behind.** If writing to IMAP fails,
   the tool deletes the staging record before reporting the error. Mail would
   otherwise keep it, marked failed, where nothing lists it.

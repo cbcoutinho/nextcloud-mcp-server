@@ -212,24 +212,12 @@ class SendMessageResponse(BaseResponse):
 class SaveDraftResponse(BaseResponse):
     """Response model for saving a draft (nothing is sent)."""
 
-    draft_id: int = Field(
-        description="ID the Mail app staged the draft under. Stale on return: "
-        "writing the draft to the Drafts mailbox removes that staging record, so "
-        "this ID cannot address the draft afterwards. Find the saved draft in the "
-        "account's Drafts mailbox instead."
-    )
     account_id: int = Field(description="Mail account the draft was saved to")
     subject: str = Field(description="Subject of the saved draft")
     move_result: str | None = Field(
         None,
         description="The Mail app's confirmation that the draft was written to "
         "IMAP, e.g. 'Message moved to IMAP'",
-    )
-    marked_ai_generated: bool = Field(
-        False,
-        description="Whether the server asked the Mail app to mark the draft as "
-        "AI-generated (setting MAIL_DRAFT_MARK_AI_GENERATED). Mail versions "
-        "before 5.12 ignore the request.",
     )
     message: str = Field(description="Human-readable summary")
 

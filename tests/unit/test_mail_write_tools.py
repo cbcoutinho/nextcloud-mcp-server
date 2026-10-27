@@ -224,25 +224,15 @@ def test_every_tool_scope_is_grantable():
 def _saved_draft(draft_id: int = 42) -> dict:
     """What ``MailClient.save_draft`` returns after a successful create + move."""
     return {
-        "draft_id": draft_id,
         "draft": {"id": draft_id, "accountId": 1, "subject": "Re: Hi"},
         "response": {"status": "success", "data": "Message moved to IMAP"},
     }
 
 
-def _ai_marker_setting(mocker, enabled: bool) -> None:
-    """Pin MAIL_DRAFT_MARK_AI_GENERATED for the tool, independent of the env."""
-    mocker.patch(
-        "nextcloud_mcp_server.server.mail.get_settings",
-        return_value=SimpleNamespace(mail_draft_mark_ai_generated=enabled),
-    )
-
-
 async def test_save_draft_parses_recipients_and_returns_a_typed_response(
-    mail_tools, fake_mail, mocker
+    mail_tools, fake_mail
 ):
     """JSON recipients reach the client as dicts, and nothing reaches send."""
-    _ai_marker_setting(mocker, False)
     fake_mail.save_draft.return_value = _saved_draft()
 
     result = await mail_tools["nc_mail_save_draft"].fn(
@@ -256,12 +246,12 @@ async def test_save_draft_parses_recipients_and_returns_a_typed_response(
 
     assert isinstance(result, SaveDraftResponse)
     assert result.success is True
-    assert result.draft_id == 42
     assert result.account_id == 1
     assert result.subject == "Re: Hi"
     assert result.move_result == "Message moved to IMAP"
-    assert result.marked_ai_generated is False
     assert "Nothing was sent" in result.message
+    # The staging id is stale once the draft is on IMAP, so it is not returned.
+    assert "draft_id" not in result.model_dump()
     fake_mail.save_draft.assert_awaited_once_with(
         account_id=1,
         to=[{"email": "alice@example.com", "label": "Alice"}],
@@ -270,26 +260,12 @@ async def test_save_draft_parses_recipients_and_returns_a_typed_response(
         is_html=False,
         cc=[{"email": "bob@example.com"}],
         bcc=None,
-        ai_generated=False,
     )
     fake_mail.send_message.assert_not_awaited()
 
 
-async def test_save_draft_marks_ai_generated_when_the_operator_enables_it(
-    mail_tools, fake_mail, mocker
-):
-    """MAIL_DRAFT_MARK_AI_GENERATED reaches the client, and the response says so."""
-    _ai_marker_setting(mocker, True)
-    fake_mail.save_draft.return_value = _saved_draft()
-
-    result = await mail_tools["nc_mail_save_draft"].fn(1, "[]", "Hi", "body", _ctx())
-
-    assert result.marked_ai_generated is True
-    assert fake_mail.save_draft.await_args.kwargs["ai_generated"] is True
-
-
 def test_save_draft_has_no_ai_marker_parameter(mail_tools):
-    """The marker is the operator's decision, so the agent must not get a knob."""
+    """Every draft is marked as AI-generated, so the agent gets no knob for it."""
     params = mail_tools["nc_mail_save_draft"].parameters["properties"]
     assert not any("ai" in name.split("_") for name in params)
 

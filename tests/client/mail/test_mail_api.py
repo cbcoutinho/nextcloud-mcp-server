@@ -652,7 +652,8 @@ async def test_create_draft_posts_a_local_message(mocker):
     """POST /drafts takes the same LocalMessage body as the outbox, minus the reply id.
 
     ``inReplyToMessageId`` is not sent: Mail does not carry it into the IMAP
-    draft, so it would be dropped by the move anyway.
+    draft, so it would be dropped by the move anyway. ``isAiGenerated`` is
+    always sent: every draft this client writes comes from an agent.
     """
     mock_make_request = mocker.patch.object(
         MailClient, "_make_request", return_value=_staged_draft_response()
@@ -679,6 +680,7 @@ async def test_create_draft_posts_a_local_message(mocker):
         "to": [{"email": "a@b.com", "label": "A"}],
         "bodyPlain": "body",
         "bcc": [{"email": "c@d.com"}],
+        "isAiGenerated": True,
     }
     assert call.kwargs["headers"]["Content-Type"] == "application/json"
 
@@ -699,22 +701,8 @@ async def test_create_draft_sends_html_as_body_html(mocker):
     assert body["to"] == []
 
 
-async def test_create_draft_can_mark_the_draft_ai_generated(mocker):
-    """``isAiGenerated`` is sent only when asked for (Mail 5.12+ honours it)."""
-    mock_make_request = mocker.patch.object(
-        MailClient, "_make_request", return_value=_staged_draft_response()
-    )
-
-    client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    await client.create_draft(1, [], "Hi", "body", ai_generated=True)
-    await client.create_draft(1, [], "Hi", "body")
-
-    marked, unmarked = (c.kwargs["json"] for c in mock_make_request.call_args_list)
-    assert marked["isAiGenerated"] is True
-    assert "isAiGenerated" not in unmarked
-
-
-async def test_save_draft_passes_the_ai_marker_to_the_create_step(mocker):
+async def test_save_draft_marks_the_draft_ai_generated(mocker):
+    """The create step of save_draft carries ``isAiGenerated`` (Mail 5.12+)."""
     mock_make_request = mocker.patch.object(
         MailClient,
         "_make_request",
@@ -722,7 +710,7 @@ async def test_save_draft_passes_the_ai_marker_to_the_create_step(mocker):
     )
 
     client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    await client.save_draft(1, [], "Hi", "body", ai_generated=True)
+    await client.save_draft(1, [], "Hi", "body")
 
     assert mock_make_request.call_args_list[0].kwargs["json"]["isAiGenerated"] is True
 
@@ -785,7 +773,7 @@ async def test_save_draft_stages_then_moves_and_never_touches_the_outbox(mocker)
     client = MailClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
     result = await client.save_draft(1, [{"email": "a@b.com"}], "Hi", "body")
 
-    assert result["draft_id"] == 42
+    assert result["draft"]["id"] == 42
     assert result["response"]["data"] == "Message moved to IMAP"
     paths = [call.args for call in mock_make_request.call_args_list]
     assert paths == [

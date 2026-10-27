@@ -14,7 +14,6 @@ from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.mail import DEFAULT_TAG_COLOR
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.mail import (
     GetAttachmentResponse,
@@ -384,9 +383,9 @@ async def nc_mail_save_draft(
     tool. To revise one, save a new draft and ask the user to discard the old
     one.
 
-    If the server operator enabled it, the draft is marked as AI-generated,
-    which Nextcloud Mail shows when the draft is opened. ``marked_ai_generated``
-    in the response says whether the marker was requested.
+    The draft is marked as AI-generated, which Nextcloud Mail (5.12 and
+    later) shows when the draft is opened. The person sending it can remove
+    the marker.
 
     Args:
         account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
@@ -398,15 +397,12 @@ async def nc_mail_save_draft(
         bcc: Optional JSON array of BCC recipients
 
     Returns:
-        SaveDraftResponse confirming the draft was saved. Its ``draft_id`` is
-        stale on return: look for the draft in the account's Drafts mailbox.
+        SaveDraftResponse confirming the draft was saved. Find the draft in
+        the account's Drafts mailbox.
     """
     to_list = _parse_recipients(to, "to")
     cc_list = _parse_recipients(cc, "cc")
     bcc_list = _parse_recipients(bcc, "bcc")
-    # An operator setting, not a tool parameter: whether drafts carry the
-    # marker is the deployment's decision, not the calling agent's.
-    ai_generated = get_settings().mail_draft_mark_ai_generated
 
     client = await get_client(ctx)
     try:
@@ -418,7 +414,6 @@ async def nc_mail_save_draft(
             is_html=is_html,
             cc=cc_list or None,
             bcc=bcc_list or None,
-            ai_generated=ai_generated,
         )
     except RequestError as e:
         raise MCPError(
@@ -437,11 +432,9 @@ async def nc_mail_save_draft(
     move_response = result.get("response")
     move_result = move_response.get("data") if isinstance(move_response, dict) else None
     return SaveDraftResponse(
-        draft_id=result["draft_id"],
         account_id=account_id,
         subject=subject,
         move_result=move_result if isinstance(move_result, str) else None,
-        marked_ai_generated=ai_generated,
         message=f"Draft saved to the Drafts mailbox of account {account_id}. "
         "Nothing was sent.",
     )

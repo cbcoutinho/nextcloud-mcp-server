@@ -83,7 +83,6 @@ def tools() -> dict:
 def fake_mail(mocker) -> AsyncMock:
     mail = AsyncMock()
     mail.save_draft.return_value = {
-        "draft_id": 42,
         "draft": {"id": 42},
         "response": {"status": "success", "data": "Message moved to IMAP"},
     }
