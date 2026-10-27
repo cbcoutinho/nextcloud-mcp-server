@@ -6,6 +6,7 @@
 |------|-------------|
 | `nc_webdav_list_directory` | List files and directories in any NextCloud path |
 | `nc_webdav_read_file` | Read file content (documents extracted to text/markdown, text decoded, other binary as base64) |
+| `nc_webdav_view_image` | Show an image to a vision model as an image, scaled to a useful size |
 | `nc_webdav_write_file` | Create or update files in NextCloud |
 | `nc_webdav_create_directory` | Create new directories |
 | `nc_webdav_delete_resource` | Delete files or directories |
@@ -80,6 +81,44 @@ await nc_webdav_copy_resource("document.txt", "Backup/document.txt")
 # Copy a directory
 await nc_webdav_copy_resource("Projects/ProjectA", "Projects/ProjectA_Backup")
 ```
+
+### Viewing Images
+
+`nc_webdav_view_image` returns an image as an MCP image block, which clients
+such as Claude Desktop and Claude Code pass to the model as a picture. That is
+the difference to `nc_webdav_read_file`: it hands an image back as base64 text
+inside its JSON (or as OCR text), which a model cannot look at, and a phone
+photo as base64 is large enough to fill a context window on its own.
+
+```python
+# A photo, scaled to at most 1568 px on its longer edge (the default)
+await nc_webdav_view_image("Photos/2026/whiteboard.jpg")
+
+# More pixels to read small print, or fewer to save tokens
+await nc_webdav_view_image("Scans/invoice.png", max_size=2576)
+await nc_webdav_view_image("Photos/2026/whiteboard.jpg", max_size=512)
+```
+
+- **Nextcloud renders, the server scales.** The image is fetched through
+  Nextcloud's preview endpoint (`/index.php/core/preview.png`), which applies
+  the EXIF orientation and handles every format the instance can preview, HEIC
+  included where the server supports it. The MCP server then scales it to
+  `max_size` (64 to 2576, the most any Claude model looks at) and re-encodes
+  it: JPEG, or PNG when the image has transparency. At the default of
+  1568 px a photo arrives at 200 to 400 KB. Keep `max_size` at 2000 or
+  below in long conversations: once a request carries more than 20 images,
+  the Claude API refuses any image larger than that.
+- **Fallback to the original.** When Nextcloud has no preview for a file, the
+  original (up to 40 MB) is downloaded and decoded locally (JPEG, PNG, GIF,
+  WebP, BMP, TIFF).
+- **Images only.** Files whose name says they are something else (text, PDF,
+  Markdown) are refused before any request, since Nextcloud would happily
+  render them as pictures. Files without an extension are tried.
+- **Anywhere in the files tree.** Notes attachments, images on Collectives
+  pages and files shared in Talk are files like any other and work by path.
+- The structured part of the response says how large the image is, whether it
+  came from the preview or the original, and how large the image it was made
+  from was, so a caller can tell whether a higher `max_size` would show more.
 
 ### File Comments
 
