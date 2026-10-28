@@ -92,7 +92,7 @@ def _warn_vector_viz_deprecated() -> None:
     # use is counted by the surface="http_viz" search metric.
     logger.warning(
         "POST /api/v1/vector-viz/search is deprecated and will be removed; "
-        "use POST /api/v1/search with include_pca=true (Astrolabe releases after 0.47.0 do)"
+        "use POST /api/v1/search with include_pca=true (Astrolabe releases after 0.47.1 do)"
     )
 
 
