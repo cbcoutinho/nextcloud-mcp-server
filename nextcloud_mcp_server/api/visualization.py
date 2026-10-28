@@ -879,8 +879,11 @@ async def vector_search(request: Request) -> JSONResponse:
     """POST /api/v1/vector-viz/search - Vector search for visualization.
 
     DEPRECATED: use ``POST /api/v1/search`` with ``include_pca: true``, which
-    serves the same filters plus ``granularity`` and ``offset`` and returns the
-    plot under ``pca_data``. Kept for Astrolabe releases that still call it;
+    serves the same filters plus ``granularity`` and ``offset``. Two
+    differences a migrating caller hits: ``include_pca`` defaults to false
+    there (true here), and the plot comes back nested under ``pca_data``
+    rather than as top-level ``coordinates_3d``/``query_coords``/
+    ``pca_variance``. Kept for Astrolabe releases that still call it;
     removed once the ``http_viz`` search metric shows no traffic.
 
     Executes semantic search and returns results with optional PCA coordinates
