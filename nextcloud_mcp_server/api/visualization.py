@@ -12,6 +12,7 @@ already in Nextcloud. See tests/unit/test_api_no_whole_file_reads.py.
 All endpoints require OAuth bearer token authentication via UnifiedTokenVerifier.
 """
 
+import functools
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -83,6 +84,16 @@ from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 logger = logging.getLogger(__name__)
 
 _NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
+
+
+@functools.cache
+def _warn_vector_viz_deprecated() -> None:
+    # Once per process: an older Astrolabe calls this on every search. Ongoing
+    # use is counted by the surface="http_viz" search metric.
+    logger.warning(
+        "POST /api/v1/vector-viz/search is deprecated and will be removed; "
+        "use POST /api/v1/search with include_pca=true (Astrolabe releases after 0.47.0 do)"
+    )
 
 
 def _search_algorithm_label(algorithm: str, fusion: str) -> str:
@@ -867,6 +878,11 @@ async def unified_search(request: Request) -> JSONResponse:
 async def vector_search(request: Request) -> JSONResponse:
     """POST /api/v1/vector-viz/search - Vector search for visualization.
 
+    DEPRECATED: use ``POST /api/v1/search`` with ``include_pca: true``, which
+    serves the same filters plus ``granularity`` and ``offset`` and returns the
+    plot under ``pca_data``. Kept for Astrolabe releases that still call it;
+    removed once the ``http_viz`` search metric shows no traffic.
+
     Executes semantic search and returns results with optional PCA coordinates
     for 2D visualization.
 
@@ -883,6 +899,7 @@ async def vector_search(request: Request) -> JSONResponse:
 
     Requires OAuth bearer token for user filtering.
     """
+    _warn_vector_viz_deprecated()
     settings = get_settings()
     if not settings.vector_sync_enabled:
         return JSONResponse(
