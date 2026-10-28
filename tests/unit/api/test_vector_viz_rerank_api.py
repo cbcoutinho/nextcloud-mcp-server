@@ -246,3 +246,16 @@ def test_degraded_rerank_reports_false_and_still_returns_200():
 
     assert resp.status_code == 200
     assert resp.json()["reranked"] is False
+
+
+@pytest.mark.unit
+def test_deprecation_warning_is_logged_once_per_process(caplog):
+    """Older Astrolabe calls vector-viz on every search; warning per call would
+    flood the log."""
+    from nextcloud_mcp_server.api.visualization import _warn_vector_viz_deprecated
+
+    _warn_vector_viz_deprecated.cache_clear()
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.api.visualization"):
+        _warn_vector_viz_deprecated()
+        _warn_vector_viz_deprecated()
+    assert sum("deprecated" in r.getMessage() for r in caplog.records) == 1

@@ -121,7 +121,21 @@ def _state_sar_case() -> None:
     # Intentionally empty: no live-stack state to set up yet (phase 4).
 
 
+def _state_reranking_configured() -> None:
+    """Provider state for astrolabe's reranked-search pacts (search page and
+    unified search): ``POST /api/v1/search`` with ``rerank: true``, answered
+    with ``relevance``.
+
+    Both are bearer-authenticated, and a 200 needs a server with a reranker
+    configured, which the integration stack does not run. Seeding both is the
+    ADR-029 phase-4 test hook; until then these ride the broker's pending flow
+    like the SAR and purge pacts. Registered so the state is recognised by name.
+    """
+    # Intentionally empty: no reranker in the provider stack yet (phase 4).
+
+
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
+    "the server has reranking configured": _state_reranking_configured,
     "a user with background access can create a SAR case": _state_sar_case,
     "an open SAR case 101 exists": _state_sar_case,
     "an exported SAR case 101 exists": _state_sar_case,
