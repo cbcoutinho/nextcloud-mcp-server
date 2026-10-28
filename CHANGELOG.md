@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.202.2 (2026-10-28)
+
+### Refactor
+
+- **api**: Astrolabe 0.47.1 still calls vector-viz; name the right release
+- **api**: name the two migration differences; pin the warn-once
+- **api**: deprecate POST /api/v1/vector-viz/search
+
 ## v0.202.1 (2026-10-26)
 
 ### Fix
