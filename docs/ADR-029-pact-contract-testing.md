@@ -92,6 +92,28 @@ Broker-dependent steps are skipped when `PACT_BROKER` is unset (forks).
 `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` (Tailscale github-runner OAuth client),
 `PACT_BROKER` (base URL), `PACT_USERNAME`, `PACT_PASSWORD` (broker basic auth).
 
+### Upstream Nextcloud apps (decided 2026-10-29)
+
+Pact covers only boundaries where **both sides are ours**: astrolabe and
+astrolabe-cloud-gateway. The Nextcloud server and the upstream apps the MCP
+tools wrap (Mail, WebDAV, `/core/preview.png`, Notes, Deck, Tables, …) are
+**not** Pact participants:
+
+- Nobody can run a provider verifier for them. A consumer pact on its own only
+  restates our client's assumptions, so it would stay green when Mail or core
+  changes its API. That is the failure we would want it to catch.
+- Making such a pact bite would mean verifying it against the docker-compose
+  Nextcloud, with provider states that seed accounts, mail, drafts and files.
+  That is the integration matrix again, with extra machinery on top.
+
+For these boundaries the **integration lanes against a real Nextcloud are the
+contract**. Examples are `tests/integration/test_mail_greenmail.py` (drafts,
+attachment download and image view against Mail + GreenMail) and
+`tests/server/test_webdav_*_mcp.py` (conditional `If-Match` writes, previews).
+A tool that only calls upstream Nextcloud satisfies the review gate with e2e
+coverage. It needs a pact only if it also crosses an astrolabe or gateway
+boundary.
+
 ## Consequences
 
 - **Fast, independent signal**: either side detects an incompatible change in a
