@@ -1,8 +1,8 @@
 # Mail App
 
 Tools for the [Nextcloud Mail](https://github.com/nextcloud/mail) app: browsing
-accounts and mailboxes, reading and searching messages, sending, and managing
-message state (flags, tags, move, delete).
+accounts and mailboxes, reading and searching messages, sending, saving drafts,
+and managing message state (flags, tags, move, delete).
 
 ### Mail Tools
 
@@ -15,6 +15,7 @@ message state (flags, tags, move, delete).
 | `nc_mail_get_message_source` | Get a message's raw RFC 2822 source (all headers) |
 | `nc_mail_get_attachment` | Download one attachment (base64; capped at 5 MB inline) |
 | `nc_mail_send_message` | Send a message via the account's outbox |
+| `nc_mail_save_draft` | Save a message to the account's Drafts mailbox **without sending it** |
 | `nc_mail_set_flags` | Mark read/unread, star, mark answered or junk |
 | `nc_mail_create_tag` | Create a tag, or look up an existing one by name |
 | `nc_mail_set_tag` / `nc_mail_remove_tag` | Add / remove a tag on a message |
@@ -28,6 +29,67 @@ message state (flags, tags, move, delete).
 | `mail.read` | The listing, reading and attachment tools |
 | `mail.write` | Flags, tags, move, delete |
 | `mail.send` | `nc_mail_send_message` |
+| `mail.draft` | `nc_mail_save_draft` |
+
+The scopes are independent: none implies another. In particular `mail.draft`
+does not grant sending, and `mail.send` does not grant saving drafts. Granting
+`mail.read` + `mail.draft` while withholding `mail.send` lets an agent read mail
+and prepare replies that a person reviews and sends.
+
+### Saving drafts
+
+`nc_mail_save_draft` prepares a message without sending it. It takes the same
+`account_id`, `to`/`cc`/`bcc` (JSON arrays of `{"label", "email"}`), `subject`,
+`body` and `is_html` as `nc_mail_send_message`, and saves the result to the
+account's IMAP **Drafts** mailbox, where the user finds it in Nextcloud Mail and
+in any other mail client and sends it from there.
+
+Under the hood it makes the same two calls as the Mail web UI's composer:
+
+1. `POST /apps/mail/api/drafts` stages the draft in Nextcloud's database
+   (Mail 2.2.0+). A staged draft is visible in no mail client.
+2. `POST /apps/mail/api/drafts/move/{id}` writes it to the Drafts mailbox with
+   the `\Draft` flag (Mail 3.3.0+). The route is named "move" and calls
+   `DraftsService::sendMessage`, but it only stores the message on IMAP.
+   Nothing is sent over SMTP.
+
+Things worth knowing:
+
+- **No Drafts mailbox?** Mail creates one named `Drafts` on the first save and
+  assigns it as the account's drafts mailbox.
+- **Find the draft in the Drafts mailbox.** Writing the draft to IMAP deletes
+  the staging record, so the tool returns no id for it. Look for the draft in
+  the Drafts mailbox (`nc_mail_list_mailboxes` → `specialUse` contains
+  `drafts`).
+- **No update or delete tool.** The Mail app's draft update and delete routes
+  only reach the staging record, which no longer exists once the draft is on
+  IMAP. To revise a draft, save a new one and discard the old one in the mail
+  client. (`nc_mail_delete_message` can remove a saved draft, but it needs
+  `mail.write`.)
+- **Replies are not linked by headers.** Mail does not write
+  `In-Reply-To`/`References` into drafts it saves to IMAP, so the tool has no
+  reply-reference parameter. Set the subject (`Re: ...`) and recipients
+  yourself. A reply sent from the draft is not linked to the original by
+  headers; only clients that also thread by subject will group it.
+- **Every draft is marked as AI-generated.** The tool always asks the Mail app
+  to mark the draft (Mail 5.12+; older versions ignore it). Mail then writes an
+  `X-AI-Generated: 1` header into the draft and pre-ticks "Mark as AI
+  generated" when the draft is opened in Nextcloud Mail. The person sending it
+  can untick it there.
+- **A failed save leaves no staging record behind.** If writing to IMAP fails,
+  the tool deletes the staging record before reporting the error. Mail would
+  otherwise keep it, marked failed, where nothing lists it.
+
+**Operators with a fixed OIDC client:** `mail.draft` must be in that client's
+allowed scopes. Otherwise no token can carry it, the tool is hidden from
+`list_tools`, and every call is refused. For Nextcloud's `oidc` app, add it in
+Nextcloud → Administration → OpenID Connect (the app's `occ` commands can set
+`--allowed_scopes` only when creating a client); for an external IdP, add the
+scope to the client there. Users then have to re-authorize to get a token that
+carries it. On Login Flow v2 deployments, a user whose stored app-password
+grant is an explicit list also needs `mail.draft` added via
+`nc_auth_update_scopes`. See [Scope Enforcement](login-flow-v2.md#scope-enforcement)
+for how the two layers combine.
 
 ### Marking messages read
 

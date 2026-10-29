@@ -88,6 +88,10 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "mail.read",
         "mail.write",
         "mail.send",
+        # Saving drafts only. Deliberately not implied by, and not implying,
+        # mail.send or mail.write: it lets an agent prepare a message that a
+        # person reviews and sends, on a deployment that withholds mail.send.
+        "mail.draft",
         "talk.read",
         "talk.write",
         "collectives.read",

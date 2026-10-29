@@ -10,12 +10,17 @@ being used in a URL, and that the tools return typed ``BaseResponse`` models.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
 
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
-from nextcloud_mcp_server.models.mail import MailActionResponse, MailTagResponse
+from nextcloud_mcp_server.models.mail import (
+    MailActionResponse,
+    MailTagResponse,
+    SaveDraftResponse,
+)
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 from nextcloud_mcp_server.server.mail import configure_mail_tools
 from nextcloud_mcp_server.server.semantic import configure_semantic_tools
@@ -211,3 +216,139 @@ def test_every_tool_scope_is_grantable():
     assert required <= ALL_SUPPORTED_SCOPES, (
         f"scopes used by tools but not grantable: {sorted(required - ALL_SUPPORTED_SCOPES)}"
     )
+
+
+# --- Drafts -----------------------------------------------------------------
+
+
+def _saved_draft(draft_id: int = 42) -> dict:
+    """What ``MailClient.save_draft`` returns after a successful create + move."""
+    return {
+        "draft": {"id": draft_id, "accountId": 1, "subject": "Re: Hi"},
+        "response": {"status": "success", "data": "Message moved to IMAP"},
+    }
+
+
+async def test_save_draft_parses_recipients_and_returns_a_typed_response(
+    mail_tools, fake_mail
+):
+    """JSON recipients reach the client as dicts, and nothing reaches send."""
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    result = await mail_tools["nc_mail_save_draft"].fn(
+        1,
+        '[{"label": "Alice", "email": "alice@example.com"}]',
+        "Re: Hi",
+        "Thanks!",
+        _ctx(),
+        cc='[{"email": "bob@example.com"}]',
+    )
+
+    assert isinstance(result, SaveDraftResponse)
+    assert result.success is True
+    assert result.account_id == 1
+    assert result.subject == "Re: Hi"
+    assert result.move_result == "Message moved to IMAP"
+    assert "Nothing was sent" in result.message
+    # The staging id is stale once the draft is on IMAP, so it is not returned.
+    assert "draft_id" not in result.model_dump()
+    fake_mail.save_draft.assert_awaited_once_with(
+        account_id=1,
+        to=[{"email": "alice@example.com", "label": "Alice"}],
+        subject="Re: Hi",
+        body="Thanks!",
+        is_html=False,
+        cc=[{"email": "bob@example.com"}],
+        bcc=None,
+    )
+    fake_mail.send_message.assert_not_awaited()
+
+
+def test_save_draft_has_no_ai_marker_parameter(mail_tools):
+    """Every draft is marked as AI-generated, so the agent gets no knob for it."""
+    params = mail_tools["nc_mail_save_draft"].parameters["properties"]
+    assert not any("ai" in name.split("_") for name in params)
+
+
+async def test_save_draft_accepts_a_draft_without_recipients(mail_tools, fake_mail):
+    """Unlike sending, a draft may be saved before its recipients are known."""
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    await mail_tools["nc_mail_save_draft"].fn(1, "[]", "Hi", "body", _ctx())
+
+    assert fake_mail.save_draft.await_args.kwargs["to"] == []
+
+
+@pytest.mark.parametrize(
+    ("to", "expected"),
+    [
+        ("not json", "Invalid JSON in to"),
+        ('{"email": "a@b.com"}', "to must be a JSON array"),
+        ('[{"label": "no address"}]', "needs an 'email' string"),
+        ('["a@b.com"]', "needs an 'email' string"),
+    ],
+)
+async def test_save_draft_rejects_malformed_recipients_before_any_request(
+    mail_tools, fake_mail, to, expected
+):
+    """A bad recipient list fails with a message naming it, before any request."""
+    save_draft = mail_tools["nc_mail_save_draft"].fn
+    ctx = _ctx()
+    with pytest.raises(MCPError) as exc_info:
+        await save_draft(1, to, "Hi", "body", ctx)
+
+    assert expected in str(exc_info.value)
+    fake_mail.save_draft.assert_not_awaited()
+
+
+async def test_save_draft_failure_says_nothing_was_sent(mail_tools, fake_mail):
+    """An agent must not read a failed save as "maybe it went out"."""
+    request = httpx.Request(
+        "POST", "http://test.local/index.php/apps/mail/api/drafts/move/42"
+    )
+    response = httpx.Response(
+        500,
+        request=request,
+        text='{"status":"error","message":"Could not save draft message"}',
+    )
+    fake_mail.save_draft.side_effect = httpx.HTTPStatusError(
+        "HTTP 500", request=request, response=response
+    )
+    save_draft = mail_tools["nc_mail_save_draft"].fn
+    ctx = _ctx()
+    with pytest.raises(MCPError) as exc_info:
+        await save_draft(1, "[]", "Hi", "body", ctx)
+
+    message = str(exc_info.value)
+    assert "500" in message
+    assert "Could not save draft message" in message
+    assert "Nothing was sent" in message
+
+
+def test_save_draft_requires_only_the_draft_scope(mail_tools):
+    """mail.draft stands alone: neither mail.send nor mail.write may be required.
+
+    Requiring either would make the tool unusable on exactly the deployments it
+    is for, the ones that withhold mail.send.
+    """
+    assert list(mail_tools["nc_mail_save_draft"].fn._required_scopes) == ["mail.draft"]
+
+
+def test_no_other_mail_tool_accepts_the_draft_scope(mail_tools):
+    """mail.draft must not open up sending, moving or deleting mail."""
+    for name, tool in mail_tools.items():
+        if name != "nc_mail_save_draft":
+            assert "mail.draft" not in tool.fn._required_scopes, name
+
+
+def test_save_draft_annotations_and_description(mail_tools):
+    """ADR-017 create semantics; destructive_hint must be explicitly false,
+    since MCP defaults it to true for a tool that is not read-only."""
+    tool = mail_tools["nc_mail_save_draft"]
+
+    assert tool.title == "Save Mail Draft"
+    assert tool.annotations.read_only_hint is not True
+    assert tool.annotations.destructive_hint is False
+    assert tool.annotations.idempotent_hint is False
+    assert tool.annotations.open_world_hint is True
+    assert "WITHOUT sending" in tool.description
