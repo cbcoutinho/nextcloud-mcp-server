@@ -4,8 +4,11 @@ import json
 import logging
 import uuid
 
+import anyio
 import pytest
 from mcp import ClientSession
+
+from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
@@ -269,7 +272,147 @@ async def test_collectives_get_landing_page_content(
         "Landing page should have auto-generated content"
     )
     assert len(data["content"]) > 0, "Landing page should have non-empty content"
+    assert isinstance(data["etag"], str) and data["etag"], (
+        "Page read should return the content's ETag"
+    )
     logger.info("Landing page content: %s bytes", len(data["content"]))
+
+
+# --- Content ETag (safe read-modify-write) ---
+
+
+def _page_path(page: dict) -> str:
+    """The page's markdown path, built the way collectives_get_page builds it."""
+    parts = [page["collectivePath"]]
+    if page["filePath"]:
+        parts.append(page["filePath"])
+    parts.append(page["fileName"])
+    return "/".join(p.strip("/") for p in parts)
+
+
+async def _create_page(nc_mcp_client: ClientSession, collective: dict) -> int:
+    result = await nc_mcp_client.call_tool(
+        "collectives_create_page",
+        {
+            "collective_id": collective["id"],
+            "parent_id": collective["landing_page_id"],
+            "title": f"ETag Page {uuid.uuid4().hex[:8]}",
+        },
+    )
+    assert result.is_error is False, result.content
+    return json.loads(result.content[0].text)["id"]
+
+
+async def _get_page(nc_mcp_client: ClientSession, cid: int, page_id: int) -> dict:
+    result = await nc_mcp_client.call_tool(
+        "collectives_get_page", {"collective_id": cid, "page_id": page_id}
+    )
+    assert result.is_error is False, result.content
+    return json.loads(result.content[0].text)
+
+
+async def _write_page(
+    nc_mcp_client: ClientSession, path: str, content: str, if_match: str
+):
+    return await nc_mcp_client.call_tool(
+        "nc_webdav_write_file",
+        {"path": path, "content": content, "if_match": if_match},
+    )
+
+
+async def test_collectives_page_etag_is_reusable_for_a_safe_write(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """The ETag from collectives_get_page is accepted as if_match unchanged, the
+    write returns a new ETag, and a re-read reports that same new ETag."""
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        before = await _get_page(nc_mcp_client, cid, page_id)
+        etag_a = before["etag"]
+        assert etag_a, "a readable page must come with an ETag"
+        path = _page_path(before["page"])
+
+        write = await _write_page(nc_mcp_client, path, "# Edited\n", etag_a)
+        assert write.is_error is False, write.content
+        etag_b = json.loads(write.content[0].text)["etag"]
+        assert etag_b, "the write should return the new ETag"
+        # Not asserted: etag_b != etag_a. Nextcloud keeps the etag when a
+        # file is written twice within the same second (nextcloud/server#63994),
+        # and the page was created moments ago.
+
+        after = await _get_page(nc_mcp_client, cid, page_id)
+        assert after["content"] == "# Edited\n"
+        assert after["etag"] == etag_b
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
+
+
+@pytest.mark.parametrize(
+    ("initial", "concurrent"),
+    [
+        (None, "A second writer's longer content.\n"),
+        ("Original text, v1.\n", "Original text, v2.\n"),
+    ],
+    ids=["different_length", "same_length"],
+)
+async def test_collectives_stale_page_etag_is_rejected(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_collective: dict,
+    initial: str | None,
+    concurrent: str,
+):
+    """A real concurrent edit must make the ETag read before it stale.
+
+    Only real ETags and conditional writes are used -- no fabricated ETag and
+    no ``if_match="*"`` -- so this proves Nextcloud detects an actual
+    intervening write, not merely that it rejects an invalid ETag.
+    ``same_length`` additionally keeps the file size unchanged.
+
+    The concurrent edit is made more than a second after the write that
+    produced the ETag: within the same second Nextcloud keeps the etag
+    (nextcloud/server#63994), so an ETag alone cannot detect that edit.
+    """
+    cid = temporary_collective["id"]
+    page_id = await _create_page(nc_mcp_client, temporary_collective)
+    try:
+        page = await _get_page(nc_mcp_client, cid, page_id)
+        path = _page_path(page["page"])
+        if initial is not None:
+            # Seed through a conditional write too, using the ETag just read.
+            seed = await _write_page(nc_mcp_client, path, initial, page["etag"])
+            assert seed.is_error is False, seed.content
+            page = await _get_page(nc_mcp_client, cid, page_id)
+            assert page["content"] == initial
+
+        etag_a = page["etag"]
+        assert etag_a
+
+        # Second writer (e.g. a human in the web UI) edits with the same ETag,
+        # outside the same-second window of nextcloud/server#63994.
+        await anyio.sleep(1.1)
+        second = await nc_client.webdav.write_file(
+            path, concurrent.encode(), "text/markdown", if_match=etag_a
+        )
+        assert second["status_code"] in (200, 201, 204), second
+
+        # The first writer still holds etag A: its write must be refused.
+        stale = await _write_page(nc_mcp_client, path, "Stale write.\n", etag_a)
+        assert stale.is_error is True, (
+            "a write with an ETag read before a concurrent edit must be refused"
+        )
+        assert "modified since" in stale.content[0].text
+
+        after = await _get_page(nc_mcp_client, cid, page_id)
+        assert after["content"] == concurrent, "the concurrent edit must survive"
+        assert after["etag"] != etag_a
+    finally:
+        await nc_mcp_client.call_tool(
+            "collectives_trash_page", {"collective_id": cid, "page_id": page_id}
+        )
 
 
 async def test_collectives_move_page(
