@@ -5,6 +5,27 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.203.0 (2026-10-29)
+
+### Feat
+
+- **mail**: add nc_mail_view_attachment to show image attachments
+- **webdav**: add nc_webdav_view_image to show images to vision models
+- **client**: add WebDAVClient.get_preview for Nextcloud file previews
+- **webdav**: add nc_webdav_edit_file and line-range reads
+- **mail**: add opt-in MAIL_DRAFT_MARK_AI_GENERATED for saved drafts
+- **mail**: add mail.draft scope and nc_mail_save_draft tool
+
+### Fix
+
+- bound image decode memory and concurrency
+- **webdav**: edit only plain text files and cap oversized single lines
+
+### Refactor
+
+- **mail**: split the raw attachment download from get_attachment
+- **mail**: always mark drafts as AI-generated and drop draft_id
+
 ## v0.202.2 (2026-10-28)
 
 ### Refactor
