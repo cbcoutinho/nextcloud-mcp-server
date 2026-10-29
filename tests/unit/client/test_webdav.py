@@ -8,8 +8,8 @@ from httpx import HTTPStatusError
 
 from nextcloud_mcp_server.client.webdav import (
     WebDAVClient,
-    _normalize_etag,
     like_predicate,
+    normalize_etag,
 )
 
 
@@ -1329,14 +1329,14 @@ async def test_write_file_etag_is_none_when_absent(mocker):
     ],
 )
 def test_normalize_etag(raw, expected):
-    assert _normalize_etag(raw) == expected
+    assert normalize_etag(raw) == expected
 
 
 @pytest.mark.unit
 async def test_read_and_write_etags_use_the_same_representation(mocker):
     """read_file's etag must be directly reusable as write_file's if_match.
 
-    Both go through _normalize_etag, so the value a read hands out is exactly
+    Both go through normalize_etag, so the value a read hands out is exactly
     what a subsequent conditional write expects — that is the whole point of
     returning it from the write too.
     """

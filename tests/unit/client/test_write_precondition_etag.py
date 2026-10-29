@@ -6,7 +6,7 @@ value a client reads back is not the one the origin stored. Passing it through
 as ``If-Match`` made Nextcloud reject the write as a concurrent edit, which
 broke *every* overwrite of an existing file behind such a proxy.
 
-The normalisation itself lives in ``_normalize_etag`` and is covered in
+The normalisation itself lives in ``normalize_etag`` and is covered in
 ``test_webdav.py``; what is pinned here is that the precondition header runs
 values through it rather than re-quoting whatever it was handed.
 """

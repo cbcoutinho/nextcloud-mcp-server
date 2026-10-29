@@ -167,7 +167,7 @@ def _reject_path_traversal(path: str) -> str:
     return path
 
 
-def _normalize_etag(raw: Optional[str]) -> Optional[str]:
+def normalize_etag(raw: Optional[str]) -> Optional[str]:
     """Strip the quotes an ETag is transported in, so callers can pass it back.
 
     Every etag this client surfaces goes through here — ``read_file``,
@@ -351,7 +351,7 @@ def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
         return {"If-None-Match": "*"}
     if if_match == "*":
         return {"If-Match": "*"}
-    return {"If-Match": f'"{_normalize_etag(if_match)}"'}
+    return {"If-Match": f'"{normalize_etag(if_match)}"'}
 
 
 def _write_conflict_result(
@@ -784,7 +784,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # if_match, which re-adds the quotes for the If-Match header).
                 etag_elem = prop.find(".//{DAV:}getetag")
                 etag = (
-                    _normalize_etag(etag_elem.text)
+                    normalize_etag(etag_elem.text)
                     if etag_elem is not None and etag_elem.text
                     else None
                 )
@@ -866,7 +866,7 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
-                etag = _normalize_etag(response.headers.get("etag"))
+                etag = normalize_etag(response.headers.get("etag"))
                 # anyio's async file wrapper, not pathlib.Path.open: the writes
                 # run on a worker thread, so streaming a multi-hundred-MB
                 # document does not block the event loop (and with it every other
@@ -915,7 +915,7 @@ class WebDAVClient(BaseNextcloudClient):
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
-            etag = _normalize_etag(response.headers.get("etag"))
+            etag = normalize_etag(response.headers.get("etag"))
 
             logger.debug("Successfully read file '%s' (%s bytes)", path, len(content))
             return content, content_type, etag
@@ -998,7 +998,7 @@ class WebDAVClient(BaseNextcloudClient):
             # write.
             return {
                 "status_code": response.status_code,
-                "etag": _normalize_etag(
+                "etag": normalize_etag(
                     response.headers.get("etag") or response.headers.get("oc-etag")
                 ),
             }
@@ -1723,7 +1723,7 @@ class WebDAVClient(BaseNextcloudClient):
                 elif tag == "getlastmodified":
                     item["last_modified"] = value
                 elif tag == "getetag":
-                    item["etag"] = _normalize_etag(value) if value else None
+                    item["etag"] = normalize_etag(value) if value else None
                 elif tag == "fileid":
                     item["file_id"] = int(value) if value else None
                 elif tag == "favorite":
@@ -2235,7 +2235,7 @@ class WebDAVClient(BaseNextcloudClient):
 
         etag_elem = prop.find(".//{DAV:}getetag")
         etag = (
-            _normalize_etag(etag_elem.text)
+            normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None
         )
@@ -2576,7 +2576,7 @@ class WebDAVClient(BaseNextcloudClient):
             "last_modified": lastmodified_elem.text
             if lastmodified_elem is not None
             else None,
-            "etag": _normalize_etag(etag_elem.text)
+            "etag": normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None,
             "is_directory": is_directory,
