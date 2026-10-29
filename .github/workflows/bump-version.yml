@@ -44,8 +44,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # The concurrency group serialises runs but cannot stop master moving
+      # between this run's checkout and its push: back-to-back merges then fail
+      # with "cannot lock ref" / "rejected (fetch first)". A run that is no
+      # longer the tip is redundant — the newest run's commitizen bump covers
+      # every commit since the last tag — so skip it instead of failing.
+      - name: Skip if superseded
+        id: tip
+        run: |
+          git fetch origin master
+          if [ "$(git rev-parse origin/master)" = "$GITHUB_SHA" ]; then
+            echo "tip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Superseded by a newer push to master; skipping bump."
+          fi
+
       - name: Detect and bump version
         id: bump
+        if: steps.tip.outputs.tip == 'true'
         run: |
           set -euo pipefail
 
