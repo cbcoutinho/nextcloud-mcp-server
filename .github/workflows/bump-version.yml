@@ -107,6 +107,10 @@ jobs:
             echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Tag has been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.tip.outputs.tip }}" != "true" ]; then
+            echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Skipped: superseded by a newer push to master, whose run will bump instead." >> $GITHUB_STEP_SUMMARY
           else
             echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
