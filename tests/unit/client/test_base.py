@@ -26,6 +26,19 @@ def test_apps_path_is_prefixed_with_index_php():
     )
 
 
+def test_bare_core_path_gets_index_php_prefix():
+    """Core routes (``/core/preview.png``) use the same front controller as
+    app routes, so without pretty URLs they need ``/index.php`` too."""
+    assert (
+        BaseNextcloudClient._resolve_url("/core/preview.png")
+        == "/index.php/core/preview.png"
+    )
+    assert (
+        BaseNextcloudClient._resolve_url("/index.php/core/preview.png")
+        == "/index.php/core/preview.png"
+    )
+
+
 def test_remote_php_dav_unchanged():
     """WebDAV/CalDAV/CardDAV paths use a dedicated entry point and don't need
     rewriting — leave them alone so we don't break the working call sites.

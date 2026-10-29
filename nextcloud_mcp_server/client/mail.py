@@ -344,10 +344,10 @@ class MailClient(BaseNextcloudClient):
         data = await self._ocs_get(f"/message/{message_id}")
         return data if isinstance(data, dict) else {}
 
-    async def get_attachment(
+    async def download_attachment(
         self, message_id: int, attachment_id: str
-    ) -> dict[str, Any]:
-        """Get an attachment's content from a message.
+    ) -> tuple[bytes, str, str]:
+        """Download an attachment's raw bytes from a message.
 
         Uses the direct route
         ``GET /index.php/apps/mail/api/messages/{id}/attachment/{id}``
@@ -363,8 +363,9 @@ class MailClient(BaseNextcloudClient):
             attachment_id: The attachment ID string.
 
         Returns:
-            Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
-            ``content`` is the raw attachment bytes base64-encoded.
+            ``(content, mime, name)``: the raw bytes, the MIME type without
+            parameters (``application/octet-stream`` when the response has
+            none), and the file name.
         """
         safe_id = quote(attachment_id, safe="")
         # Binary download: unlike the JSON helpers, don't send
@@ -375,7 +376,6 @@ class MailClient(BaseNextcloudClient):
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
-        raw = response.content
         ctype = (response.headers.get("content-type", "") or "").split(";")[0].strip()
 
         # Recover the real filename from the Content-Disposition header (core's
@@ -386,9 +386,27 @@ class MailClient(BaseNextcloudClient):
             or f"attachment_{message_id}_{attachment_id}"
         )
 
+        return response.content, ctype or "application/octet-stream", name
+
+    async def get_attachment(
+        self, message_id: int, attachment_id: str
+    ) -> dict[str, Any]:
+        """Get an attachment's content from a message, base64-encoded.
+
+        See :meth:`download_attachment` for the route and the id encoding.
+
+        Args:
+            message_id: The message database ID.
+            attachment_id: The attachment ID string.
+
+        Returns:
+            Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
+            ``content`` is the raw attachment bytes base64-encoded.
+        """
+        raw, mime, name = await self.download_attachment(message_id, attachment_id)
         return {
             "name": name,
-            "mime": ctype or "application/octet-stream",
+            "mime": mime,
             "size": len(raw),
             "content": base64.b64encode(raw).decode("ascii"),
         }

@@ -357,6 +357,66 @@ async def test_get_attachment_url_encodes_attachment_id(mocker):
     )
 
 
+async def test_download_attachment_returns_raw_bytes_mime_and_name(mocker):
+    """download_attachment hands back the bytes untouched (no base64), the mime
+    without its parameters, and the filename from Content-Disposition."""
+    raw = b"\xff\xd8\xff\xe0 not really a jpeg"
+    mock_response = create_mock_response(
+        content=raw,
+        headers={
+            "content-type": "image/jpeg; charset=binary",
+            "content-disposition": 'attachment; filename="photo.jpg"',
+        },
+    )
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=mock_response
+    )
+
+    client = MailClient(mock_client, "testuser")
+    content, mime, name = await client.download_attachment(100, "1.2")
+
+    assert content == raw
+    assert mime == "image/jpeg"
+    assert name == "photo.jpg"
+
+    args, _ = mock_make_request.call_args
+    assert args == ("GET", "/apps/mail/api/messages/100/attachment/1.2")
+
+
+async def test_download_attachment_synthesizes_name_and_mime_without_headers(mocker):
+    """Without Content-Disposition a synthetic name is used, and without a
+    Content-Type the generic octet-stream, exactly as get_attachment reports."""
+    mock_response = create_mock_response(content=b"data")
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mocker.patch.object(MailClient, "_make_request", return_value=mock_response)
+
+    client = MailClient(mock_client, "testuser")
+    content, mime, name = await client.download_attachment(100, "1.2")
+
+    assert content == b"data"
+    assert mime == "application/octet-stream"
+    assert name == "attachment_100_1.2"
+
+
+async def test_download_attachment_url_encodes_attachment_id(mocker):
+    """A traversal-style attachment_id is percent-encoded in the URL path."""
+    mock_response = create_mock_response(content=b"y")
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=mock_response
+    )
+
+    client = MailClient(mock_client, "testuser")
+    await client.download_attachment(100, "../../evil")
+
+    args, _ = mock_make_request.call_args
+    assert args == (
+        "GET",
+        "/apps/mail/api/messages/100/attachment/..%2F..%2Fevil",
+    )
+
+
 async def test_empty_data_returns_empty_list(mocker):
     """A non-list direct payload degrades to an empty list for list endpoints."""
     mock_response = create_mock_response(json_data={})

@@ -14,6 +14,7 @@ and managing message state (flags, tags, move, delete).
 | `nc_mail_get_message` | Get one message with its full body and attachment metadata |
 | `nc_mail_get_message_source` | Get a message's raw RFC 2822 source (all headers) |
 | `nc_mail_get_attachment` | Download one attachment (base64; capped at 5 MB inline) |
+| `nc_mail_view_attachment` | Show an image attachment to a vision model as an image, scaled to a useful size |
 | `nc_mail_send_message` | Send a message via the account's outbox |
 | `nc_mail_save_draft` | Save a message to the account's Drafts mailbox **without sending it** |
 | `nc_mail_set_flags` | Mark read/unread, star, mark answered or junk |
@@ -90,6 +91,51 @@ carries it. On Login Flow v2 deployments, a user whose stored app-password
 grant is an explicit list also needs `mail.draft` added via
 `nc_auth_update_scopes`. See [Scope Enforcement](login-flow-v2.md#scope-enforcement)
 for how the two layers combine.
+
+### Viewing Image Attachments
+
+`nc_mail_view_attachment` returns an image attachment as an MCP image block,
+which clients such as Claude Desktop and Claude Code pass to the model as a
+picture. That is the difference to `nc_mail_get_attachment`: it hands the file
+back as base64 text inside its JSON, which a model cannot look at.
+
+```python
+# A photo, scaled to at most 1568 px on its longer edge (the default)
+await nc_mail_view_attachment(message_id=42, attachment_id="2")
+
+# More pixels to read small print, or fewer to save tokens
+await nc_mail_view_attachment(message_id=42, attachment_id="2", max_size=2576)
+await nc_mail_view_attachment(message_id=42, attachment_id="2", max_size=512)
+```
+
+The `attachment_id` is the `id` of an entry in the message's `attachments` list
+(from `nc_mail_get_message`).
+
+- **The MCP server decodes it.** The attachment is downloaded as-is, then
+  scaled to `max_size` (64 to 2576, the most any Claude model looks at) and
+  re-encoded: JPEG, or PNG when the image has transparency. The EXIF
+  orientation is applied, so a phone photo arrives upright. JPEG, PNG, GIF,
+  WebP, BMP and TIFF work. HEIC does not: unlike files in the Files app, mail
+  attachments get no Nextcloud-rendered preview to fall back on, so the tool
+  says it cannot show the attachment.
+- **Size limits.** A JPEG may have up to 80 megapixels, because the decoder
+  skips resolution that would be scaled away. Any other format (PNG, GIF, WebP,
+  BMP, TIFF) is decoded in full and is refused above 24 megapixels, which is
+  checked from the header before decoding. At most two images are decoded at a
+  time (a limit shared with `nc_webdav_view_image`), so a burst of requests
+  queues up instead of using memory in parallel.
+- **Images only.** An attachment whose type is not `image/*` is refused before
+  it is decoded, with a pointer to `nc_mail_get_attachment`. When the mail
+  client sent it as the generic `application/octet-stream`, the file name
+  decides: `scan.pdf` is refused, `photo.png` or a name without an extension is
+  tried.
+- **Inline body parts cannot be fetched.** Attachments listed with `id: null`
+  have no id to ask for, as with `nc_mail_get_attachment`.
+- The structured part of the response says how large the image is, what its
+  format is, and how large the attachment was after orientation, so a caller can
+  tell whether a higher `max_size` would show more.
+- Failures are reported as for `nc_mail_get_attachment`: "Attachment not found"
+  for an unknown id, and the HTTP status for anything else Nextcloud answers.
 
 ### Marking messages read
 

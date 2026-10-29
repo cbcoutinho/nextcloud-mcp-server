@@ -430,3 +430,36 @@ class TagFileResponse(BaseResponse):
     tag: str = Field(description="Tag name")
     tag_id: int = Field(description="Tag id")
     assigned: bool = Field(description="True after tagging, False after untagging")
+
+
+class ViewImageResponse(BaseResponse):
+    """Structured part of ``nc_webdav_view_image``. The image itself travels
+    alongside it as an MCP image block."""
+
+    path: str = Field(description="Path of the image file")
+    mime_type: str = Field(
+        description="Format of the image sent: image/jpeg or image/png"
+    )
+    width: int = Field(description="Width of the image sent, in pixels")
+    height: int = Field(description="Height of the image sent, in pixels")
+    source: Literal["preview", "original"] = Field(
+        description=(
+            "What the image was made from: Nextcloud's preview of the file, or "
+            "the original file when Nextcloud had no preview for it"
+        )
+    )
+    source_width: int = Field(
+        description=(
+            "Width of the image it was made from. Larger than width when the "
+            "image was scaled down, so a larger max_size would show more detail."
+        )
+    )
+    source_height: int = Field(description="Height of the image it was made from")
+    size: int = Field(description="Size of the image sent, in bytes")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens the file in Nextcloud. None when the server has no "
+            "browser-reachable Nextcloud base URL configured."
+        ),
+    )
