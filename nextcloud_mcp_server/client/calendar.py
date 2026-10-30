@@ -2727,6 +2727,37 @@ class CalendarClient:
             todo, todo_data, todo_data.get("summary", ""), _TODO_REMINDER_DESCRIPTION
         )
 
+        # Handle recurrence. Same contract as ``_create_ical_event``: a non-empty
+        # rule is itself the intent to recur, and ``recurring=False`` remains an
+        # explicit opt-out. Without this, ``nc_calendar_create_todo`` had no way
+        # to write an RRULE even when the caller passed one in todo_data
+        # (issue #1658).
+        recurrence_rule = todo_data.get("recurrence_rule", "")
+        if recurrence_rule and todo_data.get("recurring", True):
+            recurrence_end_date = todo_data.get("recurrence_end_date", "")
+            if recurrence_end_date:
+                # Prefer DTSTART, then DUE, so UNTIL's value type matches the
+                # series anchor the expander already uses for VTODO.
+                if dtstart:
+                    anchor = self._parse_todo_date(dtstart, date_only=date_only)
+                    anchor_str = dtstart
+                elif due:
+                    anchor = self._parse_todo_date(due, date_only=date_only)
+                    anchor_str = due
+                else:
+                    # No DTSTART/DUE: keep UNTIL as a DATE so mismatched
+                    # value types cannot silently drop the series.
+                    anchor = dt.date.fromisoformat(
+                        recurrence_end_date.split("T", 1)[0]
+                    )
+                    anchor_str = None
+                recurrence_rule = _rrule_with_until(
+                    recurrence_rule,
+                    recurrence_end_date,
+                    _until_anchor(anchor, anchor_str),
+                )
+            todo.add("rrule", vRecur.from_ical(recurrence_rule))
+
         # Add timestamps
         now = dt.datetime.now(dt.UTC)
         todo.add("created", now)
