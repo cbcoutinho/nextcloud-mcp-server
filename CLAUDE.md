@@ -589,6 +589,14 @@ This service participates in Pact contract tests (ADR-029) under
 - a **provider** of the `/api/v1/*` API that the `astrolabe` Nextcloud app
   consumes (verified via `test_mcp_provider_verification.py`).
 
+**Upstream Nextcloud is not a Pact participant.** The Nextcloud server and its
+apps that we don't own (Mail, WebDAV, `/core/preview`, Notes, Deck, Tables, …)
+can't run a provider verifier, and a consumer pact nobody verifies would never
+fail when they change. For those boundaries the **integration lanes against a
+real Nextcloud are the contract** (e.g. `tests/integration/test_mail_greenmail.py`).
+A tool that only calls upstream Nextcloud needs e2e coverage, not a pact. See
+ADR-029 → *Upstream Nextcloud apps*.
+
 **Reviewers (including the Claude review bot) must flag any API-surface PR that
 lacks e2e + contract coverage** as a required change under "Test coverage". If a
 tier does not exist yet, say so explicitly in the PR and open/track a follow-up
@@ -609,6 +617,10 @@ Known gaps (tracked on board 11):
 - There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
   is spread across `tests/integration/` + `tests/smoke/`.
 - `can-i-deploy` runs in non-blocking **shadow mode**.
+- Mail **send** (`/apps/mail/api/outbox`) has no passing e2e test:
+  `test_send_message_via_outbox` is `xfail`, because Mail returns a 500 for a
+  CLI-provisioned GreenMail account. Only the outbox *create* step is
+  exercised.
 
 ### Use Existing Fixtures
 See `tests/conftest.py` for 2888 lines of test infrastructure:
