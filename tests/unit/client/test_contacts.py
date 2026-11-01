@@ -999,6 +999,64 @@ class TestVcardLineFolding:
         assert "item1.X-ABLabel:homepage" in result
 
 
+class TestStructuredName:
+    """Issue #1749: write vCard N on create and update."""
+
+    @staticmethod
+    def _merge(raw: str, data: dict) -> str:
+        client = ContactsClient.__new__(ContactsClient)
+        return client._merge_vcard_properties(raw, _normalize_contact_data(data))
+
+    def test_create_writes_n_from_flat_keys(self):
+        card = _vcard(fn="Jane Doe", given_name="Jane", family_name="Doe")
+        assert "N:Doe;Jane;;;" in card
+        assert _project_contact(_parse_vcard(card))["n"][:2] == ["Doe", "Jane"]
+
+    def test_create_with_fn_only_writes_empty_n(self):
+        assert "N:;;;;" in _vcard(fn="Jane Doe")
+
+    def test_create_derives_fn_from_parts(self):
+        card = _vcard(
+            n={
+                "honorific_prefix": "Dr.",
+                "given_name": "Jane",
+                "family_name": "van Doe",
+            }
+        )
+        assert "FN:Dr. Jane van Doe" in card
+        assert "N:van Doe;Jane;;Dr.;" in card
+
+    @pytest.mark.parametrize("n", ["Doe;Jane;;;", ["Doe", "Jane"]])
+    def test_n_string_and_list_forms(self, n):
+        assert "N:Doe;Jane;;;" in _vcard(fn="x", n=n)
+
+    def test_flat_key_wins_over_n(self):
+        assert "N:Roe;Jane;;;" in _vcard(fn="x", n="Doe;Jane", family_name="Roe")
+
+    def test_create_escapes_separators(self):
+        card = _vcard(fn="x", given_name="Jane", family_name="Doe;x")
+        assert "N:Doe\\;x;Jane;;;" in card
+
+    def test_update_changes_only_given_components(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:Jane\nN:Doe;Jane;Q\\;R;Dr.;\nEND:VCARD\n"
+        result = self._merge(existing, {"given_name": "Janet"})
+        assert "N:Doe;Janet;Q\\;R;Dr.;" in result
+        assert "FN:Jane" in result
+
+    def test_update_adds_n_when_missing(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:Jane Doe\nEND:VCARD\n"
+        result = self._merge(existing, {"family_name": "Doe", "given_name": "Jane"})
+        assert "N:Doe;Jane;;;" in result
+
+    def test_update_keeps_n_parameters_and_group(self):
+        existing = (
+            "BEGIN:VCARD\nVERSION:4.0\nUID:u\nFN:J\n"
+            "item1.N;SORT-AS=Doe:Doe;J;;;\nEND:VCARD\n"
+        )
+        result = self._merge(existing, {"given_name": "Jane"})
+        assert "item1.N;SORT-AS=Doe:Doe;Jane;;;" in result
+
+
 @pytest.mark.parametrize("bad_line", ["BDAY;VALUE=DATE:--1226", "GEO:37.38,-122.08"])
 def test_unparseable_property_drops_only_that_property(bad_line: str):
     """Issue #1551: one bad property must not blank the whole contact."""

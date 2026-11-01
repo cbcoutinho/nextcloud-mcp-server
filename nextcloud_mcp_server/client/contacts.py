@@ -1,11 +1,12 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
 
-from pythonvCard4.vcard import Contact, fold_line, unfold_lines
+from pythonvCard4.vcard import Contact, escape_text, fold_line, unfold_lines
 
 from .base import BaseNextcloudClient
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_CONTACT_KEYS = frozenset(
     {
         "fn",
+        "n",
         "email",
         "tel",
         "org",
@@ -31,14 +33,83 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
 )
 
 
+# vCard N components, in RFC 6350 §6.2.2 order.
+_N_COMPONENTS = (
+    "family_name",
+    "given_name",
+    "additional_names",
+    "honorific_prefix",
+    "honorific_suffix",
+)
+
+
+def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
+    """Pop structured-name input from ``data`` into ``{component: value}``.
+
+    Accepts the flat keys in ``_N_COMPONENTS`` and/or ``n`` as a dict with those
+    keys, a positional list, or a raw ``"Family;Given;Additional;Prefix;Suffix"``
+    string. Flat keys win over ``n``. Only components actually supplied are
+    returned, so an update can change one part and keep the rest (issue #1749).
+    """
+    raw = data.pop("n", None)
+    if isinstance(raw, str):
+        raw = raw.split(";")
+    if isinstance(raw, list):
+        raw = dict(zip(_N_COMPONENTS, raw))
+    parts = (
+        {k: v for k, v in raw.items() if k in _N_COMPONENTS}
+        if isinstance(raw, dict)
+        else {}
+    )
+    for key in _N_COMPONENTS:
+        if key in data:
+            parts[key] = data.pop(key)
+    return {k: "" if v is None else str(v) for k, v in parts.items()}
+
+
+def _fn_from_name_parts(parts: dict[str, str]) -> str:
+    """Derive a display name: prefix, given, additional, family, suffix."""
+    order = (
+        "honorific_prefix",
+        "given_name",
+        "additional_names",
+        "family_name",
+        "honorific_suffix",
+    )
+    return " ".join(parts[k] for k in order if parts.get(k))
+
+
+def _escape_n_component(value: str) -> str:
+    return escape_text(value.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
+    """Overwrite the supplied components of an existing raw N value.
+
+    Existing components are split on unescaped ``;`` and kept verbatim (still
+    escaped); supplied components are escaped and written in their slot.
+    """
+    comps = re.split(r"(?<!\\);", existing) if existing else []
+    comps += [""] * (len(_N_COMPONENTS) - len(comps))
+    for i, key in enumerate(_N_COMPONENTS):
+        if key in parts:
+            comps[i] = _escape_n_component(parts[key])
+    return ";".join(comps)
+
+
 def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     """Map documented aliases to canonical keys.
 
     ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
     are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
+    Structured-name keys (``given_name``, ``family_name``, …, or ``n``) collapse
+    into ``n`` as a ``{component: value}`` dict — see ``_pop_name_parts``.
     Returns a new dict — does not mutate the caller's argument.
     """
     normalised = dict(contact_data)
+    name_parts = _pop_name_parts(normalised)
+    if name_parts:
+        normalised["n"] = name_parts
     if "phone" in normalised and "tel" not in normalised:
         normalised["tel"] = normalised.pop("phone")
     else:
@@ -292,14 +363,23 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     invoking this helper; it assumes canonical keys only.
     """
     data = contact_data
+    name_parts = data.get("n") or {}
+    fn = data.get("fn") or _fn_from_name_parts(name_parts)
 
-    if not data.get("fn"):
+    if not fn:
         logger.warning(
             "contact_data missing required 'fn' field; pythonvCard4 may reject or "
             "produce an invalid vCard"
         )
 
-    kwargs: dict[str, Any] = {"fn": data.get("fn"), "uid": uid}
+    # N is always written (empty components when none were given): vCard 3.0
+    # requires it and clients sort by it. No splitting of ``fn`` — that guesses
+    # wrong on titles and particles ("Dr. Jane van Doe"), see issue #1749.
+    kwargs: dict[str, Any] = {
+        "fn": fn,
+        "uid": uid,
+        "n": [name_parts.get(k, "") for k in _N_COMPONENTS],
+    }
 
     emails = _wrap_contact_field(data.get("email"))
     if emails:
@@ -850,6 +930,15 @@ class ContactsClient(BaseNextcloudClient):
                     f"{group_prefix}FN:{_safe_vcard_value(contact_data['fn'])}"
                 )
                 updated_properties.add("fn")
+            elif property_name == "N" and "n" in contact_data:
+                if "n" not in updated_properties:
+                    merged_n = _merge_n_value(line.partition(":")[2], contact_data["n"])
+                    params = _existing_parameters(line)
+                    updated_lines.append(f"{group_prefix}N{params}:{merged_n}")
+                    updated_properties.add("n")
+                else:
+                    # Malformed card with a second N: preserve it untouched.
+                    updated_lines.append(line)
             elif property_name == "EMAIL" and "email" in contact_data:
                 # Replace first email with new one, preserve others
                 if "email" not in updated_properties:
@@ -956,6 +1045,8 @@ class ContactsClient(BaseNextcloudClient):
             if key not in updated_properties:
                 if key == "fn":
                     updated_lines.append(f"FN:{_safe_vcard_value(value)}")
+                elif key == "n":
+                    updated_lines.append(f"N:{_merge_n_value('', value)}")
                 elif key == "email" and isinstance(value, str):
                     updated_lines.append(f"EMAIL:{_safe_vcard_value(value)}")
                 elif key == "tel" and isinstance(value, str):
