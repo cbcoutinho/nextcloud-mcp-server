@@ -6,7 +6,7 @@ reads its result out of a response *header*. Both are pinned here.
 """
 
 import pytest
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from nextcloud_mcp_server.client.webdav import WebDAVClient
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def webdav_client(mocker):
-    """WebDAVClient with a mocked underlying httpx client."""
+    """WebDAVClient with a mocked underlying httpx2 client."""
     return WebDAVClient(mocker.AsyncMock(spec=AsyncClient), "testuser")
 
 

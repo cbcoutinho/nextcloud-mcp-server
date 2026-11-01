@@ -16,7 +16,7 @@ exactly as they do for a file that arrived as OOXML.
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Optional
 
-import httpx
+import httpx2
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .presentation import PPTX_MIME
@@ -55,12 +55,12 @@ async def convert(
     # The part's filename matters: its extension selects the import filter.
     files = {"data": (f"document.{source_ext}", content)}
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)
         ) as client:
             response = await client.post(url, files=files)
             response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
+    except httpx2.HTTPStatusError as exc:
         hint = (
             " (is this server in coolwsd's net.post_allow list?)"
             if exc.response.status_code == 403
@@ -70,7 +70,7 @@ async def convert(
             f"Collabora conversion to {target} failed: HTTP "
             f"{exc.response.status_code}{hint}"
         ) from exc
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         raise ProcessorError(f"Collabora conversion to {target} failed: {exc}") from exc
     if not response.content:
         raise ProcessorError(f"Collabora returned an empty {target}")
@@ -144,9 +144,9 @@ class CollaboraProcessor(DocumentProcessor):
         """coolwsd advertises whether this client may use convert-to."""
         url = f"{self._api_url.rstrip('/')}/hosting/capabilities"
         try:
-            async with httpx.AsyncClient(timeout=_CONNECT_TIMEOUT_SECONDS) as client:
+            async with httpx2.AsyncClient(timeout=_CONNECT_TIMEOUT_SECONDS) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 return bool(response.json().get("convert-to", {}).get("available"))
-        except (httpx.HTTPError, ValueError, AttributeError):
+        except (httpx2.HTTPError, ValueError, AttributeError):
             return False

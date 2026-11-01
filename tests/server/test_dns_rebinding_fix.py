@@ -6,7 +6,7 @@ Without the fix, requests with Host headers that don't match the default allowed
 (127.0.0.1:*, localhost:*, [::1]:*) would be rejected with a 421 Misdirected Request error.
 """
 
-import httpx
+import httpx2
 import pytest
 
 
@@ -72,7 +72,7 @@ async def test_accepts_various_host_headers():
         "id": 1,
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         for test_case in test_cases:
             print(f"\n🧪 Testing: {test_case['name']}")
             print(f"   Host header: {test_case['headers']['Host']}")
@@ -139,7 +139,7 @@ async def test_dns_rebinding_protection_is_disabled():
         "id": 1,
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.post(
             mcp_url,
             json=initialize_request,

@@ -14,10 +14,9 @@ from typing import Any, AsyncGenerator, AsyncIterator
 from urllib.parse import parse_qs, quote, urlparse
 
 import anyio
-import httpx
 import httpx2
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp import ClientSession
 from mcp.client.context import ClientRequestContext
 from mcp.client.streamable_http import streamable_http_client
@@ -124,7 +123,7 @@ async def wait_for_nextcloud(
     """
     logger.info("Waiting for Nextcloud server at %s to be ready...", host)
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    async with httpx2.AsyncClient(timeout=5.0) as client:
         for attempt in range(1, max_attempts + 1):
             try:
                 # Try to hit the status endpoint
@@ -137,7 +136,7 @@ async def wait_for_nextcloud(
                             data.get("versionstring", "unknown"),
                         )
                         return True
-            except (httpx.RequestError, httpx.TimeoutException) as e:
+            except (httpx2.RequestError, httpx2.TimeoutException) as e:
                 logger.debug("Attempt %s/%s: %s", attempt, max_attempts, e)
 
             if attempt < max_attempts:
@@ -1329,7 +1328,7 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     logger.info("Setting up shared OAuth client credentials for all test users...")
     logger.info("Using real callback server at: %s", callback_url)
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         # OIDC Discovery
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
@@ -1422,7 +1421,7 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
     logger.info("Setting up shared JWT OAuth client credentials...")
     logger.info("Using real callback server at: %s", callback_url)
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         # OIDC Discovery
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
@@ -1507,7 +1506,7 @@ async def get_mcp_server_resource_metadata(mcp_base_url: str) -> dict:
     Raises:
         HTTPStatusError: If metadata endpoint is not available
     """
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         prm_url = f"{mcp_base_url}/.well-known/oauth-protected-resource"
         logger.debug("Fetching resource metadata from: %s", prm_url)
 
@@ -1552,7 +1551,7 @@ async def _create_oauth_client_with_scopes(
         raise ValueError("NEXTCLOUD_HOST environment variable not set")
 
     # Discover registration endpoint
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -1605,7 +1604,7 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
 
     auth_states, callback_url = oauth_callback_server
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -1678,7 +1677,7 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
 
     auth_states, callback_url = oauth_callback_server
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -1751,7 +1750,7 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
 
     auth_states, callback_url = oauth_callback_server
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -1830,7 +1829,7 @@ async def no_custom_scopes_oauth_client_credentials(
 
     auth_states, callback_url = oauth_callback_server
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -2044,7 +2043,7 @@ async def playwright_oauth_token(
 
     # Exchange authorization code for access token
     logger.info("Exchanging authorization code for access token...")
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -2357,7 +2356,7 @@ async def _get_oauth_token_with_scopes(
 
     # Exchange authorization code for access token
     logger.info("Exchanging authorization code for access token...")
-    async with httpx.AsyncClient(timeout=30.0) as token_client:
+    async with httpx2.AsyncClient(timeout=30.0) as token_client:
         token_response = await token_client.post(
             token_endpoint,
             data={
@@ -2514,7 +2513,7 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
         try:
             # Use admin nc_client to create the group via User API
             # First, try to create it (will fail if exists, but that's okay)
-            async with httpx.AsyncClient() as http_client:
+            async with httpx2.AsyncClient() as http_client:
                 base_url = str(nc_client._client.base_url)
                 # Get password from environment since nc_client doesn't expose it
                 password = os.getenv("NEXTCLOUD_PASSWORD")
@@ -2657,7 +2656,7 @@ async def _get_oauth_token_for_user(
     prm_url = f"{mcp_server_url}/.well-known/oauth-protected-resource"
 
     logger.debug("Fetching PRM metadata from: %s", prm_url)
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         prm_response = await client.get(prm_url, timeout=10)
         if prm_response.status_code != 200:
             logger.warning("Failed to fetch PRM metadata: %s", prm_response.status_code)
@@ -2757,7 +2756,7 @@ async def _get_oauth_token_for_user(
 
     # Exchange code for token
     logger.info("Exchanging auth code for access token (%s)...", username)
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={

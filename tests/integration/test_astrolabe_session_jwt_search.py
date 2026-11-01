@@ -25,7 +25,7 @@ import logging
 import os
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
@@ -38,20 +38,20 @@ _HEADERS = {"OCS-APIRequest": "true"}
 
 # The first /search after container start is slow: astrolabe mints a JWT and
 # the MCP server runs a semantic search that may cold-load the embedding model.
-# A single 30s read timeout was a CI flake (httpx.ReadTimeout); give the search
+# A single 30s read timeout was a CI flake (httpx2.ReadTimeout); give the search
 # path a generous budget and one retry on transient transport errors.
-_SEARCH_TIMEOUT = httpx.Timeout(90.0)
+_SEARCH_TIMEOUT = httpx2.Timeout(90.0)
 
 
 async def _get_with_retry(
-    client: httpx.AsyncClient, url: str, *, max_attempts: int = 2, **kwargs
-) -> httpx.Response:
+    client: httpx2.AsyncClient, url: str, *, max_attempts: int = 2, **kwargs
+) -> httpx2.Response:
     """GET, retrying on transient transport errors (timeouts/conn resets)."""
-    last_exc: httpx.TransportError | None = None
+    last_exc: httpx2.TransportError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             return await client.get(url, **kwargs)
-        except httpx.TransportError as e:  # covers timeouts + connect/read errors
+        except httpx2.TransportError as e:  # covers timeouts + connect/read errors
             last_exc = e
             logger.warning(
                 "GET %s failed (attempt %s/%s): %s", url, attempt, max_attempts, e
@@ -62,13 +62,13 @@ async def _get_with_retry(
     raise last_exc
 
 
-async def _astrolabe_configured(client: httpx.AsyncClient, auth) -> bool:
+async def _astrolabe_configured(client: httpx2.AsyncClient, auth) -> bool:
     """Readiness probe: astrolabe must be able to reach its MCP server."""
     try:
         resp = await client.get(
             f"{ASTROLABE_API}/vector-status", auth=auth, headers=_HEADERS
         )
-    except httpx.HTTPError:
+    except httpx2.HTTPError:
         return False
     if resp.status_code != 200:
         return False
@@ -83,8 +83,8 @@ async def test_session_user_searches_without_provisioning(test_users_setup):
     server accepted it. Results may be empty (nothing indexed) — the auth
     chain, not recall, is under test here.
     """
-    auth = httpx.BasicAuth("bob", test_users_setup["bob"]["password"])
-    async with httpx.AsyncClient(timeout=30) as client:
+    auth = httpx2.BasicAuth("bob", test_users_setup["bob"]["password"])
+    async with httpx2.AsyncClient(timeout=30) as client:
         if not await _astrolabe_configured(client, auth):
             pytest.skip("Astrolabe not wired to an MCP server in this stack")
 
@@ -117,8 +117,8 @@ async def test_session_user_searches_without_provisioning(test_users_setup):
 async def test_admin_session_search_succeeds():
     """The same JWT-mint path works for the admin session user."""
     admin_pw = os.environ["NEXTCLOUD_PASSWORD"]
-    auth = httpx.BasicAuth(os.environ["NEXTCLOUD_USERNAME"], admin_pw)
-    async with httpx.AsyncClient(timeout=30) as client:
+    auth = httpx2.BasicAuth(os.environ["NEXTCLOUD_USERNAME"], admin_pw)
+    async with httpx2.AsyncClient(timeout=30) as client:
         if not await _astrolabe_configured(client, auth):
             pytest.skip("Astrolabe not wired to an MCP server in this stack")
         resp = await _get_with_retry(
@@ -135,7 +135,7 @@ async def test_admin_session_search_succeeds():
 
 async def test_search_requires_authentication():
     """Unauthenticated search is rejected (no anonymous JWT minting)."""
-    async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
+    async with httpx2.AsyncClient(follow_redirects=False, timeout=30) as client:
         resp = await client.get(
             f"{ASTROLABE_API}/search",
             params={"query": "x"},

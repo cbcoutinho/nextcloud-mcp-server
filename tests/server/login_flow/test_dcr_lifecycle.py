@@ -17,7 +17,7 @@ import time
 from urllib.parse import quote
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth.client_registration import delete_client, register_client
@@ -122,7 +122,7 @@ async def get_oauth_token_with_client(
 
     # Exchange code for token
     logger.info("Exchanging authorization code for access token...")
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -167,7 +167,7 @@ async def test_dcr_register_and_delete_lifecycle(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -191,7 +191,7 @@ async def test_dcr_register_and_delete_lifecycle(
         "token_type": "Bearer",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as reg_client:
+    async with httpx2.AsyncClient(timeout=30.0) as reg_client:
         reg_response = await reg_client.post(
             registration_endpoint,
             json=client_metadata,
@@ -269,7 +269,7 @@ async def test_dcr_register_and_delete_lifecycle(
 
     # Try to use the deleted client to get a token
     # This should fail because the client no longer exists
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         try:
             # Try to use client credentials grant (should fail)
             token_response = await http_client.post(
@@ -295,7 +295,7 @@ async def test_dcr_register_and_delete_lifecycle(
                     f"but got status {token_response.status_code}"
                 )
 
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             # Expected - client should be rejected
             if e.response.status_code == 401:
                 logger.info("✅ Deleted client correctly rejected (401 Unauthorized)")
@@ -326,7 +326,7 @@ async def test_dcr_delete_with_wrong_credentials(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -425,7 +425,7 @@ async def test_dcr_deletion_is_idempotent(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()

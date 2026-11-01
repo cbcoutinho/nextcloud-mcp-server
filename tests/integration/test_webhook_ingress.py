@@ -11,7 +11,7 @@ sets ``WEBHOOK_SECRET`` so the route is mounted at all.
 
 import os
 
-import httpx
+import httpx2
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -36,7 +36,7 @@ async def test_pdf_write_is_queued():
     """A file event for an indexable file is accepted and queued as a
     ``doc_type="file"`` reconcile task (the processor decides whether the file
     is actually tagged for indexing)."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             _INGRESS,
             json=_envelope(
@@ -54,7 +54,7 @@ async def test_pdf_write_is_queued():
 
 
 async def test_note_write_is_queued_as_note():
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             _INGRESS,
             json=_envelope(
@@ -71,7 +71,7 @@ async def test_note_write_is_queued_as_note():
 async def test_unindexable_file_is_ignored():
     """Vector sync indexes neither images nor arbitrary file types, so those
     events must not enqueue work."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             _INGRESS,
             json=_envelope(
@@ -88,7 +88,7 @@ async def test_unindexable_file_is_ignored():
 async def test_wrong_secret_is_rejected():
     """GHSA-8vh3-g2qg-2h2c: the ingress trusts ``user.uid``, so an unauthenticated
     caller must never reach the parser."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             _INGRESS,
             json=_envelope(

@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations

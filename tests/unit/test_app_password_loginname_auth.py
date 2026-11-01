@@ -4,7 +4,7 @@ both authentication and DAV/API path construction.
 The Nextcloud loginName (returned by Login Flow v2 and stored in
 ``app_data["username"]``) is authoritative for the Nextcloud username.  It must
 be used for:
-- credential username (httpx + CalDAV auth) → loginName
+- credential username (httpx2 + CalDAV auth) → loginName
 - DAV/URL path identity (``client.username``) → loginName
 
 When Nextcloud itself is the OIDC IdP, loginName == OIDC sub == NC username, so
@@ -21,7 +21,7 @@ and the sync layer already knows the Nextcloud UID from the provisioning record.
 import tempfile
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -33,7 +33,7 @@ _APP_PW = "aaaaa-bbbbb-ccccc-ddddd-eeeee"
 
 
 def _basic_auth_header(username: str, password: str) -> str:
-    return httpx.BasicAuth(username, password)._auth_header
+    return httpx2.BasicAuth(username, password)._auth_header
 
 
 @pytest.fixture
@@ -49,12 +49,12 @@ async def temp_storage():
 
 
 class _FakeAsyncClient:
-    """Minimal stand-in for ``httpx.AsyncClient`` that records the ``auth=``
+    """Minimal stand-in for ``httpx2.AsyncClient`` that records the ``auth=``
     kwarg and returns a canned status code."""
 
     def __init__(self, status_code: int):
         self._status_code = status_code
-        self.captured_auth: httpx.Auth | None = None
+        self.captured_auth: httpx2.Auth | None = None
 
     def __call__(self, *args, **kwargs):
         self.captured_auth = kwargs.get("auth")
@@ -67,7 +67,7 @@ class _FakeAsyncClient:
         return False
 
     async def get(self, *args, **kwargs):
-        return httpx.Response(self._status_code)
+        return httpx2.Response(self._status_code)
 
 
 async def test_basic_auth_builder_splits_uid_and_loginname(mocker):
@@ -95,7 +95,7 @@ async def test_basic_auth_builder_splits_uid_and_loginname(mocker):
 
     # Path identity → UID
     assert client.username == "Ada Lovelace"
-    # httpx credential (notes/webdav/sharing) → loginName
+    # httpx2 credential (notes/webdav/sharing) → loginName
     assert client._client.auth._auth_header == _basic_auth_header(
         "ada@example.com", "app-pw-1234"
     )
@@ -199,7 +199,7 @@ async def test_cleanup_authenticates_with_loginname_not_uid(temp_storage, mocker
         "Ada Lovelace", _APP_PW, username="ada@example.com"
     )
     fake = _FakeAsyncClient(status_code=200)  # valid credential
-    mocker.patch("nextcloud_mcp_server.auth.storage.httpx.AsyncClient", fake)
+    mocker.patch("nextcloud_mcp_server.auth.storage.httpx2.AsyncClient", fake)
 
     removed = await temp_storage.cleanup_invalid_app_passwords(
         "https://cloud.example.org"
@@ -218,7 +218,7 @@ async def test_cleanup_removes_genuinely_invalid_password(temp_storage, mocker):
         "alice", _APP_PW, username="alice"
     )
     fake = _FakeAsyncClient(status_code=401)
-    mocker.patch("nextcloud_mcp_server.auth.storage.httpx.AsyncClient", fake)
+    mocker.patch("nextcloud_mcp_server.auth.storage.httpx2.AsyncClient", fake)
 
     removed = await temp_storage.cleanup_invalid_app_passwords(
         "https://cloud.example.org"

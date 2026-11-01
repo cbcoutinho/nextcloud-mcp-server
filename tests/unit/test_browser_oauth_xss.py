@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -80,22 +80,22 @@ async def test_callback_does_not_reflect_idp_http_error_body(storage):
     """
     discovery = {"token_endpoint": "http://idp.example/token"}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/.well-known/openid-configuration"):
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(discovery).encode(),
                 headers={"content-type": "application/json"},
             )
         if str(request.url) == "http://idp.example/token":
-            return httpx.Response(400, content=XSS_PAYLOAD.encode())
-        return httpx.Response(404)
+            return httpx2.Response(400, content=XSS_PAYLOAD.encode())
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     # Pre-populate the oauth_session row that the callback expects
     await storage.store_oauth_session(
@@ -126,7 +126,7 @@ async def test_callback_does_not_reflect_idp_http_error_body(storage):
 
     # Discovery now goes through token_utils.get_oidc_discovery (PR #758
     # round-2 nit 3); token-exchange POST still uses browser_oauth_routes'
-    # httpx client.
+    # httpx2 client.
     with (
         patch(
             "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.unit
 
 
 def _patch_outbound_client(mocker, response: MagicMock) -> MagicMock:
-    """Patch the httpx client used by AstrolabeClient; return the mock client."""
+    """Patch the httpx2 client used by AstrolabeClient; return the mock client."""
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=response)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)

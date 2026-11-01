@@ -7,7 +7,7 @@ unredacted. So every malformed shape must raise rather than be skipped.
 
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.providers.ner import (
@@ -24,24 +24,24 @@ _URL = "https://gw.example/v1/ner"
 
 def _patch_transport(monkeypatch, handler):
     """Same MockTransport shim as test_rerank_client.py (no respx here)."""
-    seen: list[httpx.Request] = []
+    seen: list[httpx2.Request] = []
 
-    def _handler(request: httpx.Request) -> httpx.Response:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
         return handler(request)
 
-    original = httpx.AsyncClient
+    original = httpx2.AsyncClient
 
     def _factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(_handler)
+        kwargs["transport"] = httpx2.MockTransport(_handler)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(httpx2, "AsyncClient", _factory)
     return seen
 
 
 def _ok(payload):
-    return lambda request: httpx.Response(200, json=payload)
+    return lambda request: httpx2.Response(200, json=payload)
 
 
 def _person(start, end, text="ignored"):
@@ -150,7 +150,7 @@ async def test_error_for_a_bad_result_does_not_carry_its_names(monkeypatch):
 
 
 async def test_http_error_raises(monkeypatch):
-    _patch_transport(monkeypatch, lambda r: httpx.Response(503))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(503))
     with pytest.raises(NerError, match="HTTP 503"):
         await NerClient(_URL, "m").detect(["a"])
 
@@ -158,7 +158,7 @@ async def test_http_error_raises(monkeypatch):
 async def test_batches_large_inputs(monkeypatch):
     def handler(request):
         n = len(json.loads(request.content)["texts"])
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"results": [{"index": i, "entities": []} for i in range(n)]}
         )
 

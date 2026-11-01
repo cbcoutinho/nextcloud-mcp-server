@@ -21,7 +21,7 @@ import time
 from urllib.parse import quote
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth.client_registration import register_client
@@ -178,7 +178,7 @@ async def get_oauth_token_with_client(
 
     # Exchange code for token
     logger.info("Exchanging authorization code for access token...")
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -224,7 +224,7 @@ async def test_dcr_respects_jwt_token_type(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -308,7 +308,7 @@ async def test_dcr_respects_bearer_token_type(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()

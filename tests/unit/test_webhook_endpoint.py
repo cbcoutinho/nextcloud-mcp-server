@@ -57,7 +57,7 @@ def _patch_secret(monkeypatch, secret: str | None) -> None:
 
 def _client(app) -> TestClient:
     """TestClient that sends the matching bearer by default. Per-request
-    ``headers=`` still override it (httpx request headers win over client
+    ``headers=`` still override it (httpx2 request headers win over client
     headers), so auth tests can send a wrong/absent token."""
     return TestClient(app, headers=_AUTH)
 

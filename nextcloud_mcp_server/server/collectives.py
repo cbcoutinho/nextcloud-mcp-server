@@ -3,7 +3,7 @@
 import logging
 from typing import NoReturn
 
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -40,7 +40,7 @@ def _raise_collectives_error(e: OCSError | HTTPStatusError) -> NoReturn:
     ``MCPError``. A transport-level ``HTTPStatusError`` is re-raised untouched:
     ``NextcloudMCPServer`` renders it into an LLM-friendly message at the tool
     boundary (GH #1208), and wrapping it in ``str(e)`` here would shadow that
-    with httpx's internal-URL text.
+    with httpx2's internal-URL text.
     """
     if isinstance(e, OCSError):
         raise MCPError(code=-32603, message=e.message) from e

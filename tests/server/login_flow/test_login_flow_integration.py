@@ -451,7 +451,7 @@ class TestLoginFlowDeck:
         """Create board → list boards → get board details."""
         import os
 
-        import httpx
+        import httpx2
 
         suffix = uuid.uuid4().hex[:8]
         board_title = f"LoginFlow Board {suffix}"
@@ -491,9 +491,9 @@ class TestLoginFlowDeck:
                 nc_user = os.getenv("NEXTCLOUD_USERNAME", "admin")
                 nc_pass = os.getenv("NEXTCLOUD_PASSWORD", "admin")
                 try:
-                    async with httpx.AsyncClient(
+                    async with httpx2.AsyncClient(
                         base_url=nc_host,
-                        auth=httpx.BasicAuth(nc_user, nc_pass),
+                        auth=httpx2.BasicAuth(nc_user, nc_pass),
                         headers={"OCS-APIREQUEST": "true"},
                     ) as client:
                         resp = await client.delete(
@@ -681,9 +681,9 @@ class TestBrowserOAuthLoginRoute:
     LOGIN_FLOW_MCP_BASE_URL = "http://localhost:8004"
 
     async def test_oauth_login_redirects_not_500(self):
-        import httpx
+        import httpx2
 
-        async with httpx.AsyncClient(follow_redirects=False) as client:
+        async with httpx2.AsyncClient(follow_redirects=False) as client:
             resp = await client.get(f"{self.LOGIN_FLOW_MCP_BASE_URL}/oauth/login")
 
         # 302 redirect to the IdP authorization endpoint — the pre-#1068

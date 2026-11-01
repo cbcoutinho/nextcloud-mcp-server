@@ -18,7 +18,7 @@ from nextcloud_mcp_server.client import NextcloudClient, _normalise_search_resul
 def _make_client() -> Any:
     """Build a NextcloudClient with mocked sub-clients.
 
-    The client constructor opens an httpx session; we don't need it, just
+    The client constructor opens an httpx2 session; we don't need it, just
     a stub instance whose ``webdav`` attribute we can replace. Returned as
     ``Any`` so tests can freely reassign mocked methods on the sub-clients
     without fighting the real ``WebDAVClient`` signatures.
@@ -433,7 +433,7 @@ class TestFromEnv:
         ``Settings.nextcloud_host`` is ``str | None``, so an unset
         NEXTCLOUD_HOST used to flow straight into
         ``NextcloudClient(base_url=...)`` and only surface later as a confusing
-        httpx error on the first request. Mirrors the guard ``context.py``
+        httpx2 error on the first request. Mirrors the guard ``context.py``
         already applies for multi-user BasicAuth mode.
 
         ``cfg`` and ``__init__`` are both stubbed so the *only* thing that can

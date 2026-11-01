@@ -13,7 +13,7 @@ DELETE there destroys them. The cleanup must remove only an empty husk.
 from typing import Any
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.webdav import WebDAVClient
@@ -24,14 +24,14 @@ pytestmark = pytest.mark.unit
 def _make_client(mocker) -> Any:
     # Any so the mocked list_directory/delete_resource assignments don't trip
     # ty's invalid-assignment on the real signatures.
-    client: Any = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client: Any = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     return client
 
 
-def _not_found() -> httpx.HTTPStatusError:
-    request = httpx.Request("PROPFIND", "http://nc/dav")
-    return httpx.HTTPStatusError(
-        "404", request=request, response=httpx.Response(404, request=request)
+def _not_found() -> httpx2.HTTPStatusError:
+    request = httpx2.Request("PROPFIND", "http://nc/dav")
+    return httpx2.HTTPStatusError(
+        "404", request=request, response=httpx2.Response(404, request=request)
     )
 
 

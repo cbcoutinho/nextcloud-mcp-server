@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.document_processors import ocr
@@ -518,13 +518,13 @@ async def test_processor_timeout_returns_timeout_reason(monkeypatch):
 
 
 async def test_gateway_httpx_timeout_maps_to_timeout_reason(monkeypatch):
-    """A gateway httpx.ReadTimeout (not a builtin TimeoutError) must still map to
+    """A gateway httpx2.ReadTimeout (not a builtin TimeoutError) must still map to
     parse_failed_reason='timeout', not 'error'."""
-    import httpx
+    import httpx2
 
     class _HttpxTimeoutBackend:
         async def ocr(self, content, mime_type):
-            raise httpx.ReadTimeout("read timed out")
+            raise httpx2.ReadTimeout("read timed out")
 
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=5.0)
@@ -556,7 +556,7 @@ async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
         captured["timeout"] = kwargs.get("timeout")
         return client
 
-    monkeypatch.setattr(ocr.httpx, "AsyncClient", _make_client)
+    monkeypatch.setattr(ocr.httpx2, "AsyncClient", _make_client)
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=42.0)
     )
@@ -564,7 +564,7 @@ async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
     backend = ocr._GatewayOcrBackend("https://gw", "mistral/mistral-ocr-latest")
     await backend.ocr(b"%PDF-1.7", "application/pdf")
 
-    # httpx.Timeout(42.0, connect=10.0): the read/overall budget is the setting.
+    # httpx2.Timeout(42.0, connect=10.0): the read/overall budget is the setting.
     assert captured["timeout"].read == pytest.approx(42.0)
     assert captured["timeout"].connect == pytest.approx(10.0)
 
@@ -935,7 +935,7 @@ async def test_batch_submit_transport_error_propagates_not_caught(monkeypatch):
         submitted: list = []
 
         async def submit(self, content, mime_type, custom_id):
-            raise httpx.ConnectError("gateway down")
+            raise httpx2.ConnectError("gateway down")
 
         async def poll(self, job_id):  # pragma: no cover - not reached
             raise AssertionError("poll should not be called")
@@ -950,7 +950,7 @@ async def test_batch_submit_transport_error_propagates_not_caught(monkeypatch):
     monkeypatch.setattr(ocr, "build_ocr_backend", _build_backend)
     _wire_batch(monkeypatch, client=_DownClient(), store=_FakeStore())
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(httpx2.ConnectError):
         await ocr.OcrProcessor().process(
             b"%PDF", "application/pdf", options=dict(_IDENTITY)
         )

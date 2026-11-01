@@ -8,7 +8,7 @@ otherwise it would be reported as a deleted file or a stored version.
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from nextcloud_mcp_server.client.webdav import WebDAVClient
 

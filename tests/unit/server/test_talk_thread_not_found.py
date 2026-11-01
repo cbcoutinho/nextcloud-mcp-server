@@ -1,6 +1,6 @@
 """Only spreed's thread 404 becomes "thread not found" in talk_get_messages."""
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -10,13 +10,13 @@ from nextcloud_mcp_server.server.talk import _get_messages
 pytestmark = pytest.mark.unit
 
 
-def _http_404(body: dict | None) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "https://nc.example/ocs/v2.php/apps/spreed")
-    response = httpx.Response(404, json=body, request=request)
-    return httpx.HTTPStatusError("404 Not Found", request=request, response=response)
+def _http_404(body: dict | None) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "https://nc.example/ocs/v2.php/apps/spreed")
+    response = httpx2.Response(404, json=body, request=request)
+    return httpx2.HTTPStatusError("404 Not Found", request=request, response=response)
 
 
-async def _call(mocker, error: httpx.HTTPStatusError):
+async def _call(mocker, error: httpx2.HTTPStatusError):
     talk = mocker.AsyncMock(spec=TalkClient)
     talk.get_messages.side_effect = error
     return await _get_messages(
@@ -45,5 +45,5 @@ async def test_thread_404_becomes_tool_error(mocker):
 )
 async def test_other_404s_propagate(mocker, body):
     error = _http_404(body)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(httpx2.HTTPStatusError):
         await _call(mocker, error)

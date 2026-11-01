@@ -3,7 +3,7 @@ OpenTelemetry distributed tracing for the Nextcloud MCP Server.
 
 This module provides:
 - OpenTelemetry SDK initialization with OTLP exporter
-- Auto-instrumentation for ASGI (Starlette/FastAPI) and httpx
+- Auto-instrumentation for ASGI (Starlette/FastAPI) and httpx2
 - Helper functions for creating custom spans
 - Context propagation utilities
 - Span attribute standardization
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Global tracer instance (initialized in setup_tracing)
 _tracer: Tracer | None = None
 
-# Auto-instrument httpx for Nextcloud API calls
+# Auto-instrument httpx2 for Nextcloud API calls
 
 
 def setup_tracing(

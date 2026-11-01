@@ -6,7 +6,7 @@ and passed through to Nextcloud APIs without storage (stateless).
 
 import json
 
-import httpx
+import httpx2
 import pytest
 
 
@@ -14,7 +14,7 @@ import pytest
 @pytest.mark.multi_user_basic
 async def test_basic_auth_wrong_password_rejected():
     """A wrong password is rejected at the edge, before any MCP handler runs."""
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.post(
             "http://localhost:8003/mcp",
             auth=("admin", "definitely-not-admins-password"),

@@ -8,7 +8,7 @@ APIs use OAuth.
 
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.app import setup_oauth_config_for_multi_user_basic
@@ -58,7 +58,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         self, hybrid_auth_settings, oidc_discovery_response, mocker
     ):
         """Test successful OAuth setup without offline access."""
-        # Mock httpx.AsyncClient
+        # Mock httpx2.AsyncClient
         mock_response = MagicMock()
         mock_response.json = MagicMock(return_value=oidc_discovery_response)
         mock_response.raise_for_status = MagicMock()
@@ -68,7 +68,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = AsyncMock()
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Call function
         (
@@ -133,7 +133,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         # injected Settings, not os.getenv, after the env->settings migration.
         hybrid_auth_settings.token_encryption_key = valid_fernet_key
 
-        # Mock httpx.AsyncClient
+        # Mock httpx2.AsyncClient
         mock_response = MagicMock()
         mock_response.json = MagicMock(return_value=oidc_discovery_response)
         mock_response.raise_for_status = MagicMock()
@@ -143,7 +143,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = AsyncMock()
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Call function
         (
@@ -167,7 +167,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         self, hybrid_auth_settings, oidc_discovery_response, mocker
     ):
         """Test that discovered URLs are used directly without rewriting."""
-        # Mock httpx.AsyncClient
+        # Mock httpx2.AsyncClient
         mock_response = MagicMock()
         mock_response.json = MagicMock(return_value=oidc_discovery_response)
         mock_response.raise_for_status = MagicMock()
@@ -177,7 +177,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = AsyncMock()
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Call function
         (
@@ -213,7 +213,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         # Create a mock response with a status error
         mock_response = MagicMock()
         mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        mock_response.raise_for_status.side_effect = httpx2.HTTPStatusError(
             "Not Found",
             request=MagicMock(),
             response=MagicMock(status_code=404),
@@ -225,7 +225,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         # Return None to propagate exceptions (not suppress them)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Should raise ValueError with helpful message (not UnboundLocalError)
         with pytest.raises(ValueError, match="OIDC discovery failed"):
@@ -239,17 +239,17 @@ class TestSetupOAuthConfigForMultiUserBasic:
         self, hybrid_auth_settings, mocker
     ):
         """Test handling of OIDC discovery connection errors."""
-        import httpx
+        import httpx2
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
-            side_effect=httpx.ConnectError("Connection refused")
+            side_effect=httpx2.ConnectError("Connection refused")
         )
         mock_client.__aenter__.return_value = mock_client
         # Return None to propagate exceptions (not suppress them)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Should raise ValueError with helpful message
         with pytest.raises(ValueError, match="Cannot connect to"):
@@ -281,7 +281,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         )
         hybrid_auth_settings.oidc_discovery_url = custom_discovery_url
 
-        # Mock httpx.AsyncClient
+        # Mock httpx2.AsyncClient
         mock_response = MagicMock()
         mock_response.json = MagicMock(return_value=oidc_discovery_response)
         mock_response.raise_for_status = MagicMock()
@@ -291,7 +291,7 @@ class TestSetupOAuthConfigForMultiUserBasic:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = AsyncMock()
 
-        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+        mocker.patch("httpx2.AsyncClient", return_value=mock_client)
 
         # Call function
         await setup_oauth_config_for_multi_user_basic(

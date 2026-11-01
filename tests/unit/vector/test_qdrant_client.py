@@ -19,7 +19,7 @@ from unittest.mock import call
 
 import anyio
 import anyio.lowlevel
-import httpx
+import httpx2
 import pytest
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import PayloadSchemaType
@@ -62,7 +62,7 @@ def _make_unexpected(status_code: int, body: bytes) -> UnexpectedResponse:
         status_code=status_code,
         reason_phrase="Bad Request",
         content=body,
-        headers=httpx.Headers(),
+        headers=httpx2.Headers(),
     )
 
 
@@ -334,7 +334,7 @@ async def test_ensure_payload_indexes_continues_past_raw_network_error(mocker, c
     """A raw network error (e.g. ConnectError, TimeoutError) must not skip the rest.
 
     UnexpectedResponse covers HTTP-shaped failures, but transport-level
-    failures (httpx.ConnectError, asyncio.TimeoutError) reach the loop as
+    failures (httpx2.ConnectError, asyncio.TimeoutError) reach the loop as
     bare Exceptions. Without a broad catch, the first network blip
     propagates, leaves _qdrant_client assigned, and silently skips every
     remaining field. The fix is per-field containment matching the 5xx

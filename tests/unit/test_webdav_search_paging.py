@@ -17,7 +17,7 @@ The behaviour we pin:
 from typing import Any
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.webdav import FILE_ID_BATCH, WebDAVClient
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.unit
 def _make_client(mocker) -> Any:
     # Returned as Any so tests can reassign mocked search methods without
     # tripping ty's invalid-assignment on the real WebDAVClient signatures.
-    client: Any = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client: Any = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     return client
 
 

@@ -19,7 +19,7 @@ import zipfile
 from collections.abc import Awaitable, Callable
 
 import anyio
-import httpx
+import httpx2
 import pymupdf
 import pytest
 
@@ -177,7 +177,7 @@ async def test_sar_case_via_management_api(
     await _wait_indexed(nc_mcp_login_flow_client, term, note_id=note["id"])
     headers = {"Authorization": f"Bearer {login_flow_static_client_token}"}
 
-    async with httpx.AsyncClient(timeout=30.0, headers=headers) as http:
+    async with httpx2.AsyncClient(timeout=30.0, headers=headers) as http:
         status = (await http.get("http://localhost:8004/api/v1/status")).json()
         assert status["sar_available"] is True
 
@@ -252,7 +252,7 @@ async def test_sar_case_via_management_api(
         )
         assert missing.status_code == 403
 
-    async with httpx.AsyncClient(timeout=30.0) as anonymous:
+    async with httpx2.AsyncClient(timeout=30.0) as anonymous:
         assert (await anonymous.get(CASES)).status_code == 401
 
 
@@ -315,7 +315,7 @@ async def test_sar_case_page_range_of_indexed_pdf(
         )
         assert outside["results"] == []
         headers = {"Authorization": f"Bearer {login_flow_static_client_token}"}
-        async with httpx.AsyncClient(timeout=30.0, headers=headers) as http:
+        async with httpx2.AsyncClient(timeout=30.0, headers=headers) as http:
             via_http = await http.post(
                 f"{CASES}/{case_id}/search",
                 json={

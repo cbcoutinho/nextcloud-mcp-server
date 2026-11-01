@@ -13,7 +13,6 @@ from typing import Any
 from urllib.parse import quote
 
 import anyio
-import httpx
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -69,11 +68,11 @@ class OAuthUserPool:
         self.token_endpoint = token_endpoint
         self.authorization_endpoint = authorization_endpoint
         self.users: dict[str, UserProfile] = {}
-        self._http_client: httpx.AsyncClient | None = None
+        self._http_client: httpx2.AsyncClient | None = None
 
     async def __aenter__(self):
         """Initialize HTTP client."""
-        self._http_client = httpx.AsyncClient(verify=False, timeout=30.0)
+        self._http_client = httpx2.AsyncClient(verify=False, timeout=30.0)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-import httpx
+import httpx2
 
 from ..retry import retry_on_transient
 from .base import Provider
@@ -35,15 +35,15 @@ DEFAULT_MAX_BATCH_CHARS = 16_000
 # RemoteProtocolError is named specifically: its sibling LocalProtocolError
 # shares the ProtocolError parent but is not transient.
 _TRANSIENT_TRANSPORT_ERRORS = (
-    httpx.TimeoutException,  # Connect/Read/Write/Pool
-    httpx.NetworkError,  # Connect/Read/Write/Close
-    httpx.RemoteProtocolError,
-    httpx.ProxyError,
+    httpx2.TimeoutException,  # Connect/Read/Write/Pool
+    httpx2.NetworkError,  # Connect/Read/Write/Close
+    httpx2.RemoteProtocolError,
+    httpx2.ProxyError,
 )
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """Whether an httpx error against Ollama is worth retrying.
+    """Whether an httpx2 error against Ollama is worth retrying.
 
     Same shape as the OpenAI/Mistral predicates: an explicit allow-list of
     transport failures, plus 429 / 5xx. Permanent 4xx — an unknown model, a
@@ -57,17 +57,17 @@ def _is_transient(exc: BaseException) -> bool:
     ``VECTOR_SYNC_MAX_INDEX_FAILURES`` rounds — and the char-bounded batching
     above is what stops it happening in the first place.
     """
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         status = exc.response.status_code
         return status == 429 or status >= 500
     return isinstance(exc, _TRANSIENT_TRANSPORT_ERRORS)
 
 
-# Catch the httpx.HTTPError base (parent of both RequestError and
+# Catch the httpx2.HTTPError base (parent of both RequestError and
 # HTTPStatusError) and let the predicate decide; permanent errors re-raise
 # immediately.
 _retry_transient = retry_on_transient(
-    httpx.HTTPError,
+    httpx2.HTTPError,
     should_retry=_is_transient,
     provider_name="Ollama",
     label="transient error",
@@ -86,7 +86,7 @@ class OllamaProvider(Provider):
         base_url: str,
         embedding_model: str | None = None,
         verify_ssl: bool = True,
-        timeout: httpx.Timeout | None = None,
+        timeout: httpx2.Timeout | None = None,
         embedding_dimensions: int | None = None,
         max_batch_chars: int = DEFAULT_MAX_BATCH_CHARS,
     ):
@@ -117,9 +117,9 @@ class OllamaProvider(Provider):
         self.max_batch_chars = max(1, max_batch_chars)
 
         if timeout is None:
-            timeout = httpx.Timeout(timeout=DEFAULT_TIMEOUT_SECONDS, connect=5)
+            timeout = httpx2.Timeout(timeout=DEFAULT_TIMEOUT_SECONDS, connect=5)
 
-        self.client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout)
+        self.client = httpx2.AsyncClient(verify=verify_ssl, timeout=timeout)
         self._dimension: int | None = None  # Detected dynamically for embeddings
         self._requested_dimensions = embedding_dimensions
 
@@ -268,7 +268,7 @@ class OllamaProvider(Provider):
         for batch in self._iter_batches(texts, batch_size):
             try:
                 data = await self._embed_batch_request(batch)
-            except httpx.HTTPError as exc:
+            except httpx2.HTTPError as exc:
                 # Once per exhausted batch, not once per attempt — see
                 # _log_batch_failure.
                 self._log_batch_failure(batch, exc)
@@ -323,7 +323,7 @@ class OllamaProvider(Provider):
     def _log_batch_failure(self, batch: list[str], exc: BaseException) -> None:
         """Explain a batch that failed for good, once per batch.
 
-        An httpx transport error carries an empty message, so the retry loop's
+        An httpx2 transport error carries an empty message, so the retry loop's
         ``%r`` degrades to ``ReadTimeout('')`` and tells an operator nothing
         about WHAT failed (GH #1345). Name the batch shape; the tuning hint is
         timeout-specific, since only a timeout is plausibly caused by batch size
@@ -336,7 +336,7 @@ class OllamaProvider(Provider):
         a rich line per attempt turned one failing batch into 5+5 warnings.
         """
         hint = ""
-        if isinstance(exc, httpx.TimeoutException):
+        if isinstance(exc, httpx2.TimeoutException):
             hint = (
                 " The request cost scales with total characters, because Ollama "
                 "embeds a batch serially — lower OLLAMA_EMBED_MAX_BATCH_CHARS "
@@ -400,7 +400,7 @@ class OllamaProvider(Provider):
             model: Model name to check
             autoload: Whether to automatically pull the model if not loaded
         """
-        response = httpx.get(f"{self.base_url}/api/tags")
+        response = httpx2.get(f"{self.base_url}/api/tags")
         response.raise_for_status()
 
         models = [m["name"] for m in response.json().get("models", [])]
@@ -411,7 +411,7 @@ class OllamaProvider(Provider):
                 "Model '%s' not yet available in ollama, attempting to pull now...",
                 model,
             )
-            response = httpx.post(f"{self.base_url}/api/pull", json={"model": model})
+            response = httpx2.post(f"{self.base_url}/api/pull", json={"model": model})
             response.raise_for_status()
 
     async def close(self) -> None:

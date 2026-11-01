@@ -5,7 +5,7 @@ cannot see: that the envelope is unwrapped and that an empty 204 body does not
 blow up on ``.json()``.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.shopping_list import ShoppingListClient
@@ -36,7 +36,7 @@ def _client(mocker, json_data=None, content=None):
     mock_make_request = mocker.patch.object(
         ShoppingListClient, "_make_request", return_value=mock_response
     )
-    client = ShoppingListClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = ShoppingListClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     return client, mock_make_request
 
 

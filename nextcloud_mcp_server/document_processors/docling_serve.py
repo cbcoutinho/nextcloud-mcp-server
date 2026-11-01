@@ -31,7 +31,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -142,7 +142,7 @@ async def convert_file(
             content_type or "application/octet-stream",
         )
     }
-    # docling-serve reads repeated multipart fields for list params; httpx emits a
+    # docling-serve reads repeated multipart fields for list params; httpx2 emits a
     # part per list item. Booleans go as lowercase strings for FastAPI coercion.
     data: dict[str, Any] = {"to_formats": list(to_formats)}
     from_format = _from_format_for_mime(content_type)
@@ -166,13 +166,13 @@ async def convert_file(
 
     url = f"{api_url.rstrip('/')}/v1/convert/file"
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)
         ) as client:
             response = await client.post(url, files=files, data=data)
             response.raise_for_status()
             body = response.json()
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         logger.error("docling-serve HTTP error: %s", e)
         raise ProcessorError(f"HTTP error: {e}") from e
     except ValueError as e:
@@ -202,7 +202,7 @@ async def convert_file(
 async def health(api_url: str, *, timeout: float = 5.0) -> bool:
     """docling-serve liveness (``GET /health`` -> 200)."""
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx2.AsyncClient(timeout=timeout) as client:
             response = await client.get(f"{api_url.rstrip('/')}/health")
             return response.status_code == 200
     except Exception as e:  # noqa: BLE001 -- health probe never raises

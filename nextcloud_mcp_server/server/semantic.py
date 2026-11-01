@@ -4,7 +4,7 @@ import logging
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import anyio
-from httpx import RequestError
+from httpx2 import RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import (

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.document_processors.base import EMPTY_DOCUMENT_REASON
@@ -53,7 +53,7 @@ def test_empty_download_of_a_measured_file_is_retryable(metric_sample):
     """
     before = metric_sample(_TRUNCATED, {})
 
-    with pytest.raises(httpx.RemoteProtocolError, match="scanner saw 4096 bytes"):
+    with pytest.raises(httpx2.RemoteProtocolError, match="scanner saw 4096 bytes"):
         proc.empty_download_result(_task(4096), _source(0), "/doc.pdf")
 
     # Counted on the same panel as the Content-Length short read: both are the

@@ -28,7 +28,7 @@ See ADR-029 (contract architecture) and ADR-031 (per-document index mode).
 import shutil
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from pact import Pact
 
@@ -69,7 +69,7 @@ async def _fetch_supported_search_types(base_url: str) -> list[str]:
     endpoint and read the ``supported_search_types`` array to populate its
     query-type picker.
     """
-    async with httpx.AsyncClient(base_url=base_url) as client:
+    async with httpx2.AsyncClient(base_url=base_url) as client:
         resp = await client.get("/api/v1/status")
         resp.raise_for_status()
         return resp.json()["supported_search_types"]
@@ -122,7 +122,7 @@ async def test_status_advertises_nothing_when_vector_sync_disabled(status_pact):
 
 async def _post_search_algorithm(
     base_url: str, path: str, algorithm: str
-) -> httpx.Response:
+) -> httpx2.Response:
     """Stand-in for astrolabe's McpServerClient search calls: POST ``path`` with an
     explicit ``algorithm``. Returns the raw response so the caller can assert on
     the (strict, ADR-031) 422 the server sends for an unsupported algorithm.
@@ -132,7 +132,7 @@ async def _post_search_algorithm(
     on the server share one ``_build_search_algorithm`` gate, so both must reject
     an explicit unsupported algorithm identically.
     """
-    async with httpx.AsyncClient(base_url=base_url) as client:
+    async with httpx2.AsyncClient(base_url=base_url) as client:
         return await client.post(
             path,
             json={"query": "torch leadership award", "algorithm": algorithm},

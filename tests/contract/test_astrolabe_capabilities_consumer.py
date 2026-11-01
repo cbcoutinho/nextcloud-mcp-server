@@ -32,7 +32,7 @@ See ADR-029 for the overall contract-testing architecture.
 """
 
 import pytest
-from httpx import BasicAuth
+from httpx2 import BasicAuth
 from pact import match
 
 from nextcloud_mcp_server.capabilities import allowed_doc_types, clear_cache

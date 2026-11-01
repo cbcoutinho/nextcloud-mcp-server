@@ -211,7 +211,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
         ),
     )
 
-    # Mock httpx client for Nextcloud validation
+    # Mock httpx2 client for Nextcloud validation
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"ocs": {"data": {"id": "testuser"}}}
@@ -360,7 +360,7 @@ async def test_provision_app_password_nextcloud_validation_fails(mocker):
         ),
     )
 
-    # Mock httpx client to return 401
+    # Mock httpx2 client to return 401
     mock_response = MagicMock()
     mock_response.status_code = 401
 
@@ -563,7 +563,7 @@ async def test_provision_app_password_non_json_response_returns_502(mocker):
 
 async def test_provision_app_password_request_error_returns_502(mocker):
     """A transport-level failure reaching Nextcloud returns a clean 502."""
-    import httpx
+    import httpx2
 
     mocker.patch(
         "nextcloud_mcp_server.api.passwords.get_settings",
@@ -575,7 +575,7 @@ async def test_provision_app_password_request_error_returns_502(mocker):
     )
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    mock_client.get = AsyncMock(side_effect=httpx2.ConnectError("connection refused"))
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     # return_value=False so the context manager does not suppress the raised error
     mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -727,7 +727,7 @@ async def test_delete_app_password_success(temp_storage, mocker):
         ),
     )
 
-    # Mock httpx client for Nextcloud validation (OCS v2 success shape)
+    # Mock httpx2 client for Nextcloud validation (OCS v2 success shape)
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -778,7 +778,7 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
         ),
     )
 
-    # Mock httpx client for Nextcloud validation (OCS v2 success shape)
+    # Mock httpx2 client for Nextcloud validation (OCS v2 success shape)
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -824,7 +824,7 @@ async def test_delete_app_password_invalid_credentials(mocker):
         ),
     )
 
-    # Mock httpx client to return 401
+    # Mock httpx2 client to return 401
     mock_response = MagicMock()
     mock_response.status_code = 401
 
@@ -990,7 +990,7 @@ async def test_provision_app_password_rate_limiting(mocker):
         ),
     )
 
-    # Mock httpx client to return 401 (failed validation)
+    # Mock httpx2 client to return 401 (failed validation)
     mock_response = MagicMock()
     mock_response.status_code = 401
 
@@ -1053,7 +1053,7 @@ async def test_rate_limiting_is_per_user(mocker):
         ),
     )
 
-    # Mock httpx client to return 401
+    # Mock httpx2 client to return 401
     mock_response = MagicMock()
     mock_response.status_code = 401
 

@@ -6,21 +6,21 @@ alertable on ``astrolabe_vector_ingest_dropped_total`` distinctly from
 persistent faults.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.vector import processor
 
 
-def _req() -> httpx.Request:
-    return httpx.Request("POST", "https://gw/v1/embeddings")
+def _req() -> httpx2.Request:
+    return httpx2.Request("POST", "https://gw/v1/embeddings")
 
 
 @pytest.mark.unit
 def test_httpx_connect_and_timeout_classified():
-    assert processor._drop_reason(httpx.ConnectError("refused")) == "connection"
-    assert processor._drop_reason(httpx.ReadTimeout("slow")) == "timeout"
-    assert processor._drop_reason(httpx.ConnectTimeout("slow")) == "timeout"
+    assert processor._drop_reason(httpx2.ConnectError("refused")) == "connection"
+    assert processor._drop_reason(httpx2.ReadTimeout("slow")) == "timeout"
+    assert processor._drop_reason(httpx2.ConnectTimeout("slow")) == "timeout"
 
 
 @pytest.mark.unit
@@ -37,14 +37,14 @@ def test_openai_errors_classified():
     assert processor._drop_reason(APITimeoutError(request=req)) == "timeout"
     assert (
         processor._drop_reason(
-            RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+            RateLimitError("rl", response=httpx2.Response(429, request=req), body=None)
         )
         == "rate_limit"
     )
     assert (
         processor._drop_reason(
             InternalServerError(
-                "boom", response=httpx.Response(503, request=req), body=None
+                "boom", response=httpx2.Response(503, request=req), body=None
             )
         )
         == "server"
@@ -54,7 +54,7 @@ def test_openai_errors_classified():
 @pytest.mark.unit
 def test_exception_group_unwraps_to_leaf():
     group = BaseExceptionGroup(
-        "unhandled errors in a TaskGroup", [httpx.ConnectError("refused")]
+        "unhandled errors in a TaskGroup", [httpx2.ConnectError("refused")]
     )
     assert processor._drop_reason(group) == "connection"
 
@@ -63,7 +63,7 @@ def test_exception_group_unwraps_to_leaf():
 def test_nested_exception_group_descends_to_leaf():
     """A doubly-wrapped group must still classify by its leaf, not 'other'."""
     nested = BaseExceptionGroup(
-        "outer", [BaseExceptionGroup("inner", [httpx.ReadTimeout("slow")])]
+        "outer", [BaseExceptionGroup("inner", [httpx2.ReadTimeout("slow")])]
     )
     assert processor._drop_reason(nested) == "timeout"
 
@@ -72,7 +72,7 @@ def test_nested_exception_group_descends_to_leaf():
 def test_qdrant_namespace_classified():
     from qdrant_client.http.exceptions import UnexpectedResponse
 
-    exc = UnexpectedResponse(500, "err", b"", headers=httpx.Headers())
+    exc = UnexpectedResponse(500, "err", b"", headers=httpx2.Headers())
     assert processor._drop_reason(exc) == "qdrant"
 
 
@@ -101,11 +101,11 @@ async def test_process_document_records_drop_on_exhausted_retries(mocker):
         mocker.AsyncMock(return_value=mocker.MagicMock()),
     )
     mocker.patch.object(
-        processor, "_index_document", side_effect=httpx.ConnectError("refused")
+        processor, "_index_document", side_effect=httpx2.ConnectError("refused")
     )
     rec = mocker.patch.object(processor, "record_ingest_dropped")
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(httpx2.ConnectError):
         await processor.process_document(doc_task, mocker.MagicMock(), max_retries=1)
 
     rec.assert_called_once_with("connection")

@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 
 from nextcloud_mcp_server.client.webdav import (
     WebDAVClient,
@@ -178,7 +178,7 @@ async def test_get_file_info_raises_on_404(mocker):
     "absent → None" semantics should catch HTTPStatusError and check the
     status code themselves.
     """
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
@@ -566,7 +566,7 @@ def test_parse_search_response_decodes_non_ascii_paths(mocker):
 
 
 def _request_url(mock_http_client) -> str:
-    """Positional URL passed to the underlying httpx ``request`` call."""
+    """Positional URL passed to the underlying httpx2 ``request`` call."""
     return mock_http_client.request.call_args[0][1]
 
 
@@ -631,7 +631,7 @@ async def test_read_file_encodes_special_chars(mocker):
     """read_file must percent-encode '#', commas, and spaces in the path (card 309).
 
     Paths arrive already URL-decoded from PROPFIND/REPORT, so an unencoded '#'
-    reaches httpx as a URL fragment and silently truncates the request → 404 on
+    reaches httpx2 as a URL fragment and silently truncates the request → 404 on
     valid files (e.g. OHR-Bench law filenames). The outgoing request path must be
     percent-encoded.
     """
@@ -684,12 +684,12 @@ async def test_read_file_ascii_path_unchanged(mocker):
 async def test_read_file_raises_on_truncated_body(mocker):
     """A body shorter than Content-Length is a poisoned/truncated download (#965).
 
-    httpx can hand back empty/short bytes on a healthy-looking 200 when a pooled
+    httpx2 can hand back empty/short bytes on a healthy-looking 200 when a pooled
     keep-alive connection is desynced. read_file must raise a retryable transport
     error (so the vector-sync processor retries/re-queues instead of parsing the
     empty bytes and dead-lettering the file), not return the truncated content.
     """
-    from httpx import RemoteProtocolError
+    from httpx2 import RemoteProtocolError
 
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
@@ -731,7 +731,7 @@ async def test_read_file_accepts_matching_content_length(mocker):
 @pytest.mark.unit
 async def test_read_file_accepts_gzip_response_shorter_than_content_length(mocker):
     """A gzip response's Content-Length is the compressed wire size, not the
-    decompressed body httpx hands back in ``response.content`` — comparing
+    decompressed body httpx2 hands back in ``response.content`` — comparing
     the two would misfire on every compressible file Nextcloud gzips (#1099).
     """
     mock_http_client = AsyncMock()
@@ -739,7 +739,7 @@ async def test_read_file_accepts_gzip_response_shorter_than_content_length(mocke
 
     body = b'{"key": "value"} ' * 2000  # compressible enough to be gzipped
     mock_response = AsyncMock()
-    mock_response.content = body  # httpx already decompressed this
+    mock_response.content = body  # httpx2 already decompressed this
     mock_response.headers = {
         "content-type": "application/json",
         "content-encoding": "gzip",
@@ -813,7 +813,7 @@ async def test_write_file_sends_if_match_header_when_provided(mocker):
     mock_response = AsyncMock()
     mock_response.status_code = 204
     # A real dict: AsyncMock attribute access would make headers.get() return a
-    # coroutine, which is not how httpx behaves.
+    # coroutine, which is not how httpx2 behaves.
     mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
@@ -858,7 +858,7 @@ async def test_write_file_sends_force_header_for_star(mocker):
     mock_response = AsyncMock()
     mock_response.status_code = 204
     # A real dict: AsyncMock attribute access would make headers.get() return a
-    # coroutine, which is not how httpx behaves.
+    # coroutine, which is not how httpx2 behaves.
     mock_response.headers = {"etag": '"new-etag"'}
     mock_response.raise_for_status = mocker.Mock()
     mock_http_client.request = AsyncMock(return_value=mock_response)
@@ -876,7 +876,7 @@ async def test_write_file_returns_structured_result_on_stale_etag(mocker):
     known conflict status: return a structured 'concurrent edit' dict, don't
     raise, matching move_resource/copy_resource's handling of their own
     conflict statuses."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
@@ -899,7 +899,7 @@ async def test_write_file_returns_structured_result_on_stale_etag(mocker):
 async def test_write_file_returns_already_exists_on_create_conflict(mocker):
     """412 from the create-only default (If-None-Match: *) means the path
     already exists -- surface a distinct, actionable 'read it first' message."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
@@ -922,7 +922,7 @@ async def test_write_file_returns_already_exists_on_create_conflict(mocker):
 async def test_write_file_returns_missing_on_force_overwrite_of_absent_file(mocker):
     """412 from a force-overwrite (If-Match: *) means the file does not exist --
     surface a distinct message rather than the generic conflict text."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
@@ -947,7 +947,7 @@ async def test_write_file_returns_structured_result_on_locked(mocker):
     Nextcloud web editor) is a known conflict status: return a structured
     dict, don't raise -- a caller retrying the same write automatically would
     otherwise be indistinguishable from any other transport failure."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
@@ -969,7 +969,7 @@ async def test_write_file_returns_structured_result_on_locked(mocker):
 @pytest.mark.unit
 async def test_write_file_still_raises_on_other_http_errors(mocker):
     """Any status other than 412/423 keeps the pre-existing raise behavior."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())
@@ -990,7 +990,7 @@ async def test_write_file_still_raises_on_other_http_errors(mocker):
 @pytest.mark.unit
 async def test_get_note_attachment_raises_on_truncated_body(mocker):
     """get_note_attachment shares the short-read guard with read_file (#965)."""
-    from httpx import RemoteProtocolError
+    from httpx2 import RemoteProtocolError
 
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
@@ -1027,7 +1027,7 @@ async def test_move_copy_encode_destination_header(
     mocker, method, destination, expected_suffix
 ):
     """MOVE/COPY carry the target in a header, so it needs the same encoding
-    the request URL gets for free from httpx."""
+    the request URL gets for free from httpx2."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
     client._principal_discovered = True
@@ -1208,7 +1208,7 @@ async def test_get_fileid_parses_oc_fileid(mocker):
 @pytest.mark.unit
 async def test_get_fileid_returns_none_on_404(mocker):
     """A gone/inaccessible path resolves to None so the caller degrades."""
-    from httpx import HTTPStatusError, Response
+    from httpx2 import HTTPStatusError, Response
 
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", AsyncMock())

@@ -2,7 +2,7 @@
 
 import logging
 
-import httpx
+import httpx2
 
 from ..config import get_settings
 from .base import Provider
@@ -129,7 +129,7 @@ def create_provider() -> Provider:
             verify_ssl=settings.ollama_verify_ssl,
             embedding_dimensions=settings.embedding_dimensions,
             max_batch_chars=settings.ollama_embed_max_batch_chars,
-            timeout=httpx.Timeout(settings.ollama_embed_timeout, connect=5),
+            timeout=httpx2.Timeout(settings.ollama_embed_timeout, connect=5),
         )
 
     # 5. Simple (fallback)

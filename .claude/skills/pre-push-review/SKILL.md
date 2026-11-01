@@ -301,7 +301,7 @@ If a category has zero applicable findings, omit it from the punch list. Don't p
 
 1. **[J1]** `nextcloud_mcp_server/client/talk.py:42` — Token interpolated into
    URL before validation; path-traversal risk. Move `_validate_token(token)`
-   above the `httpx.URL(...)` call.
+   above the `httpx2.URL(...)` call.
 
 ### 🟡 Important (<count>)
 

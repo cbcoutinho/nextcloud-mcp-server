@@ -16,13 +16,16 @@ from urllib.parse import quote, urlparse
 
 import anyio
 import click
-import httpx
+import httpx2
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.httpx import (
+    HTTPX2ClientInstrumentor,
+    HTTPXClientInstrumentor,
+)
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -143,7 +146,8 @@ if TYPE_CHECKING:
     from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
-HTTPXClientInstrumentor().instrument()
+HTTPX2ClientInstrumentor().instrument()  # our clients, mcp, openai, mistralai
+HTTPXClientInstrumentor().instrument()  # qdrant-client and huggingface-hub still use httpx
 
 
 def build_dcr_scopes(
@@ -613,7 +617,7 @@ async def _check_qdrant_health() -> None:
         probe_url = f"{qdrant_url}/collections/{quote(collection, safe='')}"
         probe_desc = f"collection {collection}"
 
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.get(probe_url, headers=headers)
         healthy = response.status_code == 200
         # Keep the healthy detail exactly "ok" — the control plane's rotate-verify
@@ -637,7 +641,7 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
     network-policy convergence), which is worth retrying. A genuine
     misconfiguration (bad URL/API key surfacing as a 4xx) is not transient and
     should fail fast. Transient signals, mirroring the OIDC-discovery split:
-    connection-level failures — ``httpx.TransportError`` (raw) or qdrant's
+    connection-level failures — ``httpx2.TransportError`` (raw) or qdrant's
     ``ResponseHandlingException`` (wrapper) — and a ``5xx`` from a reachable but
     overloaded/starting Qdrant (qdrant's ``UnexpectedResponse.status_code``). A
     ``4xx`` (auth/URL) is not transient. Walks the ``__cause__``/``__context__``
@@ -648,7 +652,7 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if type(current).__name__ == "ResponseHandlingException" or isinstance(
-            current, httpx.TransportError
+            current, httpx2.TransportError
         ):
             return True
         # qdrant's UnexpectedResponse carries the HTTP status: 5xx is a transient
@@ -1086,7 +1090,7 @@ async def app_lifespan_basic(server: MCPServer) -> AsyncGenerator[AppContext]:
 def _oidc_discovery_error_is_transient(exc: BaseException) -> bool:
     """Whether an OIDC-discovery failure is worth retrying.
 
-    ``httpx.RequestError`` is the broad network-layer base (transport
+    ``httpx2.RequestError`` is the broad network-layer base (transport
     timeouts/connection errors plus TooManyRedirects, DecodingError, …), and a
     malformed 200 body — e.g. a proxy/gateway "warming up" HTML placeholder
     served during cold start — raises ``JSONDecodeError``. Both are transient
@@ -1096,7 +1100,7 @@ def _oidc_discovery_error_is_transient(exc: BaseException) -> bool:
     A 4xx is a misconfiguration (wrong URL, no OIDC app), so it fails fast and
     the operator sees the real error instead of a retry storm.
     """
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return 500 <= exc.response.status_code < 600
     return True
 
@@ -1118,12 +1122,12 @@ async def _perform_oidc_discovery(
     responses are treated as transient and retried. A 4xx response is a
     configuration error, not a transient condition, so it is raised immediately.
 
-    ``timeout`` overrides the per-attempt httpx timeout (seconds); ``None`` keeps
-    httpx's default. The hybrid multi-user-basic path passes an explicit,
+    ``timeout`` overrides the per-attempt httpx2 timeout (seconds); ``None`` keeps
+    httpx2's default. The hybrid multi-user-basic path passes an explicit,
     longer budget here so it keeps its original per-attempt timeout while also
     gaining the retries.
     """
-    # Pass timeout through only when set — httpx treats an explicit
+    # Pass timeout through only when set — httpx2 treats an explicit
     # timeout=None as "disable timeout" rather than "use the default".
     client_kwargs: dict[str, Any] = {"follow_redirects": True}
     if timeout is not None:
@@ -1134,7 +1138,7 @@ async def _perform_oidc_discovery(
     # gte=1/gte=0 dynaconf validators, and a negative backoff would otherwise
     # flip random.uniform(0, delay) into a reversed range.
     @retry_on_transient(
-        (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError),
+        (httpx2.RequestError, httpx2.HTTPStatusError, json.JSONDecodeError),
         should_retry=_oidc_discovery_error_is_transient,
         provider_name="OIDC discovery",
         label="transient error",
@@ -1423,7 +1427,7 @@ async def setup_oauth_config_for_multi_user_basic(
 
     Raises:
         ValueError: If NEXTCLOUD_HOST is not set
-        httpx.HTTPError: If OIDC discovery fails
+        httpx2.HTTPError: If OIDC discovery fails
     """
     nextcloud_host = settings.nextcloud_host
     if not nextcloud_host:
@@ -1450,7 +1454,7 @@ async def setup_oauth_config_for_multi_user_basic(
     # subclass) all fall through to the handlers below.
     try:
         discovery = await _perform_oidc_discovery(discovery_url, settings, timeout=30.0)
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         logger.error(
             "OIDC discovery failed: HTTP %s from %s",
             e.response.status_code,
@@ -1460,7 +1464,7 @@ async def setup_oauth_config_for_multi_user_basic(
             f"OIDC discovery failed: HTTP {e.response.status_code} from {discovery_url}. "
             "Ensure Nextcloud OIDC (user_oidc app) is installed and configured."
         ) from e
-    except httpx.RequestError as e:
+    except httpx2.RequestError as e:
         logger.error("OIDC discovery failed: %s", e)
         raise ValueError(
             f"OIDC discovery failed: Cannot connect to {discovery_url}. Error: {e}"
@@ -1828,9 +1832,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info(
                     "✓ OAuth infrastructure setup complete for multi-user BasicAuth hybrid mode"
                 )
-            except (httpx.HTTPError, ValueError, KeyError) as e:
+            except (httpx2.HTTPError, ValueError, KeyError) as e:
                 # Expected errors during OAuth infrastructure setup:
-                # - httpx.HTTPError: Network issues, OIDC discovery failures
+                # - httpx2.HTTPError: Network issues, OIDC discovery failures
                 # - ValueError: Missing required configuration (NEXTCLOUD_HOST)
                 # - KeyError: Missing required fields in OIDC discovery response
                 logger.error("Failed to setup OAuth infrastructure: %s", e)

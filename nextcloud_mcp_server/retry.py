@@ -74,7 +74,7 @@ def retry_on_transient(
 
     Args:
         exception_type: Catch this exception class (or tuple of classes), e.g.
-            ``openai.APIError`` or ``httpx.RequestError``.
+            ``openai.APIError`` or ``httpx2.RequestError``.
         should_retry: Predicate that decides whether a caught exception is
             transient (and so retryable) vs. a permanent error of the same
             class. Defaults to "always True" — appropriate when

@@ -35,7 +35,7 @@ import json
 import logging
 import os
 
-import httpx
+import httpx2
 import pytest
 from mcp.types import CallToolResult
 
@@ -51,7 +51,7 @@ async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
 
     # Test the PRM endpoint directly (RFC 9728 - path includes /mcp resource)
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8004/.well-known/oauth-protected-resource/mcp"
         )
@@ -145,7 +145,7 @@ async def _set_stored_scopes(user_id: str, password: str, scopes: list[str]) -> 
     That makes it the cheapest way to put a provisioned session into a
     restricted state without driving a second browser login flow.
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.patch(
             f"{LOGIN_FLOW_MCP_BASE_URL}/api/v1/users/{user_id}/scopes",
             json={"scopes": scopes},

@@ -16,7 +16,7 @@ import hashlib
 import logging
 import secrets
 
-import httpx
+import httpx2
 import pytest
 
 logger = logging.getLogger(__name__)
@@ -31,21 +31,21 @@ KEYCLOAK_REALM = "nextcloud-mcp"
 @pytest.fixture(scope="module")
 async def keycloak_mcp_available():
     """Check that the mcp-keycloak service is reachable and return AS metadata."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx2.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 f"{MCP_KEYCLOAK_BASE_URL}/.well-known/oauth-authorization-server"
             )
             resp.raise_for_status()
             return resp.json()
-        except (httpx.ConnectError, httpx.HTTPStatusError) as e:
+        except (httpx2.ConnectError, httpx2.HTTPStatusError) as e:
             pytest.skip(f"mcp-keycloak service not available: {e}")
 
 
 @pytest.fixture()
 async def dcr_client(keycloak_mcp_available):
     """Register a client via DCR proxy and clean up after test."""
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx2.AsyncClient(timeout=30.0) as http:
         # Register via MCP proxy
         resp = await http.post(
             f"{MCP_KEYCLOAK_BASE_URL}/oauth/register",
@@ -67,7 +67,7 @@ async def dcr_client(keycloak_mcp_available):
     client_id = data.get("client_id")
     rat = data.get("registration_access_token")
     if client_id and rat:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx2.AsyncClient(timeout=10.0) as http:
             await http.delete(
                 f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
                 f"/clients-registrations/openid-connect/{client_id}",
@@ -103,7 +103,7 @@ async def test_dcr_client_accepted_by_authorize(keycloak_mcp_available, dcr_clie
     challenge = hashlib.sha256(verifier.encode()).digest()
     code_challenge = base64.urlsafe_b64encode(challenge).rstrip(b"=").decode()
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
+    async with httpx2.AsyncClient(timeout=30.0, follow_redirects=False) as http:
         resp = await http.get(
             f"{MCP_KEYCLOAK_BASE_URL}/oauth/authorize",
             params={
@@ -125,7 +125,7 @@ async def test_dcr_client_accepted_by_authorize(keycloak_mcp_available, dcr_clie
 
 async def test_dcr_client_deletion_via_keycloak(keycloak_mcp_available):
     """Full DCR lifecycle: register via proxy, verify, delete via RFC 7592."""
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx2.AsyncClient(timeout=30.0) as http:
         # Register
         resp = await http.post(
             f"{MCP_KEYCLOAK_BASE_URL}/oauth/register",
@@ -193,7 +193,7 @@ async def test_as_metadata_has_required_fields(keycloak_mcp_available):
 async def test_authorize_rejects_unknown_client(keycloak_mcp_available):
     """Authorization endpoint should reject client_ids that are neither
     statically configured nor dynamically registered."""
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
+    async with httpx2.AsyncClient(timeout=30.0, follow_redirects=False) as http:
         resp = await http.get(
             f"{MCP_KEYCLOAK_BASE_URL}/oauth/authorize",
             params={
@@ -235,12 +235,12 @@ async def test_as_metadata_advertises_cimd_and_iss(keycloak_mcp_available):
 
 @pytest.fixture(scope="module")
 async def claude_cimd_document():
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx2.AsyncClient(timeout=10.0) as http:
         try:
             resp = await http.get(CLAUDE_CIMD_CLIENT_ID)
             resp.raise_for_status()
             return resp.json()
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx2.HTTPError, ValueError) as e:
             pytest.skip(f"claude.ai CIMD document not reachable: {e}")
 
 
@@ -255,7 +255,7 @@ async def test_authorize_with_cimd_client_id(
         else "https://attacker.example.com/callback"
     )
     digest = hashlib.sha256(secrets.token_urlsafe(64).encode()).digest()
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
+    async with httpx2.AsyncClient(timeout=30.0, follow_redirects=False) as http:
         resp = await http.get(
             f"{MCP_KEYCLOAK_BASE_URL}/oauth/authorize",
             params={

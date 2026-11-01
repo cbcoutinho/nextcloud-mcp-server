@@ -9,7 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
-import httpx
+import httpx2
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from qdrant_client.models import (
@@ -117,12 +117,12 @@ def _drop_reason(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
 
-    # Raw httpx transport errors from direct Nextcloud API calls (the nc_client
-    # uses httpx directly); the openai checks below catch the SDK-wrapped
+    # Raw httpx2 transport errors from direct Nextcloud API calls (the nc_client
+    # uses httpx2 directly); the openai checks below catch the SDK-wrapped
     # variants of the same failure modes.
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, httpx2.TimeoutException):
         return "timeout"
-    if isinstance(exc, httpx.ConnectError):
+    if isinstance(exc, httpx2.ConnectError):
         return "connection"
 
     # openai.* is always installed (provider dep) but import lazily to keep this
@@ -508,7 +508,7 @@ def empty_download_result(
             file_path,
             scanned_size,
         )
-        raise httpx.RemoteProtocolError(
+        raise httpx2.RemoteProtocolError(
             f"Empty download for {file_path!r}: scanner saw {scanned_size} bytes, got 0"
         )
     from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415

@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import anyio
-import httpx
+import httpx2
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
@@ -53,8 +53,8 @@ def _make_result(
 
 
 def _http_error(status_code: int) -> HTTPStatusError:
-    request = httpx.Request("GET", "http://test.local/x")
-    response = httpx.Response(status_code=status_code, request=request)
+    request = httpx2.Request("GET", "http://test.local/x")
+    response = httpx2.Response(status_code=status_code, request=request)
     return HTTPStatusError(f"{status_code}", request=request, response=response)
 
 
@@ -482,7 +482,7 @@ async def test_verify_news_items_unexpected_exception_keeps_all(mocker):
     """A non-HTTP exception from get_items must keep all results (fail open).
 
     Covers the catch-all ``except Exception`` branch that exists so a bug
-    in the News client (or an httpx connection error) cannot silently shrink
+    in the News client (or an httpx2 connection error) cannot silently shrink
     the result set.
     """
     news_client = SimpleNamespace(

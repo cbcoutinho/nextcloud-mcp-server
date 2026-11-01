@@ -105,7 +105,7 @@ class LoginFlowV2Client:
             LoginFlowInitResponse with login URL and poll credentials
 
         Raises:
-            httpx.HTTPStatusError: If the Nextcloud server returns an error
+            httpx2.HTTPStatusError: If the Nextcloud server returns an error
         """
         url = f"{self.nextcloud_host}/index.php/login/v2"
 

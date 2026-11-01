@@ -2,7 +2,7 @@
 
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.news import NewsClient, NewsItemType
@@ -38,7 +38,7 @@ async def test_news_api_get_folders(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -58,7 +58,7 @@ async def test_news_api_create_folder(mocker):
     """Test that create_folder correctly creates a folder."""
     mock_response = create_mock_news_folder_response(folder_id=3, name="New Folder")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -78,7 +78,7 @@ async def test_news_api_rename_folder(mocker):
     """Test that rename_folder makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -95,7 +95,7 @@ async def test_news_api_delete_folder(mocker):
     """Test that delete_folder makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -122,7 +122,7 @@ async def test_news_api_get_feeds(mocker):
         newest_item_id=100,
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -143,7 +143,7 @@ async def test_news_api_create_feed(mocker):
         feed_id=10, url="https://example.com/new-feed", title="New Feed"
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -167,7 +167,7 @@ async def test_news_api_create_feed_with_folder(mocker):
         feed_id=10, url="https://example.com/feed", folder_id=5
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -188,7 +188,7 @@ async def test_news_api_delete_feed(mocker):
     """Test that delete_feed makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -203,7 +203,7 @@ async def test_news_api_move_feed(mocker):
     """Test that move_feed makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -220,7 +220,7 @@ async def test_news_api_rename_feed(mocker):
     """Test that rename_feed makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -248,7 +248,7 @@ async def test_news_api_get_items(mocker):
     ]
     mock_response = create_mock_news_items_response(items=items)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -273,7 +273,7 @@ async def test_news_api_get_items_starred(mocker):
     items = [create_mock_news_item(item_id=1, starred=True)]
     mock_response = create_mock_news_items_response(items=items)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -294,7 +294,7 @@ async def test_news_api_get_items_unread_only(mocker):
     items = [create_mock_news_item(item_id=1, unread=True)]
     mock_response = create_mock_news_items_response(items=items)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -318,7 +318,7 @@ async def test_news_api_get_item(mocker):
         create_mock_news_item(item_id=200, title="Other Item 2"),
     ]
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_get_items = mocker.patch.object(NewsClient, "get_items", return_value=items)
 
     client = NewsClient(mock_client, "testuser")
@@ -338,7 +338,7 @@ async def test_news_api_get_item_not_found(mocker):
         create_mock_news_item(item_id=200, title="Item 2"),
     ]
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mocker.patch.object(NewsClient, "get_items", return_value=items)
 
     client = NewsClient(mock_client, "testuser")
@@ -352,7 +352,7 @@ async def test_news_api_get_updated_items(mocker):
     items = [create_mock_news_item(item_id=1)]
     mock_response = create_mock_news_items_response(items=items)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -372,7 +372,7 @@ async def test_news_api_mark_item_read(mocker):
     """Test that mark_item_read makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -389,7 +389,7 @@ async def test_news_api_mark_item_unread(mocker):
     """Test that mark_item_unread makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -406,7 +406,7 @@ async def test_news_api_star_item(mocker):
     """Test that star_item makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -423,7 +423,7 @@ async def test_news_api_unstar_item(mocker):
     """Test that unstar_item makes the correct API call."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -440,7 +440,7 @@ async def test_news_api_mark_items_read_multiple(mocker):
     """Test that mark_items_read makes the correct API call for multiple items."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -457,7 +457,7 @@ async def test_news_api_star_items_multiple(mocker):
     """Test that star_items makes the correct API call for multiple items."""
     mock_response = create_mock_response(status_code=200, json_data={})
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -482,7 +482,7 @@ async def test_news_api_get_status(mocker):
         warnings={"improperlyConfiguredCron": False},
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -502,7 +502,7 @@ async def test_news_api_get_version(mocker):
         status_code=200, json_data={"version": "25.0.0"}
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         NewsClient, "_make_request", return_value=mock_response
     )
@@ -524,17 +524,17 @@ async def test_news_api_create_folder_conflict(mocker):
     """Test that create_folder raises HTTPStatusError on 409 conflict."""
     error_response = create_mock_error_response(409, "Folder name already exists")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(NewsClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "409 Conflict",
-        request=httpx.Request("POST", "http://test.local"),
+        request=httpx2.Request("POST", "http://test.local"),
         response=error_response,
     )
 
     client = NewsClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.create_folder(name="Existing Folder")
 
     assert excinfo.value.response.status_code == 409
@@ -544,17 +544,17 @@ async def test_news_api_delete_feed_not_found(mocker):
     """Test that delete_feed raises HTTPStatusError on 404."""
     error_response = create_mock_error_response(404, "Feed not found")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(NewsClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "404 Not Found",
-        request=httpx.Request("DELETE", "http://test.local"),
+        request=httpx2.Request("DELETE", "http://test.local"),
         response=error_response,
     )
 
     client = NewsClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.delete_feed(feed_id=999999)
 
     assert excinfo.value.response.status_code == 404
@@ -564,17 +564,17 @@ async def test_news_api_create_feed_invalid_url(mocker):
     """Test that create_feed raises HTTPStatusError on 422 for invalid URL."""
     error_response = create_mock_error_response(422, "Invalid feed URL")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(NewsClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "422 Unprocessable Entity",
-        request=httpx.Request("POST", "http://test.local"),
+        request=httpx2.Request("POST", "http://test.local"),
         response=error_response,
     )
 
     client = NewsClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.create_feed(url="not-a-valid-url")
 
     assert excinfo.value.response.status_code == 422

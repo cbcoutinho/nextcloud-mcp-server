@@ -8,7 +8,7 @@ fast. See ``nextcloud_mcp_server.app._init_qdrant_collection_with_retry``.
 
 import types
 
-import httpx
+import httpx2
 import pytest
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
@@ -21,16 +21,16 @@ from nextcloud_mcp_server.app import (
 @pytest.mark.unit
 class TestQdrantInitErrorIsTransient:
     def test_httpx_transport_error_is_transient(self):
-        assert _qdrant_init_error_is_transient(httpx.ConnectError("refused")) is True
-        assert _qdrant_init_error_is_transient(httpx.ReadTimeout("slow")) is True
+        assert _qdrant_init_error_is_transient(httpx2.ConnectError("refused")) is True
+        assert _qdrant_init_error_is_transient(httpx2.ReadTimeout("slow")) is True
 
     def test_qdrant_response_handling_exception_is_transient(self):
-        exc = ResponseHandlingException(httpx.ConnectError("refused"))
+        exc = ResponseHandlingException(httpx2.ConnectError("refused"))
         assert _qdrant_init_error_is_transient(exc) is True
 
     def test_transient_cause_is_detected_through_chain(self):
         outer = RuntimeError("wrapper")
-        outer.__cause__ = httpx.ConnectError("refused")
+        outer.__cause__ = httpx2.ConnectError("refused")
         assert _qdrant_init_error_is_transient(outer) is True
 
     def test_config_error_is_not_transient(self):
@@ -42,7 +42,7 @@ class TestQdrantInitErrorIsTransient:
             status_code=403,
             reason_phrase="Forbidden",
             content=b"",
-            headers=httpx.Headers(),
+            headers=httpx2.Headers(),
         )
         assert _qdrant_init_error_is_transient(exc) is False
 
@@ -52,7 +52,7 @@ class TestQdrantInitErrorIsTransient:
             status_code=503,
             reason_phrase="Service Unavailable",
             content=b"",
-            headers=httpx.Headers(),
+            headers=httpx2.Headers(),
         )
         assert _qdrant_init_error_is_transient(exc) is True
 
@@ -73,8 +73,8 @@ class TestInitQdrantCollectionWithRetry:
         get_client = mocker.patch(
             "nextcloud_mcp_server.vector.qdrant_client.get_qdrant_client",
             side_effect=[
-                ResponseHandlingException(httpx.ConnectError("refused")),
-                httpx.ConnectError("refused"),
+                ResponseHandlingException(httpx2.ConnectError("refused")),
+                httpx2.ConnectError("refused"),
                 mocker.AsyncMock(),  # success on the 3rd attempt
             ],
         )
@@ -103,7 +103,7 @@ class TestInitQdrantCollectionWithRetry:
         mocker.patch("nextcloud_mcp_server.app.get_settings", return_value=_settings(2))
         get_client = mocker.patch(
             "nextcloud_mcp_server.vector.qdrant_client.get_qdrant_client",
-            side_effect=httpx.ConnectError("refused"),
+            side_effect=httpx2.ConnectError("refused"),
         )
 
         with pytest.raises(RuntimeError, match="Qdrant initialization failed"):

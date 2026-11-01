@@ -4,7 +4,7 @@ import uuid
 from io import BytesIO
 
 import pytest
-from httpx import HTTPStatusError  # Import if needed for specific error checks
+from httpx2 import HTTPStatusError  # Import if needed for specific error checks
 from PIL import Image, ImageDraw
 
 from nextcloud_mcp_server.client import NextcloudClient

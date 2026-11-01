@@ -30,13 +30,13 @@ def flow_client():
 
 
 def _mock_response(status_code: int, json_data: dict) -> MagicMock:
-    """Create a mock httpx response."""
+    """Create a mock httpx2 response."""
     response = MagicMock()
     response.status_code = status_code
     response.json.return_value = json_data
     response.raise_for_status = MagicMock()
     if status_code >= 400:
-        from httpx import HTTPStatusError
+        from httpx2 import HTTPStatusError
 
         response.raise_for_status.side_effect = HTTPStatusError(
             "error", request=MagicMock(), response=response

@@ -8,7 +8,7 @@ tenant realm); creds are all-or-nothing.
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.config import Settings
@@ -80,24 +80,24 @@ def test_openai_creds_do_not_trigger_gateway(monkeypatch):
 async def test_token_provider_caches_and_refreshes(monkeypatch):
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         calls["n"] += 1
         assert request.headers["Authorization"].startswith("Basic ")
-        body = dict(httpx.QueryParams(request.content.decode()))
+        body = dict(httpx2.QueryParams(request.content.decode()))
         assert body["grant_type"] == "client_credentials"
         assert body["scope"] == "embed"
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"access_token": f"tok{calls['n']}", "expires_in": 3600}
         )
 
-    transport = httpx.MockTransport(handler)
-    orig_async_client = httpx.AsyncClient
+    transport = httpx2.MockTransport(handler)
+    orig_async_client = httpx2.AsyncClient
 
     def _client(*args, **kwargs):
         kwargs["transport"] = transport
         return orig_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    monkeypatch.setattr(httpx2, "AsyncClient", _client)
 
     tp = GatewayTokenProvider(
         token_url="https://idp.example/oauth2/token",
@@ -124,22 +124,22 @@ async def test_token_provider_concurrent_callers_issue_single_request(monkeypatc
 
     calls = {"n": 0}
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         calls["n"] += 1
         # Hold the "network" open so a second caller arrives mid-flight.
         await anyio.sleep(0.05)
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"access_token": f"tok{calls['n']}", "expires_in": 3600}
         )
 
-    transport = httpx.MockTransport(handler)
-    orig_async_client = httpx.AsyncClient
+    transport = httpx2.MockTransport(handler)
+    orig_async_client = httpx2.AsyncClient
 
     def _client(*args, **kwargs):
         kwargs["transport"] = transport
         return orig_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    monkeypatch.setattr(httpx2, "AsyncClient", _client)
 
     tp = GatewayTokenProvider(
         token_url="https://idp.example/oauth2/token",
@@ -166,16 +166,16 @@ async def test_token_provider_concurrent_callers_issue_single_request(monkeypatc
 
 
 def _mock_async_client(monkeypatch, handler):
-    """Route every httpx.AsyncClient through a MockTransport (mirrors the
+    """Route every httpx2.AsyncClient through a MockTransport (mirrors the
     token-provider tests above)."""
-    transport = httpx.MockTransport(handler)
-    orig = httpx.AsyncClient
+    transport = httpx2.MockTransport(handler)
+    orig = httpx2.AsyncClient
 
     def _client(*args, **kwargs):
         kwargs["transport"] = transport
         return orig(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    monkeypatch.setattr(httpx2, "AsyncClient", _client)
 
 
 async def test_detect_dimension_from_models_endpoint(monkeypatch):
@@ -183,10 +183,10 @@ async def test_detect_dimension_from_models_endpoint(monkeypatch):
     call — the regression that crashed external-mode startup."""
     seen = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("Authorization")
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "object": "list",
@@ -219,11 +219,13 @@ async def test_detect_dimension_sends_bearer(monkeypatch):
     """When a token provider is configured, discovery presents the M2M bearer."""
     captured = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/token"):
-            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+            return httpx2.Response(
+                200, json={"access_token": "tok", "expires_in": 3600}
+            )
         captured["auth"] = request.headers.get("Authorization")
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"data": [{"id": "mistral/mistral-embed", "dimension": 1024}]}
         )
 
@@ -245,8 +247,8 @@ async def test_detect_dimension_non_fatal_on_http_error(monkeypatch):
     """An old gateway without /v1/models (404) must not crash startup —
     dimension stays unknown so lazy detect-on-first-embed still applies."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json={"detail": "not found"})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(404, json={"detail": "not found"})
 
     _mock_async_client(monkeypatch, handler)
     provider = GatewayProvider(
@@ -261,8 +263,8 @@ async def test_detect_dimension_model_absent(monkeypatch):
     """Gateway reachable but doesn't list our model → no dimension set,
     no raise."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [{"id": "other", "dimension": 99}]})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"data": [{"id": "other", "dimension": 99}]})
 
     _mock_async_client(monkeypatch, handler)
     provider = GatewayProvider(
@@ -277,9 +279,9 @@ async def test_detect_dimension_skips_when_already_known(monkeypatch):
     """If the dimension is already known, discovery makes no HTTP call."""
     called = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         called["n"] += 1
-        return httpx.Response(200, json={"data": []})
+        return httpx2.Response(200, json={"data": []})
 
     _mock_async_client(monkeypatch, handler)
     provider = GatewayProvider(
@@ -431,9 +433,9 @@ async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):
     dimension because discovery lands on /v1/models."""
     seen = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(request.url)
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"data": [{"id": "mistral/mistral-embed", "dimension": 1024}]}
         )
 

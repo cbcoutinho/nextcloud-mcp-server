@@ -943,6 +943,17 @@ LOGGING_CONFIG = {
             "handlers": ["default"],
             "level": "INFO",
         },
+        "httpx2": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
+        "httpcore2": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
+        # Legacy httpx: still used by qdrant-client and huggingface-hub
         "httpx": {
             "handlers": ["default"],
             "level": "INFO",
@@ -1155,7 +1166,7 @@ class Settings:
     nextcloud_verify_ssl: bool = True
     nextcloud_ca_bundle: str | None = None
 
-    # Reuse pooled keep-alive connections for the Nextcloud httpx client.
+    # Reuse pooled keep-alive connections for the Nextcloud httpx2 client.
     # Default True preserves low-latency interactive traffic. Set
     # NEXTCLOUD_HTTP_KEEPALIVE=false to force a fresh connection per request
     # (max_keepalive_connections=0) — mirrors the DATABASE_POOL_SIZE→NullPool
@@ -1544,7 +1555,7 @@ class Settings:
     # direct mistral backend strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
     # OCR backend HTTP request timeout (seconds). float for parity with the
-    # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
+    # parse timeout / httpx2.Timeout; per-tenant tunable so a gateway with a
     # shorter ceiling isn't masked by the 180s default.
     document_ocr_timeout_seconds: float = 180.0
     # OCR execution mode: "sync" | "batch" (Deck #332). batch is opt-in and routes
@@ -1874,7 +1885,7 @@ class Settings:
         self.ner_batch_size = int(self.ner_batch_size)
         if self.ner_batch_size < 1:
             raise ValueError(f"NER_BATCH_SIZE must be >= 1; got {self.ner_batch_size}")
-        # 0 would give httpx no time budget: every NER call would time out at
+        # 0 would give httpx2 no time budget: every NER call would time out at
         # request time instead of failing here with a clear message.
         self.ner_timeout_seconds = float(self.ner_timeout_seconds)
         if self.ner_timeout_seconds <= 0:
@@ -2504,7 +2515,7 @@ def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
 
 @functools.cache
 def get_nextcloud_http_keepalive() -> bool:
-    """Return whether the Nextcloud httpx client may reuse pooled connections.
+    """Return whether the Nextcloud httpx2 client may reuse pooled connections.
 
     Returns:
         - False if NEXTCLOUD_HTTP_KEEPALIVE=false (fresh connection per

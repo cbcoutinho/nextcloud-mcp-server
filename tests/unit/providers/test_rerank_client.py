@@ -6,7 +6,7 @@ while actually being lost recall, so the client's contract is: every index it
 returns is valid and unique, and it never invents or omits one quietly.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.providers.rerank import (
@@ -18,28 +18,28 @@ pytestmark = pytest.mark.unit
 
 
 def _patch_transport(monkeypatch, handler):
-    """Wrap httpx.AsyncClient with a MockTransport, capturing issued requests.
+    """Wrap httpx2.AsyncClient with a MockTransport, capturing issued requests.
 
     Mirrors tests/unit/providers/test_gateway_batch.py — this repo has no respx.
     """
-    seen: list[httpx.Request] = []
+    seen: list[httpx2.Request] = []
 
-    def _handler(request: httpx.Request) -> httpx.Response:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
         return handler(request)
 
-    original = httpx.AsyncClient
+    original = httpx2.AsyncClient
 
     def _factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(_handler)
+        kwargs["transport"] = httpx2.MockTransport(_handler)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(httpx2, "AsyncClient", _factory)
     return seen
 
 
 def _ok(payload):
-    return lambda request: httpx.Response(200, json=payload)
+    return lambda request: httpx2.Response(200, json=payload)
 
 
 async def test_posts_model_query_and_documents(monkeypatch):
@@ -153,14 +153,14 @@ async def test_empty_document_list_short_circuits(monkeypatch):
 
 
 async def test_non_2xx_raises_rerank_error(monkeypatch):
-    _patch_transport(monkeypatch, lambda r: httpx.Response(503, text="unavailable"))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(503, text="unavailable"))
     with pytest.raises(RerankError, match="503"):
         await RerankClient("https://gw.example/v1/rerank", "m").rerank("q", ["a", "b"])
 
 
 async def test_transport_failure_raises_rerank_error(monkeypatch):
     def _boom(request):
-        raise httpx.ConnectError("no route to host")
+        raise httpx2.ConnectError("no route to host")
 
     _patch_transport(monkeypatch, _boom)
     with pytest.raises(RerankError):
@@ -171,20 +171,20 @@ class TestTimeoutBudget:
     """The configured timeout is the caller's whole budget, connect included."""
 
     @staticmethod
-    def _captured_timeout(monkeypatch) -> list[httpx.Timeout]:
-        seen: list[httpx.Timeout] = []
-        original = httpx.AsyncClient
+    def _captured_timeout(monkeypatch) -> list[httpx2.Timeout]:
+        seen: list[httpx2.Timeout] = []
+        original = httpx2.AsyncClient
 
         def _factory(*args, **kwargs):
             seen.append(kwargs.get("timeout"))
-            kwargs["transport"] = httpx.MockTransport(
-                lambda r: httpx.Response(
+            kwargs["transport"] = httpx2.MockTransport(
+                lambda r: httpx2.Response(
                     200, json={"results": [{"index": 0, "relevance_score": 1.0}]}
                 )
             )
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(httpx, "AsyncClient", _factory)
+        monkeypatch.setattr(httpx2, "AsyncClient", _factory)
         return seen
 
     async def test_connect_is_clamped_to_a_shorter_overall_budget(self, monkeypatch):

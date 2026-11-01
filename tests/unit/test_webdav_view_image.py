@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -50,10 +50,10 @@ def _jpeg(size=(4000, 3000)) -> bytes:
     return out.getvalue()
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://test.local/index.php/core/preview.png")
-    response = httpx.Response(status, request=request)
-    return httpx.HTTPStatusError(str(status), request=request, response=response)
+def _http_error(status: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "http://test.local/index.php/core/preview.png")
+    response = httpx2.Response(status, request=request)
+    return httpx2.HTTPStatusError(str(status), request=request, response=response)
 
 
 @pytest.fixture
@@ -308,7 +308,7 @@ async def test_get_preview_requests_the_core_preview_route(mocker):
         ),
     )
 
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     content, content_type = await client.get_preview("Photos/a b.jpg", 1024)
 
     assert (content, content_type) == (b"\xff\xd8jpeg", "image/jpeg")

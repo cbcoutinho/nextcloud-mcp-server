@@ -27,7 +27,7 @@ import os
 import uuid
 
 import pytest
-from httpx import BasicAuth, HTTPStatusError
+from httpx2 import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings

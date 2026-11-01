@@ -11,7 +11,7 @@ import logging
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import HTTPStatusError, Request, Response
+from httpx2 import HTTPStatusError, Request, Response
 
 from nextcloud_mcp_server.vector.scanner import (
     _app_enabled,

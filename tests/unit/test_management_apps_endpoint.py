@@ -10,7 +10,7 @@ Basic Auth. The OAuth bearer is **never** forwarded to Nextcloud (see
 
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -46,7 +46,7 @@ def _patch_basic_auth(
 
 
 def _patch_outbound_client(mocker, response: MagicMock) -> MagicMock:
-    """Patch the outbound httpx client; return the factory MagicMock so tests
+    """Patch the outbound httpx2 client; return the factory MagicMock so tests
     can introspect the kwargs (esp. ``auth=``) it was called with."""
     mock_get = AsyncMock(return_value=response)
     mock_client = AsyncMock()
@@ -104,7 +104,7 @@ async def test_returns_sorted_capability_keys(mocker):
     assert "headers" not in factory_kwargs or "Authorization" not in (
         factory_kwargs.get("headers") or {}
     )
-    assert isinstance(factory_kwargs["auth"], httpx.BasicAuth)
+    assert isinstance(factory_kwargs["auth"], httpx2.BasicAuth)
 
 
 async def test_empty_capabilities_returns_empty_list(mocker):
