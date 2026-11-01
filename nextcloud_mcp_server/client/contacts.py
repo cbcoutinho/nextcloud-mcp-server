@@ -48,8 +48,11 @@ def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
 
     Accepts the flat keys in ``_N_COMPONENTS`` and/or ``n`` as a dict with those
     keys, a positional list, or a raw ``"Family;Given;Additional;Prefix;Suffix"``
-    string. Flat keys win over ``n``. Only components actually supplied are
-    returned, so an update can change one part and keep the rest (issue #1749).
+    string (split on ``;`` as-is, not unescaped — use the flat keys for a
+    component containing ``;``). Flat keys win over ``n``. Only components
+    actually supplied are returned, so an update can change one part and keep
+    the rest (issue #1749). ``None`` means "not supplied", not "clear it"; pass
+    ``""`` to clear a component.
     """
     raw = data.pop("n", None)
     if isinstance(raw, str):
@@ -62,15 +65,14 @@ def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
         else {}
     )
     for key in _N_COMPONENTS:
-        if key in data:
-            parts[key] = data.pop(key)
-    return {k: _name_component_str(v) for k, v in parts.items()}
+        value = data.pop(key, None)
+        if value is not None:
+            parts[key] = value
+    return {k: _name_component_str(v) for k, v in parts.items() if v is not None}
 
 
 def _name_component_str(value: Any) -> str:
-    """``None`` → ``""``; a list (e.g. several additional names) is space-joined."""
-    if value is None:
-        return ""
+    """A list (e.g. several additional names) is space-joined."""
     if isinstance(value, list):
         return " ".join(str(v) for v in value if v)
     return str(value)
