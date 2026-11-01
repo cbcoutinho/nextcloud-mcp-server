@@ -1,6 +1,6 @@
 """Unit tests for the docling-serve client + DoclingProcessor (mocked HTTP)."""
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.document_processors import docling_serve
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 
 
 def _mock_client(mocker, *, json=None, status_code=200, raise_http=None):
-    """A monkeypatchable httpx.AsyncClient stand-in returning one canned response."""
+    """A monkeypatchable httpx2.AsyncClient stand-in returning one canned response."""
     resp = mocker.Mock()
     resp.status_code = status_code
     resp.json = mocker.Mock(return_value=json or {})
@@ -68,7 +68,7 @@ async def test_convert_file_sends_multipart_options(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"md_content": "# Hi\n\nbody"}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     document = await docling_serve.convert_file(
         "https://docling:5001/",
@@ -100,7 +100,7 @@ async def test_convert_file_pdf_from_format(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"text_content": "text"}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     await docling_serve.convert_file(
         "https://docling:5001",
@@ -119,7 +119,7 @@ async def test_convert_file_vlm_pipeline(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"md_content": "vlm text"}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     await docling_serve.convert_file(
         "https://docling:5001",
@@ -146,7 +146,7 @@ async def test_convert_file_vlm_without_preset(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"md_content": "vlm text"}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     await docling_serve.convert_file(
         "https://docling:5001",
@@ -161,9 +161,9 @@ async def test_convert_file_vlm_without_preset(mocker, monkeypatch):
 
 
 async def test_convert_file_http_error_raises_processor_error(mocker, monkeypatch):
-    err = httpx.HTTPStatusError("500", request=mocker.Mock(), response=mocker.Mock())
+    err = httpx2.HTTPStatusError("500", request=mocker.Mock(), response=mocker.Mock())
     client = _mock_client(mocker, raise_http=err)
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
@@ -175,7 +175,7 @@ async def test_convert_file_failure_status_raises(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "failure", "document": {}, "errors": ["boom"]}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
@@ -187,7 +187,7 @@ async def test_convert_file_empty_text_raises(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"md_content": ""}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
@@ -199,7 +199,7 @@ async def test_convert_file_non_dict_body_raises(mocker, monkeypatch):
     """A valid-JSON but non-object body (bare list from a misbehaving proxy) must
     become a ProcessorError, not an AttributeError on body.get(...)."""
     client = _mock_client(mocker, json=["unexpected"])
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
@@ -217,7 +217,7 @@ async def test_convert_file_non_json_body_raises(mocker, monkeypatch):
     client.__aenter__ = mocker.AsyncMock(return_value=client)
     client.__aexit__ = mocker.AsyncMock(return_value=False)
     client.post = mocker.AsyncMock(return_value=resp)
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     with pytest.raises(ProcessorError):
         await docling_serve.convert_file(
@@ -244,7 +244,7 @@ async def test_process_image_returns_markdown(mocker, monkeypatch):
         mocker,
         json={"status": "success", "document": {"md_content": "handwritten text"}},
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     proc = DoclingProcessor("https://docling:5001", ocr_lang=["en", "de"])
     result = await proc.process(b"\x89PNG", "image/png", filename="note.png")
@@ -265,7 +265,7 @@ async def test_process_image_vlm_pipeline(mocker, monkeypatch):
         mocker,
         json={"status": "success", "document": {"md_content": "vlm markdown"}},
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     proc = DoclingProcessor(
         "https://docling:5001", pipeline="vlm", vlm_preset="glm_ocr"
@@ -289,7 +289,7 @@ async def test_process_pdf_when_forced(mocker, monkeypatch):
         mocker,
         json={"status": "success", "document": {"md_content": "| a | b |\n| 1 | 2 |"}},
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     proc = DoclingProcessor("https://docling:5001")
     result = await proc.process(b"%PDF-1.7", "application/pdf", filename="tables.pdf")
@@ -304,7 +304,7 @@ async def test_process_with_progress_callback_returns_text(mocker, monkeypatch):
     client = _mock_client(
         mocker, json={"status": "success", "document": {"md_content": "ocr text"}}
     )
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     async def progress_cb(progress, total, message):
         pass
@@ -318,9 +318,9 @@ async def test_process_with_progress_callback_returns_text(mocker, monkeypatch):
 
 
 async def test_process_http_error_raises(mocker, monkeypatch):
-    err = httpx.HTTPStatusError("500", request=mocker.Mock(), response=mocker.Mock())
+    err = httpx2.HTTPStatusError("500", request=mocker.Mock(), response=mocker.Mock())
     client = _mock_client(mocker, raise_http=err)
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
 
     proc = DoclingProcessor("https://docling:5001")
     with pytest.raises(ProcessorError):
@@ -329,7 +329,7 @@ async def test_process_http_error_raises(mocker, monkeypatch):
 
 async def test_health_check_ok(mocker, monkeypatch):
     ok = _mock_client(mocker, status_code=200)
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: ok)
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: ok)
     assert await DoclingProcessor("https://docling:5001").health_check() is True
 
 
@@ -337,8 +337,8 @@ async def test_health_check_error_is_false(mocker, monkeypatch):
     client = mocker.MagicMock()
     client.__aenter__ = mocker.AsyncMock(return_value=client)
     client.__aexit__ = mocker.AsyncMock(return_value=False)
-    client.get = mocker.AsyncMock(side_effect=httpx.ConnectError("down"))
-    monkeypatch.setattr(docling_serve.httpx, "AsyncClient", lambda *a, **k: client)
+    client.get = mocker.AsyncMock(side_effect=httpx2.ConnectError("down"))
+    monkeypatch.setattr(docling_serve.httpx2, "AsyncClient", lambda *a, **k: client)
     assert await DoclingProcessor("https://docling:5001").health_check() is False
 
 

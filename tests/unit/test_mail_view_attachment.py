@@ -19,7 +19,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 from mcp.client import Client
 from mcp.server.mcpserver import MCPServer
@@ -68,17 +68,17 @@ def _transparent_png() -> bytes:
     return _encode(Image.new("RGBA", (300, 200), (255, 0, 0, 0)), "PNG")
 
 
-def _request_error() -> httpx.RequestError:
-    return httpx.ConnectError(
+def _request_error() -> httpx2.RequestError:
+    return httpx2.ConnectError(
         "connection refused",
-        request=httpx.Request("GET", "http://test.local/attachment"),
+        request=httpx2.Request("GET", "http://test.local/attachment"),
     )
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://test.local/attachment")
-    response = httpx.Response(status, request=request)
-    return httpx.HTTPStatusError(str(status), request=request, response=response)
+def _http_error(status: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "http://test.local/attachment")
+    response = httpx2.Response(status, request=request)
+    return httpx2.HTTPStatusError(str(status), request=request, response=response)
 
 
 @pytest.fixture

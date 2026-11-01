@@ -14,7 +14,7 @@ positional parameter is ``url`` — so the status string lands in ``exc.url``, n
 
 from __future__ import annotations
 
-import httpx
+import httpx2
 import pytest
 from caldav.lib import error as caldav_error
 
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.unit
 def _client(mocker, *, delete_raises: Exception | None = None) -> CalendarClient:
     """Build a CalendarClient whose object lookup and delete are stubbed."""
     client = CalendarClient.__new__(CalendarClient)
-    client._client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    client._client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     client._principal_resolved = True
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
     mocker.patch.object(
@@ -111,10 +111,10 @@ async def test_unparseable_refusal_is_not_guessed(mocker):
 
 async def test_transport_errors_still_propagate(mocker):
     """Refusals are handled; connectivity failures are not ours to swallow."""
-    client = _client(mocker, delete_raises=httpx.ConnectError("boom"))
+    client = _client(mocker, delete_raises=httpx2.ConnectError("boom"))
     pending = client.delete_event("Personal", "e1")
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(httpx2.ConnectError):
         await pending
 
 

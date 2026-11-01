@@ -18,7 +18,7 @@ the request, so every user requests the full supported set.
 import base64
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from .conftest import (
@@ -48,7 +48,7 @@ def _scope_claim(token: str) -> set[str]:
 
 
 async def _granted_scopes(username: str, password: str) -> set[str]:
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx2.AsyncClient(timeout=30.0) as http:
         response = await http.post(
             TOKEN_ENDPOINT,
             data={

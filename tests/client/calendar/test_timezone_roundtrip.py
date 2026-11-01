@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import datetime
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.calendar import CalendarClient
@@ -32,7 +32,7 @@ def _make_client(mocker) -> CalendarClient:
     ``_parse_ical_event``) don't touch the wire, so a stub AsyncClient is fine.
     """
     client = CalendarClient.__new__(CalendarClient)
-    client._client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    client._client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     client._username = "tester"
     return client
 

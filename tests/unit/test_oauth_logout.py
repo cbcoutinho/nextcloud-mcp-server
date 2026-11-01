@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 from starlette.requests import HTTPConnection
@@ -415,9 +415,9 @@ async def test_logout_handles_session_with_no_refresh_token(storage):
 # ---------------------------------------------------------------------------
 
 
-def _httpx_handler(routes: dict[str, httpx.Response]):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return routes.get(str(request.url), httpx.Response(404))
+def _httpx_handler(routes: dict[str, httpx2.Response]):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return routes.get(str(request.url), httpx2.Response(404))
 
     return handler
 
@@ -426,28 +426,28 @@ async def test_revoke_helper_posts_to_revocation_endpoint():
     discovery_url = "http://idp.example/.well-known"
     revocation_url = "http://idp.example/revoke"
 
-    received: list[httpx.Request] = []
+    received: list[httpx2.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if str(request.url) == discovery_url:
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps({"revocation_endpoint": revocation_url}).encode(),
                 headers={"content-type": "application/json"},
             )
         if str(request.url) == revocation_url:
             received.append(request)
-            return httpx.Response(200)
-        return httpx.Response(404)
+            return httpx2.Response(200)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     # Discovery now goes through token_utils.get_oidc_discovery (PR #758 nit
-    # 6); revocation POST still uses browser_oauth_routes' httpx client.
+    # 6); revocation POST still uses browser_oauth_routes' httpx2 client.
     with (
         patch(
             "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
@@ -485,16 +485,16 @@ async def test_revoke_helper_skips_when_no_revocation_endpoint():
     """IdPs without a revocation_endpoint advertised: helper must no-op silently."""
     discovery_url = "http://idp.example/.well-known"
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if str(request.url) == discovery_url:
-            return httpx.Response(200, json={})  # no revocation_endpoint
-        return httpx.Response(404)
+            return httpx2.Response(200, json={})  # no revocation_endpoint
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     with (
         patch(
@@ -523,14 +523,14 @@ async def test_revoke_helper_skips_when_no_revocation_endpoint():
 async def test_revoke_helper_silent_on_idp_error():
     """If the IdP 500s, the helper must not raise — caller treats it as best-effort."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, content=b"boom")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(500, content=b"boom")
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     with (
         patch(

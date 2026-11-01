@@ -1,6 +1,6 @@
 """The response event hook must never consume a streamed body.
 
-httpx runs response event hooks BEFORE the body is fetched. ``log_response``
+httpx2 runs response event hooks BEFORE the body is fetched. ``log_response``
 called ``response.aread()`` unconditionally, which meant:
 
 * every response in the app was buffered and stringified regardless of log
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client import log_response
@@ -31,10 +31,10 @@ pytestmark = pytest.mark.unit
 HOOK_LOGGER = "nextcloud_mcp_server.client"
 
 
-class _AsyncStream(httpx.AsyncByteStream):
+class _AsyncStream(httpx2.AsyncByteStream):
     """A not-yet-read response body.
 
-    ``httpx.Response(content=...)`` is consumed the moment it is constructed, so
+    ``httpx2.Response(content=...)`` is consumed the moment it is constructed, so
     it cannot show whether the hook read anything. A stream-backed response
     starts with ``is_stream_consumed`` False, which is what makes the assertion
     meaningful -- and it is also what an over-the-wire response actually is.
@@ -47,10 +47,10 @@ class _AsyncStream(httpx.AsyncByteStream):
         yield self._body
 
 
-def _response(*, streaming: bool, body: bytes = b"payload") -> httpx.Response:
+def _response(*, streaming: bool, body: bytes = b"payload") -> httpx2.Response:
     extensions = {STREAMING_REQUEST_EXTENSION: True} if streaming else {}
-    request = httpx.Request("GET", "https://nc/f.pdf", extensions=extensions)
-    return httpx.Response(200, stream=_AsyncStream(body), request=request)
+    request = httpx2.Request("GET", "https://nc/f.pdf", extensions=extensions)
+    return httpx2.Response(200, stream=_AsyncStream(body), request=request)
 
 
 async def test_streamed_response_is_left_unconsumed(caplog):
@@ -99,14 +99,14 @@ async def test_stream_survives_the_real_hook_end_to_end(tmp_path):
     """
     body = b"x" * (512 * 1024)
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         # stream=, not content=: a Response built with content= is consumed on
         # construction, so it would look "buffered" no matter what the hook did
         # and the test could never fail.
-        return httpx.Response(200, stream=_AsyncStream(body))
+        return httpx2.Response(200, stream=_AsyncStream(body))
 
-    transport = httpx.MockTransport(handler)
-    http = httpx.AsyncClient(
+    transport = httpx2.MockTransport(handler)
+    http = httpx2.AsyncClient(
         transport=transport,
         base_url="https://nc",
         event_hooks={"response": [log_response]},
@@ -118,7 +118,7 @@ async def test_stream_survives_the_real_hook_end_to_end(tmp_path):
     )
     response = await http.send(request, stream=True)
     try:
-        # THE assertion. Counting bytes afterwards proves nothing: once httpx
+        # THE assertion. Counting bytes afterwards proves nothing: once httpx2
         # has buffered a body it replays it from response.content, so the byte
         # count matches whether or not the hook ate the stream. Only the
         # unconsumed state distinguishes streaming from buffering, and it is
@@ -139,15 +139,15 @@ async def test_unmarked_stream_would_be_consumed(caplog):
 
     Without the extension the hook cannot tell a streamed request apart and
     reads it -- which is precisely the production failure. If a future change
-    makes the marker unnecessary (e.g. httpx exposes stream intent on the
+    makes the marker unnecessary (e.g. httpx2 exposes stream intent on the
     request), this test should be updated deliberately, not silently.
     """
     body = b"y" * 4096
 
-    transport = httpx.MockTransport(
-        lambda r: httpx.Response(200, stream=_AsyncStream(body))
+    transport = httpx2.MockTransport(
+        lambda r: httpx2.Response(200, stream=_AsyncStream(body))
     )
-    http = httpx.AsyncClient(
+    http = httpx2.AsyncClient(
         transport=transport,
         base_url="https://nc",
         event_hooks={"response": [log_response]},

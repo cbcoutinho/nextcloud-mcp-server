@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from httpx import HTTPStatusError, RequestError
+from httpx2 import HTTPStatusError, RequestError
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
@@ -95,7 +95,7 @@ class DeckClient(BaseNextcloudClient):
         the endpoints work as-is, and swapping the header would be a
         behaviour change riding along in a de-duplication pass. If it is ever
         revisited, it is a change to Deck's REST calls only. ``OCS-APIRequest``
-        comes from the shared httpx client, as for every other call.
+        comes from the shared httpx2 client, as for every other call.
         """
         headers = {"Content-Type": "application/json"}
         if additional_headers:

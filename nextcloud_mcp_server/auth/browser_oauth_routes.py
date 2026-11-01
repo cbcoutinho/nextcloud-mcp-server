@@ -13,7 +13,7 @@ from html import escape as html_escape
 from urllib.parse import urlencode
 from urllib.parse import urlparse as parse_url
 
-import httpx
+import httpx2
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -453,7 +453,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 response.raise_for_status()
                 token_data = response.json()
 
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         # Correlation IDs let the user reference a specific failure in the
         # server logs without us having to reflect raw exception/IdP text
         # back into the HTML page (PR #758 round-3 nit 6).

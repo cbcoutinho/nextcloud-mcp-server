@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
@@ -180,11 +180,11 @@ class TokenBrokerService:
         self._locks_lock = anyio.Lock()  # Protects the locks dict itself
         self._http_client = None
 
-    async def _get_http_client(self) -> httpx.AsyncClient:
+    async def _get_http_client(self) -> httpx2.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None:
             self._http_client = nextcloud_httpx_client(
-                timeout=httpx.Timeout(30.0), follow_redirects=True
+                timeout=httpx2.Timeout(30.0), follow_redirects=True
             )
         return self._http_client
 

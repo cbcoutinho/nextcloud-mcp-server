@@ -10,7 +10,7 @@ being used in a URL, and that the tools return typed ``BaseResponse`` models.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
@@ -303,15 +303,15 @@ async def test_save_draft_rejects_malformed_recipients_before_any_request(
 
 async def test_save_draft_failure_says_nothing_was_sent(mail_tools, fake_mail):
     """An agent must not read a failed save as "maybe it went out"."""
-    request = httpx.Request(
+    request = httpx2.Request(
         "POST", "http://test.local/index.php/apps/mail/api/drafts/move/42"
     )
-    response = httpx.Response(
+    response = httpx2.Response(
         500,
         request=request,
         text='{"status":"error","message":"Could not save draft message"}',
     )
-    fake_mail.save_draft.side_effect = httpx.HTTPStatusError(
+    fake_mail.save_draft.side_effect = httpx2.HTTPStatusError(
         "HTTP 500", request=request, response=response
     )
     save_draft = mail_tools["nc_mail_save_draft"].fn

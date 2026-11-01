@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude", "webdav", "caldav", "carddav"]
 dependencies = [
     "mcp[cli] (>=2.3,<2.4)",
-    "httpx (>=0.28.1,<0.29.0)",
+    "httpx2>=2.5.0",
     # Imported directly at runtime. Each was previously reachable only because
     # some other dependency happened to pull it in — the accident that broke
     # #1285 when the resolver stopped doing so. Declared explicitly so the
@@ -40,7 +40,7 @@ dependencies = [
     "opentelemetry-sdk>=1.28.2", # OpenTelemetry SDK
     "starlette<1.0", # Pin until we address starlette 1.0 breaking changes (#648)
     "opentelemetry-instrumentation-asgi>=0.49b2", # Auto-instrument ASGI/Starlette
-    "opentelemetry-instrumentation-httpx>=0.49b2", # Auto-instrument httpx client
+    "opentelemetry-instrumentation-httpx>=0.65b0", # Auto-instrument httpx2 (HTTPX2ClientInstrumentor) + legacy httpx
     "opentelemetry-instrumentation-logging>=0.49b2", # Logging integration
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.2", # OTLP gRPC exporter
     "python-json-logger>=3.2.0", # Structured JSON logging
@@ -143,10 +143,6 @@ dev = [
     # plain `uv run` / `uv sync` does not strip it from the environment.
     "nextcloud-mcp-server[semantic]",
     "commitizen>=4.8.2",
-    # Imported directly by tests/conftest.py and tests/load/ to build the
-    # httpx2.AsyncClient that mcp 2.x's streamable_http_client takes; mcp pulls
-    # it in anyway, but the import here is ours.
-    "httpx2>=2.5.0",
     "deptry>=0.20.0",
     "ipython>=9.2.0",
     "playwright>=1.49.1",

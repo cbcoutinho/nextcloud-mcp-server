@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.vector import collection_metadata as cm
@@ -62,9 +62,9 @@ async def test_api_source(mocker):
         collection_metadata_api_url="https://cp",
     )
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/v1/qdrant-collections/col/metadata"
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "embedding_identity": "amazon.titan-embed-text-v2:0",
@@ -72,10 +72,10 @@ async def test_api_source(mocker):
             },
         )
 
-    transport = httpx.MockTransport(handler)
-    orig = httpx.AsyncClient
+    transport = httpx2.MockTransport(handler)
+    orig = httpx2.AsyncClient
     mocker.patch.object(
-        httpx,
+        httpx2,
         "AsyncClient",
         # ty can't narrow the spread kwargs through the constructor overloads.
         lambda *a, **k: orig(*a, **{**k, "transport": transport}),  # ty: ignore[invalid-argument-type]
@@ -88,11 +88,11 @@ async def test_api_source(mocker):
 async def test_api_source_uses_shared_http_client():
     """When a caller passes http_client, the read reuses it (no own client)."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/v1/qdrant-collections/col/metadata"
-        return httpx.Response(200, json={"embedding_identity": "mistral-embed"})
+        return httpx2.Response(200, json={"embedding_identity": "mistral-embed"})
 
-    shared = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    shared = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     async with shared:
         meta = await cm._read_from_api("https://cp", "col", client=shared)
     assert meta is not None

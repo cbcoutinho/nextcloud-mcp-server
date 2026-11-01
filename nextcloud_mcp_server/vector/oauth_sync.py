@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 import anyio
 from anyio.abc import TaskGroup, TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from httpx import BasicAuth, HTTPStatusError
+from httpx2 import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient

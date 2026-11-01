@@ -79,16 +79,21 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 
 ### Error Handling
 - **Use custom decorators**: `@retry_on_429` for rate limiting (see base_client.py)
-- **Standard exceptions**: `HTTPStatusError` from httpx, `MCPError` for MCP-specific errors
+- **Standard exceptions**: `HTTPStatusError` from httpx2 (not `httpx` — see the note below), `MCPError` for MCP-specific errors
 - **Logging patterns**:
   - `logger.debug()` for expected 404s and normal operations
   - `logger.warning()` for retries and non-critical issues
   - `logger.error()` for actual errors
+- **HTTP client is `httpx2`, not `httpx`.** `httpx` stays installed (qdrant-client
+  and huggingface-hub depend on it), so `import httpx` still works. But
+  `except httpx.X` never matches the `httpx2.X` that our clients, mcp, openai and
+  mistralai raise, and nothing reports the miss. Only qdrant/huggingface traffic
+  uses legacy `httpx`, and qdrant wraps it in `ResponseHandlingException`.
 
 ### Testing Patterns
 - **Use existing fixtures** from `tests/conftest.py` (2888 lines of test infrastructure)
 - **Session-scoped fixtures** handle anyio/pytest-asyncio incompatibility
-- **Mocked unit tests** use `mocker.AsyncMock(spec=httpx.AsyncClient)`
+- **Mocked unit tests** use `mocker.AsyncMock(spec=httpx2.AsyncClient)`
 - **pytest-timeout**: 180s default per test
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
@@ -103,10 +108,10 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   - Don't reimplement `_make_request` in a subclass — a private copy silently skips
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
-  - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx client
+  - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx2 client
     sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
     `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
-    Nextcloud-bound `httpx.AsyncClient` through that factory. Pass only
+    Nextcloud-bound `httpx2.AsyncClient` through that factory. Pass only
     request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
     `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
     both rules (GH #1664: the per-call opt-in left the Tables v1 routes without
@@ -461,7 +466,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 1. `NextcloudClient` orchestrates all app-specific clients
 2. `BaseNextcloudClient` provides common HTTP functionality + retry logic
 3. MCP tools use context pattern: `get_client(ctx)` → `NextcloudClient`
-4. All operations are async using httpx
+4. All operations are async using httpx2
 
 ### Deployment Modes
 
@@ -635,7 +640,7 @@ async def test_notes_api_get_note(mocker):
         NotesClient, "_make_request", return_value=mock_response
     )
 
-    client = NotesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = NotesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     note = await client.get_note(note_id=123)
 
     assert note["id"] == 123

@@ -6,7 +6,7 @@ branch on become distinguishable types -- without breaking any handler that
 catches plain ``HTTPStatusError``.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
@@ -31,13 +31,13 @@ def _dav_body(exception: str, message: str) -> bytes:
 </d:error>""".encode()
 
 
-def _error(status: int, content: bytes = b"") -> httpx.HTTPStatusError:
+def _error(status: int, content: bytes = b"") -> httpx2.HTTPStatusError:
     """Build the HTTPStatusError raise_for_status() would produce."""
-    request = httpx.Request(
+    request = httpx2.Request(
         "PUT", "https://nc.example.com/remote.php/dav/files/u/a.txt"
     )
-    response = httpx.Response(status, content=content, request=request)
-    return httpx.HTTPStatusError(f"{status} error", request=request, response=response)
+    response = httpx2.Response(status, content=content, request=request)
+    return httpx2.HTTPStatusError(f"{status} error", request=request, response=response)
 
 
 @pytest.mark.parametrize(
@@ -54,7 +54,7 @@ def test_branchable_statuses_get_their_own_type(status, expected_type):
 
     assert isinstance(enriched, expected_type)
     # Still catchable by every handler that predates this module.
-    assert isinstance(enriched, httpx.HTTPStatusError)
+    assert isinstance(enriched, httpx2.HTTPStatusError)
     assert enriched.response.status_code == status
 
 
@@ -126,15 +126,15 @@ def test_unread_streaming_response_yields_no_detail():
     so the body is not available. Reading it there is not worth a second
     network-facing read on an already-failing download.
     """
-    request = httpx.Request(
+    request = httpx2.Request(
         "GET", "https://nc.example.com/remote.php/dav/files/u/a.bin"
     )
-    response = httpx.Response(
-        507, request=request, stream=httpx.ByteStream(_dav_body("Quota", "full"))
+    response = httpx2.Response(
+        507, request=request, stream=httpx2.ByteStream(_dav_body("Quota", "full"))
     )
 
     # Precondition: this is genuinely an unread stream.
-    with pytest.raises(httpx.ResponseNotRead):
+    with pytest.raises(httpx2.ResponseNotRead):
         _ = response.content
 
     assert parse_dav_error_body(response) == (None, None)
@@ -152,13 +152,13 @@ async def test_make_request_raises_the_enriched_type(mocker):
     The unit tests above prove the parser works in isolation. This is the line
     that decides whether callers ever see it.
     """
-    request = httpx.Request("PUT", "https://nc.example.com/remote.php/dav/files/u/a")
-    response = httpx.Response(
+    request = httpx2.Request("PUT", "https://nc.example.com/remote.php/dav/files/u/a")
+    response = httpx2.Response(
         423,
         content=_dav_body("Sabre\\DAV\\Exception\\Locked", "File is write locked"),
         request=request,
     )
-    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     http_client.request = mocker.AsyncMock(return_value=response)
 
     client = _Client(http_client, "alice")
@@ -175,19 +175,19 @@ async def test_make_request_leaves_a_non_dav_failure_unwrapped(mocker):
     ``enrich_dav_error`` returns the same object here, so re-raising it with
     ``from`` would set ``__cause__`` to the exception itself.
     """
-    request = httpx.Request("GET", "https://nc.example.com/ocs/v2.php/x")
-    response = httpx.Response(
+    request = httpx2.Request("GET", "https://nc.example.com/ocs/v2.php/x")
+    response = httpx2.Response(
         400, content=b'{"ocs":{"meta":{"statuscode":400}}}', request=request
     )
-    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     http_client.request = mocker.AsyncMock(return_value=response)
 
     client = _Client(http_client, "alice")
 
-    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+    with pytest.raises(httpx2.HTTPStatusError) as exc_info:
         await client._make_request("GET", "/ocs/v2.php/x")
 
-    assert type(exc_info.value) is httpx.HTTPStatusError
+    assert type(exc_info.value) is httpx2.HTTPStatusError
     assert exc_info.value.__cause__ is not exc_info.value
 
 
@@ -199,10 +199,10 @@ async def test_stream_request_raises_the_enriched_type(mocker):
     quota failure on a download should arrive as ``DavInsufficientStorage``, not
     a bare ``HTTPStatusError``.
     """
-    request = httpx.Request("GET", "https://nc.example.com/remote.php/dav/files/u/a")
-    response = httpx.Response(507, request=request, stream=httpx.ByteStream(b""))
+    request = httpx2.Request("GET", "https://nc.example.com/remote.php/dav/files/u/a")
+    response = httpx2.Response(507, request=request, stream=httpx2.ByteStream(b""))
 
-    http_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    http_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     http_client.stream = mocker.MagicMock()
     http_client.stream.return_value.__aenter__ = mocker.AsyncMock(return_value=response)
     http_client.stream.return_value.__aexit__ = mocker.AsyncMock(return_value=False)

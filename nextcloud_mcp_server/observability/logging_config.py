@@ -312,7 +312,7 @@ def configure_component_loggers(default_level: str = "INFO") -> None:
         "nextcloud_mcp_server.auth": default_level,
         "nextcloud_mcp_server.observability": default_level,
         # HTTP client loggers (less verbose by default)
-        "httpx": "WARNING",
+        "httpx2": "WARNING",
         "httpcore": "WARNING",
         # Server loggers
         "uvicorn": "INFO",
@@ -447,7 +447,7 @@ def get_uvicorn_logging_config(
                 "level": "INFO",
                 "propagate": False,
             },
-            "httpx": {
+            "httpx2": {
                 "handlers": ["default"],
                 "level": "WARNING",
                 "propagate": False,

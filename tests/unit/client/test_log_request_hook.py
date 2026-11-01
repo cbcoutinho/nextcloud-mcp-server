@@ -1,10 +1,10 @@
 """The request event hook must not fail a request with a streamed body.
 
 ``log_request`` evaluated ``request.content`` as a log argument at every log
-level. httpx only buffers bytes/str/form/JSON bodies up front; for a streamed
+level. httpx2 only buffers bytes/str/form/JSON bodies up front; for a streamed
 body (an async iterable, or multipart ``files=``) it raises ``RequestNotRead``
 there, so the request failed inside the hook before it was sent. Every app
-client shares the one ``httpx.AsyncClient`` that carries this hook.
+client shares the one ``httpx2.AsyncClient`` that carries this hook.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client import NextcloudClient, log_request, log_response
@@ -46,13 +46,13 @@ async def _send(caplog, level: int, **request_kwargs) -> bytes:
     """PUT through a client carrying ``log_request``; return the bytes sent."""
     received: list[bytes] = []
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         received.append(await request.aread())
-        return httpx.Response(204)
+        return httpx2.Response(204)
 
     caplog.set_level(level, logger=HOOK_LOGGER)
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         event_hooks={"request": [log_request]},
     ) as client:
         response = await client.put("https://nc.example/x", **request_kwargs)
@@ -61,9 +61,9 @@ async def _send(caplog, level: int, **request_kwargs) -> bytes:
 
 
 async def test_every_app_client_shares_the_hooked_client():
-    """Every app client sends through the one hooked ``httpx.AsyncClient``."""
+    """Every app client sends through the one hooked ``httpx2.AsyncClient``."""
     nc = NextcloudClient(
-        base_url="https://nc.example", username="u", auth=httpx.BasicAuth("u", "p")
+        base_url="https://nc.example", username="u", auth=httpx2.BasicAuth("u", "p")
     )
     try:
         assert nc._client.event_hooks["request"] == [log_request]
@@ -71,7 +71,7 @@ async def test_every_app_client_shares_the_hooked_client():
         app_clients = {
             name: value._client is nc._client
             for name, value in vars(nc).items()
-            if isinstance(getattr(value, "_client", None), httpx.AsyncClient)
+            if isinstance(getattr(value, "_client", None), httpx2.AsyncClient)
         }
         assert "webdav" in app_clients
         assert all(app_clients.values()), app_clients
@@ -84,15 +84,15 @@ async def test_streamed_put_through_nextcloud_client(caplog):
     caplog.set_level(logging.INFO, logger=HOOK_LOGGER)
     received: list[bytes] = []
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         received.append(await request.aread())
-        return httpx.Response(204)
+        return httpx2.Response(204)
 
     nc = NextcloudClient(
-        base_url="https://nc.example", username="u", auth=httpx.BasicAuth("u", "p")
+        base_url="https://nc.example", username="u", auth=httpx2.BasicAuth("u", "p")
     )
     try:
-        nc._client._transport = httpx.MockTransport(handler)
+        nc._client._transport = httpx2.MockTransport(handler)
         response = await nc.webdav._make_request(
             "PUT",
             "/remote.php/dav/files/u/x",
@@ -133,18 +133,18 @@ async def test_hook_does_not_pull_any_chunk_before_send(caplog, level):
     body = _CountingBody([b"a" * 10, b"b" * 10, b"c" * 10])
     pulled_at_hook: list[int] = []
 
-    async def spy(request: httpx.Request) -> None:
+    async def spy(request: httpx2.Request) -> None:
         pulled_at_hook.append(body.pulled)
 
     received: list[bytes] = []
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         received.append(await request.aread())
-        return httpx.Response(204)
+        return httpx2.Response(204)
 
     caplog.set_level(level, logger=HOOK_LOGGER)
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         event_hooks={"request": [log_request, spy]},
     ) as client:
         await client.put(
@@ -159,9 +159,9 @@ async def test_hook_never_reads_the_request(monkeypatch, caplog):
         raise AssertionError("the hook must not read the request body")
 
     caplog.set_level(logging.DEBUG, logger=HOOK_LOGGER)
-    request = httpx.Request("PUT", "https://nc.example/x", content=_Body())
-    monkeypatch.setattr(httpx.Request, "read", boom)
-    monkeypatch.setattr(httpx.Request, "aread", boom)
+    request = httpx2.Request("PUT", "https://nc.example/x", content=_Body())
+    monkeypatch.setattr(httpx2.Request, "read", boom)
+    monkeypatch.setattr(httpx2.Request, "aread", boom)
     await log_request(request)
     assert f"Request body: {PLACEHOLDER}" in caplog.text
 

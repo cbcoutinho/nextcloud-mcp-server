@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 import anyio
 import click
-import httpx
+import httpx2
 from playwright.async_api import async_playwright
 
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
@@ -125,7 +125,7 @@ async def discover_oidc_endpoints(nextcloud_host: str) -> dict[str, str]:
         Dict with authorization_endpoint, token_endpoint, and registration_endpoint
     """
     logger.info("Discovering OIDC endpoints...")
-    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+    async with httpx2.AsyncClient(verify=False, timeout=30.0) as client:
         response = await client.get(
             f"{nextcloud_host}/.well-known/openid-configuration"
         )

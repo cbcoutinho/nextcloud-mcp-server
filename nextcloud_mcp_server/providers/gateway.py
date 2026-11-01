@@ -26,7 +26,7 @@ import logging
 import time
 
 import anyio
-import httpx
+import httpx2
 
 from ..config import Settings
 from ..providers.openai import OpenAIProvider
@@ -87,8 +87,8 @@ class GatewayTokenProvider:
             if self.scope:
                 data["scope"] = self.scope
 
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=5.0)
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(self.timeout, connect=5.0)
             ) as client:
                 resp = await client.post(
                     self.token_url,
@@ -199,8 +199,8 @@ class GatewayProvider(OpenAIProvider):
                 f"Bearer {await self._token_provider.get_token()}"
             )
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0, connect=5.0)
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(10.0, connect=5.0)
             ) as client:
                 resp = await client.get(models_url, headers=headers)
                 resp.raise_for_status()

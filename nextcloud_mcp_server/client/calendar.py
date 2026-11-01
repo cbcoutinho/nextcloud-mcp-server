@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
-import httpx
+import httpx2
 import recurring_ical_events
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
@@ -331,9 +331,9 @@ class CalendarClient:
 
         Pass the raw credential plus an explicit ``auth_type`` so caldav can
         build whichever auth object its active HTTP backend needs. caldav v3
-        prefers ``niquests`` over ``httpx`` and won't accept an ``httpx.Auth``
+        prefers ``niquests`` over ``httpx2`` and won't accept an ``httpx2.Auth``
         when ``niquests`` is the active backend (issue #731), so we no longer
-        accept a pre-built ``httpx.Auth`` here.
+        accept a pre-built ``httpx2.Auth`` here.
 
         Args:
             base_url: Nextcloud base URL
@@ -464,7 +464,7 @@ class CalendarClient:
                     f"{self.base_url}/remote.php/dav/calendars/{principal_id}/"
                 )
                 self._principal_resolved = True
-        except (caldav_error.DAVError, httpx.HTTPError, ValueError) as e:
+        except (caldav_error.DAVError, httpx2.HTTPError, ValueError) as e:
             logger.warning(
                 "CalDAV principal discovery failed; using username path: %s", e
             )
@@ -501,13 +501,13 @@ class CalendarClient:
             organizer = vCalAddress(mailto)
             try:
                 display_name = await _maybe_await(principal.get_display_name())
-            except (caldav_error.DAVError, httpx.HTTPError, ValueError):
+            except (caldav_error.DAVError, httpx2.HTTPError, ValueError):
                 display_name = None
             if display_name:
                 organizer.params["CN"] = vText(display_name)
             self._organizer = organizer
             return organizer
-        except (caldav_error.DAVError, httpx.HTTPError, ValueError) as e:
+        except (caldav_error.DAVError, httpx2.HTTPError, ValueError) as e:
             logger.warning("Could not resolve ORGANIZER address: %s", e)
             return None
 

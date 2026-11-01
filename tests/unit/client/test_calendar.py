@@ -1,8 +1,8 @@
 """Unit tests for the CalendarClient construction path.
 
 These pin the wiring into ``caldav.aio.AsyncDAVClient``. caldav v3.x prefers
-``niquests`` over ``httpx`` and rejects ``httpx.Auth`` objects when ``niquests``
-is the active backend (issue #731), so we no longer build an httpx auth object
+``niquests`` over ``httpx2`` and rejects ``httpx2.Auth`` objects when ``niquests``
+is the active backend (issue #731), so we no longer build an httpx2 auth object
 ourselves — we pass the raw credential plus an explicit ``auth_type`` and let
 caldav build whichever auth its backend needs.
 """
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
 def test_basic_auth_passes_password_and_auth_type_basic(mocker):
     """Password path: pass ``password=`` + ``auth_type='basic'``, no ``auth=`` arg.
 
-    The previous wiring passed ``auth=httpx.BasicAuth(...)`` which caldav-on-niquests
+    The previous wiring passed ``auth=httpx2.BasicAuth(...)`` which caldav-on-niquests
     rejects with "Unexpected non-callable authentication" — the regression #731 came
     in via caldav 3.x's mandatory niquests dependency.
     """
@@ -36,7 +36,7 @@ def test_basic_auth_passes_password_and_auth_type_basic(mocker):
     assert call_kwargs["username"] == "alice"
     assert call_kwargs["password"] == "app-pw-1234"
     assert call_kwargs["auth_type"] == "basic"
-    # Critical: no httpx.Auth object — that's what broke under niquests.
+    # Critical: no httpx2.Auth object — that's what broke under niquests.
     assert "auth" not in call_kwargs
 
 

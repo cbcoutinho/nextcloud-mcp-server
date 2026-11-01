@@ -1,4 +1,4 @@
-"""Guard: ``OCS-APIRequest`` is sent by the httpx client, never per call site.
+"""Guard: ``OCS-APIRequest`` is sent by the httpx2 client, never per call site.
 
 Nextcloud needs ``OCS-APIRequest: true`` from every non-browser client: OCS
 routes answer ``meta.statuscode: 997`` without it, and ``#[CORS]`` app routes
@@ -8,7 +8,7 @@ log the session out and re-authenticate, which 404s Tables v1 on Nextcloud 33
 So the header lives in exactly one place -- ``http.NEXTCLOUD_DEFAULT_HEADERS``,
 applied by ``nextcloud_httpx_client`` -- and this module pins both halves of
 that: no module spells the header itself, and no module builds a raw
-``httpx.AsyncClient`` (which would skip the default) unless it talks to
+``httpx2.AsyncClient`` (which would skip the default) unless it talks to
 something other than Nextcloud.
 
 The scans are over the AST rather than over lines, so a dict or call split
@@ -18,7 +18,7 @@ across lines by the formatter still counts.
 import ast
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 import nextcloud_mcp_server as root_pkg
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.unit
 #: The one module allowed to spell the header and to build a raw client.
 DEFINING_MODULE = "http.py"
 
-#: Modules whose raw ``httpx.AsyncClient`` talks to a non-Nextcloud service, so
+#: Modules whose raw ``httpx2.AsyncClient`` talks to a non-Nextcloud service, so
 #: the Nextcloud default headers do not belong on it. Adding a module here is a
 #: claim that it never calls Nextcloud -- if it does, use the factory instead.
 NON_NEXTCLOUD_CLIENTS = {
@@ -157,21 +157,21 @@ def test_nextcloud_client_sends_the_header():
     client = NextcloudClient(
         base_url="https://nc.example.com",
         username="alice",
-        auth=httpx.BasicAuth("alice", "pw"),
+        auth=httpx2.BasicAuth("alice", "pw"),
     )
     assert client._client.headers["OCS-APIRequest"] == "true"
 
 
 async def test_tables_v1_request_carries_the_header_on_the_wire():
     """GH #1664: the Tables v1 calls pass no headers and must still send it."""
-    seen: list[httpx.Request] = []
+    seen: list[httpx2.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
-        return httpx.Response(200, json=[])
+        return httpx2.Response(200, json=[])
 
     async with nextcloud_httpx_client(
-        base_url="https://nc.example.com", transport=httpx.MockTransport(handler)
+        base_url="https://nc.example.com", transport=httpx2.MockTransport(handler)
     ) as http_client:
         await TablesClient(http_client, "alice").get_table_rows(table_id=8)
 

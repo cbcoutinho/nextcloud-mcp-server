@@ -7,7 +7,7 @@ This test verifies that the recently implemented DCR deletion branch works corre
 import logging
 import os
 
-import httpx
+import httpx2
 import pytest
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ async def test_new_dcr_registration_includes_access_token(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -52,7 +52,7 @@ async def test_new_dcr_registration_includes_access_token(
         "token_type": "Bearer",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         logger.info("Registering client to check for registration_access_token...")
         response = await client.post(
             registration_endpoint,
@@ -110,7 +110,7 @@ async def test_new_dcr_registration_includes_access_token(
         )
         logger.info("Deletion endpoint: %s", deletion_endpoint)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx2.AsyncClient(timeout=30.0) as client:
             # Try deletion with Bearer token (RFC 7592 standard)
             logger.info("\nAttempting deletion with Bearer token...")
             delete_response = await client.delete(
@@ -175,7 +175,7 @@ async def test_dcr_deletion_with_basic_auth_new_impl(
     auth_states, callback_url = oauth_callback_server
 
     # Discover and register
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -209,7 +209,7 @@ async def test_dcr_deletion_with_basic_auth_new_impl(
     logger.info("%s", "=" * 70)
     logger.info("Endpoint: %s", deletion_endpoint)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.delete(
             deletion_endpoint,
             auth=(client_id, client_secret),

@@ -38,7 +38,7 @@ async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
 async def test_missing_file_error_is_llm_friendly(nc_mcp_client: ClientSession):
     """A tool with no bespoke handler still returns actionable text (GH #1208).
 
-    Guards the ``NextcloudMCPServer`` boundary: httpx's raw
+    Guards the ``NextcloudMCPServer`` boundary: httpx2's raw
     ``Client error '404 Not Found' for url 'http://app/remote.php/dav/...'``
     plus an MDN link must not reach the model.
     """

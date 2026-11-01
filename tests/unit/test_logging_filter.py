@@ -2,7 +2,7 @@
 
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.document_processors.escalation import (
@@ -125,12 +125,12 @@ class TestExpectedExceptionFilter:
                 from_tier="fast", to_tier="structured", reason="corrupt_glyphs"
             ),
             BatchPending(retry_in=5),
-            httpx.ConnectError("All connection attempts failed"),
-            httpx.ReadTimeout("timed out"),
-            httpx.HTTPStatusError(
+            httpx2.ConnectError("All connection attempts failed"),
+            httpx2.ReadTimeout("timed out"),
+            httpx2.HTTPStatusError(
                 "404",
-                request=httpx.Request("GET", "https://embedding-gateway/ocr"),
-                response=httpx.Response(404),
+                request=httpx2.Request("GET", "https://embedding-gateway/ocr"),
+                response=httpx2.Response(404),
             ),
         ],
     )

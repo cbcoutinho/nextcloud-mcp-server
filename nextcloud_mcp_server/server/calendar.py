@@ -2,7 +2,7 @@ import datetime as dt
 import logging
 from typing import Any, Optional
 
-import httpx
+import httpx2
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 def _stale_etag_error(uid: str, e: DavPreconditionFailed) -> ToolError:
     """Turn a 412 into something the caller can act on.
 
-    ``DavPreconditionFailed`` reaches an MCP client as an httpx status error
+    ``DavPreconditionFailed`` reaches an MCP client as an httpx2 status error
     naming a CalDAV URL -- accurate, and useless for deciding what to do. The
     only recovery is to re-read, re-apply and retry, so the message says that
     and names the tool that actually returns a current ETag.
@@ -584,7 +584,7 @@ def configure_calendar_tools(mcp: MCPServer):
         if not timezone:
             try:
                 timezone = await client.users.get_current_user_timezone()
-            except (httpx.HTTPError, KeyError, ValueError) as e:
+            except (httpx2.HTTPError, KeyError, ValueError) as e:
                 # Fail open: a floating meeting beats no meeting.
                 logger.warning("Could not read the user's timezone: %s", e)
 

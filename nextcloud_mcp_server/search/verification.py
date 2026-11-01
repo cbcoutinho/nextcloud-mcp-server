@@ -18,7 +18,7 @@ tagged folder) using one tag REPORT per index tag plus one batched
 SEARCH-by-fileid, so it does not read per-result metadata.
 
 Concurrency is bounded by a shared semaphore (default 20) so a large search
-result page (or a multi-doc_type query) cannot exhaust the httpx connection
+result page (or a multi-doc_type query) cannot exhaust the httpx2 connection
 pool or trigger Nextcloud rate limiting. The 20-slot default matches the
 context-expansion convention in ``server/semantic.py``.
 
@@ -45,7 +45,7 @@ from collections.abc import Awaitable, Callable
 
 import anyio
 from anyio.abc import TaskGroup
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 
 from nextcloud_mcp_server.config import Settings, get_settings
 from nextcloud_mcp_server.search.algorithms import (

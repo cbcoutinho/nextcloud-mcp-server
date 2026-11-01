@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import unquote, urlencode
 from urllib.parse import urlparse as parse_url
 
-import httpx
+import httpx2
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -218,7 +218,7 @@ def _refresh_unavailable() -> JSONResponse:
     )
 
 
-def _refresh_error_response(response: httpx.Response) -> JSONResponse:
+def _refresh_error_response(response: httpx2.Response) -> JSONResponse:
     """Translate the IdP's non-200 refresh answer for the downstream client.
 
     - 429 or 5xx: transient, see ``_refresh_unavailable``.
@@ -1618,7 +1618,13 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
     try:
         discovery = await get_oidc_discovery(discovery_url)
         token_endpoint = discovery["token_endpoint"]
-    except (httpx.HTTPError, httpx.InvalidURL, ValueError, KeyError, TypeError) as exc:
+    except (
+        httpx2.HTTPError,
+        httpx2.InvalidURL,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as exc:
         # HTTPError: unreachable or non-2xx. ValueError: not JSON. KeyError,
         # TypeError: JSON without a token_endpoint, or not an object.
         logger.warning(
@@ -1631,7 +1637,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             response = await http_client.post(token_endpoint, data=token_params)
     # TypeError: a token_endpoint that is not a string. A relative or non-http(s)
     # one raises UnsupportedProtocol, an HTTPError.
-    except (httpx.HTTPError, httpx.InvalidURL, TypeError) as exc:
+    except (httpx2.HTTPError, httpx2.InvalidURL, TypeError) as exc:
         logger.warning(
             "AS proxy token refresh: IdP unreachable: %s", type(exc).__name__
         )

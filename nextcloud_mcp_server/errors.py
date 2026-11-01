@@ -2,7 +2,7 @@
 
 The MCP SDK funnels every unanticipated tool exception into a ``ToolError`` and
 returns its message as the error content. On mcp 1.x that message was
-``f"Error executing tool {name}: {e}"``, so an unhandled ``httpx`` error reached
+``f"Error executing tool {name}: {e}"``, so an unhandled ``httpx2`` error reached
 the model as an internal URL plus an MDN link and no hint about what to do next.
 mcp 2.x withholds the original entirely -- ``UnexpectedToolError`` says only
 ``Error executing tool {name}`` -- which is less misleading and even less
@@ -18,7 +18,7 @@ from importlib.metadata import version
 from typing import Any
 from urllib.parse import unquote
 
-from httpx import URL, HTTPStatusError, RequestError, Response, ResponseNotRead
+from httpx2 import URL, HTTPStatusError, RequestError, Response, ResponseNotRead
 from mcp.server.context import CallNext, ServerRequestContext
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError

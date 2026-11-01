@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 import sqlalchemy as sa
 from anyio import to_thread
 from cryptography.fernet import Fernet
@@ -2061,7 +2061,7 @@ class RefreshTokenStorage:
 
                 async with nextcloud_httpx_client(
                     base_url=nextcloud_host,
-                    auth=httpx.BasicAuth(login_name, app_password),
+                    auth=httpx2.BasicAuth(login_name, app_password),
                     timeout=10.0,
                 ) as client:
                     response = await client.get(

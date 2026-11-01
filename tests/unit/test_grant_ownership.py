@@ -1,13 +1,13 @@
 """Unit tests for the Login Flow v2 grant-ownership check (GHSA-84qv-22q6-x82r).
 
-HTTP is exercised via an ``httpx.MockTransport`` injected by monkeypatching
-``httpx.AsyncClient`` (the repo has no respx dependency).
+HTTP is exercised via an ``httpx2.MockTransport`` injected by monkeypatching
+``httpx2.AsyncClient`` (the repo has no respx dependency).
 """
 
 import secrets
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth import grant_ownership as go
@@ -29,24 +29,24 @@ def _settings(monkeypatch):
     monkeypatch.setattr(go, "get_settings", lambda: _S())
 
 
-def _patch_transport(monkeypatch, handler) -> list[httpx.Request]:
-    seen: list[httpx.Request] = []
-    real = httpx.AsyncClient
+def _patch_transport(monkeypatch, handler) -> list[httpx2.Request]:
+    seen: list[httpx2.Request] = []
+    real = httpx2.AsyncClient
 
-    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        def _wrapped(request: httpx.Request) -> httpx.Response:
+    def factory(*args: Any, **kwargs: Any) -> httpx2.AsyncClient:
+        def _wrapped(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
             return handler(request)
 
-        kwargs["transport"] = httpx.MockTransport(_wrapped)
+        kwargs["transport"] = httpx2.MockTransport(_wrapped)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    monkeypatch.setattr(httpx2, "AsyncClient", factory)
     return seen
 
 
-def _ocs_user(uid: str) -> httpx.Response:
-    return httpx.Response(
+def _ocs_user(uid: str) -> httpx2.Response:
+    return httpx2.Response(
         200, json={"ocs": {"meta": {"statuscode": 200}, "data": {"id": uid}}}
     )
 
@@ -78,14 +78,14 @@ async def test_rejects_grant_from_another_account(monkeypatch):
 
 
 async def test_rejects_when_the_credential_does_not_authenticate(monkeypatch):
-    _patch_transport(monkeypatch, lambda _r: httpx.Response(401))
+    _patch_transport(monkeypatch, lambda _r: httpx2.Response(401))
 
     assert await go.grant_belongs_to_caller({"alice"}, "alice", APP_PASSWORD) is False
 
 
 async def test_rejects_when_nextcloud_is_unreachable(monkeypatch):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("boom")
 
     _patch_transport(monkeypatch, handler)
 
@@ -109,7 +109,7 @@ async def test_caller_identities_adds_the_uid_nextcloud_resolves(monkeypatch):
     """External IdP: the UID is a hash of the sub, so only Nextcloud knows it."""
     uid = "9b2d9c7f2c12390ddabe33578c453daaa6a0e3618d606b84e995dcfa6c59145e"
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.headers["Authorization"] == "Bearer tok"
         return _ocs_user(uid)
 
@@ -135,11 +135,11 @@ async def test_caller_identities_ignores_idp_claims(monkeypatch):
     advisory. Only what Nextcloud says the bearer token authenticates as counts.
     """
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         # Nextcloud does not accept this IdP's bearer tokens; the app password
         # the victim granted authenticates fine.
         if request.headers.get("Authorization", "").startswith("Bearer "):
-            return httpx.Response(401)
+            return httpx2.Response(401)
         return _ocs_user("victim")
 
     _patch_transport(monkeypatch, handler)
@@ -151,8 +151,8 @@ async def test_caller_identities_ignores_idp_claims(monkeypatch):
 
 
 async def test_caller_identities_survives_an_unreachable_nextcloud(monkeypatch):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("boom")
 
     _patch_transport(monkeypatch, handler)
 
@@ -163,7 +163,7 @@ async def test_caller_identities_survives_an_unreachable_nextcloud(monkeypatch):
 
 
 async def test_revoke_deletes_the_app_password(monkeypatch):
-    seen = _patch_transport(monkeypatch, lambda _r: httpx.Response(200))
+    seen = _patch_transport(monkeypatch, lambda _r: httpx2.Response(200))
 
     await go.revoke_app_password("admin", APP_PASSWORD)
 
@@ -172,8 +172,8 @@ async def test_revoke_deletes_the_app_password(monkeypatch):
 
 
 async def test_revoke_swallows_transport_errors(monkeypatch):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom")
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("boom")
 
     _patch_transport(monkeypatch, handler)
 

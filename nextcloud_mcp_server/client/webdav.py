@@ -10,7 +10,7 @@ from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
 
 import anyio
-from httpx import HTTPStatusError, RemoteProtocolError, Response
+from httpx2 import HTTPStatusError, RemoteProtocolError, Response
 
 from nextcloud_mcp_server.observability.metrics import (
     document_download_truncated_total,
@@ -22,7 +22,7 @@ from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
-# ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx
+# ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx2
 # client sends it on every request (``http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
 # requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
@@ -46,9 +46,9 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     back an empty/short body that the document parser then reads as ``0 chars``
     and the vector-sync processor permanently dead-letters (#965). Compare the
     received byte count against the declared ``Content-Length`` and raise a
-    retryable :class:`httpx.RemoteProtocolError` on a mismatch: the processor
+    retryable :class:`httpx2.RemoteProtocolError` on a mismatch: the processor
     retries/re-queues a raised transport error instead of dead-lettering the
-    document, so a healthy file recovers on the next scan. (httpx already
+    document, so a healthy file recovers on the next scan. (httpx2 already
     raises on most genuine truncations during the read; this is the
     belt-and-suspenders guard for the cases it returns intact. The robust
     mitigation for connection poisoning is ``NEXTCLOUD_HTTP_KEEPALIVE=false``.)
@@ -56,7 +56,7 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     the check so legitimately header-less responses never raise.
 
     ``Content-Length`` on a compressed response describes the compressed
-    size on the wire, not the decompressed ``response.content`` httpx hands
+    size on the wire, not the decompressed ``response.content`` httpx2 hands
     back — comparing the two would misfire on every compressible file
     Nextcloud happens to gzip, so the check only applies to identity-encoded
     responses (see #1099).
@@ -70,7 +70,7 @@ def _expected_content_length(response: Response) -> int | None:
     """The comparable ``Content-Length``, or ``None`` when the check can't apply.
 
     Returns ``None`` for a compressed response (the header describes the
-    compressed size on the wire, not the decompressed bytes httpx hands back --
+    compressed size on the wire, not the decompressed bytes httpx2 hands back --
     see #1099), a missing header (e.g. ``Transfer-Encoding: chunked``), a
     malformed one, or a degenerate negative length.
     """
@@ -853,7 +853,7 @@ class WebDAVClient(BaseNextcloudClient):
         hand the etag back as ``write_file``'s ``if_match`` (or report it) without
         a second request. The etag is ``None`` if the server sent no ``ETag``.
         Raises :class:`OversizeDownload` if ``max_bytes`` is exceeded, or
-        :class:`httpx.RemoteProtocolError` on a short read (#965).
+        :class:`httpx2.RemoteProtocolError` on a short read (#965).
         """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
@@ -1383,7 +1383,7 @@ class WebDAVClient(BaseNextcloudClient):
         except HTTPStatusError as e:
             # Surface the server's actual reason: Nextcloud/Sabre returns an XML
             # error body (e.g. "<s:message>...</s:message>") that pinpoints the
-            # cause — far more actionable than the generic httpx
+            # cause — far more actionable than the generic httpx2
             # "Client error '400 Bad Request' for url '.../dav/'" string. A 400
             # here almost always means a malformed SEARCH body (commonly an
             # un-escaped character in the scope path).

@@ -10,7 +10,7 @@ These verify the payload shape sent to Nextcloud. Coverage includes:
 """
 
 import pytest
-from httpx import AsyncClient, HTTPStatusError, Request
+from httpx2 import AsyncClient, HTTPStatusError, Request
 
 from nextcloud_mcp_server.client.sharing import SharingClient
 
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def sharing_client(mocker):
-    """SharingClient with a mocked underlying httpx client."""
+    """SharingClient with a mocked underlying httpx2 client."""
     mock_http = mocker.AsyncMock(spec=AsyncClient)
     return SharingClient(mock_http, "testuser")
 

@@ -19,7 +19,7 @@ from typing import AsyncGenerator
 from urllib.parse import quote
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 # Import from the root tests/ conftest.py using relative import
@@ -40,7 +40,7 @@ def nextcloud_host() -> str:
 @pytest.fixture(scope="module")
 async def oidc_endpoints(nextcloud_host: str) -> dict[str, str]:
     """Discover OIDC endpoints."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         response = await client.get(discovery_url)
         response.raise_for_status()
@@ -128,7 +128,7 @@ async def test_introspection_requires_client_authentication(
     if not introspection_endpoint:
         pytest.skip("Introspection endpoint not available")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx2.AsyncClient(timeout=10.0) as client:
         # Test 1: No credentials
         response = await client.post(
             introspection_endpoint,
@@ -264,7 +264,7 @@ async def _obtain_token_for_client(
 
     # Exchange code for token
     logger.debug("Exchanging authorization code for access token...")
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -318,7 +318,7 @@ async def test_client_cannot_introspect_other_clients_tokens(
     logger.info("Shared client ID: %s...", shared_client_id[:16])
     logger.info("Different client ID: %s...", different_client_id[:16])
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx2.AsyncClient(timeout=10.0) as client:
         # Test 1: The owning client (shared client) can introspect its own token
         response = await client.post(
             introspection_endpoint,
@@ -417,7 +417,7 @@ async def test_introspection_with_resource_parameter(
     )
 
     # Test introspection
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx2.AsyncClient(timeout=10.0) as client:
         # Test 1: Client A (owner) can introspect its own token
         response = await client.post(
             introspection_endpoint,
@@ -485,7 +485,7 @@ async def test_introspection_returns_inactive_for_invalid_token(
 
     client_a_id, client_a_secret = test_oauth_clients["clientA"]
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx2.AsyncClient(timeout=10.0) as client:
         # Test with a fake token
         response = await client.post(
             introspection_endpoint,

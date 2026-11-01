@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -356,9 +356,9 @@ async def test_write_conflicts_surface_as_errors(tools, webdav, write_result, ex
 
 
 async def test_missing_file_is_reported_as_not_found(tools, webdav):
-    request = httpx.Request("GET", "http://test.local/remote.php/dav/files/u/x")
-    response = httpx.Response(404, request=request)
-    webdav["client"].webdav.stream_to_file.side_effect = httpx.HTTPStatusError(
+    request = httpx2.Request("GET", "http://test.local/remote.php/dav/files/u/x")
+    response = httpx2.Response(404, request=request)
+    webdav["client"].webdav.stream_to_file.side_effect = httpx2.HTTPStatusError(
         "404", request=request, response=response
     )
     edit_file = tools["nc_webdav_edit_file"].fn

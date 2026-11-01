@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 #: unless asked for JSON.
 #:
 #: ``OCS-APIRequest: true`` is deliberately *not* here. Every Nextcloud-bound
-#: httpx client sends it as a client default (``http.NEXTCLOUD_DEFAULT_HEADERS``
+#: httpx2 client sends it as a client default (``http.NEXTCLOUD_DEFAULT_HEADERS``
 #: via ``nextcloud_httpx_client``), so no call site can forget it -- a
 #: per-client opt-in is how the Tables v1 routes went without it (GH #1664).
 #: ``tests/unit/test_ocs_headers_are_shared`` fails if any module spells it.

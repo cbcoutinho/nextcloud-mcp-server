@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List
 from urllib.parse import quote
 
-from httpx import Timeout
+from httpx2 import Timeout
 
 from .base import BaseNextcloudClient
 

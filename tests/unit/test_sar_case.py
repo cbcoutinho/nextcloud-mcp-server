@@ -9,7 +9,7 @@ import unicodedata
 import zipfile
 
 import anyio
-import httpx
+import httpx2
 import pymupdf
 import pytest
 
@@ -29,10 +29,10 @@ pytestmark = pytest.mark.unit
 NAMES = ("Jane Doe", "Karen Smith")
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://nc/remote.php/dav/files/dpo/x")
-    return httpx.HTTPStatusError(
-        str(status), request=request, response=httpx.Response(status, request=request)
+def _http_error(status: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "http://nc/remote.php/dav/files/dpo/x")
+    return httpx2.HTTPStatusError(
+        str(status), request=request, response=httpx2.Response(status, request=request)
     )
 
 

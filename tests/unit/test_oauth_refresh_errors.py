@@ -12,7 +12,7 @@ import json
 import logging
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth import oauth_routes
@@ -68,7 +68,7 @@ def idp(mocker, monkeypatch):
     monkeypatch.delenv("MCP_SERVER_CLIENT_SECRET", raising=False)
     state: dict = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         return state["respond"](request)
 
     mocker.patch.object(
@@ -79,7 +79,7 @@ def idp(mocker, monkeypatch):
     mocker.patch.object(
         oauth_routes,
         "nextcloud_httpx_client",
-        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        lambda **kw: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )
     return state
 
@@ -99,7 +99,7 @@ class TestOAuthErrorsFromTheIdP:
         now learns why instead of a generic 'Token refresh failed'."""
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 400,
                 json={
                     "error": "invalid_grant",
@@ -118,7 +118,7 @@ class TestOAuthErrorsFromTheIdP:
     )
     async def test_client_facing_codes_pass_through(self, idp, code):
         response = await _refresh(
-            idp, lambda r: httpx.Response(400, json={"error": code})
+            idp, lambda r: httpx2.Response(400, json={"error": code})
         )
         assert response.status_code == 400
         assert _body(response) == {"error": code}
@@ -140,7 +140,7 @@ class TestOAuthErrorsFromTheIdP:
         Relaying ``invalid_client`` would make the downstream client discard
         its own registration, and ``invalid_grant`` its tokens; neither helps."""
         response = await _refresh(
-            idp, lambda r: httpx.Response(status, json={"error": code})
+            idp, lambda r: httpx2.Response(status, json={"error": code})
         )
         assert response.status_code == 502
         assert _body(response)["error"] == "server_error"
@@ -148,7 +148,7 @@ class TestOAuthErrorsFromTheIdP:
     async def test_non_oauth_4xx_body_is_server_error(self, idp):
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 404,
                 text="<html>Not Found</html>",
                 headers={"content-type": "text/html"},
@@ -171,7 +171,7 @@ class TestOAuthErrorsFromTheIdP:
     ):
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 400,
                 json={"error": "invalid_grant", "error_description": description},
             ),
@@ -186,7 +186,7 @@ class TestOAuthErrorsFromTheIdP:
         description = "a" * length
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 400,
                 json={"error": "invalid_grant", "error_description": description},
             ),
@@ -205,7 +205,7 @@ class TestOAuthErrorsFromTheIdP:
     ):
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 400,
                 json={"error": "invalid_grant", "error_description": description},
             ),
@@ -218,7 +218,7 @@ class TestOAuthErrorsFromTheIdP:
     async def test_non_string_error_is_server_error(self, idp, error):
         """An unhashable ``error`` must not crash the membership check."""
         response = await _refresh(
-            idp, lambda r: httpx.Response(400, json={"error": error})
+            idp, lambda r: httpx2.Response(400, json={"error": error})
         )
         assert response.status_code == 502
         assert _body(response)["error"] == "server_error"
@@ -226,8 +226,8 @@ class TestOAuthErrorsFromTheIdP:
     @pytest.mark.parametrize(
         "respond",
         [
-            lambda r: httpx.Response(400),
-            lambda r: httpx.Response(400, text="Bad Request"),
+            lambda r: httpx2.Response(400),
+            lambda r: httpx2.Response(400, text="Bad Request"),
         ],
         ids=["empty", "text"],
     )
@@ -241,7 +241,7 @@ class TestOAuthErrorsFromTheIdP:
     async def test_redirect_with_oauth_body_is_not_relayed(self, idp):
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 302,
                 headers={"Location": "https://elsewhere.example.test/"},
                 json={"error": "invalid_grant"},
@@ -259,7 +259,7 @@ class TestTransientFailures:
     async def test_rate_limit_and_5xx_are_temporarily_unavailable(self, idp, status):
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 status, json={"error": "invalid_grant", "error_description": "x"}
             ),
         )
@@ -268,14 +268,14 @@ class TestTransientFailures:
 
     async def test_unparseable_5xx_is_temporarily_unavailable(self, idp):
         response = await _refresh(
-            idp, lambda r: httpx.Response(502, text="<html>Bad Gateway</html>")
+            idp, lambda r: httpx2.Response(502, text="<html>Bad Gateway</html>")
         )
         assert response.status_code == 503
         assert _body(response)["error"] == "temporarily_unavailable"
 
     async def test_unreachable_idp_is_temporarily_unavailable(self, idp):
         def refuse(request):
-            raise httpx.ConnectError("connection refused", request=request)
+            raise httpx2.ConnectError("connection refused", request=request)
 
         response = await _refresh(idp, refuse)
         assert response.status_code == 503
@@ -283,7 +283,7 @@ class TestTransientFailures:
 
     async def test_idp_timeout_is_temporarily_unavailable(self, idp):
         def slow(request):
-            raise httpx.ReadTimeout("timed out", request=request)
+            raise httpx2.ReadTimeout("timed out", request=request)
 
         response = await _refresh(idp, slow)
         assert response.status_code == 503
@@ -293,9 +293,9 @@ class TestTransientFailures:
         mocker.patch.object(
             oauth_routes,
             "get_oidc_discovery",
-            mocker.AsyncMock(side_effect=httpx.ConnectError("no route")),
+            mocker.AsyncMock(side_effect=httpx2.ConnectError("no route")),
         )
-        response = await _refresh(idp, lambda r: httpx.Response(200, json={}))
+        response = await _refresh(idp, lambda r: httpx2.Response(200, json={}))
         assert response.status_code == 503
         assert _body(response)["error"] == "temporarily_unavailable"
 
@@ -318,7 +318,7 @@ class TestTransientFailures:
         caplog.set_level(
             logging.WARNING, logger="nextcloud_mcp_server.auth.oauth_routes"
         )
-        response = await _refresh(idp, lambda r: httpx.Response(200, json={}))
+        response = await _refresh(idp, lambda r: httpx2.Response(200, json={}))
         assert response.status_code == 503
         assert _body(response)["error"] == "temporarily_unavailable"
         assert "discovery body is not JSON" not in caplog.text
@@ -339,10 +339,10 @@ class TestTransientFailures:
         # The real transport: it rejects these URLs before any I/O, where
         # MockTransport would hand them to the handler.
         mocker.patch.object(
-            oauth_routes, "nextcloud_httpx_client", lambda **kw: httpx.AsyncClient()
+            oauth_routes, "nextcloud_httpx_client", lambda **kw: httpx2.AsyncClient()
         )
         caplog.set_level(logging.DEBUG, logger="nextcloud_mcp_server.auth.oauth_routes")
-        response = await _refresh(idp, lambda r: httpx.Response(200, json={}))
+        response = await _refresh(idp, lambda r: httpx2.Response(200, json={}))
         assert response.status_code == 503
         assert _body(response)["error"] == "temporarily_unavailable"
         assert "IdP unreachable" in caplog.text
@@ -361,9 +361,9 @@ class TestRegressionGuards:
 
         def ok(request):
             seen["form"] = dict(
-                httpx.QueryParams(request.content.decode("ascii")).multi_items()
+                httpx2.QueryParams(request.content.decode("ascii")).multi_items()
             )
-            return httpx.Response(200, json=tokens)
+            return httpx2.Response(200, json=tokens)
 
         response = await _refresh(idp, ok)
         assert response.status_code == 200
@@ -378,7 +378,7 @@ class TestRegressionGuards:
         caplog.set_level(logging.DEBUG, logger="nextcloud_mcp_server.auth.oauth_routes")
         response = await _refresh(
             idp,
-            lambda r: httpx.Response(
+            lambda r: httpx2.Response(
                 status,
                 json={
                     "error": "invalid_grant",
@@ -397,7 +397,7 @@ class TestRegressionGuards:
         caplog.set_level(logging.DEBUG, logger="nextcloud_mcp_server.auth.oauth_routes")
 
         def refuse(request):
-            raise httpx.ConnectError(f"refused {request.url}", request=request)
+            raise httpx2.ConnectError(f"refused {request.url}", request=request)
 
         await _refresh(idp, refuse)
         assert "ConnectError" in caplog.text
@@ -413,7 +413,7 @@ class TestRegressionGuards:
             "refresh_token": "unknown",
         }
         before = metric_sample("mcp_oauth_grants_total", labels)
-        idp["respond"] = lambda r: httpx.Response(503)
+        idp["respond"] = lambda r: httpx2.Response(503)
         response = await oauth_routes.oauth_token_endpoint(_request())
         assert response.status_code == 503
         assert metric_sample("mcp_oauth_grants_total", labels) == before + 1

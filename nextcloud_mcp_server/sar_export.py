@@ -26,7 +26,7 @@ from typing import Any
 import pymupdf
 from anyio import CapacityLimiter, to_thread
 from anyio.abc import TaskGroup
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient

@@ -293,7 +293,7 @@ async def _create_one_payload_index(
         )
         return False
     except Exception as exc:
-        # Raw network / timeout failures (httpx.ConnectError,
+        # Raw network / timeout failures (httpx2.ConnectError,
         # asyncio.TimeoutError, etc.) reach here — outside the HTTP-status
         # taxonomy that UnexpectedResponse covers. Same containment
         # rationale as above: one transient failure on one field must not

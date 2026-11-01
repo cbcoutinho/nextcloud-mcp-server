@@ -549,11 +549,11 @@ class TestIndexFailureIsBounded:
         )
 
     async def test_exhausted_retries_record_a_bounded_failure(self, mocker):
-        import httpx
+        import httpx2
 
-        spies = self._patch(mocker, exc=httpx.ReadTimeout(""))
+        spies = self._patch(mocker, exc=httpx2.ReadTimeout(""))
 
-        with pytest.raises(httpx.ReadTimeout):
+        with pytest.raises(httpx2.ReadTimeout):
             await processor.process_document(_file_task(), _nc_client(), max_retries=1)
 
         spies.dropped.assert_called_once_with("timeout")
@@ -567,24 +567,24 @@ class TestIndexFailureIsBounded:
         spies.dead_metric.assert_not_called()
 
     async def test_metric_fires_when_the_failure_parks_the_document(self, mocker):
-        import httpx
+        import httpx2
 
-        spies = self._patch(mocker, exc=httpx.ConnectError(""))
+        spies = self._patch(mocker, exc=httpx2.ConnectError(""))
         spies.record.return_value = True  # this failure hit the limit
 
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(httpx2.ConnectError):
             await processor.process_document(_file_task(), _nc_client(), max_retries=1)
 
         spies.dead_metric.assert_called_once_with("connection")
 
     async def test_document_without_an_etag_is_not_counted(self, mocker):
-        import httpx
+        import httpx2
 
-        spies = self._patch(mocker, exc=httpx.ReadTimeout(""))
+        spies = self._patch(mocker, exc=httpx2.ReadTimeout(""))
         task = _file_task()
         task.etag = ""  # nothing to content-address the marker with
 
-        with pytest.raises(httpx.ReadTimeout):
+        with pytest.raises(httpx2.ReadTimeout):
             await processor.process_document(task, _nc_client(), max_retries=1)
 
         spies.record.assert_not_awaited()

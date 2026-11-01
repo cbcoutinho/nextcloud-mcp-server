@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from httpx import HTTPStatusError, codes
+from httpx2 import HTTPStatusError, codes
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 # Spreed conversation tokens are short alphanumeric strings (e.g. "a1b2c3d4").
-# httpx does not normalise path traversal sequences, so a pathological token
+# httpx2 does not normalise path traversal sequences, so a pathological token
 # like ``"../foo"`` would be sent verbatim. Validate up-front for clearer
 # errors and defence-in-depth.
 _TALK_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
@@ -91,7 +91,7 @@ class TalkClient(BaseNextcloudClient):
     def _talk_headers(self) -> dict[str, str]:
         """Standard OCS+JSON headers for spreed API calls.
 
-        ``Content-Type`` is intentionally omitted — httpx adds it
+        ``Content-Type`` is intentionally omitted — httpx2 adds it
         automatically (and correctly) on requests that pass ``json=``,
         so setting it here would also leak it onto bodyless GETs and
         DELETEs.
@@ -352,7 +352,7 @@ class TalkClient(BaseNextcloudClient):
         body: dict[str, Any] = {}
         if last_read_message is not None:
             body["lastReadMessage"] = last_read_message
-        # ``json=None`` makes httpx skip both the body and the
+        # ``json=None`` makes httpx2 skip both the body and the
         # ``Content-Type: application/json`` header — semantically correct
         # for the bodyless "mark everything as read" call.
         await self._make_request(

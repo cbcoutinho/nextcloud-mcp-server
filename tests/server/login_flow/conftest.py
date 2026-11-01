@@ -18,7 +18,7 @@ from typing import Any, AsyncGenerator
 from urllib.parse import quote, urlparse, urlunparse
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.types import ElicitRequestParams, ElicitResult
@@ -114,7 +114,7 @@ async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_serv
 
     logger.info("Setting up OAuth client for login-flow MCP server (port 8004)...")
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await http_client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -234,7 +234,7 @@ async def login_flow_oauth_token(
     finally:
         await context.close()
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -694,7 +694,7 @@ async def _get_login_flow_token_for_user(
         await context.close()
 
     # Exchange code for token
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -1097,7 +1097,7 @@ async def login_flow_static_client_credentials(anyio_backend, oauth_callback_ser
         allowed_scopes=DEFAULT_FULL_SCOPES,
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         discovery_response = await http_client.get(
             f"{nextcloud_host}/.well-known/openid-configuration"
         )
@@ -1189,7 +1189,7 @@ async def login_flow_static_client_token(
     finally:
         await context.close()
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
@@ -332,7 +332,7 @@ async def test_metadata_fails_open_when_discovery_is_unavailable(_config):
     _config(ALLOWED_MCP_CLIENTS="")
     with patch(
         "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
-        new=AsyncMock(side_effect=httpx.ConnectError("idp unreachable")),
+        new=AsyncMock(side_effect=httpx2.ConnectError("idp unreachable")),
     ):
         response = await oauth_as_metadata(_metadata_request("https://idp/.wk"))
 

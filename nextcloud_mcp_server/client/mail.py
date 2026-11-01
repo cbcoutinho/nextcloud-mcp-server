@@ -29,7 +29,7 @@ from email.message import Message
 from typing import Any
 from urllib.parse import quote
 
-from httpx import HTTPStatusError, RequestError, Response
+from httpx2 import HTTPStatusError, RequestError, Response
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import (
@@ -50,7 +50,7 @@ def _ocs_response(response: Response) -> Any:
     """Unwrap the OCS envelope from a response and validate the meta status.
 
     Args:
-        response: The httpx response object from an OCS endpoint.
+        response: The httpx2 response object from an OCS endpoint.
 
     Returns:
         The ``ocs.data`` payload.
@@ -120,7 +120,7 @@ class MailClient(BaseNextcloudClient):
 
     # Both route families want JSON, so they share this ``Accept``-only set. The
     # OCS-APIRequest header that authenticates the OCS routes and CSRF-exempts
-    # the direct ones is not in it: the httpx client sends that on every request
+    # the direct ones is not in it: the httpx2 client sends that on every request
     # (``http.NEXTCLOUD_DEFAULT_HEADERS``).
     _API_JSON_HEADERS = dict(OCS_REQUEST_HEADERS)
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -142,9 +142,9 @@ async def test_callback_rejects_token_response_without_refresh_token(
         "token_endpoint": "http://idp.example/token",
     }
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/.well-known/openid-configuration"):
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(discovery).encode(),
                 headers={"content-type": "application/json"},
@@ -152,7 +152,7 @@ async def test_callback_rejects_token_response_without_refresh_token(
         if str(request.url) == "http://idp.example/token":
             # Successful token exchange but no refresh_token (e.g. IdP
             # config without offline_access).
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(
                     {
@@ -163,13 +163,13 @@ async def test_callback_rejects_token_response_without_refresh_token(
                 ).encode(),
                 headers={"content-type": "application/json"},
             )
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     request = MagicMock()
     request.query_params = {"code": "abc", "state": state}

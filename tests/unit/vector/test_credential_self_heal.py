@@ -10,7 +10,7 @@ failure, and a periodic ``credential_cleanup_task`` sweeps any that slip through
 import logging
 
 import anyio
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.vector import oauth_sync
@@ -18,10 +18,10 @@ from nextcloud_mcp_server.vector import oauth_sync
 pytestmark = pytest.mark.unit
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
-    req = httpx.Request("GET", "https://cloud.example.org/ocs")
-    return httpx.HTTPStatusError(
-        "auth failure", request=req, response=httpx.Response(status, request=req)
+def _http_error(status: int) -> httpx2.HTTPStatusError:
+    req = httpx2.Request("GET", "https://cloud.example.org/ocs")
+    return httpx2.HTTPStatusError(
+        "auth failure", request=req, response=httpx2.Response(status, request=req)
     )
 
 

@@ -20,7 +20,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-import httpx
+import httpx2
 import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -929,9 +929,9 @@ class UnifiedTokenVerifier(TokenVerifier):
                     f"{response.text[:200] if response.text else 'empty'}",
                 )
 
-        except httpx.TimeoutException:
+        except httpx2.TimeoutException:
             return self._note(chain, "introspect", "network_error", token, "timeout")
-        except httpx.RequestError as e:
+        except httpx2.RequestError as e:
             return self._note(chain, "introspect", "network_error", token, str(e))
         except Exception as e:
             return self._note(chain, "introspect", "unknown", token, str(e))
@@ -993,9 +993,9 @@ class UnifiedTokenVerifier(TokenVerifier):
                 self.userinfo_uri,
                 headers={"Authorization": f"Bearer {token}"},
             )
-        except httpx.TimeoutException:
+        except httpx2.TimeoutException:
             return self._note(chain, "userinfo", "network_error", token, "timeout")
-        except httpx.RequestError as e:
+        except httpx2.RequestError as e:
             return self._note(chain, "userinfo", "network_error", token, str(e))
 
         if response.status_code != 200:

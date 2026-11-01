@@ -7,7 +7,7 @@ return best matches only, so ``total_found`` here must be the full count.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
@@ -103,10 +103,10 @@ def test_count_serializes_before_results():
 
 async def test_access_denied_is_reported_as_mcp_error(make_list_notes):
     async def get_all_notes():
-        raise httpx.HTTPStatusError(
+        raise httpx2.HTTPStatusError(
             "forbidden",
-            request=httpx.Request("GET", "http://nc/notes"),
-            response=httpx.Response(403),
+            request=httpx2.Request("GET", "http://nc/notes"),
+            response=httpx2.Response(403),
         )
         yield  # pragma: no cover - makes this an async generator
 

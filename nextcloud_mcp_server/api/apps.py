@@ -16,7 +16,7 @@ never merged and is incompatible with admin endpoints gated by
 
 import logging
 
-import httpx
+import httpx2
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -67,7 +67,7 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         # filtering without needing the admin-only /cloud/apps endpoint.
         async with nextcloud_httpx_client(
             base_url=nextcloud_host,
-            auth=httpx.BasicAuth(username, app_password),
+            auth=httpx2.BasicAuth(username, app_password),
             timeout=30.0,
         ) as client:
             response = await client.get(

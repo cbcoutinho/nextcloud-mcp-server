@@ -10,7 +10,7 @@ backend (see the crashloop investigation for tenant-ergro).
 
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.app import (
@@ -40,11 +40,11 @@ def _settings(
 
 def _patched_client(handler):
     """Patch app.nextcloud_httpx_client to route through a MockTransport."""
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     return patch(
         "nextcloud_mcp_server.app.nextcloud_httpx_client",
@@ -53,8 +53,8 @@ def _patched_client(handler):
 
 
 async def test_returns_document_on_first_success():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=DISCOVERY_DOC)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
@@ -68,11 +68,11 @@ async def test_retries_transient_connect_timeout_then_succeeds():
     """A ConnectTimeout (the tenant-ergro cold-start symptom) is retried."""
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
         if attempts["n"] < 3:
-            raise httpx.ConnectTimeout("egress not ready", request=request)
-        return httpx.Response(200, json=DISCOVERY_DOC)
+            raise httpx2.ConnectTimeout("egress not ready", request=request)
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
@@ -86,11 +86,11 @@ async def test_retries_transient_connect_timeout_then_succeeds():
 async def test_retries_5xx_then_succeeds():
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
         if attempts["n"] < 2:
-            return httpx.Response(503)
-        return httpx.Response(200, json=DISCOVERY_DOC)
+            return httpx2.Response(503)
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()):
@@ -102,11 +102,11 @@ async def test_retries_5xx_then_succeeds():
 
 async def test_timeout_is_forwarded_to_client_when_set():
     """The hybrid multi-user-basic path passes an explicit per-attempt timeout;
-    it must reach the httpx client factory (a default call omits it so httpx
+    it must reach the httpx2 client factory (a default call omits it so httpx2
     keeps its own default rather than disabling the timeout)."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=DISCOVERY_DOC)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler) as factory:
         result = await _perform_oidc_discovery(DISCOVERY_URL, _settings(), timeout=30.0)
@@ -117,10 +117,10 @@ async def test_timeout_is_forwarded_to_client_when_set():
 
 async def test_default_call_omits_timeout_kwarg():
     """Without an explicit timeout the factory is called without a timeout
-    kwarg, so httpx applies its own default instead of an infinite timeout."""
+    kwarg, so httpx2 applies its own default instead of an infinite timeout."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=DISCOVERY_DOC)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler) as factory:
         await _perform_oidc_discovery(DISCOVERY_URL, _settings())
@@ -134,11 +134,11 @@ async def test_retries_malformed_json_200_then_succeeds():
     on — otherwise it reintroduces the crashloop via a different status code."""
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
         if attempts["n"] < 2:
-            return httpx.Response(200, text="<html>warming up</html>")
-        return httpx.Response(200, json=DISCOVERY_DOC)
+            return httpx2.Response(200, text="<html>warming up</html>")
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()):
@@ -152,14 +152,14 @@ async def test_4xx_raises_immediately_without_retry():
     """A 4xx is a misconfiguration, not a transient error — fail fast."""
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
     settings = _settings()
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(httpx2.HTTPStatusError):
                 await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 1
@@ -169,14 +169,14 @@ async def test_4xx_raises_immediately_without_retry():
 async def test_raises_after_exhausting_attempts():
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
-        raise httpx.ConnectTimeout("still not ready", request=request)
+        raise httpx2.ConnectTimeout("still not ready", request=request)
 
     settings = _settings(max_attempts=3)
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
-            with pytest.raises(httpx.ConnectTimeout):
+            with pytest.raises(httpx2.ConnectTimeout):
                 await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 3
@@ -189,11 +189,11 @@ async def test_negative_backoff_is_clamped_not_crashing():
     reversed range."""
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
         if attempts["n"] < 2:
-            raise httpx.ConnectTimeout("egress not ready", request=request)
-        return httpx.Response(200, json=DISCOVERY_DOC)
+            raise httpx2.ConnectTimeout("egress not ready", request=request)
+        return httpx2.Response(200, json=DISCOVERY_DOC)
 
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
@@ -210,14 +210,14 @@ async def test_negative_backoff_is_clamped_not_crashing():
 async def test_max_attempts_one_restores_fail_fast():
     attempts = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         attempts["n"] += 1
-        raise httpx.ConnectTimeout("boom", request=request)
+        raise httpx2.ConnectTimeout("boom", request=request)
 
     settings = _settings(max_attempts=1)
     with _patched_client(handler):
         with patch("nextcloud_mcp_server.app.anyio.sleep", AsyncMock()) as sleep:
-            with pytest.raises(httpx.ConnectTimeout):
+            with pytest.raises(httpx2.ConnectTimeout):
                 await _perform_oidc_discovery(DISCOVERY_URL, settings)
 
     assert attempts["n"] == 1
@@ -235,8 +235,8 @@ class TestOidcDiscoveryTransientPredicate:
     """
 
     def test_transport_errors_are_transient(self):
-        assert _oidc_discovery_error_is_transient(httpx.ConnectError("refused"))
-        assert _oidc_discovery_error_is_transient(httpx.ReadTimeout("slow"))
+        assert _oidc_discovery_error_is_transient(httpx2.ConnectError("refused"))
+        assert _oidc_discovery_error_is_transient(httpx2.ReadTimeout("slow"))
 
     def test_malformed_json_body_is_transient(self):
         import json
@@ -246,15 +246,15 @@ class TestOidcDiscoveryTransientPredicate:
         )
 
     def test_5xx_is_transient(self):
-        request = httpx.Request("GET", DISCOVERY_URL)
-        exc = httpx.HTTPStatusError(
-            "boom", request=request, response=httpx.Response(503, request=request)
+        request = httpx2.Request("GET", DISCOVERY_URL)
+        exc = httpx2.HTTPStatusError(
+            "boom", request=request, response=httpx2.Response(503, request=request)
         )
         assert _oidc_discovery_error_is_transient(exc) is True
 
     def test_4xx_is_not_transient(self):
-        request = httpx.Request("GET", DISCOVERY_URL)
-        exc = httpx.HTTPStatusError(
-            "nope", request=request, response=httpx.Response(404, request=request)
+        request = httpx2.Request("GET", DISCOVERY_URL)
+        exc = httpx2.HTTPStatusError(
+            "nope", request=request, response=httpx2.Response(404, request=request)
         )
         assert _oidc_discovery_error_is_transient(exc) is False

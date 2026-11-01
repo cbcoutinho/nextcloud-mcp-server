@@ -18,7 +18,7 @@ class GroupsClient(BaseNextcloudClient):
     # it straight through would make any future in-place edit a cross-client bug.
     #
     # It is still ONE object per class, not per instance or per call. Nothing
-    # mutates it today, and httpx does not touch the dict it is handed. But a
+    # mutates it today, and httpx2 does not touch the dict it is handed. But a
     # future `additional_headers` parameter reaching for
     # `self._OCS_HEADERS.update(...)` would leak into every instance and every
     # later call -- build `{**self._OCS_HEADERS, ...}` instead.

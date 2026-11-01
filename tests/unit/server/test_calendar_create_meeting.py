@@ -7,7 +7,7 @@ when omitted, falls back to the user's Nextcloud timezone preference.
 
 from __future__ import annotations
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 
@@ -73,7 +73,7 @@ async def test_defaults_to_the_users_nextcloud_timezone(
 async def test_lookup_failure_falls_back_to_floating(
     create_meeting_tool, client, mocker
 ):
-    client.users.get_current_user_timezone.side_effect = httpx.ConnectError("down")
+    client.users.get_current_user_timezone.side_effect = httpx2.ConnectError("down")
 
     assert await _forwarded_timezone(create_meeting_tool, client, mocker) == ""
 
@@ -92,7 +92,7 @@ async def test_get_current_user_timezone_reads_cloud_user(mocker, data, expected
         "_make_request",
         return_value=create_mock_response(json_data={"ocs": {"data": data}}),
     )
-    users = UsersClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    users = UsersClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
 
     assert await users.get_current_user_timezone() == expected
     assert make_request.call_args.args == ("GET", "/ocs/v2.php/cloud/user")

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
 

@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import SplitResult, unquote, urlsplit
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.config import cfg
 
@@ -139,7 +139,7 @@ async def _fetch(parts: SplitResult) -> bytes:
     pinned_url = parts._replace(netloc=f"{literal}:{port}").geturl()
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=False
         ) as client:
             async with client.stream(
@@ -160,7 +160,7 @@ async def _fetch(parts: SplitResult) -> bytes:
                     if len(body) > _MAX_DOCUMENT_BYTES:
                         raise CIMDError("client metadata document is too large")
                 return body
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         raise CIMDError("failed to fetch client metadata document") from e
 
 
@@ -203,7 +203,7 @@ async def get_client_metadata(client_id: str) -> dict[str, Any]:
     if cached and cached[0] > now:
         return cached[1]
 
-    # One deadline over DNS + connect + body: httpx's timeout is per phase, so a
+    # One deadline over DNS + connect + body: httpx2's timeout is per phase, so a
     # server trickling bytes (or a slow resolver) could otherwise hold this
     # unauthenticated request open far longer.
     try:

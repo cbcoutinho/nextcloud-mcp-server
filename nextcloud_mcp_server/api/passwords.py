@@ -17,7 +17,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 
-import httpx
+import httpx2
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -233,7 +233,7 @@ async def _validate_nextcloud_credentials(
                 auth=(login_name, password),
                 params={"format": "json"},
             )
-    except httpx.RequestError as e:
+    except httpx2.RequestError as e:
         logger.error("Failed to reach Nextcloud for credential validation: %s", e)
         return None, JSONResponse(
             {"success": False, "error": "Failed to validate credentials"},

@@ -1,6 +1,6 @@
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.tables import TablesClient
@@ -28,7 +28,7 @@ async def test_tables_list_tables(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -55,7 +55,7 @@ async def test_tables_get_schema(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -104,7 +104,7 @@ async def test_tables_get_rows(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -137,7 +137,7 @@ async def test_tables_get_rows_with_pagination(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -164,7 +164,7 @@ async def test_tables_create_row(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -194,7 +194,7 @@ async def test_tables_update_row(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -218,7 +218,7 @@ async def test_tables_delete_row(mocker):
         status_code=200, json_data={"message": "Row deleted"}
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         TablesClient, "_make_request", return_value=mock_response
     )
@@ -238,17 +238,17 @@ async def test_tables_delete_nonexistent_row(mocker):
     """Test that deleting a non-existent row raises HTTPStatusError."""
     error_response = create_mock_error_response(404, "Row not found")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(TablesClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "404 Not Found",
-        request=httpx.Request("DELETE", "http://test.local"),
+        request=httpx2.Request("DELETE", "http://test.local"),
         response=error_response,
     )
 
     client = TablesClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.delete_row(row_id=999999999)
 
     assert excinfo.value.response.status_code == 404
@@ -258,17 +258,17 @@ async def test_tables_get_nonexistent_schema(mocker):
     """Test that getting schema for non-existent table raises HTTPStatusError."""
     error_response = create_mock_error_response(404, "Table not found")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(TablesClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "404 Not Found",
-        request=httpx.Request("GET", "http://test.local"),
+        request=httpx2.Request("GET", "http://test.local"),
         response=error_response,
     )
 
     client = TablesClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.get_table_schema(table_id=999999999)
 
     assert excinfo.value.response.status_code == 404

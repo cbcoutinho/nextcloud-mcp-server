@@ -44,7 +44,7 @@ import uuid
 from typing import Any, AsyncGenerator
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.types import ElicitRequestParams, ElicitResult
@@ -108,7 +108,7 @@ async def _nextcloud_uid_for_bearer(token: str) -> str | None:
     """
     host = os.getenv("NEXTCLOUD_HOST")
     assert host, "NEXTCLOUD_HOST must be set for the keycloak lane"
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx2.AsyncClient(timeout=30.0) as http:
         response = await http.get(
             f"{host.rstrip('/')}/ocs/v2.php/cloud/user",
             headers={"Authorization": f"Bearer {token}", "OCS-APIRequest": "true"},
@@ -188,14 +188,14 @@ async def keycloak_service_oauth_token(anyio_backend) -> str:
     the one that completes the Login Flow leg, or the grant is refused. That is
     what ``divergent_email_user`` asserts before anything else runs.
     """
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx2.AsyncClient(timeout=30.0) as http:
         discovery = await http.get(
             f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
             "/.well-known/openid-configuration"
         )
         try:
             discovery.raise_for_status()
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             pytest.skip(f"Keycloak realm not available: {e}")
         token_endpoint = discovery.json()["token_endpoint"]
 

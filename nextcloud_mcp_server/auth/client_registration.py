@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
@@ -105,7 +105,7 @@ async def register_client(
         ClientInfo with registration details
 
     Raises:
-        httpx.HTTPStatusError: If registration fails
+        httpx2.HTTPStatusError: If registration fails
         ValueError: If response is invalid
 
     Note:
@@ -208,7 +208,7 @@ async def register_client(
                     registration_client_uri=client_info.get("registration_client_uri"),
                 )
 
-            except httpx.HTTPStatusError as e:
+            except httpx2.HTTPStatusError as e:
                 logger.error(
                     "Failed to register client: HTTP %s", e.response.status_code
                 )
@@ -221,10 +221,10 @@ async def register_client(
                 raise ValueError(f"Invalid registration response: missing {e}")
 
     # Should not reach here, but raise if we do
-    raise httpx.HTTPStatusError(
+    raise httpx2.HTTPStatusError(
         "Registration failed after retries",
-        request=httpx.Request("POST", registration_endpoint),
-        response=httpx.Response(429),
+        request=httpx2.Request("POST", registration_endpoint),
+        response=httpx2.Response(429),
     )
 
 
@@ -347,7 +347,7 @@ async def delete_client(
                     logger.debug("Response: %s", response.text)
                     return False
 
-            except httpx.HTTPStatusError as e:
+            except httpx2.HTTPStatusError as e:
                 logger.error(
                     "HTTP error deleting client %s...: %s",
                     client_id[:16],
@@ -398,7 +398,7 @@ async def ensure_oauth_client(
         ClientInfo with valid credentials
 
     Raises:
-        httpx.HTTPStatusError: If registration fails
+        httpx2.HTTPStatusError: If registration fails
         ValueError: If response is invalid
     """
     # Try to load existing client from SQLite

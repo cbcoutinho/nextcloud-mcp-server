@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import BasicAuth
+from httpx2 import BasicAuth
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 

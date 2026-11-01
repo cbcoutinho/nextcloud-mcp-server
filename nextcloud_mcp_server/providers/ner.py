@@ -4,7 +4,7 @@ Wire format: request ``{model, texts, labels, threshold}``, response
 ``{"results": [{"index", "entities": [{"start", "end", "text", "label",
 "score"}]}]}``. Offsets are character offsets into the submitted text.
 
-A plain-httpx client, like :mod:`.rerank`: NER satisfies none of the embedding
+A plain-httpx2 client, like :mod:`.rerank`: NER satisfies none of the embedding
 ``Provider`` contract. The client returns only what redaction needs — the
 ``(label, surface form)`` pairs found in each text — and it takes each form from the SUBMITTED
 text via the offsets rather than trusting the echoed ``text`` field, so a
@@ -18,7 +18,7 @@ cannot be detected must not be exported unredacted. So every failure raises
 
 import re
 
-import httpx
+import httpx2
 
 from .gateway import GatewayTokenProvider
 
@@ -158,15 +158,15 @@ class NerClient:
         }
         try:
             connect_timeout = min(_NER_CONNECT_TIMEOUT_SECONDS, self._timeout)
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout, connect=connect_timeout)
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(self._timeout, connect=connect_timeout)
             ) as client:
                 resp = await client.post(
                     self._url, json=payload, headers=await self._headers()
                 )
                 resp.raise_for_status()
                 body = resp.json()
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             raise NerError(
                 f"NER endpoint returned HTTP {e.response.status_code}"
             ) from e

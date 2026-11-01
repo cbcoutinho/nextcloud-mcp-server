@@ -13,7 +13,7 @@ from base64 import urlsafe_b64encode
 from unittest.mock import patch
 
 import anyio
-import httpx
+import httpx2
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -86,26 +86,26 @@ def _sign(
     return jwt.encode(claims, key_pem, algorithm="RS256", headers={"kid": kid})
 
 
-def _idp_handler(request: httpx.Request) -> httpx.Response:
+def _idp_handler(request: httpx2.Request) -> httpx2.Response:
     if str(request.url) == DISCOVERY_URL:
-        return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
+        return httpx2.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
     if str(request.url) == JWKS_URI:
-        return httpx.Response(
+        return httpx2.Response(
             200,
             content=json.dumps(_build_jwks()).encode(),
             headers={"content-type": "application/json"},
         )
-    return httpx.Response(404)
+    return httpx2.Response(404)
 
 
 @pytest.fixture
 def mock_idp():
     """Patch nextcloud_httpx_client used inside token_utils.verify_id_token."""
-    transport = httpx.MockTransport(_idp_handler)
+    transport = httpx2.MockTransport(_idp_handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     with patch(
         "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
@@ -278,10 +278,10 @@ async def test_verify_id_token_recovers_after_kid_rotation():
 
     jwks_fetches = {"count": 0}
 
-    def rotation_handler(request: httpx.Request) -> httpx.Response:
+    def rotation_handler(request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         if url == DISCOVERY_URL:
-            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
+            return httpx2.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
         if url == JWKS_URI:
             jwks_fetches["count"] += 1
             # First fetch: stale JWKS (without rotated kid).
@@ -289,18 +289,18 @@ async def test_verify_id_token_recovers_after_kid_rotation():
             jwks = (
                 _build_jwks() if jwks_fetches["count"] == 1 else _build_rotated_jwks()
             )
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(jwks).encode(),
                 headers={"content-type": "application/json"},
             )
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(rotation_handler)
+    transport = httpx2.MockTransport(rotation_handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     now = int(time.time())
     token = jwt.encode(
@@ -337,24 +337,24 @@ async def test_verify_id_token_rotation_retry_still_misses():
     """Refresh that still doesn't include the kid surfaces the original error."""
     fetches = {"count": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         if url == DISCOVERY_URL:
-            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
+            return httpx2.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
         if url == JWKS_URI:
             fetches["count"] += 1
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(_build_jwks()).encode(),
                 headers={"content-type": "application/json"},
             )
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     now = int(time.time())
     token = _sign(
@@ -390,27 +390,27 @@ async def test_verify_id_token_rotation_retry_network_error_wraps():
     """
     fetches = {"jwks": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         if url == DISCOVERY_URL:
-            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
+            return httpx2.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
         if url == JWKS_URI:
             fetches["jwks"] += 1
             # First fetch: stale-but-valid JWKS. Second (refresh): 500.
             if fetches["jwks"] == 1:
-                return httpx.Response(
+                return httpx2.Response(
                     200,
                     content=json.dumps(_build_jwks()).encode(),
                     headers={"content-type": "application/json"},
                 )
-            return httpx.Response(500, content=b"upstream broke")
-        return httpx.Response(404)
+            return httpx2.Response(500, content=b"upstream broke")
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     now = int(time.time())
     token = _sign(
@@ -446,16 +446,16 @@ async def test_verify_id_token_caches_discovery_and_jwks():
     """
     fetches: dict[str, int] = {}
 
-    def counting_handler(request: httpx.Request) -> httpx.Response:
+    def counting_handler(request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         fetches[url] = fetches.get(url, 0) + 1
         return _idp_handler(request)
 
-    transport = httpx.MockTransport(counting_handler)
+    transport = httpx2.MockTransport(counting_handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     now = int(time.time())
     token = _sign(
@@ -495,18 +495,18 @@ async def test_get_cached_coalesces_concurrent_misses():
     """
     fetch_count = {"n": 0}
 
-    async def slow_handler(request: httpx.Request) -> httpx.Response:
+    async def slow_handler(request: httpx2.Request) -> httpx2.Response:
         fetch_count["n"] += 1
         # Yield so concurrent waiters all reach the lock acquisition
         # while the first holder is still mid-fetch.
         await anyio.sleep(0.01)
         return _idp_handler(request)
 
-    transport = httpx.MockTransport(slow_handler)
+    transport = httpx2.MockTransport(slow_handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     results: list[dict] = []
 

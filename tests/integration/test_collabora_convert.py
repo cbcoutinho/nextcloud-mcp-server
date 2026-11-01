@@ -16,7 +16,7 @@ import os
 import uuid
 from io import BytesIO
 
-import httpx
+import httpx2
 import pytest
 from docx import Document
 from mcp.client.session import ClientSession
@@ -38,7 +38,7 @@ MARKER = "CollaboraConvertMarker"
 
 
 def _convert(data: bytes, filename: str, target: str) -> bytes:
-    response = httpx.post(
+    response = httpx2.post(
         f"{COOLWSD}/{target}", files={"data": (filename, data)}, timeout=120
     )
     response.raise_for_status()

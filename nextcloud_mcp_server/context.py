@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Protocol, runtime_checkable
 
-from httpx import BasicAuth
+from httpx2 import BasicAuth
 from mcp.server.mcpserver import Context
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context

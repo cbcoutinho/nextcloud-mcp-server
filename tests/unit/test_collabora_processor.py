@@ -1,10 +1,10 @@
 """Legacy/ODF office files go through Collabora's convert-to, then a native
-OOXML reader (ADR-039). coolwsd is replaced by an httpx.MockTransport; the
+OOXML reader (ADR-039). coolwsd is replaced by an httpx2.MockTransport; the
 OOXML it "returns" is real, so the hand-off to the reader is exercised too."""
 
 import io
 
-import httpx
+import httpx2
 import pytest
 from docx import Document
 
@@ -46,19 +46,21 @@ def _processor() -> CollaboraProcessor:
 
 @pytest.fixture
 def coolwsd(monkeypatch):
-    """Route collabora's httpx clients to a handler; returns the request log."""
-    requests: list[httpx.Request] = []
-    state: dict = {"handler": lambda r: httpx.Response(200, content=_docx("Converted"))}
-    real_client = httpx.AsyncClient
+    """Route collabora's httpx2 clients to a handler; returns the request log."""
+    requests: list[httpx2.Request] = []
+    state: dict = {
+        "handler": lambda r: httpx2.Response(200, content=_docx("Converted"))
+    }
+    real_client = httpx2.AsyncClient
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         return state["handler"](request)
 
     def client(**kwargs):
-        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+        return real_client(transport=httpx2.MockTransport(handler), **kwargs)
 
-    monkeypatch.setattr(collabora.httpx, "AsyncClient", client)
+    monkeypatch.setattr(collabora.httpx2, "AsyncClient", client)
     state["requests"] = requests
     return state
 
@@ -103,21 +105,21 @@ async def test_bytes_that_are_not_the_claimed_container_never_reach_coolwsd(cool
 
 
 async def test_a_denied_client_names_the_allowlist(coolwsd):
-    coolwsd["handler"] = lambda r: httpx.Response(403)
+    coolwsd["handler"] = lambda r: httpx2.Response(403)
 
     with pytest.raises(ProcessorError, match="net.post_allow"):
         await _processor().process(OLE2, DOC_MIME, "old.doc")
 
 
 async def test_a_rejected_file_raises(coolwsd):
-    coolwsd["handler"] = lambda r: httpx.Response(500)
+    coolwsd["handler"] = lambda r: httpx2.Response(500)
 
     with pytest.raises(ProcessorError, match="HTTP 500"):
         await _processor().process(OLE2, DOC_MIME, "old.doc")
 
 
 async def test_an_empty_conversion_raises(coolwsd):
-    coolwsd["handler"] = lambda r: httpx.Response(200, content=b"")
+    coolwsd["handler"] = lambda r: httpx2.Response(200, content=b"")
 
     with pytest.raises(ProcessorError, match="empty docx"):
         await _processor().process(OLE2, DOC_MIME, "old.doc")
@@ -125,7 +127,7 @@ async def test_an_empty_conversion_raises(coolwsd):
 
 async def test_an_unreachable_service_raises(coolwsd):
     def refuse(request):
-        raise httpx.ConnectError("refused", request=request)
+        raise httpx2.ConnectError("refused", request=request)
 
     coolwsd["handler"] = refuse
 
@@ -136,11 +138,11 @@ async def test_an_unreachable_service_raises(coolwsd):
 @pytest.mark.parametrize(
     ("response", "healthy"),
     [
-        (httpx.Response(200, json={"convert-to": {"available": True}}), True),
+        (httpx2.Response(200, json={"convert-to": {"available": True}}), True),
         # Reported available=false when this client is outside net.post_allow.
-        (httpx.Response(200, json={"convert-to": {"available": False}}), False),
-        (httpx.Response(200, content=b"not json"), False),
-        (httpx.Response(503), False),
+        (httpx2.Response(200, json={"convert-to": {"available": False}}), False),
+        (httpx2.Response(200, content=b"not json"), False),
+        (httpx2.Response(503), False),
     ],
 )
 async def test_health_check_reads_the_capabilities_endpoint(coolwsd, response, healthy):
