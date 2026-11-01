@@ -1065,6 +1065,10 @@ class TestStructuredName:
         result = self._merge(existing, {"given_name": "Jane", "family_name": None})
         assert "N:Doe;Jane;;;" in result
 
+    def test_empty_n_string_is_not_supplied_on_update(self):
+        existing = "BEGIN:VCARD\nVERSION:4.0\nUID:u\nFN:J\nN:Doe;J;;;\nEND:VCARD\n"
+        assert "N:Doe;J;;;" in self._merge(existing, {"n": "", "note": "x"})
+
     def test_list_component_is_space_joined(self):
         card = _vcard(fn="x", additional_names=["Mary", "Anne"], family_name="Doe")
         assert "N:Doe;;Mary Anne;;" in card

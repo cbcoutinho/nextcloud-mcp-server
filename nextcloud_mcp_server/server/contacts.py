@@ -446,8 +446,9 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``given_name``, ``family_name``, ``additional_names``,
                   ``honorific_prefix``, ``honorific_suffix`` (str): Structured
                   name, written as vCard ``N``. Alternatively pass ``n`` as a
-                  dict with these keys or as a list ``[family, given, ...]``. ``fn`` is
-                  never split into parts. Without them, ``N`` is written empty.
+                  dict with these keys or as a list ``[family, given, ...]``.
+                  ``fn`` is never split into parts. Without them, ``N`` is
+                  written empty.
                 - ``email`` (str or list of str/dicts): Email address(es).
                 - ``tel`` / ``phone`` (str or list): Phone number(s).
                 - ``org`` / ``organization`` (str or list of str): Organization.

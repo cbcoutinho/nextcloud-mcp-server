@@ -56,7 +56,7 @@ def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
     """
     raw = data.pop("n", None)
     if isinstance(raw, str):
-        raw = raw.split(";")
+        raw = raw.split(";") if raw.strip() else None
     if isinstance(raw, list):
         raw = dict(zip(_N_COMPONENTS, raw))
     parts = (
