@@ -1056,6 +1056,14 @@ class TestStructuredName:
         result = self._merge(existing, {"given_name": "Jane"})
         assert "item1.N;SORT-AS=Doe:Doe;Jane;;;" in result
 
+    def test_update_preserves_extra_components(self):
+        existing = "BEGIN:VCARD\nVERSION:4.0\nUID:u\nFN:J\nN:Doe;J;;;;x\nEND:VCARD\n"
+        assert "N:Doe;Jane;;;;x" in self._merge(existing, {"given_name": "Jane"})
+
+    def test_list_component_is_space_joined(self):
+        card = _vcard(fn="x", additional_names=["Mary", "Anne"], family_name="Doe")
+        assert "N:Doe;;Mary Anne;;" in card
+
 
 @pytest.mark.parametrize("bad_line", ["BDAY;VALUE=DATE:--1226", "GEO:37.38,-122.08"])
 def test_unparseable_property_drops_only_that_property(bad_line: str):

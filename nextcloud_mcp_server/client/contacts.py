@@ -64,7 +64,16 @@ def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
     for key in _N_COMPONENTS:
         if key in data:
             parts[key] = data.pop(key)
-    return {k: "" if v is None else str(v) for k, v in parts.items()}
+    return {k: _name_component_str(v) for k, v in parts.items()}
+
+
+def _name_component_str(value: Any) -> str:
+    """``None`` → ``""``; a list (e.g. several additional names) is space-joined."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value if v)
+    return str(value)
 
 
 def _fn_from_name_parts(parts: dict[str, str]) -> str:
