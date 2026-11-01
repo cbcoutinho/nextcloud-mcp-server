@@ -948,6 +948,17 @@ LOGGING_CONFIG = {
             "level": "INFO",
             "propagate": False,  # Prevent propagation to root logger
         },
+        "httpcore2": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
+        # Legacy httpx: still used by qdrant-client and huggingface-hub
+        "httpx": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
         "httpcore": {
             "handlers": ["default"],
             "level": "INFO",
