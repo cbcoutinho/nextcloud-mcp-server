@@ -107,7 +107,13 @@ major_version_zero = true
 # ruff 0.17 widened the default rule set (1698 new findings); pin the pre-0.17
 # defaults so adopting the new rules is a deliberate, separate change.
 select = ["E4", "E7", "E9", "F"]
-extend-select = ["I", "PLC0415", "G004"]
+extend-select = ["I", "PLC0415", "G004", "TID251"]
+
+# `except httpx.X` never matches the httpx2.X our clients, mcp, openai and
+# mistralai raise, and httpx stays importable via qdrant-client, so a stray
+# import fails silently. Ban it so the mistake is a lint error instead.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "Use httpx2 -- httpx exceptions never match httpx2 errors (see CLAUDE.md)"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLC0415"]
