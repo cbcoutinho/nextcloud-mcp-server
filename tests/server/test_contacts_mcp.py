@@ -362,3 +362,51 @@ async def test_mcp_contacts_photo_and_paging_parameters(
             await nc_client.contacts.delete_addressbook(name=addressbook_name)
         except Exception:
             pass
+
+
+async def test_mcp_contacts_structured_name_round_trip(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """Issue #1749: given/family name are written as N on create and update."""
+    addressbook_name = f"mcp-test-n-{uuid.uuid4().hex[:8]}"
+    contact_uid = f"mcp-n-{uuid.uuid4().hex[:8]}"
+    await nc_client.contacts.create_addressbook(
+        name=addressbook_name, display_name=addressbook_name
+    )
+    try:
+        create_result = await nc_mcp_client.call_tool(
+            "nc_contacts_create_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"given_name": "Jane", "family_name": "Doe"},
+            },
+        )
+        assert create_result.is_error is False
+
+        listed = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_list_contacts", {"addressbook": addressbook_name}
+            )
+        )["contacts"][0]
+        assert listed["fn"] == "Jane Doe"
+        assert listed["given_name"] == "Jane"
+        assert listed["family_name"] == "Doe"
+
+        update_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"family_name": "Roe"},
+            },
+        )
+        assert update_result.is_error is False
+        updated = _extract_payload(update_result)["contact"]
+        assert updated["given_name"] == "Jane"
+        assert updated["family_name"] == "Roe"
+    finally:
+        try:
+            await nc_client.contacts.delete_addressbook(name=addressbook_name)
+        except Exception:
+            pass
