@@ -5,7 +5,12 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models.tables import ListTablesResponse, Table
+from nextcloud_mcp_server.models.tables import (
+    ListTablesResponse,
+    ReadTableResponse,
+    Table,
+    TableRow,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
@@ -48,10 +53,18 @@ def configure_tables_tools(mcp: MCPServer):
         ctx: Context,
         limit: int | None = None,
         offset: int | None = None,
-    ):
+    ) -> ReadTableResponse:
         """Read rows from a table with optional pagination"""
         client = await get_client(ctx)
-        return await client.tables.get_table_rows(table_id, limit, offset)
+        rows = await client.tables.get_table_rows(table_id, limit, offset)
+        # Wrap in a Response so the rows are one content block, not one per row
+        # (GH #568). See nc_tables_list_tables for the same pattern.
+        return ReadTableResponse(
+            rows=[TableRow.model_validate(row) for row in rows],
+            table_id=table_id,
+            offset=offset,
+            limit=limit,
+        )
 
     @mcp.tool(
         title="Insert Table Row",
