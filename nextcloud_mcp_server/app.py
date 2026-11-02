@@ -62,7 +62,6 @@ from nextcloud_mcp_server.auth import (
     get_access_token_scopes,
     has_required_scopes,
     is_jwt_token,
-    require_scopes,
 )
 from nextcloud_mcp_server.auth.browser_oauth_routes import (
     oauth_login,
@@ -103,7 +102,6 @@ from nextcloud_mcp_server.config_validators import (
     get_mode_summary,
     validate_configuration,
 )
-from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.features import semantic_installed
 from nextcloud_mcp_server.http import nextcloud_httpx_client
@@ -125,9 +123,12 @@ from nextcloud_mcp_server.plugins import (
     plugin_routes,
     register_plugin_tools,
 )
-from nextcloud_mcp_server.request_context import current_context
 from nextcloud_mcp_server.retry import retry_on_transient
-from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
+from nextcloud_mcp_server.server import (
+    AVAILABLE_APPS,
+    configure_app_tools,
+    configure_capabilities_resource,
+)
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 
@@ -1944,13 +1945,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             lifespan=app_lifespan_basic,
         )
 
-    @mcp.resource("nc://capabilities")
-    @require_scopes("openid")  # instance metadata: any verified identity
-    async def nc_get_capabilities():
-        """Get the Nextcloud Host capabilities"""
-        ctx = current_context(mcp)
-        client = await get_nextcloud_client(ctx)
-        return await client.capabilities()
+    configure_capabilities_resource(mcp)
 
     # If no specific apps are specified, enable all
     if enabled_apps is None:

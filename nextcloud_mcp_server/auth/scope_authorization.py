@@ -130,7 +130,7 @@ def require_scopes(*required_scopes: str):
                             list(required_scopes),
                             f"Access denied to {func_name}: no request context "
                             f"to authorize against.",
-                        )
+                        ) from None
                     logger.debug(
                         "No context for %s - allowing (BasicAuth mode)", func_name
                     )

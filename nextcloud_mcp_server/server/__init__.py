@@ -2,7 +2,10 @@ from collections.abc import Callable
 
 from mcp.server.mcpserver import MCPServer
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import stamp_required_capability
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.request_context import current_context
 
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
@@ -63,6 +66,18 @@ APP_CAPABILITY_KEY: dict[str, str] = {
     "cookbook": "cookbook",
     "talk": "spreed",
 }
+
+
+def configure_capabilities_resource(mcp: MCPServer) -> None:
+    """Register ``nc://capabilities``; shared by app.py and stdio.py."""
+
+    @mcp.resource("nc://capabilities")
+    @require_scopes("openid")  # instance metadata: any verified identity
+    async def nc_get_capabilities():
+        """Get the Nextcloud Host capabilities"""
+        # Static resource: the SDK injects no Context (see request_context).
+        client = await get_client(current_context(mcp))
+        return await client.capabilities()
 
 
 def configure_app_tools(mcp: MCPServer, app_name: str) -> None:
