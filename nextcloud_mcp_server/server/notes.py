@@ -354,6 +354,7 @@ async def nc_notes_delete_note(note_id: int, ctx: Context) -> DeleteNoteResponse
 
 def configure_notes_tools(mcp: MCPServer):
     @mcp.resource("notes://settings")
+    @require_scopes("notes.read")
     async def notes_get_settings():
         """Get the Notes App settings"""
         # Static resources get no Context from the SDK:
@@ -364,6 +365,7 @@ def configure_notes_tools(mcp: MCPServer):
         return NotesSettings(**settings_data)
 
     @mcp.resource("nc://Notes/{note_id}/attachments/{attachment_filename}")
+    @require_scopes("notes.read")
     async def nc_notes_get_attachment_resource(note_id: int, attachment_filename: str):
         """Get a specific attachment from a note"""
         ctx = current_context(mcp)
@@ -385,6 +387,7 @@ def configure_notes_tools(mcp: MCPServer):
         }
 
     @mcp.resource("nc://Notes/{note_id}")
+    @require_scopes("notes.read")
     async def nc_get_note_resource(note_id: int):
         """Get user note using note id"""
 

@@ -17,8 +17,17 @@ from nextcloud_mcp_server.auth.login_flow import LoginFlowPollResult
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
+from tests.unit.test_require_scopes_enforcement import _authenticated_with
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _openid_token():
+    """The auth tools require `openid`; give every call a verified token, as
+    the auth middleware does, so the scope check passes in any deployment mode."""
+    with _authenticated_with(["openid"]):
+        yield
 
 
 def _grant_completed_by(mocker, uid: str | None):
