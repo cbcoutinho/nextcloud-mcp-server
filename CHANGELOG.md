@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.204.1 (2026-11-02)
+
+### Fix
+
+- **auth**: find a positionally-passed Context in require_scopes
+- **auth**: gate nc://capabilities and guard every registered resource
+- **auth**: enforce OAuth scopes on MCP resources
+
+### Refactor
+
+- **server**: register nc://capabilities from one place
+
 ## v0.204.0 (2026-11-01)
 
 ### Feat
