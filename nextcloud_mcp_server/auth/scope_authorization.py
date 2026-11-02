@@ -1,5 +1,6 @@
 """Scope-based authorization for MCP tools."""
 
+import inspect
 import logging
 import time
 from functools import wraps
@@ -113,12 +114,18 @@ def require_scopes(*required_scopes: str):
 
         # Find which parameter receives the Context (MCPServer injects it by name)
         context_param_name = find_context_parameter(func)
+        signature = inspect.signature(func)
 
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Extract context from kwargs (where MCPServer injected it)
+            # MCPServer injects ctx by keyword; direct callers may pass it
+            # positionally, so bind instead of reading kwargs alone.
             ctx: Context | None = (
-                kwargs.get(context_param_name) if context_param_name else None
+                signature.bind_partial(*args, **kwargs).arguments.get(
+                    context_param_name
+                )
+                if context_param_name
+                else None
             )
 
             if ctx is None:
