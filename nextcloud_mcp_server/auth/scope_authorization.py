@@ -95,6 +95,11 @@ def require_scopes(*required_scopes: str):
             ...
         ```
 
+    Handlers without a ``ctx`` parameter (static resources) are authorized
+    against the request Context the middleware publishes. Under OAuth, a call
+    with neither is denied, so unit tests calling ``.fn`` directly in login-flow
+    mode must pass ``ctx`` or set a request context.
+
     Raises:
         ScopeAuthorizationError: If required scopes are not present in the access token
     """
@@ -123,6 +128,8 @@ def require_scopes(*required_scopes: str):
                 # BasicAuth from the signature — that inference let every
                 # resource bypass scopes (GHSA-29mh-jqx8-rg3v).
                 try:
+                    # No mcp argument: ctx.mcp_server is None, which is safe
+                    # because this wrapper only uses ctx for ctx.elicit().
                     ctx = current_context()
                 except LookupError:
                     if get_settings().enable_login_flow:
