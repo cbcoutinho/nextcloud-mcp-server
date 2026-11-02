@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from mcp.server.mcpserver import MCPServer
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
@@ -90,6 +91,7 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> MCPServer:
     # parameter injection — only template resources do — and mcp 2.x removed
     # get_context(). See nextcloud_mcp_server.request_context.
     @mcp.resource("nc://capabilities")
+    @require_scopes("openid")  # instance metadata: any verified identity
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""
         ctx = current_context(mcp)

@@ -62,6 +62,7 @@ from nextcloud_mcp_server.auth import (
     get_access_token_scopes,
     has_required_scopes,
     is_jwt_token,
+    require_scopes,
 )
 from nextcloud_mcp_server.auth.browser_oauth_routes import (
     oauth_login,
@@ -1944,6 +1945,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
 
     @mcp.resource("nc://capabilities")
+    @require_scopes("openid")  # instance metadata: any verified identity
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""
         ctx = current_context(mcp)

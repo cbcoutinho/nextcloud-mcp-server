@@ -16,13 +16,12 @@ from nextcloud_mcp_server.auth.scope_authorization import (
     InsufficientScopeError,
     require_scopes,
 )
+from nextcloud_mcp_server.config_validators import AuthMode
 from nextcloud_mcp_server.request_context import (
     reset_request_context,
     set_request_context,
 )
-from nextcloud_mcp_server.server.cookbook import configure_cookbook_tools
-from nextcloud_mcp_server.server.deck import configure_deck_tools
-from nextcloud_mcp_server.server.notes import configure_notes_tools
+from nextcloud_mcp_server.stdio import get_stdio_mcp
 from tests.unit.test_require_scopes_enforcement import (
     _authenticated_with,
     _request_context,
@@ -33,11 +32,13 @@ pytestmark = pytest.mark.unit
 
 
 def _server() -> MCPServer:
-    mcp = MCPServer("test")
-    configure_notes_tools(mcp)
-    configure_deck_tools(mcp)
-    configure_cookbook_tools(mcp)
-    return mcp
+    """The full stdio server: every app plus nc://capabilities, which the
+    server factories register themselves (app.py mirrors stdio.py)."""
+    with patch(
+        "nextcloud_mcp_server.stdio.validate_configuration",
+        return_value=(AuthMode.SINGLE_USER_BASIC, []),
+    ):
+        return get_stdio_mcp()
 
 
 def test_every_resource_requires_a_scope():
@@ -77,6 +78,8 @@ async def test_resource_read_refused_without_app_scope(uri):
     finally:
         reset_request_context(reset)
 
+    # The SDK wraps non-MCPError handler exceptions in UnexpectedResourceError,
+    # keeping the original as __cause__.
     err = exc_info.value
     assert isinstance(err, InsufficientScopeError) or isinstance(
         err.__cause__, InsufficientScopeError
