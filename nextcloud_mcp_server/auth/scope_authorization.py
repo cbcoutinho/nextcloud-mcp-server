@@ -12,6 +12,7 @@ from mcp.server.mcpserver.utilities.context_injection import find_context_parame
 
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.request_context import current_context
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +117,24 @@ def require_scopes(*required_scopes: str):
             )
 
             if ctx is None:
-                # No context parameter found - likely BasicAuth mode
-                # In BasicAuth mode, all operations are allowed
-                logger.debug(
-                    "No context parameter for %s - allowing (BasicAuth mode)", func_name
-                )
-                return await func(*args, **kwargs)
+                # No injected Context: static resources (the SDK refuses a ctx
+                # parameter on them) and direct calls. Recover the request's
+                # Context from the middleware contextvar rather than inferring
+                # BasicAuth from the signature — that inference let every
+                # resource bypass scopes (GHSA-29mh-jqx8-rg3v).
+                try:
+                    ctx = current_context()
+                except LookupError:
+                    if get_settings().enable_login_flow:
+                        raise InsufficientScopeError(
+                            list(required_scopes),
+                            f"Access denied to {func_name}: no request context "
+                            f"to authorize against.",
+                        )
+                    logger.debug(
+                        "No context for %s - allowing (BasicAuth mode)", func_name
+                    )
+                    return await func(*args, **kwargs)
 
             # Resolve the verified token from the SDK auth contextvar. It is
             # never an attribute of RequestContext — reading it from there

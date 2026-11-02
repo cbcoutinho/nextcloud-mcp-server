@@ -2141,6 +2141,7 @@ def configure_deck_tools(mcp: MCPServer):
 
     # Resources
     @mcp.resource("nc://Deck/boards")
+    @require_scopes("deck.read")
     async def deck_boards_resource():
         """List all Nextcloud Deck boards.
 
@@ -2152,6 +2153,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [board.model_dump() for board in boards]
 
     @mcp.resource("nc://Deck/boards/{board_id}")
+    @require_scopes("deck.read")
     async def deck_board_resource(board_id: int):
         """Get details of a specific Nextcloud Deck board.
 
@@ -2163,6 +2165,7 @@ def configure_deck_tools(mcp: MCPServer):
         return board.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks")
+    @require_scopes("deck.read")
     async def deck_stacks_resource(board_id: int):
         """List all stacks in a Nextcloud Deck board.
 
@@ -2174,6 +2177,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [stack.model_dump() for stack in stacks]
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
+    @require_scopes("deck.read")
     async def deck_stack_resource(board_id: int, stack_id: int):
         """Get details of a specific Nextcloud Deck stack.
 
@@ -2185,6 +2189,7 @@ def configure_deck_tools(mcp: MCPServer):
         return stack.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
+    @require_scopes("deck.read")
     async def deck_cards_resource(board_id: int, stack_id: int):
         """List all cards in a Nextcloud Deck stack.
 
@@ -2198,6 +2203,7 @@ def configure_deck_tools(mcp: MCPServer):
         return []
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
+    @require_scopes("deck.read")
     async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
         """Get details of a specific Nextcloud Deck card.
 
@@ -2209,6 +2215,7 @@ def configure_deck_tools(mcp: MCPServer):
         return card.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels")
+    @require_scopes("deck.read")
     async def deck_labels_resource(board_id: int):
         """List all labels in a Nextcloud Deck board.
 
@@ -2220,6 +2227,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [label.model_dump() for label in (board.labels or [])]
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
+    @require_scopes("deck.read")
     async def deck_label_resource(board_id: int, label_id: int):
         """Get details of a specific Nextcloud Deck label.
 
