@@ -13,6 +13,59 @@ logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
 
+async def test_mcp_list_events_local_day_and_display_name(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+) -> None:
+    """An early Seoul event belongs to Sep 15 locally but Sep 14 in UTC."""
+    created = await nc_client.calendar.create_event(
+        temporary_calendar,
+        {
+            "title": "Local-day query regression",
+            "start_datetime": "2026-09-15T03:05:00",
+            "end_datetime": "2026-09-15T03:35:00",
+            "timezone": "Asia/Seoul",
+        },
+    )
+    try:
+        calendars = await nc_client.calendar.list_calendars()
+        display_name = next(
+            c["display_name"] for c in calendars if c["name"] == temporary_calendar
+        )
+        assert display_name != temporary_calendar
+        for all_calendars in (False, True):
+            response = await nc_mcp_client.call_tool(
+                "nc_calendar_list_events",
+                {
+                    "calendar_name": temporary_calendar,
+                    "start_date": "2026-09-15",
+                    "end_date": "2026-09-15",
+                    "timezone": "Asia/Seoul",
+                    "search_all_calendars": all_calendars,
+                    "title_contains": "Local-day query regression",
+                },
+            )
+            assert response.is_error is False
+            events = json.loads(response.content[0].text)["events"]
+            event = next(e for e in events if e["uid"] == created["uid"])
+            assert event["calendar_name"] == temporary_calendar
+            assert event["calendar_display_name"] == display_name
+
+        response = await nc_mcp_client.call_tool(
+            "nc_calendar_list_events",
+            {
+                "calendar_name": temporary_calendar,
+                "start_date": "2026-09-15",
+                "end_date": "2026-09-15",
+            },
+        )
+        assert response.is_error is False
+        assert created["uid"] not in {
+            e["uid"] for e in json.loads(response.content[0].text)["events"]
+        }
+    finally:
+        await nc_client.calendar.delete_event(temporary_calendar, created["uid"])
+
+
 async def test_mcp_update_event_extended_fields(
     nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
 ):
