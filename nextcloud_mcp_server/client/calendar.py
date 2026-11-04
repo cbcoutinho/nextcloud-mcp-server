@@ -875,8 +875,16 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         limit: int = 50,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """List events in a calendar within date range."""
+        """List events in a calendar within date range.
+
+        ``filters`` (title_contains, categories, status, ...) are applied
+        *before* ``limit`` so a match is never hidden behind the truncation cap:
+        truncating first and letting the caller filter returned only the first
+        ``limit`` unfiltered events and silently dropped matches sorting after
+        them.
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -926,12 +934,16 @@ class CalendarClient:
                 event_dict["etag"] = etag
                 result.append(event_dict)
 
-                if len(result) >= limit:
-                    break
-
-            if len(result) >= limit:
+            # Without filters the first ``limit`` events are the answer, so we
+            # can stop early. With filters the whole calendar is scanned first
+            # (filtering happens before the cap below).
+            if not filters and len(result) >= limit:
                 break
 
+        if filters:
+            result = self._apply_event_filters(result, filters)
+
+        result = result[:limit]
         logger.debug("Found %d events", len(result))
         return result
 
@@ -1373,8 +1385,13 @@ class CalendarClient:
         """
         async with limiter:
             try:
+                # Filters run inside get_calendar_events, before its limit.
                 events = await self.get_calendar_events(
-                    calendar["name"], start_datetime, end_datetime, limit=limit
+                    calendar["name"],
+                    start_datetime,
+                    end_datetime,
+                    limit=limit,
+                    filters=filters,
                 )
             except Exception as e:
                 logger.warning(
@@ -1385,10 +1402,6 @@ class CalendarClient:
                         {"calendar_name": calendar["name"], "error": str(e)}
                     )
                 return
-
-        # Apply filters if provided
-        if filters:
-            events = self._apply_event_filters(events, filters)
 
         # Add calendar info to each event
         for event in events:
