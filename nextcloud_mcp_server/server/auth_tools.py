@@ -8,6 +8,7 @@ tools during the migration period.
 """
 
 import logging
+from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
@@ -23,7 +24,11 @@ from nextcloud_mcp_server.auth.scope_authorization import (
     invalidate_scope_cache,
     require_scopes,
 )
-from nextcloud_mcp_server.auth.storage import get_shared_storage
+from nextcloud_mcp_server.auth.storage import (
+    AppPasswordCheck,
+    RefreshTokenStorage,
+    get_shared_storage,
+)
 from nextcloud_mcp_server.auth.token_utils import (
     current_access_token,
     extract_user_id_from_token,
@@ -40,23 +45,27 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-async def _usable_app_password(storage, user_id: str) -> dict | None:
-    """Return the stored grant, unless Nextcloud no longer accepts it.
+#: How long an interactive auth tool waits for Nextcloud to validate a stored
+#: app password. Shorter than the background sweep's default: on timeout the
+#: check is inconclusive and the password counts as usable, as before.
+_INTERACTIVE_CHECK_TIMEOUT = 5.0
+
+
+async def _check_stored_password(
+    storage: RefreshTokenStorage, app_data: dict[str, Any]
+) -> AppPasswordCheck:
+    """Ask Nextcloud whether a stored grant still works; changes nothing.
 
     A user can revoke an app password in Nextcloud at any time. Reporting such a
     grant as provisioned leaves the user without a login URL while every tool
-    fails with 401, so a rejected password is removed here and counts as absent.
+    fails with 401.
     """
-    existing = await storage.get_app_password_with_scopes(user_id)
     nextcloud_host = get_settings().nextcloud_host
-    if (
-        existing
-        and nextcloud_host
-        and await storage.remove_app_password_if_rejected(user_id, nextcloud_host)
-    ):
-        invalidate_scope_cache(user_id)
-        return None
-    return existing
+    if not nextcloud_host:
+        return "unknown"
+    return await storage.check_app_password(
+        nextcloud_host, app_data, timeout=_INTERACTIVE_CHECK_TIMEOUT
+    )
 
 
 def register_auth_tools(mcp: MCPServer) -> None:
@@ -105,8 +114,17 @@ def register_auth_tools(mcp: MCPServer) -> None:
 
         storage = await get_shared_storage()
 
-        # Check if already provisioned
-        existing = await _usable_app_password(storage, user_id)
+        # Check if already provisioned. A password Nextcloud rejects is removed
+        # here, not in nc_auth_check_status (read-only), so that a fresh Login
+        # Flow can start. The delete only matches the ciphertext that was
+        # checked; if another password was stored meanwhile, that one is
+        # reported instead.
+        existing = await storage.get_app_password_with_scopes(user_id)
+        if existing and await _check_stored_password(storage, existing) == "rejected":
+            await storage.delete_app_password(
+                user_id, encrypted_password=existing["encrypted_password"]
+            )
+            existing = await storage.get_app_password_with_scopes(user_id)
         if existing:
             return ProvisionAccessResponse(
                 status="already_provisioned",
@@ -286,7 +304,21 @@ def register_auth_tools(mcp: MCPServer) -> None:
                 success=False,
             )
         if not session:
-            existing = await _usable_app_password(storage, user_id)
+            existing = await storage.get_app_password_with_scopes(user_id)
+            if (
+                existing
+                and await _check_stored_password(storage, existing) == "rejected"
+            ):
+                return ProvisionStatusResponse(
+                    status="revoked",
+                    message=(
+                        "Nextcloud no longer accepts the stored app password "
+                        "(revoked in Nextcloud). Call nc_auth_provision_access "
+                        "to log in again."
+                    ),
+                    user_id=user_id,
+                    username=existing.get("username"),
+                )
             if existing:
                 return ProvisionStatusResponse(
                     status="provisioned",

@@ -40,7 +40,7 @@ import sqlite3
 import time
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 import httpx2
@@ -50,7 +50,12 @@ from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
+from nextcloud_mcp_server.auth.scope_cache import invalidate_scope_cache
+from nextcloud_mcp_server.client.ocs import (
+    OCS_REQUEST_HEADERS,
+    OCS_STATUS_UNAUTHENTICATED,
+    parse_ocs_envelope,
+)
 from nextcloud_mcp_server.config import (
     cfg,
     get_database_url,
@@ -67,6 +72,12 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_db_connect
 
 logger = logging.getLogger(__name__)
+
+#: Outcome of ``RefreshTokenStorage.check_app_password``.
+AppPasswordCheck = Literal["valid", "rejected", "unknown"]
+
+#: Default wait for Nextcloud when checking a stored app password.
+APP_PASSWORD_CHECK_TIMEOUT = 10.0
 
 
 # Stable 64-bit signed integer used for the Postgres advisory-lock that
@@ -1960,15 +1971,22 @@ class RefreshTokenStorage:
             logger.error("Failed to decrypt app password for user %s: %s", user_id, e)
             return None
 
-    async def delete_app_password(self, user_id: str) -> bool:
+    async def delete_app_password(
+        self, user_id: str, encrypted_password: bytes | None = None
+    ) -> bool:
         """
         Delete app password for a user.
 
         Args:
             user_id: Nextcloud user ID
+            encrypted_password: Delete only if the stored row still holds this
+                ciphertext (``encrypted_password`` from
+                ``get_app_password_with_scopes``). A password stored in the
+                meantime, e.g. by a Login Flow completing while the old one was
+                being checked, is a different ciphertext and stays.
 
         Returns:
-            True if password was deleted, False if not found
+            True if password was deleted, False if not found or replaced
         """
         if not self._initialized:
             await self.initialize()
@@ -1976,12 +1994,23 @@ class RefreshTokenStorage:
         start_time = time.time()
         try:
             async with self._db() as db:
-                cursor = await db.execute(
-                    "DELETE FROM app_passwords WHERE user_id = ?",
-                    (user_id,),
-                )
+                if encrypted_password is None:
+                    cursor = await db.execute(
+                        "DELETE FROM app_passwords WHERE user_id = ?",
+                        (user_id,),
+                    )
+                else:
+                    cursor = await db.execute(
+                        "DELETE FROM app_passwords"
+                        " WHERE user_id = ? AND encrypted_password = ?",
+                        (user_id, encrypted_password),
+                    )
                 await db.commit()
                 deleted = cursor.rowcount > 0
+            if deleted:
+                # Every delete path clears the cached scopes, including the
+                # startup/periodic sweep, so they never outlive the grant.
+                invalidate_scope_cache(user_id)
 
             duration = time.time() - start_time
             record_db_operation(self._dialect, "delete", duration, "success")
@@ -2023,19 +2052,84 @@ class RefreshTokenStorage:
         logger.debug("Found %s users with app passwords", len(user_ids))
         return user_ids
 
-    async def remove_app_password_if_rejected(
-        self, user_id: str, nextcloud_host: str
-    ) -> bool:
-        """
-        Validate one stored app password against Nextcloud, removing it if rejected.
+    async def check_app_password(
+        self,
+        nextcloud_host: str,
+        app_data: dict[str, Any],
+        timeout: float = APP_PASSWORD_CHECK_TIMEOUT,
+    ) -> AppPasswordCheck:
+        """Ask Nextcloud whether a stored app password still works.
 
-        Only 401/403 count as a rejection. Anything else, including throttling
-        (429) and network errors, says nothing about the password and leaves it
-        in place.
+        Changes nothing. ``"rejected"`` only for HTTP 401 with OCS status 997,
+        Nextcloud's own answer to credentials it does not accept. Everything
+        else gives ``"unknown"`` and must not cost the user their password:
+
+        - a 401 or 403 without that envelope (a reverse proxy, WAF or geo-block
+          in front of Nextcloud), 403 from Nextcloud, throttling, server and
+          network errors;
+        - a row without a stored loginName. Nextcloud keys app-password auth on
+          the loginName, so probing with the UID would reject a working
+          password of every user whose loginName differs from the UID (#980).
+
+        Args:
+            nextcloud_host: Nextcloud base URL
+            app_data: Result of ``get_app_password_with_scopes``
+            timeout: Seconds to wait for Nextcloud
+
+        Returns:
+            ``"valid"``, ``"rejected"`` or ``"unknown"``
+        """
+        login_name = app_data.get("username")
+        if not login_name:
+            return "unknown"
+        try:
+            async with nextcloud_httpx_client(
+                base_url=nextcloud_host,
+                auth=httpx2.BasicAuth(login_name, app_data["app_password"]),
+                timeout=timeout,
+            ) as client:
+                response = await client.get(
+                    "/ocs/v2.php/cloud/user",
+                    headers=dict(OCS_REQUEST_HEADERS),
+                )
+        except Exception as e:
+            logger.warning("Could not validate app password of %s: %s", login_name, e)
+            return "unknown"
+
+        if response.is_success:
+            return "valid"
+        if response.status_code == 401:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if parse_ocs_envelope(payload).status_code == OCS_STATUS_UNAUTHENTICATED:
+                return "rejected"
+        logger.info(
+            "App password of %s not validated (HTTP %s), keeping it",
+            login_name,
+            response.status_code,
+        )
+        return "unknown"
+
+    async def remove_app_password_if_rejected(
+        self,
+        user_id: str,
+        nextcloud_host: str,
+        app_data: dict[str, Any] | None = None,
+        timeout: float = APP_PASSWORD_CHECK_TIMEOUT,
+    ) -> bool:
+        """Validate one stored app password, removing it if Nextcloud rejects it.
+
+        See ``check_app_password`` for what counts as a rejection. The delete is
+        conditional on the ciphertext that was checked, so a password stored
+        while the check was in flight is kept.
 
         Args:
             user_id: MCP user ID
             nextcloud_host: Nextcloud base URL
+            app_data: Result of ``get_app_password_with_scopes`` if already read
+            timeout: Seconds to wait for Nextcloud
 
         Returns:
             True if the password was rejected and removed
@@ -2044,44 +2138,22 @@ class RefreshTokenStorage:
             await self.initialize()
 
         try:
-            app_data = await self.get_app_password_with_scopes(user_id)
+            if app_data is None:
+                app_data = await self.get_app_password_with_scopes(user_id)
             if not app_data:
                 return False
-
-            app_password = app_data["app_password"]
-            # Authenticate as the stored loginName, not the UID: Nextcloud
-            # keys app-password auth on the loginName, which differs from
-            # the UID for OIDC-provisioned users. Using the UID here would
-            # 401 a *valid* password and wrongly delete it. Falls back to
-            # the UID for legacy rows without a stored loginName.
-            login_name = app_data.get("username") or user_id
-
-            async with nextcloud_httpx_client(
-                base_url=nextcloud_host,
-                auth=httpx2.BasicAuth(login_name, app_password),
-                timeout=10.0,
-            ) as client:
-                response = await client.get(
-                    "/ocs/v2.php/cloud/user",
-                    headers=dict(OCS_REQUEST_HEADERS),
-                )
-
-            if response.status_code in (401, 403):
-                logger.info(
-                    "App password for %s is invalid (HTTP %s), removing",
-                    user_id,
-                    response.status_code,
-                )
-                await self.delete_app_password(user_id)
-                return True
-
-            logger.debug(
-                "App password for %s validated (HTTP %s)",
-                user_id,
-                response.status_code,
+            check = await self.check_app_password(nextcloud_host, app_data, timeout)
+            if check != "rejected":
+                return False
+            removed = await self.delete_app_password(
+                user_id, encrypted_password=app_data["encrypted_password"]
             )
-            return False
-
+            logger.info(
+                "App password for %s rejected by Nextcloud, %s",
+                user_id,
+                "removed" if removed else "already replaced",
+            )
+            return removed
         except Exception as e:
             logger.warning("Could not validate app password for %s: %s", user_id, e)
             return False
@@ -2091,7 +2163,8 @@ class RefreshTokenStorage:
         Validate stored app passwords against Nextcloud and remove invalid ones.
 
         Makes a lightweight OCS request for each stored user to check if credentials
-        are still valid. Removes entries that return 401/403.
+        are still valid. Removes entries Nextcloud rejects (see
+        ``check_app_password``); rows without a stored loginName are kept.
 
         Args:
             nextcloud_host: Nextcloud base URL
@@ -2217,8 +2290,8 @@ class RefreshTokenStorage:
             user_id: MCP user ID
 
         Returns:
-            Dict with keys: app_password, scopes, username, created_at, updated_at
-            or None if not found
+            Dict with keys: app_password, encrypted_password, scopes, username,
+            created_at, updated_at, or None if not found
         """
         if not self._initialized:
             await self.initialize()
@@ -2256,6 +2329,9 @@ class RefreshTokenStorage:
 
             return {
                 "app_password": decrypted_password,
+                # Opaque; identifies this exact stored password for a
+                # conditional delete_app_password.
+                "encrypted_password": encrypted_password,
                 "scopes": scopes,
                 "username": username,
                 "created_at": created_at,

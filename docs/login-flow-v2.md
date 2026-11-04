@@ -490,7 +490,7 @@ With an **external** IdP, `NEXTCLOUD_PUBLIC_ISSUER_URL` points at the IdP (it do
 
 ### Stored app password rejected by Nextcloud (401)
 
-The user revoked it from **Settings → Security → Devices & Sessions**. `nc_auth_check_status` and `nc_auth_provision_access` validate the stored password against Nextcloud and remove it on 401/403: the status then reads `not_initiated`, and provisioning starts a fresh Login Flow. Throttling (429) and network errors leave the password in place.
+The user revoked it from **Settings → Security → Devices & Sessions**. `nc_auth_check_status` and `nc_auth_provision_access` validate the stored password against Nextcloud. On a rejection (HTTP 401 with OCS status 997) the status reads `revoked`, and `nc_auth_provision_access` removes the password and starts a fresh Login Flow; `nc_auth_check_status` stays read-only. A 401 or 403 without that OCS answer (e.g. from a reverse proxy), throttling (429), network errors and passwords stored without a loginName leave the password in place. Other tools still fail with 401 until one of the two auth tools is called.
 
 ### `cryptography.fernet.InvalidToken` on startup
 
