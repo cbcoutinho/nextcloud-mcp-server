@@ -40,6 +40,25 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
+async def _usable_app_password(storage, user_id: str) -> dict | None:
+    """Return the stored grant, unless Nextcloud no longer accepts it.
+
+    A user can revoke an app password in Nextcloud at any time. Reporting such a
+    grant as provisioned leaves the user without a login URL while every tool
+    fails with 401, so a rejected password is removed here and counts as absent.
+    """
+    existing = await storage.get_app_password_with_scopes(user_id)
+    nextcloud_host = get_settings().nextcloud_host
+    if (
+        existing
+        and nextcloud_host
+        and await storage.remove_app_password_if_rejected(user_id, nextcloud_host)
+    ):
+        invalidate_scope_cache(user_id)
+        return None
+    return existing
+
+
 def register_auth_tools(mcp: MCPServer) -> None:
     """Register Login Flow v2 auth tools with the MCP server."""
 
@@ -87,7 +106,7 @@ def register_auth_tools(mcp: MCPServer) -> None:
         storage = await get_shared_storage()
 
         # Check if already provisioned
-        existing = await storage.get_app_password_with_scopes(user_id)
+        existing = await _usable_app_password(storage, user_id)
         if existing:
             return ProvisionAccessResponse(
                 status="already_provisioned",
@@ -267,7 +286,7 @@ def register_auth_tools(mcp: MCPServer) -> None:
                 success=False,
             )
         if not session:
-            existing = await storage.get_app_password_with_scopes(user_id)
+            existing = await _usable_app_password(storage, user_id)
             if existing:
                 return ProvisionStatusResponse(
                     status="provisioned",

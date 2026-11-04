@@ -226,3 +226,39 @@ async def test_cleanup_removes_genuinely_invalid_password(temp_storage, mocker):
 
     assert removed == ["alice"]
     assert await temp_storage.get_app_password("alice") is None
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 200])
+async def test_validation_keeps_password_unless_rejected(
+    temp_storage, mocker, status_code
+):
+    """Throttling and server errors say nothing about the password."""
+    await temp_storage.store_app_password_with_scopes(
+        "alice", _APP_PW, username="alice"
+    )
+    fake = _FakeAsyncClient(status_code=status_code)
+    mocker.patch("nextcloud_mcp_server.auth.storage.httpx2.AsyncClient", fake)
+
+    removed = await temp_storage.remove_app_password_if_rejected(
+        "alice", "https://cloud.example.org"
+    )
+
+    assert removed is False
+    assert await temp_storage.get_app_password("alice") == _APP_PW
+
+
+async def test_validation_keeps_password_on_network_error(temp_storage, mocker):
+    await temp_storage.store_app_password_with_scopes(
+        "alice", _APP_PW, username="alice"
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.storage.nextcloud_httpx_client",
+        side_effect=OSError("connection refused"),
+    )
+
+    removed = await temp_storage.remove_app_password_if_rejected(
+        "alice", "https://cloud.example.org"
+    )
+
+    assert removed is False
+    assert await temp_storage.get_app_password("alice") == _APP_PW

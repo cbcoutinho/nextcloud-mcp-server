@@ -490,7 +490,7 @@ With an **external** IdP, `NEXTCLOUD_PUBLIC_ISSUER_URL` points at the IdP (it do
 
 ### Stored app password rejected by Nextcloud (401)
 
-The user revoked it from **Settings → Security → Devices & Sessions**. Delete the row from the storage DB (or call `nc_auth_provision_access` again) to trigger a fresh Login Flow.
+The user revoked it from **Settings → Security → Devices & Sessions**. `nc_auth_check_status` and `nc_auth_provision_access` validate the stored password against Nextcloud and remove it on 401/403: the status then reads `not_initiated`, and provisioning starts a fresh Login Flow. Throttling (429) and network errors leave the password in place.
 
 ### `cryptography.fernet.InvalidToken` on startup
 

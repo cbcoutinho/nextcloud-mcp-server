@@ -2023,6 +2023,69 @@ class RefreshTokenStorage:
         logger.debug("Found %s users with app passwords", len(user_ids))
         return user_ids
 
+    async def remove_app_password_if_rejected(
+        self, user_id: str, nextcloud_host: str
+    ) -> bool:
+        """
+        Validate one stored app password against Nextcloud, removing it if rejected.
+
+        Only 401/403 count as a rejection. Anything else, including throttling
+        (429) and network errors, says nothing about the password and leaves it
+        in place.
+
+        Args:
+            user_id: MCP user ID
+            nextcloud_host: Nextcloud base URL
+
+        Returns:
+            True if the password was rejected and removed
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            app_data = await self.get_app_password_with_scopes(user_id)
+            if not app_data:
+                return False
+
+            app_password = app_data["app_password"]
+            # Authenticate as the stored loginName, not the UID: Nextcloud
+            # keys app-password auth on the loginName, which differs from
+            # the UID for OIDC-provisioned users. Using the UID here would
+            # 401 a *valid* password and wrongly delete it. Falls back to
+            # the UID for legacy rows without a stored loginName.
+            login_name = app_data.get("username") or user_id
+
+            async with nextcloud_httpx_client(
+                base_url=nextcloud_host,
+                auth=httpx2.BasicAuth(login_name, app_password),
+                timeout=10.0,
+            ) as client:
+                response = await client.get(
+                    "/ocs/v2.php/cloud/user",
+                    headers=dict(OCS_REQUEST_HEADERS),
+                )
+
+            if response.status_code in (401, 403):
+                logger.info(
+                    "App password for %s is invalid (HTTP %s), removing",
+                    user_id,
+                    response.status_code,
+                )
+                await self.delete_app_password(user_id)
+                return True
+
+            logger.debug(
+                "App password for %s validated (HTTP %s)",
+                user_id,
+                response.status_code,
+            )
+            return False
+
+        except Exception as e:
+            logger.warning("Could not validate app password for %s: %s", user_id, e)
+            return False
+
     async def cleanup_invalid_app_passwords(self, nextcloud_host: str) -> list[str]:
         """
         Validate stored app passwords against Nextcloud and remove invalid ones.
@@ -2046,46 +2109,8 @@ class RefreshTokenStorage:
         removed: list[str] = []
 
         async def _validate_user(user_id: str) -> None:
-            try:
-                app_data = await self.get_app_password_with_scopes(user_id)
-                if not app_data:
-                    return
-
-                app_password = app_data["app_password"]
-                # Authenticate as the stored loginName, not the UID: Nextcloud
-                # keys app-password auth on the loginName, which differs from
-                # the UID for OIDC-provisioned users. Using the UID here would
-                # 401 a *valid* password and wrongly delete it. Falls back to
-                # the UID for legacy rows without a stored loginName.
-                login_name = app_data.get("username") or user_id
-
-                async with nextcloud_httpx_client(
-                    base_url=nextcloud_host,
-                    auth=httpx2.BasicAuth(login_name, app_password),
-                    timeout=10.0,
-                ) as client:
-                    response = await client.get(
-                        "/ocs/v2.php/cloud/user",
-                        headers=dict(OCS_REQUEST_HEADERS),
-                    )
-
-                if response.status_code in (401, 403):
-                    logger.info(
-                        "App password for %s is invalid (HTTP %s), removing",
-                        user_id,
-                        response.status_code,
-                    )
-                    await self.delete_app_password(user_id)
-                    removed.append(user_id)
-                else:
-                    logger.debug(
-                        "App password for %s validated (HTTP %s)",
-                        user_id,
-                        response.status_code,
-                    )
-
-            except Exception as e:
-                logger.warning("Could not validate app password for %s: %s", user_id, e)
+            if await self.remove_app_password_if_rejected(user_id, nextcloud_host):
+                removed.append(user_id)
 
         async with anyio.create_task_group() as tg:
             for user_id in user_ids:

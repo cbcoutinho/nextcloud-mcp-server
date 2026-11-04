@@ -255,6 +255,96 @@ def test_all_supported_scopes():
     assert "semantic.read" in ALL_SUPPORTED_SCOPES
 
 
+# ── Revoked app passwords ──
+
+
+def _storage_with_grant(mocker, rejected: bool):
+    """A stored grant for alice that Nextcloud either accepts or rejects."""
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(nextcloud_host="https://nc", nextcloud_browser_url=None),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    storage = MagicMock()
+    storage.get_login_flow_session = AsyncMock(return_value=None)
+    storage.store_login_flow_session = AsyncMock()
+    storage.get_app_password_with_scopes = AsyncMock(
+        return_value={"app_password": "pw", "username": "alice", "scopes": None}
+    )
+    storage.remove_app_password_if_rejected = AsyncMock(return_value=rejected)
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    return storage
+
+
+async def test_check_status_reports_rejected_password_as_not_initiated(mocker):
+    """A password revoked in Nextcloud must not read as provisioned."""
+    check = _capture_registered_tools()["nc_auth_check_status"]
+    storage = _storage_with_grant(mocker, rejected=True)
+
+    response = await check(MagicMock())
+
+    assert response.status == "not_initiated"
+    storage.remove_app_password_if_rejected.assert_awaited_once_with(
+        "alice", "https://nc"
+    )
+
+
+async def test_check_status_keeps_accepted_password(mocker):
+    check = _capture_registered_tools()["nc_auth_check_status"]
+    _storage_with_grant(mocker, rejected=False)
+
+    response = await check(MagicMock())
+
+    assert response.status == "provisioned"
+
+
+async def test_provision_starts_new_flow_after_rejected_password(mocker):
+    """Without this a revoked password leaves the user with no login URL at all."""
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+    storage = _storage_with_grant(mocker, rejected=True)
+    flow_client = AsyncMock()
+    flow_client.initiate = AsyncMock(
+        return_value=MagicMock(
+            poll_token="tok",
+            poll_endpoint="https://nc/login/v2/poll",
+            login_url="https://nc/login/v2/flow",
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.auth.elicitation.present_login_url",
+        AsyncMock(return_value="message_only"),
+    )
+
+    response = await provision(MagicMock())
+
+    assert response.status != "already_provisioned"
+    assert response.login_url == "https://nc/login/v2/flow"
+    storage.store_login_flow_session.assert_awaited_once()
+
+
+async def test_provision_keeps_accepted_password(mocker):
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+    _storage_with_grant(mocker, rejected=False)
+
+    response = await provision(MagicMock())
+
+    assert response.status == "already_provisioned"
+
+
 # ── Provisioning defaults ──
 
 
