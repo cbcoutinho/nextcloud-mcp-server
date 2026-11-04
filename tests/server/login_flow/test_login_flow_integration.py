@@ -574,19 +574,13 @@ class TestLoginFlowCookbook:
         logger.info("Created recipe: %s", recipe_id)
 
         try:
-            # Get recipe (may fail due to server-side Pydantic bug with recipeYield=None)
+            # Get recipe
             get_result = await nc_mcp_login_flow_client.call_tool(
                 "nc_cookbook_get_recipe", {"recipe_id": recipe_id}
             )
-            if get_result.is_error:
-                error_text = get_result.content[0].text
-                if "recipeYield" in error_text:
-                    logger.warning(
-                        "Known server bug: Recipe.recipeYield validation: %s",
-                        error_text,
-                    )
-                else:
-                    raise AssertionError(f"Get recipe failed: {error_text}")
+            assert get_result.is_error is False, (
+                f"Get recipe failed: {get_result.content[0].text}"
+            )
 
         finally:
             if recipe_id:
