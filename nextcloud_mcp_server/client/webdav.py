@@ -30,6 +30,20 @@ logger = logging.getLogger(__name__)
 _XML_CONTENT_TYPE = "text/xml"
 
 
+def _folder_size(value: str | None) -> int | None:
+    """The recursive size of a folder in bytes, from its ``oc:size`` property.
+
+    Nextcloud serves this from its file cache without walking the tree. A folder
+    it has not computed yet carries a negative marker (``FileInfo::SPACE_*``),
+    which must not reach callers as a size: ``None`` means unknown.
+    """
+    try:
+        size = int(value or "")
+    except ValueError:
+        return None
+    return size if size >= 0 else None
+
+
 class OversizeDownload(Exception):
     """A streamed download exceeded its byte budget and was aborted.
 
@@ -706,6 +720,7 @@ class WebDAVClient(BaseNextcloudClient):
         # oc:fileid is requested alongside the DAV properties because it is the
         # only stable identity a browser link can use (/index.php/f/<id>); paths
         # move and rename. The search PROPFINDs below already ask for it.
+        # oc:size is the only size a folder has: getcontentlength is file-only.
         propfind_body = """<?xml version="1.0"?>
         <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
             <d:prop>
@@ -716,6 +731,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:getetag/>
                 <d:resourcetype/>
                 <oc:fileid/>
+                <oc:size/>
             </d:prop>
         </d:propfind>"""
 
@@ -809,7 +825,13 @@ class WebDAVClient(BaseNextcloudClient):
                         "name": name,
                         "path": f"{path.rstrip('/')}/{name}" if path else name,
                         "is_directory": is_directory,
-                        "size": size if not is_directory else None,
+                        "size": (
+                            _folder_size(
+                                prop.findtext(".//{http://owncloud.org/ns}size")
+                            )
+                            if is_directory
+                            else size
+                        ),
                         "content_type": content_type,
                         "last_modified": modified,
                         "etag": etag,
@@ -1349,6 +1371,7 @@ class WebDAVClient(BaseNextcloudClient):
                 "getlastmodified",
                 "resourcetype",
                 "getetag",
+                "size",
             ]
 
         # Build the SEARCH request XML
@@ -1786,11 +1809,14 @@ class WebDAVClient(BaseNextcloudClient):
                 elif tag == "permissions":
                     item["permissions"] = value
                 elif tag == "size":
-                    # oc:size includes folder sizes
-                    item["total_size"] = int(value) if value else 0
+                    # getcontentlength is file-only; a folder has only oc:size.
+                    item["total_size"] = _folder_size(value)
                 else:
                     # Store other properties as-is
                     item[tag] = value
+
+            if item.get("is_directory"):
+                item["size"] = item.get("total_size")
 
             items.append(item)
 
@@ -1898,6 +1924,7 @@ class WebDAVClient(BaseNextcloudClient):
             "resourcetype",
             "getetag",
             "fileid",
+            "size",
         ]
         return where_conditions, properties
 
@@ -1941,6 +1968,7 @@ class WebDAVClient(BaseNextcloudClient):
             "getetag",
             "fileid",
             "favorite",
+            "size",
         ]
 
         return await self.search_files(
@@ -1986,6 +2014,7 @@ class WebDAVClient(BaseNextcloudClient):
             "getetag",
             "fileid",
             "tags",
+            "size",
         ]
 
         return await self.search_files(

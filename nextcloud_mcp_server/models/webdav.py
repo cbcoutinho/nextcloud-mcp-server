@@ -21,7 +21,11 @@ class FileInfo(BaseModel):
     path: str = Field(description="Full path")
     is_directory: bool = Field(description="Whether this is a directory")
     size: Optional[int] = Field(
-        None, description="File size in bytes (None for directories)"
+        None,
+        description=(
+            "Size in bytes. For a directory, the size of everything inside it; "
+            "None if Nextcloud has not computed it yet."
+        ),
     )
     content_type: Optional[str] = Field(None, description="MIME content type")
     last_modified: Optional[str] = Field(
@@ -59,7 +63,13 @@ class DirectoryListing(BaseResponse):
     total_count: int = Field(description="Total number of items")
     directories_count: int = Field(description="Number of directories")
     files_count: int = Field(description="Number of files")
-    total_size: int = Field(default=0, description="Total size of all files in bytes")
+    total_size: int = Field(
+        default=0,
+        description=(
+            "Size of the listed entries in bytes, including everything inside "
+            "subdirectories. A subdirectory of unknown size counts as 0."
+        ),
+    )
 
 
 class ReadFileResponse(BaseResponse):

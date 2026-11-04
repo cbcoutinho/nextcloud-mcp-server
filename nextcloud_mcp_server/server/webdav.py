@@ -442,7 +442,8 @@ def configure_webdav_tools(mcp: MCPServer):
             path: Directory path to list (empty string for root directory)
 
         Returns:
-            DirectoryListing with files, total_count, directories_count, files_count, and total_size
+            DirectoryListing with files, total_count, directories_count, files_count, and total_size.
+            A folder's size covers everything inside it, and so does total_size.
         """
         client = await get_client(ctx)
 
@@ -466,7 +467,7 @@ def configure_webdav_tools(mcp: MCPServer):
         # Calculate metadata
         directories_count = sum(1 for f in file_infos if f.is_directory)
         files_count = sum(1 for f in file_infos if not f.is_directory)
-        total_size = sum(f.size or 0 for f in file_infos if not f.is_directory)
+        total_size = sum(f.size or 0 for f in file_infos)
 
         return DirectoryListing(
             path=path,
@@ -1482,6 +1483,7 @@ def configure_webdav_tools(mcp: MCPServer):
             "getetag",
             "fileid",
             "favorite",
+            "size",
         ]
 
         results = await client.webdav.search_files(

@@ -356,6 +356,32 @@ async def test_list_directory_filters_excluded_children(
     assert [f.path for f in result.files] == ["/Public/visible.md"]
 
 
+async def test_list_directory_total_size_includes_subfolders(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    """total_size answers "how big is this folder", which subfolders are part of;
+    one whose size Nextcloud has not computed yet counts as 0."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.list_directory = AsyncMock(
+        return_value=[
+            {"path": "/d/a.txt", "name": "a.txt", "is_directory": False, "size": 10},
+            {"path": "/d/sub", "name": "sub", "is_directory": True, "size": 200},
+            {"path": "/d/new", "name": "new", "is_directory": True, "size": None},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_list_directory"].fn
+    result = await fn(path="/d", ctx=_mock_ctx(fake_client))
+
+    assert result.total_size == 210
+    assert {f.name: f.size for f in result.files} == {
+        "a.txt": 10,
+        "sub": 200,
+        "new": None,
+    }
+
+
 async def test_list_directory_surfaces_etag_on_fileinfo(
     webdav_tools, fake_client, patch_get_client, patch_excluded
 ):
