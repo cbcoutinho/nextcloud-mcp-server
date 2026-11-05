@@ -2539,7 +2539,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 # Store token broker in oauth_context for management API (revoke endpoint)
                 if hasattr(app.state, "oauth_context"):
-                    app.state.oauth_context["token_broker"] = token_broker  # ty: ignore[invalid-assignment]  # Starlette app.state bag is heterogeneous; the inferred value union is too narrow
+                    app.state.oauth_context["token_broker"] = token_broker
                     logger.info(
                         "Token broker added to oauth_context for management API"
                     )
