@@ -21,8 +21,20 @@ logger = logging.getLogger(__name__)
 class SessionAuthBackend(AuthenticationBackend):
     """Authentication backend using signed session cookies.
 
-    For BasicAuth mode: Always authenticates as the configured user.
+    For single-user BasicAuth: authenticates as the one configured user.
+    For multi-user BasicAuth: denies — see below.
     For OAuth mode: Checks for valid session cookie with stored refresh token.
+
+    Why multi-user BasicAuth is denied rather than passed through:
+        ``/app`` is a *session* UI, and that mode has no session concept —
+        callers authenticate per request with their own credentials against
+        ``/mcp``. The pass-through branch used to hand every caller
+        ``["authenticated", "admin"]`` as ``cfg("NEXTCLOUD_USERNAME", "admin")``.
+        In this mode ``NEXTCLOUD_USERNAME`` is *forbidden* config (startup
+        hard-fails via ``config_validators``), so that resolved to a literal
+        ``"admin"`` — granting anyone who could reach the port an admin UI,
+        attributed to a user who may not exist. Nothing legitimate was served
+        by it, so it fails closed.
 
     Behavior note — silent invalidation on refresh-token TTL expiry:
         The OAuth path requires *both* a live ``browser_sessions`` row and a
@@ -37,13 +49,16 @@ class SessionAuthBackend(AuthenticationBackend):
         the cleanup invariant on logout (PR #758 round-4 review medium 2).
     """
 
-    def __init__(self, oauth_enabled: bool = False):
+    def __init__(self, oauth_enabled: bool = False, multi_user_basic: bool = False):
         """Initialize session authentication backend.
 
         Args:
             oauth_enabled: Whether OAuth mode is enabled
+            multi_user_basic: Whether this is multi-user BasicAuth pass-through,
+                which has no browser session and so gets no ``/app`` access.
         """
         self.oauth_enabled = oauth_enabled
+        self.multi_user_basic = multi_user_basic
 
     async def authenticate(
         self, conn: HTTPConnection
@@ -60,8 +75,20 @@ class SessionAuthBackend(AuthenticationBackend):
         Returns:
             Tuple of (credentials, user) if authenticated, None otherwise
         """
-        # BasicAuth mode: Always authenticated as the configured user
         if not self.oauth_enabled:
+            # Multi-user BasicAuth has no browser session to authenticate, and
+            # no configured identity to fall back on. Deny rather than invent one.
+            if self.multi_user_basic:
+                logger.info(
+                    "Denying /app access: multi-user BasicAuth mode has no "
+                    "browser session (use /mcp with per-request credentials)"
+                )
+                return None
+
+            # Single-user BasicAuth: the server holds exactly one identity and
+            # every request already acts as it, so there is nothing to
+            # distinguish callers by. Startup warns that /app is unauthenticated
+            # and must not be exposed beyond loopback.
             username = cfg("NEXTCLOUD_USERNAME", "admin")
             return AuthCredentials(["authenticated", "admin"]), SimpleUser(username)
 
