@@ -29,6 +29,7 @@ from opentelemetry.instrumentation.httpx import (
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import (
@@ -3235,7 +3236,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         app.state.supported_scopes = discover_all_scopes(mcp)
 
     # Add debugging middleware to log Authorization headers and client capabilities
-    @app.middleware("http")
     async def log_auth_headers(request, call_next):
         auth_header = request.headers.get("authorization")
         if request.url.path.startswith("/mcp"):
@@ -3301,12 +3301,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         response = await call_next(request)
         return response
 
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_auth_headers)  # type: ignore[invalid-argument-type]
+
     # Log the inbound User-Agent on management API and webhook receiver routes
     # so we can tell which Astrolabe (or other PHP-side client) build is
     # talking to the backend. Astrolabe sends ``Nextcloud-Astrolabe/<version>``.
     _UA_LOGGED_PATH_PREFIXES = ("/api/v1/", "/webhooks/nextcloud")
 
-    @app.middleware("http")
     async def log_client_user_agent(request, call_next):
         path = request.url.path
         if path.startswith(_UA_LOGGED_PATH_PREFIXES):
@@ -3323,6 +3324,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 },
             )
         return await call_next(request)
+
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_client_user_agent)  # type: ignore[invalid-argument-type]
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector.
     #
@@ -3358,9 +3361,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
 
-        @app.exception_handler(InsufficientScopeError)
-        async def handle_insufficient_scope(request, exc: InsufficientScopeError):
+        async def handle_insufficient_scope(request, exc: Exception):
             """Return 403 with WWW-Authenticate header for scope challenges."""
+            assert isinstance(exc, InsufficientScopeError)  # registered for this type
             resource_url = (
                 settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
@@ -3381,6 +3384,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 },
             )
 
+        app.add_exception_handler(InsufficientScopeError, handle_insufficient_scope)
         logger.info("WWW-Authenticate scope challenge handler enabled")
 
     # Apply BasicAuthMiddleware for multi-user BasicAuth pass-through mode
