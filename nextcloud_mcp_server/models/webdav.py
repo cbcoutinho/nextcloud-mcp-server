@@ -24,7 +24,8 @@ class FileInfo(BaseModel):
         None,
         description=(
             "Size in bytes. For a directory, the size of everything inside it; "
-            "None if Nextcloud has not computed it yet."
+            "None if Nextcloud has not computed it yet, or if the directory "
+            "holds content hidden by an excluded tag."
         ),
     )
     content_type: Optional[str] = Field(None, description="MIME content type")

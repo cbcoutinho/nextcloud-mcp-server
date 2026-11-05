@@ -54,6 +54,7 @@ from nextcloud_mcp_server.models.webdav import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
+    hide_excluded,
     is_path_excluded,
 )
 from nextcloud_mcp_server.server.webdav_image import configure_webdav_image_tools
@@ -456,10 +457,7 @@ def configure_webdav_tools(mcp: MCPServer):
         items = await client.webdav.list_directory(path)
 
         # Filter out child files/folders carrying an excluded tag.
-        if excluded:
-            items = [
-                i for i in items if not is_path_excluded(i.get("path", ""), excluded)
-            ]
+        items = hide_excluded(items, excluded)
 
         # Convert to FileInfo models
         file_infos = [FileInfo(**item) for item in items]
@@ -1494,10 +1492,7 @@ def configure_webdav_tools(mcp: MCPServer):
         )
 
         # Filter out tagged-excluded paths from the result set.
-        if excluded:
-            results = [
-                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
-            ]
+        results = hide_excluded(results, excluded)
 
         # Convert to FileInfo models
         file_infos = [FileInfo(**result) for result in results]
@@ -1550,10 +1545,7 @@ def configure_webdav_tools(mcp: MCPServer):
         results = await client.webdav.find_by_name(
             pattern=pattern, scope=scope, limit=limit
         )
-        if excluded:
-            results = [
-                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
-            ]
+        results = hide_excluded(results, excluded)
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,
@@ -1594,10 +1586,7 @@ def configure_webdav_tools(mcp: MCPServer):
         results = await client.webdav.find_by_type(
             mime_type=mime_type, scope=scope, limit=limit
         )
-        if excluded:
-            results = [
-                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
-            ]
+        results = hide_excluded(results, excluded)
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,
@@ -1635,10 +1624,7 @@ def configure_webdav_tools(mcp: MCPServer):
                 f"Access denied: scope {scope!r} is tagged with an excluded tag"
             )
         results = await client.webdav.list_favorites(scope=scope, limit=limit)
-        if excluded:
-            results = [
-                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
-            ]
+        results = hide_excluded(results, excluded)
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,
@@ -1959,10 +1945,7 @@ def configure_webdav_tools(mcp: MCPServer):
         # A tag can be attached to an excluded file; the listing must not
         # surface it any more than a directory listing would.
         excluded = await get_excluded_file_paths(client.webdav)
-        if excluded:
-            files = [
-                f for f in files if not is_path_excluded(f.get("path", ""), excluded)
-            ]
+        files = hide_excluded(files, excluded)
 
         return FilesByTagResponse(
             tag=tag,
