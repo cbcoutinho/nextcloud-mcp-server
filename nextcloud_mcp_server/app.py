@@ -3361,7 +3361,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
 
-        async def handle_insufficient_scope(request, exc: Exception):
+        def handle_insufficient_scope(request, exc: Exception):
             """Return 403 with WWW-Authenticate header for scope challenges."""
             assert isinstance(exc, InsufficientScopeError)  # registered for this type
             resource_url = (
