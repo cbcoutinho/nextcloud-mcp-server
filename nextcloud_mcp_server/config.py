@@ -2390,10 +2390,11 @@ def cfg_bool(key: str, default: bool = False) -> bool:
     syntax, which only recognises lowercase ``true``/``false``, so
     ``SOME_FLAG=False`` survives as the *string* ``"False"`` — and
     ``bool("False")`` is ``True``, inverting the operator's intent. This accepts
-    the spellings a human plausibly types (``true``/``1``/``yes``/``on``, any
-    case) and treats everything else as false.
+    the spellings a human plausibly types (``true``/``1``/``yes``/``on`` and
+    ``false``/``0``/``no``/``off``, any case). An unrecognised value yields
+    *default* and logs a warning naming *key* (see ``parse_bool``).
     """
-    return parse_bool(cfg(key, default), default)
+    return parse_bool(cfg(key, default), default, name=key)
 
 
 def set_override(key: str, value) -> None:

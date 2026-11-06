@@ -174,6 +174,7 @@ def test_portless_loopback_redirect_matches_any_port(host, port):
         ]
     ),
 )
+@example("localhost", 19, "http://{h}:{p}/callback#")  # empty fragment slipped through
 def test_loopback_port_relaxation_is_narrow(host, port, template):
     """Only the port is relaxed; every other component must still match."""
     uri = template.format(h=host, p=port)

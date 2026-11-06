@@ -5,19 +5,24 @@ diverging edge cases (``"1"`` enabling one flag but not another, ``int()`` on a
 ``Retry-After`` HTTP-date raising mid-retry). One definition, one property test.
 """
 
+import logging
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 _TRUE = frozenset({"1", "true", "yes", "on"})
+# "" is an explicit false, not "unset": `FLAG=` in an env file means off.
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
 
-def parse_bool(value: Any, default: bool = False) -> bool:
+def parse_bool(value: Any, default: bool = False, *, name: str = "flag") -> bool:
     """Interpret a flag the way an operator would type it.
 
     Dynaconf only casts lowercase ``true``/``false``, so ``FLAG=False`` arrives
     as the string ``"False"`` and ``bool("False")`` is ``True``. Recognised
-    spellings (any case, surrounding whitespace ignored) map to their meaning;
-    anything else yields *default*.
+    spellings (any case, surrounding whitespace ignored) map to their meaning.
+    ``None`` yields *default*; any other value also yields *default*, with a
+    warning naming *name* so a typo such as ``ture`` is visible.
     """
     if isinstance(value, bool):
         return value
@@ -28,6 +33,14 @@ def parse_bool(value: Any, default: bool = False) -> bool:
         return True
     if word in _FALSE:
         return False
+    logger.warning(
+        "Unrecognised boolean %s=%r; expected one of %s or %s, using %s",
+        name,
+        value,
+        sorted(_TRUE),
+        sorted(_FALSE - {""}),
+        default,
+    )
     return default
 
 

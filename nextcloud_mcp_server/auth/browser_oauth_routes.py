@@ -127,7 +127,9 @@ def _should_use_secure_cookies() -> bool:
     # An unset or unrecognised value (``bool("false")`` is True, so never trust
     # truthiness) falls back to the scheme rather than guessing (round-6 review).
     served_over_https = (settings.nextcloud_mcp_server_url or "").startswith("https://")
-    return parse_bool(settings.cookie_secure, default=served_over_https)
+    return parse_bool(
+        settings.cookie_secure, default=served_over_https, name="COOKIE_SECURE"
+    )
 
 
 async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:

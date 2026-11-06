@@ -85,3 +85,9 @@ def test_retry_after_reads_delta_seconds(seconds, pad):
 def test_retry_after_is_positive_or_none(raw):
     result = parse_retry_after(raw)
     assert result is None or (result > 0 and str(result) == raw.strip().lstrip("0"))
+
+
+def test_unrecognised_spelling_is_logged_with_the_setting_name(caplog):
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.utils.parsing"):
+        assert parse_bool("ture", True, name="COOKIE_SECURE") is True
+    assert "COOKIE_SECURE='ture'" in caplog.text
