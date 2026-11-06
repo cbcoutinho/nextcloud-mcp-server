@@ -944,9 +944,15 @@ class CalendarClient:
         # ponytail: ISO strings sort lexicographically, so all-day dates and
         # differing UTC offsets order approximately; parse to instants if that matters.
         result.sort(key=lambda e: e.get("start_datetime", ""))
-        logger.debug(
-            "Found %d events, returning %d", len(result), min(len(result), limit)
-        )
+        if len(result) > limit:
+            # Leaves a trace when a cap bites -- notably BULK_EVENT_LIMIT, whose
+            # callers have no ``truncated`` field to report it through.
+            logger.info(
+                "Calendar %s: %d events matched, keeping the earliest %d",
+                calendar_name,
+                len(result),
+                limit,
+            )
         return result[:limit]
 
     def _expand_event_occurrences(

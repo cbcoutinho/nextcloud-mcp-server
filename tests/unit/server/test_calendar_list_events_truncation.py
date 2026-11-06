@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
 
@@ -61,3 +62,8 @@ async def test_truncated_flags_a_cut_listing(list_events, scope, available, trun
     assert result.truncated is truncated
     assert result.total_found == 3
     assert [e.uid for e in result.events] == ["e0", "e1", "e2"]
+
+
+async def test_negative_limit_is_rejected(list_events):
+    with pytest.raises(ToolError, match="limit"):
+        await list_events(3, limit=-1, calendar_name="personal")

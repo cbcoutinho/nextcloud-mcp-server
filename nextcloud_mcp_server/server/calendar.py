@@ -298,6 +298,8 @@ def configure_calendar_tools(mcp: MCPServer):
             raise ToolError(
                 "calendar_name is required when search_all_calendars is False"
             )
+        if limit < 0:
+            raise ToolError("limit must be 0 or greater")
 
         client = await get_client(ctx)
 
