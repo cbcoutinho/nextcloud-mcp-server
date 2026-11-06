@@ -244,8 +244,9 @@ async def create_case(
     Raises:
         ExportError: invalid name or folder (400), the folder is missing or not
             writable, or Nextcloud refuses the case file (403), a case of that
-            name exists there (409), or Nextcloud is failing (503). When the
-            case file cannot be written, the case folder created for it is
+            name exists there (409), or Nextcloud is failing (503). Any other
+            failure to write the case file is re-raised. Whenever the case
+            file cannot be written, the case folder created for it is
             removed again.
     """
     case_dir = f"{normalize_folder(folder)}/{validate_name(name)}"
@@ -274,22 +275,28 @@ async def create_case(
         result = await nc.webdav.write_file(
             case_file, case.model_dump_json(indent=2).encode(), "application/json"
         )
-    except Exception as e:
+    except BaseException as e:
         # We created case_dir just above (MKCOL 201), so it holds nothing but
         # our failed write. Left behind, it would turn every retry with this
-        # name into "already exists".
-        await _remove_new_case_dir(nc, case_dir)
-        if not isinstance(e, HTTPStatusError):
-            raise
-        _raise_if_unavailable(e, case_file)
-        raise ExportError(
-            f"Nextcloud refused to write {case_file!r} "
-            f"(HTTP {e.response.status_code}) although it created {case_dir!r}: "
-            "check the folder's permissions and any file access rules, and "
-            "that you have accepted the instance's terms of service (until "
-            "then Nextcloud makes your files read-only to apps).",
-            403,
-        ) from e
+        # name into "already exists". Shielded, so a cancelled or timed-out
+        # request cleans up too. If the PUT did land and only the response
+        # was lost, this discards it, which is fine: the caller saw an error
+        # and will retry.
+        with anyio.CancelScope(shield=True):
+            await _remove_new_case_dir(nc, case_dir)
+        if isinstance(e, HTTPStatusError):
+            _raise_if_unavailable(e, case_file)
+            if e.response.status_code in (401, 403):
+                raise ExportError(
+                    f"Nextcloud refused to write {case_file!r} "
+                    f"(HTTP {e.response.status_code}) although it created "
+                    f"{case_dir!r}: check the folder's permissions and any file "
+                    "access rules, and that you have accepted the instance's "
+                    "terms of service (until then Nextcloud makes your files "
+                    "read-only to apps).",
+                    403,
+                ) from e
+        raise
     if result["status_code"] in (412, 423):
         raise ExportError(f"{case_file} already exists", 409)
     file_id = await nc.webdav.get_fileid(case_file)
