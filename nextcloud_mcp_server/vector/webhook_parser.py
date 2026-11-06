@@ -101,14 +101,19 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
     if not isinstance(user_id, str) or not user_id:
         logger.debug("Webhook payload has no usable user uid")
         return None
+    if not isinstance(event_class, str):
+        logger.debug("Webhook payload has a non-string event class")
+        return None
 
     try:
         return _dispatch(event_class, event, user_id, time)
     except (AttributeError, TypeError, ValueError):
         # A body of the wrong shape: ``node``/``card`` not an object, a
-        # non-string path, an unhashable event class. The parsers below do no
-        # I/O, so these can only come from the payload.
-        logger.debug("Webhook %r has a malformed event body", event_class)
+        # non-string path. The parsers below do no I/O, so these can only come
+        # from the payload; exc_info keeps a genuine parser regression visible.
+        logger.debug(
+            "Webhook %r has a malformed event body", event_class, exc_info=True
+        )
         return None
 
 
