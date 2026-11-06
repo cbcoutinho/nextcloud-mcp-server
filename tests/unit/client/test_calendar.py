@@ -1947,6 +1947,16 @@ async def test_get_calendar_events_filters_before_limit(mocker):
     )
     assert [e["uid"] for e in found] == ["w"]
 
+    # min_duration_minutes was accepted by the tool but never applied.
+    long_only = await client.get_calendar_events(
+        "personal", *window, filters={"min_duration_minutes": 61}
+    )
+    assert long_only == []
+    hour_ok = await client.get_calendar_events(
+        "personal", *window, filters={"min_duration_minutes": 60}
+    )
+    assert len(hour_ok) == len(objs)
+
     # Unfiltered, the cut keeps the earliest events, not the first returned.
     earliest = await client.get_calendar_events("personal", *window, limit=3)
     assert [e["uid"] for e in earliest] == ["n3", "n4", "n5"]

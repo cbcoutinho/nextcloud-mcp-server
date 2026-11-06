@@ -251,6 +251,11 @@ class ListEventsResponse(BaseResponse):
     start_date: Optional[str] = Field(None, description="Start date filter applied")
     end_date: Optional[str] = Field(None, description="End date filter applied")
     total_found: int = Field(description="Total number of events found")
+    truncated: bool = Field(
+        False,
+        description="More events matched than `limit`; only the earliest were "
+        "returned. Raise `limit` or narrow the date range to see the rest.",
+    )
     errors: List[CalendarReadError] = Field(
         default_factory=list,
         description="Calendars that could not be read and are missing from events",

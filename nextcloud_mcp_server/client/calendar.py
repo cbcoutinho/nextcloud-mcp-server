@@ -3080,6 +3080,19 @@ class CalendarClient:
                 if search_term not in location:
                     return False
 
+            # Filter by minimum duration. An event without an end is
+            # zero-length; all-day dates parse as midnight, so a one-day
+            # all-day event lasts 1440 minutes.
+            if "min_duration_minutes" in filters:
+                start = dt.datetime.fromisoformat(event["start_datetime"])
+                end = dt.datetime.fromisoformat(
+                    event.get("end_datetime") or event["start_datetime"]
+                )
+                if (end - start) < dt.timedelta(
+                    minutes=filters["min_duration_minutes"]
+                ):
+                    return False
+
             return True
 
         except Exception:

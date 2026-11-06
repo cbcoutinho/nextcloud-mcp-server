@@ -342,6 +342,8 @@ def configure_calendar_tools(mcp: MCPServer):
         if location_contains is not None:
             filters["location_contains"] = location_contains
 
+        # Fetch one past the limit: a surplus event is how we know the listing
+        # was cut, which the response reports as ``truncated``.
         failures: list[dict[str, str]] = []
         if search_all_calendars:
             # Search across all calendars with filters
@@ -349,21 +351,23 @@ def configure_calendar_tools(mcp: MCPServer):
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filters if filters else None,
-                limit=limit,
+                limit=limit + 1,
                 failures=failures,
             )
+            # Merged in calendar order, so re-sort before the global cut.
             events.sort(key=lambda e: e.get("start_datetime", ""))
-            events = events[:limit]
         else:
             # Search in specific calendar
             events = await client.calendar.get_calendar_events(
                 calendar_name=calendar_name,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
-                limit=limit,
+                limit=limit + 1,
                 filters=filters if filters else None,
             )
-
+        truncated = len(events) > limit
+        events = events[:limit]
+        if not search_all_calendars:
             # Enrich events with calendar context for per-event mapping.
             # Note: calendar_display_name is not available here without an
             # extra list_calendars() call; the response-level calendar_name
@@ -378,6 +382,7 @@ def configure_calendar_tools(mcp: MCPServer):
             start_date=start_date or None,
             end_date=end_date or None,
             total_found=len(summaries),
+            truncated=truncated,
             errors=[CalendarReadError(**f) for f in failures],
         )
 
