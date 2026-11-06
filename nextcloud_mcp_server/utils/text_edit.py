@@ -139,14 +139,16 @@ def _occurrence_lines(text: str, pattern: re.Pattern[str]) -> list[int]:
 
 
 def _match_pattern(old: str) -> re.Pattern[str]:
-    """Literal matcher for ``old`` that never starts inside a CRLF pair.
+    r"""Literal matcher for ``old`` that never starts or ends inside a CRLF pair.
 
     A quote that begins with ``\n`` would otherwise match the LF half of a
     ``\r\n`` and leave the CR behind on its own: deleting ``"\nb"`` from
-    ``"a\r\nb\r\n"`` produced ``"a\r\r\n"``.
+    ``"a\r\nb\r\n"`` produced ``"a\r\r\n"``. The mirror case, a quote that
+    ends with ``\r``, would match the CR half and leave a lone LF.
     """
-    guard = r"(?<!\r)" if old.startswith("\n") else ""
-    return re.compile(guard + re.escape(old))
+    head = r"(?<!\r)" if old.startswith("\n") else ""
+    tail = r"(?!\n)" if old.endswith("\r") else ""
+    return re.compile(head + re.escape(old) + tail)
 
 
 #: A line feed that is not part of a CRLF pair.

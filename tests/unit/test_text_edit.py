@@ -200,6 +200,15 @@ def test_a_match_never_splits_a_crlf_pair(edit, expected):
     assert apply_edits("a\r\nb\r\nc\r\n", [edit]).text == expected
 
 
+def test_a_quote_ending_in_cr_does_not_match_half_a_crlf_pair():
+    """The mirror case: "a\\r" would take the CR and leave a lone LF ("x\\nb").
+    A bare CR is still matched where it really is bare."""
+    with pytest.raises(EditError, match="not found"):
+        apply_edits("a\r\nb\r\n", [TextEdit("a\r", "x")])
+
+    assert apply_edits("a\rb\r\n", [TextEdit("a\r", "x")]).text == "xb\r\n"
+
+
 def test_an_explicit_cr_in_old_string_is_never_converted():
     """Whoever quotes a CR means it: a lone LF is not rewritten into CRLF."""
     with pytest.raises(EditError, match="not found"):
