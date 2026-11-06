@@ -791,6 +791,7 @@ class ProcessorRegistry:
             logger.warning(
                 "Tier-0 classification failed for %s",
                 filename or "<bytes>",
+                exc_info=True,
             )
             return None
         if record:

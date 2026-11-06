@@ -1144,7 +1144,10 @@ async def scan_user_documents(
                         dt = parsedate_to_datetime(file_info["last_modified"])
                         modified_at = int(dt.timestamp())
                     except (ValueError, KeyError):
-                        pass
+                        logger.debug(
+                            "Unparseable last_modified %r",
+                            file_info.get("last_modified"),
+                        )
 
                 # Tenant-wide content dedup (Layer 1 / observed-access ACL): if
                 # this exact file content (fileid + etag) is already indexed under

@@ -105,6 +105,7 @@ def _recover_underextracted_pages(doc: Any, chunks: list[dict[str, Any]]) -> Non
         try:
             raw = doc[i].get_text("text")
         except Exception:  # noqa: BLE001 -- per-page best effort, never fail the parse
+            logger.debug("Skipping page %d: text extraction failed", i, exc_info=True)
             continue
         raw_len = len(raw.strip())
         if raw_len >= _TEXTLAYER_FALLBACK_MIN_CHARS and raw_len >= (

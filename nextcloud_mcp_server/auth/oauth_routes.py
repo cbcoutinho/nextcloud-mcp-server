@@ -1847,7 +1847,10 @@ async def _registration_supported(request: Request) -> bool:
         discovery = await get_oidc_discovery(discovery_url)
     except Exception:
         # Fail open: a discovery blip must not strip DCR from working setups.
-        logger.warning("AS metadata: OIDC discovery failed; advertising DCR anyway")
+        logger.warning(
+            "AS metadata: OIDC discovery failed; advertising DCR anyway",
+            exc_info=True,
+        )
         return True
     return bool(discovery.get("registration_endpoint"))
 

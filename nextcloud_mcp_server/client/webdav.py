@@ -1495,6 +1495,7 @@ class WebDAVClient(BaseNextcloudClient):
                     "WebDAV SEARCH offset page failed for scope %r; "
                     "falling back to single fetch",
                     scope,
+                    exc_info=True,
                 )
                 return None
 
@@ -2485,8 +2486,10 @@ class WebDAVClient(BaseNextcloudClient):
                 try:
                     dt = parsedate_to_datetime(lastmodified_elem.text)
                     last_modified_timestamp = int(dt.timestamp())
-                except Exception:
-                    pass
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Unparseable getlastmodified %r", lastmodified_elem.text
+                    )
 
             file_info = {
                 "id": int(fileid_elem.text),
@@ -2665,7 +2668,7 @@ class WebDAVClient(BaseNextcloudClient):
             try:
                 tag_id = int(content_location.rstrip("/").split("/")[-1])
             except (ValueError, IndexError):
-                pass
+                logger.debug("No tag id in Content-Location %r", content_location)
 
         tag_info = {
             "id": tag_id,
