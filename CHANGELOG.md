@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.205.0 (2026-11-06)
+
+### Feat
+
+- **calendar**: report truncation in list_events and apply min_duration_minutes
+
+### Fix
+
+- **calendar**: reject negative list_events limit, log when a listing is cut
+- **calendar**: raise bulk-operation match cap from 50 to BULK_EVENT_LIMIT
+- **calendar**: apply event filters before the limit and honour limit across calendars
+- **sar**: cap the shielded case-folder cleanup and log why it failed
+- **sar**: keep the 403 to refused writes and clean up on cancellation
+- **sar**: report a refused case-file write as 403 and remove the new folder
+
+### Refactor
+
+- **calendar**: drop unused _apply_event_filters, note intentional full scan
+
 ## v0.204.3 (2026-11-05)
 
 ### Fix
