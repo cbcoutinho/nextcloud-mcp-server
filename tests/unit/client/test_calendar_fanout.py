@@ -112,15 +112,19 @@ async def test_strict_returns_normally_when_every_calendar_answers(client, mocke
     assert len(events) == len(CALENDARS)
 
 
-async def test_filters_are_applied_per_calendar(client, mocker):
-    mocker.patch.object(client, "get_calendar_events", side_effect=_one)
-    applied = mocker.patch.object(
-        client, "_apply_event_filters", side_effect=lambda events, f: events
+async def test_filters_and_limit_reach_every_calendar(client, mocker):
+    """Filters must ride into get_calendar_events, which applies them before its
+    limit -- filtering the already-truncated listing misses matches (GH #1774)."""
+    fetch = mocker.patch.object(client, "get_calendar_events", side_effect=_one)
+
+    await client.search_events_across_calendars(
+        filters={"status": "CONFIRMED"}, limit=500
     )
 
-    await client.search_events_across_calendars(filters={"status": "CONFIRMED"})
-
-    assert applied.call_count == len(CALENDARS)
+    assert fetch.call_count == len(CALENDARS)
+    for call in fetch.call_args_list:
+        assert call.kwargs["filters"] == {"status": "CONFIRMED"}
+        assert call.kwargs["limit"] == 500
 
 
 async def test_fanout_is_bounded(client, mocker):

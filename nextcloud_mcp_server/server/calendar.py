@@ -276,7 +276,8 @@ def configure_calendar_tools(mcp: MCPServer):
                 search_all_calendars=True, in which case it is ignored.
             start_date: Start date for search (YYYY-MM-DD format, e.g., "2025-01-01")
             end_date: End date for search (YYYY-MM-DD format, e.g., "2025-01-31")
-            limit: Maximum number of events to return
+            limit: Maximum number of events to return, applied after the filters
+                and keeping the earliest by start
             min_attendees: Filter events with at least this many attendees
             min_duration_minutes: Filter events with at least this duration
             categories: Filter events containing any of these categories (comma-separated, e.g., "work,meeting")
@@ -348,8 +349,10 @@ def configure_calendar_tools(mcp: MCPServer):
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filters if filters else None,
+                limit=limit,
                 failures=failures,
             )
+            events.sort(key=lambda e: e.get("start_datetime", ""))
             events = events[:limit]
         else:
             # Search in specific calendar
@@ -358,6 +361,7 @@ def configure_calendar_tools(mcp: MCPServer):
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 limit=limit,
+                filters=filters if filters else None,
             )
 
             # Enrich events with calendar context for per-event mapping.
@@ -366,10 +370,6 @@ def configure_calendar_tools(mcp: MCPServer):
             # already identifies the calendar for single-calendar queries.
             for event in events:
                 event["calendar_name"] = calendar_name
-
-            # Apply filters if provided
-            if filters:
-                events = client.calendar._apply_event_filters(events, filters)
 
         summaries = [_event_dict_to_summary(e) for e in events]
         return ListEventsResponse(
@@ -886,11 +886,8 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
@@ -985,11 +982,8 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,

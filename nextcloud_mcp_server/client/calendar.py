@@ -875,8 +875,15 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         limit: int = 50,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """List events in a calendar within date range."""
+        """List events in a calendar within date range.
+
+        ``filters`` are applied *before* ``limit``, and the cut keeps the
+        earliest events by start. Truncating first (in CalDAV response order)
+        made a filtered search silently miss matches past the first ``limit``
+        events (GH #1774).
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -922,18 +929,19 @@ class CalendarClient:
                 cal, start_datetime, end_datetime, do_expand
             )
             for event_dict in event_dicts:
+                if filters and not self._event_matches_filters(event_dict, filters):
+                    continue
                 event_dict["href"] = href
                 event_dict["etag"] = etag
                 result.append(event_dict)
 
-                if len(result) >= limit:
-                    break
-
-            if len(result) >= limit:
-                break
-
-        logger.debug("Found %d events", len(result))
-        return result
+        # ponytail: ISO strings sort lexicographically, so all-day dates and
+        # differing UTC offsets order approximately; parse to instants if that matters.
+        result.sort(key=lambda e: e.get("start_datetime", ""))
+        logger.debug(
+            "Found %d events, returning %d", len(result), min(len(result), limit)
+        )
+        return result[:limit]
 
     def _expand_event_occurrences(
         self,
@@ -1374,7 +1382,11 @@ class CalendarClient:
         async with limiter:
             try:
                 events = await self.get_calendar_events(
-                    calendar["name"], start_datetime, end_datetime, limit=limit
+                    calendar["name"],
+                    start_datetime,
+                    end_datetime,
+                    limit=limit,
+                    filters=filters,
                 )
             except Exception as e:
                 logger.warning(
@@ -1385,10 +1397,6 @@ class CalendarClient:
                         {"calendar_name": calendar["name"], "error": str(e)}
                     )
                 return
-
-        # Apply filters if provided
-        if filters:
-            events = self._apply_event_filters(events, filters)
 
         # Add calendar info to each event
         for event in events:
@@ -1414,7 +1422,8 @@ class CalendarClient:
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
 
-        ``limit`` is per calendar, and truncation is silent -- callers that
+        ``limit`` is per calendar (applied after ``filters``, keeping the
+        earliest events), and truncation is silent -- callers that
         need every event in the window (availability, above all) must raise it
         rather than accept a listing that merely looks complete.
 
