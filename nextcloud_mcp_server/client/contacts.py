@@ -1,7 +1,6 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
-import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -94,13 +93,35 @@ def _escape_n_component(value: str) -> str:
     return escape_text(value.replace("\r\n", "\n").replace("\r", "\n"))
 
 
+def _split_n_value(value: str) -> list[str]:
+    """Split a raw (still escaped) N value on its unescaped ``;`` separators.
+
+    Escape pairs are consumed whole, so ``\\\\;`` -- an escaped backslash, then
+    a separator -- splits, while ``\\;`` does not. A ``(?<!\\);`` lookbehind
+    gets the first case wrong and shifts every later component one slot.
+    """
+    comps: list[str] = []
+    current: list[str] = []
+    chars = iter(value)
+    for char in chars:
+        if char == "\\":
+            current.append(char + next(chars, ""))
+        elif char == ";":
+            comps.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    comps.append("".join(current))
+    return comps
+
+
 def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
     """Overwrite the supplied components of an existing raw N value.
 
     Existing components are split on unescaped ``;`` and kept verbatim (still
     escaped); supplied components are escaped and written in their slot.
     """
-    comps = re.split(r"(?<!\\);", existing) if existing else []
+    comps = _split_n_value(existing) if existing else []
     comps += [""] * (len(_N_COMPONENTS) - len(comps))
     for i, key in enumerate(_N_COMPONENTS):
         if key in parts:
