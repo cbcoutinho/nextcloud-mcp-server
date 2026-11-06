@@ -21,8 +21,10 @@ DEFAULT = "/default"
 def _browser_resolves(location: str) -> str:
     """Where a browser sends a ``Location`` relative to ORIGIN.
 
-    WHATWG URL parsing treats ``\\`` as ``/`` in http(s) URLs; ``urljoin``
-    does not, so apply that one rule before joining.
+    WHATWG URL parsing treats ``\\`` as ``/`` in http(s) URLs ("special
+    schemes", https://url.spec.whatwg.org/#path-state); ``urljoin`` does not,
+    so apply that one rule before joining. The guard does not rely on this
+    model being complete: it refuses every ``\\`` outright.
     """
     return urljoin(ORIGIN + "/", location.replace("\\", "/"))
 
@@ -42,6 +44,7 @@ _targets = st.one_of(
 @example("/\\evil.com")  # browsers read it as //evil.com
 @example("/\\/evil.com")
 @example("\\\\evil.com")
+@example("\\foo")  # same-origin for a browser, but no target needs a backslash
 @example("//evil.example.com/path")
 @example("https://evil.example.com")
 @example("/app\nfoo")
@@ -54,7 +57,7 @@ def test_never_redirects_off_origin(raw):
     assert out in (DEFAULT, raw)
     target = urlsplit(_browser_resolves(out))
     assert (target.scheme, target.netloc) == ("https", "mcp.example")
-    assert not any(c.isspace() or not c.isprintable() for c in out)
+    assert not any(c.isspace() or not c.isprintable() or c == "\\" for c in out)
 
 
 @given(
