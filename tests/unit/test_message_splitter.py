@@ -182,10 +182,18 @@ def test_measured_length_trims_exactly_what_php_trims(core, php_pad, unicode_pad
 # Examples ------------------------------------------------------------------
 
 
-def test_unbreakable_run_packs_into_as_few_parts_as_possible():
-    parts = split_message("z" * 1500, max_length=LIMIT)
-
-    assert len(parts) == 2
+@pytest.mark.parametrize(
+    "message",
+    [
+        "z" * 1500,  # unbreakable run: hard-cut
+        "y" * (LIMIT + 1),  # one character over
+        "x" * LIMIT + "\u3000",  # over only by the server's count
+    ],
+)
+def test_just_over_the_limit_packs_into_two_parts(message):
+    """The properties bound every part from above; this pins the packing from
+    below, so a splitter emitting needless extra comments cannot pass."""
+    assert len(split_message(message, max_length=LIMIT)) == 2
 
 
 def test_split_prefers_paragraph_boundaries_over_mid_sentence_cuts():
