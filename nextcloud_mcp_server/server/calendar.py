@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.calendar import BULK_EVENT_LIMIT
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
@@ -276,7 +277,8 @@ def configure_calendar_tools(mcp: MCPServer):
                 search_all_calendars=True, in which case it is ignored.
             start_date: Start date for search (YYYY-MM-DD format, e.g., "2025-01-01")
             end_date: End date for search (YYYY-MM-DD format, e.g., "2025-01-31")
-            limit: Maximum number of events to return
+            limit: Maximum number of events to return, applied after the filters
+                and keeping the earliest by start
             min_attendees: Filter events with at least this many attendees
             min_duration_minutes: Filter events with at least this duration
             categories: Filter events containing any of these categories (comma-separated, e.g., "work,meeting")
@@ -296,6 +298,8 @@ def configure_calendar_tools(mcp: MCPServer):
             raise ToolError(
                 "calendar_name is required when search_all_calendars is False"
             )
+        if limit < 0:
+            raise ToolError("limit must be 0 or greater")
 
         client = await get_client(ctx)
 
@@ -341,6 +345,8 @@ def configure_calendar_tools(mcp: MCPServer):
         if location_contains is not None:
             filters["location_contains"] = location_contains
 
+        # Fetch one past the limit: a surplus event is how we know the listing
+        # was cut, which the response reports as ``truncated``.
         failures: list[dict[str, str]] = []
         if search_all_calendars:
             # Search across all calendars with filters
@@ -348,28 +354,29 @@ def configure_calendar_tools(mcp: MCPServer):
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filters if filters else None,
+                limit=limit + 1,
                 failures=failures,
             )
-            events = events[:limit]
+            # Merged in calendar order, so re-sort before the global cut.
+            events.sort(key=lambda e: e.get("start_datetime", ""))
         else:
             # Search in specific calendar
             events = await client.calendar.get_calendar_events(
                 calendar_name=calendar_name,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
-                limit=limit,
+                limit=limit + 1,
+                filters=filters if filters else None,
             )
-
+        truncated = len(events) > limit
+        events = events[:limit]
+        if not search_all_calendars:
             # Enrich events with calendar context for per-event mapping.
             # Note: calendar_display_name is not available here without an
             # extra list_calendars() call; the response-level calendar_name
             # already identifies the calendar for single-calendar queries.
             for event in events:
                 event["calendar_name"] = calendar_name
-
-            # Apply filters if provided
-            if filters:
-                events = client.calendar._apply_event_filters(events, filters)
 
         summaries = [_event_dict_to_summary(e) for e in events]
         return ListEventsResponse(
@@ -378,6 +385,7 @@ def configure_calendar_tools(mcp: MCPServer):
             start_date=start_date or None,
             end_date=end_date or None,
             total_found=len(summaries),
+            truncated=truncated,
             errors=[CalendarReadError(**f) for f in failures],
         )
 
@@ -886,16 +894,15 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
             targets, skipped = client.calendar._bulk_targets(
@@ -985,16 +992,15 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
             targets, skipped = client.calendar._bulk_targets(

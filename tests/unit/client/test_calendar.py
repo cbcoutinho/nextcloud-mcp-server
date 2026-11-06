@@ -1908,3 +1908,55 @@ def test_bulk_targets_never_moves_a_series():
 
     assert targets == []
     assert skipped[0]["status"] == "skipped"
+
+
+async def test_get_calendar_events_filters_before_limit(mocker):
+    """GH #1774: the limit used to cut the listing (in CalDAV order) before the
+    filters ran, so a match past the first ``limit`` events vanished."""
+    import datetime as dt
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    def ics(uid: str, day: int, title: str) -> str:
+        return (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\n"
+            f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260101T000000Z\r\n"
+            f"DTSTART:202609{day:02d}T100000Z\r\nDTEND:202609{day:02d}T110000Z\r\n"
+            f"SUMMARY:{title}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+    # Server order: latest noise first, the match last.
+    objs = [
+        mocker.Mock(data=ics(f"n{d}", d, "Standup"), url=f"/n{d}.ics", etag="e")
+        for d in range(20, 2, -1)
+    ]
+    objs.append(mocker.Mock(data=ics("w", 25, "Workshop X"), url="/w.ics", etag="e"))
+    for o in objs:
+        o.load = mocker.Mock(return_value=None)
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", return_value=mocker.Mock())
+    mocker.patch.object(
+        client, "_search_events_by_date", mocker.AsyncMock(return_value=objs)
+    )
+    window = (dt.datetime(2026, 9, 1), dt.datetime(2026, 9, 30))
+
+    found = await client.get_calendar_events(
+        "personal", *window, limit=5, filters={"title_contains": "workshop"}
+    )
+    assert [e["uid"] for e in found] == ["w"]
+
+    # min_duration_minutes was accepted by the tool but never applied.
+    long_only = await client.get_calendar_events(
+        "personal", *window, filters={"min_duration_minutes": 61}
+    )
+    assert long_only == []
+    hour_ok = await client.get_calendar_events(
+        "personal", *window, filters={"min_duration_minutes": 60}
+    )
+    assert len(hour_ok) == len(objs)
+
+    # Unfiltered, the cut keeps the earliest events, not the first returned.
+    earliest = await client.get_calendar_events("personal", *window, limit=3)
+    assert [e["uid"] for e in earliest] == ["n3", "n4", "n5"]

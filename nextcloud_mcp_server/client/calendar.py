@@ -49,6 +49,10 @@ CALENDAR_FANOUT = 8
 # listing into memory.
 AVAILABILITY_EVENT_LIMIT = 1000
 
+# Per-calendar match cap for bulk update/delete/move. Same reasoning: the
+# listing default of 50 made a bulk operation silently leave matches untouched.
+BULK_EVENT_LIMIT = 1000
+
 # The URI scheme RFC 6638 addresses attendees by.
 _MAILTO = "mailto:"
 
@@ -875,8 +879,15 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         limit: int = 50,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """List events in a calendar within date range."""
+        """List events in a calendar within date range.
+
+        ``filters`` are applied *before* ``limit``, and the cut keeps the
+        earliest events by start. Truncating first (in CalDAV response order)
+        made a filtered search silently miss matches past the first ``limit``
+        events (GH #1774).
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -922,18 +933,27 @@ class CalendarClient:
                 cal, start_datetime, end_datetime, do_expand
             )
             for event_dict in event_dicts:
+                if filters and not self._event_matches_filters(event_dict, filters):
+                    continue
                 event_dict["href"] = href
                 event_dict["etag"] = etag
                 result.append(event_dict)
 
-                if len(result) >= limit:
-                    break
-
-            if len(result) >= limit:
-                break
-
-        logger.debug("Found %d events", len(result))
-        return result
+        # The whole window is scanned on purpose (no early break at ``limit``):
+        # "earliest N matches" needs every match before the cut.
+        # ponytail: ISO strings sort lexicographically, so all-day dates and
+        # differing UTC offsets order approximately; parse to instants if that matters.
+        result.sort(key=lambda e: e.get("start_datetime", ""))
+        if len(result) > limit:
+            # Leaves a trace when a cap bites -- notably BULK_EVENT_LIMIT, whose
+            # callers have no ``truncated`` field to report it through.
+            logger.info(
+                "Calendar %s: %d events matched, keeping the earliest %d",
+                calendar_name,
+                len(result),
+                limit,
+            )
+        return result[:limit]
 
     def _expand_event_occurrences(
         self,
@@ -1374,7 +1394,11 @@ class CalendarClient:
         async with limiter:
             try:
                 events = await self.get_calendar_events(
-                    calendar["name"], start_datetime, end_datetime, limit=limit
+                    calendar["name"],
+                    start_datetime,
+                    end_datetime,
+                    limit=limit,
+                    filters=filters,
                 )
             except Exception as e:
                 logger.warning(
@@ -1385,10 +1409,6 @@ class CalendarClient:
                         {"calendar_name": calendar["name"], "error": str(e)}
                     )
                 return
-
-        # Apply filters if provided
-        if filters:
-            events = self._apply_event_filters(events, filters)
 
         # Add calendar info to each event
         for event in events:
@@ -1414,7 +1434,8 @@ class CalendarClient:
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
 
-        ``limit`` is per calendar, and truncation is silent -- callers that
+        ``limit`` is per calendar (applied after ``filters``, keeping the
+        earliest events), and truncation is silent -- callers that
         need every event in the window (availability, above all) must raise it
         rather than accept a listing that merely looks complete.
 
@@ -3031,14 +3052,6 @@ class CalendarClient:
             logger.warning("Error extracting categories: %s", e)
             return str(categories_obj)
 
-    def _apply_event_filters(
-        self, events: list[dict[str, Any]], filters: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Apply advanced filters to event list."""
-        return [
-            event for event in events if self._event_matches_filters(event, filters)
-        ]
-
     def _event_matches_filters(
         self, event: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
@@ -3075,6 +3088,19 @@ class CalendarClient:
                 location = event.get("location", "").lower()
                 search_term = filters["location_contains"].lower()
                 if search_term not in location:
+                    return False
+
+            # Filter by minimum duration. An event without an end is
+            # zero-length; all-day dates parse as midnight, so a one-day
+            # all-day event lasts 1440 minutes.
+            if "min_duration_minutes" in filters:
+                start = dt.datetime.fromisoformat(event["start_datetime"])
+                end = dt.datetime.fromisoformat(
+                    event.get("end_datetime") or event["start_datetime"]
+                )
+                if (end - start) < dt.timedelta(
+                    minutes=filters["min_duration_minutes"]
+                ):
                     return False
 
             return True
@@ -3181,6 +3207,7 @@ class CalendarClient:
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filter_criteria,
+                limit=BULK_EVENT_LIMIT,
             )
 
             targets, skipped = self._bulk_targets(events, apply_to_series, "update")
