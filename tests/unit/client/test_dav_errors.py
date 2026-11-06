@@ -8,6 +8,8 @@ catches plain ``HTTPStatusError``.
 
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.dav_errors import (
@@ -91,11 +93,42 @@ def test_non_dav_error_is_returned_untouched():
     assert enrich_dav_error(original) is original
 
 
-def test_malformed_xml_does_not_raise():
-    """A truncated or non-XML body must not turn a failure into a crash."""
-    original = _error(403, b"<d:error><s:exception>unclosed")
+#: Bytes that look enough like XML to get past the first character.
+_xmlish = st.lists(
+    st.sampled_from(
+        [
+            b'<?xml version="1.0"?>',
+            b'<?xml version="1.0" encoding="',
+            b"utf-8",
+            b"utf-16",
+            b"nope",
+            b'"?>',
+            b'<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">',
+            b"</d:error>",
+            b"<s:exception>",
+            b"</s:exception>",
+            b"<s:message>",
+            b"</s:message>",
+            b"<!DOCTYPE a [<!ENTITY e 'x'>]>",
+            b"&e;",
+            b"\xff",
+            b"\x00",
+            b"text",
+        ]
+    )
+).map(b"".join)
 
-    assert enrich_dav_error(original) is original
+
+@given(_xmlish | st.binary())
+@example(b"<d:error><s:exception>unclosed")  # truncated
+@example(b'<?xml version="1.0" encoding="nope"?><a/>')  # raised LookupError
+def test_any_body_parses_without_raising(body):
+    """This runs while another error is already propagating, so whatever the
+    body is it yields text-or-None, never an exception of its own."""
+    exception, message = parse_dav_error_body(_error(500, body).response)
+
+    assert exception is None or isinstance(exception, str)
+    assert message is None or isinstance(message, str)
 
 
 def test_oversized_body_is_not_parsed():

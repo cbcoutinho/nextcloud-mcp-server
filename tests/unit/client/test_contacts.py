@@ -5,18 +5,25 @@ so they cover the issue #716 regression surface and the edge cases flagged in
 PR #719 review without standing up the compose stack.
 """
 
+import re
 from datetime import date
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from pythonvCard4.vcard import Contact, ValidationError
 
 from nextcloud_mcp_server.client.contacts import (
+    _N_COMPONENTS,
     ContactsClient,
     _build_contact_from_data,
+    _escape_n_component,
     _first_custom,
+    _merge_n_value,
     _normalize_contact_data,
     _parse_vcard,
     _project_contact,
+    _split_n_value,
     _wrap_contact_field,
 )
 
@@ -1114,3 +1121,44 @@ def test_upstream_still_raises_on_bad_property(bad_line: str):
     """
     with pytest.raises(ValueError):
         Contact.from_vcard(f"BEGIN:VCARD\r\nFN:x\r\n{bad_line}\r\nEND:VCARD\r\n")
+
+
+# ── N value escaping (property-based) ────────────────────────────────────
+
+
+def _unescape(component: str) -> str:
+    """Single-pass vCard unescape. ``pythonvCard4.unescape_text`` chains
+    ``replace`` calls, so it mis-decodes an escaped backslash before ``n``."""
+    return re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nN" else m[1], component)
+
+
+def _crlf_to_lf(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+name_parts = st.dictionaries(st.sampled_from(_N_COMPONENTS), st.text())
+
+
+@given(st.text())
+@example("Doe;x")
+@example("C:\\")
+@example("a\\nb")  # a literal backslash-n, not a line break
+def test_escape_n_component_is_one_lossless_component(value):
+    escaped = _escape_n_component(value)
+
+    assert _split_n_value(escaped) == [escaped]
+    assert _unescape(escaped) == _crlf_to_lf(value)
+
+
+@given(name_parts, name_parts)
+# An escaped trailing backslash ("\\\\") was read as escaping the separator
+# after it, so the next merge shifted every component one slot to the left.
+@example({"family_name": "C:\\"}, {"given_name": "Bob"})
+def test_merge_n_value_writes_supplied_slots_and_keeps_the_rest(first, second):
+    merged = _merge_n_value(_merge_n_value("", first), second)
+
+    expected = [second.get(k, first.get(k, "")) for k in _N_COMPONENTS]
+    assert [_unescape(c) for c in _split_n_value(merged)] == [
+        _crlf_to_lf(v) for v in expected
+    ]
+    assert _merge_n_value(merged, second) == merged

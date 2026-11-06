@@ -84,6 +84,11 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   - `logger.debug()` for expected 404s and normal operations
   - `logger.warning()` for retries and non-critical issues
   - `logger.error()` for actual errors
+- **A handler that turns an exception into `None`, `False`, `continue` or `pass`
+  must log what happened**, unless the fallback value is itself the answer, as in
+  a validation predicate or an optional import. A broad `except Exception` needs
+  `exc_info=True`. Otherwise a bug in the guarded code disappears into a silent
+  default.
 - **HTTP client is `httpx2`, not `httpx`.** `httpx` stays installed (qdrant-client
   and huggingface-hub depend on it), so `import httpx` still works. But
   `except httpx.X` never matches the `httpx2.X` that our clients, mcp, openai and
@@ -663,6 +668,36 @@ async def test_notes_api_get_note(mocker):
 
 **When to use**: Response parsing, error handling, request parameter building
 **When NOT to use**: CalDAV/CardDAV/WebDAV protocols, OAuth flows, end-to-end MCP testing
+
+### Property-based tests (Hypothesis)
+
+Unit tier only. When a test's inputs form a family, test a property instead of
+listing cases in `@pytest.mark.parametrize`. A property needs fewer tests, and it
+has found real bugs here that the hand-picked lists missed: CRLF splitting in
+`apply_edits`, non-idempotent `normalize_etag`, vCard N slot shifting, and
+parsers that raised on `Infinity` or an unknown XML encoding.
+
+- **Couple input and expected output in a composite strategy.** An
+  `@st.composite` returns `(input, expected)`, built together, so the test does
+  not re-derive the answer. Examples: `transported_etags` in
+  `tests/unit/client/test_webdav.py` and `statuscodes` in
+  `tests/unit/client/test_ocs.py`.
+- **Filter input shapes with `assume()`** inside the test, rather than a bare
+  `return`. Use `.filter` only for a condition on a single strategy.
+- **Pin every bug a property found as an `@example`** on that property. The
+  regression is then replayed on every run, independent of generation.
+- **Parsers of untrusted input** (webhook payloads, OCS/DAV bodies, provider
+  responses) get a "never raises" property over arbitrary JSON or bytes, with
+  floats left in. `json.loads` accepts `Infinity` and `NaN`.
+- **Keep an example test when it pins a single decision**, not a family of
+  inputs. For example, the 997 wording, or absent `meta` being treated as
+  success.
+- **Profiles:** Hypothesis loads its built-in `ci` profile automatically in CI
+  (derandomized, no deadline). Do not re-register it, or its health-check
+  suppression is lost. `tests/conftest.py` loads a local `dev` profile that only
+  disables the deadline.
+- **Version cap:** `hypothesis` is capped below the next minor version in the
+  dev group, so every bump arrives as a Renovate PR.
 
 ### OAuth Testing
 OAuth tests use **Playwright browser automation** to complete flows programmatically.

@@ -194,14 +194,18 @@ def normalize_etag(raw: Optional[str]) -> Optional[str]:
     """
     if raw is None:
         return None
-    cleaned = raw.strip()
-    if cleaned.startswith("W/"):
-        cleaned = cleaned[2:]
-    cleaned = cleaned.strip('"')
-    for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
-        if cleaned.endswith(suffix):
-            return cleaned[: -len(suffix)]
-    return cleaned
+    # Repeat until nothing changes, so the result is a fixed point: normalising
+    # a normalised etag must be a no-op, or the value handed out drifts from the
+    # one ``_write_precondition_header`` re-normalises. One pass was not enough
+    # for whitespace inside the quotes (``'"\r0'``) or a stacked suffix.
+    cleaned = raw
+    while True:
+        previous = cleaned
+        cleaned = cleaned.strip().removeprefix("W/").strip('"')
+        for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
+            cleaned = cleaned.removesuffix(suffix)
+        if cleaned == previous:
+            return cleaned
 
 
 #: Collection holding one file's comments, addressed by file id.

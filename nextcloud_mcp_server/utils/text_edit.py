@@ -133,14 +133,22 @@ def _line_of(text: str, index: int) -> int:
     return text.count("\n", 0, index) + 1
 
 
-def _occurrence_lines(text: str, needle: str) -> list[int]:
-    """1-based line numbers where ``needle`` starts, in order."""
-    lines: list[int] = []
-    start = text.find(needle)
-    while start != -1:
-        lines.append(_line_of(text, start))
-        start = text.find(needle, start + len(needle))
-    return lines
+def _occurrence_lines(text: str, pattern: re.Pattern[str]) -> list[int]:
+    """1-based line numbers where ``pattern`` matches, in order."""
+    return [_line_of(text, match.start()) for match in pattern.finditer(text)]
+
+
+def _match_pattern(old: str) -> re.Pattern[str]:
+    r"""Literal matcher for ``old`` that never starts or ends inside a CRLF pair.
+
+    A quote that begins with ``\n`` would otherwise match the LF half of a
+    ``\r\n`` and leave the CR behind on its own: deleting ``"\nb"`` from
+    ``"a\r\nb\r\n"`` produced ``"a\r\r\n"``. The mirror case, a quote that
+    ends with ``\r``, would match the CR half and leave a lone LF.
+    """
+    head = r"(?<!\r)" if old.startswith("\n") else ""
+    tail = r"(?!\n)" if old.endswith("\r") else ""
+    return re.compile(head + re.escape(old) + tail)
 
 
 #: A line feed that is not part of a CRLF pair.
@@ -192,15 +200,16 @@ def apply_edits(text: str, edits: Sequence[TextEdit]) -> EditResult:
                 "change nothing."
             )
 
-        count = text.count(old)
+        pattern = _match_pattern(old)
+        count = len(pattern.findall(text))
         crlf_new = False
         if count == 0 and "\r" not in old and "\n" in old:
             # Not found as given. The file may still have this passage with
             # CRLF line breaks, which is how a model's "\n" quote looks there.
-            crlf_old = _to_crlf(old)
-            crlf_count = text.count(crlf_old)
+            crlf_pattern = _match_pattern(_to_crlf(old))
+            crlf_count = len(crlf_pattern.findall(text))
             if crlf_count:
-                old, count = crlf_old, crlf_count
+                pattern, count = crlf_pattern, crlf_count
                 crlf_new = True
         elif count and "\r\n" in text and not _BARE_LF.search(text):
             # Found as given in a file that uses CRLF throughout (old_string
@@ -222,7 +231,7 @@ def apply_edits(text: str, edits: Sequence[TextEdit]) -> EditResult:
                 f"breaks.{hint} Re-read the passage and copy it verbatim."
             )
         if count > 1 and not edit.replace_all:
-            lines = _occurrence_lines(text, old)
+            lines = _occurrence_lines(text, pattern)
             shown = ", ".join(str(n) for n in lines[:_MAX_REPORTED_LINES])
             more = (
                 f" and {count - _MAX_REPORTED_LINES} more"
@@ -235,7 +244,12 @@ def apply_edits(text: str, edits: Sequence[TextEdit]) -> EditResult:
                 "exactly once, or set replace_all to replace every occurrence."
             )
 
-        text = text.replace(old, new) if edit.replace_all else text.replace(old, new, 1)
+        # A function replacement, so backslashes in new_string stay literal.
+        text = pattern.sub(
+            lambda _, replacement=new: replacement,
+            text,
+            count=0 if edit.replace_all else 1,
+        )
         replacements += count if edit.replace_all else 1
 
     return EditResult(text=text, replacements=replacements)

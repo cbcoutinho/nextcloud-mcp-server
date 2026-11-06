@@ -118,7 +118,8 @@ def parse_ocs_envelope(payload: Any) -> OCSEnvelope:
     raw_status = meta.get("statuscode") or 200
     try:
         status_code = int(raw_status)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: ``json.loads`` accepts ``Infinity``, and int(inf) raises.
         status_code = 500
 
     # One fallback string for all three clients. They previously differed --
