@@ -187,6 +187,19 @@ def test_crlf_form_is_checked_for_uniqueness_on_its_own():
     assert result.replacements == 2
 
 
+@pytest.mark.parametrize(
+    ("edit", "expected"),
+    [
+        # Deleting a line quoted as "\nb" used to match the LF half of the
+        # CRLF before it and leave a lone CR behind: "a\r\r\nc\r\n".
+        (TextEdit("\nb", ""), "a\r\nc\r\n"),
+        (TextEdit("\n", "", replace_all=True), "abc"),
+    ],
+)
+def test_a_match_never_splits_a_crlf_pair(edit, expected):
+    assert apply_edits("a\r\nb\r\nc\r\n", [edit]).text == expected
+
+
 def test_an_explicit_cr_in_old_string_is_never_converted():
     """Whoever quotes a CR means it: a lone LF is not rewritten into CRLF."""
     with pytest.raises(EditError, match="not found"):

@@ -1326,6 +1326,10 @@ async def test_write_file_etag_is_none_when_absent(mocker):
         # survives untouched.
         ("gzip-abc", "gzip-abc"),
         ("   abc   ", "abc"),
+        # Normalising must be idempotent: each of these needed a second pass.
+        ('"\r0', "0"),
+        ('"W/abc"', "abc"),
+        ("abc-gzip-gzip", "abc"),
     ],
 )
 def test_normalize_etag(raw, expected):
