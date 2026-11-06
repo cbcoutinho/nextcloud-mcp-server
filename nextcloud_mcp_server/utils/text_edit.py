@@ -245,7 +245,11 @@ def apply_edits(text: str, edits: Sequence[TextEdit]) -> EditResult:
             )
 
         # A function replacement, so backslashes in new_string stay literal.
-        text = pattern.sub(lambda _: new, text, count=0 if edit.replace_all else 1)
+        text = pattern.sub(
+            lambda _, replacement=new: replacement,
+            text,
+            count=0 if edit.replace_all else 1,
+        )
         replacements += count if edit.replace_all else 1
 
     return EditResult(text=text, replacements=replacements)

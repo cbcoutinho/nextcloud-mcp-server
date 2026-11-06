@@ -207,6 +207,14 @@ def test_a_quote_ending_in_cr_does_not_match_half_a_crlf_pair():
         apply_edits("a\r\nb\r\n", [TextEdit("a\r", "x")])
 
     assert apply_edits("a\rb\r\n", [TextEdit("a\r", "x")]).text == "xb\r\n"
+    # replace_all takes only the bare one, never the CR of the CRLF.
+    result = apply_edits("a\rb\ra\r\n", [TextEdit("a\r", "x", replace_all=True)])
+    assert (result.text, result.replacements) == ("xb\ra\r\n", 1)
+
+
+def test_the_crlf_guards_do_not_over_reject_bare_line_breaks():
+    """In a mixed file, a leading-LF quote after a bare LF still matches."""
+    assert apply_edits("a\nb\r\nc", [TextEdit("\nb", "")]).text == "a\r\nc"
 
 
 def test_an_explicit_cr_in_old_string_is_never_converted():
