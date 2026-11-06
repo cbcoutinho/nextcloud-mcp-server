@@ -303,12 +303,19 @@ jobs:
         if: matrix.needs-playwright
         timeout-minutes: 20
         run: |
+          # Wait for the dpkg lock rather than failing on it at once.
+          echo 'DPkg::Lock::Timeout "120";' | sudo tee /etc/apt/apt.conf.d/99-ci-lock-timeout
           for attempt in 1 2 3; do
             if timeout 300 uv run --no-build --no-sync playwright install chromium --with-deps; then
               exit 0
             fi
             echo "::warning::Playwright install attempt ${attempt} failed or stalled; retrying"
+            # `timeout` kills playwright but not the `sudo apt-get` it spawned,
+            # which keeps the dpkg lock and fails every retry with "Could not
+            # get lock". Kill it, then finish any install it interrupted.
+            sudo pkill -x apt-get || true
             sleep 10
+            sudo dpkg --configure -a || true
           done
           echo "::error::Playwright install failed after 3 attempts"
           exit 1
