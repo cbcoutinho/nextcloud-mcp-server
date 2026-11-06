@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.205.2 (2026-11-06)
+
+### Fix
+
+- log a malformed webhook event body at warning with its traceback
+- make four payload parsers total over the inputs they claim to accept
+- bind new_string as a lambda default in apply_edits (Sonar S1515)
+- a quote ending in CR must not match half a CRLF pair in apply_edits
+- keep CRLF pairs intact in apply_edits and make normalize_etag idempotent
+
+### Refactor
+
+- reject a non-string webhook event class up front and log parser failures with exc_info
+
 ## v0.205.1 (2026-11-06)
 
 ### Fix
