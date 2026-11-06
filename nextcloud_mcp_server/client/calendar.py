@@ -935,6 +935,8 @@ class CalendarClient:
                 event_dict["etag"] = etag
                 result.append(event_dict)
 
+        # The whole window is scanned on purpose (no early break at ``limit``):
+        # "earliest N matches" needs every match before the cut.
         # ponytail: ISO strings sort lexicographically, so all-day dates and
         # differing UTC offsets order approximately; parse to instants if that matters.
         result.sort(key=lambda e: e.get("start_datetime", ""))
@@ -3039,14 +3041,6 @@ class CalendarClient:
         except Exception as e:
             logger.warning("Error extracting categories: %s", e)
             return str(categories_obj)
-
-    def _apply_event_filters(
-        self, events: list[dict[str, Any]], filters: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Apply advanced filters to event list."""
-        return [
-            event for event in events if self._event_matches_filters(event, filters)
-        ]
 
     def _event_matches_filters(
         self, event: dict[str, Any], filters: dict[str, Any]
