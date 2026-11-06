@@ -5,7 +5,6 @@ so they cover the issue #716 regression surface and the edge cases flagged in
 PR #719 review without standing up the compose stack.
 """
 
-import re
 from datetime import date
 
 import pytest
@@ -23,7 +22,8 @@ from nextcloud_mcp_server.client.contacts import (
     _normalize_contact_data,
     _parse_vcard,
     _project_contact,
-    _split_n_value,
+    _split_unescaped,
+    _unescape_component,
     _wrap_contact_field,
 )
 
@@ -1126,12 +1126,6 @@ def test_upstream_still_raises_on_bad_property(bad_line: str):
 # ── N value escaping (property-based) ────────────────────────────────────
 
 
-def _unescape(component: str) -> str:
-    """Single-pass vCard unescape. ``pythonvCard4.unescape_text`` chains
-    ``replace`` calls, so it mis-decodes an escaped backslash before ``n``."""
-    return re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nN" else m[1], component)
-
-
 def _crlf_to_lf(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -1146,8 +1140,8 @@ name_parts = st.dictionaries(st.sampled_from(_N_COMPONENTS), st.text())
 def test_escape_n_component_is_one_lossless_component(value):
     escaped = _escape_n_component(value)
 
-    assert _split_n_value(escaped) == [escaped]
-    assert _unescape(escaped) == _crlf_to_lf(value)
+    assert _split_unescaped(escaped) == [escaped]
+    assert _unescape_component(escaped) == _crlf_to_lf(value)
 
 
 @given(name_parts, name_parts)
@@ -1158,7 +1152,59 @@ def test_merge_n_value_writes_supplied_slots_and_keeps_the_rest(first, second):
     merged = _merge_n_value(_merge_n_value("", first), second)
 
     expected = [second.get(k, first.get(k, "")) for k in _N_COMPONENTS]
-    assert [_unescape(c) for c in _split_n_value(merged)] == [
+    assert [_unescape_component(c) for c in _split_unescaped(merged)] == [
         _crlf_to_lf(v) for v in expected
     ]
     assert _merge_n_value(merged, second) == merged
+
+
+# ── Structured values on read (property-based) ───────────────────────────
+
+#: Component text. Line-breaking characters other than CR/LF are excluded: the
+#: vCard is split with ``str.splitlines``, which breaks on those too, and
+#: neither we nor the library escape them.
+_component = st.text(
+    st.characters(exclude_categories=("Cc", "Cs", "Zl", "Zp"))
+    | st.sampled_from(";,\\\n\r")
+)
+
+
+def _structured_line(name: str, comps: list[str], sep: str) -> str:
+    return f"{name}:{sep.join(_escape_n_component(c) for c in comps)}"
+
+
+@given(
+    st.lists(_component, min_size=5, max_size=5),
+    st.lists(_component, min_size=7, max_size=7),
+    st.lists(_component, min_size=1, max_size=3),
+    st.lists(_component, min_size=1, max_size=4),
+)
+# pythonvCard4 <= 0.2.0 unescapes before splitting, so each of these split one
+# component in two (sharf-shawon/pythonvCard4#5).
+@example(
+    ["Doe;Jr", "John", "", "", ""],
+    ["", "", "1; Main St", "Town", "", "", ""],
+    ["J;D"],
+    ["R,D", "Sales"],
+)
+def test_structured_values_parse_into_their_components(n, adr, nickname, categories):
+    """An escaped separator inside a component stays inside it on read."""
+    text = "\n".join(
+        [
+            "BEGIN:VCARD",
+            "VERSION:4.0",
+            "FN:x",
+            _structured_line("N", n, ";"),
+            _structured_line("ADR;TYPE=home", adr, ";"),
+            _structured_line("NICKNAME", nickname, ";"),
+            _structured_line("CATEGORIES", categories, ","),
+            "END:VCARD",
+        ]
+    )
+
+    contact = _parse_vcard(text)
+
+    assert contact.n == [_crlf_to_lf(c) for c in n]
+    assert contact.adr == [{"value": [_crlf_to_lf(c) for c in adr], "type": ["home"]}]
+    assert contact.nickname == [_crlf_to_lf(c) for c in nickname]
+    assert contact.categories == [_crlf_to_lf(c) for c in categories]

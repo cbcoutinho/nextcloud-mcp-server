@@ -1,6 +1,7 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -93,8 +94,8 @@ def _escape_n_component(value: str) -> str:
     return escape_text(value.replace("\r\n", "\n").replace("\r", "\n"))
 
 
-def _split_n_value(value: str) -> list[str]:
-    """Split a raw (still escaped) N value on its unescaped ``;`` separators.
+def _split_unescaped(value: str, sep: str = ";") -> list[str]:
+    """Split a raw (still escaped) structured value on its unescaped ``sep``.
 
     Escape pairs are consumed whole, so ``\\\\;`` -- an escaped backslash, then
     a separator -- splits, while ``\\;`` does not. A ``(?<!\\);`` lookbehind
@@ -106,7 +107,7 @@ def _split_n_value(value: str) -> list[str]:
     for char in chars:
         if char == "\\":
             current.append(char + next(chars, ""))
-        elif char == ";":
+        elif char == sep:
             comps.append("".join(current))
             current = []
         else:
@@ -115,13 +116,22 @@ def _split_n_value(value: str) -> list[str]:
     return comps
 
 
+def _unescape_component(component: str) -> str:
+    """Single-pass vCard unescape (RFC 6350 §3.4).
+
+    ``pythonvCard4.unescape_text`` chains ``replace`` calls, so it decodes an
+    escaped backslash followed by ``n`` as a line break.
+    """
+    return re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nN" else m[1], component)
+
+
 def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
     """Overwrite the supplied components of an existing raw N value.
 
     Existing components are split on unescaped ``;`` and kept verbatim (still
     escaped); supplied components are escaped and written in their slot.
     """
-    comps = _split_n_value(existing) if existing else []
+    comps = _split_unescaped(existing) if existing else []
     comps += [""] * (len(_N_COMPONENTS) - len(comps))
     for i, key in enumerate(_N_COMPONENTS):
         if key in parts:
@@ -322,10 +332,10 @@ def _parse_vcard(vcard_text: str) -> Contact:
     loses every field of the contact. On failure, retry without the lines that
     fail in isolation, so the contact keeps its name, phone and email.
     """
+    lines = unfold_lines(vcard_text.splitlines())
     try:
-        return Contact.from_vcard(vcard_text)
+        contact = Contact.from_vcard(vcard_text)
     except Exception:
-        lines = unfold_lines(vcard_text.splitlines())
         dropped = [line for line in lines if not _parses_alone(line)]
         if not dropped:
             raise
@@ -333,8 +343,49 @@ def _parse_vcard(vcard_text: str) -> Contact:
             "Dropped unparseable vCard properties: %s",
             [line.split(":", 1)[0] for line in dropped],
         )
-        kept = [line for line in lines if line not in dropped]
-        return Contact.from_vcard("\n".join(kept))
+        lines = [line for line in lines if line not in dropped]
+        contact = Contact.from_vcard("\n".join(lines))
+    _resplit_structured(contact, lines)
+    return contact
+
+
+#: Structured properties pythonvCard4 splits, and the separator it splits on.
+#: NICKNAME is ``,``-separated in RFC 6350; ``;`` matches what the library writes.
+_STRUCTURED_SEPARATORS = {"N": ";", "ADR": ";", "NICKNAME": ";", "CATEGORIES": ","}
+
+
+def _resplit_structured(contact: Contact, lines: list[str]) -> None:
+    """Re-split N, ADR, NICKNAME and CATEGORIES from their raw lines.
+
+    ponytail: workaround for pythonvCard4 <= 0.2.0, whose ``from_vcard``
+    unescapes these values *before* splitting them, so an escaped separator
+    inside one component (``N:Doe\\;Jr;John``) splits it and shifts every later
+    field. Remove this, and its call in ``_parse_vcard``, once a pythonvCard4
+    release ships https://github.com/sharf-shawon/pythonvCard4/pull/6, and raise
+    the dependency floor to that release.
+
+    Mirrors which line the library keeps: the first N, the last NICKNAME and
+    CATEGORIES, and every ADR in order, so ``contact.adr`` keeps its TYPEs.
+    """
+    adr_entries = iter(contact.adr)
+    n_done = False
+    for line in lines:
+        key, colon, raw = line.partition(":")
+        name = key.split(";", 1)[0].upper()
+        sep = _STRUCTURED_SEPARATORS.get(name)
+        if not colon or sep is None:
+            continue
+        comps = [_unescape_component(c) for c in _split_unescaped(raw, sep)]
+        if name == "N" and not n_done:
+            contact.n, n_done = comps, True
+        elif name == "ADR":
+            entry = next(adr_entries, None)
+            if entry is not None:
+                entry["value"] = comps
+        elif name == "NICKNAME":
+            contact.nickname = comps
+        elif name == "CATEGORIES":
+            contact.categories = comps
 
 
 def _project_contact(contact: Contact) -> dict[str, Any]:
