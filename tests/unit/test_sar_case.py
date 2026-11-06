@@ -218,7 +218,8 @@ async def test_create_reports_a_failed_case_file_write_as_retryable(nc, monkeypa
     assert "/Team/SAR-1" not in nc.webdav.dirs
 
 
-async def test_create_reports_a_refused_case_file_write_as_403(nc, monkeypatch):
+@pytest.mark.parametrize("status", [401, 403])
+async def test_create_reports_a_refused_case_file_write_as_403(nc, monkeypatch, status):
     """Nextcloud can accept the MKCOL and refuse the PUT into it (seen on a
     tenant whose storage made new folders read-only). That is a permissions
     problem to report as one, not a 500, and the folder must not linger and
@@ -230,7 +231,7 @@ async def test_create_reports_a_refused_case_file_write_as_403(nc, monkeypatch):
     async def forbidden_once(*args, **kwargs):
         if refuse:
             refuse.pop()
-            raise _http_error(403)
+            raise _http_error(status)
         return await write_file(*args, **kwargs)
 
     monkeypatch.setattr(nc.webdav, "write_file", forbidden_once)

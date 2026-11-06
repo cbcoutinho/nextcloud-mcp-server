@@ -228,7 +228,9 @@ async def _remove_new_case_dir(nc: NextcloudClient, case_dir: str) -> None:
     try:
         await nc.webdav.delete_resource(case_dir)
     except Exception:
-        logger.warning("Could not remove %r after a failed case create", case_dir)
+        logger.warning(
+            "Could not remove %r after a failed case create", case_dir, exc_info=True
+        )
 
 
 async def create_case(
@@ -278,11 +280,12 @@ async def create_case(
     except BaseException as e:
         # We created case_dir just above (MKCOL 201), so it holds nothing but
         # our failed write. Left behind, it would turn every retry with this
-        # name into "already exists". Shielded, so a cancelled or timed-out
-        # request cleans up too. If the PUT did land and only the response
-        # was lost, this discards it, which is fine: the caller saw an error
-        # and will retry.
-        with anyio.CancelScope(shield=True):
+        # name into "already exists". BaseException, and shielded, so a
+        # cancelled or timed-out request cleans up too; capped so a hung
+        # DELETE cannot hold up the cancellation for long. If the PUT did
+        # land and only the response was lost, this discards it, which is
+        # fine: the caller saw an error and will retry.
+        with anyio.CancelScope(shield=True), anyio.move_on_after(10):
             await _remove_new_case_dir(nc, case_dir)
         if isinstance(e, HTTPStatusError):
             _raise_if_unavailable(e, case_file)
