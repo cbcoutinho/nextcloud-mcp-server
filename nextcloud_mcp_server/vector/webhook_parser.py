@@ -111,7 +111,7 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
         # A body of the wrong shape: ``node``/``card`` not an object, a
         # non-string path. The parsers below do no I/O, so these can only come
         # from the payload; exc_info keeps a genuine parser regression visible.
-        logger.debug(
+        logger.warning(
             "Webhook %r has a malformed event body", event_class, exc_info=True
         )
         return None
