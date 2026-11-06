@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, patch
 import anyio
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ImageContent, TextContent
@@ -24,8 +26,12 @@ from PIL import Image
 from nextcloud_mcp_server.client.webdav import OversizeDownload, WebDAVClient
 from nextcloud_mcp_server.models.webdav import ViewImageResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
-from nextcloud_mcp_server.server.webdav_image import nc_webdav_view_image
-from nextcloud_mcp_server.utils.image_view import prepare_image_in_thread
+from nextcloud_mcp_server.server.webdav_image import (
+    _PREVIEW_STEPS,
+    _preview_step,
+    nc_webdav_view_image,
+)
+from nextcloud_mcp_server.utils.image_view import MAX_SIZE, prepare_image_in_thread
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit
@@ -146,15 +152,23 @@ async def test_max_size_outside_the_range_is_refused(mcp, webdav, max_size):
 # ── Which preview, and when the original ────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("max_size", "step"),
-    [(64, 256), (800, 1024), (1024, 4096), (1568, 4096), (2576, 4096)],
-)
-async def test_preview_size_is_the_next_step_above_max_size(webdav, max_size, step):
-    """Strictly above, so source_width == width means there is no more detail."""
-    await nc_webdav_view_image(path="a.jpg", ctx=_ctx(), max_size=max_size)
+async def test_the_preview_is_requested_at_the_step_for_max_size(webdav):
+    await nc_webdav_view_image(path="a.jpg", ctx=_ctx(), max_size=800)
 
-    webdav["client"].webdav.get_preview.assert_awaited_once_with("a.jpg", step)
+    webdav["client"].webdav.get_preview.assert_awaited_once_with(
+        "a.jpg", _preview_step(800)
+    )
+
+
+@given(st.integers(min_value=64, max_value=MAX_SIZE))
+@example(1024)  # equal to a step: the next one up
+@example(MAX_SIZE)
+def test_preview_step_is_the_smallest_strictly_above_max_size(max_size):
+    """Strictly above, so source_width == width means there is no more detail."""
+    step = _preview_step(max_size)
+
+    assert step in _PREVIEW_STEPS and step > max_size
+    assert not [s for s in _PREVIEW_STEPS if max_size < s < step]
 
 
 async def test_preview_is_used_without_downloading_the_original(webdav):

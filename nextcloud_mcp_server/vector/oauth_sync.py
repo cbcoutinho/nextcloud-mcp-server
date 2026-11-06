@@ -31,6 +31,7 @@ from httpx2 import BasicAuth, HTTPStatusError
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
 from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.processor import process_document
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
@@ -337,7 +338,10 @@ async def user_scanner_task(
                 await _remove_stale_credential(user_id, status_code)
                 break
             elif status_code == 429:
-                retry_after = min(int(e.response.headers.get("Retry-After", "60")), 300)
+                retry_after = min(
+                    parse_retry_after(e.response.headers.get("Retry-After")) or 60,
+                    300,
+                )
                 logger.warning(
                     "[BasicAuth] Scanner rate-limited for %s, backing off %ss",
                     user_id,

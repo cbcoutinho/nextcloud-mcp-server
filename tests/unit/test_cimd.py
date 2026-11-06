@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
 import nextcloud_mcp_server.auth.oauth_routes as oauth_routes
@@ -128,45 +130,64 @@ LOOPBACK_DOCUMENT = {
 }
 
 
-@pytest.mark.parametrize(
-    "redirect_uri",
-    [
-        "http://localhost/callback",
-        "http://localhost:54321/callback",
-        "http://127.0.0.1:61000/callback",
-        "http://[::1]:61000/callback",
-        "http://localhost:3000/fixed",
-        REDIRECT,
-    ],
-)
-async def test_portless_loopback_redirect_matches_any_port(redirect_uri):
-    fetch = AsyncMock(return_value=json.dumps(LOOPBACK_DOCUMENT).encode())
-    with patch.object(cimd, "_fetch", new=fetch):
-        assert await cimd.validate_cimd_client(CLIENT_ID, redirect_uri) is None
+_LOOPBACK_REGISTERED = LOOPBACK_DOCUMENT["redirect_uris"]
+_hosts = st.sampled_from(["localhost", "127.0.0.1", "[::1]"])
+_ports = st.integers(min_value=1, max_value=65535)
 
 
-@pytest.mark.parametrize(
-    "redirect_uri",
-    [
-        "http://localhost:54321/other",  # different path
-        "http://localhost:54321/callback?x=1",  # different query
-        "http://localhost:54321/callback#frag",
-        "https://localhost:54321/callback",  # different scheme
-        "http://127.0.0.1:54321/other",
-        "http://example.com:54321/callback",  # not loopback
-        "http://localhost.evil.example:54321/callback",
-        "http://user@localhost:54321/callback",
-        "http://localhost:99999/callback",  # out of range
-        "http://localhost:abc/callback",
-        "http://localhost:4000/fixed",  # registered with a port: exact only
-        "https://client.example.com:8443/callback",  # only loopback is relaxed
-    ],
-)
-async def test_loopback_port_relaxation_is_narrow(redirect_uri):
+async def test_an_ephemeral_loopback_port_passes_validation():
+    """Wiring: validate_cimd_client applies the matcher below to the document."""
     fetch = AsyncMock(return_value=json.dumps(LOOPBACK_DOCUMENT).encode())
     with patch.object(cimd, "_fetch", new=fetch):
-        error = await cimd.validate_cimd_client(CLIENT_ID, redirect_uri)
-    assert error is not None and "redirect_uri" in error
+        assert (
+            await cimd.validate_cimd_client(
+                CLIENT_ID, "http://localhost:54321/callback"
+            )
+            is None
+        )
+
+
+@given(_hosts, st.none() | _ports)
+@example("[::1]", 61000)
+def test_portless_loopback_redirect_matches_any_port(host, port):
+    """RFC 8252 §7.3: native clients listen on an ephemeral port."""
+    uri = f"http://{host}" + (f":{port}" if port else "") + "/callback"
+    assert cimd._redirect_uri_matches(uri, _LOOPBACK_REGISTERED)
+
+
+@given(
+    _hosts,
+    _ports,
+    st.sampled_from(
+        [
+            "http://{h}:{p}/other",  # different path
+            "http://{h}:{p}/callback?x=1",  # different query
+            "http://{h}:{p}/callback#frag",
+            "https://{h}:{p}/callback",  # different scheme
+            "http://user@{h}:{p}/callback",
+            "http://{h}.evil.example:{p}/callback",
+            "http://example.com:{p}/callback",  # not loopback
+            "https://client.example.com:{p}/callback",  # only loopback relaxed
+            "http://{h}:{p}/callback#",  # even an empty fragment
+            "http://{h}:7{p:05d}/callback",  # out of range
+            "http://{h}:x{p}/callback",
+        ]
+    ),
+)
+def test_loopback_port_relaxation_is_narrow(host, port, template):
+    """Only the port is relaxed; every other component must still match."""
+    uri = template.format(h=host, p=port)
+    assert not cimd._redirect_uri_matches(uri, _LOOPBACK_REGISTERED)
+
+
+@given(_ports.filter(lambda p: p != 3000))
+def test_a_registered_port_matches_exactly(port):
+    assert cimd._redirect_uri_matches(
+        "http://localhost:3000/fixed", _LOOPBACK_REGISTERED
+    )
+    assert not cimd._redirect_uri_matches(
+        f"http://localhost:{port}/fixed", _LOOPBACK_REGISTERED
+    )
 
 
 async def test_slow_fetch_is_bounded_by_one_overall_deadline(monkeypatch):

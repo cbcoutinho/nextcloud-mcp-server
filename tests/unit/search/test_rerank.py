@@ -11,6 +11,8 @@ would be indistinguishable from a ranking regression.
 
 import anyio
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.rerank import (
     RerankedIndex,
@@ -104,21 +106,18 @@ class TestAvailability:
 
 
 class TestEndpointResolution:
-    @pytest.mark.parametrize(
-        "gateway,expected",
-        [
-            ("https://gw.example", "https://gw.example/v1/rerank"),
-            ("https://gw.example/", "https://gw.example/v1/rerank"),
-            ("https://gw.example/v1", "https://gw.example/v1/rerank"),
-            ("https://gw.example/v1/", "https://gw.example/v1/rerank"),
-        ],
+    @given(
+        st.from_regex(r"\Ahttps?://[a-z][a-z0-9.-]{0,20}(:[0-9]{1,5})?\Z"),
+        st.sampled_from(["", "/", "/v1", "/v1/"]),
     )
-    def test_gateway_url_normalisation_is_idempotent(self, gateway, expected):
+    @example("https://gw.example", "")
+    @example("https://gw.example", "/v1/")
+    def test_gateway_url_normalisation_is_idempotent(self, origin, suffix):
         """EMBEDDING_GATEWAY_URL is a bare origin in some deployments and already
-        /v1-suffixed in others; both must reach the same endpoint."""
+        /v1-suffixed in others; every spelling reaches the same endpoint."""
         assert (
-            rerank_mod.rerank_endpoint(_settings(embedding_gateway_url=gateway))
-            == expected
+            rerank_mod.rerank_endpoint(_settings(embedding_gateway_url=origin + suffix))
+            == f"{origin}/v1/rerank"
         )
 
     @pytest.mark.parametrize(

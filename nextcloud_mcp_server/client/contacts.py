@@ -8,6 +8,8 @@ from typing import Any
 
 from pythonvCard4.vcard import Contact, escape_text, fold_line, unfold_lines
 
+from nextcloud_mcp_server.utils.parsing import split_csv
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -210,7 +212,7 @@ def _split_categories(value: str | list[str]) -> list[str]:
     """
     if isinstance(value, list):
         return value
-    return [v.strip() for v in value.split(",") if v.strip()]
+    return split_csv(value)
 
 
 def _parse_bday(value: str | date | None) -> date | None:

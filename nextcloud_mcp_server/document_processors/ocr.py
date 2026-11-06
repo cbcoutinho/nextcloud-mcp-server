@@ -37,6 +37,7 @@ import anyio
 import httpx2
 
 from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from .base import (
     EMPTY_DOCUMENT_REASON,
@@ -595,9 +596,7 @@ def build_ocr_backend(
     # docling is explicit-only: "auto" never selects it (it needs a self-hosted
     # URL that auto can't presume), so this branch omits "auto" deliberately.
     if provider == "docling" and settings.docling_api_url:
-        lang = [
-            s.strip() for s in (settings.docling_ocr_lang or "").split(",") if s.strip()
-        ]
+        lang = split_csv(settings.docling_ocr_lang)
         # VLM OCR is ~30-150s per page; the default 180s OCR timeout is often too
         # low. Warn (don't override) so the operator raises it deliberately (D3).
         if (
