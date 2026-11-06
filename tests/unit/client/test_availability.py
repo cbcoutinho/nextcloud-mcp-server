@@ -32,12 +32,44 @@ def at(day: str, time: str) -> dt.datetime:
     return dt.datetime.fromisoformat(f"{day}T{time}").replace(tzinfo=TZ)
 
 
+@st.composite
+def time_range_hints(draw):
+    """A ``"HH:MM-HH:MM,..."`` hint and the ranges it must parse to.
+
+    Malformed and inverted entries sit among the valid ones: one typo must
+    skip that entry only, never the rest of the hint.
+    """
+    times = st.times().map(lambda t: t.replace(second=0, microsecond=0))
+    pad = st.sampled_from(["", " ", "  "])
+    parts, expected = [], []
+    for _ in range(draw(st.integers(0, 5))):
+        start, end = draw(times), draw(times)
+        kind = draw(st.sampled_from(["range", "junk"]))
+        if kind == "junk":
+            parts.append(
+                draw(st.sampled_from(["09:00", "not-a-range", "25:00-26:00", "-", ""]))
+            )
+            continue
+        parts.append(
+            f"{draw(pad)}{start:%H:%M}{draw(pad)}-{draw(pad)}{end:%H:%M}{draw(pad)}"
+        )
+        if start < end:  # equal or inverted: skipped
+            expected.append((start, end))
+    return ",".join(parts), expected
+
+
 class TestParseTimeRanges:
-    def test_parses_comma_separated_string(self):
-        assert parse_time_ranges("09:00-12:00,14:00-17:30") == [
-            (dt.time(9), dt.time(12)),
-            (dt.time(14), dt.time(17, 30)),
-        ]
+    @given(time_range_hints())
+    @example(
+        (
+            "09:00-12:00,14:00-17:30",
+            [(dt.time(9), dt.time(12)), (dt.time(14), dt.time(17, 30))],
+        )
+    )
+    @example(("17:00-09:00", []))
+    def test_parses_valid_ranges_in_order_and_skips_the_rest(self, case):
+        hint, expected = case
+        assert parse_time_ranges(hint) == expected
 
     def test_accepts_an_already_split_list(self):
         assert parse_time_ranges([" 09:00-12:00 "]) == [(dt.time(9), dt.time(12))]
@@ -45,13 +77,6 @@ class TestParseTimeRanges:
     def test_empty_input_is_no_constraint(self):
         assert parse_time_ranges("") == []
         assert parse_time_ranges(None) == []
-
-    @pytest.mark.parametrize("bad", ["09:00", "not-a-range", "25:00-26:00", "-"])
-    def test_malformed_ranges_are_skipped_not_raised(self, bad):
-        assert parse_time_ranges(f"{bad},09:00-10:00") == [(dt.time(9), dt.time(10))]
-
-    def test_inverted_range_is_skipped(self):
-        assert parse_time_ranges("17:00-09:00") == []
 
 
 class TestBusySpansFromEvents:

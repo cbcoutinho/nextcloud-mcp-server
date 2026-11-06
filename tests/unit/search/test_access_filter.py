@@ -6,6 +6,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from qdrant_client.models import (
     FieldCondition,
     Filter,
@@ -526,28 +528,29 @@ class TestBuildBaseFilterConditions:
         assert len(conditions) == 5
 
 
+_folders = st.sampled_from(["", " ", "/A", " /A ", "/B", "/B\t", "/C"]) | st.from_regex(
+    r"/dir[0-9]{1,3}", fullmatch=True
+)
+
+
 class TestNormalizePathPrefixes:
     @pytest.mark.unit
-    def test_empty_inputs_return_empty_list(self) -> None:
-        assert normalize_path_prefixes(None, None) == []
-        assert normalize_path_prefixes("", []) == []
-        assert normalize_path_prefixes("   ", ["", "  "]) == []
+    @given(
+        st.none() | _folders,
+        st.none() | st.lists(_folders, max_size=MAX_PATH_PREFIXES + 30),
+    )
+    @example(" /Projects ", ["/Archive", "/Projects", "  ", "/Specs"])
+    @example("   ", ["", "  "])  # blank must mean "no filter", not "match all"
+    @example(None, [f"/dir{i}" for i in range(MAX_PATH_PREFIXES + 30)])
+    def test_strips_drops_blanks_dedupes_in_order_and_caps(
+        self, path_prefix, path_prefixes
+    ) -> None:
+        # The cap stops any caller building an unbounded Qdrant OR-clause.
+        raw = [path_prefix or "", *(path_prefixes or [])]
+        stripped = [p.strip() for p in raw if p.strip()]
+        expected = list(dict.fromkeys(stripped))[:MAX_PATH_PREFIXES]
 
-    @pytest.mark.unit
-    def test_strips_dedupes_and_preserves_order(self) -> None:
-        result = normalize_path_prefixes(
-            " /Projects ", ["/Archive", "/Projects", "  ", "/Specs"]
-        )
-        assert result == ["/Projects", "/Archive", "/Specs"]
-
-    @pytest.mark.unit
-    def test_caps_at_max_path_prefixes(self) -> None:
-        # A huge list is truncated to MAX_PATH_PREFIXES so no caller can build
-        # an unbounded OR-clause; the first N (order-preserving) survive.
-        folders = [f"/dir{i}" for i in range(MAX_PATH_PREFIXES + 30)]
-        result = normalize_path_prefixes(None, folders)
-        assert len(result) == MAX_PATH_PREFIXES
-        assert result == folders[:MAX_PATH_PREFIXES]
+        assert normalize_path_prefixes(path_prefix, path_prefixes) == expected
 
 
 # ---------------------------------------------------------------------------

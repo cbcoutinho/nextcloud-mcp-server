@@ -6,12 +6,17 @@ while actually being lost recall, so the client's contract is: every index it
 returns is valid and unique, and it never invents or omits one quietly.
 """
 
+import math
+
 import httpx2
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.rerank import (
     RerankClient,
     RerankError,
+    _parse_entry,
 )
 
 pytestmark = pytest.mark.unit
@@ -277,20 +282,49 @@ class TestResponseParsing:
         )
         assert [r.score for r in ranked] == [-0.2, -5.0]
 
-    @pytest.mark.parametrize(
-        "item",
-        [
-            {"index": True, "relevance_score": 1.0},  # bool is an int subclass
-            {"index": "0", "relevance_score": 1.0},
-            {"index": 0, "relevance_score": "high"},
-            {"index": 0, "relevance_score": True},
-            {"index": 0},
-            "not-a-dict",
-        ],
+    @given(
+        st.integers(0, 5),
+        st.sets(st.integers(-2, 7)),
+        st.fixed_dictionaries(
+            {},
+            optional={
+                "index": st.integers(-2, 7) | st.booleans() | st.text(max_size=2),
+                "relevance_score": st.floats()
+                | st.integers()
+                | st.booleans()
+                | st.text(max_size=2),
+            },
+        )
+        | st.none()
+        | st.text(max_size=3),
     )
-    def test_malformed_entries_are_skipped(self, item):
-        with pytest.raises(RerankError, match="no usable results"):
-            RerankClient._parse({"results": [item]}, 2)
+    def test_an_entry_is_kept_only_when_it_can_be_trusted(self, sent, seen, item):
+        """Kept iff the index is a real int (``bool`` is an ``int`` subclass and
+        would reorder a result), in range and unseen, and the score is a real
+        number. Anything else is skipped rather than raised."""
+        fields = item if isinstance(item, dict) else {}
+        idx, score = fields.get("index"), fields.get("relevance_score")
+
+        def number(value, kinds):
+            return isinstance(value, kinds) and not isinstance(value, bool)
+
+        trusted = (
+            number(idx, int)
+            and 0 <= idx < sent
+            and idx not in seen
+            and number(score, (int, float))
+        )
+
+        entry = _parse_entry(item, sent, seen)
+
+        if not trusted:
+            assert entry is None
+        else:
+            assert entry is not None and entry.index == idx
+            # NaN != NaN, so compare NaN-ness separately.
+            assert entry.score == float(score) or (
+                math.isnan(score) and math.isnan(entry.score)
+            )
 
     @pytest.mark.parametrize(
         "body",
