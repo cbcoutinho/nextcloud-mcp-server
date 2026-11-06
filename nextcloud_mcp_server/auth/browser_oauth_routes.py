@@ -93,14 +93,17 @@ def _safe_next_url(raw: str | None, default: str) -> str:
     ``/oauth/login`` and ``/oauth/logout`` (and the round-tripped
     ``client_redirect_uri`` stored on the oauth_session). A safe target:
       - starts with a single ``/`` (so it's a path on this server)
-      - does NOT start with ``//`` (which would be protocol-relative)
-      - has no whitespace or control characters that could trick browsers
+      - does NOT start with ``//`` (which would be protocol-relative), where
+        ``\\`` counts as ``/``: browsers parse ``/\\evil.com`` as
+        ``//evil.com`` (WHATWG URL spec, special schemes)
+      - has no whitespace or non-printable characters that could trick browsers
 
     Anything else returns *default*.
     """
-    if not raw or not raw.startswith("/") or raw.startswith("//"):
+    if not raw or any(c.isspace() or not c.isprintable() for c in raw):
         return default
-    if any(c.isspace() or ord(c) < 0x20 for c in raw):
+    as_browser_sees_it = raw.replace("\\", "/")
+    if not as_browser_sees_it.startswith("/") or as_browser_sees_it.startswith("//"):
         return default
     return raw
 
