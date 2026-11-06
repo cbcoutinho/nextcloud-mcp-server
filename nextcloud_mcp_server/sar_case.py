@@ -326,7 +326,7 @@ async def list_cases(nc: NextcloudClient) -> SarCaseListResponse:
         except Exception:
             # A damaged or foreign file of the same name is not a case; skip
             # it rather than failing the whole list.
-            logger.warning("Skipping unreadable SAR case file %s", path)
+            logger.warning("Skipping unreadable SAR case file %s", path, exc_info=True)
             return
         # Appends from concurrent tasks are safe: no await between read and write.
         summaries.append(

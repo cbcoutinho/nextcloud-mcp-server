@@ -3106,6 +3106,11 @@ class CalendarClient:
             return True
 
         except Exception:
+            # Fail open: an unreadable event stays in the result rather than
+            # vanishing. Logged, since a filter bug would otherwise match all.
+            logger.warning(
+                "Event filter failed; keeping event %r", event.get("uid"), exc_info=True
+            )
             return True
 
     def _todo_matches_filters(
@@ -3141,6 +3146,10 @@ class CalendarClient:
             return True
 
         except Exception:
+            # Fail open, logged: see _event_matches_filters.
+            logger.warning(
+                "Todo filter failed; keeping todo %r", todo.get("uid"), exc_info=True
+            )
             return True
 
     # ============= Legacy Methods (for backward compatibility) =============
