@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.205.1 (2026-11-06)
+
+### Fix
+
+- **ci**: kill the orphaned apt-get between Playwright install attempts
+- log what was swallowed where a handler falls back silently
+
 ## v0.205.0 (2026-11-06)
 
 ### Feat
