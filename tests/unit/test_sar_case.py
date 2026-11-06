@@ -43,6 +43,7 @@ class FakeWebDAV:
         self.dirs = {"", "/Team"}
         self.files: dict[str, tuple[bytes, int, int]] = {}  # path -> (body, id, rev)
         self._next_id = 100
+        self.deleted: list[str] = []
         # Hooks simulating a writer in another process (bypassing our lock).
         self.before_write = None
         self.after_write = None
@@ -55,6 +56,14 @@ class FakeWebDAV:
             raise _http_error(409)
         self.dirs.add(path)
         return {"status_code": 201}
+
+    async def delete_resource(self, path):
+        path = path.rstrip("/")
+        self.deleted.append(path)
+        self.dirs.discard(path)
+        for f in [f for f in self.files if f.startswith(path + "/")]:
+            del self.files[f]
+        return {"status_code": 204}
 
     async def write_file(self, path, content, content_type=None, if_match=None):
         if self.before_write is not None:
@@ -205,6 +214,49 @@ async def test_create_reports_a_failed_case_file_write_as_retryable(nc, monkeypa
     with pytest.raises(sar_export.ExportError, match="try again") as info:
         await _create(nc)
     assert info.value.status == 503
+    assert "/Team/SAR-1" not in nc.webdav.dirs
+
+
+async def test_create_reports_a_refused_case_file_write_as_403(nc, monkeypatch):
+    """Nextcloud can accept the MKCOL and refuse the PUT into it (seen on a
+    tenant whose storage made new folders read-only). That is a permissions
+    problem to report as one, not a 500, and the folder must not linger and
+    turn every retry into 'already exists'."""
+
+    async def forbidden(*args, **kwargs):
+        raise _http_error(403)
+
+    monkeypatch.setattr(nc.webdav, "write_file", forbidden)
+    with pytest.raises(sar_export.ExportError, match="refused") as info:
+        await _create(nc)
+    assert info.value.status == 403
+    assert nc.webdav.deleted == ["/Team/SAR-1"]
+
+    monkeypatch.undo()
+    assert (await _create(nc)).path == "/Team/SAR-1/sar-case.json"
+
+
+async def test_create_cleanup_failure_does_not_mask_the_write_error(nc, monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise _http_error(403)
+
+    async def undeletable(path):
+        raise _http_error(403)
+
+    monkeypatch.setattr(nc.webdav, "write_file", forbidden)
+    monkeypatch.setattr(nc.webdav, "delete_resource", undeletable)
+    with pytest.raises(sar_export.ExportError) as info:
+        await _create(nc)
+    assert info.value.status == 403
+
+
+async def test_create_never_removes_an_existing_folder(nc, webdav):
+    await _create(nc)
+    with pytest.raises(sar_export.ExportError) as info:
+        await _create(nc)
+    assert info.value.status == 409
+    assert webdav.deleted == []
+    assert "/Team/SAR-1/sar-case.json" in webdav.files
 
 
 async def test_create_validates_name_and_folder(nc):

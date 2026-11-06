@@ -223,6 +223,14 @@ def _raise_if_unavailable(e: HTTPStatusError, path: str) -> None:
         ) from e
 
 
+async def _remove_new_case_dir(nc: NextcloudClient, case_dir: str) -> None:
+    """Best effort: a failure here must not mask why the create failed."""
+    try:
+        await nc.webdav.delete_resource(case_dir)
+    except Exception:
+        logger.warning("Could not remove %r after a failed case create", case_dir)
+
+
 async def create_case(
     nc: NextcloudClient,
     *,
@@ -235,7 +243,10 @@ async def create_case(
 
     Raises:
         ExportError: invalid name or folder (400), the folder is missing or not
-            writable (403), or a case of that name exists there (409).
+            writable, or Nextcloud refuses the case file (403), a case of that
+            name exists there (409), or Nextcloud is failing (503). When the
+            case file cannot be written, the case folder created for it is
+            removed again.
     """
     case_dir = f"{normalize_folder(folder)}/{validate_name(name)}"
     case_file = f"{case_dir}/{CASE_FILE}"
@@ -263,9 +274,22 @@ async def create_case(
         result = await nc.webdav.write_file(
             case_file, case.model_dump_json(indent=2).encode(), "application/json"
         )
-    except HTTPStatusError as e:
+    except Exception as e:
+        # We created case_dir just above (MKCOL 201), so it holds nothing but
+        # our failed write. Left behind, it would turn every retry with this
+        # name into "already exists".
+        await _remove_new_case_dir(nc, case_dir)
+        if not isinstance(e, HTTPStatusError):
+            raise
         _raise_if_unavailable(e, case_file)
-        raise
+        raise ExportError(
+            f"Nextcloud refused to write {case_file!r} "
+            f"(HTTP {e.response.status_code}) although it created {case_dir!r}: "
+            "check the folder's permissions and any file access rules, and "
+            "that you have accepted the instance's terms of service (until "
+            "then Nextcloud makes your files read-only to apps).",
+            403,
+        ) from e
     if result["status_code"] in (412, 423):
         raise ExportError(f"{case_file} already exists", 409)
     file_id = await nc.webdav.get_fileid(case_file)
