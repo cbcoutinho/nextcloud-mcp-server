@@ -70,7 +70,8 @@ def parse_modified_timestamp(
         seconds = _to_unix_seconds(value)
     except (ValueError, OverflowError) as exc:  # NaN, infinity, bad ISO string
         raise ValueError(
-            f"{param_name} must be an RFC 3339 datetime or Unix seconds, got {value!r}"
+            f"{param_name} must be an RFC 3339 datetime or finite Unix seconds, "
+            f"got {value!r}"
         ) from exc
     # One check for every form: "1969-12-31" is as negative as -1.
     if seconds < 0:

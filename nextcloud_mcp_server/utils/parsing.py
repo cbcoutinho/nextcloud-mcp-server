@@ -5,6 +5,7 @@ diverging edge cases (``"1"`` enabling one flag but not another, ``int()`` on a
 ``Retry-After`` HTTP-date raising mid-retry). One definition, one property test.
 """
 
+import functools
 import logging
 from typing import Any
 
@@ -33,15 +34,21 @@ def parse_bool(value: Any, default: bool = False, *, name: str = "flag") -> bool
         return True
     if word in _FALSE:
         return False
+    _warn_unrecognised(name, repr(value), default)
+    return default
+
+
+@functools.cache
+def _warn_unrecognised(name: str, value: str, default: bool) -> None:
+    """Warn once per (setting, value): some flags are read on every request."""
     logger.warning(
-        "Unrecognised boolean %s=%r; expected one of %s or %s, using %s",
+        "Unrecognised boolean %s=%s; expected one of %s or %s, using %s",
         name,
         value,
         sorted(_TRUE),
         sorted(_FALSE - {""}),
         default,
     )
-    return default
 
 
 def split_csv(raw: str | None) -> list[str]:

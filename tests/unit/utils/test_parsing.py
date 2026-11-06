@@ -5,6 +5,7 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.utils.parsing import (
+    _warn_unrecognised,
     parse_bool,
     parse_retry_after,
     split_csv,
@@ -87,7 +88,10 @@ def test_retry_after_is_positive_or_none(raw):
     assert result is None or (result > 0 and str(result) == raw.strip().lstrip("0"))
 
 
-def test_unrecognised_spelling_is_logged_with_the_setting_name(caplog):
+def test_unrecognised_spelling_is_logged_once_with_the_setting_name(caplog):
+    """Once per (setting, value): COOKIE_SECURE is read on every login."""
+    _warn_unrecognised.cache_clear()
     with caplog.at_level("WARNING", logger="nextcloud_mcp_server.utils.parsing"):
         assert parse_bool("ture", True, name="COOKIE_SECURE") is True
-    assert "COOKIE_SECURE='ture'" in caplog.text
+        assert parse_bool("ture", True, name="COOKIE_SECURE") is True
+    assert caplog.text.count("COOKIE_SECURE='ture'") == 1
