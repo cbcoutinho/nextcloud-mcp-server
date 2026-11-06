@@ -49,6 +49,10 @@ CALENDAR_FANOUT = 8
 # listing into memory.
 AVAILABILITY_EVENT_LIMIT = 1000
 
+# Per-calendar match cap for bulk update/delete/move. Same reasoning: the
+# listing default of 50 made a bulk operation silently leave matches untouched.
+BULK_EVENT_LIMIT = 1000
+
 # The URI scheme RFC 6638 addresses attendees by.
 _MAILTO = "mailto:"
 
@@ -3197,6 +3201,7 @@ class CalendarClient:
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filter_criteria,
+                limit=BULK_EVENT_LIMIT,
             )
 
             targets, skipped = self._bulk_targets(events, apply_to_series, "update")

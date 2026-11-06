@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.calendar import BULK_EVENT_LIMIT
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
@@ -892,12 +893,14 @@ def configure_calendar_tools(mcp: MCPServer):
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
             targets, skipped = client.calendar._bulk_targets(
@@ -988,12 +991,14 @@ def configure_calendar_tools(mcp: MCPServer):
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
             targets, skipped = client.calendar._bulk_targets(
