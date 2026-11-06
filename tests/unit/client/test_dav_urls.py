@@ -1,54 +1,73 @@
-"""Unit tests for the shared DAV path/URL encoders.
+"""Property tests for the shared DAV path/URL encoders.
 
 The behavioural tests that matter live beside the clients that call these
 (``test_webdav.py`` for the '#'-truncation 404, ``test_calendar.py`` for the
-space caldav rejects outright). These pin the encoders themselves.
+space caldav rejects outright). These pin the encoders themselves: for *any*
+decoded path, encoding is lossless and leaves nothing a transport could read as
+a delimiter.
 """
 
+import re
+from urllib.parse import unquote
+
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.client.dav_urls import encode_dav_path, encode_dav_url
 
 pytestmark = pytest.mark.unit
 
+#: What may appear in an encoded path: unreserved characters, the separator,
+#: and percent escapes. No '#', '?' or space, which httpx2/caldav would read as
+#: a fragment, a query, or reject outright.
+_ENCODED = re.compile(r"[A-Za-z0-9_.\-~/%]*")
 
-def test_encode_dav_path_encodes_exactly_once():
-    """Pins the decoded-input precondition: a literal '%' becomes '%25', so an
-    already-encoded path passed in error would double-encode (caught here)."""
-    assert encode_dav_path("already%20encoded.pdf") == "already%2520encoded.pdf"
-
-
-def test_encode_dav_path_keeps_separators_and_encodes_delimiters():
-    """'/' separates; '#' and '?' are literal characters in a DAV path."""
-    assert encode_dav_path("a/b c.pdf") == "a/b%20c.pdf"
-    assert encode_dav_path("notes/draft #1?.md") == "notes/draft%20%231%3F.md"
+# Decoded DAV paths never contain the authority separator, which is what
+# ``encode_dav_url`` keys on to tell a URL from a bare path.
+paths = st.text().filter(lambda p: "://" not in p)
 
 
-def test_encode_dav_url_preserves_the_authority():
-    """Scheme, host and port must survive; only the path is encoded."""
-    assert (
-        encode_dav_url("https://cloud.example.org:8443/remote.php/dav/calendars/A B/")
-        == "https://cloud.example.org:8443/remote.php/dav/calendars/A%20B/"
+@given(paths)
+@example("already%20encoded.pdf")  # a literal '%' is data: encoded exactly once
+@example("notes/draft #1?.md")  # '#' and '?' are characters, not delimiters
+@example("a/b c.pdf")
+def test_encode_dav_path_is_lossless_and_transport_safe(path):
+    encoded = encode_dav_path(path)
+
+    assert unquote(encoded) == path
+    assert _ENCODED.fullmatch(encoded)
+    assert encoded.count("/") == path.count("/")
+
+
+@st.composite
+def absolute_urls(draw):
+    """A decoded absolute DAV URL and the authority that must survive encoding."""
+    scheme = draw(st.sampled_from(["http", "https"]))
+    host = draw(
+        st.from_regex(r"[a-z0-9][a-z0-9.-]{0,30}(:[0-9]{1,5})?", fullmatch=True)
     )
-    # A bare path (what caldav hands back from a parsed href) has no authority.
-    assert (
-        encode_dav_url("/remote.php/dav/calendars/A B/")
-        == "/remote.php/dav/calendars/A%20B/"
-    )
-    # Decoded input, so a literal '%' encodes to '%25' -- exactly once.
-    assert (
-        encode_dav_url("/remote.php/dav/calendars/a%b/")
-        == "/remote.php/dav/calendars/a%25b/"
-    )
+    path = draw(st.text())
+    return f"{scheme}://{host}/", path
 
 
-def test_encode_dav_url_does_not_truncate_at_a_fragment_or_query_marker():
-    """``urlsplit`` would read these as delimiters and drop the remainder."""
-    assert (
-        encode_dav_url("/remote.php/dav/calendars/u/personal/evt#1.ics")
-        == "/remote.php/dav/calendars/u/personal/evt%231.ics"
-    )
-    assert (
-        encode_dav_url("https://h/remote.php/dav/calendars/u/personal/evt?x.ics")
-        == "https://h/remote.php/dav/calendars/u/personal/evt%3Fx.ics"
-    )
+@given(absolute_urls())
+@example(("https://cloud.example.org:8443/", "remote.php/dav/calendars/A B/"))
+@example(("https://h/", "remote.php/dav/calendars/u/personal/evt?x.ics"))
+def test_encode_dav_url_keeps_the_authority_and_encodes_only_the_path(url):
+    authority, path = url
+
+    encoded = encode_dav_url(authority + path)
+
+    assert encoded.startswith(authority)
+    rest = encoded[len(authority) :]
+    assert unquote(rest) == path
+    assert _ENCODED.fullmatch(rest)
+
+
+@given(paths)
+@example("/remote.php/dav/calendars/u/personal/evt#1.ics")
+@example("/remote.php/dav/calendars/a%b/")
+def test_encode_dav_url_treats_a_bare_path_like_encode_dav_path(path):
+    """What caldav hands back from a parsed href has no authority."""
+    assert encode_dav_url(path) == encode_dav_path(path)

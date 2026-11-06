@@ -17,6 +17,7 @@ import anyio
 import httpx2
 import pytest
 from httpx2 import HTTPStatusError
+from hypothesis import settings
 from mcp import ClientSession
 from mcp.client.context import ClientRequestContext
 from mcp.client.streamable_http import streamable_http_client
@@ -26,6 +27,17 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
+
+# Property-based tests (Hypothesis). In CI, Hypothesis loads its built-in "ci"
+# profile by itself (derandomized, no deadline, no example database, failure
+# blob printed, too_slow suppressed) -- do not re-register it, which would drop
+# part of that. Locally, only the deadline goes: per-example timing under xdist
+# is too noisy to be a signal. Override with `pytest --hypothesis-profile=...`.
+settings.register_profile("dev", deadline=None)
+# Hypothesis has already loaded "ci" if its own detection fired (CI,
+# GITHUB_ACTIONS, ...); defer to that rather than re-deriving it from CI alone.
+if settings.get_current_profile_name() != "ci":
+    settings.load_profile("dev")
 
 # Default scopes for OAuth testing - all app-specific read/write scopes.
 #

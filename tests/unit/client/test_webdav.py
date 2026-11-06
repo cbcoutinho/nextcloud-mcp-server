@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx2 import HTTPStatusError
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.client.webdav import (
     WebDAVClient,
@@ -1301,39 +1303,62 @@ async def test_write_file_etag_is_none_when_absent(mocker):
     assert result["etag"] is None
 
 
+_ETAG_SUFFIXES = ("-gzip", "-br", "-deflate", "-zstd")
+
+
+@st.composite
+def transported_etags(draw):
+    """An origin etag, and that etag as it may arrive after transport.
+
+    Wrappings, all of which ``normalize_etag`` must undo: surrounding whitespace,
+    the quotes, a weak ``W/`` prefix (``strip`` alone used to leave ``W/"abc``),
+    and the content-coding suffix Apache's mod_deflate appends by default
+    (``DeflateAlterETag AddSuffix``), which broke every conditional overwrite
+    behind such a proxy.
+    """
+    origin = draw(
+        st.text(alphabet="0123456789abcdefgipzr-", max_size=40).filter(
+            lambda e: not e.endswith(_ETAG_SUFFIXES)
+        )
+    )
+    raw = origin + draw(st.sampled_from(("", *_ETAG_SUFFIXES)))
+    if draw(st.booleans()):
+        raw = f'"{raw}"'
+    if draw(st.booleans()):
+        raw = "W/" + raw
+    pad = st.text(alphabet=" \t", max_size=3)
+    return draw(pad) + raw + draw(pad), origin
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ('"abc"', "abc"),
-        ("abc", "abc"),
-        ('""', ""),
-        (None, None),
-        # Weak validators used to come out as W/"abc — strip only removes
-        # characters from the ends, and the leading W protected the opening
-        # quote. The prefix is dropped first now, so the result is usable.
-        ('W/"abc"', "abc"),
-        # Apache's mod_deflate appends -gzip to the ETag of every compressed
-        # response (DeflateAlterETag AddSuffix, the default). Left in place it
-        # breaks every conditional overwrite behind such a proxy.
-        ('"abc-gzip"', "abc"),
-        ("abc-br", "abc"),
-        ("abc-deflate", "abc"),
-        ("abc-zstd", "abc"),
-        ('"abc-zstd"', "abc"),
-        ('W/"abc-gzip"', "abc"),
-        # Only a trailing suffix counts: a name that merely contains one
-        # survives untouched.
-        ("gzip-abc", "gzip-abc"),
-        ("   abc   ", "abc"),
-        # Normalising must be idempotent: each of these needed a second pass.
-        ('"\r0', "0"),
-        ('"W/abc"', "abc"),
-        ("abc-gzip-gzip", "abc"),
-    ],
-)
-def test_normalize_etag(raw, expected):
-    assert normalize_etag(raw) == expected
+@given(transported_etags())
+@example(('"abc"', "abc"))
+@example(('""', ""))
+@example(('W/"abc-gzip"', "abc"))
+@example(("gzip-abc", "gzip-abc"))  # only a *trailing* suffix counts
+@example(("abc-gzip-gzip", "abc"))
+def test_normalize_etag_recovers_the_origin_etag(case):
+    raw, origin = case
+    assert normalize_etag(raw) == origin
+
+
+#: Arbitrary text almost never combines quotes, ``W/``, inner whitespace and
+#: suffixes in the orders that defeat a single pass, so build from those parts.
+_etag_fragments = st.lists(
+    st.sampled_from(['"', "W/", " ", "\t", "\r", "a", "0", *_ETAG_SUFFIXES])
+).map("".join)
+
+
+@pytest.mark.unit
+@given(st.none() | _etag_fragments | st.text())
+@example('"\r0"')  # whitespace inside the quotes needed a second pass
+@example('"W/abc"')
+def test_normalize_etag_is_idempotent(raw):
+    """The value handed out is re-normalised by the write precondition, so a
+    second pass must be a no-op or the two representations drift apart."""
+    once = normalize_etag(raw)
+    assert normalize_etag(once) == once
+    assert (once is None) == (raw is None)
 
 
 @pytest.mark.unit

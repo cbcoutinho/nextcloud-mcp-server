@@ -177,6 +177,9 @@ dev = [
     # failure. That job must therefore stay off .github/actions/uv-env, which
     # syncs the dev group -- a comment on the job says so.
     "pyroscope-io>=0.8.0",
+    # Upper bound is renovate-managed (one minor at a time), so a bump arrives
+    # as a PR whose CI run shows whether new strategies/shrinking surface failures.
+    "hypothesis>=6.170.15,<6.171",
 ]
 
 [project.entry-points."nextcloud_mcp_server.plugins"]
