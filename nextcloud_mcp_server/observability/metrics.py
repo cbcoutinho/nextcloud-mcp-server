@@ -474,7 +474,7 @@ document_escalation_suppressed_total = Counter(
 document_parse_failed_total = Counter(
     "astrolabe_document_parse_failed_total",
     "Document parses that failed in the isolated worker (process killed)",
-    ["reason"],  # reason: timeout | oom | error | unreadable
+    ["reason"],  # reason: timeout | oom | interrupted | error | unreadable
 )
 
 # Documents dead-lettered after a terminal parse failure: the failing tier had
@@ -489,8 +489,8 @@ document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
     "Documents dead-lettered by a terminal parse failure (no escalation tier) "
     "or by repeated index failures",
-    # reason: a parse-failure reason (timeout | oom | error | oversize |
-    # unreadable | unsupported_type) OR a vector.processor._drop_reason value
+    # reason: a parse-failure reason (timeout | oom | interrupted | error |
+    # oversize | unreadable | unsupported_type) OR a vector.processor._drop_reason value
     # (timeout | connection | rate_limit | server | qdrant | other) for the
     # repeated-index-failure path. Keep in step with record_document_dead_lettered's
     # docstring below and with _drop_reason.
@@ -1797,7 +1797,8 @@ def record_document_parse_failed(reason: str) -> None:
     """Record a hard parse failure from the isolated worker.
 
     Args:
-        reason: ``timeout`` | ``oom`` | ``error`` (from the isolated worker);
+        reason: ``timeout`` | ``oom`` | ``interrupted`` | ``error`` (from the
+            isolated worker);
             ``unreadable`` -- the engine could not open the bytes as a document
             at all, i.e. the file's content does not match the mime type its
             extension claimed. Distinguished from ``error`` on purpose: it means
@@ -1858,7 +1859,7 @@ def record_document_dead_lettered(reason: str) -> None:
 
     Args:
         reason: for a **terminal parse failure** — ``timeout`` | ``oom`` |
-            ``error`` (the reason carried from the isolated worker),
+            ``interrupted`` | ``error`` (the reason carried from the isolated worker),
             ``oversize`` (rejected by the pre-parse size guard, which no tier can
             ever parse), ``unreadable`` (the bytes are not a document the engine
             can open -- no tier will do better, so it is terminal on the first

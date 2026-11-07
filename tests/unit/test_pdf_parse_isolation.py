@@ -240,12 +240,16 @@ def test_pymupdf4llm_imports_under_the_mem_limit():
     host core, and under a 640 MiB ``RLIMIT_AS`` either ``pthread_create``
     fails (the import ends in ``KeyboardInterrupt``) or the next import can no
     longer map its shared object (``ImportError``). Both were seen on an
-    8-core host. On a runner with few cores this passes with or without the fix.
+    8-core host.
+
+    The child asks for 64 OpenBLAS threads, which reproduces the failure on any
+    runner whatever its core count, so the test only passes if the worker
+    overrides that setting.
 
     Runs in a fresh interpreter: the cap and the imports are both per-process,
     and they are already loaded in the test process.
     """
-    env = {k: v for k, v in os.environ.items() if k != "OPENBLAS_NUM_THREADS"}
+    env = {**os.environ, "OPENBLAS_NUM_THREADS": "64"}
     script = (
         "from nextcloud_mcp_server.document_processors import _isolation\n"
         "_isolation._apply_mem_limit(640)\n"

@@ -509,8 +509,9 @@ async def run_isolated_pdf_parse(
 ) -> list[dict[str, Any]]:
     """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
 
-    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``interrupted`` | ``error``) instead of
-    taking the pod down. On timeout the worker process is killed (``cancellable``).
+    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``interrupted`` |
+    ``error``) instead of taking the pod down. On timeout the worker process is
+    killed (``cancellable``).
 
     ``process_slots`` bounds how many parses run concurrently. Without it anyio
     defaults to an ``os.cpu_count()``-wide pool, which neither the worker's
