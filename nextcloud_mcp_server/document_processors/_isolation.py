@@ -230,6 +230,11 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
     # ImportError mapping onnxruntime right after (#1635). The parse makes no
     # real use of BLAS, so one thread costs nothing. OpenBLAS reads this when
     # it loads, so it must be set before the first numpy import.
+    #
+    # Assigned, not setdefault: under the cap, more threads is exactly what
+    # breaks, so an operator's larger value must not win here. Only OpenBLAS
+    # is pinned because it is the pool the pinned numpy wheel ships and the
+    # one that failed; a numpy built on MKL/OpenMP would need its own variable.
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     target = mem_limit_mb * 1024 * 1024
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
