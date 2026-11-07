@@ -98,15 +98,16 @@ async def test_broken_worker_classified_as_oom(monkeypatch):
 
 
 @pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
-async def test_interrupted_worker_classified_as_oom(monkeypatch, exc_type):
+async def test_interrupted_worker_classified_as_interrupted(monkeypatch, exc_type):
     # #1635: a worker's KeyboardInterrupt crossed the boundary and took the
-    # server down with it.
+    # server down with it. Labelled apart from "oom" so operators don't go
+    # raising memory limits for it.
     async def fake(*args, **kwargs):
         raise exc_type()
 
     with pytest.raises(PdfParseFailed) as exc:
         await _run(monkeypatch, fake)
-    assert exc.value.reason == "oom"
+    assert exc.value.reason == "interrupted"
 
 
 async def test_other_exception_classified_as_error(monkeypatch):
@@ -228,6 +229,36 @@ def test_apply_mem_limit_noop_when_os_refuses_cap(monkeypatch):
     monkeypatch.setattr(_isolation.resource, "setrlimit", refuse)
     _isolation._apply_mem_limit(1536)  # must not raise
     assert _isolation._MEM_LIMIT_APPLIED is True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS is enforced on Linux")
+def test_pymupdf4llm_imports_under_the_mem_limit():
+    """The worker must still import pymupdf4llm after capping its address space.
+
+    Regression for #1635: the worker imports pymupdf4llm (and with it numpy and
+    onnxruntime) lazily, after the cap. numpy's OpenBLAS starts one thread per
+    host core, and under a 640 MiB ``RLIMIT_AS`` either ``pthread_create``
+    fails (the import ends in ``KeyboardInterrupt``) or the next import can no
+    longer map its shared object (``ImportError``). Both were seen on an
+    8-core host. On a runner with few cores this passes with or without the fix.
+
+    Runs in a fresh interpreter: the cap and the imports are both per-process,
+    and they are already loaded in the test process.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "OPENBLAS_NUM_THREADS"}
+    script = (
+        "from nextcloud_mcp_server.document_processors import _isolation\n"
+        "_isolation._apply_mem_limit(640)\n"
+        "_isolation.load_classic_pymupdf4llm()\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
 
 
 def test_isolation_imports_on_windows_without_resource(monkeypatch):
