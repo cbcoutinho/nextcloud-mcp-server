@@ -181,8 +181,12 @@ def test_verify_astrolabe_consumer_pacts() -> None:
         # (e.g. the consent-purge endpoint) reports as *pending* instead of
         # failing this build until provider verification of the authenticated
         # surface is stood up (ADR-029 phase 4). Already-verified interactions
-        # (GET /api/v1/status) stay blocking. Empty consumer selectors keep the
-        # default "latest pacts for this provider" fetch.
+        # (GET /api/v1/status) stay blocking.
+        #
+        # Selectors: astrolabe's main branch plus whatever astrolabe version is
+        # deployed/released. The latter is what can-i-deploy checks this build
+        # against, so without it the matrix has no row for production (Deck
+        # #1457).
         broker = verifier.broker_source(
             _BROKER_URL,
             username=_BROKER_USERNAME,
@@ -190,6 +194,8 @@ def test_verify_astrolabe_consumer_pacts() -> None:
             selector=True,
         )
         broker.include_pending()
+        broker.consumer_version(main_branch=True)
+        broker.consumer_version(deployed_or_released=True)
         provider_branch = os.environ.get("PACT_PROVIDER_BRANCH")
         if provider_branch:
             broker.provider_branch(provider_branch)
