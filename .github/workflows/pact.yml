@@ -65,9 +65,9 @@ jobs:
         run: .github/scripts/install-pact-cli.sh
 
       # Guard the migration: record-deployment only runs on a release, so assert
-      # here that the unified CLI exposes every flag the pact steps pass. Dumps each --help so a
-      # future flag rename is visible in the log, then fails fast if a flag the
-      # workflows rely on is gone.
+      # here that the unified CLI exposes every flag the pact steps pass. Dumps
+      # each --help so a future flag rename is visible in the log, then fails
+      # fast if a flag the workflows rely on is gone.
       - name: Verify pact broker CLI flags
         if: ${{ env.PACT_BROKER != '' }}
         run: |
@@ -79,7 +79,6 @@ jobs:
           pact broker publish --help | grep -q -- '--consumer-app-version'
           pact broker publish --help | grep -q -- '--branch'
           pact broker can-i-deploy --help | grep -q -- '--to-environment'
-          pact broker can-i-deploy --help | grep -q -- '--ignore'
           pact broker record-deployment --help | grep -q -- '--environment'
 
       - name: Publish pacts to broker
@@ -214,16 +213,11 @@ jobs:
 
       # SHADOW MODE: run can-i-deploy for signal but never fail the workflow.
       # It runs on PRs so that, once promoted, the gate blocks the merge rather
-      # than the deploy. Still non-blocking because astrolabe has no
-      # `production` deployment recorded yet, and its pact against this
-      # provider has interactions that cannot verify until the authenticated
-      # surface does (#1340). Promote by dropping the `set +e`/`exit 0` wrapper,
-      # adding `--retry-while-unknown`, and marking the check required in
-      # branch protection (Deck #1457).
-      #
-      # --ignore astrolabe-cloud-gateway: the gateway records no deployments,
-      # so its row is always "unknown". Remove once astrolabe-cloud-website
-      # records gateway deployments.
+      # than the deploy. Still non-blocking because astrolabe's pact against
+      # this provider has interactions that cannot verify until the
+      # authenticated surface does (#1340). Promote by dropping the
+      # `set +e`/`exit 0` wrapper, adding `--retry-while-unknown`, and marking
+      # the check required in branch protection (Deck #1457).
       - name: Can I deploy nextcloud-mcp-server? (shadow — non-blocking)
         if: ${{ env.PACT_BROKER != '' }}
         run: |
@@ -234,8 +228,7 @@ jobs:
             --broker-password "$PACT_PASSWORD" \
             --pacticipant nextcloud-mcp-server \
             --version "$GITHUB_SHA" \
-            --to-environment production \
-            --ignore astrolabe-cloud-gateway
+            --to-environment production
           rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::warning title=can-i-deploy (shadow)::can-i-deploy exited $rc — NOT gating (shadow mode). See Deck card #1457 for what blocks promotion."
