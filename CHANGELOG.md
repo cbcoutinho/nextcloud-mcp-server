@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.206.0 (2026-11-07)
+
+### BREAKING CHANGE
+
+- tool calls carrying arguments absent from the tool's
+inputSchema now return an error (isError) instead of succeeding with the
+extra keys ignored.
+
+### Fix
+
+- **server**: reject unknown tool arguments instead of ignoring them
+
 ## v0.205.4 (2026-11-07)
 
 ### Fix
