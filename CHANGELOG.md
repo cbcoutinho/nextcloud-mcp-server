@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.205.4 (2026-11-07)
+
+### Fix
+
+- **config**: warn once per unrecognised boolean; clearer timestamp error
+- **config**: warn on unrecognised boolean spellings; review round 1
+- **auth**: refuse any backslash in _safe_next_url
+- **auth**: reject backslash open redirect in _safe_next_url
+
+### Refactor
+
+- consolidate scalar parsers; replace input-family parametrizes with properties
+
 ## v0.205.3 (2026-11-06)
 
 ### Fix
