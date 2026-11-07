@@ -1592,7 +1592,7 @@ account with Talk disabled sees no Talk tools while their colleague does.
   payload, unparseable version), the tool stays listed. Availability beats
   precision — an instance we can't interrogate behaves exactly as before.
 - Only apps that actually publish a capability block are gated: **Notes, Tables,
-  Deck, Cookbook and Talk** (`spreed`). Calendar and Contacts tools speak
+  Deck, Cookbook, Talk** (`spreed`) **and Full Text Search**. Calendar and Contacts tools speak
   CalDAV/CardDAV and keep working with those web apps uninstalled, so they are
   never gated; Collectives, News, Mail and Shopping List publish nothing to gate
   on.
