@@ -95,6 +95,41 @@ async def test_write_read_delete_file(nc_client: NextcloudClient, test_base_path
             pass
 
 
+async def test_folder_size_covers_nested_content(
+    nc_client: NextcloudClient, test_base_path: str
+):
+    """A folder's size comes from Nextcloud and includes every level below it."""
+    try:
+        await nc_client.webdav.create_directory(test_base_path)
+        await nc_client.webdav.create_directory(f"{test_base_path}/outer")
+        await nc_client.webdav.create_directory(f"{test_base_path}/outer/inner")
+        await nc_client.webdav.create_directory(f"{test_base_path}/empty")
+        await nc_client.webdav.write_file(
+            f"{test_base_path}/outer/a.txt", b"x" * 100, content_type="text/plain"
+        )
+        await nc_client.webdav.write_file(
+            f"{test_base_path}/outer/inner/b.txt", b"y" * 50, content_type="text/plain"
+        )
+
+        listing = await nc_client.webdav.list_directory(test_base_path)
+        assert {item["name"]: item["size"] for item in listing} == {
+            "outer": 150,
+            "empty": 0,
+        }
+
+        found = await nc_client.webdav.find_by_type(
+            "httpd/unix-directory", scope=test_base_path
+        )
+        sizes = {item["path"].rsplit("/", 1)[-1]: item["size"] for item in found}
+        assert sizes["inner"] == 50
+        assert sizes["outer"] == 150
+    finally:
+        try:
+            await nc_client.webdav.delete_resource(test_base_path)
+        except Exception:
+            pass
+
+
 async def test_list_directory_empty_and_populated(
     nc_client: NextcloudClient, test_base_path: str
 ):

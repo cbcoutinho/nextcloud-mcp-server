@@ -356,6 +356,77 @@ async def test_list_directory_filters_excluded_children(
     assert [f.path for f in result.files] == ["/Public/visible.md"]
 
 
+async def test_list_directory_total_size_includes_subfolders(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    """total_size answers "how big is this folder", which subfolders are part of;
+    one whose size Nextcloud has not computed yet counts as 0."""
+    patch_get_client(fake_client)
+    patch_excluded(set())
+    fake_client.webdav.list_directory = AsyncMock(
+        return_value=[
+            {"path": "/d/a.txt", "name": "a.txt", "is_directory": False, "size": 10},
+            {"path": "/d/sub", "name": "sub", "is_directory": True, "size": 200},
+            {"path": "/d/new", "name": "new", "is_directory": True, "size": None},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_list_directory"].fn
+    result = await fn(path="/d", ctx=_mock_ctx(fake_client))
+
+    assert result.total_size == 210
+    assert {f.name: f.size for f in result.files} == {
+        "a.txt": 10,
+        "sub": 200,
+        "new": None,
+    }
+
+
+async def test_list_directory_hides_size_of_folder_holding_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    """A folder's oc:size counts excluded descendants; reporting it would leak
+    that hidden content exists and how big it is."""
+    patch_get_client(fake_client)
+    patch_excluded({"d/sub/deep/secret.pdf"})
+    fake_client.webdav.list_directory = AsyncMock(
+        return_value=[
+            {"path": "/d/a.txt", "name": "a.txt", "is_directory": False, "size": 10},
+            {"path": "/d/sub", "name": "sub", "is_directory": True, "size": 900},
+            {"path": "/d/subway", "name": "subway", "is_directory": True, "size": 5},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_list_directory"].fn
+    result = await fn(path="/d", ctx=_mock_ctx(fake_client))
+
+    assert {f.name: f.size for f in result.files} == {
+        "a.txt": 10,
+        "sub": None,
+        "subway": 5,
+    }
+    assert result.total_size == 15
+
+
+async def test_search_hides_size_of_folder_holding_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"outer/inner"})
+    fake_client.webdav.find_by_type = AsyncMock(
+        return_value=[
+            {"path": "/outer", "name": "outer", "is_directory": True, "size": 150},
+            {"path": "/outer/inner", "name": "inner", "is_directory": True},
+            {"path": "/other", "name": "other", "is_directory": True, "size": 7},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_find_by_type"].fn
+    result = await fn(mime_type="httpd/unix-directory", ctx=_mock_ctx(fake_client))
+
+    assert {r.path: r.size for r in result.results} == {"/outer": None, "/other": 7}
+
+
 async def test_list_directory_surfaces_etag_on_fileinfo(
     webdav_tools, fake_client, patch_get_client, patch_excluded
 ):

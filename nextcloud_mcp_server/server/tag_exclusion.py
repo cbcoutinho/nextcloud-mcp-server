@@ -22,6 +22,7 @@ is created with ``user_assignable=false``.
 """
 
 import logging
+from typing import Any
 
 import anyio
 
@@ -159,6 +160,31 @@ def is_path_excluded(path: str, excluded_paths: set[str]) -> bool:
         if normalised.startswith(exc + "/"):
             return True
     return False
+
+
+def hide_excluded(
+    items: list[dict[str, Any]], excluded_paths: set[str]
+) -> list[dict[str, Any]]:
+    """Drop excluded entries, and blank the size of any folder holding one.
+
+    A folder's ``size`` is Nextcloud's recursive ``oc:size``, which counts the
+    bytes of excluded descendants too; reporting it would reveal that hidden
+    content exists and how large it is. Such a folder reports ``None``
+    (unknown) instead.
+    """
+    if not excluded_paths:
+        return items
+    visible = []
+    for item in items:
+        path = _normalise_path(item.get("path", ""))
+        if is_path_excluded(path, excluded_paths):
+            continue
+        if item.get("is_directory") and any(
+            not path or exc.startswith(path + "/") for exc in excluded_paths
+        ):
+            item = {**item, "size": None}
+        visible.append(item)
+    return visible
 
 
 def _normalise_path(path: str) -> str:

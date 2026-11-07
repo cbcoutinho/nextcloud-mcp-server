@@ -1680,3 +1680,121 @@ def test_like_predicate_keeps_wildcards_intact():
     literal = root.find(".//{DAV:}literal")
     assert literal is not None
     assert literal.text == "%vector-index%"
+
+
+def _multistatus(*entries: tuple[str, str]) -> bytes:
+    """A multistatus body from ``(href, prop xml)`` pairs."""
+    responses = "".join(
+        f"<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop>"
+        "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+        for href, props in entries
+    )
+    return (
+        '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" '
+        f'xmlns:oc="http://owncloud.org/ns">{responses}</d:multistatus>'
+    ).encode()
+
+
+_FOLDER = "<d:resourcetype><d:collection/></d:resourcetype>"
+_DAV_ROOT = "/remote.php/dav/files/testuser"
+
+
+@pytest.fixture
+def webdav_client(mocker):
+    client = WebDAVClient(AsyncMock(), "testuser")
+    mocker.patch.object(client, "_ensure_principal_id", return_value="testuser")
+    mocker.patch.object(
+        client, "_webdav_path", side_effect=lambda path: f"{_DAV_ROOT}/{path}"
+    )
+    return client
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("oc_size", "expected"),
+    [
+        pytest.param("<oc:size>2048</oc:size>", 2048, id="computed"),
+        pytest.param("<oc:size>0</oc:size>", 0, id="empty"),
+        pytest.param("<oc:size>-1</oc:size>", None, id="not-computed"),
+        pytest.param("<oc:size>-2</oc:size>", None, id="unknown"),
+        pytest.param("<oc:size>n/a</oc:size>", None, id="not-a-number"),
+        pytest.param("", None, id="absent"),
+    ],
+)
+async def test_list_directory_reports_folder_size(
+    mocker, webdav_client, oc_size, expected
+):
+    response = mocker.Mock(
+        content=_multistatus(
+            (f"{_DAV_ROOT}/docs/", _FOLDER),
+            (f"{_DAV_ROOT}/docs/sub/", _FOLDER + oc_size),
+        )
+    )
+    request = mocker.patch.object(webdav_client, "_make_request", return_value=response)
+
+    items = await webdav_client.list_directory("docs")
+
+    assert "<oc:size/>" in request.call_args.kwargs["content"]
+    assert items[0]["is_directory"] is True
+    assert items[0]["size"] == expected
+
+
+@pytest.mark.unit
+async def test_list_directory_file_size_comes_from_content_length(
+    mocker, webdav_client
+):
+    response = mocker.Mock(
+        content=_multistatus(
+            (f"{_DAV_ROOT}/docs/", _FOLDER),
+            (
+                f"{_DAV_ROOT}/docs/a.txt",
+                "<d:resourcetype/><d:getcontentlength>42</d:getcontentlength>"
+                "<oc:size>99</oc:size>",
+            ),
+        )
+    )
+    mocker.patch.object(webdav_client, "_make_request", return_value=response)
+
+    items = await webdav_client.list_directory("docs")
+
+    assert items[0]["size"] == 42
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("oc_size", "expected"),
+    [("<oc:size>2048</oc:size>", 2048), ("<oc:size>-1</oc:size>", None), ("", None)],
+)
+def test_search_response_reports_folder_size(webdav_client, oc_size, expected):
+    items = webdav_client._parse_search_response(
+        _multistatus((f"{_DAV_ROOT}/docs/", _FOLDER + oc_size)), ""
+    )
+
+    assert items[0]["size"] == expected
+
+
+@pytest.mark.unit
+def test_search_response_file_size_comes_from_content_length(webdav_client):
+    items = webdav_client._parse_search_response(
+        _multistatus(
+            (
+                f"{_DAV_ROOT}/a.txt",
+                "<d:resourcetype/><d:getcontentlength>42</d:getcontentlength>"
+                "<oc:size>99</oc:size>",
+            )
+        ),
+        "",
+    )
+
+    assert items[0]["size"] == 42
+
+
+@pytest.mark.unit
+async def test_search_asks_for_folder_size_by_default(mocker, webdav_client):
+    request = mocker.patch.object(
+        webdav_client, "_make_request", return_value=mocker.Mock(content=_multistatus())
+    )
+
+    await webdav_client.search_files(scope="", where_conditions=None)
+
+    assert "<oc:size/>" in request.call_args.kwargs["content"]
