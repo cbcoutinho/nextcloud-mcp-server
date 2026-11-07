@@ -7,6 +7,8 @@ claims to be a probability when the mapping behind it is not one.
 """
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.search.relevance import (
     RELEVANCE_CALIBRATED,
@@ -67,25 +69,25 @@ def test_the_rrf_scale_is_spread_across_the_range_not_crushed_at_zero():
 # --- properties a caller relies on --------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"rerank_score": 0.9},
-        {"rerank_score": 0.0},
-        {"rerank_score": -8.0},  # a reranker emitting logits
-        {"rerank_score": 250.0},
-        {"score": 0.0},
-        {"score": 1e9},  # unbounded raw BM25
-        {"score": 0.5, "fusion": "dbsf"},
-        {"score": 0.5, "algorithm": "semantic"},
-        {"rerank_score": 0.5, "rerank_model": "some/unfitted-model"},
-        {"rerank_score": 0.5, "rerank_model": None},
-    ],
+_signals = st.floats(allow_nan=True, allow_infinity=True)
+_contexts = st.fixed_dictionaries(
+    {
+        "fusion": st.sampled_from(["rrf", "dbsf"]),
+        "algorithm": st.sampled_from(["hybrid", "semantic", "bm25"]),
+        "rerank_model": st.sampled_from(
+            [_M3, f"local/{_M3}", "some/unfitted-model", None]
+        ),
+    }
 )
-def test_always_within_the_unit_interval(kwargs):
+
+
+@given(st.one_of(st.none(), _signals), _signals, _contexts)
+@example(-8.0, 0.02, {"fusion": "rrf", "algorithm": "hybrid", "rerank_model": _M3})
+@example(None, 1e9, {"fusion": "dbsf", "algorithm": "hybrid", "rerank_model": None})
+def test_always_within_the_unit_interval(rerank_score, score, context):
     """Every result carries a value in [0, 1] — no NaN, no overflow, no None —
     so a client never has to branch on whether the number exists."""
-    value, source = _rel(**kwargs)
+    value, source = relevance_for(rerank_score=rerank_score, score=score, **context)
 
     assert 0.0 <= value <= 1.0
     assert source in {
@@ -95,18 +97,29 @@ def test_always_within_the_unit_interval(kwargs):
     }
 
 
-def test_monotone_in_the_cross_encoder_score():
+_finite = st.floats(min_value=-1e6, max_value=1e6)
+
+
+@given(_finite, _finite, _contexts)
+def test_monotone_in_the_cross_encoder_score(a, b, context):
     """Ranking and relevance must never disagree: a caller sorting by either one
     gets the same order."""
-    values = [_rel(rerank_score=s)[0] for s in (0.0, 0.05, 0.2, 0.5, 0.9)]
+    lo, hi = sorted((a, b))
 
-    assert all(a <= b for a, b in zip(values, values[1:]))
+    assert (
+        relevance_for(rerank_score=lo, score=0.02, **context)[0]
+        <= relevance_for(rerank_score=hi, score=0.02, **context)[0]
+    )
 
 
-def test_monotone_in_the_fused_score():
-    values = [_rel(score=s)[0] for s in (0.0, 0.008, 0.017, 0.025, 0.033)]
+@given(_finite, _finite, _contexts)
+def test_monotone_in_the_fused_score(a, b, context):
+    lo, hi = sorted((a, b))
 
-    assert all(a <= b for a, b in zip(values, values[1:]))
+    assert (
+        relevance_for(rerank_score=None, score=lo, **context)[0]
+        <= relevance_for(rerank_score=None, score=hi, **context)[0]
+    )
 
 
 # --- source selection ---------------------------------------------------------

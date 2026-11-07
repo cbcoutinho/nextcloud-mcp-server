@@ -323,17 +323,10 @@ async def test_escape_hatch_disables_hiding_and_refusal(mocker, disable_gating):
 @pytest.mark.parametrize(
     "raw,expected_disabled",
     [
-        # Dynaconf casts env vars with TOML syntax, which only recognises
-        # lowercase true/false — so a capitalised or numeric value arrives as a
-        # string, and `bool("False")` would invert the operator's intent.
-        ("true", True),
+        # Strings, not bools: `bool("False")` would invert the operator's
+        # intent. The full spelling family is parse_bool's property test.
         ("True", True),
-        ("1", True),
-        ("yes", True),
-        ("false", False),
         ("False", False),
-        ("0", False),
-        ("", False),
     ],
 )
 async def test_escape_hatch_reads_env_var_spellings(

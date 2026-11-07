@@ -15,6 +15,8 @@ from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
+from nextcloud_mcp_server.utils.parsing import parse_bool, split_csv
+
 logger = logging.getLogger(__name__)
 
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
@@ -1023,9 +1025,7 @@ def get_document_processor_config() -> dict[str, Any]:
             "api_url": _dynaconf.get("UNSTRUCTURED_API_URL"),
             "timeout": _dynaconf.get("UNSTRUCTURED_TIMEOUT"),
             "strategy": _dynaconf.get("UNSTRUCTURED_STRATEGY"),
-            "languages": [
-                lang.strip() for lang in languages_str.split(",") if lang.strip()
-            ],
+            "languages": split_csv(languages_str),
             "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
         }
 
@@ -1048,9 +1048,7 @@ def get_document_processor_config() -> dict[str, Any]:
         custom_url = _dynaconf.get("CUSTOM_PROCESSOR_URL")
         if custom_url:
             supported_types_str = _dynaconf.get("CUSTOM_PROCESSOR_TYPES")
-            supported_types = {
-                t.strip() for t in supported_types_str.split(",") if t.strip()
-            }
+            supported_types = set(split_csv(supported_types_str))
 
             config["processors"]["custom"] = {
                 "name": _dynaconf.get("CUSTOM_PROCESSOR_NAME"),
@@ -1073,7 +1071,7 @@ def get_document_processor_config() -> dict[str, Any]:
             config["processors"]["docling"] = {
                 "api_url": docling_url,
                 "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
-                "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
+                "ocr_lang": split_csv(lang_str),
                 "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
                 # Normalize like Settings.__post_init__ does (.strip().lower()) so the
                 # image path matches convert_file()'s ``pipeline == "vlm"`` check --
@@ -1316,11 +1314,7 @@ class Settings:
             )
 
             return tuple(sorted(get_registry().supported_mime_types()))
-        return tuple(
-            t.strip()
-            for t in self.vector_sync_indexable_mime_types.split(",")
-            if t.strip()
-        )
+        return tuple(split_csv(self.vector_sync_indexable_mime_types))
 
     # Mail tag (an IMAP keyword) restricting which messages are indexed — the
     # mail analogue of ``vector_sync_tag``. Empty (default) indexes every
@@ -2396,13 +2390,11 @@ def cfg_bool(key: str, default: bool = False) -> bool:
     syntax, which only recognises lowercase ``true``/``false``, so
     ``SOME_FLAG=False`` survives as the *string* ``"False"`` — and
     ``bool("False")`` is ``True``, inverting the operator's intent. This accepts
-    the spellings a human plausibly types (``true``/``1``/``yes``/``on``, any
-    case) and treats everything else as false.
+    the spellings a human plausibly types (``true``/``1``/``yes``/``on`` and
+    ``false``/``0``/``no``/``off``, any case). An unrecognised value yields
+    *default* and logs a warning naming *key* (see ``parse_bool``).
     """
-    value = cfg(key, default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return parse_bool(cfg(key, default), default, name=key)
 
 
 def set_override(key: str, value) -> None:

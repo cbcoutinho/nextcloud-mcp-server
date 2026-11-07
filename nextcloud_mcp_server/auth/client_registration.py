@@ -9,6 +9,7 @@ import anyio
 import httpx2
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
 
 from ..http import nextcloud_httpx_client
 
@@ -148,7 +149,9 @@ async def register_client(
                 if response.status_code == 429:
                     # Rate limited - retry with exponential backoff
                     if attempt < max_retries - 1:
-                        retry_after = int(response.headers.get("Retry-After", 2))
+                        retry_after = (
+                            parse_retry_after(response.headers.get("Retry-After")) or 2
+                        )
                         wait_time = min(retry_after, 2**attempt)
                         logger.warning(
                             "Rate limited (429) registering client, retrying in %ss (attempt %s/%s)",
@@ -306,7 +309,9 @@ async def delete_client(
                 elif response.status_code == 429:
                     # Rate limited - retry with exponential backoff
                     if attempt < max_retries - 1:
-                        retry_after = int(response.headers.get("Retry-After", 2))
+                        retry_after = (
+                            parse_retry_after(response.headers.get("Retry-After")) or 2
+                        )
                         wait_time = min(
                             retry_after, 2**attempt
                         )  # Exponential backoff, max from header

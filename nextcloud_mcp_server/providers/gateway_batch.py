@@ -29,6 +29,8 @@ from typing import Any
 
 import httpx2
 
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
+
 from .gateway import GatewayTokenProvider
 
 logger = logging.getLogger(__name__)
@@ -101,19 +103,6 @@ class BatchPollResult:
     @property
     def is_failed(self) -> bool:
         return self.status == _FAILED
-
-
-def _parse_retry_after(value: str | None) -> int | None:
-    """Parse a Retry-After header as delta-seconds. The gateway sends an integer
-    number of seconds (never an HTTP-date), so a non-integer / non-positive / absent
-    value yields None and the caller falls back to its configured poll interval."""
-    if value is None:
-        return None
-    try:
-        seconds = int(value.strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
 
 
 class GatewayBatchOcrClient:
@@ -239,7 +228,7 @@ class GatewayBatchOcrClient:
             # A 429 (or any error response) may carry Retry-After; honour it so a
             # rate-limited poll backs off as asked instead of at our own interval.
             retry_after = (
-                _parse_retry_after(exc.response.headers.get("Retry-After"))
+                parse_retry_after(exc.response.headers.get("Retry-After"))
                 if isinstance(exc, httpx2.HTTPStatusError)
                 else None
             )
@@ -269,7 +258,7 @@ class GatewayBatchOcrClient:
                 status=status,
                 pages=[],
                 error=body.get("error"),
-                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+                retry_after=parse_retry_after(resp.headers.get("Retry-After")),
             )
         return _result_from_success(body)
 

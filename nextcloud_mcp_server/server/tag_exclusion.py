@@ -27,16 +27,14 @@ import anyio
 
 from nextcloud_mcp_server.client.webdav import WebDAVClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 logger = logging.getLogger(__name__)
 
 
 def get_excluded_tag_names() -> list[str]:
     """Return the configured excluded tag names (empty list if disabled)."""
-    raw = get_settings().excluded_tags
-    if not raw:
-        return []
-    return [t.strip() for t in raw.split(",") if t.strip()]
+    return split_csv(get_settings().excluded_tags)
 
 
 async def _resolve_one_tag(

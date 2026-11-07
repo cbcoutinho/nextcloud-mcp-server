@@ -60,27 +60,34 @@ def parse_modified_timestamp(
     # silently read as 1/0 seconds.
     if isinstance(value, bool):
         raise ValueError(f"{param_name} must be a datetime string or Unix seconds")
-    if isinstance(value, (int, float)):
-        seconds = int(value)
-        if seconds < 0:
-            raise ValueError(f"{param_name} must be >= 0, got {seconds}")
-        return seconds
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
-        if _UNIX_SECONDS_RE.fullmatch(text):
-            return int(text)
-        # RFC 3339 / ISO 8601. ``fromisoformat`` accepts a trailing "Z" only on
-        # Python 3.11+; normalize it for safety across versions.
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(
-                f"{param_name} must be an RFC 3339 datetime or Unix seconds, "
-                f"got {value!r}"
-            ) from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return int(parsed.timestamp())
-    raise ValueError(f"{param_name} must be a datetime string or Unix seconds")
+    elif not isinstance(value, (int, float)):
+        raise ValueError(f"{param_name} must be a datetime string or Unix seconds")
+    try:
+        seconds = _to_unix_seconds(value)
+    except (ValueError, OverflowError) as exc:  # NaN, infinity, bad ISO string
+        raise ValueError(
+            f"{param_name} must be an RFC 3339 datetime or finite Unix seconds, "
+            f"got {value!r}"
+        ) from exc
+    # One check for every form: "1969-12-31" is as negative as -1.
+    if seconds < 0:
+        raise ValueError(f"{param_name} must be >= 0, got {seconds}")
+    return seconds
+
+
+def _to_unix_seconds(value: str | int | float) -> int:
+    if not isinstance(value, str):
+        return int(value)
+    text = value.strip()
+    if _UNIX_SECONDS_RE.fullmatch(text):
+        return int(text)
+    # RFC 3339 / ISO 8601. ``fromisoformat`` accepts a trailing "Z" only on
+    # Python 3.11+; normalize it for safety across versions.
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())

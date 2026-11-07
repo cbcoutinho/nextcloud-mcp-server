@@ -132,6 +132,7 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 # The vector/semantic-search stack (vector/, search/, document_processors/,
 # admin/payload_backfill, api/{visualization,vector_sync,sar}, server/{semantic,
@@ -1562,11 +1563,6 @@ async def setup_oauth_config_for_multi_user_basic(
     return (token_verifier, refresh_token_storage, client_id, client_secret)
 
 
-def _csv_setting(raw: str) -> list[str]:
-    """Split a comma-separated setting into a list, dropping blanks."""
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 #: Room for the JSON-RPC envelope around a maximum-size `nc_webdav_write_file`
 #: argument: method, id, path, content_type, and the quoting of the base64 blob.
 _REQUEST_ENVELOPE_SLACK = 1024 * 1024
@@ -1607,8 +1603,8 @@ def _build_transport_security() -> TransportSecuritySettings:
     """
     settings = get_settings()
     enabled = settings.mcp_dns_rebinding_protection
-    hosts = _csv_setting(settings.mcp_allowed_hosts)
-    origins = _csv_setting(settings.mcp_allowed_origins)
+    hosts = split_csv(settings.mcp_allowed_hosts)
+    origins = split_csv(settings.mcp_allowed_origins)
 
     if not enabled and (hosts or origins):
         logger.warning(
@@ -3337,7 +3333,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # so *any* origin may send credentialed requests. Fine behind a private
     # network or for local Inspector use; not something to leave unexamined on a
     # server reachable from a browser.
-    cors_origins = _csv_setting(get_settings().cors_allow_origins)
+    cors_origins = split_csv(get_settings().cors_allow_origins)
     if "*" in cors_origins:
         logger.warning(
             "CORS allows any origin with credentials (CORS_ALLOW_ORIGINS='*'). "

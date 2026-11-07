@@ -14,6 +14,8 @@ from types import SimpleNamespace
 
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.auth import oauth_routes
 
@@ -93,6 +95,50 @@ def _body(response) -> dict:
     return json.loads(bytes(response.body))
 
 
+_JSON = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: st.lists(inner) | st.dictionaries(st.text(), inner),
+    max_leaves=5,
+)
+
+
+@given(
+    st.one_of(
+        st.text(), st.text(st.characters(min_codepoint=0x20, max_codepoint=0x7E)), _JSON
+    )
+)
+@example("a" * 200)  # at the bound: kept
+@example("a" * 201)  # past it: dropped
+@example('contains a "quote"')
+@example("back\\slash")
+@example("non-ascii é")
+@example("bad\r\nSet-Cookie: x=1")  # header injection
+@example("tab\there")
+@example("nul\x00")
+@example("")
+@example(42)
+def test_description_is_relayed_only_within_the_rfc_charset_and_bound(description):
+    """RFC 6749 §5.2: %x20-21 / %x23-5B / %x5D-7E, i.e. printable ASCII minus
+    `"` and `\\`. The bound keeps an IdP from relaying arbitrary payloads."""
+    response = oauth_routes._refresh_error_response(
+        httpx2.Response(
+            400, json={"error": "invalid_grant", "error_description": description}
+        )
+    )
+    allowed = (
+        isinstance(description, str)
+        and 1 <= len(description) <= 200
+        and all(" " <= c <= "~" and c not in '"\\' for c in description)
+    )
+
+    assert response.status_code == 400
+    assert _body(response) == (
+        {"error": "invalid_grant", "error_description": description}
+        if allowed
+        else {"error": "invalid_grant"}
+    )
+
+
 class TestOAuthErrorsFromTheIdP:
     async def test_invalid_grant_is_relayed_with_its_description(self, idp):
         """The case that should log the user out still does, and the client
@@ -156,61 +202,6 @@ class TestOAuthErrorsFromTheIdP:
         )
         assert response.status_code == 502
         assert _body(response)["error"] == "server_error"
-
-    @pytest.mark.parametrize(
-        "description",
-        [
-            'contains a "quote"',
-            "non-ascii \u00e9",
-            "",
-            42,
-        ],
-    )
-    async def test_description_outside_rfc_charset_or_bound_is_dropped(
-        self, idp, description
-    ):
-        response = await _refresh(
-            idp,
-            lambda r: httpx2.Response(
-                400,
-                json={"error": "invalid_grant", "error_description": description},
-            ),
-        )
-        assert response.status_code == 400
-        assert _body(response) == {"error": "invalid_grant"}
-
-    @pytest.mark.parametrize(
-        ("length", "kept"), [(199, True), (200, True), (201, False)]
-    )
-    async def test_description_length_boundary(self, idp, length, kept):
-        description = "a" * length
-        response = await _refresh(
-            idp,
-            lambda r: httpx2.Response(
-                400,
-                json={"error": "invalid_grant", "error_description": description},
-            ),
-        )
-        assert response.status_code == 400
-        expected = description if kept else None
-        assert _body(response).get("error_description") == expected
-
-    @pytest.mark.parametrize(
-        "description",
-        ["bad\r\nSet-Cookie: x=1", "tab\there", "nul\x00", "back\\slash"],
-        ids=["crlf", "tab", "nul", "backslash"],
-    )
-    async def test_description_with_control_or_escape_chars_is_dropped(
-        self, idp, description
-    ):
-        response = await _refresh(
-            idp,
-            lambda r: httpx2.Response(
-                400,
-                json={"error": "invalid_grant", "error_description": description},
-            ),
-        )
-        assert _body(response) == {"error": "invalid_grant"}
 
     @pytest.mark.parametrize(
         "error", [["invalid_grant"], {"code": "invalid_grant"}], ids=["list", "dict"]
