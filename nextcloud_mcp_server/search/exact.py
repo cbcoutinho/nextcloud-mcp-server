@@ -14,6 +14,7 @@ Results are one row per document (its first matching chunk), all with score
 still correct, except in strict mode, where the filter is refused.
 """
 
+import logging
 from collections.abc import Iterable
 from typing import Any
 
@@ -33,6 +34,8 @@ from nextcloud_mcp_server.search.algorithms import (
     build_search_result_from_point,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+logger = logging.getLogger(__name__)
 
 # ponytail: a hard ceiling so one query cannot hold an unbounded result set in
 # memory; a case holds far fewer items (MAX_CASE_ITEMS) anyway. `truncated`
@@ -172,6 +175,7 @@ def _keep_first_chunk(
         metadata_extras={"search_method": "exact"},
     )
     if result is None:
+        logger.debug("Exact match skipped point %s: no usable payload", point.id)
         return True
     key = (result.doc_type, result.id)
     kept = found.get(key)

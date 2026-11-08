@@ -833,7 +833,7 @@ async def unified_search(request: Request) -> JSONResponse:
             # a caller can always tell which ordering it received.
             "reranked": rerank_outcome == RERANK_APPLIED,
         }
-        if isinstance(search_algo, ExactMatchAlgorithm):
+        if isinstance(search_algo, ExactMatchAlgorithm):  # narrows the type; exact
             # The match stopped at MAX_EXACT_DOCUMENTS: total_found is a floor.
             response_data["truncated"] = search_algo.truncated
 
