@@ -785,6 +785,16 @@ well beyond what the pod can survive. Keep
 `DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
 memory limit. The limiter is created once per worker, so a change needs a restart.
 
+**Don't set `DOCUMENT_PARSE_MEM_LIMIT_MB` much below 1024.** The parse worker uses
+about 600 MiB of address space on imports alone, before it reads a page: its share
+of the server, plus pymupdf4llm, which loads onnxruntime even in classic mode. At
+640, markdown promotion fails intermittently with
+`ImportError: … failed to map segment from shared object` and falls back to the
+plain text layer (#1635). The server logs a startup warning below 1024. The
+default, 1536, leaves room for the parse itself. Size the container memory
+limit to hold `DOCUMENT_PARSE_PROCESS_SLOTS ×` the parse's resident memory on top
+of the server, not the full cap, since the cap is virtual address space.
+
 **The name says PDF; the cap does not.** `DOCUMENT_MAX_PDF_SIZE_MB` guards every
 indexed document — `.docx`, `.doc`, `.xlsx`, `.xls` and `.msg` included — since
 discovery stopped being PDF-only. The setting keeps its original name so

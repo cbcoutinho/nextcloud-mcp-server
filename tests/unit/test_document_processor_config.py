@@ -1,10 +1,15 @@
 """Unit tests for document processor configuration."""
 
+import logging
 import os
 
 import pytest
 
-from nextcloud_mcp_server.config import _reload_config, get_document_processor_config
+from nextcloud_mcp_server.config import (
+    Settings,
+    _reload_config,
+    get_document_processor_config,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -192,3 +197,17 @@ class TestDocumentProcessorConfig:
             assert config["default_processor"] == "tesseract"
         finally:
             os.environ.pop("DOCUMENT_PROCESSOR", None)
+
+
+class TestParseMemLimitWarning:
+    """A parse cap too small for the worker's imports is flagged at startup (#1635)."""
+
+    def test_low_limit_warns(self, caplog):
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(document_parse_mem_limit_mb=640)
+        assert "DOCUMENT_PARSE_MEM_LIMIT_MB=640 is below 1024" in caplog.text
+
+    def test_default_does_not_warn(self, caplog):
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings()
+        assert "DOCUMENT_PARSE_MEM_LIMIT_MB" not in caplog.text
