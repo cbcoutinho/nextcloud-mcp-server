@@ -28,6 +28,7 @@ from nextcloud_mcp_server.api.management import (
     _sanitize_error_for_client,
     _validate_query_string,
     select_search_algorithm,
+    supported_search_types,
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.config import Settings, get_settings
@@ -1045,6 +1046,16 @@ async def vector_search(request: Request) -> JSONResponse:
             )
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
+        # This deprecated endpoint has no offset and verifies every result, so
+        # an exact match (thousands of documents) is served by /api/v1/search
+        # only. Its callers predate "exact" and never send it.
+        if algorithm == "exact":
+            return _unsupported_search_type_response(
+                UnsupportedSearchType(
+                    algorithm,
+                    [a for a in supported_search_types(settings) if a != "exact"],
+                )
+            )
 
         # Capability gate after the query and algorithm checks, matching
         # /api/v1/search so an unsupported algorithm still wins over an
