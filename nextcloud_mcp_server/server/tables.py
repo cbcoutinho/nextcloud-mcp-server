@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
@@ -18,7 +19,7 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def _row(raw: dict, columns: list[int] | None) -> TableRow:
+def _row(raw: dict[str, Any], columns: list[int] | None) -> TableRow:
     """Validate a raw row, keeping only ``columns`` (all when None)."""
     row = TableRow.model_validate(raw)
     if columns is not None:

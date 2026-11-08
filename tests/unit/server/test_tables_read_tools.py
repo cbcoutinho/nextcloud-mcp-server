@@ -71,9 +71,8 @@ async def test_read_view(client):
     )
     client.tables.get_view_rows.assert_awaited_once_with(9, 10, 20)
     assert payload["view_id"] == 9
-    assert payload["rows"] == [
-        {**payload["rows"][0], "id": 2, "data": {"3": "noise"}},
-    ]
+    assert [r["id"] for r in payload["rows"]] == [2]
+    assert payload["rows"][0]["data"] == {"3": "noise"}
 
 
 async def test_get_row(client):

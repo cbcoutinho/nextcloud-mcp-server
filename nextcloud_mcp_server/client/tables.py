@@ -1,7 +1,7 @@
 """Client for Nextcloud Tables app operations."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .base import BaseNextcloudClient
 from .ocs import OCS_REQUEST_HEADERS
@@ -36,8 +36,8 @@ class TablesClient(BaseNextcloudClient):
         return response.json()
 
     async def get_table_rows(
-        self, table_id: int, limit: Optional[int] = None, offset: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, table_id: int, limit: int | None = None, offset: int | None = None
+    ) -> list[dict[str, Any]]:
         """Read rows from a table with optional pagination."""
         return await self._get_rows(
             f"/apps/tables/api/1/tables/{table_id}/rows", limit, offset
