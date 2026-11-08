@@ -818,6 +818,27 @@ _dynaconf = Dynaconf(
 )
 
 
+def _warn_low_parse_mem_limit(mem_limit_mb: int) -> None:
+    """Warn when the parse cap leaves the worker too little room (#1635).
+
+    The parse worker spends ~600 MiB of address space on imports alone (its
+    share of the app plus pymupdf4llm, which loads onnxruntime even in classic
+    mode), before any page is read. At 640 the markdown promotion failed
+    intermittently with "failed to map segment". The validator's floor of 128
+    only rejects nonsense, so this warns instead of refusing to start.
+    """
+    if mem_limit_mb < _PARSE_MEM_LIMIT_WARN_MB:
+        logger.warning(
+            "DOCUMENT_PARSE_MEM_LIMIT_MB=%d is below %d. The PDF parse worker "
+            "needs ~600 MiB of address space for its imports alone, so markdown "
+            "promotion is likely to fail (ImportError: failed to map segment). "
+            "The default is %d.",
+            mem_limit_mb,
+            _PARSE_MEM_LIMIT_WARN_MB,
+            _DEFAULTS["document_parse_mem_limit_mb"],
+        )
+
+
 def _reload_config():
     """Reload dynaconf settings from files and environment.
 
@@ -1703,20 +1724,7 @@ class Settings:
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
 
-        # The parse worker spends ~600 MiB of address space on imports alone
-        # (its share of the app plus pymupdf4llm, which loads onnxruntime even in
-        # classic mode), before any page is read. At 640 the markdown promotion
-        # failed intermittently with "failed to map segment" (#1635). The
-        # validator's floor of 128 only rejects nonsense, so warn here.
-        if self.document_parse_mem_limit_mb < _PARSE_MEM_LIMIT_WARN_MB:
-            logger.warning(
-                "DOCUMENT_PARSE_MEM_LIMIT_MB=%d is below %d. The PDF parse worker "
-                "needs ~600 MiB of address space for its imports alone, so markdown "
-                "promotion is likely to fail (ImportError: failed to map segment). "
-                "The default is 1536.",
-                self.document_parse_mem_limit_mb,
-                _PARSE_MEM_LIMIT_WARN_MB,
-            )
+        _warn_low_parse_mem_limit(self.document_parse_mem_limit_mb)
 
         # Page-packing is a sub-mode of page-aware chunking (the packing logic
         # only runs inside the page-aware branch). Enabling it without page-aware

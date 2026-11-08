@@ -207,6 +207,12 @@ class TestParseMemLimitWarning:
         Settings(document_parse_mem_limit_mb=640)
         assert "DOCUMENT_PARSE_MEM_LIMIT_MB=640 is below 1024" in caplog.text
 
+    @pytest.mark.parametrize(("limit", "warns"), [(1023, True), (1024, False)])
+    def test_boundary(self, caplog, limit, warns):
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(document_parse_mem_limit_mb=limit)
+        assert ("DOCUMENT_PARSE_MEM_LIMIT_MB" in caplog.text) is warns
+
     def test_default_does_not_warn(self, caplog):
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings()
