@@ -12,6 +12,7 @@ from nextcloud_mcp_server.features import (
     sar_available,
 )
 from nextcloud_mcp_server.redaction import (
+    _NOT_NAMES,
     Redactor,
     counts,
     detect_entities,
@@ -111,7 +112,25 @@ def test_subject_detected_with_a_title_or_first_name_alone_is_kept():
     )
 
 
-_WORD = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=3, max_size=8)
+def test_subject_form_sharing_a_word_with_a_third_party_is_redacted():
+    # "Doe" alone could be the subject or "John Doe": it stays redacted, while
+    # the title-led full name is still the subject.
+    r = Redactor({"Mr Jane Doe", "Doe", "John Doe"}, keep=["Jane Doe"])
+    assert r.redact("Mr Jane Doe; Doe; John Doe") == (
+        "Mr Jane Doe; [PERSON_1]; [PERSON_2]"
+    )
+
+
+def test_a_kept_address_does_not_make_a_third_party_the_subject():
+    # "Jane" is a word of the subject's kept address, not of their name.
+    r = Redactor({"Jane"}, keep=["Sam Roe", "12 Jane Street"])
+    assert r.redact("Jane called") == "[PERSON_1] called"
+
+
+# Titles and role words change how a name is treated; keep them out.
+_WORD = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=3, max_size=8).filter(
+    lambda w: w not in _NOT_NAMES
+)
 
 
 @given(
