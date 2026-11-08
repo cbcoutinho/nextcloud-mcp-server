@@ -5,7 +5,7 @@ this package: **astrolabe is the consumer** and **nextcloud-mcp-server is the
 provider**. The astrolabe UI reads ``supported_search_types`` from
 ``/api/v1/status`` to gate which query types it offers (ADR-031):
 
-- vector sync enabled  → ``["semantic", "bm25", "hybrid"]`` (the collection is
+- vector sync enabled  → ``["semantic", "bm25", "hybrid", "exact"]`` (the collection is
   always dense-capable; keyword-only documents contribute via the sparse side)
 - vector sync disabled → ``[]``
 
@@ -90,7 +90,7 @@ async def test_status_advertises_all_query_types_when_vector_sync_enabled(status
         .with_body(
             # Pin only the field astrolabe reads; Pact V4 allows the real
             # response to carry the other status fields (version, auth_mode, …).
-            {"supported_search_types": ["semantic", "bm25", "hybrid"]},
+            {"supported_search_types": ["semantic", "bm25", "hybrid", "exact"]},
             content_type="application/json",
         )
     )
@@ -98,7 +98,7 @@ async def test_status_advertises_all_query_types_when_vector_sync_enabled(status
     with status_pact.serve() as srv:
         types = await _fetch_supported_search_types(str(srv.url))
 
-    assert types == ["semantic", "bm25", "hybrid"]
+    assert types == ["semantic", "bm25", "hybrid", "exact"]
 
 
 async def test_status_advertises_nothing_when_vector_sync_disabled(status_pact):

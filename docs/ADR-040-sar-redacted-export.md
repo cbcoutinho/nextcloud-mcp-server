@@ -152,6 +152,22 @@ single `Plugin` (`nextcloud_mcp_server/sar_plugin.py`), registered under the
 `nextcloud_mcp_server.plugins` entry-point group; the server has no SAR-specific
 wiring of its own. See `nextcloud_mcp_server/plugins.py`.
 
+### Finding every document: `algorithm: "exact"`
+
+Ranked search (semantic, BM25, hybrid) returns the top results for a query, so
+it cannot promise "every document that mentions this person" at any page size:
+in one-row-per-document mode the grouped prefetch is bounded, and deeper pages
+come back empty. `POST /api/v1/search` (and so the case search route, which wraps
+it) therefore also accepts `algorithm: "exact"`: a Qdrant scroll filtered by the
+query as a phrase in the chunk text (or its words in the file path), within the
+caller's access scope and filters. It is unranked (every result has relevance 1.0,
+source `exact_match`), always one row per document, and `total_found` is the true
+count of indexed matches, so a client can page through all of them. Access is
+verified per page rather than over the whole set; export re-checks every file.
+A match stops at 20,000 documents and says so with `truncated: true`. It is
+advertised in `supported_search_types`, so clients gate on it. The phrase filter
+uses the `excerpt` text index (`EXACT_MATCH_INDEX_ENABLED`).
+
 ### Execution
 
 The export runs in-process in the MCP server as a background task, with

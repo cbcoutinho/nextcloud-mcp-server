@@ -150,7 +150,9 @@ jobs:
             needs-playwright: false
             # Also start GreenMail (SMTP/IMAP) so the Mail integration tests have
             # a real backend; the Mail account is provisioned in a step below.
-            extra-compose-profiles: "--profile mail"
+            # And a Qdrant server, for tests of what only a server evaluates
+            # (test_exact_match_qdrant_server.py: the phrase text index).
+            extra-compose-profiles: "--profile mail --profile qdrant"
             # This is the long pole of the whole workflow (~15min of pytest),
             # and the only lane that can be fanned out: the other modes go
             # through the OAuth fixtures, whose callback server binds a fixed

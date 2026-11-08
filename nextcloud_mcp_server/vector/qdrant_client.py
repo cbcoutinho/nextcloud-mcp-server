@@ -15,6 +15,9 @@ from qdrant_client.models import (
     Distance,
     PayloadSchemaType,
     PointStruct,
+    TextIndexParams,
+    TextIndexType,
+    TokenizerType,
     VectorParams,
 )
 
@@ -126,6 +129,18 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "index_mode": PayloadSchemaType.KEYWORD,
 }
 
+# Chunk text, for the phrase filter of algorithm="exact" (search/exact.py).
+# Phrase matching needs the index's positional data, hence params rather than
+# the bare TEXT type. Gated by EXACT_MATCH_INDEX_ENABLED, and created without
+# waiting: on a large collection the build takes a while, and exact searches
+# scan until it is done rather than blocking startup.
+_EXCERPT_INDEX = TextIndexParams(
+    type=TextIndexType.TEXT,
+    tokenizer=TokenizerType.WORD,
+    lowercase=True,
+    phrase_matching=True,
+)
+
 # Sentinel point that records "this collection has been backfilled to str
 # doc_id". Written after a successful pass of _backfill_doc_id_to_string so
 # subsequent restarts can short-circuit the O(N) scroll. Carries no
@@ -236,11 +251,17 @@ class _ThreadOffloadingQdrantClient:
         )
 
 
+def _data_type(schema: PayloadSchemaType | TextIndexParams) -> PayloadSchemaType:
+    return schema if isinstance(schema, PayloadSchemaType) else PayloadSchemaType.TEXT
+
+
 async def _create_one_payload_index(
     client: AsyncQdrantClient,
     collection_name: str,
     field: str,
-    schema_type: PayloadSchemaType,
+    schema_type: PayloadSchemaType | TextIndexParams,
+    *,
+    wait: bool = True,
 ) -> bool:
     """Create one payload index with per-field error containment.
 
@@ -256,9 +277,11 @@ async def _create_one_payload_index(
             collection_name=collection_name,
             field_name=field,
             field_schema=schema_type,
-            wait=True,
+            wait=wait,
         )
-        logger.info("Created %s payload index on '%s'", schema_type.name, field)
+        logger.info(
+            "Created %s payload index on '%s'", _data_type(schema_type).name, field
+        )
         return True
     except UnexpectedResponse as e:
         body = getattr(e, "content", b"") or b""
@@ -353,8 +376,11 @@ async def _ensure_payload_indexes(
             return
         existing_schema = collection_info.payload_schema or {}
 
+    fields: dict[str, PayloadSchemaType | TextIndexParams] = dict(_PAYLOAD_INDEX_FIELDS)
+    if get_settings().exact_match_index_enabled:
+        fields["excerpt"] = _EXCERPT_INDEX
     failed_fields: list[str] = []
-    for field, schema_type in _PAYLOAD_INDEX_FIELDS.items():
+    for field, schema_type in fields.items():
         if field in existing_schema:
             # Index already present. Confirm the existing schema type matches
             # what we'd create — a pre-existing collection with `doc_id`
@@ -366,7 +392,7 @@ async def _ensure_payload_indexes(
             # we wrote with.
             existing_info = existing_schema[field]
             existing_type = getattr(existing_info, "data_type", None)
-            if existing_type is not None and existing_type != schema_type:
+            if existing_type is not None and existing_type != _data_type(schema_type):
                 logger.warning(
                     "Payload index on '%s' has wrong schema type "
                     "(got %s, expected %s); searches filtering on this "
@@ -375,7 +401,7 @@ async def _ensure_payload_indexes(
                     "for the recovery procedure.",
                     field,
                     getattr(existing_type, "name", existing_type),
-                    schema_type.name,
+                    _data_type(schema_type).name,
                 )
                 failed_fields.append(field)
             # Either way, skip the create call: a matching index needs no
@@ -383,7 +409,11 @@ async def _ensure_payload_indexes(
             # intervention only — see docs/configuration.md).
             continue
         if not await _create_one_payload_index(
-            client, collection_name, field, schema_type
+            client,
+            collection_name,
+            field,
+            schema_type,
+            wait=schema_type is not _EXCERPT_INDEX,
         ):
             failed_fields.append(field)
 

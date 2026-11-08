@@ -69,6 +69,8 @@ from nextcloud_mcp_server.search.algorithms import SearchResult
 RELEVANCE_CALIBRATED = "cross_encoder_calibrated"
 RELEVANCE_ORDINAL = "fusion_ordinal"
 RELEVANCE_UNCALIBRATED = "uncalibrated"
+# An exact-match result (algorithm="exact") is a yes, not a degree: relevance 1.0.
+RELEVANCE_EXACT = "exact_match"
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,9 @@ def relevance_for(
     ordered by; falling back to ``score`` there would report a number that
     disagrees with the ranking the caller is looking at.
     """
+    if algorithm == "exact":
+        return 1.0, RELEVANCE_EXACT
+
     if rerank_score is not None:
         curve = _CROSS_ENCODER_CURVES.get(_normalize_model(rerank_model))
         if curve is not None:

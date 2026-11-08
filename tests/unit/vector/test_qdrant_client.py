@@ -129,6 +129,49 @@ def test_index_mode_indexed_as_keyword():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_excerpt_index(request, mocker):
+    """The _ensure_payload_indexes tests count _PAYLOAD_INDEX_FIELDS; the
+    settings-gated excerpt index has its own tests below."""
+    if request.node.name.startswith("test_ensure_payload_indexes"):
+        mocker.patch.object(
+            qdrant_module,
+            "get_settings",
+            return_value=SimpleNamespace(exact_match_index_enabled=False),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_excerpt_phrase_index_follows_its_setting(mocker, enabled):
+    """algorithm="exact" filters chunk text by phrase, which needs a TEXT
+    index with phrase matching. Not awaited: a large collection must not hold
+    up startup while Qdrant builds it."""
+    mocker.patch.object(
+        qdrant_module,
+        "get_settings",
+        return_value=SimpleNamespace(exact_match_index_enabled=enabled),
+    )
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = _empty_collection_info()
+
+    await _ensure_payload_indexes(client, "test-collection")
+
+    excerpt = [
+        c
+        for c in client.create_payload_index.await_args_list
+        if c.kwargs["field_name"] == "excerpt"
+    ]
+    if not enabled:
+        assert excerpt == []
+        return
+    [created] = excerpt
+    assert created.kwargs["wait"] is False
+    params = created.kwargs["field_schema"]
+    assert params.phrase_matching is True
+    assert params.lowercase is True
+
+
 @pytest.mark.unit
 async def test_ensure_payload_indexes_creates_each_field(mocker):
     """Happy path: every field in _PAYLOAD_INDEX_FIELDS gets its declared schema.

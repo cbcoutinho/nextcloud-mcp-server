@@ -320,6 +320,12 @@ _DEFAULTS: dict[str, Any] = {
     # default: a deployment opts in, since only some need it. Also requires
     # vector sync and EMBEDDING_GATEWAY_URL (for name detection).
     "sar_enabled": False,
+    # TEXT index (with phrase matching) on chunk text, for algorithm="exact"
+    # searches: every document containing a phrase. Built in the background on
+    # startup; it costs disk and RAM roughly proportional to the indexed text.
+    # Off: exact searches still work by scanning, slower, except on Qdrant in
+    # strict mode, which refuses a filter on an unindexed field.
+    "exact_match_index_enabled": True,
     "ner_model": "local/urchade/gliner_multi_pii-v1",
     # Per-request budget. Export runs in the background, so this only needs to
     # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
@@ -1420,6 +1426,7 @@ class Settings:
     search_rerank_max_concurrency: int = 1
     # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
     sar_enabled: bool = False
+    exact_match_index_enabled: bool = True
     ner_model: str = "local/urchade/gliner_multi_pii-v1"
     ner_timeout_seconds: float = 120.0
     ner_batch_size: int = 8

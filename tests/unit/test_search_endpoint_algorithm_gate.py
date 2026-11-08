@@ -66,7 +66,7 @@ def test_explicit_unknown_algorithm_returns_422(path: str):
     body = resp.json()
     assert body["error"] == "unsupported_search_type"
     assert body["requested"] == "fulltext"
-    assert body["supported_search_types"] == ["semantic", "bm25", "hybrid"]
+    assert body["supported_search_types"] == ["semantic", "bm25", "hybrid", "exact"]
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
