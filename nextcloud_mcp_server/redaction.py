@@ -32,9 +32,10 @@ The data subject passes through via ``keep``: their names, aliases, emails,
 phone numbers, NI numbers and addresses. A detected address is kept when it is a
 kept address or its leading part (house number first), never a bare street.
 Kept names match first (longest match wins) and
-are left as written. Tokens of a detected name that is itself kept are not
-expanded, so a bare "Jane" survives when only "Jane Doe" is the subject — unless
-"Jane" is also a token of some third party's name, in which case it is redacted.
+are left as written. A detected name whose words, titles aside, all belong to a
+kept name is kept too: "Mr Jane Doe" and a bare "Jane" survive when "Jane Doe"
+is the subject — unless one of those words is also in some third party's name,
+in which case it is redacted. Tokens of a kept name are not expanded.
 
 Detection needs the embedding gateway's ``POST /v1/ner``, so redaction is
 available only with ``EMBEDDING_GATEWAY_URL`` configured.
@@ -310,6 +311,28 @@ def _address_pattern(
     )
 
 
+def _subject_forms(names: Iterable[str], kept: set[str]) -> set[str]:
+    """Detected names that are the subject written another way: "Mr Jane Doe"
+    or a bare "Jane" when "Jane Doe" is kept.
+
+    A detection counts when its title-free words all belong to one kept name
+    and none of them belongs to a third party's name. A bare "Doe" shared with
+    a third party "John Doe" is ambiguous, so it is still redacted.
+    """
+    kept_words = [set(k.split()) for k in kept]
+
+    def words(key: str) -> set[str]:
+        return {t for t in key.split() if t not in _HONORIFICS}
+
+    def subject(key: str) -> bool:
+        w = words(key)
+        return bool(w) and any(w <= k for k in kept_words)
+
+    keys = {_key(n) for n in names}
+    third_party = {t for k in keys if not subject(k) for t in words(k)}
+    return {k for k in keys if subject(k) and not words(k) & third_party}
+
+
 def _name_forms(
     names: Iterable[str], kept: set[str]
 ) -> tuple[set[str], dict[str, set[str]]]:
@@ -366,6 +389,8 @@ class Redactor:
             n for k in keep if _NI_RE.fullmatch(k.strip()) and (n := _ni_key(k))
         }
         self._keep = {key for k in keep if "@" not in k and (key := _key(k))}
+        names = [n for n in names if _key(n)]
+        self._keep |= _subject_forms(names, self._keep)
         forms, owners = _name_forms(names, self._keep)
         # A bare token shares its full name's number only when it is
         # unambiguous: it belongs to exactly one detected third party and to

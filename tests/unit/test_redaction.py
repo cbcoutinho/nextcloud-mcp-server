@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.features import (
     ner_endpoint,
@@ -97,6 +99,37 @@ def test_shared_token_with_third_party_is_redacted():
     )
     r = Redactor({"Jane Doe", "John Doe"}, keep=["Jane Doe", "Doe"])
     assert r.redact("Doe") == "Doe"
+
+
+def test_subject_detected_with_a_title_or_first_name_alone_is_kept():
+    # The model tags "Mr Jane Doe" in an address block and "Jane" alone in a
+    # salutation. Both are the subject; neither may become a placeholder.
+    r = Redactor({"Mr Jane Doe", "Jane", "Mr Sam Roe", "Sam"}, keep=["Jane Doe"])
+    text = "Mr Jane Doe\nDear Jane\nSigned Mr Sam Roe. Regards, Sam"
+    assert r.redact(text) == (
+        "Mr Jane Doe\nDear Jane\nSigned [PERSON_1]. Regards, [PERSON_1]"
+    )
+
+
+_WORD = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=3, max_size=8)
+
+
+@given(
+    first=_WORD,
+    last=_WORD,
+    title=st.sampled_from(["", "Mr ", "Ms ", "Dr "]),
+    others=st.lists(st.tuples(_WORD, _WORD), max_size=3),
+)
+@example(first="jane", last="doe", title="Mr ", others=[("sam", "roe")])
+def test_subject_forms_survive_when_no_third_party_shares_a_word(
+    first, last, title, others
+):
+    subject = {first, last}
+    others = [(a, b) for a, b in others if not {a, b} & subject]
+    names = {f"{title}{first} {last}", first, *(f"{a} {b}" for a, b in others)}
+    r = Redactor(names, keep=[f"{first} {last}"])
+    text = f"{title}{first} {last}; Dear {first}"
+    assert r.redact(text) == text
 
 
 def test_honorifics_and_short_tokens_are_not_expanded():
