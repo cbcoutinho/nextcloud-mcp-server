@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.207.1 (2026-11-08)
+
+### Fix
+
+- **config**: warn when DOCUMENT_PARSE_MEM_LIMIT_MB is too small for the parse worker
+
+### Refactor
+
+- **config**: move the parse mem-limit warning into a helper and pin its boundary
+
 ## v0.207.0 (2026-11-08)
 
 ### Feat
