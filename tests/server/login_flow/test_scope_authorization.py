@@ -542,7 +542,7 @@ async def test_scope_classification():
     """Test that our scope classification correctly identifies read vs write operations."""
     # `scripts/` is a dev-only helper dir (not an installed package); resolved
     # at runtime via the repo root on sys.path, so ty can't see it.
-    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[import-not-found]
         classify_function,
     )
 
@@ -577,7 +577,7 @@ async def test_all_tools_classified():
     """Verify that all tools can be properly classified as read or write."""
     # `scripts/` is a dev-only helper dir (not an installed package); resolved
     # at runtime via the repo root on sys.path, so ty can't see it.
-    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[import-not-found]
         classify_function,
     )
 
