@@ -677,7 +677,9 @@ async def unified_search(request: Request) -> JSONResponse:
                 # thousands. total_found therefore counts indexed matches; a
                 # stale one only shortens its page, and export re-checks
                 # access to every file anyway.
-                results.sort(key=lambda r: (r.doc_type, r.title.casefold(), r.id))
+                results.sort(
+                    key=lambda r: (r.doc_type, (r.title or "").casefold(), r.id)
+                )
                 exact_total = len(results)
                 return results[offset : offset + limit]
             # Rerank inside the closure, i.e. BEFORE verify-on-read runs in

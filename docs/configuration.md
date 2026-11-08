@@ -1466,6 +1466,18 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `NER_BATCH_SIZE` | ⚠️ Optional | `8` | Texts (up to 2,000 characters each) per `/v1/ner` request. Keep it small on a CPU backend, which must finish a batch inside the gateway's own upstream timeout; raise it (e.g. `32`) on a GPU. Must be `>= 1`. |
 | `NER_THRESHOLD` | ⚠️ Optional | `0.5` | Minimum model confidence, in `(0, 1]`, for a span to count as a person name. Lower it to raise recall; the cost is over-redaction, which is the safe direction for a disclosure. |
 
+**Recovering a payload index** that startup reports as wrong (a wrong schema
+type, or `excerpt` without phrase matching): startup never replaces an existing
+index, so drop it and restart. The next startup creates it as it should be.
+
+```bash
+curl -X DELETE "$QDRANT_URL/collections/<collection>/index/<field>" \
+  -H "api-key: $QDRANT_API_KEY"
+```
+
+Until it is rebuilt, filters on that field scan (or, on Qdrant in strict mode,
+are refused); `excerpt` is rebuilt in the background.
+
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)
 

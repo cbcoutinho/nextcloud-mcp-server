@@ -141,11 +141,13 @@ class ExactMatchAlgorithm(SearchAlgorithm):
             )
             scanned += len(points)
             for point in points:
-                _keep_first_chunk(found, point)
-                # At a cap, the documents kept are those scrolled first (point
-                # id order), not the first by title: deterministic, so pages
-                # stay stable, but an arbitrary subset, hence `truncated`.
-                if len(found) >= self.max_documents:
+                # Truncated only once a document beyond the cap turns up, so a
+                # match of exactly max_documents is complete. At a cap, the
+                # documents kept are those scrolled first (point id order), not
+                # the first by title: deterministic, so pages stay stable, but
+                # an arbitrary subset, hence `truncated`.
+                room = len(found) < self.max_documents
+                if not _keep_first_chunk(found, point, room=room):
                     self.truncated = True
                     return list(found.values())
             if offset is None:
@@ -155,19 +157,26 @@ class ExactMatchAlgorithm(SearchAlgorithm):
                 return list(found.values())
 
 
-def _keep_first_chunk(found: dict[tuple[str, str], SearchResult], point: Any) -> None:
+def _keep_first_chunk(
+    found: dict[tuple[str, str], SearchResult], point: Any, *, room: bool
+) -> bool:
     """Record ``point`` under its document unless an earlier chunk is there.
 
     A shared file can be indexed under several owners, and a document matches
     in several chunks: one row per document, its first matching chunk.
+    Returns False, recording nothing, for a new document when there is no
+    ``room`` for it.
     """
     result = build_search_result_from_point(
         ScoredPoint(id=point.id, version=0, score=1.0, payload=point.payload),
         metadata_extras={"search_method": "exact"},
     )
     if result is None:
-        return
+        return True
     key = (result.doc_type, result.id)
     kept = found.get(key)
+    if kept is None and not room:
+        return False
     if kept is None or result.chunk_index < kept.chunk_index:
         found[key] = result
+    return True

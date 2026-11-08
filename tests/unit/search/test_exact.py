@@ -93,6 +93,14 @@ async def test_stops_at_the_cap_and_says_so(qdrant):
     assert algo.truncated
 
 
+async def test_a_match_of_exactly_the_cap_is_not_truncated(qdrant):
+    await qdrant.upsert("c", [_point(i, "Jane Doe") for i in range(1, 5)])
+    algo = ExactMatchAlgorithm(max_documents=4)
+
+    assert len(await algo.search("Jane Doe", "alice")) == 4
+    assert not algo.truncated
+
+
 async def test_stops_at_the_chunk_budget_and_says_so(qdrant, mocker):
     # One document matching in many chunks must not scroll them all.
     await qdrant.upsert(

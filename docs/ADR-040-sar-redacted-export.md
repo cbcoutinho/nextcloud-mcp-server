@@ -169,7 +169,10 @@ lost access to: a page can come back shorter than `limit`, and a client must
 page by `offset < total_found`, never stop at the first short page.
 A match stops at 20,000 documents (or 200,000 scanned chunks) per doc type and
 says so with `truncated: true`; the subset kept then is in scroll order, not by
-title. It is
+title. A file path matches more loosely than text: its words in any order.
+Every page re-runs the scroll and slices it, so a page costs the whole match
+set (bounded by the caps), not the pages before it; caching the sorted ids per
+query is the upgrade if deep paging gets slow. It is
 advertised in `supported_search_types`, so clients gate on it. The phrase filter
 uses the `excerpt` text index (`EXACT_MATCH_INDEX_ENABLED`).
 
