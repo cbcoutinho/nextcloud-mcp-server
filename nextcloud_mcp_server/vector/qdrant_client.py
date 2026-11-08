@@ -255,6 +255,49 @@ def _data_type(schema: PayloadSchemaType | TextIndexParams) -> PayloadSchemaType
     return schema if isinstance(schema, PayloadSchemaType) else PayloadSchemaType.TEXT
 
 
+def _existing_index_ok(
+    field: str, wanted: PayloadSchemaType | TextIndexParams, existing: Any
+) -> bool:
+    """Whether an index already on ``field`` is the one we would build; warns
+    when it is not.
+
+    A pre-existing collection with ``doc_id`` indexed as INTEGER would
+    otherwise silently survive, and searches using MatchValue(value="123")
+    would keep failing with HTTP 400 on Qdrant Cloud strict mode. Compare via
+    PayloadSchemaType equality; PayloadIndexInfo.data_type is the same enum we
+    wrote with. A TEXT index built without the phrase matching we would add
+    passes that check, but MatchPhrase cannot use it.
+    """
+    existing_type = getattr(existing, "data_type", None)
+    if existing_type is not None and existing_type != _data_type(wanted):
+        logger.warning(
+            "Payload index on '%s' has wrong schema type "
+            "(got %s, expected %s); searches filtering on this "
+            "field will fail with HTTP 400 until the index is "
+            "dropped and recreated. See docs/configuration.md "
+            "for the recovery procedure.",
+            field,
+            getattr(existing_type, "name", existing_type),
+            _data_type(wanted).name,
+        )
+        return False
+    params = getattr(existing, "params", None)
+    if (
+        isinstance(wanted, TextIndexParams)
+        and wanted.phrase_matching
+        and not getattr(params, "phrase_matching", False)
+    ):
+        logger.warning(
+            "Text index on '%s' has no phrase matching; exact searches "
+            "scan instead. An operator must drop the index; the next "
+            "restart then creates it with phrase matching. See "
+            "docs/configuration.md.",
+            field,
+        )
+        return False
+    return True
+
+
 async def _create_one_payload_index(
     client: AsyncQdrantClient,
     collection_name: str,
@@ -382,43 +425,7 @@ async def _ensure_payload_indexes(
     failed_fields: list[str] = []
     for field, schema_type in fields.items():
         if field in existing_schema:
-            # Index already present. Confirm the existing schema type matches
-            # what we'd create — a pre-existing collection with `doc_id`
-            # indexed as INTEGER (the bug this PR fixes) would otherwise
-            # silently survive here, and searches using
-            # MatchValue(value="123") would keep failing with HTTP 400 on
-            # Qdrant Cloud strict mode. Compare via PayloadSchemaType
-            # equality; PayloadIndexInfo.data_type is the same enum
-            # we wrote with.
-            existing_info = existing_schema[field]
-            existing_type = getattr(existing_info, "data_type", None)
-            if existing_type is not None and existing_type != _data_type(schema_type):
-                logger.warning(
-                    "Payload index on '%s' has wrong schema type "
-                    "(got %s, expected %s); searches filtering on this "
-                    "field will fail with HTTP 400 until the index is "
-                    "dropped and recreated. See docs/configuration.md "
-                    "for the recovery procedure.",
-                    field,
-                    getattr(existing_type, "name", existing_type),
-                    _data_type(schema_type).name,
-                )
-                failed_fields.append(field)
-            elif (
-                isinstance(schema_type, TextIndexParams)
-                and schema_type.phrase_matching
-                and not getattr(
-                    getattr(existing_info, "params", None), "phrase_matching", False
-                )
-            ):
-                # A TEXT index built without phrase matching passes the type
-                # check, but MatchPhrase then cannot use it.
-                logger.warning(
-                    "Text index on '%s' has no phrase matching; exact searches "
-                    "scan until the index is dropped; the next restart then "
-                    "recreates it. See docs/configuration.md.",
-                    field,
-                )
+            if not _existing_index_ok(field, schema_type, existing_schema[field]):
                 failed_fields.append(field)
             # Either way, skip the create call: a matching index needs no
             # work, and a mismatch must not be auto-repaired (operator

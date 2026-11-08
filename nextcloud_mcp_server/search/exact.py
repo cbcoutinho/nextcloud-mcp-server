@@ -141,20 +141,10 @@ class ExactMatchAlgorithm(SearchAlgorithm):
             )
             scanned += len(points)
             for point in points:
-                result = build_search_result_from_point(
-                    ScoredPoint(
-                        id=point.id, version=0, score=1.0, payload=point.payload
-                    ),
-                    metadata_extras={"search_method": "exact"},
-                )
-                if result is None:
-                    continue
-                key = (result.doc_type, result.id)
-                # A shared file can be indexed under several owners, and a
-                # document matches in several chunks: keep the first.
-                kept = found.get(key)
-                if kept is None or result.chunk_index < kept.chunk_index:
-                    found[key] = result
+                _keep_first_chunk(found, point)
+                # At a cap, the documents kept are those scrolled first (point
+                # id order), not the first by title: deterministic, so pages
+                # stay stable, but an arbitrary subset, hence `truncated`.
                 if len(found) >= self.max_documents:
                     self.truncated = True
                     return list(found.values())
@@ -163,3 +153,21 @@ class ExactMatchAlgorithm(SearchAlgorithm):
             if scanned >= self.max_chunks:
                 self.truncated = True
                 return list(found.values())
+
+
+def _keep_first_chunk(found: dict[tuple[str, str], SearchResult], point: Any) -> None:
+    """Record ``point`` under its document unless an earlier chunk is there.
+
+    A shared file can be indexed under several owners, and a document matches
+    in several chunks: one row per document, its first matching chunk.
+    """
+    result = build_search_result_from_point(
+        ScoredPoint(id=point.id, version=0, score=1.0, payload=point.payload),
+        metadata_extras={"search_method": "exact"},
+    )
+    if result is None:
+        return
+    key = (result.doc_type, result.id)
+    kept = found.get(key)
+    if kept is None or result.chunk_index < kept.chunk_index:
+        found[key] = result

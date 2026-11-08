@@ -167,8 +167,9 @@ verified per page rather than over the whole set; export re-checks every file.
 So `total_found` counts indexed matches, including any the caller has since
 lost access to: a page can come back shorter than `limit`, and a client must
 page by `offset < total_found`, never stop at the first short page.
-A match stops at 20,000 documents (or 200,000 scanned chunks) and says so with
-`truncated: true`. It is
+A match stops at 20,000 documents (or 200,000 scanned chunks) per doc type and
+says so with `truncated: true`; the subset kept then is in scroll order, not by
+title. It is
 advertised in `supported_search_types`, so clients gate on it. The phrase filter
 uses the `excerpt` text index (`EXACT_MATCH_INDEX_ENABLED`).
 

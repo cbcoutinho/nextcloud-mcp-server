@@ -83,6 +83,16 @@ def test_several_doc_types_are_not_cut_to_a_candidate_budget():
     assert body["total_found"] == 600
 
 
+def test_an_offset_past_the_end_is_an_empty_page_with_the_true_total():
+    body = _post(
+        {"query": "Jane Doe", "limit": 10, "offset": 50},
+        AsyncMock(return_value=_docs(30)),
+    ).json()
+
+    assert body["results"] == []
+    assert body["total_found"] == 30
+
+
 def test_truncation_is_reported():
     body = _post(
         {"query": "Jane Doe"}, AsyncMock(return_value=_docs(3)), truncated=True
