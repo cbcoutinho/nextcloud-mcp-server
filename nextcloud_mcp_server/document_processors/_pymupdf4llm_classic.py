@@ -3,40 +3,40 @@
 Every caller of ``pymupdf4llm.to_markdown`` in this codebase must go through
 :func:`load_classic_pymupdf4llm`. Two independent reasons:
 
-* **Memory.** 1.27.2.1 made ``import pymupdf4llm`` initialise ``pymupdf.layout``
-  and route ``to_markdown`` through an ONNX layout-detection model, which costs
-  ~1157 MiB of address space. The isolated parse worker runs under a 1536 MiB
+* **Memory.** Layout mode (pymupdf4llm's default since 1.27.2.1) routes
+  ``to_markdown`` through an ONNX layout-detection model, which costs ~700-1150
+  MiB of address space. The isolated parse worker runs under a 1536 MiB
   RLIMIT_AS, so paying that cost leaves ~117 MiB for the parse itself -- which is
-  how a perfectly healthy document ends up dead-lettered (Deck #911). Binding
-  ``pymupdf.layout`` to None in ``sys.modules`` -- the standard way to make an
-  import raise -- takes pymupdf4llm's classic branch and avoids the cost.
+  how a perfectly healthy document ends up dead-lettered (Deck #911).
 
-  Two baselines get quoted for that saving; they measure different processes, so
-  to be explicit about which is which. Importing *only* pymupdf4llm: VmSize 1191
-  MiB with layout, 499 MiB without. The ingest worker, which also carries the
-  whole app: 1476 MiB with, 891 MiB without (its ``to_process`` parse child
-  tracks ~55 MiB below each, so 1419 MiB was the figure that actually blew the
-  1536 MiB cap).
+  *When* the cost lands depends on the major version. In 1.x, ``import
+  pymupdf4llm`` imported ``pymupdf.layout`` (and onnxruntime) on the spot:
+  VmSize 1191 MiB with layout vs 499 MiB without for the import alone, and 1476
+  vs 891 MiB for the ingest worker carrying the whole app. Since 2.0 (where both
+  modules ship inside the pymupdf wheel) the import is cheap and the model
+  loads lazily on the first ``to_markdown`` with layout enabled: measured on
+  2.1, VmSize after a 20-page parse is 1166 MiB with layout vs 478 MiB through
+  this loader, and onnxruntime is never imported.
 * **Consistency.** The classic and layout extractors emit different markdown
   (and name the page key ``page`` vs ``page_number``). ``search/pdf_highlighter``
   recomputes offsets that must match what indexing produced, so the two must
   agree on the extractor or highlight offsets silently misalign.
 
-pymupdf4llm decides at import time with::
+pymupdf4llm picks its default at import time: 1.x by trying ``import
+pymupdf.layout``, 2.x by ``pymupdf._layout_available()`` (a ``find_spec`` on
+the same name). Binding ``pymupdf.layout`` to None in ``sys.modules`` makes
+both report "not installed", so the default comes out classic and nothing can
+import the layout module later in this process. The explicit
+``use_layout(False)`` -- which in 2.x clears the process-wide
+``pymupdf._layout_enabled`` gate on the lazy model load -- still disables
+inference if the block ever stops working (upstream renaming the module, say).
 
-    try: import pymupdf.layout
-    except ImportError: use_layout(False)
-    else: use_layout(True)
-
-hence both mechanisms here: the ``sys.modules`` block avoids the address-space
-cost, and the explicit ``use_layout(False)`` still disables inference if that
-block ever stops working (upstream renaming the module, say). The block cannot
-undo an import that already happened, so **this must run before anything else
-imports pymupdf4llm** -- which is why every caller imports it lazily rather than
-at module scope. A module-level ``import pymupdf4llm`` anywhere in the app's
-import graph re-breaks the memory guarantee for the whole process tree, because
-``anyio.to_process`` re-imports the parent's ``__main__`` inside every parse
-worker before the worker function runs.
+In 1.x the block could not undo an import that already happened, so **this
+must run before anything else imports pymupdf4llm** -- which is why every
+caller imports it lazily rather than at module scope. 2.x defers the cost to
+``to_markdown``, so a stray early import is no longer fatal on its own, but
+keep the rule: ``anyio.to_process`` re-imports the parent's ``__main__`` inside
+every parse worker, and only this loader guarantees layout is off there.
 
 Both effects are process-wide and sticky for the life of the process; nothing in
 this codebase needs real layout mode. Anything that later does must not share a

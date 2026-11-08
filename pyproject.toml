@@ -211,13 +211,13 @@ documents = [
     # Pinned exactly, and upgraded deliberately rather than by range. The
     # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
     # hard dependency of our page-boundary/citation path, and it is not stable
-    # across releases: 1.27.2.1 made pymupdf4llm initialise pymupdf_layout on
-    # import, which switched the emitting code path from ``pymupdf_rag`` (key
-    # ``page``) to ``document_layout`` (key ``page_number``). Upstream pins its
-    # own pymupdf dependency exactly for the same reason (see their CHANGES for
-    # 1.27.2.1), so the two versions must move together.
+    # across releases: layout mode (on by default since 1.27.2.1) switches the
+    # emitting code path from ``pymupdf_rag`` (key ``page``) to
+    # ``document_layout`` (key ``page_number``). Since 2.0 the ``pymupdf4llm``
+    # and ``pymupdf.layout`` modules ship inside the pymupdf wheel (the
+    # ``pymupdf4llm`` / ``pymupdf-layout`` distributions are empty shims it pins
+    # exactly), so this one pin covers all three.
     "pymupdf==2.1",
-    "pymupdf4llm==2.1",
     "pypdfium2>=5.9.0",
     "python-pptx>=1.0.2",
     "python-docx>=1.2.0",

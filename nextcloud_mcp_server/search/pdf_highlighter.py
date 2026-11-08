@@ -95,13 +95,13 @@ class PDFHighlighter:
         # reasons. (1) Offsets: indexing runs the classic (pymupdf_rag)
         # extractor, so recomputing them under layout mode would silently
         # misalign every highlight -- the exact failure the write_images note
-        # above guards against. (2) Memory: a module-level ``import pymupdf4llm``
-        # here put pymupdf.layout (~1.1 GiB of address space) into the app's
-        # import graph, and ``anyio.to_process`` re-imports the parent's
-        # ``__main__`` inside every PDF parse worker before the worker function
-        # runs -- so this import, in a module the ingest path never calls, was
-        # what left the 1536 MiB RLIMIT_AS worker with ~117 MiB to parse in and
-        # dead-lettered healthy documents (Deck #911).
+        # above guards against. (2) Memory: under pymupdf 1.x a module-level
+        # ``import pymupdf4llm`` here put pymupdf.layout (~1.1 GiB of address
+        # space) into the app's import graph, and ``anyio.to_process``
+        # re-imports the parent's ``__main__`` inside every PDF parse worker --
+        # so this import, in a module the ingest path never calls, left the
+        # 1536 MiB RLIMIT_AS worker with ~117 MiB to parse in (Deck #911). 2.x
+        # loads the model lazily instead, but only the loader turns it off.
         pymupdf4llm = load_classic_pymupdf4llm()
 
         # Use temp directory for image output (images are discarded after extraction)
