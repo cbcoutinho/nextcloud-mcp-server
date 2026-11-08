@@ -69,7 +69,8 @@ def configure_tables_tools(mcp: MCPServer):
         """Read rows from a table with optional pagination.
 
         Pass ``columns`` (column IDs from nc_tables_get_schema) to return only
-        those cells of each row. To read a filtered/sorted subset, use
+        those cells of each row (omit it for all cells; ``[]`` returns rows
+        with no cells, e.g. to list row IDs). To read a filtered/sorted subset, use
         nc_tables_read_view with one of the table's views.
         """
         client = await get_client(ctx)
@@ -100,7 +101,8 @@ def configure_tables_tools(mcp: MCPServer):
 
         View IDs are listed under ``views`` in nc_tables_get_schema. Filters and
         sorting are managed by the table owner in the Tables UI. Pass
-        ``columns`` (column IDs) to return only those cells of each row.
+        ``columns`` (column IDs) to return only those cells of each row (omit
+        it for all cells; ``[]`` returns rows with no cells).
         """
         client = await get_client(ctx)
         rows = await client.tables.get_view_rows(view_id, limit, offset)
@@ -122,7 +124,8 @@ def configure_tables_tools(mcp: MCPServer):
     ) -> GetRowResponse:
         """Get a single table row by ID.
 
-        Pass ``columns`` (column IDs) to return only those cells.
+        Pass ``columns`` (column IDs) to return only those cells (omit it for
+        all cells; ``[]`` returns no cells).
         """
         client = await get_client(ctx)
         return GetRowResponse(row=_row(await client.tables.get_row(row_id), columns))
