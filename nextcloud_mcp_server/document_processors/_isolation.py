@@ -22,6 +22,7 @@ loop whose exit tears its pool down (see :func:`_run_one_shot`).
 
 import functools
 import logging
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -157,8 +158,8 @@ def _text_only_chunks(doc: Any) -> list[dict[str, Any]]:
 class PdfParseFailed(Exception):
     """A PDF parse failed in the isolated worker.
 
-    ``reason`` is one of ``timeout`` | ``oom`` | ``error`` and maps directly to
-    the ``astrolabe_document_parse_failed_total{reason}`` metric label.
+    ``reason`` is one of ``timeout`` | ``oom`` | ``interrupted`` | ``error`` and
+    maps directly to the ``astrolabe_document_parse_failed_total{reason}`` metric label.
     """
 
     def __init__(self, reason: str, message: str | None = None) -> None:
@@ -222,6 +223,19 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
         logger.debug("resource module unavailable; skipping RLIMIT_AS cap")
         _MEM_LIMIT_APPLIED = True
         return
+    # numpy is imported after the cap (pymupdf4llm loads it lazily), and its
+    # OpenBLAS starts one thread per HOST core, whatever the container's CPU
+    # quota. On an 8-core host those threads' address space was enough to make
+    # the import fail under a 640 MiB cap: KeyboardInterrupt out of numpy, or
+    # ImportError mapping onnxruntime right after (#1635). The parse makes no
+    # real use of BLAS, so one thread costs nothing. OpenBLAS reads this when
+    # it loads, so it must be set before the first numpy import.
+    #
+    # Assigned, not setdefault: under the cap, more threads is exactly what
+    # breaks, so an operator's larger value must not win here. Only OpenBLAS
+    # is pinned because it is the pool the pinned numpy wheel ships and the
+    # one that failed; a numpy built on MKL/OpenMP would need its own variable.
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
     target = mem_limit_mb * 1024 * 1024
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     soft_target = target if hard == resource.RLIM_INFINITY else min(target, hard)
@@ -432,13 +446,15 @@ async def _run_classified(
             # killer beating the rlimit). Treat as an out-of-memory failure.
             raise PdfParseFailed("oom", str(e)) from e
         except (KeyboardInterrupt, SystemExit) as e:  # NOSONAR(S5754)
-            # The worker was interrupted (e.g. a SIGINT to the process group)
-            # and anyio re-raises its BaseException here. Uncaught, it escapes
-            # every `except Exception` above us and tears down the lifespan
-            # task group, restarting the whole server (#1635). Our own
-            # shutdown arrives as cancellation, not this, so it is the
-            # worker's: treat it like a dead worker -- retryable, not terminal.
-            raise PdfParseFailed("oom", f"worker interrupted: {e!r}") from e
+            # The worker raised a BaseException and anyio re-raises it here.
+            # Uncaught, it escapes every `except Exception` above us and tears
+            # down the lifespan task group, restarting the whole server
+            # (#1635). Our own shutdown arrives as cancellation, not this, so
+            # it is the worker's. Retryable like a dead worker, but labelled
+            # apart: reporting it as "oom" sent operators to raise memory
+            # limits when the cause was OpenBLAS failing to start threads (see
+            # _apply_mem_limit).
+            raise PdfParseFailed("interrupted", f"worker interrupted: {e!r}") from e
         except PdfWorkerError as e:
             # Already normalised in the worker: its message is
             # "OriginalType: text", so re-prefixing would read
@@ -498,8 +514,9 @@ async def run_isolated_pdf_parse(
 ) -> list[dict[str, Any]]:
     """Parse a PDF in an isolated worker subprocess with a memory cap and timeout.
 
-    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``error``) instead of
-    taking the pod down. On timeout the worker process is killed (``cancellable``).
+    Raises ``PdfParseFailed`` (reason ``timeout`` | ``oom`` | ``interrupted`` |
+    ``error``) instead of taking the pod down. On timeout the worker process is
+    killed (``cancellable``).
 
     ``process_slots`` bounds how many parses run concurrently. Without it anyio
     defaults to an ``os.cpu_count()``-wide pool, which neither the worker's

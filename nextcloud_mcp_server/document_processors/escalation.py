@@ -165,8 +165,8 @@ class EscalateError(Exception):
     signal to escalate a *hard parse failure* -- an isolated-worker timeout/OOM
     on a pathological PDF -- up the ladder instead of dropping the document, so
     ``reason`` may also carry a ``parse_failed_reason`` value (``timeout``,
-    ``oom``, ``error``). The ``from_tier``/``to_tier`` hop is identical; only the
-    reason label widens, which surfaces on
+    ``oom``, ``interrupted``, ``error``). The ``from_tier``/``to_tier`` hop is
+    identical; only the reason label widens, which surfaces on
     ``astrolabe_document_escalation_total{reason}``.
     """
 

@@ -179,9 +179,9 @@ async def mark_dead_letter(
 
     Keyed by content (``etag``) + escalation config (``tiers_sig``); the scanner
     skips re-queuing while both match. ``reason`` is the parse failure reason
-    (``timeout`` | ``oom`` | ``error``). Fail-safe: a Qdrant error is logged, not
-    raised — a missed mark just means the document is retried (the bounded prior
-    behaviour), never a crash.
+    (``timeout`` | ``oom`` | ``interrupted`` | ``error``). Fail-safe: a Qdrant
+    error is logged, not raised — a missed mark just means the document is
+    retried (the bounded prior behaviour), never a crash.
 
     Terminal on the first call: a hard parse failure at the deepest available
     tier defeats a retry by construction. Repeatable *index* failures go through
