@@ -320,10 +320,12 @@ def _subject_forms(names: Iterable[str], kept: set[str]) -> set[str]:
     A bare "Doe" shared with a third party "John Doe" is ambiguous, so it is
     still redacted; "Mr Jane Doe" is not.
     """
-    kept_words = [set(k.split()) for k in kept]
 
     def words(key: str) -> set[str]:
         return {t for t in key.split() if t not in _HONORIFICS}
+
+    # Title-free on both sides, so a kept "Mr Jane Doe" is the whole name too.
+    kept_words = [words(k) for k in kept]
 
     def subject(key: str) -> bool:
         w = words(key)
@@ -400,7 +402,10 @@ class Redactor:
         names = [n for n in names if _key(n)]
         # Only names count as the subject's name words: an address, phone or NI
         # number in ``keep`` ("12 Jane Street") must not make a third party
-        # "Jane" look like the subject. Every such entry carries a digit.
+        # "Jane" look like the subject. Entries with a digit are dropped, which
+        # covers phone and NI numbers and numbered addresses.
+        # ponytail: a number-less address ("Rose Cottage") still counts as name
+        # words; pass it via ``addresses`` or split keep by kind if that bites.
         kept_names = {k for k in self._keep if not any(c.isdigit() for c in k)}
         self._keep |= _subject_forms(names, kept_names)
         forms, owners = _name_forms(names, self._keep)
