@@ -67,10 +67,10 @@ def supported_search_types(settings: Settings) -> list[str]:
 
     - vector sync disabled → ``[]`` (no Qdrant-backed search at all)
     - vector sync enabled  → all four (``semantic``, ``bm25``, ``hybrid``,
-      ``exact``). The
-      collection is always dense-capable; keyword-only documents
-      (``keyword-index`` tag) simply contribute to ``bm25``/``hybrid`` via their
-      sparse vector.
+      ``exact``). The collection is always dense-capable; keyword-only
+      documents (``keyword-index`` tag) simply contribute to ``bm25``/``hybrid``
+      via their sparse vector. ``exact`` is a different mechanism: a filtered
+      scroll over chunk text, needing no vectors at all.
 
     Order follows ``SUPPORTED_SEARCH_ALGORITHMS`` for a stable contract.
     """

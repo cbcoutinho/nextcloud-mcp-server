@@ -164,7 +164,11 @@ caller's access scope and filters. It is unranked (every result has relevance 1.
 source `exact_match`), always one row per document, and `total_found` is the true
 count of indexed matches, so a client can page through all of them. Access is
 verified per page rather than over the whole set; export re-checks every file.
-A match stops at 20,000 documents and says so with `truncated: true`. It is
+So `total_found` counts indexed matches, including any the caller has since
+lost access to: a page can come back shorter than `limit`, and a client must
+page by `offset < total_found`, never stop at the first short page.
+A match stops at 20,000 documents (or 200,000 scanned chunks) and says so with
+`truncated: true`. It is
 advertised in `supported_search_types`, so clients gate on it. The phrase filter
 uses the `excerpt` text index (`EXACT_MATCH_INDEX_ENABLED`).
 

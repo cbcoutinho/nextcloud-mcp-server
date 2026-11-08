@@ -558,12 +558,6 @@ async def unified_search(request: Request) -> JSONResponse:
         except UnsupportedSearchType as e:
             return _unsupported_search_type_response(e)
 
-        # Only the hybrid algorithm implements grouping. The dense-only path
-        # would accept the kwarg and silently ignore it, returning several
-        # chunks of one document to a caller that asked for one row per
-        # document — indistinguishable from a ranking bug. Reject instead.
-        # Astrolabe requests "hybrid" (its default), so this combination is
-        # reachable only by an explicit opt-in to the dense algorithm.
         # An exact match is a set, not a ranking: always one row per document,
         # and nothing for a reranker to order.
         exact = algorithm == "exact"
@@ -576,6 +570,12 @@ async def unified_search(request: Request) -> JSONResponse:
             granularity = GRANULARITY_DOCUMENT
         exact_total = 0
 
+        # Only the hybrid algorithm implements grouping. The dense-only path
+        # would accept the kwarg and silently ignore it, returning several
+        # chunks of one document to a caller that asked for one row per
+        # document — indistinguishable from a ranking bug. Reject instead.
+        # Astrolabe requests "hybrid" (its default), so this combination is
+        # reachable only by an explicit opt-in to the dense algorithm.
         if granularity == GRANULARITY_DOCUMENT and algorithm == "semantic":
             return JSONResponse(
                 {
@@ -625,6 +625,7 @@ async def unified_search(request: Request) -> JSONResponse:
         async def _execute(scope: AccessibleScope | None) -> list:
             """Run the search across requested doc_types with the given access
             scope (None ⇒ self-only)."""
+            nonlocal exact_total, rerank_outcome
             owners = scope.owners if scope else None
             # Narrow the owner branch to the subtrees actually shared with the
             # caller; see access_filter.build_ownership_filter.
@@ -676,14 +677,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 # thousands. total_found therefore counts indexed matches; a
                 # stale one only shortens its page, and export re-checks
                 # access to every file anyway.
-                nonlocal exact_total
                 results.sort(key=lambda r: (r.doc_type, r.title.casefold(), r.id))
                 exact_total = len(results)
                 return results[offset : offset + limit]
             # Rerank inside the closure, i.e. BEFORE verify-on-read runs in
             # _search_with_acl, and after the per-doc_type merge so one pass
             # covers every type.
-            nonlocal rerank_outcome
             if rerank:
                 results, rerank_outcome = await rerank_results(
                     results, query, settings=settings, surface="http"

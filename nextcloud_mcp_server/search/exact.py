@@ -38,6 +38,10 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 # memory; a case holds far fewer items (MAX_CASE_ITEMS) anyway. `truncated`
 # tells the caller when it is hit. Stream pages if a real need exceeds it.
 MAX_EXACT_DOCUMENTS = 20_000
+# The same guard for chunks: a phrase repeated across thousands of chunks of a
+# few documents would otherwise scroll every one of them (with its text) before
+# reaching the document cap.
+MAX_EXACT_CHUNKS = 10 * MAX_EXACT_DOCUMENTS
 _SCROLL_PAGE = 1000
 _PAYLOAD = [
     "doc_id",
@@ -69,11 +73,21 @@ def phrase_filter(query: str) -> Filter:
 
 class ExactMatchAlgorithm(SearchAlgorithm):
     """Every matching document, unranked. ``truncated`` is set after a search
-    that stopped at :data:`MAX_EXACT_DOCUMENTS`."""
+    that stopped at ``max_documents`` or ``max_chunks``.
 
-    def __init__(self, max_documents: int = MAX_EXACT_DOCUMENTS) -> None:
+    The search API runs one search per doc type on the same instance, so there
+    ``truncated`` means "some type was cut": each search only ever sets it.
+    Reset it before reusing the instance for an unrelated query.
+    """
+
+    def __init__(
+        self,
+        max_documents: int = MAX_EXACT_DOCUMENTS,
+        max_chunks: int = MAX_EXACT_CHUNKS,
+    ) -> None:
         super().__init__()
         self.max_documents = max_documents
+        self.max_chunks = max_chunks
         self.truncated = False
 
     @property
@@ -114,6 +128,7 @@ class ExactMatchAlgorithm(SearchAlgorithm):
         collection = get_settings().get_collection_name()
 
         found: dict[tuple[str, str], SearchResult] = {}
+        scanned = 0
         offset = None
         while True:
             points, offset = await qdrant.scroll(
@@ -124,6 +139,7 @@ class ExactMatchAlgorithm(SearchAlgorithm):
                 with_payload=_PAYLOAD,
                 with_vectors=False,
             )
+            scanned += len(points)
             for point in points:
                 result = build_search_result_from_point(
                     ScoredPoint(
@@ -143,4 +159,7 @@ class ExactMatchAlgorithm(SearchAlgorithm):
                     self.truncated = True
                     return list(found.values())
             if offset is None:
+                return list(found.values())
+            if scanned >= self.max_chunks:
+                self.truncated = True
                 return list(found.values())

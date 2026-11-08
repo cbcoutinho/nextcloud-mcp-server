@@ -93,6 +93,20 @@ async def test_stops_at_the_cap_and_says_so(qdrant):
     assert algo.truncated
 
 
+async def test_stops_at_the_chunk_budget_and_says_so(qdrant, mocker):
+    # One document matching in many chunks must not scroll them all.
+    await qdrant.upsert(
+        "c", [_point(i, "Jane Doe", doc_id="1", chunk_index=i) for i in range(1, 11)]
+    )
+    mocker.patch.object(exact, "_SCROLL_PAGE", 2)
+    algo = ExactMatchAlgorithm(max_chunks=3)
+
+    results = await algo.search("Jane Doe", "alice")
+
+    assert len(results) == 1
+    assert algo.truncated
+
+
 async def test_blank_query_matches_nothing(qdrant):
     await qdrant.upsert("c", [_point(1, "Jane Doe")])
 

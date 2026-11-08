@@ -255,6 +255,38 @@ async def test_ensure_payload_indexes_skips_fields_already_indexed(mocker, caplo
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("phrase_matching", [True, False])
+async def test_excerpt_index_without_phrase_matching_is_reported(
+    mocker, caplog, phrase_matching
+):
+    """A TEXT index on excerpt built without phrase matching has the right
+    type, but MatchPhrase cannot use it: say so, don't keep it silently."""
+    mocker.patch.object(
+        qdrant_module,
+        "get_settings",
+        return_value=SimpleNamespace(exact_match_index_enabled=True),
+    )
+    existing = SimpleNamespace(
+        data_type=PayloadSchemaType.TEXT,
+        params=SimpleNamespace(phrase_matching=phrase_matching),
+    )
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = SimpleNamespace(
+        payload_schema={"excerpt": existing}
+    )
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_payload_indexes(client, "test-collection")
+
+    created = {
+        c.kwargs["field_name"] for c in client.create_payload_index.await_args_list
+    }
+    assert "excerpt" not in created
+    warned = any("no phrase matching" in r.getMessage() for r in caplog.records)
+    assert warned is not phrase_matching
+
+
+@pytest.mark.unit
 async def test_ensure_payload_indexes_warns_on_wrong_schema_type(mocker, caplog):
     """Pre-existing index with wrong schema type surfaces as a WARNING.
 

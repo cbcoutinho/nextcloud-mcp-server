@@ -404,6 +404,22 @@ async def _ensure_payload_indexes(
                     _data_type(schema_type).name,
                 )
                 failed_fields.append(field)
+            elif (
+                isinstance(schema_type, TextIndexParams)
+                and schema_type.phrase_matching
+                and not getattr(
+                    getattr(existing_info, "params", None), "phrase_matching", False
+                )
+            ):
+                # A TEXT index built without phrase matching passes the type
+                # check, but MatchPhrase then cannot use it.
+                logger.warning(
+                    "Text index on '%s' has no phrase matching; exact searches "
+                    "scan until the index is dropped; the next restart then "
+                    "recreates it. See docs/configuration.md.",
+                    field,
+                )
+                failed_fields.append(field)
             # Either way, skip the create call: a matching index needs no
             # work, and a mismatch must not be auto-repaired (operator
             # intervention only — see docs/configuration.md).
