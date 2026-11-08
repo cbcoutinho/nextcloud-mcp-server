@@ -315,9 +315,10 @@ def _subject_forms(names: Iterable[str], kept: set[str]) -> set[str]:
     """Detected names that are the subject written another way: "Mr Jane Doe"
     or a bare "Jane" when "Jane Doe" is kept.
 
-    A detection counts when its title-free words all belong to one kept name
-    and none of them belongs to a third party's name. A bare "Doe" shared with
-    a third party "John Doe" is ambiguous, so it is still redacted.
+    A detection counts when its title-free words are a whole kept name, or all
+    belong to one kept name and none of them belongs to a third party's name.
+    A bare "Doe" shared with a third party "John Doe" is ambiguous, so it is
+    still redacted; "Mr Jane Doe" is not.
     """
     kept_words = [set(k.split()) for k in kept]
 
@@ -330,7 +331,13 @@ def _subject_forms(names: Iterable[str], kept: set[str]) -> set[str]:
 
     keys = {_key(n) for n in names}
     third_party = {t for k in keys if not subject(k) for t in words(k)}
-    return {k for k in keys if subject(k) and not words(k) & third_party}
+    # The whole kept name under a title ("Mr Jane Doe") is unambiguous even
+    # when a third party shares one of its words; only a part of it is not.
+    return {
+        k
+        for k in keys
+        if subject(k) and (words(k) in kept_words or not words(k) & third_party)
+    }
 
 
 def _name_forms(
@@ -389,8 +396,13 @@ class Redactor:
             n for k in keep if _NI_RE.fullmatch(k.strip()) and (n := _ni_key(k))
         }
         self._keep = {key for k in keep if "@" not in k and (key := _key(k))}
+        # Materialised once: ``names`` may be a one-shot iterable, read twice.
         names = [n for n in names if _key(n)]
-        self._keep |= _subject_forms(names, self._keep)
+        # Only names count as the subject's name words: an address, phone or NI
+        # number in ``keep`` ("12 Jane Street") must not make a third party
+        # "Jane" look like the subject. Every such entry carries a digit.
+        kept_names = {k for k in self._keep if not any(c.isdigit() for c in k)}
+        self._keep |= _subject_forms(names, kept_names)
         forms, owners = _name_forms(names, self._keep)
         # A bare token shares its full name's number only when it is
         # unambiguous: it belongs to exactly one detected third party and to
@@ -399,7 +411,8 @@ class Redactor:
         # archive never attributes an ambiguous mention to a specific person.
         # ponytail: string-level alias resolution; a person-entity layer
         # (Deck P9) would reconcile initials and nicknames too.
-        kept_tokens = {t for k in self._keep for t in k.split()}
+        # Titles are not name tokens: a kept "mr jane doe" adds no "mr" here.
+        kept_tokens = {t for k in self._keep for t in k.split() if t not in _HONORIFICS}
         self._canonical = {
             token: next(iter(full))
             for token, full in owners.items()
