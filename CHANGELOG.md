@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.206.1 (2026-11-08)
+
+### Fix
+
+- **documents**: pin OpenBLAS to one thread in the PDF parse worker
+
 ## v0.206.0 (2026-11-07)
 
 ### BREAKING CHANGE
