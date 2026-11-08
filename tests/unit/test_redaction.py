@@ -121,6 +121,14 @@ def test_subject_form_sharing_a_word_with_a_third_party_is_redacted():
     )
 
 
+def test_a_kept_name_with_a_title_is_the_whole_name():
+    # keep holds "Mr Jane Doe"; the model tags "Jane Doe" and "Ms Jane Doe".
+    r = Redactor({"Jane Doe", "Ms Jane Doe", "John Doe"}, keep=["Mr Jane Doe"])
+    assert r.redact("Jane Doe; Ms Jane Doe; John Doe") == (
+        "Jane Doe; Ms Jane Doe; [PERSON_1]"
+    )
+
+
 def test_a_kept_address_does_not_make_a_third_party_the_subject():
     # "Jane" is a word of the subject's kept address, not of their name.
     r = Redactor({"Jane"}, keep=["Sam Roe", "12 Jane Street"])
