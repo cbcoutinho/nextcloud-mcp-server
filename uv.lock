@@ -2411,7 +2411,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.11.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8.0" },
-    { name = "pymupdf", marker = "extra == 'documents'", specifier = "==2.1" },
+    { name = "pymupdf", marker = "extra == 'documents'", specifier = ">=2.1,<2.2" },
     { name = "pypdfium2", marker = "extra == 'documents'", specifier = ">=5.9.0" },
     { name = "pyroscope-io", marker = "extra == 'observability'", specifier = ">=0.8.0" },
     { name = "python-docx", marker = "extra == 'documents'", specifier = ">=1.2.0" },

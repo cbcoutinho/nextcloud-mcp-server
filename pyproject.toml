@@ -208,7 +208,8 @@ semantic = [
 # returns PDF/Office files raw, with a note naming this extra.
 documents = [
     "mistralai>=2.4.5", # document_processors/ocr.py (Mistral OCR tier)
-    # Pinned exactly, and upgraded deliberately rather than by range. The
+    # Capped below the next minor, so each minor bump arrives as its own
+    # Renovate PR and is upgraded deliberately. The
     # per-page ``metadata`` that ``to_markdown(page_chunks=True)`` emits is a
     # hard dependency of our page-boundary/citation path, and it is not stable
     # across releases: layout mode (on by default since 1.27.2.1) switches the
@@ -216,8 +217,8 @@ documents = [
     # ``document_layout`` (key ``page_number``). Since 2.0 the ``pymupdf4llm``
     # and ``pymupdf.layout`` modules ship inside the pymupdf wheel (the
     # ``pymupdf4llm`` / ``pymupdf-layout`` distributions are empty shims it pins
-    # exactly), so this one pin covers all three.
-    "pymupdf==2.1",
+    # exactly), so this one constraint covers all three.
+    "pymupdf>=2.1,<2.2",
     "pypdfium2>=5.9.0",
     "python-pptx>=1.0.2",
     "python-docx>=1.2.0",
