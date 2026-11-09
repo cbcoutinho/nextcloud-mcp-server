@@ -87,6 +87,7 @@ markers = [
     "contract: Pact consumer/provider contract tests (ADR-029)",
     "docling: Tests requiring the docker-compose docling-serve backend (ADR-031)",
     "collabora: Tests requiring the docker-compose Collabora Online converter (ADR-039)",
+    "fulltextsearch: Tests requiring the docker-compose Elasticsearch and the Full Text Search apps",
 ]
 testpaths = [
     "tests",
