@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
+import httpx2
 from qdrant_client import AsyncQdrantClient, models
 
 from ..config import Settings, get_settings
@@ -135,12 +135,12 @@ async def _read_from_api(
     api_url: str,
     collection_name: str,
     *,
-    client: httpx.AsyncClient | None = None,
+    client: httpx2.AsyncClient | None = None,
 ) -> dict[str, Any] | None:
     """GET the control-plane metadata for a collection.
 
     ``client`` lets the caller pass a shared, lifespan-managed
-    :class:`httpx.AsyncClient`; when omitted we create a short-lived one.
+    :class:`httpx2.AsyncClient`; when omitted we create a short-lived one.
 
     Auth note: the control-plane metadata endpoint is currently unauthenticated
     (read-only collection identity, no tenant secrets), matching the gateway's
@@ -149,7 +149,7 @@ async def _read_from_api(
     """
     url = f"{api_url.rstrip('/')}/v1/qdrant-collections/{collection_name}/metadata"
 
-    async def _do(c: httpx.AsyncClient) -> dict[str, Any] | None:
+    async def _do(c: httpx2.AsyncClient) -> dict[str, Any] | None:
         resp = await c.get(url)
         if resp.status_code == 404:
             return None
@@ -158,9 +158,9 @@ async def _read_from_api(
 
     if client is not None:
         return await _do(client)
-    # httpx verifies TLS by default (verify=True); stated here to be explicit.
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(10.0, connect=5.0), verify=True
+    # httpx2 verifies TLS by default (verify=True); stated here to be explicit.
+    async with httpx2.AsyncClient(
+        timeout=httpx2.Timeout(10.0, connect=5.0), verify=True
     ) as owned:
         return await _do(owned)
 
@@ -170,7 +170,7 @@ async def read_collection_metadata(
     collection_name: str,
     settings: Settings | None = None,
     *,
-    http_client: httpx.AsyncClient | None = None,
+    http_client: httpx2.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Read collection metadata from the configured source, falling back to env
     defaults on any miss/error (preserves query availability — §10.1).

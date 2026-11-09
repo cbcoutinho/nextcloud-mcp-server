@@ -12,7 +12,10 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from mcp import types
+from mcp.client import Client
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
@@ -101,6 +104,39 @@ class TestToolCallLine:
         with caplog.at_level(logging.INFO, logger=LOGGER):
             await _wrap(inner)(_request())
 
+        record = _line(caplog)
+        assert record.outcome == "tool_error"
+        assert record.levelno == logging.WARNING
+
+    async def test_tool_error_in_the_wire_shape(self, caplog):
+        """What the runner actually hands a middleware: the serialized dict."""
+
+        async def inner(_ctx):
+            return {"content": [], "isError": True}
+
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            await _wrap(inner)(_request())
+
+        assert _line(caplog).outcome == "tool_error"
+
+    async def test_tool_error_through_the_real_runner(self, caplog):
+        """The fakes above return whichever shape they are written with; only a
+        real ``Client(server)`` round-trip shows what the SDK passes along. Every
+        failure was logged as success until this was checked end to end."""
+
+        mcp = MCPServer(name="test-tool-error-outcome")
+
+        @mcp.tool()
+        async def nc_semantic_search() -> str:
+            raise ValueError("board 999 not found")
+
+        instrument_call_tool_outcomes(mcp)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            async with Client(mcp) as client:
+                result = await client.call_tool("nc_semantic_search", {})
+
+        assert result.is_error is True
         record = _line(caplog)
         assert record.outcome == "tool_error"
         assert record.levelno == logging.WARNING
@@ -222,10 +258,32 @@ class TestSanitizeToolArgs:
         assert "hunter2" not in _sanitize_tool_args({"password": "hunter2"})
 
     def test_long_value_capped_without_hiding_later_arguments(self):
-        rendered = _sanitize_tool_args({"content": "x" * 5000, "path": "/notes/a.md"})
+        rendered = _sanitize_tool_args({"query": "x" * 5000, "path": "/notes/a.md"})
 
         assert "x" * 150 in rendered
         assert "x" * 300 not in rendered
+        assert "'path': '/notes/a.md'" in rendered
+
+    def test_free_text_bodies_logged_by_size_only(self):
+        """#1644: note/file bodies and messages never reach the log line."""
+        rendered = _sanitize_tool_args(
+            {
+                "content": "private page text",
+                "message": "hi there",
+                "new_description": ["a", "b"],
+                "message_id": 42,
+                "description": None,
+                "path": "/notes/a.md",
+            }
+        )
+
+        assert "private page text" not in rendered
+        assert "hi there" not in rendered
+        assert "'content': <17 chars>" in rendered
+        assert "'message': <8 chars>" in rendered
+        assert "'new_description': <10 chars>" in rendered
+        assert "'message_id': 42" in rendered
+        assert "'description': None" in rendered
         assert "'path': '/notes/a.md'" in rendered
 
     def test_many_arguments_capped_overall(self):
@@ -238,3 +296,24 @@ class TestSanitizeToolArgs:
         assert _sanitize_tool_args(None) is None
         # ctx and etag are dropped as noise, leaving nothing
         assert _sanitize_tool_args({"ctx": object(), "etag": "abc"}) is None
+
+
+@given(st.text())
+@example("bare-token-without-scheme")  # its first word IS the secret
+@example("Token abc123")
+def test_auth_scheme_never_echoes_credentials(header):
+    """The /mcp auth log line carries a known scheme word or a placeholder,
+    nothing else, so no part of any header can reach the log."""
+    from nextcloud_mcp_server.app import _auth_scheme
+
+    assert _auth_scheme(header).lower() in {"basic", "bearer", "<other>"}
+
+
+@given(st.sampled_from(["Basic", "Bearer"]), st.text())
+@example("Basic", "dXNlcjphcHAtcGFzc3dvcmQ=")
+@example("Bearer", "eyJhbGciOi.payload.sig")
+def test_auth_scheme_names_the_known_schemes_in_any_case(scheme, credential):
+    from nextcloud_mcp_server.app import _auth_scheme
+
+    header = f"{scheme.swapcase()} {credential}"
+    assert _auth_scheme(header) == scheme.swapcase()

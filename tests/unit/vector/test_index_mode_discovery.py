@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.processor import _reconcile_tag_event
 from nextcloud_mcp_server.vector.scanner import DocumentTask, _discover_tagged_files
@@ -20,6 +21,9 @@ def _settings(tag: str = "vector-index", keyword_tag: str = "") -> MagicMock:
     s = MagicMock()
     s.vector_sync_tag = tag
     s.vector_sync_keyword_tag = keyword_tag
+    # The real tuple, not a MagicMock attribute: discovery passes this straight
+    # to find_files_by_tag, so a mock here would assert nothing about the filter.
+    s.indexable_mime_types = Settings().indexable_mime_types
     return s
 
 
@@ -59,7 +63,7 @@ async def test_keyword_tag_empty_queries_only_hybrid():
 
     assert [f["_index_mode"] for f in files] == [payload_keys.INDEX_MODE_HYBRID]
     nc.find_files_by_tag.assert_awaited_once_with(
-        "vector-index", mime_type_filter="application/pdf"
+        "vector-index", mime_type_filter=Settings().indexable_mime_types
     )
 
 

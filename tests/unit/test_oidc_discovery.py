@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth import token_utils
@@ -38,18 +38,18 @@ async def test_discovery_follows_redirect_to_index_php():
         "token_endpoint": "https://nx.example.com/index.php/apps/oidc/token",
     }
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if str(request.url) == pretty_url:
-            return httpx.Response(301, headers={"location": rewritten_url})
+            return httpx2.Response(301, headers={"location": rewritten_url})
         if str(request.url) == rewritten_url:
-            return httpx.Response(200, json=discovery_doc)
-        return httpx.Response(404)
+            return httpx2.Response(200, json=discovery_doc)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     with patch(
         "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",

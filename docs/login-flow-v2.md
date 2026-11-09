@@ -81,6 +81,10 @@ When `OIDC_DISCOVERY_URL` is unset, Nextcloud's own **OpenID Connect provider**
 (`oidc`) app is the IdP. Register a **static** client for the MCP server there —
 don't rely on Dynamic Client Registration, because the `oidc` app auto-deletes
 DCR clients after ~1 hour (see [Troubleshooting](#access-forbidden-after-the-connection-worked-for-a-while)).
+From `oidc` 2.5.0 a DCR client also can't get a token for the MCP server's
+resource at all (`invalid_target`): the app accepts an RFC 8707 resource only
+when an admin approved it, which is automatic for a static client's own
+resource URL and never for DCR.
 
 1. Install/enable the **OpenID Connect provider** (`oidc`) app.
 2. Go to **Administration settings → OpenID Connect provider → Add client** and set:
@@ -113,7 +117,7 @@ mismatches across them.
 |---|---|---|
 | **MCP server** | Yes | The MCP server's RP relationship with the IdP. Configured via `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET`. Used for OIDC discovery, JWKS retrieval, and token validation. |
 | **Astrolabe** | Only if Astrolabe is installed | Used by the Astrolabe Nextcloud app for its own per-user OAuth flow against the MCP server. Its `client_id` must be listed in `ALLOWED_MGMT_CLIENT` (the management API matches it against the token's `client_id` claim), but **not** in `ALLOWED_MCP_CLIENTS` — Astrolabe never uses the MCP server's AS proxy, and `/mcp` authorizes by audience + `sub` rather than by client identity. See [ADR-005 → *Client Identity Is Not an Authorization Gate on `/mcp`*](ADR-005-token-audience-validation.md#client-identity-is-not-an-authorization-gate-on-mcp). |
-| **MCP client** (e.g. Claude.ai, Claude Code) | Optional | The MCP server supports RFC 7591 Dynamic Client Registration, so MCP clients are auto-registered on first connect. Only register a static client if your IdP rejects DCR-issued clients or your MCP client cannot do DCR (see [#752 thread](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/752#issuecomment-4362197279) for the Claude Code workarounds). When pre-allowlisting static MCP clients, set `ALLOWED_MCP_CLIENTS` — see [`auth/client_registry.py`](../nextcloud_mcp_server/auth/client_registry.py) for the format. |
+| **MCP client** (e.g. Claude.ai, Claude Code) | Optional | The MCP server supports RFC 7591 Dynamic Client Registration, so MCP clients are auto-registered on first connect. Only register a static client if your IdP rejects DCR-issued clients or your MCP client cannot do DCR (see [#752 thread](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/752#issuecomment-4362197279) for the Claude Code workarounds). When pre-allowlisting static MCP clients, set `ALLOWED_MCP_CLIENTS` — see [`auth/client_registry.py`](../nextcloud_mcp_server/auth/client_registry.py) for the format. Hosted clients that support Client ID Metadata Documents (ChatGPT, Claude) need neither: set `CIMD_ALLOWED_HOSTS` (e.g. `claude.ai,chatgpt.com`) and the AS proxy fetches their `client_id` URL instead — see [`auth/cimd.py`](../nextcloud_mcp_server/auth/cimd.py). When the IdP has no DCR and no static client is configured, `registration_endpoint` is omitted from the AS metadata. |
 
 #### Scopes the IdP must advertise on the MCP-server client
 
@@ -322,6 +326,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `collectives.read` / `collectives.write` | Collectives |
 | `shopping_list.read` / `shopping_list.write` | Shopping List |
 | `news.read` | News (read-only) |
+| `mail.read` / `mail.write` / `mail.send` / `mail.draft` | Mail (see [mail.md](mail.md#scopes)) |
 | `sharing.write` | Share-link / share-permission management |
 | `semantic.read` | Semantic search + RAG (when enabled) |
 
@@ -336,8 +341,7 @@ Each MCP tool is decorated with `@require_scopes(...)`:
 ```python
 @mcp.tool()
 @require_scopes("notes.read")
-async def nc_notes_get_note(note_id: int, ctx: Context):
-    ...
+async def nc_notes_get_note(note_id: int, ctx: Context): ...
 ```
 
 Two layers apply, and **both** must permit a scope:
@@ -371,6 +375,43 @@ WWW-Authenticate: Bearer error="insufficient_scope",
 Clients can use this header to trigger **step-up authorization** — re-running the OAuth flow with additional scopes.
 
 Implementation: [`nextcloud_mcp_server/auth/scope_authorization.py`](../nextcloud_mcp_server/auth/scope_authorization.py).
+
+### Per-Group Scope Limits
+
+To cap what members of a group can do, whatever client they use, set the limit **at the IdP**. The MCP server needs no configuration for this: it enforces whatever scopes the token carries.
+
+**Nextcloud `oidc` app.** Group scope limits were added in the `cbcoutinho/oidc` fork and have been proposed upstream. They are managed on the admin page ("Group Scope Limits") or with occ:
+
+```bash
+occ oidc:group-scopes:set <group_id> "offline_access notes.read files.read"
+occ oidc:group-scopes:list
+occ oidc:group-scopes:delete <group_id>
+```
+
+How the limit is applied:
+
+- A member of limited groups is issued only scopes in the union of those groups' limits.
+- `openid profile email roles` are always allowed.
+- Include `offline_access` in the limit if members need refresh tokens.
+- Users in no limited group are not restricted.
+- The limit covers DCR clients.
+- It applies on authorize (before consent), on refresh (so removing a user from a group narrows their token at the next refresh), on token exchange, and on the `TokenGenerationRequestEvent` that Astrolabe mints through.
+
+This adds a third term to Layer 1:
+
+```
+token = requested ∩ client allowed_scopes ∩ group limit
+```
+
+**Keycloak.** Keycloak does this natively. A client scope with **role scope mappings** is granted only to users who hold one of those roles, and groups can carry roles. A scope the user isn't permitted is left out of the token; the request itself doesn't fail. Keycloak checks this on the authorization-code, refresh and token-exchange grants. In `realm-export.json`:
+
+```json
+"roles":  { "realm": [ { "name": "notes-writer" } ] },
+"groups": [ { "name": "notes-writers", "path": "/notes-writers", "realmRoles": ["notes-writer"] } ],
+"scopeMappings": [ { "clientScope": "notes.write", "roles": ["notes-writer"] } ]
+```
+
+Use **realm** roles. Token exchange with an `audience` strips client roles that don't belong to the audience client, so a client-role mapping can fail unexpectedly. The dev realm in `keycloak/realm-export.json` gates `notes.write` and `files.write` this way.
 
 ## OAuth Endpoints
 

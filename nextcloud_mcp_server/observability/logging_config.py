@@ -311,7 +311,10 @@ def configure_component_loggers(default_level: str = "INFO") -> None:
         "nextcloud_mcp_server.client": default_level,
         "nextcloud_mcp_server.auth": default_level,
         "nextcloud_mcp_server.observability": default_level,
-        # HTTP client loggers (less verbose by default)
+        # HTTP client loggers (less verbose by default). httpx2 carries our own
+        # traffic; legacy httpx is still used by qdrant-client/huggingface-hub.
+        "httpx2": "WARNING",
+        "httpcore2": "WARNING",
         "httpx": "WARNING",
         "httpcore": "WARNING",
         # Server loggers
@@ -445,6 +448,16 @@ def get_uvicorn_logging_config(
             "uvicorn.error": {
                 "handlers": ["default"],
                 "level": "INFO",
+                "propagate": False,
+            },
+            "httpx2": {
+                "handlers": ["default"],
+                "level": "WARNING",
+                "propagate": False,
+            },
+            "httpcore2": {
+                "handlers": ["default"],
+                "level": "WARNING",
                 "propagate": False,
             },
             "httpx": {

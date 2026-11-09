@@ -112,15 +112,19 @@ async def test_strict_returns_normally_when_every_calendar_answers(client, mocke
     assert len(events) == len(CALENDARS)
 
 
-async def test_filters_are_applied_per_calendar(client, mocker):
-    mocker.patch.object(client, "get_calendar_events", side_effect=_one)
-    applied = mocker.patch.object(
-        client, "_apply_event_filters", side_effect=lambda events, f: events
+async def test_filters_and_limit_reach_every_calendar(client, mocker):
+    """Filters must ride into get_calendar_events, which applies them before its
+    limit -- filtering the already-truncated listing misses matches (GH #1774)."""
+    fetch = mocker.patch.object(client, "get_calendar_events", side_effect=_one)
+
+    await client.search_events_across_calendars(
+        filters={"status": "CONFIRMED"}, limit=500
     )
 
-    await client.search_events_across_calendars(filters={"status": "CONFIRMED"})
-
-    assert applied.call_count == len(CALENDARS)
+    assert fetch.call_count == len(CALENDARS)
+    for call in fetch.call_args_list:
+        assert call.kwargs["filters"] == {"status": "CONFIRMED"}
+        assert call.kwargs["limit"] == 500
 
 
 async def test_fanout_is_bounded(client, mocker):
@@ -159,6 +163,29 @@ async def test_one_broken_calendar_does_not_sink_todos(client, mocker):
 
     assert "cal4" not in [t["calendar_name"] for t in todos]
     assert len(todos) == len(CALENDARS) - 1
+
+
+async def test_skipped_calendars_are_reported_to_the_caller(client, mocker):
+    """An empty slot is indistinguishable from an empty calendar, so a lenient
+    caller gets told which calendars were skipped and why."""
+
+    async def broken_cal2(name, *args, **kwargs):
+        if name == "cal2":
+            raise RuntimeError("calendar is on fire")
+        return [{"uid": f"{name}-1"}]
+
+    mocker.patch.object(client, "get_calendar_events", side_effect=broken_cal2)
+    mocker.patch.object(client, "list_todos", side_effect=broken_cal2)
+
+    event_failures: list[dict[str, str]] = []
+    events = await client.search_events_across_calendars(failures=event_failures)
+    todo_failures: list[dict[str, str]] = []
+    todos = await client.search_todos_across_calendars(failures=todo_failures)
+
+    expected = [{"calendar_name": "cal2", "error": "calendar is on fire"}]
+    assert event_failures == expected
+    assert todo_failures == expected
+    assert len(events) == len(todos) == len(CALENDARS) - 1
 
 
 async def _one(name: str, *args, **kwargs):

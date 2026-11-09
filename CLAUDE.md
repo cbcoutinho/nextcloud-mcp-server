@@ -79,16 +79,26 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 
 ### Error Handling
 - **Use custom decorators**: `@retry_on_429` for rate limiting (see base_client.py)
-- **Standard exceptions**: `HTTPStatusError` from httpx, `MCPError` for MCP-specific errors
+- **Standard exceptions**: `HTTPStatusError` from httpx2 (not `httpx` — see the note below), `MCPError` for MCP-specific errors
 - **Logging patterns**:
   - `logger.debug()` for expected 404s and normal operations
   - `logger.warning()` for retries and non-critical issues
   - `logger.error()` for actual errors
+- **A handler that turns an exception into `None`, `False`, `continue` or `pass`
+  must log what happened**, unless the fallback value is itself the answer, as in
+  a validation predicate or an optional import. A broad `except Exception` needs
+  `exc_info=True`. Otherwise a bug in the guarded code disappears into a silent
+  default.
+- **HTTP client is `httpx2`, not `httpx`.** `httpx` stays installed (qdrant-client
+  and huggingface-hub depend on it), so `import httpx` still works. But
+  `except httpx.X` never matches the `httpx2.X` that our clients, mcp, openai and
+  mistralai raise, and nothing reports the miss. Only qdrant/huggingface traffic
+  uses legacy `httpx`, and qdrant wraps it in `ResponseHandlingException`.
 
 ### Testing Patterns
 - **Use existing fixtures** from `tests/conftest.py` (2888 lines of test infrastructure)
 - **Session-scoped fixtures** handle anyio/pytest-asyncio incompatibility
-- **Mocked unit tests** use `mocker.AsyncMock(spec=httpx.AsyncClient)`
+- **Mocked unit tests** use `mocker.AsyncMock(spec=httpx2.AsyncClient)`
 - **pytest-timeout**: 180s default per test
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
@@ -103,6 +113,14 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   - Don't reimplement `_make_request` in a subclass — a private copy silently skips
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
+  - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx2 client
+    sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
+    `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
+    Nextcloud-bound `httpx2.AsyncClient` through that factory. Pass only
+    request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
+    `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
+    both rules (GH #1664: the per-call opt-in left the Tables v1 routes without
+    the header, and Nextcloud 33 answers those with an empty 404).
   - **Known exception**: `CalendarClient` talks CalDAV via its own `caldav` session,
     not the shared Nextcloud HTTP client, so it does not extend `BaseNextcloudClient`.
     This is intentional — do not "fix" it.
@@ -134,7 +152,8 @@ duration of every inbound message.
 ```python
 from nextcloud_mcp_server.request_context import current_context
 
-@mcp.resource("nc://capabilities")          # static: no ctx parameter allowed
+
+@mcp.resource("nc://capabilities")  # static: no ctx parameter allowed
 async def nc_get_capabilities():
     client = await get_client(current_context(mcp))
     return await client.capabilities()
@@ -452,7 +471,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 1. `NextcloudClient` orchestrates all app-specific clients
 2. `BaseNextcloudClient` provides common HTTP functionality + retry logic
 3. MCP tools use context pattern: `get_client(ctx)` → `NextcloudClient`
-4. All operations are async using httpx
+4. All operations are async using httpx2
 
 ### Deployment Modes
 
@@ -580,6 +599,14 @@ This service participates in Pact contract tests (ADR-029) under
 - a **provider** of the `/api/v1/*` API that the `astrolabe` Nextcloud app
   consumes (verified via `test_mcp_provider_verification.py`).
 
+**Upstream Nextcloud is not a Pact participant.** The Nextcloud server and its
+apps that we don't own (Mail, WebDAV, `/core/preview`, Notes, Deck, Tables, …)
+can't run a provider verifier, and a consumer pact nobody verifies would never
+fail when they change. For those boundaries the **integration lanes against a
+real Nextcloud are the contract** (e.g. `tests/integration/test_mail_greenmail.py`).
+A tool that only calls upstream Nextcloud needs e2e coverage, not a pact. See
+ADR-029 → *Upstream Nextcloud apps*.
+
 **Reviewers (including the Claude review bot) must flag any API-surface PR that
 lacks e2e + contract coverage** as a required change under "Test coverage". If a
 tier does not exist yet, say so explicitly in the PR and open/track a follow-up
@@ -600,6 +627,10 @@ Known gaps (tracked on board 11):
 - There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
   is spread across `tests/integration/` + `tests/smoke/`.
 - `can-i-deploy` runs in non-blocking **shadow mode**.
+- Mail **send** (`/apps/mail/api/outbox`) has no passing e2e test:
+  `test_send_message_via_outbox` is `xfail`, because Mail returns a 500 for a
+  CLI-provisioned GreenMail account. Only the outbox *create* step is
+  exercised.
 
 ### Use Existing Fixtures
 See `tests/conftest.py` for 2888 lines of test infrastructure:
@@ -615,15 +646,18 @@ For client-layer response parsing tests, use mocked HTTP responses:
 async def test_notes_api_get_note(mocker):
     """Test that get_note correctly parses the API response."""
     mock_response = create_mock_note_response(
-        note_id=123, title="Test Note", content="Test content",
-        category="Test", etag="abc123"
+        note_id=123,
+        title="Test Note",
+        content="Test content",
+        category="Test",
+        etag="abc123",
     )
 
     mock_make_request = mocker.patch.object(
         NotesClient, "_make_request", return_value=mock_response
     )
 
-    client = NotesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = NotesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     note = await client.get_note(note_id=123)
 
     assert note["id"] == 123
@@ -634,6 +668,36 @@ async def test_notes_api_get_note(mocker):
 
 **When to use**: Response parsing, error handling, request parameter building
 **When NOT to use**: CalDAV/CardDAV/WebDAV protocols, OAuth flows, end-to-end MCP testing
+
+### Property-based tests (Hypothesis)
+
+Unit tier only. When a test's inputs form a family, test a property instead of
+listing cases in `@pytest.mark.parametrize`. A property needs fewer tests, and it
+has found real bugs here that the hand-picked lists missed: CRLF splitting in
+`apply_edits`, non-idempotent `normalize_etag`, vCard N slot shifting, and
+parsers that raised on `Infinity` or an unknown XML encoding.
+
+- **Couple input and expected output in a composite strategy.** An
+  `@st.composite` returns `(input, expected)`, built together, so the test does
+  not re-derive the answer. Examples: `transported_etags` in
+  `tests/unit/client/test_webdav.py` and `statuscodes` in
+  `tests/unit/client/test_ocs.py`.
+- **Filter input shapes with `assume()`** inside the test, rather than a bare
+  `return`. Use `.filter` only for a condition on a single strategy.
+- **Pin every bug a property found as an `@example`** on that property. The
+  regression is then replayed on every run, independent of generation.
+- **Parsers of untrusted input** (webhook payloads, OCS/DAV bodies, provider
+  responses) get a "never raises" property over arbitrary JSON or bytes, with
+  floats left in. `json.loads` accepts `Infinity` and `NaN`.
+- **Keep an example test when it pins a single decision**, not a family of
+  inputs. For example, the 997 wording, or absent `meta` being treated as
+  success.
+- **Profiles:** Hypothesis loads its built-in `ci` profile automatically in CI
+  (derandomized, no deadline). Do not re-register it, or its health-check
+  suppression is lost. `tests/conftest.py` loads a local `dev` profile that only
+  disables the deadline.
+- **Version cap:** `hypothesis` is capped below the next minor version in the
+  dev group, so every bump arrives as a Renovate PR.
 
 ### OAuth Testing
 OAuth tests use **Playwright browser automation** to complete flows programmatically.

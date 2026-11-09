@@ -39,7 +39,7 @@ A single filter — `doc_type` — already threads through three layers. New fil
 
    ```python
    filter_conditions = [
-       get_placeholder_filter(),                       # exclude pending placeholders
+       get_placeholder_filter(),  # exclude pending placeholders
        build_ownership_filter(user_id, accessible_owners),  # ACL
    ]
    if doc_type:
@@ -121,17 +121,27 @@ dense-only) by editing one function:
 ```python
 # search/access_filter.py — the single source of the filter contract
 def build_base_filter_conditions(
-    user_id, accessible_owners=None, doc_type=None,
-    modified_after=None, modified_before=None,
+    user_id,
+    accessible_owners=None,
+    doc_type=None,
+    modified_after=None,
+    modified_before=None,
 ) -> list[Condition]:
-    conditions = [get_placeholder_filter(), build_ownership_filter(user_id, accessible_owners)]
+    conditions = [
+        get_placeholder_filter(),
+        build_ownership_filter(user_id, accessible_owners),
+    ]
     if doc_type:
-        conditions.append(FieldCondition(key="doc_type", match=MatchValue(value=doc_type)))
+        conditions.append(
+            FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
+        )
     if modified_after is not None or modified_before is not None:
         conditions.append(
             FieldCondition(
                 key="modified_at",
-                range=Range(gte=modified_after, lte=modified_before),  # None bounds are open-ended
+                range=Range(
+                    gte=modified_after, lte=modified_before
+                ),  # None bounds are open-ended
             )
         )
     return conditions

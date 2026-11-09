@@ -5,6 +5,8 @@ Payload examples are taken from real Nextcloud captures recorded in
 """
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.vector.webhook_parser import extract_document_task
 
@@ -97,7 +99,10 @@ def test_node_id_is_normalized_to_string():
 
 
 @pytest.mark.unit
-def test_path_outside_notes_returns_none():
+def test_markdown_outside_notes_is_left_to_the_scanner():
+    """Only the Notes folder holds notes. Elsewhere a .md is a text file, which
+    the polling scanner indexes when tagged: editors save .md files too often
+    to queue a discovery per write."""
     payload = {
         "user": {"uid": "admin"},
         "time": 1,
@@ -170,37 +175,94 @@ def test_node_deleted_event_without_id_returns_none():
     assert extract_document_task(payload) is None
 
 
+_EVENT_CLASSES = [
+    "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+    "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+    "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent",
+    "OCA\\Deck\\Event\\CardCreatedEvent",
+    "OCA\\Deck\\Event\\CardUpdatedEvent",
+    "OCA\\Deck\\Event\\CardDeletedEvent",
+    "OCA\\Deck\\Event\\BoardUpdatedEvent",
+    "OCP\\SystemTag\\MapperEvent",
+]
+
+#: Any JSON value, floats (inf/nan) included: what a payload field may hold.
+json_values = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: (
+        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
+    ),
+    max_leaves=8,
+)
+_ids = st.integers() | st.text() | json_values
+_paths = (
+    st.from_regex(
+        r"/[a-z]{1,5}/files/(Notes/)?[A-Za-z]{1,8}\.(md|pdf|txt)", fullmatch=True
+    )
+    | json_values
+)
+
+
+@st.composite
+def webhook_payloads(draw):
+    """Payloads shaped like Nextcloud's, with any field missing or wrong-typed:
+    the known event classes and plausible paths keep every parser branch hot."""
+    body = draw(
+        st.fixed_dictionaries(
+            {"class": st.sampled_from(_EVENT_CLASSES) | json_values},
+            optional={
+                "node": st.fixed_dictionaries({}, optional={"id": _ids, "path": _paths})
+                | json_values,
+                "card": st.fixed_dictionaries(
+                    {}, optional={"id": _ids, "stackId": _ids}
+                )
+                | json_values,
+                "objectType": st.just("files") | json_values,
+                "objectId": _ids,
+                "boardId": _ids,
+            },
+        )
+    )
+    return draw(
+        st.fixed_dictionaries(
+            {},
+            optional={
+                "event": st.just(body) | json_values,
+                "user": st.fixed_dictionaries(
+                    {}, optional={"uid": st.text() | json_values}
+                )
+                | json_values,
+                "time": st.integers() | st.floats() | json_values,
+            },
+        )
+    )
+
+
+_NOTE_CREATED = {
+    "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+    "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
+}
+
+
 @pytest.mark.unit
-def test_missing_user_field_returns_none():
-    payload = {
-        "time": 1,
-        "event": {
-            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
-        },
-    }
+@given(webhook_payloads())
+@example({})
+@example({"time": 1, "event": _NOTE_CREATED})  # no user
+@example({"user": {"uid": "admin"}, "time": "not-a-number", "event": _NOTE_CREATED})
+@example({"user": {"uid": "admin"}, "time": float("inf"), "event": _NOTE_CREATED})
+@example({"user": {"uid": "a"}, "event": {**_NOTE_CREATED, "node": [None]}})
+def test_any_payload_yields_a_faithful_task_or_none(payload):
+    """Total: a malformed payload is ignored, never an exception. A task is only
+    ever built from a well-formed envelope, and carries exactly its values."""
+    task = extract_document_task(payload)
 
-    assert extract_document_task(payload) is None
-
-
-@pytest.mark.unit
-def test_empty_payload_returns_none():
-    assert extract_document_task({}) is None
-
-
-@pytest.mark.unit
-def test_non_numeric_time_field_returns_none():
-    """A malformed ``time`` field must not raise ValueError out of the parser."""
-    payload = {
-        "user": {"uid": "admin"},
-        "time": "not-a-number",
-        "event": {
-            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
-        },
-    }
-
-    assert extract_document_task(payload) is None
+    if task is None:
+        return
+    assert task.user_id == payload["user"]["uid"]
+    assert isinstance(task.user_id, str) and task.user_id
+    assert task.modified_at == int(payload.get("time", 0) or 0)
+    assert isinstance(task.doc_id, str)
+    assert task.operation in {"index", "delete"}
 
 
 @pytest.mark.unit
@@ -380,8 +442,8 @@ def test_indexable_file_suffix_is_case_insensitive():
 
 @pytest.mark.unit
 def test_non_indexable_file_event_returns_none():
-    """Vector sync only indexes PDFs, so other file types stay ignored — no
-    reconcile job for every image or spreadsheet saved on the instance."""
+    """Types outside VECTOR_SYNC_INDEXABLE_MIME_TYPES stay ignored — no
+    reconcile job for every image saved on the instance."""
     payload = {
         "user": {"uid": "alice"},
         "time": 1,
@@ -392,6 +454,45 @@ def test_non_indexable_file_event_returns_none():
     }
 
     assert extract_document_task(payload) is None
+
+
+def _file_written(path: str) -> dict:
+    return {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+            "node": {"id": 12, "path": path},
+        },
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "name",
+    ["contract.docx", "sheet.xlsx", "deck.pptx", "mail.msg"],
+)
+def test_readable_files_are_indexable_by_default(name):
+    task = extract_document_task(_file_written(f"/alice/files/Docs/{name}"))
+
+    assert task is not None
+    assert task.doc_type == "file"
+
+
+@pytest.mark.unit
+def test_webhook_suffixes_follow_the_indexable_mime_setting(monkeypatch):
+    """Narrowing VECTOR_SYNC_INDEXABLE_MIME_TYPES narrows the webhook too, so
+    the push path never enqueues a type the scanner would not discover."""
+    from nextcloud_mcp_server import config  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: config.Settings(vector_sync_indexable_mime_types="application/pdf"),
+    )
+
+    assert extract_document_task(_file_written("/alice/files/Docs/a.docx")) is None
+    assert extract_document_task(_file_written("/alice/files/Docs/a.pdf")) is not None
 
 
 @pytest.mark.unit

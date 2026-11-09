@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-07-01
+Accepted — 2026-07-01. The "office formats stay with `unstructured`" call below
+is revisited by ADR-036 for `.pptx` specifically: it now gets a native,
+in-process reader instead. `unstructured` remains the only option for
+`.docx`/`.xlsx` and for legacy binary Office formats.
 
 ## Context
 

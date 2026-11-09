@@ -1,19 +1,27 @@
 import base64
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Literal
+import posixpath
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 import anyio
 from anyio.to_thread import run_sync
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.webdav import like_predicate
+from nextcloud_mcp_server.client.webdav import (
+    OversizeDownload,
+    like_predicate,
+    normalize_etag,
+)
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.features import documents_installed
 from nextcloud_mcp_server.links import file_url, with_links
 from nextcloud_mcp_server.models import (
     CopyResourceResponse,
@@ -27,23 +35,71 @@ from nextcloud_mcp_server.models import (
     SearchFilesResponse,
     WriteFileResponse,
 )
-from nextcloud_mcp_server.models.webdav import ParseStatus
+from nextcloud_mcp_server.models.webdav import (
+    EditFileResponse,
+    FileEdit,
+    FilesByTagResponse,
+    FileTagsResponse,
+    FileVersion,
+    ListTagsResponse,
+    ListTrashResponse,
+    ListVersionsResponse,
+    ParseStatus,
+    RestoreFromTrashResponse,
+    RestoreVersionResponse,
+    SystemTag,
+    TagFileResponse,
+    TrashEntry,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+from nextcloud_mcp_server.server.webdav_image import configure_webdav_image_tools
 from nextcloud_mcp_server.utils.message_splitter import (
     COMMENT_MAX_LENGTH,
     is_blank_comment,
     measured_length,
 )
+from nextcloud_mcp_server.utils.text_edit import (
+    EditError,
+    LineRangeError,
+    LineWindow,
+    TextEdit,
+    apply_edits,
+    is_editable_text,
+    line_window,
+    normalize_content_type,
+    unified_diff,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
     from nextcloud_mcp_server.client import NextcloudClient
-    from nextcloud_mcp_server.document_processors.source import DocumentSource
+    from nextcloud_mcp_server.document_source import DocumentSource
 
 logger = logging.getLogger(__name__)
+
+_DOCUMENTS_HINT = "Install it with: pip install 'nextcloud-mcp-server[documents]'"
+# What the ``documents`` extra would parse (utils.document_parser
+# .is_parseable_document), checked without importing it. Only these get the
+# install hint, so a JSON or XML file -- returned raw either way -- doesn't point
+# at an extra that would not change anything. test_webdav_tools_exclusion.py
+# fails if a processor starts declaring a type this does not cover.
+_DOCUMENT_TYPE_PREFIXES = (
+    "application/pdf",
+    "application/msword",
+    "application/rtf",
+    "application/epub+zip",
+    "application/x-msg",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.oasis.opendocument.",
+    "application/vnd.ms-",
+    "message/rfc822",
+    # Images are parsed only by the OCR tier, which also needs configuring, but
+    # its client comes from the same extra -- so the hint is deliberately broad.
+    "image/",
+)
 
 # move_resource/copy_resource return (rather than raise) on these, since they
 # are conditions a caller reacts to rather than transport failures. They are
@@ -71,6 +127,74 @@ def _stamp_url(response: ReadFileResponse, url: str | None) -> ReadFileResponse:
     """
     response.url = url
     return response
+
+
+#: Stand-in for "to the last page" when page_end is omitted. The slice worker
+#: clamps to the real page count, so any value past it behaves the same.
+_LAST_PAGE = 2**31 - 1
+
+
+async def _slice_pages(
+    source: "DocumentSource",
+    path: str,
+    page_start: int | None,
+    page_end: int | None,
+    settings: Any,
+    scratch: contextlib.AsyncExitStack,
+) -> tuple["DocumentSource", int, int, int, list[str]]:
+    """Cut the requested pages of a spooled PDF into their own spool file.
+
+    Returns ``(slice_source, first, last, page_count, notes)``, pages 1-based and
+    inclusive. The slice file's lifetime is bound to ``scratch``.
+
+    Slicing BEFORE the pipeline, rather than teaching each tier to take a page
+    range, means every tier (fast, structured, OCR) parses only these pages with
+    no change of its own, the markdown page gate counts the requested pages
+    rather than the whole document, and per-page bookkeeping such as the
+    under-extraction recovery stays index-aligned. Page numbers in the result are
+    slice-relative and are shifted back by the caller.
+
+    Raises ``ToolError`` for a start past the end, ``PdfParseFailed`` when the
+    document cannot be sliced at all.
+    """
+    from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
+        slice_pdf_pages,
+    )
+    from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
+        SpooledDocumentSource,
+        spool_target,
+    )
+
+    first = page_start or 1
+    target = scratch.enter_context(spool_target(settings.document_spool_dir))
+    page_count = await slice_pdf_pages(
+        str(source.path()),
+        str(target),
+        first,
+        page_end or _LAST_PAGE,
+        timeout_seconds=settings.document_parse_timeout_seconds,
+        mem_limit_mb=settings.document_parse_mem_limit_mb,
+        process_slots=settings.document_parse_process_slots,
+    )
+    if first > page_count:
+        raise ToolError(
+            f"page_start={first} is past the end of {path!r}, which has "
+            f"{page_count} page(s)."
+        )
+    last = min(page_end or page_count, page_count)
+    notes = []
+    if page_end is not None and page_end > page_count:
+        notes.append(
+            f"page_end={page_end} is past the end of the document, so pages "
+            f"{first}-{last} of {page_count} are returned."
+        )
+    slice_source = SpooledDocumentSource(
+        spool_path=target,
+        content_type=source.content_type,
+        filename=source.filename,
+        etag=getattr(source, "etag", None),
+    )
+    return slice_source, first, last, page_count, notes
 
 
 async def _raw_response(
@@ -164,11 +288,110 @@ async def _raw_response(
     )
 
 
-async def _resolve_commented_file(client: "NextcloudClient", path: str) -> int:
-    """Resolve ``path`` to the file ID the comments collection is keyed by.
+async def _line_range_response(
+    source: "DocumentSource",
+    path: str,
+    start: int,
+    end: int | None,
+    *,
+    numbered: bool,
+    parse_status: ParseStatus,
+) -> ReadFileResponse:
+    """Return lines ``start`` to ``end`` of a spooled text file.
 
-    Shared by both comment tools so the excluded-tag guard and the
-    does-it-exist check cannot drift between reading and writing comments.
+    Iterates the spool line by line, so only the window is held in memory and a
+    long log file can be read in parts. The window is capped at
+    :data:`RAW_CONTENT_MAX_BYTES` like any other inline content, even when a
+    single line is bigger than that (minified JSON): that line is returned cut
+    off, ``line_end`` names it, and ``parse_notes`` says so.
+
+    Raises:
+        ToolError: ``start`` lies past the end, or the window is not UTF-8.
+    """
+
+    def _read() -> LineWindow:
+        with source.open() as fh:
+            return line_window(
+                fh, start, end, numbered=numbered, max_bytes=RAW_CONTENT_MAX_BYTES
+            )
+
+    try:
+        window = await run_sync(_read)
+    except LineRangeError as e:
+        raise ToolError(f"{e} ({path!r})") from e
+    except UnicodeDecodeError as e:
+        raise ToolError(
+            f"{path!r} is not UTF-8 text, so it cannot be read by lines. Read it "
+            f"without line_start/line_end."
+        ) from e
+
+    limit_mb = RAW_CONTENT_MAX_BYTES // (1024 * 1024)
+    more_lines = window.last < window.total and (end is None or window.last < end)
+    notes = []
+    if window.last_line_cut:
+        # The window holds a single, incomplete line. Pointing at the next
+        # line is right, since the rest of this one cannot be fetched by range.
+        notes.append(
+            f"Line {window.last} is longer than the {limit_mb} MB one response "
+            f"can carry, so only its start is returned and the rest of it is "
+            f"cut off."
+            + (
+                f" The lines after it start at line_start={window.last + 1}."
+                if more_lines
+                else ""
+            )
+        )
+    elif window.truncated:
+        notes.append(
+            f"Only lines {window.first}-{window.last} fit into one response "
+            f"({limit_mb} MB). Continue with line_start={window.last + 1}."
+        )
+    return ReadFileResponse(
+        path=path,
+        content=window.content,
+        content_type=source.content_type,
+        size=source.size,
+        parse_status=parse_status,
+        parse_notes=notes,
+        line_start=window.first,
+        line_end=window.last,
+        total_lines=window.total,
+        # getattr for the same reason as in _raw_response: only a spooled
+        # source carries the origin's etag, the DocumentSource type does not.
+        etag=getattr(source, "etag", None),
+    )
+
+
+def _not_editable_message(path: str, content_type: str | None) -> str:
+    """Why ``nc_webdav_edit_file`` refuses ``path``, and what to do instead."""
+    media_type = normalize_content_type(content_type)
+    what = f"content type {media_type!r}" if media_type else "no content type"
+    # For a generic type (octet-stream) the file name decides, so show it.
+    extension = posixpath.splitext(posixpath.basename(path))[1]
+    if extension:
+        what += f" and the extension {extension!r}"
+    return (
+        f"{path!r} has {what}, which nc_webdav_edit_file does not edit. It only "
+        "edits plain UTF-8 text files such as Markdown, YAML, JSON, configuration "
+        "files and source code, because a text edit would corrupt a PDF, an "
+        "Office or OpenDocument file, an image, audio, video or an archive. To "
+        "replace the whole file, use nc_webdav_write_file."
+    )
+
+
+def _as_int(raw: Any) -> Optional[int]:
+    """DAV numbers arrive as text; a non-numeric one costs that field, not the row."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _resolve_file_id(client: "NextcloudClient", path: str) -> int:
+    """Resolve ``path`` to the numeric file ID the DAV collections are keyed by.
+
+    Shared by the comment and tag tools so the excluded-tag guard and the
+    does-it-exist check cannot drift between them.
 
     Raises:
         ToolError: If the path is excluded by tag, resolves to nothing, or
@@ -267,8 +490,17 @@ def configure_webdav_tools(mcp: MCPServer):
         path: str,
         ctx: Context,
         parse_document: Literal["auto", "markdown", "raw"] = "auto",
+        page_start: int | None = None,
+        page_end: int | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        line_numbers: bool = False,
     ) -> ReadFileResponse:
         """Read the content of a file from NextCloud.
+
+        For photos, screenshots and other images, use nc_webdav_view_image
+        instead: it shows you the image itself, while this tool returns it as
+        base64 text or OCR output.
 
         Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
         file (or an ancestor folder) carries an excluded system tag.
@@ -289,6 +521,28 @@ def configure_webdav_tools(mcp: MCPServer):
 
                 Files no processor handles (plain text, JSON, archives) are
                 unaffected by this argument.
+            page_start: PDF only. First page to read (1-based). Omit it, and
+                page_end, to read the whole document. Use a range for a long
+                PDF: only those pages are parsed and returned, which is faster
+                and keeps the response to a size you can use. The markdown page
+                ceiling then counts only the requested pages.
+            page_end: PDF only. Last page to read (1-based, inclusive). Omitted
+                means through the last page. A value past the end is clamped to
+                the last page and noted in parse_notes. Neither argument can be
+                combined with parse_document="raw".
+            line_start: Text files only. First line to read (1-based). Use a
+                line range to look at part of a long text file instead of
+                loading all of it, for example to find the passage to change
+                with nc_webdav_edit_file. Cannot be combined with page_start or
+                page_end.
+            line_end: Text files only. Last line to read (1-based, inclusive).
+                Omitted means through the last line. A value past the end is
+                clamped. ``total_lines`` in the response says how long the file
+                is. A single line longer than the response limit is returned
+                cut off, and parse_notes says so.
+            line_numbers: Prefix each returned line with its number and a tab,
+                for a line-range read. Strip that prefix again before quoting
+                text in nc_webdav_edit_file.
 
         Returns:
             ``ReadFileResponse``. Alongside ``path``/``content``/``content_type``/
@@ -310,7 +564,56 @@ def configure_webdav_tools(mcp: MCPServer):
             - ``url``: a link that opens the file in Nextcloud. Offer it when
               reporting on the file, and especially when ``parse_notes`` says
               the extraction degraded.
+            - ``page_count``: total pages in a parsed PDF. With ``page_start``/
+              ``page_end`` (the pages actually returned) it tells you whether
+              more remains to read.
         """
+        paged = page_start is not None or page_end is not None
+        if paged:
+            if parse_document == "raw":
+                raise ToolError(
+                    "page_start/page_end select pages to parse, so they cannot be "
+                    "combined with parse_document='raw'."
+                )
+            for name, value in (("page_start", page_start), ("page_end", page_end)):
+                if value is not None and value < 1:
+                    raise ToolError(
+                        f"Invalid page range: {name}={value}, but pages are "
+                        f"numbered from 1."
+                    )
+            if (
+                page_start is not None
+                and page_end is not None
+                and page_end < page_start
+            ):
+                raise ToolError(
+                    f"Invalid page range: page_end={page_end} precedes "
+                    f"page_start={page_start}."
+                )
+
+        lined = line_start is not None or line_end is not None
+        if lined:
+            if paged:
+                raise ToolError(
+                    "A read takes either a page range (PDFs) or a line range "
+                    "(text files), not both."
+                )
+            for name, value in (("line_start", line_start), ("line_end", line_end)):
+                if value is not None and value < 1:
+                    raise ToolError(
+                        f"Invalid line range: {name}={value}, but lines are "
+                        f"numbered from 1."
+                    )
+            if (
+                line_start is not None
+                and line_end is not None
+                and line_end < line_start
+            ):
+                raise ToolError(
+                    f"Invalid line range: line_end={line_end} precedes "
+                    f"line_start={line_start}."
+                )
+
         client = await get_client(ctx)
 
         # Block reads of paths carrying an excluded tag.
@@ -350,11 +653,24 @@ def configure_webdav_tools(mcp: MCPServer):
         # ``parse_document``, and ``from ... import parse_document`` would rebind
         # it and silently discard the caller's choice.
         from nextcloud_mcp_server.client.webdav import OversizeDownload  # noqa: PLC0415
-        from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
         from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
             download_ceiling,
             spooled_document,
         )
+
+        # Parsing needs the optional ``documents`` extra. Without it every file
+        # is returned as it is, and a document says which extra would parse it.
+        parsing = documents_installed()
+        if parsing:
+            from nextcloud_mcp_server.document_processors._isolation import (  # noqa: PLC0415
+                PdfParseFailed,
+            )
+            from nextcloud_mcp_server.utils import document_parser  # noqa: PLC0415
+        elif paged:
+            raise ToolError(
+                "page_start/page_end need PDF parsing, which this server does "
+                f"not have installed. {_DOCUMENTS_HINT}"
+            )
 
         settings = get_settings()
         ceiling = download_ceiling(settings)
@@ -365,19 +681,109 @@ def configure_webdav_tools(mcp: MCPServer):
         # straight from the path (page-windowed) once it is there. The ceiling is
         # the same one ingest streams under, so a runaway transfer is aborted
         # rather than filling the disk. The block owns the spool file: everything
-        # that touches the document must happen inside it.
+        # that touches the document must happen inside it. ``scratch`` owns any
+        # page-range slice of it, and exits first.
         try:
-            async with spooled_document(
-                client,
-                path,
-                spool_dir=settings.document_spool_dir,
-                max_bytes=ceiling,
-            ) as source:
+            async with (
+                spooled_document(
+                    client,
+                    path,
+                    spool_dir=settings.document_spool_dir,
+                    max_bytes=ceiling,
+                ) as source,
+                contextlib.AsyncExitStack() as scratch,
+            ):
                 content_type = source.content_type
                 etag = source.etag
 
-                if parse_document != "raw" and document_parser.is_parseable_document(
-                    content_type
+                if lined:
+                    if (
+                        parsing
+                        and parse_document != "raw"
+                        and document_parser.is_parseable_document(content_type)
+                    ):
+                        raise ToolError(
+                            f"line_start/line_end apply to text files, and {path!r} "
+                            f"is {content_type!r}. Use page_start/page_end for a "
+                            f"PDF, or read it without a range."
+                        )
+                    return _stamp_url(
+                        await _line_range_response(
+                            source,
+                            path,
+                            line_start or 1,
+                            line_end,
+                            numbered=line_numbers,
+                            parse_status=(
+                                "skipped"
+                                if parse_document == "raw"
+                                else "not_applicable"
+                            ),
+                        ),
+                        url,
+                    )
+
+                # What the pipeline parses: the whole spool, or just the pages
+                # asked for. ``source`` stays the whole file for the raw fallback.
+                parse_source: "DocumentSource" = source
+                page_range: tuple[int, int] | None = None
+                page_count: int | None = None
+                range_notes: list[str] = []
+                if paged:
+                    if content_type != "application/pdf":
+                        raise ToolError(
+                            f"page_start/page_end apply to PDFs only, and {path!r} "
+                            f"is {content_type!r}. Read it without a page range."
+                        )
+                    try:
+                        (
+                            parse_source,
+                            first,
+                            last,
+                            page_count,
+                            range_notes,
+                        ) = await _slice_pages(
+                            source, path, page_start, page_end, settings, scratch
+                        )
+                    except PdfParseFailed as e:
+                        return _stamp_url(
+                            await _raw_response(
+                                source,
+                                path,
+                                "failed",
+                                [
+                                    f"The requested pages could not be extracted "
+                                    f"({e.reason}: {e}); the raw file is returned "
+                                    f"instead."
+                                ],
+                            ),
+                            url,
+                        )
+                    page_range = (first, last)
+
+                async def _parse_failed(notes: list[str], **kwargs: Any):
+                    """Raw fallback for a failed parse, scoped to what was asked for.
+
+                    ``parse_source`` is the slice on a range read (else the whole
+                    file), so a caller who asked for pages 5-10 gets those pages
+                    back rather than the entire document, and is told so.
+                    """
+                    response = await _raw_response(
+                        parse_source, path, "failed", range_notes + notes, **kwargs
+                    )
+                    if page_range is not None:
+                        response.page_count = page_count
+                        response.page_start, response.page_end = page_range
+                        response.parse_notes.append(
+                            f"The raw content is a PDF of pages {page_range[0]}-"
+                            f"{page_range[1]} only, not the whole document."
+                        )
+                    return _stamp_url(response, url)
+
+                if (
+                    parsing
+                    and parse_document != "raw"
+                    and document_parser.is_parseable_document(content_type)
                 ):
                     # Optional interactive cap (ADR-032): bound the SYNCHRONOUS
                     # parse so a slow VLM/OCR convert returns the raw file quickly
@@ -399,7 +805,7 @@ def configure_webdav_tools(mcp: MCPServer):
                         )
                         with cap_ctx:
                             result = await document_parser.parse_document_source(
-                                source,
+                                parse_source,
                                 prefer_markdown=(parse_document == "markdown"),
                                 progress_callback=ctx.report_progress,
                             )
@@ -417,22 +823,14 @@ def configure_webdav_tools(mcp: MCPServer):
                             f"instead."
                         )
                         logger.warning("Parsing document %r timed out: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(source, path, "failed", [note]), url
-                        )
+                        return await _parse_failed([note])
                     except Exception as e:
                         logger.warning("Failed to parse document %r: %s", path, e)
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                [
-                                    f"Parsing failed ({type(e).__name__}: {e}); the "
-                                    f"raw file is returned instead."
-                                ],
-                            ),
-                            url,
+                        return await _parse_failed(
+                            [
+                                f"Parsing failed ({type(e).__name__}: {e}); the "
+                                f"raw file is returned instead."
+                            ]
                         )
 
                     summary = document_parser.summarize_parse(
@@ -443,18 +841,21 @@ def configure_webdav_tools(mcp: MCPServer):
                     if summary.status == "failed":
                         # An unsuccessful parse is never reported as content: hand
                         # back the raw file with the reason attached.
-                        return _stamp_url(
-                            await _raw_response(
-                                source,
-                                path,
-                                "failed",
-                                summary.notes,
-                                parse_tier=summary.tier,
-                                parse_processor=summary.processor,
-                                parsing_metadata=result.metadata,
-                            ),
-                            url,
+                        return await _parse_failed(
+                            summary.notes,
+                            parse_tier=summary.tier,
+                            parse_processor=summary.processor,
+                            parsing_metadata=result.metadata,
                         )
+                    metadata = result.metadata or {}
+                    if page_range is not None:
+                        # The slice numbers its pages from 1. Shift them back so
+                        # citations and highlights point at the real pages.
+                        for boundary in metadata.get("page_boundaries") or []:
+                            if isinstance(boundary.get("page"), int):
+                                boundary["page"] += page_range[0] - 1
+                    else:
+                        page_count = metadata.get("page_count")
                     return _stamp_url(
                         ReadFileResponse(
                             path=path,
@@ -466,8 +867,11 @@ def configure_webdav_tools(mcp: MCPServer):
                             parse_tier=summary.tier,
                             parse_processor=summary.processor,
                             content_format=summary.content_format,
-                            parse_notes=summary.notes,
+                            parse_notes=range_notes + summary.notes,
                             parsing_metadata=result.metadata,
+                            page_count=page_count,
+                            page_start=page_range[0] if page_range else None,
+                            page_end=page_range[1] if page_range else None,
                             etag=etag,
                         ),
                         url,
@@ -476,7 +880,17 @@ def configure_webdav_tools(mcp: MCPServer):
                 status: ParseStatus = (
                     "skipped" if parse_document == "raw" else "not_applicable"
                 )
-                return _stamp_url(await _raw_response(source, path, status, []), url)
+                notes = []
+                if (
+                    not parsing
+                    and parse_document != "raw"
+                    and content_type.startswith(_DOCUMENT_TYPE_PREFIXES)
+                ):
+                    notes.append(
+                        "Text extraction for this file type is not installed on "
+                        f"this server, so the raw file is returned. {_DOCUMENTS_HINT}"
+                    )
+                return _stamp_url(await _raw_response(source, path, status, notes), url)
         except OversizeDownload as e:
             # The transfer was aborted mid-flight, so there is no file left to
             # describe -- not even its content type. Say that plainly rather than
@@ -508,6 +922,9 @@ def configure_webdav_tools(mcp: MCPServer):
         if_match: str | None = None,
     ) -> WriteFileResponse:
         """Write content to a file in NextCloud.
+
+        To change part of an existing text file, use nc_webdav_edit_file
+        instead: it takes only the passage to replace, not the whole file.
 
         Writes are **fail-closed**: an existing file is never silently
         overwritten. What happens depends on ``if_match`` (see below).
@@ -592,6 +1009,186 @@ def configure_webdav_tools(mcp: MCPServer):
             created=status_code == 201,
             size=len(content_bytes),
             etag=result.get("etag"),
+        )
+
+    @mcp.tool(
+        title="Edit File",
+        annotations=ToolAnnotations(
+            # NOT idempotent (ADR-017 update): a repeat no longer finds
+            # old_string and fails, and every successful edit changes the etag.
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_edit_file(
+        path: str,
+        edits: Annotated[list[FileEdit], Field(min_length=1, max_length=100)],
+        ctx: Context,
+        if_match: str | None = None,
+    ) -> EditFileResponse:
+        """Change part of a text file in place, by exact text replacement.
+
+        Prefer this over nc_webdav_write_file for changing an existing text
+        file: send only the passage to replace and its replacement, not the
+        whole file. Plain UTF-8 text files only, such as Markdown (including
+        Collectives pages), YAML, JSON, XML, CSV, configuration files and
+        source code. PDFs, Office and OpenDocument files, images other than
+        SVG, audio, video and archives are refused, because a text edit would
+        corrupt them. Replace those as a whole with nc_webdav_write_file.
+
+        Each edit replaces ``old_string`` with ``new_string``. ``old_string``
+        must match the file exactly, including whitespace, indentation and
+        line breaks, and must occur exactly once unless ``replace_all`` is
+        true, so quote enough surrounding text to make it unique. Strip the
+        line-number prefix if you copied the text from a read with
+        line_numbers. To delete text, use an empty ``new_string``.
+
+        Several edits are applied in order, each to the result of the previous
+        one, and saved as a single change (one new file version). If any edit
+        cannot be applied, nothing is saved and the error says which one and
+        why.
+
+        The file is read and written back guarded by its etag, so a change
+        made elsewhere at the same moment is never overwritten. Pass
+        ``if_match`` (an etag from nc_webdav_read_file) to also refuse the edit
+        if the file changed since you read it. Windows line endings (CRLF) and
+        a byte-order mark are kept as they are.
+
+        Raises ``ToolError`` when the file does not exist, is not a plain UTF-8
+        text file, is larger than ``WEBDAV_WRITE_MAX_MB``, carries an excluded
+        tag, is locked, changed concurrently, or when an edit cannot be applied.
+
+        Args:
+            path: Full path of the file to edit
+            edits: Replacements, applied in order. Each has ``old_string``,
+                ``new_string`` and optionally ``replace_all``.
+            if_match: Optional etag from an earlier read. The edit fails if
+                the file has changed since.
+
+        Returns:
+            ``EditFileResponse`` with the new ``etag``, the number of
+            ``replacements`` and a unified ``diff`` of the change, to check it
+            without re-reading the file.
+        """
+        client = await get_client(ctx)
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+        # Imported lazily for the same reason as in nc_webdav_read_file: the
+        # spool helpers live in the ingest layer, which startup must not load.
+        from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
+            download_ceiling,
+            spooled_document,
+        )
+
+        settings = get_settings()
+        # The edited file is written back in one PUT, so the write limit is
+        # also the useful download limit: a bigger file could not be saved.
+        max_mb = settings.webdav_write_max_mb
+        max_bytes = int(max_mb * 1024 * 1024) if max_mb else download_ceiling(settings)
+
+        try:
+            async with spooled_document(
+                client,
+                path,
+                spool_dir=settings.document_spool_dir,
+                max_bytes=max_bytes,
+            ) as source:
+                content_type = source.content_type
+                etag = source.etag
+
+                # Before anything is decoded or read into memory. UTF-8 validity
+                # is no proof of text: an all-ASCII PDF decodes, and an edit
+                # would shift the offsets in its xref table. The type is the
+                # download's Content-Type. The check is an allow-list rather
+                # than is_parseable_document, which depends on which document
+                # processors this deployment registered.
+                if not is_editable_text(content_type, path):
+                    raise ToolError(_not_editable_message(path, content_type))
+
+                def _read_all() -> bytes:
+                    with source.open() as fh:
+                        return fh.read()
+
+                original = await run_sync(_read_all)
+        except OversizeDownload as e:
+            limit = (
+                f"WEBDAV_WRITE_MAX_MB ({max_mb} MB)"
+                if max_mb
+                else f"the {max_bytes} byte download ceiling"
+            )
+            raise ToolError(
+                f"{path!r} is too large to edit: it exceeds {limit}."
+            ) from e
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise ToolError(f"File not found: {path!r}") from e
+            raise ToolError(
+                f"Failed to read {path!r} for editing: HTTP {e.response.status_code}"
+            ) from e
+
+        if etag is None:
+            # Without an etag the write-back could not be made conditional,
+            # and an edit that might clobber a concurrent change is refused.
+            raise ToolError(
+                f"Nextcloud returned no ETag for {path!r} (a proxy may strip "
+                "it), so the edit cannot be protected against concurrent "
+                "changes. Use nc_webdav_write_file instead."
+            )
+        if if_match is not None and normalize_etag(if_match) != etag:
+            raise ToolError(
+                f"{path!r} has changed since you read it. Read it again and "
+                "base the edit on the current content."
+            )
+
+        try:
+            before = original.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ToolError(
+                f"{path!r} is not a UTF-8 text file, so it cannot be edited by "
+                "text replacement. Use nc_webdav_write_file to replace it."
+            ) from e
+
+        try:
+            result = apply_edits(
+                before,
+                [TextEdit(e.old_string, e.new_string, e.replace_all) for e in edits],
+            )
+        except EditError as e:
+            raise ToolError(f"{e} Nothing was changed in {path!r}.") from e
+
+        updated = result.text.encode("utf-8")
+        if max_mb and len(updated) > max_mb * 1024 * 1024:
+            raise ToolError(
+                f"The edited {path!r} would exceed WEBDAV_WRITE_MAX_MB "
+                f"({max_mb} MB). Nothing was changed."
+            )
+
+        write = await client.webdav.write_file(
+            path, updated, content_type, if_match=etag
+        )
+        status_code = write.get("status_code")
+        if status_code == 412:
+            raise ToolError(
+                f"{path!r} was changed by someone else while it was being "
+                "edited. Nothing was saved. Read it again and retry."
+            )
+        if status_code == 423:
+            raise ToolError(f"{write['message']} ({path!r})")
+
+        diff, diff_truncated = unified_diff(before, result.text, path)
+        return EditFileResponse(
+            path=path,
+            etag=write.get("etag"),
+            edits_applied=len(edits),
+            replacements=result.replacements,
+            size=len(updated),
+            diff=diff,
+            diff_truncated=diff_truncated,
         )
 
     @mcp.tool(
@@ -1083,7 +1680,7 @@ def configure_webdav_tools(mcp: MCPServer):
             raise ToolError(f"offset must not be negative, got {offset}")
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comments = await client.webdav.list_comments(
             file_id, limit=limit, offset=offset
@@ -1144,7 +1741,7 @@ def configure_webdav_tools(mcp: MCPServer):
             )
 
         client = await get_client(ctx)
-        file_id = await _resolve_commented_file(client, path)
+        file_id = await _resolve_file_id(client, path)
 
         comment_id = await client.webdav.create_comment(file_id, message)
         return CreateFileCommentResponse(
@@ -1153,3 +1750,273 @@ def configure_webdav_tools(mcp: MCPServer):
             comment_id=comment_id,
             message=message,
         )
+
+    @mcp.tool(
+        title="List Trash",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_trash(ctx: Context) -> ListTrashResponse:
+        """List deleted files in the user's trash bin.
+
+        Each entry carries the id needed to restore it, the location it was
+        deleted from, and when it was deleted.
+        """
+        client = await get_client(ctx)
+        items = await client.webdav.list_trash()
+
+        # Hide entries deleted from inside a still-existing excluded folder.
+        # ponytail: a *directly* tagged file drops out of the files-by-tag
+        # REPORT once trashed, and no DAV route exposes tags on trash items
+        # (verified on NC 32), so its name still lists here. Its tag survives
+        # restore, so the read/write guards still cover its content.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if excluded:
+            items = [
+                item
+                for item in items
+                if not is_path_excluded(item.get("original_location") or "", excluded)
+            ]
+
+        entries = [
+            TrashEntry(
+                id=item["id"],
+                name=item.get("trashbin_filename"),
+                original_location=item.get("original_location"),
+                deleted_at=_as_int(item.get("deleted_at")),
+                size=_as_int(item.get("size")),
+                href=item.get("href"),
+            )
+            for item in items
+        ]
+        return ListTrashResponse(items=entries, total_count=len(entries))
+
+    @mcp.tool(
+        title="Restore From Trash",
+        annotations=ToolAnnotations(
+            destructive_hint=False,  # Puts a file back; nothing is overwritten
+            idempotent_hint=False,  # The entry is gone from the trash afterwards
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_restore_from_trash(
+        entry_id: str, ctx: Context
+    ) -> RestoreFromTrashResponse:
+        """Restore a deleted file from the trash bin to its original location.
+
+        Args:
+            entry_id: The id from nc_webdav_list_trash (not the file name).
+        """
+        client = await get_client(ctx)
+
+        # Resolve the entry first so a bad id fails as a refusal, not a DAV
+        # error, and nothing is restored into an excluded folder (see the
+        # directly-tagged caveat in nc_webdav_list_trash).
+        entries = await client.webdav.list_trash()
+        match = next((e for e in entries if e.get("id") == entry_id), None)
+        if match is None:
+            raise ToolError(f"No trash entry with id {entry_id!r}")
+
+        excluded = await get_excluded_file_paths(client.webdav)
+        original = match.get("original_location") or ""
+        if is_path_excluded(original, excluded):
+            raise ToolError(
+                f"Access denied: {original!r} is tagged with an excluded tag"
+            )
+
+        await client.webdav.restore_from_trash(entry_id)
+        return RestoreFromTrashResponse(entry_id=entry_id)
+
+    @mcp.tool(
+        title="List File Versions",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_versions(path: str, ctx: Context) -> ListVersionsResponse:
+        """List stored previous versions of a file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        # Resolving through the shared helper applies the excluded-tag guard
+        # and turns a missing file into a refusal rather than a ValueError
+        # surfacing from the client layer. Passing the id through spares
+        # list_versions a second get_fileid round-trip for the same path.
+        file_id = await _resolve_file_id(client, path)
+
+        data = await client.webdav.list_versions(path, file_id=file_id)
+        versions = [
+            FileVersion(
+                version_id=v["version_id"],
+                size=_as_int(v.get("size")),
+                modified=v.get("modified"),
+                label=v.get("label"),
+            )
+            for v in data.get("versions", [])
+        ]
+        return ListVersionsResponse(
+            path=data["path"],
+            file_id=str(data["file_id"]),
+            versions=versions,
+            total_count=len(versions),
+        )
+
+    @mcp.tool(
+        title="Restore File Version",
+        annotations=ToolAnnotations(
+            destructive_hint=False,  # The current content is kept as a version
+            # Not idempotent: each restore stores the then-current content as
+            # a further version, so repeating it keeps adding side effects.
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_restore_version(
+        path: str, version_id: str, ctx: Context
+    ) -> RestoreVersionResponse:
+        """Roll a file back to an earlier version.
+
+        The current content is not lost: Nextcloud stores it as a version in
+        turn, so the rollback itself can be undone.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            version_id: The version_id from nc_webdav_list_versions.
+        """
+        client = await get_client(ctx)
+        # See nc_webdav_list_versions: passing the id through spares
+        # restore_version a second get_fileid round-trip.
+        file_id = await _resolve_file_id(client, path)
+
+        await client.webdav.restore_version(path, version_id, file_id=file_id)
+        return RestoreVersionResponse(path=path, restored_version=version_id)
+
+    @mcp.tool(
+        title="List Tags",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_tags(ctx: Context) -> ListTagsResponse:
+        """List all system tags available for tagging files."""
+        client = await get_client(ctx)
+        tags = [SystemTag(**t) for t in await client.webdav.list_tags()]
+        return ListTagsResponse(tags=tags, total_count=len(tags))
+
+    @mcp.tool(
+        title="Get File Tags",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_get_file_tags(path: str, ctx: Context) -> FileTagsResponse:
+        """List the tags assigned to one file.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+        """
+        client = await get_client(ctx)
+        # Resolving through the shared helper applies the excluded-tag guard,
+        # so an excluded path cannot be probed for existence via its tags.
+        await _resolve_file_id(client, path)
+
+        data = await client.webdav.get_file_tags(path)
+        return FileTagsResponse(
+            path=data["path"],
+            file_id=str(data["file_id"]),
+            tags=[SystemTag(id=t["id"], name=t["name"]) for t in data["tags"]],
+        )
+
+    @mcp.tool(
+        title="Find Files By Tag",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @with_links
+    @instrument_tool
+    async def nc_webdav_find_by_tag_name(tag: str, ctx: Context) -> FilesByTagResponse:
+        """Find all files carrying a given tag.
+
+        Args:
+            tag: Tag name, case-sensitive.
+        """
+        client = await get_client(ctx)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            return FilesByTagResponse(tag=tag, files=[], total_count=0)
+
+        files = await client.webdav.get_files_by_tag(found["id"])
+
+        # A tag can be attached to an excluded file; the listing must not
+        # surface it any more than a directory listing would.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if excluded:
+            files = [
+                f for f in files if not is_path_excluded(f.get("path", ""), excluded)
+            ]
+
+        return FilesByTagResponse(
+            tag=tag,
+            tag_id=found["id"],
+            files=[FileInfo(**f) for f in files],
+            total_count=len(files),
+        )
+
+    @mcp.tool(
+        title="Tag File",
+        annotations=ToolAnnotations(
+            destructive_hint=False,
+            idempotent_hint=True,  # Same tag twice = same end state
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_tag_file(path: str, tag: str, ctx: Context) -> TagFileResponse:
+        """Attach a tag to a file, creating the tag if it does not exist yet.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        resolved = await client.webdav.get_or_create_tag(tag)
+        await client.webdav.assign_tag_to_file(file_id, resolved["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=resolved["id"], assigned=True)
+
+    @mcp.tool(
+        title="Untag File",
+        annotations=ToolAnnotations(
+            destructive_hint=False,  # The tag itself survives
+            idempotent_hint=True,  # Removing an absent tag = same end state
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_untag_file(
+        path: str, tag: str, ctx: Context
+    ) -> TagFileResponse:
+        """Remove a tag from a file. The tag itself keeps existing.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            tag: Tag name.
+        """
+        client = await get_client(ctx)
+        file_id = await _resolve_file_id(client, path)
+        found = await client.webdav.get_tag_by_name(tag)
+        if found is None or found.get("id") is None:
+            raise ToolError(f"No tag named {tag!r} exists")
+        await client.webdav.remove_tag_from_file(file_id, found["id"])
+        return TagFileResponse(path=path, tag=tag, tag_id=found["id"], assigned=False)
+
+    configure_webdav_image_tools(mcp)

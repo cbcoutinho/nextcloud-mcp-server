@@ -306,6 +306,8 @@ The probe reports each dependency under `checks` (`ok` / `embedded` / `pending` 
 
 The MCP server includes semantic search capabilities powered by vector embeddings. This feature requires a vector database (Qdrant) and an embedding service.
 
+> **Install the `semantic` extra.** A PyPI install needs `pip install 'nextcloud-mcp-server[semantic]'` (the Docker image already includes it). With `ENABLE_SEMANTIC_SEARCH=true` and the extra missing, the server refuses to start and names this command. See [Installation → Optional features](installation.md#optional-features-extras).
+
 ### Quick Start
 
 **Single-User Mode:**
@@ -383,6 +385,42 @@ Notes:
   cycle rather than falling back to indexing everything, and search keeps
   returning already-indexed mail unverified.
 - Max 128 characters (validated at startup — the Mail app rejects longer names).
+
+### Which file types get indexed — `VECTOR_SYNC_INDEXABLE_MIME_TYPES`
+
+By default, tagged-file discovery enqueues **every type an enabled processor can
+read**: PDF, `.docx`/`.xlsx`/`.pptx` (ADR-036/038), Outlook `.msg`, plain text,
+Markdown and CSV, plus legacy Office and ODF when Collabora is configured
+(`COLLABORA_URL`, ADR-039). Enabling a processor is what opts its types in; a
+tagged file of a type no processor reads is ignored. That includes the optional
+processors: configuring Unstructured, Tesseract, Docling or a custom HTTP
+processor also indexes the types they claim (images, EPUB, RTF, …) in tagged
+folders, with the OCR and embedding cost that brings. Set the variable below to
+keep them to the types you want.
+
+Plain text, Markdown and CSV files are picked up by the polling scanner only,
+not on the change webhook: editors such as Text save them on every few
+keystrokes.
+
+Set `VECTOR_SYNC_INDEXABLE_MIME_TYPES` to a comma-separated list to narrow that,
+for example to PDF only:
+
+```dotenv
+VECTOR_SYNC_INDEXABLE_MIME_TYPES=application/pdf
+```
+
+> **Upgrading changes what you pay to embed.** Previously the default was PDF and
+> `.docx`/`.xlsx`/`.pptx` only. On upgrade, `.msg`, `.txt`, `.md` and `.csv` files
+> (and ODF/legacy Office with Collabora) already under a `vector-index` or
+> `keyword-index` tag, including everything beneath a tagged folder, are indexed
+> on the next scan. Set the list above before upgrading to keep the old scope.
+>
+> Setting it **empty** does not mean "no filter" — it means *index nothing*, and
+> discovery logs a warning saying so.
+
+Reading `.doc`/`.docx` and legacy `.xls` needs LibreOffice in the image. Where
+it is absent those types are simply not claimed, and each discovered file logs
+one "no processor for type" failure rather than failing mid-parse.
 
 ### Per-document keyword vs hybrid indexing — `VECTOR_SYNC_KEYWORD_TAG`
 
@@ -725,7 +763,7 @@ shorter OCR ceiling:
 ```dotenv
 DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
 DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
-DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap for EVERY indexed document, not only PDFs; 0 disables (default: 50)
 DOCUMENT_PARSE_PAGE_WINDOW=100        # Pages per extraction window; 0 disables (default: 100)
 DOCUMENT_PARSE_PROCESS_SLOTS=2        # Concurrent isolated parse subprocesses (default: 2)
 DOCUMENT_MARKDOWN_MAX_PAGES=150       # Structured-tier markdown page ceiling; 0 disables markdown (default: 150)
@@ -747,7 +785,23 @@ well beyond what the pod can survive. Keep
 `DOCUMENT_PARSE_PROCESS_SLOTS × DOCUMENT_PARSE_MEM_LIMIT_MB` within the pod's
 memory limit. The limiter is created once per worker, so a change needs a restart.
 
-A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
+**Don't set `DOCUMENT_PARSE_MEM_LIMIT_MB` much below 1024.** The parse worker uses
+about 600 MiB of address space on imports alone, before it reads a page: its share
+of the server, plus pymupdf4llm, which loads onnxruntime even in classic mode. At
+640, markdown promotion fails intermittently with
+`ImportError: … failed to map segment from shared object` and falls back to the
+plain text layer (#1635). The server logs a startup warning below 1024. The
+default, 1536, leaves room for the parse itself. Size the container memory
+limit to hold `DOCUMENT_PARSE_PROCESS_SLOTS ×` the parse's resident memory on top
+of the server, not the full cap, since the cap is virtual address space.
+
+**The name says PDF; the cap does not.** `DOCUMENT_MAX_PDF_SIZE_MB` guards every
+indexed document — `.docx`, `.doc`, `.xlsx`, `.xls` and `.msg` included — since
+discovery stopped being PDF-only. The setting keeps its original name so
+existing deployments are not silently re-tuned by a rename. If a large `.docx`
+is being rejected as `oversize`, this is the knob, despite the name.
+
+A document larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 (exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
@@ -926,8 +980,12 @@ own, so a PDF reaches it through the OCR tier and nowhere else:
   `force_processor="docling"`, which asked the caller to name an extraction
   engine it had no basis to choose.)
 
-Office formats (DOCX/PPTX/XLSX) deliberately stay with `unstructured` — docling
-is scoped to the image/scan/handwriting use case here. OCR language codes are
+Office formats never route through docling for their text — docling is scoped
+to the image/scan/handwriting use case here. `.pptx` has a native `python-pptx`
+reader (ADR-036), and `.docx`/`.xlsx` native `python-docx`/`openpyxl` readers
+(ADR-038); all three can optionally send the *pictures* they find to docling
+for captioning — see
+"Office picture captioning" below. OCR language codes are
 engine-dependent: the docling-serve default engine (EasyOCR) uses two-letter
 codes (`en,de`); a Tesseract-backed instance wants `eng,deu`. The synchronous
 convert endpoint has an observed ~2 min practical ceiling (from our testing, not a
@@ -973,6 +1031,66 @@ base64 **fast** instead of hanging until the client times out. Default is empty
 (e.g. 45–60s) if you want graceful fallback; leave it unset (and expect long calls)
 if you deliberately want interactive VLM with a tolerant client. It never affects
 the async ingest/worker path. See `docs/ADR-032-docling-vlm-pipeline.md`.
+
+#### Legacy and ODF office formats via Collabora Online (opt-in)
+
+`.doc`/`.xls`/`.ppt` and `.odt`/`.ods`/`.odp` have no pure-Python reader. Point
+the server at a Collabora Online (coolwsd) instance, for example the one serving
+Nextcloud Office, and these files are converted to OOXML by its stateless
+`convert-to` API and read by the native `.docx`/`.xlsx`/`.pptx` readers (ADR-039):
+
+```dotenv
+COLLABORA_URL=http://collabora:9980   # coolwsd base URL; unset = these types are not claimed
+COLLABORA_TIMEOUT_SECONDS=60          # per-file convert-to request timeout
+```
+
+coolwsd answers `convert-to` only for clients in its `net.post_allow` list. The
+default list covers loopback and the private ranges (compose networks, cluster
+pod CIDRs); a denied client gets HTTP 403. Check with
+`curl $COLLABORA_URL/hosting/capabilities`, which reports
+`"convert-to":{"available":true}` for an allowed client. For local development:
+`docker compose --profile collabora up -d collabora` and
+`COLLABORA_URL=http://collabora:9980`.
+
+Outlook `.msg` needs none of this: it is read in-process.
+
+#### Office picture captioning (opt-in)
+
+The native OOXML readers (`.pptx`, ADR-036; `.docx`/`.xlsx`, ADR-038) extract
+text/tables without docling. They can *additionally* send each raster picture
+they find to the same docling-serve instance for a short caption, added as
+`*Image: <caption>*` — under the slide for `.pptx`, right after the paragraph
+holding the picture for `.docx`, and in a trailing `## Images` section for
+`.xlsx`:
+
+```dotenv
+OFFICE_CAPTION_IMAGES=false          # explicit opt-in, on top of DOCLING_API_URL
+OFFICE_CAPTION_MAX_IMAGES=8          # cap on docling round trips per file
+OFFICE_CAPTION_TIMEOUT_SECONDS=15    # per-picture request timeout (independent of DOCLING_TIMEOUT)
+```
+
+These were `PPTX_CAPTION_*` in 0.193.0. The old names still apply, with a
+deprecation warning, wherever the new name is left at its default.
+
+Requires `DOCLING_API_URL` (does **not** require `ENABLE_DOCLING` — that flag
+only gates the images-auto-select processor on the `find_processor` path,
+a different touchpoint). `OFFICE_CAPTION_IMAGES` is its own explicit toggle
+rather than riding the bare URL, for the same reason `DOCUMENT_OCR_PROVIDER`
+needs its own selection: a deployment that only wants docling for scanned-PDF
+OCR shouldn't start captioning every picture in every document for free.
+
+Only *raster* picture shapes are captioned, and only above
+`MIN_CAPTION_PICTURE_PX` (80px on either native axis) — small pictures are
+treated as decorative (a logo, a bullet icon) and skipped. **Native vector
+diagrams (SmartArt, freeform/connector shapes) are not pictures in the OOXML
+sense and are not affected by this setting at all** — the readers have no
+rendering engine to turn them into pixels, so they still produce no text. The
+result's `parsing_metadata.pictures_found` / `.pictures_captioned`
+report what was found/described, surfaced as a `parse_notes` entry on
+`nc_webdav_read_file` whenever a document has pictures that were not (fully)
+captioned. `DOCLING_PIPELINE=vlm` also affects captions (better descriptions,
+much slower per picture — raise `OFFICE_CAPTION_TIMEOUT_SECONDS` accordingly).
+See `docs/ADR-037-pptx-picture-captioning.md`.
 
 #### OCR execution mode: synchronous vs batch (Deck #332)
 
@@ -1251,23 +1369,21 @@ aware of:
   search that surfaces news results. Disabling News in the indexer or running
   with a smaller backlog mitigates this; per-item paginated verification is
   tracked as a future improvement.
-- **Files caveat**: `file` results are gated on current **`vector-index` tag
-  membership**, not bare access — the verifier issues a single
-  `find_files_by_tag(<tag>, mime_type_filter="application/pdf")` REPORT per
-  search that contains any file result (plus a one-shot `EXCLUDED_TAGS`
-  lookup), then keeps only files in that set. This matches exactly what the
-  scanner indexes, so a file removed from the tag (or deleted, or moved under
-  an excluded folder) drops out of results immediately rather than waiting for
-  the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
-  SEARCH, so deployments that tag whole directory trees pay that walk once per
-  search; configure `VECTOR_SYNC_TAG` to change the tag name. The `file`
-  verifier's latency therefore scales with **both** the `Depth: infinity` folder
-  expansion **and** the `EXCLUDED_TAGS` lookup: that lookup fans out ~2 WebDAV
-  calls (1 PROPFIND + 1 REPORT) *per excluded tag*, concurrently, while holding
-  a single verification slot — so a deployment with a long `EXCLUDED_TAGS` list
-  and/or deeply tagged trees issues many parallel Nextcloud requests per search.
-  Operators in that situation may want to **lower `VERIFICATION_CONCURRENCY`** so
-  the file verifier's internal fan-out does not overwhelm the backend.
+- **Files caveat**: `file` results are gated on current **index-tag
+  membership** (`VECTOR_SYNC_TAG` / `VECTOR_SYNC_KEYWORD_TAG`), not bare access.
+  A file counts as tagged if it carries the tag itself or sits under a tagged
+  folder. For each search that contains a file result, the verifier issues one
+  tag REPORT per index tag (directly-tagged items only, no folder walk) plus one
+  batched SEARCH-by-fileid for the results that are not directly tagged. It
+  then matches those results against the tagged folders by path. Its cost
+  therefore follows the result page, not the size of the tagged corpus. This
+  matches what the scanner indexes, so a file removed from the tag (or deleted,
+  unshared, or moved under an excluded folder) drops out of results immediately
+  rather than waiting for the scanner sweep. The `EXCLUDED_TAGS` lookup (run
+  only when some file survives) fans out ~2 WebDAV calls (1 PROPFIND + 1
+  REPORT) *per excluded tag*, concurrently, while holding a single verification
+  slot. A deployment with a long `EXCLUDED_TAGS` list may want to **lower
+  `VERIFICATION_CONCURRENCY`** so that fan-out does not overwhelm the backend.
 - **Shared files**: a file an owner tagged and shared with the searcher only
   survives verification if the owner's **`userVisible`** tag surfaces in the
   *searcher's* tag REPORT. The MCP server's own tag-creation path
@@ -1304,6 +1420,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `VECTOR_SYNC_TAG` | ⚠️ Optional | `vector-index` | Nextcloud tag marking files for **hybrid** (dense + BM25 sparse) indexing (ADR-031) |
 | `VECTOR_SYNC_KEYWORD_TAG` | ⚠️ Optional | `keyword-index` | Nextcloud tag marking files for **keyword-only** (BM25 sparse) indexing into the same collection; on by default, set empty to disable. Hybrid wins if a file carries both tags (ADR-031) |
+| `VECTOR_SYNC_INDEXABLE_MIME_TYPES` | ⚠️ Optional | *(unset)*: every type a registered processor reads | Comma-separated MIME types that tagged-file discovery will enqueue. Unset, it is every type an enabled processor can read (PDF, `.docx`/`.xlsx`/`.pptx`, `.msg`, plain text, Markdown, CSV, plus ODF and legacy Office with `COLLABORA_URL` and whatever an optional processor claims), so enabling a processor opts its types in. Set it to narrow that, e.g. `application/pdf` for PDF only; set it empty to index no files. See "Which file types get indexed" above. |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
@@ -1312,7 +1429,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `QDRANT_INIT_BACKOFF_BASE` | ⚠️ Optional | `1.0` | Base delay (seconds) for the first Qdrant-init retry; subsequent retries grow exponentially (`base * 2**n`) with full jitter. |
 | `QDRANT_INIT_BACKOFF_MAX` | ⚠️ Optional | `10.0` | Per-retry cap (seconds) for the Qdrant-init backoff. Size your k8s `startupProbe` accordingly (worst case ≈ `max_attempts × backoff_max` of waiting on a persistently-down Qdrant before startup finally fails). |
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
-| `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero (while Qdrant still holds points for it) before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty (a genuine mass-untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
+| `VECTOR_SYNC_EMPTY_DISCOVERY_DELETE_THRESHOLD` | ⚠️ Optional | `3` | Fail-safe against a flaky/empty tag-discovery read. A scan deletes indexed points whose files a tag-discovery no longer returns; if a Nextcloud intermittently answers the systemtag `REPORT` with an empty result, that would wrongly purge (then re-index) the whole corpus each cycle. This is the number of **consecutive** scan cycles an index mode's discovery must return zero, or fewer than half of the points Qdrant holds for it (a partial read, e.g. one tagged folder's walk failing), before deletions for that mode are believed — a transient empty deletes nothing; a sustained empty or partial read (a genuine bulk untag) still deletes once the streak is reached. Worst-case deletion latency for a real mass-untag ≈ `(threshold-1) × VECTOR_SYNC_SCAN_INTERVAL + 1.5 × VECTOR_SYNC_SCAN_INTERVAL`. Set `≤1` to restore immediate deletion. |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
 | `VECTOR_SYNC_MAX_INDEX_FAILURES` | ⚠️ Optional | `5` | Consecutive failed **index** attempts before a document is dead-lettered instead of re-queued by the next scan (GH #1345). A hard *parse* failure at the deepest tier is terminal on its first attempt; an embedding / Qdrant / transport failure is treated as transient at first, so parking it takes this many rounds — otherwise a backend outage would drop every in-flight document. The count is per content-version (`etag` + escalation-tier signature) and is cleared by a successful index, so it bounds only *persistent* failure. Each attempt already costs the in-process retries, so the default spans roughly 5 scan cycles. Must be `>= 1`; `1` parks on the first exhausted-retry round. |
 | `VECTOR_SYNC_FAST_CONCURRENCY` | ⚠️ Optional | unset | Per-tier override for the **fast** ingest worker's concurrency. Unset inherits `VECTOR_SYNC_PROCESSOR_WORKERS`. Must be `>= 1` when set. Resolution precedence: the worker `--concurrency` flag > this tier override > `VECTOR_SYNC_PROCESSOR_WORKERS`. |
@@ -1344,6 +1461,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `DOCUMENT_CHUNK_PAGE_PACK` | ⚠️ Optional | `false` | Greedy page-packing (requires page-aware): merge consecutive sub-budget PDF pages into one chunk (page-range citation via `page_number`/`page_end`) instead of one-per-page. Cuts dense-vector density on lean-page/born-digital PDFs. Enabling it re-scales density fleet-wide — re-calibrate the storage rate first (Deck #636/#626). |
 | `CHUNKING_CONFIG_VERSION` | ⚠️ Optional | `1` | Chunker config generation stamped on the collection sentinel. Bump on any chunker behaviour change (size, overlap, page-aware, page-pack) so the pricing density reference can't silently go stale. |
 | `VECTOR_SEARCH_RRF_K` | ⚠️ Optional | `60` | Ranking constant for Reciprocal Rank Fusion in hybrid search: the fused score is `1/(rank + k)`, summed across the dense and sparse prefetches. Must be `>= 1`. Lower values make a single retriever's top hit dominate (Qdrant's own default of `2` lets a rank-0 hit from one retriever outrank a rank-3 hit both agree on); `60` is the standard value and makes cross-retriever agreement decide the ordering. Applies only when `fusion="rrf"` — DBSF has no such constant. Note the resulting scores are small (~`2/k`) and are a rank artifact, not a relevance percentage, so don't use them as an absolute `score_threshold` — use the `relevance` field and the `min_relevance` request parameter instead (ADR-034), which map every result onto a stable `[0, 1]` regardless of `k`, fusion or reranker. |
+| `SEARCH_EMBEDDING_TIMEOUT_SECONDS` | ⚠️ Optional | `10.0` | How long a search waits for its query embedding. On expiry, or on an embedding error, the search fails fast: `POST /api/v1/search` and `/api/v1/vector-viz/search` return `503` with `code: "embedding_unavailable"`, and `nc_semantic_search` returns an error saying so. Keyword search (`algorithm: "bm25"`) never embeds the query and keeps working. The embedding provider's own timeout and retries are sized for ingest and are not used by search. Hitting the limit cancels the provider call, including any retries in progress. The gateway may still finish the abandoned request, which costs a little backend work but delays no other request. Must be `> 0`. |
 | `SEARCH_RERANK_ENABLED` | ⚠️ Optional | `false` | Enable the optional cross-encoder rerank stage. When enabled, callers may pass `rerank: true` to `POST /api/v1/search`, `POST /api/v1/vector-viz/search`, or the `nc_semantic_search` tool to have retrieved candidates re-scored against the query before being returned — generally the largest available improvement to result ordering. Requires a rerank endpoint: `SEARCH_RERANK_URL` **or** `EMBEDDING_GATEWAY_URL` (startup fails with neither). Off by default: it adds an upstream round-trip to every search, and what that costs depends on how the reranker is deployed. Measure on your own deployment before enabling it broadly. Servers advertise this as `rerank_available` on `GET /api/v1/status` so clients can gate their UI instead of probing. See [docs/reranking.md](reranking.md) for self-hosting setup. |
 | `SEARCH_RERANK_URL` | ⚠️ Optional | - | **Full URL** of a Cohere-protocol rerank endpoint — path included, nothing is appended or normalised. Backends disagree on the path and a wrong guess degrades silently to retrieval order, so it is spelled out: Infinity `http://infinity:7997/rerank`, vLLM `http://vllm:8000/v1/rerank`, Cohere `https://api.cohere.com/v2/rerank`. Unset = derive it from `EMBEDDING_GATEWAY_URL` (`<gateway>/v1/rerank`), which is what existing gateway deployments do. Set it to rerank **without** an embedding gateway — the self-hosting path, since Ollama serves no rerank models at all. Setting it also means the gateway's M2M OIDC token is never sent to that host; use `SEARCH_RERANK_API_KEY` for its auth. |
 | `SEARCH_RERANK_API_KEY` | ⚠️ Optional | - | Static bearer token for `SEARCH_RERANK_URL` (a Cohere API key, an Infinity `--api-key`). Sent as `Authorization: Bearer <value>`. Takes precedence over the gateway's M2M credentials when both are present. Unset = no `Authorization` header, which is correct for a local Infinity/vLLM on a private network. |
@@ -1351,6 +1469,11 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `SEARCH_RERANK_POOL_SIZE` | ⚠️ Optional | `200` | Candidates handed to the reranker. Reranking can only reorder what retrieval supplied, so this depth — not the caller's `limit` — bounds how much it can improve; reranking only the rows a normal search returns captures little of the available gain. Treat as a ceiling rather than a starting point: under `granularity="document"` the grouped prefetch is bounded, and requesting more groups than it can fill makes Qdrant reorder the head of the result set before the reranker sees it. Never drops below the request's own over-fetch. Must be `>= 1`. |
 | `SEARCH_RERANK_TIMEOUT_SECONDS` | ⚠️ Optional | `30.0` | Per-request rerank timeout. Generous headroom rather than a target — on expiry the search returns retrieval ordering with `reranked: false` rather than failing. Must be `> 0`. |
 | `SEARCH_RERANK_MAX_CONCURRENCY` | ⚠️ Optional | `1` | Concurrent rerank calls in flight, process-wide. Bounds how many rerank requests this process keeps in flight against the reranker, so a burst of searches cannot queue unbounded work on a service that may also serve this server's embedding traffic and other callers. A client-side courtesy rather than a throughput control — raise it if yours has headroom, which a CPU cross-encoder almost certainly does not. Must be `>= 1`. |
+| `SAR_ENABLED` | ⚠️ Optional | `false` | Serve subject access request cases and redacted export (ADR-040): the `sar_case_*` tools, `/api/v1/sar/*`, the `sar.read`/`sar.write` scopes, and `sar_available: true` on `GET /api/v1/status`, which is what makes Astrolabe show its SAR page. Opt-in per deployment. Requires semantic search (`ENABLE_SEMANTIC_SEARCH`) and `EMBEDDING_GATEWAY_URL`; the server refuses to start with it set and either missing. |
+| `NER_MODEL` | ⚠️ Optional | `local/urchade/gliner_multi_pii-v1` | Name-detection model for SAR export redaction (ADR-040), addressed the gateway way (`<provider>/<model>`). Names are detected by the embedding gateway's `POST /v1/ner`, so SAR export needs `EMBEDDING_GATEWAY_URL`. |
+| `NER_TIMEOUT_SECONDS` | ⚠️ Optional | `120` | Per-request NER budget. Export runs in the background, so this only has to cover one batch on the slowest backend. A document whose detection fails is reported as failed in the archive, never exported unredacted. |
+| `NER_BATCH_SIZE` | ⚠️ Optional | `8` | Texts (up to 2,000 characters each) per `/v1/ner` request. Keep it small on a CPU backend, which must finish a batch inside the gateway's own upstream timeout; raise it (e.g. `32`) on a GPU. Must be `>= 1`. |
+| `NER_THRESHOLD` | ⚠️ Optional | `0.5` | Minimum model confidence, in `(0, 1]`, for a span to count as a person name. Lower it to raise recall; the cost is over-redaction, which is the safe direction for a disclosure. |
 
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)

@@ -118,6 +118,35 @@ class ReadFileResponse(BaseResponse):
     parsing_metadata: Optional[dict] = Field(
         None, description="Raw document-processor metadata when a parse ran"
     )
+    page_count: Optional[int] = Field(
+        None,
+        description=(
+            "Total pages in the document (paged documents such as PDF, when a "
+            "parse ran). Compare with page_end to see whether more remains."
+        ),
+    )
+    page_start: Optional[int] = Field(
+        None,
+        description="First page (1-based) the content covers, for a page-range read",
+    )
+    page_end: Optional[int] = Field(
+        None,
+        description="Last page (1-based, inclusive) the content covers, for a page-range read",
+    )
+    line_start: int | None = Field(
+        None,
+        description="First line (1-based) the content covers, for a line-range read",
+    )
+    line_end: int | None = Field(
+        None,
+        description=(
+            "Last line (1-based, inclusive) the content covers, for a line-range "
+            "read. Compare with total_lines to see whether more remains."
+        ),
+    )
+    total_lines: int | None = Field(
+        None, description="Number of lines in the whole file, for a line-range read"
+    )
     etag: Optional[str] = Field(None, description="ETag for versioning")
     last_modified: Optional[str] = Field(None, description="Last modification time")
     url: str | None = Field(
@@ -151,6 +180,52 @@ class WriteFileResponse(StatusResponse):
             "did not return one (some proxies strip it) — re-read the file to "
             "obtain it in that case."
         ),
+    )
+
+
+class FileEdit(BaseModel):
+    """One replacement for ``nc_webdav_edit_file``."""
+
+    old_string: str = Field(
+        min_length=1,
+        description=(
+            "Exact text to replace, including whitespace, indentation and line "
+            "breaks. Must occur exactly once unless replace_all is true."
+        ),
+    )
+    new_string: str = Field(
+        description="Replacement text. An empty string deletes old_string."
+    )
+    replace_all: bool = Field(
+        False, description="Replace every occurrence instead of exactly one"
+    )
+
+
+class EditFileResponse(BaseResponse):
+    """Response model for an in-place text edit."""
+
+    path: str = Field(description="File path that was edited")
+    etag: str | None = Field(
+        None,
+        description=(
+            "ETag of the file as written. Pass it as if_match to the next edit or "
+            "write to make sure nobody changed the file in between. None if the "
+            "server did not return one."
+        ),
+    )
+    edits_applied: int = Field(description="Number of edits applied, in order")
+    replacements: int = Field(
+        description="Occurrences replaced in total (more than edits_applied when "
+        "replace_all matched several)"
+    )
+    size: int = Field(description="Size of the file as written, in bytes")
+    diff: str = Field(
+        description="Unified diff of the change with two lines of context, to "
+        "check it without re-reading the file"
+    )
+    diff_truncated: bool = Field(
+        False,
+        description="Whether the diff was cut short. The edit itself is complete.",
     )
 
 
@@ -254,4 +329,137 @@ class SearchFilesResponse(BaseResponse):
     scope: str = Field(description="The scope/path that was searched")
     filters_applied: Optional[dict] = Field(
         None, description="Filters that were applied to the search"
+    )
+
+
+class TrashEntry(BaseModel):
+    """One item in the trash bin."""
+
+    id: str = Field(description="Trashbin entry id, needed to restore it")
+    name: Optional[str] = Field(
+        None, description="File name the entry had before deletion"
+    )
+    original_location: Optional[str] = Field(
+        None, description="Path the entry was deleted from"
+    )
+    deleted_at: Optional[int] = Field(
+        None, description="Deletion time as a Unix timestamp"
+    )
+    size: Optional[int] = Field(None, description="Size in bytes")
+    href: Optional[str] = Field(None, description="Full DAV path of the entry")
+
+
+class ListTrashResponse(BaseResponse):
+    """Deleted files currently held in the trash bin."""
+
+    items: List[TrashEntry] = Field(default_factory=list, description="Trashed items")
+    total_count: int = Field(description="Number of trashed items")
+
+
+class RestoreFromTrashResponse(BaseResponse):
+    """Outcome of restoring a trashed entry."""
+
+    entry_id: str = Field(description="Trashbin entry id that was restored")
+
+
+class FileVersion(BaseModel):
+    """One stored version of a file."""
+
+    version_id: str = Field(description="Version id, needed to restore it")
+    size: Optional[int] = Field(None, description="Size in bytes")
+    modified: Optional[str] = Field(None, description="Last-modified of this version")
+    label: Optional[str] = Field(None, description="Version label, when set")
+
+
+class ListVersionsResponse(BaseResponse):
+    """Stored previous versions of a file."""
+
+    path: str = Field(description="Path the versions belong to")
+    file_id: str = Field(description="Nextcloud file id")
+    versions: List[FileVersion] = Field(
+        default_factory=list, description="Stored versions, newest first"
+    )
+    total_count: int = Field(description="Number of stored versions")
+
+
+class RestoreVersionResponse(BaseResponse):
+    """Outcome of rolling a file back to an earlier version."""
+
+    path: str = Field(description="Path that was rolled back")
+    restored_version: str = Field(description="Version id that is now current")
+
+
+class SystemTag(BaseModel):
+    """A system tag defined on the instance."""
+
+    id: int = Field(description="Tag id")
+    name: str = Field(description="Tag display name")
+    assignable: bool = Field(
+        default=True, description="Whether users may assign this tag"
+    )
+
+
+class ListTagsResponse(BaseResponse):
+    """Every system tag on the instance."""
+
+    tags: List[SystemTag] = Field(default_factory=list, description="Tags, by name")
+    total_count: int = Field(description="Number of tags")
+
+
+class FileTagsResponse(BaseResponse):
+    """Tags assigned to one file."""
+
+    path: str = Field(description="Path the tags belong to")
+    file_id: str = Field(description="Nextcloud file id")
+    tags: List[SystemTag] = Field(default_factory=list, description="Assigned tags")
+
+
+class FilesByTagResponse(BaseResponse):
+    """Files carrying a given tag."""
+
+    tag: str = Field(description="Tag name that was searched for")
+    tag_id: Optional[int] = Field(None, description="Tag id, when the tag exists")
+    files: List[FileInfo] = Field(default_factory=list, description="Matching files")
+    total_count: int = Field(description="Number of matching files")
+
+
+class TagFileResponse(BaseResponse):
+    """Outcome of attaching or detaching a tag."""
+
+    path: str = Field(description="Path that was tagged or untagged")
+    tag: str = Field(description="Tag name")
+    tag_id: int = Field(description="Tag id")
+    assigned: bool = Field(description="True after tagging, False after untagging")
+
+
+class ViewImageResponse(BaseResponse):
+    """Structured part of ``nc_webdav_view_image``. The image itself travels
+    alongside it as an MCP image block."""
+
+    path: str = Field(description="Path of the image file")
+    mime_type: str = Field(
+        description="Format of the image sent: image/jpeg or image/png"
+    )
+    width: int = Field(description="Width of the image sent, in pixels")
+    height: int = Field(description="Height of the image sent, in pixels")
+    source: Literal["preview", "original"] = Field(
+        description=(
+            "What the image was made from: Nextcloud's preview of the file, or "
+            "the original file when Nextcloud had no preview for it"
+        )
+    )
+    source_width: int = Field(
+        description=(
+            "Width of the image it was made from. Larger than width when the "
+            "image was scaled down, so a larger max_size would show more detail."
+        )
+    )
+    source_height: int = Field(description="Height of the image it was made from")
+    size: int = Field(description="Size of the image sent, in bytes")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Link that opens the file in Nextcloud. None when the server has no "
+            "browser-reachable Nextcloud base URL configured."
+        ),
     )

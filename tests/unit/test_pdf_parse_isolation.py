@@ -13,6 +13,7 @@ check on the sample PDFs, not here (unit tests must not spawn the heavy worker
 or depend on the sample files).
 """
 
+import os
 import pickle
 import subprocess
 import sys
@@ -94,6 +95,19 @@ async def test_broken_worker_classified_as_oom(monkeypatch):
     with pytest.raises(PdfParseFailed) as exc:
         await _run(monkeypatch, fake)
     assert exc.value.reason == "oom"
+
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+async def test_interrupted_worker_classified_as_interrupted(monkeypatch, exc_type):
+    # #1635: a worker's KeyboardInterrupt crossed the boundary and took the
+    # server down with it. Labelled apart from "oom" so operators don't go
+    # raising memory limits for it.
+    async def fake(*args, **kwargs):
+        raise exc_type()
+
+    with pytest.raises(PdfParseFailed) as exc:
+        await _run(monkeypatch, fake)
+    assert exc.value.reason == "interrupted"
 
 
 async def test_other_exception_classified_as_error(monkeypatch):
@@ -193,6 +207,62 @@ def test_apply_mem_limit_noop_when_resource_unavailable(monkeypatch):
     monkeypatch.setattr(_isolation, "resource", None)
     _isolation._apply_mem_limit(1536)  # must not raise
     assert _isolation._MEM_LIMIT_APPLIED is True
+
+
+@requires_resource
+def test_apply_mem_limit_noop_when_os_refuses_cap(monkeypatch):
+    """Where the kernel rejects the cap (macOS), the worker runs without it.
+
+    macOS raises ``ValueError: current limit exceeds maximum limit`` for any
+    finite ``RLIMIT_AS``; that used to fail every page-range read.
+    """
+    monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
+    monkeypatch.setattr(
+        _isolation.resource,
+        "getrlimit",
+        lambda _w: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
+    )
+
+    def refuse(*_a):
+        raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(_isolation.resource, "setrlimit", refuse)
+    _isolation._apply_mem_limit(1536)  # must not raise
+    assert _isolation._MEM_LIMIT_APPLIED is True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS is enforced on Linux")
+def test_pymupdf4llm_imports_under_the_mem_limit():
+    """The worker must still import pymupdf4llm after capping its address space.
+
+    Regression for #1635: the worker imports pymupdf4llm (and with it numpy and
+    onnxruntime) lazily, after the cap. numpy's OpenBLAS starts one thread per
+    host core, and under a 640 MiB ``RLIMIT_AS`` either ``pthread_create``
+    fails (the import ends in ``KeyboardInterrupt``) or the next import can no
+    longer map its shared object (``ImportError``). Both were seen on an
+    8-core host.
+
+    The child asks for 64 OpenBLAS threads, which reproduces the failure on any
+    runner whatever its core count, so the test only passes if the worker
+    overrides that setting.
+
+    Runs in a fresh interpreter: the cap and the imports are both per-process,
+    and they are already loaded in the test process.
+    """
+    env = {**os.environ, "OPENBLAS_NUM_THREADS": "64"}
+    script = (
+        "from nextcloud_mcp_server.document_processors import _isolation\n"
+        "_isolation._apply_mem_limit(640)\n"
+        "_isolation.load_classic_pymupdf4llm()\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
 
 
 def test_isolation_imports_on_windows_without_resource(monkeypatch):
@@ -796,3 +866,148 @@ def test_ingest_import_graph_does_not_load_pymupdf4llm():
         "pymupdf4llm is imported at module scope somewhere on the ingest path; "
         "load it lazily via load_classic_pymupdf4llm() instead"
     )
+
+
+# --- one-shot parse: no worker outlives an interactive read (Deck #1337) ------
+#
+# anyio pools a finished to_process worker and prunes idle ones only inside the
+# NEXT run_sync call. On an API pod there may be no next call, so the worker kept
+# its parse's peak RSS indefinitely (~640 MiB). These two tests spawn a real, but
+# trivial, worker (os.getpid) to pin both halves of that: the pooled default
+# keeps its process, and one_shot does not.
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def test_pooled_worker_outlives_the_call():
+    """The root cause, pinned: without one_shot the worker is still running."""
+    pid = await anyio.to_process.run_sync(os.getpid)
+
+    assert pid != os.getpid()
+    assert _alive(pid), "anyio no longer pools workers -- one_shot may be unneeded"
+
+
+async def test_one_shot_worker_is_gone_when_the_call_returns():
+    pid = await _isolation._run_one_shot(os.getpid, (), 30, anyio.CapacityLimiter(1))
+
+    assert pid != os.getpid()
+    assert not _alive(pid), "the one-shot parse left its worker process running"
+
+
+async def test_one_shot_timeout_is_still_classified(monkeypatch):
+    """The timeout runs inside the private loop, so a hung parse is still cut off."""
+
+    async def hang(*args, **kwargs):
+        await anyio.sleep(30)
+
+    monkeypatch.setattr(anyio.to_process, "run_sync", hang)
+    with pytest.raises(PdfParseFailed) as exc:
+        await run_isolated_pdf_parse(
+            "/nonexistent.pdf",
+            write_images=False,
+            image_path=None,
+            graphics_limit=5000,
+            timeout_seconds=0.2,
+            mem_limit_mb=1536,
+            markdown_max_pages=150,
+            one_shot=True,
+        )
+    assert exc.value.reason == "timeout"
+
+
+async def test_one_shot_failure_is_still_classified(monkeypatch):
+    async def oom(*args, **kwargs):
+        raise MemoryError("rlimit hit")
+
+    monkeypatch.setattr(anyio.to_process, "run_sync", oom)
+    with pytest.raises(PdfParseFailed) as exc:
+        await run_isolated_pdf_parse(
+            "/nonexistent.pdf",
+            write_images=False,
+            image_path=None,
+            graphics_limit=5000,
+            timeout_seconds=5,
+            mem_limit_mb=1536,
+            markdown_max_pages=150,
+            one_shot=True,
+        )
+    assert exc.value.reason == "oom"
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (None, False),
+        ({"prefer_markdown": True}, False),
+        ({"one_shot_parse": True}, True),
+    ],
+)
+async def test_processor_forwards_one_shot_option(monkeypatch, options, expected):
+    from nextcloud_mcp_server.document_processors import pymupdf as pymupdf_proc
+
+    seen = {}
+
+    async def fake_parse(content, **kwargs):
+        seen.update(kwargs)
+        return [{"text": "x", "metadata": {"page": 1}}]
+
+    monkeypatch.setattr(pymupdf_proc, "run_isolated_pdf_parse", fake_parse)
+
+    proc = pymupdf_proc.PyMuPDFProcessor(extract_images=False)
+    await proc.process(_tiny_pdf(), "application/pdf", options=options)
+
+    assert seen["one_shot"] is expected
+
+
+# --- page slicing (Deck #1337) -------------------------------------------------
+# Driven in-process with mem_limit_mb=0 so the test process is never rlimited.
+
+
+def _page_texts(path) -> list[str]:
+    doc = pymupdf.open(str(path), filetype="pdf")
+    try:
+        return [page.get_text().strip() for page in doc]
+    finally:
+        doc.close()
+
+
+def test_slice_copies_only_the_requested_pages(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(5, "Page"))
+    out = tmp_path / "slice.pdf"
+
+    total = _isolation._slice_pdf_worker(src, str(out), 2, 4, 0)
+
+    assert total == 5
+    assert _page_texts(out) == ["Page 2", "Page 3", "Page 4"]
+
+
+def test_slice_clamps_last_to_the_page_count(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(3, "Page"))
+    out = tmp_path / "slice.pdf"
+
+    assert _isolation._slice_pdf_worker(src, str(out), 3, 99, 0) == 3
+    assert _page_texts(out) == ["Page 3"]
+
+
+def test_slice_writes_nothing_when_first_is_past_the_end(tmp_path):
+    src = _write(tmp_path, _pdf_with_pages(2))
+    out = tmp_path / "slice.pdf"
+
+    assert _isolation._slice_pdf_worker(src, str(out), 3, 5, 0) == 2
+    assert not out.exists()
+
+
+def test_slice_raises_picklable_errors(tmp_path):
+    src = tmp_path / "junk.pdf"
+    src.write_bytes(b"not a pdf at all")
+
+    with pytest.raises(_isolation.PdfWorkerError) as exc:
+        _isolation._slice_pdf_worker(str(src), str(tmp_path / "out.pdf"), 1, 1, 0)
+
+    pickle.loads(pickle.dumps(exc.value))

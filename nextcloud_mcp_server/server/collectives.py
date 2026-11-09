@@ -3,7 +3,7 @@
 import logging
 from typing import NoReturn
 
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -40,7 +40,7 @@ def _raise_collectives_error(e: OCSError | HTTPStatusError) -> NoReturn:
     ``MCPError``. A transport-level ``HTTPStatusError`` is re-raised untouched:
     ``NextcloudMCPServer`` renders it into an LLM-friendly message at the tool
     boundary (GH #1208), and wrapping it in ``str(e)`` here would shadow that
-    with httpx's internal-URL text.
+    with httpx2's internal-URL text.
     """
     if isinstance(e, OCSError):
         raise MCPError(code=-32603, message=e.message) from e
@@ -106,7 +106,8 @@ def configure_collectives_tools(mcp: MCPServer):
         """Get a page's metadata and markdown content from a Nextcloud Collective.
 
         Content is fetched via WebDAV using the page's file path. To update
-        page content, use the nc_webdav_write_file tool with the path
+        page content, use nc_webdav_edit_file for a partial change, or
+        nc_webdav_write_file to replace it all, with the path
         collectivePath/filePath/fileName (omit filePath for root-level pages).
 
         Args:

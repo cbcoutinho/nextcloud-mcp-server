@@ -2,15 +2,16 @@ import logging
 from typing import Final, Literal, cast
 
 import anyio
-from httpx import HTTPStatusError, RequestError
+from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.capabilities import require_capability
+from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.client.deck import _normalize_color
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.deck import (
@@ -75,6 +76,43 @@ def _validate_positive_length(
     """
     if value is not None and value <= 0:
         raise ToolError(f"{name} must be positive, got {value}")
+
+
+# Card startdate and color first ship in Deck 1.18.0 (Nextcloud 34).
+_CARD_FIELDS_MIN_DECK_VERSION = "1.18.0"
+
+
+async def _require_card_fields_supported(
+    client: NextcloudClient, startdate: str | None, color: str | None
+) -> None:
+    """Refuse startdate/color on Deck < 1.18 instead of silently dropping them.
+
+    Older Deck ignores the keys, so the write would "succeed" with the field
+    unset. Checked before writing, so nothing is half-applied. Fail-open like
+    the tool gates: unknown capabilities let the write through.
+
+    Also surfaces a malformed color as a ``ToolError`` rather than the client
+    layer's bare ``ValueError``.
+    """
+    try:
+        _normalize_color(color)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    requested = [
+        name
+        for name, value in (("startdate", startdate), ("color", color))
+        if value is not None
+    ]
+    if not requested:
+        return
+    reason = await unmet_capability(
+        client, client.username, "deck", _CARD_FIELDS_MIN_DECK_VERSION
+    )
+    if reason:
+        raise ToolError(
+            f"{' and '.join(requested)} cannot be set on this Deck: {reason}. "
+            "Retry without it."
+        )
 
 
 # Nextcloud's core comment cap (see COMMENT_MAX_LENGTH). Deck adds no check of
@@ -506,11 +544,14 @@ def _summarize_card(card: DeckCard, description_preview_length: int) -> DeckCard
         stackId=card.stackId,
         archived=card.archived,
         duedate=card.duedate,
+        startdate=card.startdate,
         done=card.done,
+        color=card.color,
         labels=[lbl.title for lbl in (card.labels or [])],
         assignedUsers=assignees,
         attachmentCount=card.attachmentCount,
         commentsUnread=card.commentsUnread,
+        commentsCount=card.commentsCount,
         hasDescription=has_description,
         descriptionPreview=preview,
     )
@@ -1248,6 +1289,8 @@ async def deck_create_card(
     order: int = 999,
     description: str | None = None,
     duedate: str | None = None,
+    startdate: str | None = None,
+    color: str | None = None,
 ) -> CreateCardResponse:
     """Create a new card in a Nextcloud Deck stack
 
@@ -1259,10 +1302,21 @@ async def deck_create_card(
         order: Order for sorting the cards
         description: Description of the card
         duedate: Due date of the card (ISO-8601 format)
+        startdate: Start date of the card (ISO-8601 format)
+        color: Card color as hex RGB, e.g. "FF0000"
     """
     client = await get_client(ctx)
+    await _require_card_fields_supported(client, startdate, color)
     card = await client.deck.create_card(
-        board_id, stack_id, title, type, order, description, duedate
+        board_id,
+        stack_id,
+        title,
+        type,
+        order,
+        description,
+        duedate,
+        startdate=startdate,
+        color=color,
     )
     return CreateCardResponse(
         id=card.id,
@@ -1287,6 +1341,8 @@ async def deck_update_card(
     duedate: str | None = None,
     archived: bool | None = None,
     done: str | None = None,
+    startdate: str | None = None,
+    color: str | None = None,
 ) -> CardOperationResponse:
     """Update a Nextcloud Deck card
 
@@ -1302,8 +1358,13 @@ async def deck_update_card(
         duedate: New due date for the card (ISO-8601 format)
         archived: Whether the card should be archived
         done: Completion date for the card (ISO-8601 format)
+        startdate: New start date for the card (ISO-8601 format).
+            Pass an empty string to clear it.
+        color: New card color as hex RGB, e.g. "FF0000".
+            Pass an empty string to clear it.
     """
     client = await get_client(ctx)
+    await _require_card_fields_supported(client, startdate, color)
     await client.deck.update_card(
         board_id,
         stack_id,
@@ -1316,6 +1377,8 @@ async def deck_update_card(
         duedate,
         archived,
         done,
+        startdate=startdate,
+        color=color,
     )
     return CardOperationResponse(
         success=True,
@@ -2078,6 +2141,7 @@ def configure_deck_tools(mcp: MCPServer):
 
     # Resources
     @mcp.resource("nc://Deck/boards")
+    @require_scopes("deck.read")
     async def deck_boards_resource():
         """List all Nextcloud Deck boards.
 
@@ -2089,6 +2153,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [board.model_dump() for board in boards]
 
     @mcp.resource("nc://Deck/boards/{board_id}")
+    @require_scopes("deck.read")
     async def deck_board_resource(board_id: int):
         """Get details of a specific Nextcloud Deck board.
 
@@ -2100,6 +2165,7 @@ def configure_deck_tools(mcp: MCPServer):
         return board.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks")
+    @require_scopes("deck.read")
     async def deck_stacks_resource(board_id: int):
         """List all stacks in a Nextcloud Deck board.
 
@@ -2111,6 +2177,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [stack.model_dump() for stack in stacks]
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
+    @require_scopes("deck.read")
     async def deck_stack_resource(board_id: int, stack_id: int):
         """Get details of a specific Nextcloud Deck stack.
 
@@ -2122,6 +2189,7 @@ def configure_deck_tools(mcp: MCPServer):
         return stack.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
+    @require_scopes("deck.read")
     async def deck_cards_resource(board_id: int, stack_id: int):
         """List all cards in a Nextcloud Deck stack.
 
@@ -2135,6 +2203,7 @@ def configure_deck_tools(mcp: MCPServer):
         return []
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
+    @require_scopes("deck.read")
     async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
         """Get details of a specific Nextcloud Deck card.
 
@@ -2146,6 +2215,7 @@ def configure_deck_tools(mcp: MCPServer):
         return card.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels")
+    @require_scopes("deck.read")
     async def deck_labels_resource(board_id: int):
         """List all labels in a Nextcloud Deck board.
 
@@ -2157,6 +2227,7 @@ def configure_deck_tools(mcp: MCPServer):
         return [label.model_dump() for label in (board.labels or [])]
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
+    @require_scopes("deck.read")
     async def deck_label_resource(board_id: int, label_id: int):
         """Get details of a specific Nextcloud Deck label.
 

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 import anyio
-import httpx
+import httpx2
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -173,7 +173,7 @@ class UnstructuredProcessor(DocumentProcessor):
         )
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx2.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     f"{self.api_url}/general/v0/general",
                     files=files,
@@ -220,7 +220,7 @@ class UnstructuredProcessor(DocumentProcessor):
                     success=True,
                 )
 
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             logger.error("Unstructured API HTTP error: %s", e)
             raise ProcessorError(f"HTTP error: {str(e)}") from e
         except Exception as e:
@@ -309,7 +309,7 @@ class UnstructuredProcessor(DocumentProcessor):
             True if API is healthy, False otherwise
         """
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx2.AsyncClient(timeout=5) as client:
                 response = await client.get(f"{self.api_url}/healthcheck")
                 return response.status_code == 200
         except Exception as e:

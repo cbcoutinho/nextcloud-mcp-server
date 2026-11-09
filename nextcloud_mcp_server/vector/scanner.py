@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 
 import anyio
 from anyio.abc import TaskStatus
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     FieldCondition,
@@ -226,6 +226,13 @@ _empty_discovery_streak: dict[tuple[str, str], int] = {}
 # to half capacity on overflow.
 _EMPTY_DISCOVERY_STREAK_MAX = 50_000
 
+# A discovery that finds fewer than this fraction of a mode's indexed docs is
+# treated like an empty one (streak-gated). A partial read -- one tagged folder's
+# walk timing out -- returned 18% of the corpus and purged the rest (Deck #1373);
+# the empty-only check let it through. A genuine bulk untag still purges once the
+# streak reaches the threshold.
+_IMPLAUSIBLE_DISCOVERY_RATIO = 0.5
+
 
 def _bump_streak(streak_state: dict[tuple[str, str], int], key: tuple[str, str]) -> int:
     """Increment and return the consecutive-empty streak for ``key``, bounded.
@@ -278,14 +285,15 @@ def _plan_file_deletions(
 ) -> _FileDeletionPlan:
     """Decide which indexed file points to delete, fail-safe against empty reads.
 
-    A mode's discovery is *implausible* this cycle iff it was attempted, returned
-    zero files, yet Qdrant still holds indexed points for it — the signature of a
-    flaky/empty tag read (issue: the observed re-index flap). While a mode's
-    consecutive-empty streak is below ``empty_delete_threshold`` its deletions are
-    suppressed and its grace timers are left untouched (neither started nor
-    advanced), so a transient empty deletes nothing. Once the streak reaches the
-    threshold (a sustained empty = a genuine mass-untag) the mode's deletions
-    proceed normally. Any healthy read (>0 discovered) pops the streak and
+    A mode's discovery is *implausible* this cycle iff it was attempted yet
+    returned fewer than ``_IMPLAUSIBLE_DISCOVERY_RATIO`` of the points Qdrant
+    holds for it (zero included) — the signature of a flaky/empty/partial tag
+    read (issue: the observed re-index flap). While a mode's consecutive-empty
+    streak is below ``empty_delete_threshold`` its deletions are suppressed and
+    its grace timers are left untouched (neither started nor advanced), so a
+    transient empty deletes nothing. Once the streak reaches the threshold (a
+    sustained empty = a genuine mass-untag) the mode's deletions proceed
+    normally. Any healthy read (at or above the ratio) pops the streak and
     restores normal grace-based deletion.
 
     A mode that was *not attempted* (files admin-disabled, or the keyword tag
@@ -331,19 +339,21 @@ def _update_empty_discovery_streaks(
 ) -> tuple[set[str], dict[str, int]]:
     """Advance per-mode empty-discovery streaks; return (suppressed_modes, streaks).
 
-    A mode is *implausible* iff it was attempted, discovered zero, yet still has
-    indexed points — bump its streak and suppress deletions while the streak is
-    below ``empty_delete_threshold``. Any other outcome (not attempted → an
+    A mode is *implausible* iff it was attempted and discovered fewer than
+    ``_IMPLAUSIBLE_DISCOVERY_RATIO`` of its indexed points (zero included) —
+    bump its streak and suppress deletions while the streak is below
+    ``empty_delete_threshold``. Any other outcome (not attempted → an
     intentional zero; healthy read; nothing indexed) clears the streak.
     """
     suppressed_modes: set[str] = set()
     streaks: dict[str, int] = {}
     for mode in set(indexed_by_mode) | attempted_modes:
         streak_key = (user_id, mode)
+        indexed = len(indexed_by_mode.get(mode, set()))
         implausible = (
             mode in attempted_modes
-            and discovered_by_mode.get(mode, 0) == 0
-            and len(indexed_by_mode.get(mode, set())) > 0
+            and indexed > 0
+            and discovered_by_mode.get(mode, 0) < indexed * _IMPLAUSIBLE_DISCOVERY_RATIO
         )
         if not implausible:
             streak_state.pop(streak_key, None)
@@ -410,11 +420,12 @@ def _record_suppressed_deletions(
             continue
         logger.warning(
             "[SCAN-%s] Suppressed %d file deletion(s) for mode %s: tag "
-            "discovery returned 0 but Qdrant holds %d indexed doc(s) — "
+            "discovery found under %d%% of the %d indexed doc(s) — "
             "treating as a failed read (streak %d/%d)",
             scan_id,
             suppressed,
             mode,
+            int(_IMPLAUSIBLE_DISCOVERY_RATIO * 100),
             len(indexed_by_mode.get(mode, set())),
             plan.streaks.get(mode, 0),
             threshold,
@@ -473,7 +484,11 @@ def _indexed_files_scroll_filter(user_id: str) -> Filter:
 async def _discover_tagged_files(
     nc_client: "NextcloudClientProtocol", settings: Settings
 ) -> list[dict]:
-    """Discover tagged PDFs for both index modes, stamping ``_index_mode``.
+    """Discover tagged indexable files for both index modes, stamping ``_index_mode``.
+
+    Which types count is ``settings.indexable_mime_types``: by default every type
+    a registered processor can read, narrowed by
+    ``VECTOR_SYNC_INDEXABLE_MIME_TYPES`` when that is set.
 
     ``vector_sync_tag`` → hybrid (dense + BM25 sparse); ``vector_sync_keyword_tag``
     → keyword (BM25 sparse only). Hybrid wins precedence: a file carrying both tags
@@ -485,8 +500,25 @@ async def _discover_tagged_files(
     Each returned dict is a ``find_files_by_tag`` row (id/path/etag/...) plus an
     ``_index_mode`` key consumed by the enqueue loop.
     """
+    indexable = settings.indexable_mime_types
+    if not indexable:
+        # An empty allowlist means "index nothing", not "no filter". Passing the
+        # empty tuple through would do neither consistently: find_files_by_tag
+        # would skip the content-type test for directly-tagged files (indexing
+        # *every* type, images and video included) while skipping tagged-folder
+        # expansion entirely (indexing none of those). That inverts the point of
+        # an allowlist, and "set it empty to disable" is exactly the convention
+        # vector_sync_keyword_tag establishes elsewhere in this config, so it is
+        # the reading an operator is likely to try.
+        logger.warning(
+            "VECTOR_SYNC_INDEXABLE_MIME_TYPES is empty; no files will be "
+            "discovered for indexing. Set it to a comma-separated MIME list "
+            "(e.g. application/pdf) to re-enable file discovery."
+        )
+        return []
+
     hybrid_files = await nc_client.find_files_by_tag(
-        settings.vector_sync_tag, mime_type_filter="application/pdf"
+        settings.vector_sync_tag, mime_type_filter=indexable
     )
     for f in hybrid_files:
         f["_index_mode"] = payload_keys.INDEX_MODE_HYBRID
@@ -509,7 +541,7 @@ async def _discover_tagged_files(
 
     hybrid_ids = {str(f["id"]) for f in hybrid_files}
     keyword_files = await nc_client.find_files_by_tag(
-        keyword_tag, mime_type_filter="application/pdf"
+        keyword_tag, mime_type_filter=indexable
     )
     # Hybrid precedence: drop keyword rows for files already tagged hybrid.
     extra_keyword_files = []
@@ -974,7 +1006,7 @@ async def scan_user_documents(
             logger.info("Sent %s documents for initial sync: %s", queued, user_id)
             return
 
-        # Scan tagged PDF files (after notes)
+        # Scan tagged files (after notes)
         # Get this user's readable indexed file points from Qdrant (for deletion
         # tracking), keyed on acl_principals (the observed-access set) rather than
         # the immutable user_id indexer stamp — see _indexed_files_scroll_filter
@@ -1011,16 +1043,16 @@ async def scan_user_documents(
                 sum(len(ids) for ids in indexed_by_mode.values()),
             )
 
-        # Scan for tagged PDF files
+        # Scan for tagged files
         file_count = 0
         file_queued = 0
         nextcloud_file_ids = set()
 
         try:
-            # Find tagged PDFs via the OCS Tags API. find_files_by_tag also
-            # expands tagged directories into their PDF descendants (Depth:
-            # infinity SEARCH), so a tag on a folder applies to every PDF beneath
-            # it. Two tags feed one pipeline: ``vector_sync_tag`` →
+            # Find tagged files via the OCS Tags API. find_files_by_tag also
+            # expands tagged directories into their indexable descendants (Depth:
+            # infinity SEARCH), so a tag on a folder applies to every indexable
+            # file beneath it. Two tags feed one pipeline: ``vector_sync_tag`` →
             # hybrid (dense + sparse), ``vector_sync_keyword_tag`` → keyword
             # (sparse only). Each file dict is stamped with ``_index_mode`` so the
             # per-document processor knows which to apply; hybrid wins when a file
@@ -1112,7 +1144,10 @@ async def scan_user_documents(
                         dt = parsedate_to_datetime(file_info["last_modified"])
                         modified_at = int(dt.timestamp())
                     except (ValueError, KeyError):
-                        pass
+                        logger.debug(
+                            "Unparseable last_modified %r",
+                            file_info.get("last_modified"),
+                        )
 
                 # Tenant-wide content dedup (Layer 1 / observed-access ACL): if
                 # this exact file content (fileid + etag) is already indexed under
@@ -1362,7 +1397,7 @@ async def scan_user_documents(
                             )
 
             logger.info(
-                "[SCAN-%s] Found %s tagged PDFs for %s", scan_id, file_count, user_id
+                "[SCAN-%s] Found %s tagged files for %s", scan_id, file_count, user_id
             )
             record_vector_sync_scan(file_count)
 

@@ -3,7 +3,7 @@ services:
   # https://hub.docker.com/_/mariadb
   db:
     # Note: Check the recommend version here: https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html#server
-    image: docker.io/library/mariadb:12.3.3-noble@sha256:ab1c3dd381940233af12512b97d47b508fd3a0f17fbe3ba388739b7bc17cbc0b
+    image: docker.io/library/mariadb:12.3.3-noble@sha256:d46e102fa8b9b72bfcdeb56f9dd538742092119dc8b11f31fe662605cd234cd9
     restart: always
     command: --transaction-isolation=READ-COMMITTED
     volumes:
@@ -19,11 +19,11 @@ services:
   # Note: Redis is an external service. You can find more information about the configuration here:
   # https://hub.docker.com/_/redis
   redis:
-    image: docker.io/library/redis:8.10.1-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+    image: docker.io/library/redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.14@sha256:29d45e778fe42c07cd3b06ddbf5fe4bf383f3f663c69dee8f0def1e7441f48b8}
+    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.15@sha256:68feaa8992524ac26b4c00194b81c1ae6dc8e9f412ac82de0c5f4d4a2ee4bbcd}
     restart: always
     ports:
       - 127.0.0.1:8080:80
@@ -37,7 +37,10 @@ services:
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
       #- ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      #- ./third_party/oidc:/opt/apps/oidc:ro
+      # TEMPORARY: test the unreleased group scope limits (third_party/oidc
+      # pinned to cbcoutinho/oidc feat/group-scope-ceiling). Revert to the
+      # commented form before merging; app-store oidc is the baseline.
+      - ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -51,6 +54,10 @@ services:
       # (before-starting hook creates OIDC client + stores credentials in config.php)
       # Example: MCP_SERVER_URL=http://mcp-login-flow:8004 docker compose --profile login-flow up -d
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+      # Static OIDC client for mcp-login-flow, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh when set.
+      - LOGIN_FLOW_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - LOGIN_FLOW_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
       interval: 10s
@@ -58,14 +65,14 @@ services:
       retries: 30
 
   recipes:
-    image: docker.io/library/nginx:1.31.5-alpine@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
+    image: docker.io/library/nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
       - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   unstructured:
-    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.11@sha256:dd3176b0f7f86734707664f0d3996764fcac0bffe1e03dec6a0194438285f1d5
+    image: downloads.unstructured.io/unstructured-io/unstructured-api:0.1.16@sha256:fcd5230db2fbdf79ad8faeec8b6fff3cebf4cf30ccd79494bdba641bd62b2961
     restart: always
     ports:
       - 127.0.0.1:8005:8000
@@ -82,7 +89,7 @@ services:
   # runs on plain GitHub-hosted runners. CPU OCR is slow; give it a generous
   # DOCLING_TIMEOUT.
   docling:
-    image: ghcr.io/docling-project/docling-serve-cpu:v1.32.0@sha256:576fc2074ac77bcfbf3fe27633aa0dd89b452a170b2cd31689c8751e94d60f7a
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
     restart: always
     ports:
       - 127.0.0.1:5001:5001
@@ -101,6 +108,24 @@ services:
       start_period: 30s
     profiles:
       - docling
+
+  # Collabora Online (CODE): converts legacy .doc/.xls/.ppt and ODF
+  # .odt/.ods/.odp to OOXML over its stateless POST /cool/convert-to API, for the
+  # native readers to parse (ADR-039). Opt-in via the "collabora" profile; point
+  # the MCP server at it with COLLABORA_URL=http://collabora:9980. convert-to is
+  # only answered for clients in coolwsd's net.post_allow list, whose default
+  # already covers the private ranges a compose network uses. TLS is off because
+  # the MCP server reaches it on the compose network. The image ships no shell,
+  # so there is no container healthcheck; poll /hosting/capabilities instead.
+  collabora:
+    image: docker.io/collabora/code:26.04.6.1.1@sha256:95f29f1c0a1778999125f53f058d968fe0afb37c95e32ebfb9f3444140faebd2
+    restart: always
+    ports:
+      - 127.0.0.1:9980:9980
+    environment:
+      - extra_params=--o:ssl.enable=false
+    profiles:
+      - collabora
 
   # infinity: self-hosted embeddings + CROSS-ENCODER RERANKING. Opt-in via the
   # "infinity" profile. The reason it exists here: Ollama serves no rerank
@@ -122,7 +147,7 @@ services:
   # raise SEARCH_RERANK_TIMEOUT_SECONDS or lower SEARCH_RERANK_POOL_SIZE, or
   # use the GPU image (drop the "-cpu" suffix) for real workloads.
   infinity:
-    image: docker.io/michaelf34/infinity:0.0.77-cpu@sha256:94db836145f609c508f3f296f3b9bd0e78ae088025e879664d073dfd9f929e96
+    image: docker.io/michaelf34/infinity:0.0.78-cpu@sha256:0dda7c4fd26da2734ffbfa4054f880e81a7c7f941c7aa1f4c257523ee7fc70a3
     restart: always
     command:
       - v2
@@ -151,6 +176,18 @@ services:
       start_period: 300s
     profiles:
       - infinity
+
+  # Canned stand-in for the embedding gateway's POST /v1/ner, so the login-flow
+  # tests exercise SAR export redaction (ADR-040) without a model. It detects
+  # only the synthetic names hard-coded in tests/fixtures/ner_stub.py.
+  ner-stub:
+    image: docker.io/library/python:3.14-alpine@sha256:a18b20ad69e74df6cf6d2e1b1a260d7a1ecf5380fd83b310f83ba88c461cf894
+    restart: always
+    command: ["python", "/stub/ner_stub.py"]
+    volumes:
+      - ./tests/fixtures/ner_stub.py:/stub/ner_stub.py:ro
+    profiles:
+      - login-flow
 
   mcp:
     build: .
@@ -259,6 +296,10 @@ services:
       # A client-friendly bound (e.g. 45-60) makes a slow VLM/OCR read return the
       # raw file fast instead of blocking past the MCP client's own timeout.
       - DOCUMENT_READ_TIMEOUT_SECONDS=${DOCUMENT_READ_TIMEOUT_SECONDS:-}
+      # Collabora Online conversion service for legacy/ODF office files
+      # (ADR-039). Empty = those types are not claimed. The CI "collabora" lane
+      # starts the `collabora` profile and sets COLLABORA_URL=http://collabora:9980.
+      - COLLABORA_URL=${COLLABORA_URL:-}
     profiles:
       - single-user
 
@@ -326,7 +367,7 @@ services:
       - multi-user-basic
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.2@sha256:9d1f1b2b7261ff53c66cb1092dfcdc34a5fb77e81f9e6a6e75b8b6a795de8067
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b
     command:
       - "start-dev"
       - "--import-realm"
@@ -387,6 +428,8 @@ services:
       # Login Flow v2 (ADR-022) with external IdP — derived from the
       # auto-detected LOGIN_FLOW deployment mode; no separate flag needed.
       - ENABLE_DCR=true
+      # CIMD (GH #1470): trust claude.ai's Client ID Metadata Document
+      - CIMD_ALLOWED_HOSTS=claude.ai
 
       # OAuth scopes (optional - uses defaults if not specified)
       - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write
@@ -409,6 +452,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      ner-stub:
+        condition: service_started
     ports:
       - 127.0.0.1:8004:8004
     environment:
@@ -421,13 +466,16 @@ services:
       # the browser-based app-password layer is derived automatically.
       - MCP_DEPLOYMENT_MODE=login_flow
 
-      # NOTE: this dev/test service relies on Dynamic Client Registration for
-      # the MCP server's own OIDC client, which is fine for short-lived CI runs.
-      # For a real self-hosted login_flow deployment, register a STATIC client
-      # in Nextcloud (Administration → OpenID Connect provider) and set
-      # NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET — the built-in
-      # `oidc` app deletes DCR clients after ~1h, which breaks auth (see #907
-      # and docs/login-flow-v2.md → Troubleshooting).
+      # The MCP server's own OIDC client. With LOGIN_FLOW_OIDC_CLIENT_ID/_SECRET
+      # set (CI generates them) it is a STATIC client, created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. That is
+      # required from oidc 2.5.0, which never approves an RFC 8707 resource for
+      # a DCR client (`invalid_target`), and it is what a real self-hosted
+      # login_flow deployment should use anyway: the built-in `oidc` app also
+      # deletes DCR clients after ~1h (see #907 and docs/login-flow-v2.md →
+      # Troubleshooting). Unset, the server falls back to DCR (oidc < 2.5.0).
+      - NEXTCLOUD_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
+      - NEXTCLOUD_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
 
       # Token storage (required for app password + session persistence).
       # Source the key from .env — see env.sample. To generate a fresh key:
@@ -449,6 +497,13 @@ services:
       # against this profile too.
       - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
 
+      # SAR export (ADR-040): opt-in, enabled here for the SAR tests. Names are
+      # detected via the gateway's /v1/ner, stubbed here like the `mcp`
+      # service. OCR and reranking are off by default, so nothing else routes
+      # through the gateway.
+      - SAR_ENABLED=${SAR_ENABLED:-true}
+      - EMBEDDING_GATEWAY_URL=${EMBEDDING_GATEWAY_URL:-http://ner-stub:8080}
+
       # Observability -- same host passthrough as the `mcp` service. This is the
       # profile Astrolabe drives, so it is the one to point at a collector when
       # tracing the search/chunk-context path end to end.
@@ -461,7 +516,7 @@ services:
       - login-flow
 
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    image: docker.io/qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
@@ -485,7 +540,7 @@ services:
   # Bring up with:  docker compose --profile postgres up -d postgres-test
   # See ADR-026 for the pluggable-database-backend design.
   postgres-test:
-    image: docker.io/library/postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    image: docker.io/library/postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
     environment:
       POSTGRES_USER: mcp
@@ -507,7 +562,7 @@ services:
   # provisioned by the post-installation hook can connect without seeding users.
   # SMTP 3025 / IMAP 3143 are the plaintext ports (ssl-mode "none").
   greenmail:
-    image: docker.io/greenmail/standalone:2.1.13@sha256:3df66b7edd01c8a301343ca5e3601d8674760d4708655573560c24745e624fb2
+    image: docker.io/greenmail/standalone:2.1.15@sha256:309ba544ea482e5d4265d09921cdab07c8dad2cc4481d715c9b8ff5d3f0a149f
     restart: always
     environment:
       - GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled -Dgreenmail.verbose
@@ -534,7 +589,7 @@ services:
   # backends can't produce. Bootstrapped fresh on every `up` (no data volume),
   # so the custom LDIF is always applied.
   openldap:
-    image: docker.io/vegardit/openldap:2.6.10@sha256:0d9b7cf8874b5fc4fda4507a1b884325f04a1fe3589c0bfb17ce50c367619dae
+    image: docker.io/vegardit/openldap:2.6.10@sha256:982df355e2ba0478fed68aecb360fed6df64f872c53c87c6a86e713ce7724b47
     environment:
       - LDAP_INIT_ORG_DN=dc=example,dc=org
       - LDAP_INIT_ORG_NAME=Example Org

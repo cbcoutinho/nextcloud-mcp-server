@@ -108,7 +108,37 @@ def _state_vector_sync_disabled() -> None:
     # No in-process injection into the separate provider yet (phase 4).
 
 
+def _state_sar_case() -> None:
+    """Provider states for astrolabe's SAR case pacts (ADR-040):
+    ``/api/v1/sar/cases`` create, items, get and export.
+
+    All are authenticated and act as the token's user, who needs background
+    access and, for all but create, a case with id 101 in a given state.
+    Seeding that, plus the bearer token, is the ADR-029 phase-4 test hook; until
+    then these interactions ride the broker's pending flow like the purge pact.
+    Registered so the states are recognised by name.
+    """
+    # Intentionally empty: no live-stack state to set up yet (phase 4).
+
+
+def _state_reranking_configured() -> None:
+    """Provider state for astrolabe's reranked-search pacts (search page and
+    unified search): ``POST /api/v1/search`` with ``rerank: true``, answered
+    with ``relevance``.
+
+    Both are bearer-authenticated, and a 200 needs a server with a reranker
+    configured, which the integration stack does not run. Seeding both is the
+    ADR-029 phase-4 test hook; until then these ride the broker's pending flow
+    like the SAR and purge pacts. Registered so the state is recognised by name.
+    """
+    # Intentionally empty: no reranker in the provider stack yet (phase 4).
+
+
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
+    "the server has reranking configured": _state_reranking_configured,
+    "a user with background access can create a SAR case": _state_sar_case,
+    "an open SAR case 101 exists": _state_sar_case,
+    "an exported SAR case 101 exists": _state_sar_case,
     "an admin can purge indexed documents": _state_admin_can_purge,
     # Search advertisement states for GET /api/v1/status (ADR-031); the astrolabe
     # UI consumer pact declares one of these to assert supported_search_types.
@@ -151,8 +181,12 @@ def test_verify_astrolabe_consumer_pacts() -> None:
         # (e.g. the consent-purge endpoint) reports as *pending* instead of
         # failing this build until provider verification of the authenticated
         # surface is stood up (ADR-029 phase 4). Already-verified interactions
-        # (GET /api/v1/status) stay blocking. Empty consumer selectors keep the
-        # default "latest pacts for this provider" fetch.
+        # (GET /api/v1/status) stay blocking.
+        #
+        # Selectors: astrolabe's main branch plus whatever astrolabe version is
+        # deployed/released. The latter is what can-i-deploy checks this build
+        # against, so without it the matrix has no row for production (Deck
+        # #1457).
         broker = verifier.broker_source(
             _BROKER_URL,
             username=_BROKER_USERNAME,
@@ -160,6 +194,8 @@ def test_verify_astrolabe_consumer_pacts() -> None:
             selector=True,
         )
         broker.include_pending()
+        broker.consumer_version(main_branch=True)
+        broker.consumer_version(deployed_or_released=True)
         provider_branch = os.environ.get("PACT_PROVIDER_BRANCH")
         if provider_branch:
             broker.provider_branch(provider_branch)

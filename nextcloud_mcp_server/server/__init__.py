@@ -2,7 +2,10 @@ from collections.abc import Callable
 
 from mcp.server.mcpserver import MCPServer
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import stamp_required_capability
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.request_context import current_context
 
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
@@ -12,7 +15,6 @@ from .deck import configure_deck_tools
 from .mail import configure_mail_tools
 from .news import configure_news_tools
 from .notes import configure_notes_tools
-from .semantic import configure_semantic_tools
 from .sharing import configure_sharing_tools
 from .shopping_list import configure_shopping_list_tools
 from .tables import configure_tables_tools
@@ -22,7 +24,9 @@ from .webdav import configure_webdav_tools
 # Canonical mapping of app name → tool registration function.
 # Used by app.py (HTTP), stdio.py (stdio), and cli.py (--enable-app choices).
 # Semantic search is excluded here because it is a cross-app feature gated
-# by VECTOR_SYNC_ENABLED, not an individual Nextcloud app.
+# by VECTOR_SYNC_ENABLED, not an individual Nextcloud app. Its module is not
+# imported from this package at all: it pulls in the optional semantic stack
+# (qdrant-client, provider SDKs), and the core server must import without it.
 AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "notes": configure_notes_tools,
     "tables": configure_tables_tools,
@@ -64,6 +68,18 @@ APP_CAPABILITY_KEY: dict[str, str] = {
 }
 
 
+def configure_capabilities_resource(mcp: MCPServer) -> None:
+    """Register ``nc://capabilities``; shared by app.py and stdio.py."""
+
+    @mcp.resource("nc://capabilities")
+    @require_scopes("openid")  # instance metadata: any verified identity
+    async def nc_get_capabilities():
+        """Get the Nextcloud Host capabilities"""
+        # Static resource: the SDK injects no Context (see request_context).
+        client = await get_client(current_context(mcp))
+        return await client.capabilities()
+
+
 def configure_app_tools(mcp: MCPServer, app_name: str) -> None:
     """Register one app's tools, gated on the app being installed for the user.
 
@@ -94,7 +110,6 @@ __all__ = [
     "configure_mail_tools",
     "configure_news_tools",
     "configure_notes_tools",
-    "configure_semantic_tools",
     "configure_sharing_tools",
     "configure_shopping_list_tools",
     "configure_tables_tools",

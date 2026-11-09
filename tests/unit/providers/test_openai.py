@@ -298,15 +298,15 @@ async def test_openai_close(mock_openai_client):
 
 
 def _req():
-    import httpx
+    import httpx2
 
-    return httpx.Request("POST", "https://gw/v1/embeddings")
+    return httpx2.Request("POST", "https://gw/v1/embeddings")
 
 
 @pytest.mark.unit
 def test_is_transient_classifies_retryable_errors():
     """Connection / timeout / 429 / 5xx are transient; 4xx and others are not."""
-    import httpx
+    import httpx2
     from openai import (
         APIConnectionError,
         APITimeoutError,
@@ -322,14 +322,14 @@ def test_is_transient_classifies_retryable_errors():
     assert _is_transient(APITimeoutError(request=req)) is True
     assert (
         _is_transient(
-            RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+            RateLimitError("rl", response=httpx2.Response(429, request=req), body=None)
         )
         is True
     )
     assert (
         _is_transient(
             InternalServerError(
-                "boom", response=httpx.Response(500, request=req), body=None
+                "boom", response=httpx2.Response(500, request=req), body=None
             )
         )
         is True
@@ -337,7 +337,9 @@ def test_is_transient_classifies_retryable_errors():
     # Permanent client errors must NOT be retried.
     assert (
         _is_transient(
-            BadRequestError("bad", response=httpx.Response(400, request=req), body=None)
+            BadRequestError(
+                "bad", response=httpx2.Response(400, request=req), body=None
+            )
         )
         is False
     )
@@ -401,7 +403,7 @@ async def test_embed_batch_retries_on_connection_error(mock_openai_client, monke
 @pytest.mark.unit
 async def test_embed_does_not_retry_on_bad_request(mock_openai_client, monkeypatch):
     """embed() fast-fails (no retry) on a permanent 4xx."""
-    import httpx
+    import httpx2
     from openai import BadRequestError
 
     from nextcloud_mcp_server import retry as _retry
@@ -409,7 +411,7 @@ async def test_embed_does_not_retry_on_bad_request(mock_openai_client, monkeypat
     monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
 
     err = BadRequestError(
-        "bad", response=httpx.Response(400, request=_req()), body=None
+        "bad", response=httpx2.Response(400, request=_req()), body=None
     )
     create = AsyncMock(side_effect=err)
     mock_openai_client.embeddings.create = create

@@ -24,7 +24,7 @@ used to 500.
 
 import base64
 
-import httpx
+import httpx2
 import pytest
 
 LOGIN_FLOW_API_BASE_URL = "http://localhost:8004"
@@ -55,7 +55,7 @@ async def test_provision_with_unresolvable_loginname_returns_401_not_500(user_id
     Pre-fix, the capitalized/spaced loginName produced an OCS v1 ``200 +
     data: []`` payload that crashed parsing with an unhandled 500.
     """
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{LOGIN_FLOW_API_BASE_URL}/api/v1/users/{user_id}/app-password",
             headers={"Authorization": _basic_auth_header(user_id, _WRONG_APP_PASSWORD)},
@@ -75,7 +75,7 @@ async def test_provision_with_mismatched_loginname_body_returns_401_not_500():
     Mirrors the production call shape where the UID in the path differs from the
     Nextcloud loginName sent in the JSON body.
     """
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{LOGIN_FLOW_API_BASE_URL}/api/v1/users/testuser/app-password",
             headers={

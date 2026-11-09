@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.features import semantic_installed
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,14 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
     # Note: Embedding provider validation removed - Simple provider is always
     # available as fallback (ADR-015). Users can optionally configure Ollama or OpenAI
     # for better quality embeddings.
+
+    # Fail at startup with the fix, rather than with a ModuleNotFoundError from
+    # deep inside the first semantic import.
+    if settings.vector_sync_enabled and not semantic_installed():
+        errors.append(
+            f"[{mode.value}] ENABLE_SEMANTIC_SEARCH requires "
+            "the semantic extra: pip install 'nextcloud-mcp-server[semantic]'"
+        )
 
     return mode, errors
 

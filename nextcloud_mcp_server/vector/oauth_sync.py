@@ -26,11 +26,12 @@ from dataclasses import dataclass, field
 import anyio
 from anyio.abc import TaskGroup, TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from httpx import BasicAuth, HTTPStatusError
+from httpx2 import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
 from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.processor import process_document
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
@@ -220,6 +221,30 @@ async def get_user_client_basic_auth(
     )
 
 
+async def resolve_background_client(user_id: str) -> NextcloudClient:
+    """An authenticated NextcloudClient for ``user_id`` outside a request.
+
+    Background work (the ingest worker, SAR export) cannot use a request's
+    credentials. Single-user BasicAuth uses the shared env credentials; every
+    multi-user mode resolves the user's locally-stored app password (BasicAuth).
+
+    Raises:
+        NotProvisionedError: the user has not provisioned background access.
+    """
+    from nextcloud_mcp_server.config_validators import (  # noqa: PLC0415
+        AuthMode,
+        detect_auth_mode,
+    )
+
+    settings = get_settings()
+    if detect_auth_mode(settings) == AuthMode.SINGLE_USER_BASIC:
+        return NextcloudClient.from_env()
+    host = settings.nextcloud_host
+    if not host:
+        raise ValueError("NEXTCLOUD_HOST is required for multi-user background work")
+    return await get_user_client_basic_auth(user_id, host)
+
+
 async def user_scanner_task(
     user_id: str,
     send_stream: TaskProducer,
@@ -313,7 +338,10 @@ async def user_scanner_task(
                 await _remove_stale_credential(user_id, status_code)
                 break
             elif status_code == 429:
-                retry_after = min(int(e.response.headers.get("Retry-After", "60")), 300)
+                retry_after = min(
+                    parse_retry_after(e.response.headers.get("Retry-After")) or 60,
+                    300,
+                )
                 logger.warning(
                     "[BasicAuth] Scanner rate-limited for %s, backing off %ss",
                     user_id,

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.vector.processor import _reconcile_tag_event
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
@@ -60,7 +61,7 @@ async def test_reconcile_tagged_file_becomes_index():
     # webhook-triggered index, and a tagged huge PDF still gets fully downloaded.
     assert task.size_bytes == 4096
     nc_client.find_files_by_tag.assert_any_await(
-        "vector-index", mime_type_filter="application/pdf"
+        "vector-index", mime_type_filter=Settings().indexable_mime_types
     )
 
 

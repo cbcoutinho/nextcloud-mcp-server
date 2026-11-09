@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import DocumentSource
 from nextcloud_mcp_server.observability.metrics import (
     record_document_classification,
     record_document_escalation,
@@ -23,7 +24,6 @@ from .classifier import (
 )
 from .escalation import TIER_LADDER, EscalationDecision
 from .ocr import OCR_BATCH_PENDING_KEY
-from .source import DocumentSource
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,14 @@ class ProcessorRegistry:
             List of processor names (highest priority first)
         """
         return list(self._priority_order)
+
+    def supported_mime_types(self) -> set[str]:
+        """Every MIME type some registered processor can read."""
+        return {
+            mime
+            for p, _ in self._processors.values()
+            for mime in p.supported_mime_types
+        }
 
     async def process(
         self,
@@ -679,21 +687,25 @@ class ProcessorRegistry:
         Returns an explicit ``oversize`` failure so the caller marks the
         placeholder "failed" instead of retrying; 0 disables the cap.
         """
-        max_pdf_mb = settings.document_max_pdf_size_mb
-        if max_pdf_mb > 0 and size_bytes > max_pdf_mb * 1024 * 1024:
+        # Local named for what it caps, not for PDFs; the setting keeps its
+        # pre-existing name, which is out of scope to rename here.
+        max_size_mb = settings.document_max_pdf_size_mb
+        if max_size_mb > 0 and size_bytes > max_size_mb * 1024 * 1024:
             size_mb = size_bytes / (1024 * 1024)
             logger.warning(
-                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
+                "Document %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
                 filename or "<bytes>",
                 size_mb,
-                max_pdf_mb,
+                max_size_mb,
             )
             return ProcessingResult(
                 text="",
                 metadata={"parse_failed_reason": "oversize"},
                 processor="size_guard",
                 success=False,
-                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
+                error=(
+                    f"Document exceeds size cap: {size_mb:.1f} MB > {max_size_mb:.1f} MB"
+                ),
             )
         return None
 
@@ -779,6 +791,7 @@ class ProcessorRegistry:
             logger.warning(
                 "Tier-0 classification failed for %s",
                 filename or "<bytes>",
+                exc_info=True,
             )
             return None
         if record:

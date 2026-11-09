@@ -5,32 +5,57 @@ these factories to ensure consistent SSL/TLS configuration from environment
 variables (NEXTCLOUD_VERIFY_SSL, NEXTCLOUD_CA_BUNDLE).
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
-import httpx
+import httpx2
 
 from .config import get_nextcloud_http_keepalive, get_nextcloud_ssl_verify
 
+#: Sent on every request to Nextcloud. ``OCS-APIRequest: true`` is how a
+#: non-browser client identifies itself: OCS routes refuse requests without it
+#: (``meta.statuscode: 997``), it exempts app routes from the CSRF check, and on
+#: ``#[CORS]`` app routes it stops ``CORSMiddleware`` from logging the session
+#: out and re-authenticating -- the path that 404s Tables v1 on Nextcloud 33
+#: (GH #1664). This is the only place the header is spelled; per-request
+#: headers merge over it. Read-only for the same reason as
+#: ``ocs.OCS_REQUEST_HEADERS``: every client shares this one object.
+NEXTCLOUD_DEFAULT_HEADERS: Mapping[str, str] = MappingProxyType(
+    {"OCS-APIRequest": "true"}
+)
 
-def nextcloud_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
-    """Create an httpx.AsyncClient with Nextcloud SSL settings applied.
+
+def nextcloud_httpx_client(**kwargs: Any) -> httpx2.AsyncClient:
+    """Create an httpx2.AsyncClient with Nextcloud SSL settings and headers applied.
 
     Reads NEXTCLOUD_VERIFY_SSL and NEXTCLOUD_CA_BUNDLE from the environment
     via ``get_nextcloud_ssl_verify()``. Caller-supplied ``verify`` kwarg
-    takes precedence if explicitly provided.
+    takes precedence if explicitly provided. ``NEXTCLOUD_DEFAULT_HEADERS``
+    are client defaults; caller-supplied ``headers`` are merged over them.
+
+    Nextcloud-specific: build clients for other services (Qdrant, the
+    embedding gateway, document processors, ...) with ``httpx2.AsyncClient``
+    directly. The configured OIDC provider is the one sanctioned exception,
+    because it shares Nextcloud's TLS settings; it ignores the extra header.
 
     Args:
-        **kwargs: Forwarded to ``httpx.AsyncClient()``.
+        **kwargs: Forwarded to ``httpx2.AsyncClient()``.
 
     Returns:
-        Configured ``httpx.AsyncClient``.
+        Configured ``httpx2.AsyncClient``.
     """
     kwargs.setdefault("verify", get_nextcloud_ssl_verify())
-    return httpx.AsyncClient(**kwargs)
+    # httpx2.Headers: case-insensitive override, and accepts every header shape
+    # httpx2 does (mapping, Headers, list of tuples).
+    headers = httpx2.Headers(NEXTCLOUD_DEFAULT_HEADERS)
+    headers.update(kwargs.get("headers") or {})
+    kwargs["headers"] = headers
+    return httpx2.AsyncClient(**kwargs)
 
 
-def nextcloud_httpx_transport(**kwargs: Any) -> httpx.AsyncHTTPTransport:
-    """Create an httpx.AsyncHTTPTransport with Nextcloud SSL settings applied.
+def nextcloud_httpx_transport(**kwargs: Any) -> httpx2.AsyncHTTPTransport:
+    """Create an httpx2.AsyncHTTPTransport with Nextcloud SSL settings applied.
 
     Used by ``NextcloudClient`` which wraps the transport in
     ``AsyncDisableCookieTransport``.
@@ -48,12 +73,12 @@ def nextcloud_httpx_transport(**kwargs: Any) -> httpx.AsyncHTTPTransport:
     turn these into per-request ``get_settings()`` calls and should cache them.
 
     Args:
-        **kwargs: Forwarded to ``httpx.AsyncHTTPTransport()``.
+        **kwargs: Forwarded to ``httpx2.AsyncHTTPTransport()``.
 
     Returns:
-        Configured ``httpx.AsyncHTTPTransport``.
+        Configured ``httpx2.AsyncHTTPTransport``.
     """
     kwargs.setdefault("verify", get_nextcloud_ssl_verify())
     if not get_nextcloud_http_keepalive():
-        kwargs.setdefault("limits", httpx.Limits(max_keepalive_connections=0))
-    return httpx.AsyncHTTPTransport(**kwargs)
+        kwargs.setdefault("limits", httpx2.Limits(max_keepalive_connections=0))
+    return httpx2.AsyncHTTPTransport(**kwargs)

@@ -1,12 +1,12 @@
 """Unit tests for the gateway batch OCR client (Deck #332).
 
-HTTP is exercised via an ``httpx.MockTransport`` injected by monkeypatching
-``httpx.AsyncClient`` (the repo has no respx dependency).
+HTTP is exercised via an ``httpx2.MockTransport`` injected by monkeypatching
+``httpx2.AsyncClient`` (the repo has no respx dependency).
 """
 
 from typing import Any, cast
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.providers import gateway_batch as gbc
@@ -14,21 +14,21 @@ from nextcloud_mcp_server.providers import gateway_batch as gbc
 pytestmark = pytest.mark.unit
 
 
-def _patch_transport(monkeypatch, handler) -> list[httpx.Request]:
-    """Route the client's httpx calls through ``handler``; return a list that
+def _patch_transport(monkeypatch, handler) -> list[httpx2.Request]:
+    """Route the client's httpx2 calls through ``handler``; return a list that
     captures each issued request for assertions."""
-    seen: list[httpx.Request] = []
-    real = httpx.AsyncClient
+    seen: list[httpx2.Request] = []
+    real = httpx2.AsyncClient
 
-    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        def _wrapped(request: httpx.Request) -> httpx.Response:
+    def factory(*args: Any, **kwargs: Any) -> httpx2.AsyncClient:
+        def _wrapped(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
             return handler(request)
 
-        kwargs["transport"] = httpx.MockTransport(_wrapped)
+        kwargs["transport"] = httpx2.MockTransport(_wrapped)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    monkeypatch.setattr(httpx2, "AsyncClient", factory)
     return seen
 
 
@@ -38,8 +38,8 @@ def test_base_url_normalization():
 
 
 async def test_submit_posts_one_document_and_returns_job_id(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             202, json={"job_id": "mistral/job-1", "status": "pending"}
         )
 
@@ -66,8 +66,8 @@ async def test_submit_sends_bearer_when_token_provider(monkeypatch):
         async def get_token(self) -> str:
             return "tok-abc"
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(202, json={"job_id": "mistral/j", "status": "pending"})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(202, json={"job_id": "mistral/j", "status": "pending"})
 
     seen = _patch_transport(monkeypatch, handler)
     # _Tok duck-types get_token; cast for the type checker (the client only awaits
@@ -81,7 +81,7 @@ async def test_submit_sends_bearer_when_token_provider(monkeypatch):
 
 async def test_submit_raises_on_missing_job_id(monkeypatch):
     # A 2xx with no job_id is a gateway contract violation -> actionable error.
-    _patch_transport(monkeypatch, lambda r: httpx.Response(202, json={}))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(202, json={}))
     client = gbc.GatewayBatchOcrClient("https://gw", "m")
     with pytest.raises(ValueError, match="no job_id"):
         await client.submit(b"x", "application/pdf", custom_id="d")
@@ -89,7 +89,7 @@ async def test_submit_raises_on_missing_job_id(monkeypatch):
 
 async def test_poll_missing_status_is_failed(monkeypatch):
     # A 2xx body without a status field must fail fast, not poll forever.
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json={"total": 1}))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json={"total": 1}))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed
 
@@ -100,7 +100,7 @@ async def test_poll_404_raises_job_not_found(monkeypatch):
     # transport/5xx — so the caller drops the id and re-submits instead of re-polling
     # a dead id forever (incident 2026-07-03: a doc polled a purged id for ~2.5 days).
     _patch_transport(
-        monkeypatch, lambda r: httpx.Response(404, json={"detail": "gone"})
+        monkeypatch, lambda r: httpx2.Response(404, json={"detail": "gone"})
     )
     client = gbc.GatewayBatchOcrClient("https://gw", "m")
     with pytest.raises(gbc.OcrBatchJobNotFound) as exc:
@@ -113,7 +113,7 @@ async def test_poll_pending(monkeypatch):
     # configured poll interval).
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(200, json={"status": "pending", "total": 1}),
+        lambda r: httpx2.Response(200, json={"status": "pending", "total": 1}),
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_pending and result.pages == []
@@ -126,7 +126,7 @@ async def test_poll_pending_parses_retry_after_header(monkeypatch):
     # layer doing the actual HTTP header parsing.
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(
+        lambda r: httpx2.Response(
             202, json={"status": "pending"}, headers={"Retry-After": "30"}
         ),
     )
@@ -140,7 +140,7 @@ async def test_poll_pending_ignores_malformed_retry_after_header(monkeypatch):
     # NOT support) — or any non-integer — degrades to None rather than raising.
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(
+        lambda r: httpx2.Response(
             202,
             json={"status": "pending"},
             headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"},
@@ -164,7 +164,7 @@ async def test_poll_succeeded_maps_pages(monkeypatch):
             }
         ],
     }
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json=body))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_succeeded
     # Order is preserved as returned; _pages_to_text sorts downstream. The third
@@ -185,7 +185,7 @@ async def test_poll_succeeded_carries_blocks(monkeypatch):
             }
         ],
     }
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json=body))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_succeeded
     assert result.pages == [(0, "two", blocks)]
@@ -194,7 +194,7 @@ async def test_poll_succeeded_carries_blocks(monkeypatch):
 async def test_poll_failed_surfaces_error(monkeypatch):
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(200, json={"status": "failed", "error": "quota"}),
+        lambda r: httpx2.Response(200, json={"status": "failed", "error": "quota"}),
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed and result.error == "quota"
@@ -202,7 +202,7 @@ async def test_poll_failed_surfaces_error(monkeypatch):
 
 async def test_poll_succeeded_with_per_document_error_is_failed(monkeypatch):
     body = {"status": "succeeded", "results": [{"custom_id": "d", "error": "bad page"}]}
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json=body))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed and result.error == "bad page"
 
@@ -211,7 +211,7 @@ async def test_poll_succeeded_empty_pages_is_failed(monkeypatch):
     # A succeeded job that produced zero pages is a per-document failure, not a
     # silent 0-chunk success.
     body = {"status": "succeeded", "results": [{"custom_id": "d", "pages": []}]}
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json=body))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed and result.error == "no pages returned"
 
@@ -219,7 +219,7 @@ async def test_poll_succeeded_empty_pages_is_failed(monkeypatch):
 async def test_poll_succeeded_no_results_is_failed(monkeypatch):
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(200, json={"status": "succeeded", "results": []}),
+        lambda r: httpx2.Response(200, json={"status": "succeeded", "results": []}),
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed
@@ -232,35 +232,18 @@ async def test_poll_succeeded_no_results_is_failed(monkeypatch):
 # (test_poll_non_404_4xx_still_raises).
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("30", 30),
-        ("  45  ", 45),  # surrounding whitespace tolerated
-        (None, None),  # header absent
-        ("0", None),  # non-positive -> no back-off signal
-        ("-5", None),  # negative -> ignored
-        ("30.5", None),  # non-integer -> ignored (we send whole seconds)
-        ("soon", None),  # non-numeric -> ignored
-        ("Wed, 21 Oct 2026 07:28:00 GMT", None),  # HTTP-date form unsupported
-    ],
-)
-def test_parse_retry_after(raw, expected):
-    assert gbc._parse_retry_after(raw) == expected
-
-
-def _capture_timeouts(monkeypatch, handler) -> list[httpx.Timeout]:
+def _capture_timeouts(monkeypatch, handler) -> list[httpx2.Timeout]:
     """Like ``_patch_transport`` but records the ``timeout`` each AsyncClient is
     constructed with, so the submit/poll split can be asserted."""
-    timeouts: list[httpx.Timeout] = []
-    real = httpx.AsyncClient
+    timeouts: list[httpx2.Timeout] = []
+    real = httpx2.AsyncClient
 
-    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+    def factory(*args: Any, **kwargs: Any) -> httpx2.AsyncClient:
         timeouts.append(kwargs["timeout"])
-        kwargs["transport"] = httpx.MockTransport(handler)
+        kwargs["transport"] = httpx2.MockTransport(handler)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    monkeypatch.setattr(httpx2, "AsyncClient", factory)
     return timeouts
 
 
@@ -275,10 +258,10 @@ async def test_submit_and_poll_use_separate_read_timeouts(monkeypatch):
     that duplicate-GPU-work bug, so pin them apart.
     """
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "POST":
-            return httpx.Response(202, json={"job_id": "surya/j", "status": "pending"})
-        return httpx.Response(202, json={"status": "pending"})
+            return httpx2.Response(202, json={"job_id": "surya/j", "status": "pending"})
+        return httpx2.Response(202, json={"status": "pending"})
 
     timeouts = _capture_timeouts(monkeypatch, handler)
     client = gbc.GatewayBatchOcrClient("https://gw", "surya/surya-ocr-2")
@@ -305,8 +288,8 @@ async def test_poll_read_timeout_is_pending(monkeypatch):
     then DROPPED the document, while the gateway may still have been OCRing it.
     """
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("", request=request)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ReadTimeout("", request=request)
 
     _patch_transport(monkeypatch, handler)
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
@@ -321,7 +304,7 @@ async def test_poll_5xx_is_pending(monkeypatch, status):
     answer yet", not a terminal job state. This replaces the retired
     test_poll_raises_on_http_error, which pinned the opposite for 503."""
     _patch_transport(
-        monkeypatch, lambda r: httpx.Response(status, json={"detail": "poll failed"})
+        monkeypatch, lambda r: httpx2.Response(status, json={"detail": "poll failed"})
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
 
@@ -333,7 +316,7 @@ async def test_poll_429_is_pending_and_honours_retry_after(monkeypatch):
     would reintroduce the drop for a gateway that rate-limits polls under load."""
     _patch_transport(
         monkeypatch,
-        lambda r: httpx.Response(429, json={}, headers={"Retry-After": "90"}),
+        lambda r: httpx2.Response(429, json={}, headers={"Retry-After": "90"}),
     )
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/job-1")
 
@@ -343,27 +326,27 @@ async def test_poll_429_is_pending_and_honours_retry_after(monkeypatch):
 
 async def test_poll_token_provider_failure_still_raises(monkeypatch):
     """The token provider talks to the OIDC issuer, not the gateway, and raises the
-    same httpx types the PENDING remap catches. An M2M outage must surface as an auth
+    same httpx2 types the PENDING remap catches. An M2M outage must surface as an auth
     fault — not as "the gateway says the job is still running" on every document."""
 
     class _BrokenTok:
         async def get_token(self) -> str:
-            raise httpx.ConnectError("token endpoint unreachable")
+            raise httpx2.ConnectError("token endpoint unreachable")
 
-    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json={}))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(200, json={}))
     client = gbc.GatewayBatchOcrClient(
         "https://gw", "m", token_provider=cast(Any, _BrokenTok())
     )
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(httpx2.ConnectError):
         await client.poll("mistral/job-1")
 
 
 async def test_poll_non_404_4xx_still_raises(monkeypatch):
     """A client-side fault is a real error and must keep propagating; 404 (unknown
     job) and 429 (poll slower) have their own handling."""
-    _patch_transport(monkeypatch, lambda r: httpx.Response(403, json={}))
+    _patch_transport(monkeypatch, lambda r: httpx2.Response(403, json={}))
     client = gbc.GatewayBatchOcrClient("https://gw", "m")
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(httpx2.HTTPStatusError):
         await client.poll("mistral/job-1")

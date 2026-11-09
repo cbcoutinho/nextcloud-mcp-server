@@ -10,7 +10,7 @@ the pool class so a refactor can't silently regress to a sharing pool.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
@@ -49,6 +49,19 @@ def test_postgres_engine_uses_nullpool():
         "to QueuePool/SingletonThreadPool will re-introduce the cross-event-"
         "loop crashes from PR #799"
     )
+
+
+def test_postgres_engine_disables_auto_prepare(mocker):
+    """psycopg's named prepared statements collide behind a transaction-mode
+    PgBouncer and drop whole usage batches (Deck #1374)."""
+    create = mocker.patch(
+        "nextcloud_mcp_server.auth.storage.create_async_engine",
+        wraps=create_async_engine,
+    )
+    storage = _storage("postgresql+psycopg://mcp:placeholder@db.example.com:5432/mcp")
+    storage._build_postgres_engine()
+
+    assert create.call_args.kwargs["connect_args"] == {"prepare_threshold": None}
 
 
 def test_postgres_engine_ignores_pool_sizing_settings(monkeypatch: pytest.MonkeyPatch):

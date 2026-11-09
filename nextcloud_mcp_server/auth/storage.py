@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 import sqlalchemy as sa
 from anyio import to_thread
 from cryptography.fernet import Fernet
@@ -58,6 +58,7 @@ from nextcloud_mcp_server.config import (
     is_sqlite_url,
     mask_db_password,
 )
+from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import (
     record_db_connect,
@@ -571,10 +572,19 @@ class RefreshTokenStorage:
         # accepts the operator-supplied DSN as-is (ADR-026). When the URL omits
         # ``sslmode`` libpq's default (``prefer``) applies, keeping
         # cluster-local Postgres without TLS working out of the box.
+        #
+        # ``prepare_threshold=None`` disables psycopg's auto-prepare, which turns
+        # a query into a server-side named statement (``_pg3_0``...) on its 6th
+        # run. Behind a transaction-mode PgBouncer those names collide across
+        # clients (``DuplicatePreparedStatement``), so a usage batch of >=6
+        # INSERTs was dropped wholesale (Deck #1374). Same fix as
+        # ``_psycopg_connector`` in vector/queue/procrastinate.py (Deck #424);
+        # harmless when connecting direct.
         engine = create_async_engine(
             self.database_url,
             poolclass=NullPool,
             future=True,
+            connect_args={"prepare_threshold": None},
         )
         logger.info(
             "Postgres engine ready: NullPool (one connection per "
@@ -2049,9 +2059,9 @@ class RefreshTokenStorage:
                 # the UID for legacy rows without a stored loginName.
                 login_name = app_data.get("username") or user_id
 
-                async with httpx.AsyncClient(
+                async with nextcloud_httpx_client(
                     base_url=nextcloud_host,
-                    auth=httpx.BasicAuth(login_name, app_password),
+                    auth=httpx2.BasicAuth(login_name, app_password),
                     timeout=10.0,
                 ) as client:
                     response = await client.get(

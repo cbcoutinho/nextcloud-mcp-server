@@ -181,6 +181,7 @@ After provisioning:
 # MCP client registers itself at IdP startup
 import httpx
 
+
 async def register_with_idp():
     response = await httpx.post(
         "https://idp.example.com/register",
@@ -190,7 +191,7 @@ async def register_with_idp():
             "grant_types": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_method": "none",  # Public client with PKCE
             "application_type": "native",
-        }
+        },
     )
     client_id = response.json()["client_id"]
     # Store client_id for subsequent OAuth flows
@@ -431,15 +432,14 @@ sequenceDiagram
 import jwt
 from datetime import datetime, timedelta
 
+
 class TokenBrokerService:
     """
     Token broker that exchanges master refresh tokens for audience-specific access tokens.
     Works alongside the required_scopes decorator which handles MCP token validation.
     """
 
-    def __init__(self,
-                 token_storage: RefreshTokenStorage,
-                 idp_client: OAuthClient):
+    def __init__(self, token_storage: RefreshTokenStorage, idp_client: OAuthClient):
         self.storage = token_storage
         self.idp_client = idp_client
         self.nextcloud_token_cache = {}  # Short-lived cache
@@ -451,8 +451,8 @@ class TokenBrokerService:
         """
         # Check cache first
         cached = self.nextcloud_token_cache.get(user_id)
-        if cached and cached['exp'] > datetime.utcnow().timestamp():
-            return cached['token']
+        if cached and cached["exp"] > datetime.utcnow().timestamp():
+            return cached["token"]
 
         # Get master refresh token (stored during OAuth flow)
         refresh_token = await self.storage.get_refresh_token(user_id)
@@ -465,26 +465,25 @@ class TokenBrokerService:
             # This does NOT rotate the master refresh token!
             response = await self.idp_client.refresh_token(
                 refresh_token=refresh_token,
-                audience='nextcloud'  # CRITICAL: Request Nextcloud audience
+                audience="nextcloud",  # CRITICAL: Request Nextcloud audience
             )
 
             # Verify the new token has correct audience
             payload = jwt.decode(
-                response.access_token,
-                options={"verify_signature": False}
+                response.access_token, options={"verify_signature": False}
             )
 
-            audiences = payload.get('aud', [])
+            audiences = payload.get("aud", [])
             if isinstance(audiences, str):
                 audiences = [audiences]
 
-            if 'nextcloud' not in audiences:
+            if "nextcloud" not in audiences:
                 raise ValueError(f"IdP returned wrong audience: {audiences}")
 
             # Cache for short period (5 minutes)
             self.nextcloud_token_cache[user_id] = {
-                'token': response.access_token,
-                'exp': payload.get('exp', 0)
+                "token": response.access_token,
+                "exp": payload.get("exp", 0),
             }
 
             return response.access_token
@@ -510,7 +509,7 @@ class TokenBrokerService:
             # Get new refresh token from IdP
             response = await self.idp_client.refresh_token(
                 refresh_token=old_refresh.token,
-                scope='openid profile offline_access nextcloud:*'
+                scope="openid profile offline_access nextcloud:*",
             )
 
             # Store new refresh token
@@ -518,7 +517,7 @@ class TokenBrokerService:
                 user_id=user_id,
                 token_family_id=old_refresh.token_family_id,
                 refresh_token=response.refresh_token,
-                status='active'
+                status="active",
             )
 
             return response.refresh_token
@@ -528,6 +527,7 @@ class TokenBrokerService:
             await self.storage.revoke_token_family(old_refresh.token_family_id)
             await self.alert_user_possible_breach(user_id)
             raise
+
 
 # Integration with FastMCP framework
 class MCPTokenVerifier(TokenVerifier):
@@ -541,29 +541,28 @@ class MCPTokenVerifier(TokenVerifier):
         try:
             payload = jwt.decode(
                 token,
-                options={"verify_signature": False}  # IdP handles signature
+                options={"verify_signature": False},  # IdP handles signature
             )
 
             # CRITICAL: Verify audience is MCP server
-            audiences = payload.get('aud', [])
+            audiences = payload.get("aud", [])
             if isinstance(audiences, str):
                 audiences = [audiences]
 
-            if 'mcp-server' not in audiences:
+            if "mcp-server" not in audiences:
                 logger.warning(f"Token rejected: wrong audience {audiences}")
                 return None
 
             # Check expiry
-            if payload.get('exp', 0) < datetime.utcnow().timestamp():
+            if payload.get("exp", 0) < datetime.utcnow().timestamp():
                 return None
 
             return AccessToken(
                 token=token,  # Keep original MCP token
-                scopes=payload.get('scope', '').split(),
-                resource=json.dumps({
-                    "user_id": payload['sub'],
-                    "session_id": payload.get('jti')
-                })
+                scopes=payload.get("scope", "").split(),
+                resource=json.dumps(
+                    {"user_id": payload["sub"], "session_id": payload.get("jti")}
+                ),
             )
 
         except jwt.InvalidTokenError:
@@ -580,6 +579,7 @@ For Flow 2 (Nextcloud provisioning), we provide an MCP tool that returns an OAut
 from urllib.parse import urlencode
 import secrets
 
+
 @mcp.tool()
 @required_scopes("mcp:provision")  # Or allow all authenticated users
 async def provision_nextcloud_access(ctx: Context) -> dict:
@@ -594,10 +594,9 @@ async def provision_nextcloud_access(ctx: Context) -> dict:
     """
     # Get user_id from MCP token (already validated by required_scopes)
     token_payload = jwt.decode(
-        ctx.authorization.token,
-        options={"verify_signature": False}
+        ctx.authorization.token, options={"verify_signature": False}
     )
-    user_id = token_payload['sub']
+    user_id = token_payload["sub"]
 
     # Check if already provisioned
     token_storage = get_token_storage(ctx)
@@ -605,15 +604,13 @@ async def provision_nextcloud_access(ctx: Context) -> dict:
     if existing_token:
         return {
             "status": "already_provisioned",
-            "message": "MCP server already has Nextcloud access for this user."
+            "message": "MCP server already has Nextcloud access for this user.",
         }
 
     # Generate state to link callback to this user
     state = secrets.token_urlsafe(32)
     await store_provisioning_session(
-        state=state,
-        user_id=user_id,
-        created_at=datetime.utcnow()
+        state=state, user_id=user_id, created_at=datetime.utcnow()
     )
 
     # Build OAuth URL for Flow 2
@@ -623,10 +620,10 @@ async def provision_nextcloud_access(ctx: Context) -> dict:
         "redirect_uri": f"{MCP_SERVER_URL}/oauth/callback-nextcloud",
         "response_type": "code",
         "scope": "openid offline_access "
-                 "nextcloud:notes:read nextcloud:notes:write "
-                 "nextcloud:calendar:read nextcloud:calendar:write",
+        "nextcloud:notes:read nextcloud:notes:write "
+        "nextcloud:calendar:read nextcloud:calendar:write",
         "state": state,
-        "prompt": "consent"  # Ensure user sees consent screen
+        "prompt": "consent",  # Ensure user sees consent screen
     }
 
     auth_url = f"{IDP_AUTHORIZATION_ENDPOINT}?{urlencode(idp_params)}"
@@ -635,9 +632,8 @@ async def provision_nextcloud_access(ctx: Context) -> dict:
         "status": "pending",
         "auth_url": auth_url,
         "message": "Please open the URL in your browser to authorize Nextcloud access.",
-        "instructions": "After authorizing, the MCP server will be able to access Nextcloud on your behalf."
+        "instructions": "After authorizing, the MCP server will be able to access Nextcloud on your behalf.",
     }
-
 ```
 
 ### 3. OAuth Callback for Resource Provisioning (Flow 2)
@@ -659,7 +655,7 @@ async def oauth_callback_nextcloud(code: str, state: str):
             "<h1>Error</h1>"
             "<p>Invalid or expired authorization request.</p>"
             "</body></html>",
-            status_code=400
+            status_code=400,
         )
 
     user_id = session.user_id
@@ -671,22 +667,19 @@ async def oauth_callback_nextcloud(code: str, state: str):
             code=code,
             redirect_uri=f"{MCP_SERVER_URL}/oauth/callback-nextcloud",
             client_id=MCP_SERVER_CLIENT_ID,
-            client_secret=MCP_SERVER_CLIENT_SECRET
+            client_secret=MCP_SERVER_CLIENT_SECRET,
         )
 
         # Verify the refresh token has correct audience
         # NOTE: The access token will have aud: "nextcloud", and the
         # refresh token should be able to mint tokens with that audience
-        payload = jwt.decode(
-            tokens.access_token,
-            options={"verify_signature": False}
-        )
+        payload = jwt.decode(tokens.access_token, options={"verify_signature": False})
 
-        audiences = payload.get('aud', [])
+        audiences = payload.get("aud", [])
         if isinstance(audiences, str):
             audiences = [audiences]
 
-        if 'nextcloud' not in audiences:
+        if "nextcloud" not in audiences:
             raise ValueError(f"IdP returned token with wrong audience: {audiences}")
 
         # Generate new token family for rotation
@@ -700,9 +693,9 @@ async def oauth_callback_nextcloud(code: str, state: str):
             token_family_id=token_family_id,
             access_token=tokens.access_token,  # Initial Nextcloud access token
             refresh_token=tokens.refresh_token,  # Master refresh token!
-            status='active',
+            status="active",
             scopes=tokens.scope,
-            idp_subject=payload['sub']
+            idp_subject=payload["sub"],
         )
 
         # Delete provisioning session
@@ -725,9 +718,8 @@ async def oauth_callback_nextcloud(code: str, state: str):
             "<p>Failed to complete authorization. Please try again.</p>"
             f"<p>Error: {str(e)}</p>"
             "</body></html>",
-            status_code=500
+            status_code=500,
         )
-
 ```
 
 **NOTE**: The MCP server does NOT need to provide `/oauth/authorize` or `/oauth/token` endpoints for Flow 1. The MCP client authenticates directly with the IdP using its own `client_id`, and the IdP issues tokens directly to the client. The MCP server only validates these tokens.
@@ -737,12 +729,14 @@ async def oauth_callback_nextcloud(code: str, state: str):
 ```python
 from functools import wraps
 
+
 def required_scopes(*scopes):
     """
     Decorator that verifies token audience and scopes.
     The existing required_scopes decorator needs to be updated
     to verify audience: "mcp-server" for all incoming tokens.
     """
+
     def decorator(func):
         @wraps(func)
         async def wrapper(ctx: Context, *args, **kwargs):
@@ -756,19 +750,19 @@ def required_scopes(*scopes):
             try:
                 payload = jwt.decode(
                     token,
-                    options={"verify_signature": False}  # IdP handles signature
+                    options={"verify_signature": False},  # IdP handles signature
                 )
 
                 # CRITICAL: Verify token is for MCP server
-                audiences = payload.get('aud', [])
+                audiences = payload.get("aud", [])
                 if isinstance(audiences, str):
                     audiences = [audiences]
 
-                if 'mcp-server' not in audiences:
+                if "mcp-server" not in audiences:
                     raise Unauthorized(f"Invalid audience: {audiences}")
 
                 # Verify required scopes
-                token_scopes = set(payload.get('scope', '').split())
+                token_scopes = set(payload.get("scope", "").split())
                 required = set(scopes)
 
                 if not required.issubset(token_scopes):
@@ -782,7 +776,9 @@ def required_scopes(*scopes):
                 raise Unauthorized(f"Invalid token: {e}")
 
         return wrapper
+
     return decorator
+
 
 # Example usage in MCP tools
 @mcp.tool()
@@ -798,7 +794,7 @@ async def list_notes(ctx: Context) -> dict:
     # Use Nextcloud token for API access
     client = NextcloudClient.from_token(
         base_url=NEXTCLOUD_HOST,
-        token=nextcloud_token  # Token with aud: "nextcloud"
+        token=nextcloud_token,  # Token with aud: "nextcloud"
     )
 
     notes = await client.notes.list_notes()
@@ -909,33 +905,32 @@ class BackgroundSyncWorker:
         try:
             # Check cache for valid Nextcloud access token
             cached = self.nextcloud_token_cache.get(user_id)
-            if cached and cached['exp'] > datetime.utcnow().timestamp():
-                nextcloud_token = cached['token']
+            if cached and cached["exp"] > datetime.utcnow().timestamp():
+                nextcloud_token = cached["token"]
             else:
                 # Get new ACCESS token with Nextcloud audience
                 # This does NOT rotate the refresh token!
                 response = await self.idp_client.refresh_token(
                     refresh_token=master_refresh_token,
-                    audience='nextcloud'  # Request Nextcloud audience
+                    audience="nextcloud",  # Request Nextcloud audience
                 )
 
                 # Verify audience is for Nextcloud (security check)
                 payload = jwt.decode(
-                    response.access_token,
-                    options={"verify_signature": False}
+                    response.access_token, options={"verify_signature": False}
                 )
 
-                audiences = payload.get('aud', [])
+                audiences = payload.get("aud", [])
                 if isinstance(audiences, str):
                     audiences = [audiences]
 
-                if 'nextcloud' not in audiences:
+                if "nextcloud" not in audiences:
                     raise ValueError(f"IdP returned wrong audience: {audiences}")
 
                 # Cache the access token for 5 minutes
                 self.nextcloud_token_cache[user_id] = {
-                    'token': response.access_token,
-                    'exp': payload.get('exp', 0)
+                    "token": response.access_token,
+                    "exp": payload.get("exp", 0),
                 }
                 nextcloud_token = response.access_token
 
@@ -944,7 +939,7 @@ class BackgroundSyncWorker:
             client = NextcloudClient.from_token(
                 base_url=self.nextcloud_url,
                 token=nextcloud_token,  # Access token with aud: nextcloud
-                username=user_id
+                username=user_id,
             )
 
             # Perform sync operations with Nextcloud
@@ -962,7 +957,7 @@ class BackgroundSyncWorker:
                 await self.log_security_event(
                     user_id,
                     "access_token_rejected",
-                    f"Nextcloud rejected access token for user {user_id}"
+                    f"Nextcloud rejected access token for user {user_id}",
                 )
             raise
         except Exception as e:
@@ -975,7 +970,7 @@ class BackgroundSyncWorker:
             user_id=user_id,
             operation=event,
             details=details,
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.utcnow().isoformat(),
         )
 ```
 
@@ -983,13 +978,18 @@ class BackgroundSyncWorker:
 
 ```python
 # Environment variables for federated setup
-IDP_DISCOVERY_URL = os.getenv("IDP_DISCOVERY_URL")  # e.g., https://keycloak.example.com/realms/master/.well-known/openid-configuration
-MCP_SERVER_CLIENT_ID = os.getenv("MCP_SERVER_CLIENT_ID")  # MCP server's client ID in IdP
+IDP_DISCOVERY_URL = os.getenv(
+    "IDP_DISCOVERY_URL"
+)  # e.g., https://keycloak.example.com/realms/master/.well-known/openid-configuration
+MCP_SERVER_CLIENT_ID = os.getenv(
+    "MCP_SERVER_CLIENT_ID"
+)  # MCP server's client ID in IdP
 MCP_SERVER_CLIENT_SECRET = os.getenv("MCP_SERVER_CLIENT_SECRET")  # Client secret
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
 
 # Nextcloud configuration
 NEXTCLOUD_HOST = os.getenv("NEXTCLOUD_HOST")  # Nextcloud instance URL
+
 
 # Parse IdP discovery document
 async def setup_idp_client():
@@ -1004,7 +1004,7 @@ async def setup_idp_client():
         introspection_endpoint=discovery_doc.get("introspection_endpoint"),
         userinfo_endpoint=discovery_doc["userinfo_endpoint"],
         client_id=MCP_SERVER_CLIENT_ID,
-        client_secret=MCP_SERVER_CLIENT_SECRET
+        client_secret=MCP_SERVER_CLIENT_SECRET,
     )
 ```
 
@@ -1082,25 +1082,25 @@ The MCP server acts as a **secure token broker**:
 ```python
 # MCP Access Token (from IdP)
 {
-  "aud": "mcp-server",      # Single audience ONLY
-  "sub": "user-123",
-  "scope": "mcp:full",
-  "exp": 1234567890
+    "aud": "mcp-server",  # Single audience ONLY
+    "sub": "user-123",
+    "scope": "mcp:full",
+    "exp": 1234567890,
 }
 
 # Nextcloud Access Token (obtained via refresh)
 {
-  "aud": "nextcloud",        # Different audience
-  "sub": "user-123",
-  "scope": "notes:read calendar:write",
-  "exp": 1234567890
+    "aud": "nextcloud",  # Different audience
+    "sub": "user-123",
+    "scope": "notes:read calendar:write",
+    "exp": 1234567890,
 }
 
 # Master Refresh Token Claims (stored by server)
 {
-  "sub": "user-123",
-  "scope": "openid offline_access nextcloud:notes:read nextcloud:calendar:write",
-  # Can mint tokens with aud: "nextcloud" via refresh grant
+    "sub": "user-123",
+    "scope": "openid offline_access nextcloud:notes:read nextcloud:calendar:write",
+    # Can mint tokens with aud: "nextcloud" via refresh grant
 }
 ```
 
@@ -1417,7 +1417,9 @@ async def get_client(ctx: Context) -> NextcloudClient:
     if hasattr(lifespan_ctx, "nextcloud_host"):
         if settings.enable_token_exchange:
             # Token exchange mode
-            return await get_session_client_from_context(ctx, lifespan_ctx.nextcloud_host)
+            return await get_session_client_from_context(
+                ctx, lifespan_ctx.nextcloud_host
+            )
         else:
             # Pass-through mode (default)
             return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
@@ -1452,15 +1454,12 @@ class BackgroundSyncWorker:
 
         # Use refresh token to get Nextcloud access token
         response = await self.idp_client.refresh_token(
-            refresh_token=refresh_token,
-            audience='nextcloud'
+            refresh_token=refresh_token, audience="nextcloud"
         )
 
         # Use access token for background operations
         client = NextcloudClient.from_token(
-            base_url=self.nextcloud_url,
-            token=response.access_token,
-            username=user_id
+            base_url=self.nextcloud_url, token=response.access_token, username=user_id
         )
 
         await self.sync_notes(user_id, client)

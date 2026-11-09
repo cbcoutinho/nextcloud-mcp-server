@@ -12,7 +12,7 @@ client.add_note_attachment(
     note_id=123,  # The ID of the note
     filename="image.png",  # The filename for the attachment
     content=image_bytes,  # The binary content of the image
-    mime_type="image/png"  # The MIME type
+    mime_type="image/png",  # The MIME type
 )
 ```
 
@@ -76,7 +76,7 @@ client = NextcloudClient.from_env()
 note = client.notes_create_note(
     title="Note with Embedded Image",
     content="# Image Example\n\nThis note will have an embedded image.",
-    category="Documentation"
+    category="Documentation",
 )
 note_id = note["id"]
 note_etag = note["etag"]
@@ -90,7 +90,7 @@ client.add_note_attachment(
     note_id=note_id,
     filename="example.png",
     content=image_content,
-    mime_type="image/png"
+    mime_type="image/png",
 )
 
 # 4. Update note content to include image reference
@@ -102,11 +102,7 @@ This note has an embedded image below:
 """
 
 # 5. Update the note with image reference
-client.notes_update_note(
-    note_id=note_id,
-    etag=note_etag,
-    content=updated_content
-)
+client.notes_update_note(note_id=note_id, etag=note_etag, content=updated_content)
 ```
 
 ## Troubleshooting

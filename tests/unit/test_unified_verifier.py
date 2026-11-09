@@ -10,7 +10,7 @@ import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import jwt
 import pytest
 from mcp.server.auth.provider import AccessToken
@@ -907,7 +907,7 @@ class TestUserinfoFallback:
             patch.object(
                 verifier.http_client,
                 "post",
-                AsyncMock(side_effect=httpx.TimeoutException("introspect down")),
+                AsyncMock(side_effect=httpx2.TimeoutException("introspect down")),
             ),
             patch.object(
                 verifier.http_client, "get", AsyncMock(return_value=userinfo_resp)
@@ -1040,7 +1040,7 @@ class TestUserinfoFallback:
         with patch.object(
             verifier.http_client,
             "get",
-            AsyncMock(side_effect=httpx.TimeoutException("timeout")),
+            AsyncMock(side_effect=httpx2.TimeoutException("timeout")),
         ):
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is None
@@ -1050,7 +1050,7 @@ class TestUserinfoFallback:
         with patch.object(
             verifier.http_client,
             "get",
-            AsyncMock(side_effect=httpx.ConnectError("boom")),
+            AsyncMock(side_effect=httpx2.ConnectError("boom")),
         ):
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is None
@@ -1953,3 +1953,23 @@ class TestRejectionObservability:
         # Exactly one event, from _introspect_token, attributed to introspect.
         assert metric_sample(self.VALIDATIONS, inactive) - before_inactive == 1
         assert metric_sample(self.VALIDATIONS, no_validator) == before_nv
+
+
+async def test_introspection_sends_client_credentials_in_the_body(base_settings):
+    """client_secret_post, the method our DCR registration declares: the
+    Nextcloud oidc app rejects any other method from 2.5.0 (401
+    invalid_client), so HTTP Basic must not be used here."""
+    verifier = UnifiedTokenVerifier(base_settings)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"active": False}
+    verifier.http_client = MagicMock(post=AsyncMock(return_value=response))
+
+    await verifier._introspect_token("tok")
+
+    kwargs = verifier.http_client.post.await_args.kwargs
+    assert kwargs["data"] == {
+        "token": "tok",
+        "client_id": "test-client-id",
+        "client_secret": "test-client-secret",
+    }
+    assert "auth" not in kwargs

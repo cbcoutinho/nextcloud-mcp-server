@@ -4,7 +4,7 @@ import uuid
 
 import anyio
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
 
@@ -177,7 +177,7 @@ async def test_category_change_cleans_up_old_attachments_directory(
             old_attachment_dir_path = (
                 f"{webdav_base}/Notes/{initial_category}/.attachments.{note_id}"
             )
-            propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+            propfind_headers = {"Depth": "0"}
             try:
                 propfind_resp = await nc_client._client.request(
                     "PROPFIND", old_attachment_dir_path, headers=propfind_headers
@@ -245,7 +245,7 @@ async def test_category_change_cleans_up_old_attachments_directory(
                 new_attachment_dir_path = (
                     f"{webdav_base}/Notes/{new_category}/.attachments.{note_id}"
                 )
-                propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+                propfind_headers = {"Depth": "0"}
                 try:
                     propfind_resp = await nc_client._client.request(
                         "PROPFIND", new_attachment_dir_path, headers=propfind_headers

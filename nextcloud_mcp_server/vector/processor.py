@@ -9,7 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
-import httpx
+import httpx2
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from qdrant_client.models import (
@@ -32,7 +32,7 @@ from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.document_processors.source import (
+from nextcloud_mcp_server.document_source import (
     DocumentSource,
     MemoryDocumentSource,
 )
@@ -117,12 +117,12 @@ def _drop_reason(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
 
-    # Raw httpx transport errors from direct Nextcloud API calls (the nc_client
-    # uses httpx directly); the openai checks below catch the SDK-wrapped
+    # Raw httpx2 transport errors from direct Nextcloud API calls (the nc_client
+    # uses httpx2 directly); the openai checks below catch the SDK-wrapped
     # variants of the same failure modes.
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, httpx2.TimeoutException):
         return "timeout"
-    if isinstance(exc, httpx.ConnectError):
+    if isinstance(exc, httpx2.ConnectError):
         return "connection"
 
     # openai.* is always installed (provider dep) but import lazily to keep this
@@ -432,7 +432,7 @@ def should_use_page_aware(
 def preflight_oversize_result(
     doc_task: Any, file_path: str | None, settings: Any
 ) -> Any:
-    """Apply the PDF size cap to the scanned size, before any download.
+    """Apply the document size cap to the scanned size, before any download.
 
     ``DocumentTask.size_bytes`` carries the WebDAV ``getcontentlength`` captured
     at scan time, so an over-cap document can be rejected without fetching it.
@@ -446,11 +446,11 @@ def preflight_oversize_result(
     or ``None`` when the size is unknown or within the cap -- in which case the
     post-download guard still applies as the backstop.
     """
-    # The cap is PDF-specific, but content type is not known before the download.
-    # Safe because file discovery is PDF-only: _discover_tagged_files passes
-    # mime_type_filter="application/pdf" (vector/scanner.py), so every
-    # doc_type="file" task is a PDF. If discovery is ever broadened to other MIME
-    # types, gate this on content type rather than silently applying a PDF cap.
+    # Discovery is no longer PDF-only (settings.indexable_mime_types), so this
+    # cap now lands on office documents too. That is deliberate rather than an
+    # oversight: it is a guard on *bytes*, and an OOXML reader inflates the whole
+    # package into memory (bounded separately by _ooxml.MAX_UNCOMPRESSED_BYTES).
+    # The wording of the rejection says "document" rather than "PDF" to match.
     size_bytes = getattr(doc_task, "size_bytes", None)
     if not size_bytes:
         return None
@@ -508,7 +508,7 @@ def empty_download_result(
             file_path,
             scanned_size,
         )
-        raise httpx.RemoteProtocolError(
+        raise httpx2.RemoteProtocolError(
             f"Empty download for {file_path!r}: scanner saw {scanned_size} bytes, got 0"
         )
     from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
@@ -850,8 +850,8 @@ async def _reconcile_tag_event(
     indexable file was created or written — see
     ``webhook_parser._parse_file_event``). Neither payload says whether the file
     is (still) tagged for indexing, nor where it lives. Look up the user's current
-    tagged PDFs across BOTH tags (the same discovery the scanner uses, which
-    applies hybrid precedence and expands tagged folders into their PDF
+    tagged files across BOTH tags (the same discovery the scanner uses, which
+    applies hybrid precedence and expands tagged folders into their indexable
     descendants) and reconcile the task in place:
 
     - fileid present -> index it; fill path/etag/mtime and set ``index_mode`` from
@@ -1198,7 +1198,7 @@ async def _index_document(
     embedding and bbox extraction, then be removed however this call ends. The
     exit stack scopes exactly that, so the file cannot outlive the document it
     belongs to and no caller has to remember to unlink it (see
-    ``document_processors.source.spool_target``).
+    ``document_source.spool_target``).
     """
     async with AsyncExitStack() as stack:
         return await _index_document_inner(
@@ -2126,7 +2126,7 @@ async def _index_document_inner(
                             full_text=content,
                         )
 
-                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                     _compute_bboxes
                 )
 

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -129,18 +129,20 @@ def make_comment(comment_id: int, message: str, card_id: int = 42) -> DeckCommen
     )
 
 
-def http_error(status: int, *, ocs_message: str | None = None) -> httpx.HTTPStatusError:
+def http_error(
+    status: int, *, ocs_message: str | None = None
+) -> httpx2.HTTPStatusError:
     """Build the failure the client layer would raise for ``status``."""
-    request = httpx.Request("POST", "https://nextcloud.example/ocs/v2.php")
+    request = httpx2.Request("POST", "https://nextcloud.example/ocs/v2.php")
     if ocs_message is not None:
-        response = httpx.Response(
+        response = httpx2.Response(
             status,
             request=request,
             json={"ocs": {"meta": {"status": "failure", "message": ocs_message}}},
         )
     else:
         # Deck's masked 500 is a bare JSONResponse, not an OCS envelope.
-        response = httpx.Response(
+        response = httpx2.Response(
             status,
             request=request,
             json={
@@ -149,7 +151,7 @@ def http_error(status: int, *, ocs_message: str | None = None) -> httpx.HTTPStat
                 "requestId": "x",
             },
         )
-    return httpx.HTTPStatusError("boom", request=request, response=response)
+    return httpx2.HTTPStatusError("boom", request=request, response=response)
 
 
 def long_message(parts_wanted: int) -> str:
@@ -584,7 +586,7 @@ async def test_network_error_is_reported_as_such(
     create_comment, fake_client, patch_get_client, ctx
 ):
     patch_get_client(fake_client)
-    fake_client.deck.create_comment.side_effect = httpx.ConnectError("no route")
+    fake_client.deck.create_comment.side_effect = httpx2.ConnectError("no route")
 
     with pytest.raises(MCPError, match="Network error creating a comment"):
         await create_comment(ctx=ctx, card_id=42, message="hello")

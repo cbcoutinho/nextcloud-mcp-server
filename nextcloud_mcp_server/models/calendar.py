@@ -234,6 +234,13 @@ class DeleteEventResponse(StatusResponse):
     )
 
 
+class CalendarReadError(BaseModel):
+    """A calendar skipped by a cross-calendar read because it failed to load."""
+
+    calendar_name: str = Field(description="Calendar that could not be read")
+    error: str = Field(description="Why it could not be read")
+
+
 class ListEventsResponse(BaseResponse):
     """Response model for listing events."""
 
@@ -244,6 +251,15 @@ class ListEventsResponse(BaseResponse):
     start_date: Optional[str] = Field(None, description="Start date filter applied")
     end_date: Optional[str] = Field(None, description="End date filter applied")
     total_found: int = Field(description="Total number of events found")
+    truncated: bool = Field(
+        False,
+        description="More events matched than `limit`; only the earliest were "
+        "returned. Raise `limit` or narrow the date range to see the rest.",
+    )
+    errors: List[CalendarReadError] = Field(
+        default_factory=list,
+        description="Calendars that could not be read and are missing from events",
+    )
 
 
 class ListCalendarsResponse(BaseResponse):
@@ -313,6 +329,10 @@ class UpcomingEventsResponse(BaseResponse):
     days_ahead: int = Field(description="Number of days ahead searched")
     calendar_name: Optional[str] = Field(
         None, description="Calendar name (if filtered to one calendar)"
+    )
+    errors: List[CalendarReadError] = Field(
+        default_factory=list,
+        description="Calendars that could not be read and are missing from events",
     )
 
 
@@ -426,6 +446,10 @@ class ListTodosResponse(BaseResponse):
         None, description="Calendar name (if filtered to one calendar)"
     )
     total_count: int = Field(description="Total number of todos found")
+    errors: List[CalendarReadError] = Field(
+        default_factory=list,
+        description="Calendars that could not be read and are missing from todos",
+    )
 
 
 class CreateTodoResponse(BaseResponse):

@@ -8,7 +8,7 @@ methods added for usage metering (Deck #67) — provider-reported
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.providers.ollama import (
@@ -181,22 +181,22 @@ class TestTransientRetry:
     """
 
     def _request(self):
-        return httpx.Request("POST", "https://ollama:11434/api/embed")
+        return httpx2.Request("POST", "https://ollama:11434/api/embed")
 
     def _status_error(self, code):
         request = self._request()
-        return httpx.HTTPStatusError(
+        return httpx2.HTTPStatusError(
             f"HTTP {code}",
             request=request,
-            response=httpx.Response(code, request=request),
+            response=httpx2.Response(code, request=request),
         )
 
     @pytest.mark.unit
     def test_transport_errors_are_transient(self):
-        assert _is_transient(httpx.ReadTimeout("", request=self._request()))
-        assert _is_transient(httpx.ConnectError("refused"))
+        assert _is_transient(httpx2.ReadTimeout("", request=self._request()))
+        assert _is_transient(httpx2.ConnectError("refused"))
         # A model still loading into memory looks exactly like this.
-        assert _is_transient(httpx.ConnectTimeout(""))
+        assert _is_transient(httpx2.ConnectTimeout(""))
 
     @pytest.mark.unit
     def test_rate_limit_and_server_errors_are_transient(self):
@@ -213,29 +213,29 @@ class TestTransientRetry:
 
     @pytest.mark.unit
     def test_deterministic_transport_errors_are_not_retried(self):
-        # httpx.RequestError is NOT a usable proxy for "transient": it also
+        # httpx2.RequestError is NOT a usable proxy for "transient": it also
         # covers misconfiguration that fails identically every attempt, and
         # retrying those only delays the error an operator needs to see. A bad
         # scheme in OLLAMA_BASE_URL should surface at once, not after 5 backoffs.
-        assert not _is_transient(httpx.UnsupportedProtocol("bad scheme"))
-        assert not _is_transient(httpx.LocalProtocolError("our bug"))
-        assert not _is_transient(httpx.TooManyRedirects("loop"))
-        assert not _is_transient(httpx.DecodingError("bad encoding"))
+        assert not _is_transient(httpx2.UnsupportedProtocol("bad scheme"))
+        assert not _is_transient(httpx2.LocalProtocolError("our bug"))
+        assert not _is_transient(httpx2.TooManyRedirects("loop"))
+        assert not _is_transient(httpx2.DecodingError("bad encoding"))
 
     @pytest.mark.unit
     def test_remote_protocol_error_is_transient_but_local_is_not(self):
         # Both subclass ProtocolError, so the allow-list has to name the remote
         # one specifically — a server hanging up mid-response is a restart, a
         # local protocol violation is a bug on our side.
-        assert _is_transient(httpx.RemoteProtocolError("server hung up"))
-        assert not _is_transient(httpx.LocalProtocolError("malformed request"))
+        assert _is_transient(httpx2.RemoteProtocolError("server hung up"))
+        assert not _is_transient(httpx2.LocalProtocolError("malformed request"))
 
     @pytest.mark.unit
     async def test_retries_then_succeeds(self, ollama_provider, monkeypatch):
         monkeypatch.setattr("anyio.sleep", AsyncMock())  # don't wait out the backoff
         ollama_provider.client.post = AsyncMock(
             side_effect=[
-                httpx.ConnectError("ollama restarting"),
+                httpx2.ConnectError("ollama restarting"),
                 _embed_response([[0.1, 0.2]], prompt_eval_count=3),
             ]
         )
@@ -252,7 +252,7 @@ class TestTransientRetry:
         resp.raise_for_status = MagicMock(side_effect=self._status_error(404))
         ollama_provider.client.post = AsyncMock(return_value=resp)
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx2.HTTPStatusError):
             await ollama_provider.embed_batch_with_usage(["a"])
 
         ollama_provider.client.post.assert_awaited_once()
@@ -263,10 +263,10 @@ class TestTransientRetry:
     ):
         monkeypatch.setattr("anyio.sleep", AsyncMock())
         ollama_provider.client.post = AsyncMock(
-            side_effect=httpx.ReadTimeout("", request=self._request())
+            side_effect=httpx2.ReadTimeout("", request=self._request())
         )
 
-        with caplog.at_level(logging.WARNING), pytest.raises(httpx.ReadTimeout):
+        with caplog.at_level(logging.WARNING), pytest.raises(httpx2.ReadTimeout):
             await ollama_provider.embed_batch_with_usage(["x" * 500, "y" * 500])
 
         # `ReadTimeout('')` alone told an operator nothing — the log must name
@@ -287,10 +287,10 @@ class TestTransientRetry:
     ):
         monkeypatch.setattr("anyio.sleep", AsyncMock())
         ollama_provider.client.post = AsyncMock(
-            side_effect=httpx.ConnectError("ollama restarting")
+            side_effect=httpx2.ConnectError("ollama restarting")
         )
 
-        with caplog.at_level(logging.WARNING), pytest.raises(httpx.ConnectError):
+        with caplog.at_level(logging.WARNING), pytest.raises(httpx2.ConnectError):
             await ollama_provider.embed_batch_with_usage(["x" * 500])
 
         logged = caplog.text

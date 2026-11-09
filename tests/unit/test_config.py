@@ -320,6 +320,38 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {"SAR_ENABLED": "true", "VECTOR_SYNC_ENABLED": "true"},
+        clear=True,
+    )
+    def test_sar_requires_the_embedding_gateway(self):
+        """Opting in to SAR without name detection would advertise nothing and
+        look broken: refuse to start instead."""
+        _reload_config()
+        with pytest.raises(ValueError, match="SAR_ENABLED requires"):
+            get_settings()
+
+    @patch.dict(
+        os.environ,
+        {
+            "SAR_ENABLED": "true",
+            "VECTOR_SYNC_ENABLED": "true",
+            "EMBEDDING_GATEWAY_URL": "http://gateway:8083",
+        },
+        clear=True,
+    )
+    def test_sar_enabled_parses_from_the_environment(self):
+        """The env var reaches Settings as a real bool."""
+        _reload_config()
+        assert get_settings().sar_enabled is True
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_sar_is_off_by_default(self):
+        """SAR is opt-in per deployment."""
+        _reload_config()
+        assert get_settings().sar_enabled is False
+
+    @patch.dict(
+        os.environ,
         {
             "SEARCH_RERANK_ENABLED": "true",
             "SEARCH_RERANK_URL": "http://infinity:7997/rerank",
@@ -448,6 +480,36 @@ class TestGetSettings:
         """USAGE_METERING_ENABLED=true maps to settings.usage_metering_enabled."""
         _reload_config()
         assert get_settings().usage_metering_enabled is True
+
+    @patch.dict(
+        os.environ,
+        {
+            "PPTX_CAPTION_IMAGES": "true",
+            "PPTX_CAPTION_MAX_IMAGES": "3",
+            "PPTX_CAPTION_TIMEOUT_SECONDS": "40",
+        },
+        clear=True,
+    )
+    def test_legacy_pptx_caption_names_still_apply(self):
+        """The 0.193.0 PPTX_CAPTION_* names keep working for OFFICE_CAPTION_*."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.office_caption_images is True
+        assert settings.office_caption_max_images == 3
+        assert settings.office_caption_timeout_seconds == 40
+
+    @patch.dict(
+        os.environ,
+        {"PPTX_CAPTION_MAX_IMAGES": "3", "OFFICE_CAPTION_MAX_IMAGES": "5"},
+        clear=True,
+    )
+    def test_office_caption_name_wins_over_legacy(self, caplog):
+        _reload_config()
+        with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.config"):
+            assert get_settings().office_caption_max_images == 5
+        assert (
+            "Both OFFICE_CAPTION_MAX_IMAGES and PPTX_CAPTION_MAX_IMAGES" in caplog.text
+        )
 
 
 class TestChunkConfigValidation:

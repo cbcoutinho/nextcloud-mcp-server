@@ -1,11 +1,14 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
 
-from pythonvCard4.vcard import Contact, fold_line, unfold_lines
+from pythonvCard4.vcard import Contact, escape_text, fold_line, unfold_lines
+
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from .base import BaseNextcloudClient
 
@@ -18,6 +21,7 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_CONTACT_KEYS = frozenset(
     {
         "fn",
+        "n",
         "email",
         "tel",
         "org",
@@ -31,14 +35,125 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
 )
 
 
+# vCard N components, in RFC 6350 §6.2.2 order.
+_N_COMPONENTS = (
+    "family_name",
+    "given_name",
+    "additional_names",
+    "honorific_prefix",
+    "honorific_suffix",
+)
+
+
+def _pop_name_parts(data: dict[str, Any]) -> dict[str, str]:
+    """Pop structured-name input from ``data`` into ``{component: value}``.
+
+    Accepts the flat keys in ``_N_COMPONENTS`` and/or ``n`` as a dict with those
+    keys, a positional list, or a raw ``"Family;Given;Additional;Prefix;Suffix"``
+    string (split on ``;`` as-is, not unescaped — use the flat keys for a
+    component containing ``;``). Flat keys win over ``n``. Only components
+    actually supplied are returned, so an update can change one part and keep
+    the rest (issue #1749). ``None`` means "not supplied", not "clear it"; pass
+    ``""`` to clear a component.
+    """
+    raw = data.pop("n", None)
+    if isinstance(raw, str):
+        raw = raw.split(";") if raw.strip() else None
+    if isinstance(raw, list):
+        raw = dict(zip(_N_COMPONENTS, raw))
+    parts = (
+        {k: v for k, v in raw.items() if k in _N_COMPONENTS}
+        if isinstance(raw, dict)
+        else {}
+    )
+    for key in _N_COMPONENTS:
+        value = data.pop(key, None)
+        if value is not None:
+            parts[key] = value
+    return {k: _name_component_str(v) for k, v in parts.items() if v is not None}
+
+
+def _name_component_str(value: Any) -> str:
+    """A list (e.g. several additional names) is space-joined."""
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value if v)
+    return str(value)
+
+
+def _fn_from_name_parts(parts: dict[str, str]) -> str:
+    """Derive a display name: prefix, given, additional, family, suffix."""
+    order = (
+        "honorific_prefix",
+        "given_name",
+        "additional_names",
+        "family_name",
+        "honorific_suffix",
+    )
+    return " ".join(parts[k] for k in order if parts.get(k))
+
+
+def _escape_n_component(value: str) -> str:
+    return escape_text(value.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def _split_unescaped(value: str, sep: str = ";") -> list[str]:
+    """Split a raw (still escaped) structured value on its unescaped ``sep``.
+
+    Escape pairs are consumed whole, so ``\\\\;`` -- an escaped backslash, then
+    a separator -- splits, while ``\\;`` does not. A ``(?<!\\);`` lookbehind
+    gets the first case wrong and shifts every later component one slot.
+    """
+    comps: list[str] = []
+    current: list[str] = []
+    chars = iter(value)
+    for char in chars:
+        if char == "\\":
+            current.append(char + next(chars, ""))
+        elif char == sep:
+            comps.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    comps.append("".join(current))
+    return comps
+
+
+def _unescape_component(component: str) -> str:
+    """Single-pass vCard unescape (RFC 6350 §3.4).
+
+    ``pythonvCard4.unescape_text`` chains ``replace`` calls, so it decodes an
+    escaped backslash followed by ``n`` as a line break.
+    """
+    return re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nN" else m[1], component)
+
+
+def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
+    """Overwrite the supplied components of an existing raw N value.
+
+    Existing components are split on unescaped ``;`` and kept verbatim (still
+    escaped); supplied components are escaped and written in their slot.
+    """
+    comps = _split_unescaped(existing) if existing else []
+    comps += [""] * (len(_N_COMPONENTS) - len(comps))
+    for i, key in enumerate(_N_COMPONENTS):
+        if key in parts:
+            comps[i] = _escape_n_component(parts[key])
+    return ";".join(comps)
+
+
 def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     """Map documented aliases to canonical keys.
 
     ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
     are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
+    Structured-name keys (``given_name``, ``family_name``, …, or ``n``) collapse
+    into ``n`` as a ``{component: value}`` dict — see ``_pop_name_parts``.
     Returns a new dict — does not mutate the caller's argument.
     """
     normalised = dict(contact_data)
+    name_parts = _pop_name_parts(normalised)
+    if name_parts:
+        normalised["n"] = name_parts
     if "phone" in normalised and "tel" not in normalised:
         normalised["tel"] = normalised.pop("phone")
     else:
@@ -97,7 +212,7 @@ def _split_categories(value: str | list[str]) -> list[str]:
     """
     if isinstance(value, list):
         return value
-    return [v.strip() for v in value.split(",") if v.strip()]
+    return split_csv(value)
 
 
 def _parse_bday(value: str | date | None) -> date | None:
@@ -199,6 +314,82 @@ def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[s
     }
 
 
+def _parses_alone(line: str) -> bool:
+    # Relies on from_vcard ignoring BEGIN/END/VERSION and taking the first FN,
+    # so structural lines probe clean. If a future release validates the
+    # envelope, every line "fails", the retry raises, and callers fall back to
+    # the pre-#1551 empty projection — degraded, never crashed.
+    try:
+        Contact.from_vcard(f"FN:x\n{line}")
+    except Exception:
+        return False
+    return True
+
+
+def _parse_vcard(vcard_text: str) -> Contact:
+    """Parse a vCard, dropping only the properties pythonvCard4 chokes on.
+
+    The library raises on shapes real servers store — a reduced-form
+    ``BDAY:--1226`` (issue #1551), a vCard 3.0 ``GEO:lat,lon`` — and a raise
+    loses every field of the contact. On failure, retry without the lines that
+    fail in isolation, so the contact keeps its name, phone and email.
+    """
+    lines = unfold_lines(vcard_text.splitlines())
+    try:
+        contact = Contact.from_vcard(vcard_text)
+    except Exception:
+        dropped = [line for line in lines if not _parses_alone(line)]
+        if not dropped:
+            raise
+        logger.warning(
+            "Dropped unparseable vCard properties: %s",
+            [line.split(":", 1)[0] for line in dropped],
+        )
+        lines = [line for line in lines if line not in dropped]
+        contact = Contact.from_vcard("\n".join(lines))
+    _resplit_structured(contact, lines)
+    return contact
+
+
+#: Structured properties pythonvCard4 splits, and the separator it splits on.
+#: NICKNAME is ``,``-separated in RFC 6350; ``;`` matches what the library writes.
+_STRUCTURED_SEPARATORS = {"N": ";", "ADR": ";", "NICKNAME": ";", "CATEGORIES": ","}
+
+
+def _resplit_structured(contact: Contact, lines: list[str]) -> None:
+    """Re-split N, ADR, NICKNAME and CATEGORIES from their raw lines.
+
+    ponytail: workaround for pythonvCard4 <= 0.2.0, whose ``from_vcard``
+    unescapes these values *before* splitting them, so an escaped separator
+    inside one component (``N:Doe\\;Jr;John``) splits it and shifts every later
+    field. Remove this, and its call in ``_parse_vcard``, once a pythonvCard4
+    release ships https://github.com/sharf-shawon/pythonvCard4/pull/6, and raise
+    the dependency floor to that release.
+
+    Mirrors which line the library keeps: the first N, the last NICKNAME and
+    CATEGORIES, and every ADR in order, so ``contact.adr`` keeps its TYPEs.
+    """
+    adr_entries = iter(contact.adr)
+    n_done = False
+    for line in lines:
+        key, colon, raw = line.partition(":")
+        name = key.split(";", 1)[0].upper()
+        sep = _STRUCTURED_SEPARATORS.get(name)
+        if not colon or sep is None:
+            continue
+        comps = [_unescape_component(c) for c in _split_unescaped(raw, sep)]
+        if name == "N" and not n_done:
+            contact.n, n_done = comps, True
+        elif name == "ADR":
+            entry = next(adr_entries, None)
+            if entry is not None:
+                entry["value"] = comps
+        elif name == "NICKNAME":
+            contact.nickname = comps
+        elif name == "CATEGORIES":
+            contact.categories = comps
+
+
 def _project_contact(contact: Contact) -> dict[str, Any]:
     """Project a parsed vCard into the flat dict the server layer maps to a model.
 
@@ -257,14 +448,23 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     invoking this helper; it assumes canonical keys only.
     """
     data = contact_data
+    name_parts = data.get("n") or {}
+    fn = data.get("fn") or _fn_from_name_parts(name_parts)
 
-    if not data.get("fn"):
+    if not fn:
         logger.warning(
             "contact_data missing required 'fn' field; pythonvCard4 may reject or "
             "produce an invalid vCard"
         )
 
-    kwargs: dict[str, Any] = {"fn": data.get("fn"), "uid": uid}
+    # N is always written (empty components when none were given): vCard 3.0
+    # requires it and clients sort by it. No splitting of ``fn`` — that guesses
+    # wrong on titles and particles ("Dr. Jane van Doe"), see issue #1749.
+    kwargs: dict[str, Any] = {
+        "fn": fn,
+        "uid": uid,
+        "n": [name_parts.get(k, "") for k in _N_COMPONENTS],
+    }
 
     emails = _wrap_contact_field(data.get("email"))
     if emails:
@@ -584,7 +784,7 @@ class ContactsClient(BaseNextcloudClient):
         # projection is at risk. The caller still gets the new ETag and the full
         # ``addressdata``, so nothing is withheld.
         try:
-            contact_projection = _project_contact(Contact.from_vcard(vcard_content))
+            contact_projection = _project_contact(_parse_vcard(vcard_content))
         except Exception:
             # Broad by intent: pythonvCard4 is third-party and its parse failure
             # modes aren't enumerable. Whatever it raises, the write stands.
@@ -693,7 +893,7 @@ class ContactsClient(BaseNextcloudClient):
             # ``addressdata`` still carries everything, so the caller loses the
             # parsed convenience fields for that one contact, not the listing.
             try:
-                contact_projection = _project_contact(Contact.from_vcard(addressdata))
+                contact_projection = _project_contact(_parse_vcard(addressdata))
             except Exception:
                 logger.warning(
                     "Could not parse vCard for %s in addressbook %s; returning it "
@@ -815,6 +1015,15 @@ class ContactsClient(BaseNextcloudClient):
                     f"{group_prefix}FN:{_safe_vcard_value(contact_data['fn'])}"
                 )
                 updated_properties.add("fn")
+            elif property_name == "N" and "n" in contact_data:
+                if "n" not in updated_properties:
+                    merged_n = _merge_n_value(line.partition(":")[2], contact_data["n"])
+                    params = _existing_parameters(line)
+                    updated_lines.append(f"{group_prefix}N{params}:{merged_n}")
+                    updated_properties.add("n")
+                else:
+                    # Malformed card with a second N: preserve it untouched.
+                    updated_lines.append(line)
             elif property_name == "EMAIL" and "email" in contact_data:
                 # Replace first email with new one, preserve others
                 if "email" not in updated_properties:
@@ -921,6 +1130,8 @@ class ContactsClient(BaseNextcloudClient):
             if key not in updated_properties:
                 if key == "fn":
                     updated_lines.append(f"FN:{_safe_vcard_value(value)}")
+                elif key == "n":
+                    updated_lines.append(f"N:{_merge_n_value('', value)}")
                 elif key == "email" and isinstance(value, str):
                     updated_lines.append(f"EMAIL:{_safe_vcard_value(value)}")
                 elif key == "tel" and isinstance(value, str):

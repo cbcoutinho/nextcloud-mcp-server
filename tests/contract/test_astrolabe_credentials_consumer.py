@@ -43,6 +43,9 @@ async def test_status_reports_access_for_provisioned_user(consumer_pact, mocker)
         .given("user alice has provisioned background-sync credentials")
         .with_request("GET", "/apps/astrolabe/api/v1/background-sync/credentials/alice")
         .with_header("Authorization", _BEARER)
+        # Every Nextcloud-bound client sends it; Nextcloud fails the CSRF
+        # check on this (non-OCS, admin) route without it.
+        .with_header("OCS-APIRequest", "true")
         .will_respond_with(200)
         .with_body(
             {
@@ -80,6 +83,9 @@ async def test_status_reports_no_access_for_unprovisioned_user(consumer_pact, mo
         .given("user bob has no background-sync credentials")
         .with_request("GET", "/apps/astrolabe/api/v1/background-sync/credentials/bob")
         .with_header("Authorization", _BEARER)
+        # Every Nextcloud-bound client sends it; Nextcloud fails the CSRF
+        # check on this (non-OCS, admin) route without it.
+        .with_header("OCS-APIRequest", "true")
         .will_respond_with(200)
         .with_body(
             {

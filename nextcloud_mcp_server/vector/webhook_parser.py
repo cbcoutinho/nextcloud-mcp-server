@@ -47,11 +47,37 @@ _DECK_CARD_EVENTS = frozenset(
 # "/admin/files/Notes/Sub/Note.md" or "/alice/files/Notes/foo.md".
 _NOTES_PATH_RE = re.compile(r"^/[^/]+/files/Notes/.+\.md$")
 
-# File extensions vector sync can index as ``doc_type="file"``. Mirrors the
-# ``mime_type_filter="application/pdf"`` that scanner._discover_tagged_files
-# applies — the webhook payload carries no mime type, so the suffix is the only
-# signal available. Broaden both together.
-_INDEXABLE_FILE_SUFFIXES = (".pdf",)
+# The webhook payload carries no mime type, so the suffix is the only signal:
+# map settings.indexable_mime_types (what scanner._discover_tagged_files
+# enqueues) to suffixes. A listed type missing here is still indexed, just by
+# the polling scanner instead of on the webhook.
+_SUFFIX_BY_MIME = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-outlook": ".msg",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    # Plain text, Markdown and CSV are deliberately left to the polling
+    # scanner: the Text app and Collectives save .md files on every few
+    # keystrokes, and each write here would queue a tagged-file discovery.
+}
+
+
+def _indexable_suffixes() -> tuple[str, ...]:
+    """File suffixes for the currently indexable MIME types."""
+    from nextcloud_mcp_server.config import get_settings  # noqa: PLC0415
+
+    return tuple(
+        _SUFFIX_BY_MIME[m]
+        for m in get_settings().indexable_mime_types
+        if m in _SUFFIX_BY_MIME
+    )
 
 
 def extract_document_task(payload: dict) -> DocumentTask | None:
@@ -61,15 +87,39 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
     target isn't a markdown file under a user's Notes folder. Callers should
     treat None as "ignored" — not an error.
     """
+    # The payload is user-controlled: anything Nextcloud (or a caller holding the
+    # webhook secret) sends. Never raise out of here -- a malformed payload is
+    # "ignored", exactly like an unsupported event.
     try:
         event = payload["event"]
         event_class = event["class"]
         user_id = payload["user"]["uid"]
-        time = int(payload.get("time", 0) or 0)
-    except (KeyError, TypeError, ValueError):
+        time = int(payload.get("time", 0) or 0)  # inf -> OverflowError
+    except (KeyError, TypeError, ValueError, OverflowError):
         logger.debug("Webhook payload has missing or malformed envelope fields")
         return None
+    if not isinstance(user_id, str) or not user_id:
+        logger.debug("Webhook payload has no usable user uid")
+        return None
+    if not isinstance(event_class, str):
+        logger.debug("Webhook payload has a non-string event class")
+        return None
 
+    try:
+        return _dispatch(event_class, event, user_id, time)
+    except (AttributeError, TypeError, ValueError):
+        # A body of the wrong shape: ``node``/``card`` not an object, a
+        # non-string path. The parsers below do no I/O, so these can only come
+        # from the payload; exc_info keeps a genuine parser regression visible.
+        logger.warning(
+            "Webhook %r has a malformed event body", event_class, exc_info=True
+        )
+        return None
+
+
+def _dispatch(
+    event_class: str, event: dict, user_id: str, time: int
+) -> DocumentTask | None:
     if event_class in (
         _FILE_EVENT_CREATED,
         _FILE_EVENT_WRITTEN,
@@ -95,7 +145,7 @@ def _parse_file_event(
     node_id = node.get("id")
 
     is_note = bool(_NOTES_PATH_RE.match(path))
-    is_indexable_file = path.lower().endswith(_INDEXABLE_FILE_SUFFIXES)
+    is_indexable_file = path.lower().endswith(_indexable_suffixes())
     if not is_note and not is_indexable_file:
         # A folder, or a file type vector sync never indexes.
         return None

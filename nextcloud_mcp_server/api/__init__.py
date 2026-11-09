@@ -8,7 +8,10 @@ This package is organized into modules by domain:
 - management.py: Server status, user sessions, shared helpers
 - passwords.py: App password provisioning for multi-user BasicAuth
 - apps.py: Installed Nextcloud apps
-- visualization.py: Search and PDF visualization endpoints
+
+The semantic-search endpoints (visualization.py, vector_sync.py, sar.py) are
+deliberately not re-exported: they import the optional vector stack, and this
+package must stay importable without it. Import them from their modules.
 """
 
 from nextcloud_mcp_server.api.access import (
@@ -37,14 +40,6 @@ from nextcloud_mcp_server.api.passwords import (
     get_app_password_status,
     provision_app_password,
 )
-from nextcloud_mcp_server.api.vector_sync import (
-    purge_doc_types_route,
-)
-from nextcloud_mcp_server.api.visualization import (
-    get_chunk_context,
-    unified_search,
-    vector_search,
-)
 
 __all__ = [
     # Access endpoints (from access.py)
@@ -72,10 +67,4 @@ __all__ = [
     "delete_app_password",
     # Installed-apps endpoint (from apps.py)
     "get_installed_apps",
-    # Vector-sync admin endpoints (from vector_sync.py)
-    "purge_doc_types_route",
-    # Visualization endpoints (from visualization.py)
-    "unified_search",
-    "vector_search",
-    "get_chunk_context",
 ]

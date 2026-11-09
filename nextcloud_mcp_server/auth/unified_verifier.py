@@ -20,7 +20,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-import httpx
+import httpx2
 import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -30,6 +30,7 @@ from nextcloud_mcp_server.observability.metrics import (
     oauth_token_cache_hits_total,
     record_oauth_token_validation,
 )
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from ..http import nextcloud_httpx_client
 
@@ -112,9 +113,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         # independent. These may be consolidated into a single env var later
         # once the deployment story stabilises.
         self._allowed_mgmt_clients: frozenset[str] = frozenset(
-            entry.strip()
-            for entry in cfg("ALLOWED_MGMT_CLIENT", "").split(",")
-            if entry.strip()
+            split_csv(cfg("ALLOWED_MGMT_CLIENT", ""))
         )
         if not self._allowed_mgmt_clients:
             if self.userinfo_uri:
@@ -887,10 +886,18 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
 
         try:
+            # Credentials in the body (client_secret_post), not HTTP Basic: that
+            # is the method our DCR registration declares, and the Nextcloud
+            # oidc app enforces the declared method from 2.5.0 (a mismatch is
+            # 401 invalid_client). Static clients and Keycloak's client-secret
+            # authenticator accept either.
             response = await self.http_client.post(
                 self.introspection_uri,
-                data={"token": token},
-                auth=(client_id, client_secret),
+                data={
+                    "token": token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
             )
 
             if response.status_code == 200:
@@ -921,9 +928,9 @@ class UnifiedTokenVerifier(TokenVerifier):
                     f"{response.text[:200] if response.text else 'empty'}",
                 )
 
-        except httpx.TimeoutException:
+        except httpx2.TimeoutException:
             return self._note(chain, "introspect", "network_error", token, "timeout")
-        except httpx.RequestError as e:
+        except httpx2.RequestError as e:
             return self._note(chain, "introspect", "network_error", token, str(e))
         except Exception as e:
             return self._note(chain, "introspect", "unknown", token, str(e))
@@ -985,9 +992,9 @@ class UnifiedTokenVerifier(TokenVerifier):
                 self.userinfo_uri,
                 headers={"Authorization": f"Bearer {token}"},
             )
-        except httpx.TimeoutException:
+        except httpx2.TimeoutException:
             return self._note(chain, "userinfo", "network_error", token, "timeout")
-        except httpx.RequestError as e:
+        except httpx2.RequestError as e:
             return self._note(chain, "userinfo", "network_error", token, str(e))
 
         if response.status_code != 200:

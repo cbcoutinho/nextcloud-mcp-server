@@ -5,6 +5,694 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.207.1 (2026-11-08)
+
+### Fix
+
+- **config**: warn when DOCUMENT_PARSE_MEM_LIMIT_MB is too small for the parse worker
+
+### Refactor
+
+- **config**: move the parse mem-limit warning into a helper and pin its boundary
+
+## v0.207.0 (2026-11-08)
+
+### Feat
+
+- **tables**: read a view, read a single row, select columns
+
+### Fix
+
+- **tables**: drop semicolons from tool descriptions
+
+### Refactor
+
+- **tables**: address review nits (typing, tighter view test)
+
+## v0.206.1 (2026-11-08)
+
+### Fix
+
+- **documents**: pin OpenBLAS to one thread in the PDF parse worker
+
+## v0.206.0 (2026-11-07)
+
+### BREAKING CHANGE
+
+- tool calls carrying arguments absent from the tool's
+inputSchema now return an error (isError) instead of succeeding with the
+extra keys ignored.
+
+### Fix
+
+- **server**: reject unknown tool arguments instead of ignoring them
+
+## v0.205.4 (2026-11-07)
+
+### Fix
+
+- **config**: warn once per unrecognised boolean; clearer timestamp error
+- **config**: warn on unrecognised boolean spellings; review round 1
+- **auth**: refuse any backslash in _safe_next_url
+- **auth**: reject backslash open redirect in _safe_next_url
+
+### Refactor
+
+- consolidate scalar parsers; replace input-family parametrizes with properties
+
+## v0.205.3 (2026-11-06)
+
+### Fix
+
+- keep an escaped ; or , inside one N, ADR, NICKNAME or CATEGORIES component on read
+
+## v0.205.2 (2026-11-06)
+
+### Fix
+
+- log a malformed webhook event body at warning with its traceback
+- make four payload parsers total over the inputs they claim to accept
+- bind new_string as a lambda default in apply_edits (Sonar S1515)
+- a quote ending in CR must not match half a CRLF pair in apply_edits
+- keep CRLF pairs intact in apply_edits and make normalize_etag idempotent
+
+### Refactor
+
+- reject a non-string webhook event class up front and log parser failures with exc_info
+
+## v0.205.1 (2026-11-06)
+
+### Fix
+
+- **ci**: kill the orphaned apt-get between Playwright install attempts
+- log what was swallowed where a handler falls back silently
+
+## v0.205.0 (2026-11-06)
+
+### Feat
+
+- **calendar**: report truncation in list_events and apply min_duration_minutes
+
+### Fix
+
+- **calendar**: reject negative list_events limit, log when a listing is cut
+- **calendar**: raise bulk-operation match cap from 50 to BULK_EVENT_LIMIT
+- **calendar**: apply event filters before the limit and honour limit across calendars
+- **sar**: cap the shielded case-folder cleanup and log why it failed
+- **sar**: keep the 403 to refused writes and clean up on cancellation
+- **sar**: report a refused case-file write as 403 and remove the new folder
+
+### Refactor
+
+- **calendar**: drop unused _apply_event_filters, note intentional full scan
+
+## v0.204.3 (2026-11-05)
+
+### Fix
+
+- resolve ty 0.0.97 diagnostics
+
+## v0.204.2 (2026-11-05)
+
+### Fix
+
+- make scope-challenge exception handler sync (python:S7503)
+- migrate off decorators removed in Starlette 1.0
+- **deps**: update dependency starlette to v1
+
+## v0.204.1 (2026-11-02)
+
+### Fix
+
+- **auth**: find a positionally-passed Context in require_scopes
+- **auth**: gate nc://capabilities and guard every registered resource
+- **auth**: enforce OAuth scopes on MCP resources
+
+### Refactor
+
+- **server**: register nc://capabilities from one place
+
+## v0.204.0 (2026-11-01)
+
+### Feat
+
+- **contacts**: write structured name (vCard N) on create and update
+
+### Fix
+
+- **contacts**: ignore an empty n string instead of clearing family name
+- **contacts**: treat null name components as not supplied
+- **contacts**: space-join list-valued N components
+
+## v0.203.3 (2026-11-01)
+
+### Fix
+
+- **logging**: configure httpx2/httpcore2 loggers and keep legacy httpx
+
+### Refactor
+
+- replace httpx with httpx2
+
+## v0.203.2 (2026-11-01)
+
+### Fix
+
+- **tables**: parse the Tables row payload in TableRow instead of raw dicts
+- **mcp**: wrap raw list returns from calendar and tables tools
+
+## v0.203.1 (2026-11-01)
+
+### Fix
+
+- **calendar**: stop rebuilding a VTODO from the partial update dict on error
+
+## v0.203.0 (2026-10-29)
+
+### Feat
+
+- **mail**: add nc_mail_view_attachment to show image attachments
+- **webdav**: add nc_webdav_view_image to show images to vision models
+- **client**: add WebDAVClient.get_preview for Nextcloud file previews
+- **webdav**: add nc_webdav_edit_file and line-range reads
+- **mail**: add opt-in MAIL_DRAFT_MARK_AI_GENERATED for saved drafts
+- **mail**: add mail.draft scope and nc_mail_save_draft tool
+
+### Fix
+
+- bound image decode memory and concurrency
+- **webdav**: edit only plain text files and cap oversized single lines
+
+### Refactor
+
+- **mail**: split the raw attachment download from get_attachment
+- **mail**: always mark drafts as AI-generated and drop draft_id
+
+## v0.202.2 (2026-10-28)
+
+### Refactor
+
+- **api**: Astrolabe 0.47.1 still calls vector-viz; name the right release
+- **api**: name the two migration differences; pin the warn-once
+- **api**: deprecate POST /api/v1/vector-viz/search
+
+## v0.202.1 (2026-10-26)
+
+### Fix
+
+- **contract**: close GatewayProvider on the test's own event loop
+- **deps**: pin mcp to 2.3.x for the streamable-HTTP session idle timeout
+
+## v0.202.0 (2026-10-26)
+
+### Feat
+
+- **notes**: add nc_notes_list_notes tool with a total count
+
+### Fix
+
+- **notes**: drop semicolons from the list_notes description
+- **notes**: keep list_notes count visible under truncation and bound its output
+
+### Refactor
+
+- **notes**: validate list_notes limit and stream the count
+
+## v0.201.3 (2026-10-26)
+
+### Fix
+
+- **ci**: never cancel pact runs for master pushes
+
+## v0.201.2 (2026-10-24)
+
+### Fix
+
+- **auth**: stop reporting every failed AS-proxy refresh as invalid_grant
+
+### Refactor
+
+- **auth**: drop _is_absolute_http_url from the AS-proxy refresh path
+
+## v0.201.1 (2026-10-24)
+
+### Fix
+
+- **server**: default serverInfo.version in NextcloudMCPServer itself
+- **server**: advertise serverInfo.version in the MCP handshake
+
+## v0.201.0 (2026-10-24)
+
+### Feat
+
+- **deck**: refuse startdate/color on Deck < 1.18
+- **deck**: support card startdate and color (Deck 1.18)
+
+### Fix
+
+- **deck**: surface malformed card color as ToolError
+- **deck**: drop semicolons from card tool descriptions
+- **deck**: reject non-hex card colors
+
+### Refactor
+
+- **deck**: extract _isoformat for date carry-over (Sonar S3358)
+
+## v0.200.5 (2026-10-21)
+
+### Fix
+
+- **client**: don't read a streamed request body in the request log hook
+
+## v0.200.4 (2026-10-21)
+
+### Fix
+
+- **auth**: store rotated refresh tokens with the IdP's lifetime (fixes #411)
+
+## v0.200.3 (2026-10-21)
+
+### Fix
+
+- **search**: address review — error wording, label docs, pass-through tests
+- **search**: fail fast when the query cannot be embedded, run bm25 keyword-only
+
+### Refactor
+
+- **search**: bound the query embed with a context manager
+
+## v0.200.2 (2026-10-20)
+
+### Fix
+
+- **http**: merge caller headers via httpx.Headers in the factory
+- **client**: send OCS-APIRequest from the httpx client, not per call site
+
+### Refactor
+
+- **webdav**: hoist text/xml content type; document factory scope
+- **client**: make NEXTCLOUD_DEFAULT_HEADERS read-only; clarify mail JSON headers
+
+## v0.200.1 (2026-10-20)
+
+### Fix
+
+- **search**: harden batched file verification per review
+- **auth**: reject unparseable Basic headers with 401
+- **auth**: verify multi-user BasicAuth credentials in the middleware
+
+### Perf
+
+- **search**: verify file results per result instead of re-walking the tagged corpus
+
+## v0.200.0 (2026-10-20)
+
+### Feat
+
+- **talk**: filter talk_get_messages by thread
+- **talk**: support creating and posting into Talk threads
+
+### Fix
+
+- **ci**: keep release smoke test on Python 3.11 (project floor)
+- **ci**: pin Python to 3.14 and cap Renovate below 3.15
+- **lint**: satisfy ty 0.0.89
+- **talk**: drop semicolon from talk_get_messages description
+- **talk**: only map spreed's thread 404 to "thread not found"
+- **documents**: read text inside Word content controls (w:sdt)
+
+### Refactor
+
+- **documents**: split the docx block walk into helpers (cognitive complexity)
+- **talk**: move thread 404 handling out of configure_talk_tools
+
+## v0.199.4 (2026-10-12)
+
+### Fix
+
+- **logging**: render a None body argument as None, not its size
+- **logging**: never log Authorization credentials or tool-call bodies
+
+### Refactor
+
+- **logging**: extract per-argument rendering to cut complexity
+
+## v0.199.3 (2026-10-09)
+
+### Fix
+
+- **documents**: mark the worker-interrupt catch as intentional for Sonar
+- **documents**: contain a parse worker's KeyboardInterrupt
+
+## v0.199.2 (2026-10-09)
+
+### Fix
+
+- **mail**: only sync on MailboxNotCachedException, log, bound-test
+- **mail**: sync uncached mailboxes before listing messages
+
+## v0.199.1 (2026-10-08)
+
+### Fix
+
+- **calendar**: anchor UNTIL on the caller's offset; store absolute TRIGGER as UTC
+- **calendar**: store fixed-offset datetimes as UTC
+
+## v0.199.0 (2026-10-08)
+
+### BREAKING CHANGE
+
+- the semantic-search dependencies are no longer installed
+by default. Deployments using ENABLE_SEMANTIC_SEARCH / VECTOR_SYNC_ENABLED
+from PyPI must install `nextcloud-mcp-server[semantic]`. The Docker image
+is unaffected.
+
+### Feat
+
+- plugin entry points, with SAR as the first plugin
+
+### Fix
+
+- name the plugin when its tool or route registration fails
+- plugin load errors name the entry point; status survives a faulty plugin
+- harden plugin loading and keep stdio's tool set unchanged
+- hint at the documents extra only for types it would parse
+- guard semantic-only CLI paths on an install without the extra
+- address Sonar shelldre:S7688 in the login-flow client hook; doc oidc 2.5 + DCR
+- **auth**: work with Nextcloud oidc 2.5's stricter client auth and resource policy
+
+### Refactor
+
+- move plugin availability flags out of get_server_status
+- keep the semantic stack out of the core import path
+
+
+- move the semantic-search stack into a `semantic` extra
+
+## v0.198.5 (2026-10-06)
+
+### Fix
+
+- **sar**: render failed index rows, which carry no reason
+- **sar**: allow a blank reason per document on export
+
+### Refactor
+
+- **sar**: name the index reason fragment; assert the title survives
+
+## v0.198.4 (2026-10-06)
+
+### Fix
+
+- **webdav**: strip the -zstd content-coding suffix from etags
+
+## v0.198.3 (2026-10-01)
+
+### Fix
+
+- **storage**: disable psycopg auto-prepare on the Postgres engine
+
+## v0.198.2 (2026-10-01)
+
+### Fix
+
+- **vector-sync**: page SEARCH correctly and never delete on partial discovery
+
+## v0.198.1 (2026-09-30)
+
+### Fix
+
+- **auth**: accept any port on portless loopback CIMD redirect URIs
+
+## v0.198.0 (2026-09-28)
+
+### BREAKING CHANGE
+
+- SAR cases and redacted export are no longer served
+implicitly when vector sync and EMBEDDING_GATEWAY_URL are configured.
+Set SAR_ENABLED=true to keep them.
+
+### Feat
+
+- **sar**: SAR is opt-in per deployment via SAR_ENABLED
+
+## v0.197.1 (2026-09-27)
+
+### Fix
+
+- **redaction**: a detected job title is redacted whole, never split
+- **redaction**: role and relationship words are never names
+- **redaction**: a window never starts inside a word longer than the overlap
+- **redaction**: cut NER windows on whitespace, never mid-word
+
+## v0.197.0 (2026-09-27)
+
+### BREAKING CHANGE
+
+- /api/v1/status reports sar_available instead of
+sar_export_available, and the SAR tools and routes now require the
+sar.read or sar.write scope. Clients need to request them.
+- NerClient.detect() now takes the labels to request and
+returns (label, surface) pairs; detect_names() is replaced by
+detect_entities(), which returns (names, addresses). The gateway NER
+consumer pact now sends labels ["person", "address"] under the provider
+state "the gateway detects person names and addresses".
+
+### Feat
+
+- **sar**: sar.read and sar.write scopes; advertise sar_available
+- **sar**: case searches with the search page's filters, logged in the case
+- **redaction**: redact addresses and UK postcodes in SAR archives
+- **sar**: persisted SAR cases shared by Astrolabe and MCP agents (ADR-040)
+- **sar**: /api/v1/sar/exports for the Astrolabe app (ADR-040)
+- **sar**: redacted SAR export archives via sar_export_submit (ADR-040)
+- **redaction**: gateway NER client and person-name redaction core
+
+### Fix
+
+- **redaction**: keep only the subject's address or its leading part
+- **sar**: a case search's log entry is built before the search runs
+- **sar**: cap and dedupe the search log; case search needs semantic.read
+- **sar**: export what was locked, render off the event loop
+- **sar**: no lost updates when a case is edited concurrently
+- **sar**: no semicolons in SAR tool descriptions
+- **redaction**: number a bare token as the one person it belongs to
+- **sar**: refuse '.'/'..' segments in output_folder
+- **redaction**: an NER error never repeats the response's entity text
+- **redaction**: title-free name phrase is one form; validate NER_TIMEOUT_SECONDS
+- **redaction**: bool-first index guard in NerClient._parse; test bool index
+- **redaction**: order bool guard first for Sonar S2583; document sort key
+- **redaction**: address review round 1
+
+### Refactor
+
+- **sar**: split complex functions; 5xx on case creation is retryable
+- **redaction**: re-scope the core to SAR export archives (ADR-040)
+
+### Perf
+
+- **sar**: load case files concurrently when listing cases
+
+## v0.196.0 (2026-09-27)
+
+### BREAKING CHANGE
+
+- with VECTOR_SYNC_INDEXABLE_MIME_TYPES unset, tagged
+.msg, .txt, .md and .csv files are now indexed, as are ODF and legacy
+Office files when COLLABORA_URL is set, and whatever types an optional
+processor claims when one is configured (Unstructured, Tesseract,
+Docling, custom HTTP: images, EPUB, RTF, ...). Set the variable to keep
+the previous scope.
+
+### Feat
+
+- **vector-sync**: index every file type an enabled processor reads
+
+### Fix
+
+- **webdav**: reading a text file stays raw now that text has a processor
+
+## v0.195.5 (2026-09-27)
+
+### Fix
+
+- **calendar**: accept percent-encoded calendar names, report skipped calendars
+
+## v0.195.4 (2026-09-25)
+
+### Fix
+
+- **documents**: skip the RLIMIT_AS cap when the OS refuses it
+
+## v0.195.3 (2026-09-24)
+
+### Fix
+
+- **contacts**: drop only unparseable vCard properties, not the whole contact
+
+## v0.195.2 (2026-09-24)
+
+### Fix
+
+- **observability**: classify tool errors from the wire-shaped result
+
+### Refactor
+
+- **observability**: extract _is_tool_error to keep complexity in bounds
+
+## v0.195.1 (2026-09-23)
+
+### Fix
+
+- **webdav**: scope a range read's failed-parse fallback to the slice
+- **webdav**: reap the read-path parse worker, add page-range reads
+
+### Refactor
+
+- **pymupdf**: lift the one_shot check out of process_source
+
+## v0.195.0 (2026-09-19)
+
+### Feat
+
+- **processors**: read legacy and ODF office files via a shared Collabora service (ADR-039)
+- **vector-sync**: discover office and Outlook documents, not only PDFs
+
+### Fix
+
+- **vector-sync**: index only formats this build can read; webhook follows the setting
+- **vector-sync**: treat an empty indexable-MIME list as "index nothing"
+
+### Perf
+
+- **vector-sync**: expand each tagged folder's types concurrently
+
+## v0.194.0 (2026-09-19)
+
+### BREAKING CHANGE
+
+- parsing_metadata keys pptx_pictures_found and
+pptx_pictures_captioned (added in 0.193.0) are renamed to
+pictures_found and pictures_captioned.
+
+### Feat
+
+- **processors**: read .xlsx natively via openpyxl (ADR-038)
+- **processors**: read .docx natively via python-docx (ADR-038)
+
+### Fix
+
+- **xlsx**: order xl/media naturally so the caption cap takes the first pictures
+- **docx**: treat direct numbering as a list item; pin same-paragraph picture order
+- **config**: warn when OFFICE_CAPTION_* and PPTX_CAPTION_* are both set
+
+### Refactor
+
+- **ooxml**: share pptx picture captioning with the other OOXML readers
+
+## v0.193.1 (2026-09-18)
+
+### Fix
+
+- **calendar**: drop semicolon from create_meeting description
+- **calendar**: bind create_meeting events to a timezone (#1502)
+
+## v0.193.0 (2026-09-18)
+
+### Feat
+
+- **pptx**: caption raster pictures via docling-serve (ADR-037)
+
+### Fix
+
+- **pptx**: split the noqa comment from its explanation
+
+### Refactor
+
+- **pptx**: extract caption/assemble helpers out of process()
+
+## v0.192.0 (2026-09-18)
+
+### BREAKING CHANGE
+
+- nc_calendar_bulk_operations skips events that belong to a
+recurring series unless apply_to_series=true is passed; previously the whole
+series was updated or deleted.
+
+### Fix
+
+- **calendar**: bulk ops no longer rewrite a whole recurring series per occurrence
+- **calendar**: set ORGANIZER on events with attendees
+
+## v0.191.0 (2026-09-17)
+
+### Feat
+
+- **processors**: native PPTX reader via python-pptx
+- **docling**: auto-serve OOXML office formats (PPTX/DOCX/XLSX)
+
+### Fix
+
+- **processors**: harden PPTX reader against real-world decks
+
+## v0.190.1 (2026-09-17)
+
+### Fix
+
+- **deps**: bump pact installer sha256 and let renovate manage it
+
+## v0.190.0 (2026-09-17)
+
+### Feat
+
+- **auth**: accept CIMD client_ids and emit RFC 9207 iss (#1470)
+
+### Fix
+
+- **auth**: reject percent-encoded dot segments in a CIMD client_id
+- **auth**: close CIMD NAT64 SSRF gap and rate-limit document fetches
+- **webdav**: use snake_case ToolAnnotations hints on the tag tools
+
+### Refactor
+
+- **auth**: let a registered client win over CIMD resolution
+
+## v0.189.0 (2026-09-16)
+
+### Feat
+
+- **webdav**: add trash bin and file version tools
+
+### Fix
+
+- **webdav**: add OCS header to trash/version calls, skip a redundant fileid lookup
+- **webdav**: correct restore idempotency, refusals and numeric fields
+
+### Refactor
+
+- **webdav**: typed responses and exclusion guards for trash/versions
+
+## v0.188.1 (2026-09-15)
+
+### Fix
+
+- **contacts**: keep the mapper's photo default, opt out only in list/search
+- **contacts**: make photo payloads opt-in and add paging
+
+## v0.188.0 (2026-09-15)
+
+### Feat
+
+- **webdav**: expose file tags
+
+### Fix
+
+- **webdav**: apply @with_links to nc_webdav_find_by_tag_name
+
+### Refactor
+
+- **webdav**: typed responses and exclusion guards for the tag tools
+
 ## v0.187.1 (2026-09-12)
 
 ### Fix

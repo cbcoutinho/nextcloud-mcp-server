@@ -3,10 +3,11 @@
 import datetime as dt
 import json
 import logging
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from caldav.lib.error import PropfindError
 from mcp.client import Client
@@ -169,7 +170,7 @@ async def test_list_tool_forwards_utc_bounds_and_real_display_name(
 
 
 @pytest.mark.parametrize(
-    "error_type", [httpx.TransportError, PropfindError, ValueError]
+    "error_type", [httpx2.TransportError, PropfindError, ValueError]
 )
 async def test_display_name_failure_preserves_events(
     listing, mocker, caplog, error_type: type[Exception]
@@ -198,10 +199,7 @@ async def test_empty_results_skip_display_name_lookup(
     listing, mocker, filtered: bool
 ) -> None:
     mcp, client, _ = listing
-    if filtered:
-        client.calendar._apply_event_filters.return_value = []
-    else:
-        client.calendar.get_calendar_events.return_value = []
+    client.calendar.get_calendar_events.return_value = []
     tool = mcp._tool_manager.get_tool("nc_calendar_list_events")
     result = await tool.fn(
         ctx=mocker.MagicMock(),
@@ -212,6 +210,9 @@ async def test_empty_results_skip_display_name_lookup(
     assert result.events == []
     assert result.total_found == 0
     client.calendar.get_calendar_display_name.assert_not_awaited()
+    assert client.calendar.get_calendar_events.call_args.kwargs["filters"] == (
+        {"title_contains": "no match"} if filtered else None
+    )
 
 
 async def test_display_name_cancellation_propagates(listing, mocker) -> None:
@@ -296,3 +297,38 @@ async def test_mcp_round_trip_preserves_calendar_context_and_reports_bad_input(
     assert data["events"][0]["calendar_display_name"] == "My Calendar"
     assert error.is_error is True
     assert "Invalid start_date" in str(error.content)
+
+
+@pytest.mark.parametrize("limit", [0, 1])
+async def test_local_day_listing_preserves_truncation_and_display_name(
+    listing: tuple[MCPServer, Any, Any], limit: int
+) -> None:
+    """The local-day tool keeps the upstream post-filter truncation contract."""
+    mcp, calendar_client, _ = listing
+    async with Client(mcp) as client:
+        response = await client.call_tool(
+            "nc_calendar_list_events",
+            {
+                "calendar_name": "1",
+                "start_date": "2026-09-15",
+                "end_date": "2026-09-15",
+                "timezone": "Asia/Seoul",
+                "title_contains": "Early",
+                "limit": limit,
+            },
+        )
+    assert response.is_error is False
+    data = json.loads(response.content[0].text)
+    assert data["truncated"] is True
+    assert data["total_found"] == limit
+    assert len(data["events"]) == limit
+    query = calendar_client.calendar.get_calendar_events.call_args.kwargs
+    assert query["start_datetime"] == dt.datetime(2026, 9, 14, 15, tzinfo=dt.UTC)
+    assert query["end_datetime"] == dt.datetime(2026, 9, 15, 15, tzinfo=dt.UTC)
+    assert query["filters"] == {"title_contains": "Early"}
+    assert query["limit"] == limit + 1
+    if limit:
+        assert data["events"][0]["calendar_display_name"] == "My Calendar"
+        calendar_client.calendar.get_calendar_display_name.assert_awaited_once_with("1")
+    else:
+        calendar_client.calendar.get_calendar_display_name.assert_not_awaited()

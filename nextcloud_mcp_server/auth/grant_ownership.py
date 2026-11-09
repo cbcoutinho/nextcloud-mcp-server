@@ -39,7 +39,6 @@ from nextcloud_mcp_server.http import nextcloud_httpx_client
 
 logger = logging.getLogger(__name__)
 
-_OCS_HEADERS = {"OCS-APIRequest": "true"}
 _TIMEOUT = 10.0
 
 
@@ -53,7 +52,7 @@ async def _ocs_whoami(
     if not host:
         return None
 
-    headers = dict(_OCS_HEADERS)
+    headers: dict[str, str] = {}
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
 
@@ -113,7 +112,6 @@ async def revoke_app_password(login_name: str, app_password: str) -> None:
             await client.delete(
                 f"{host.rstrip('/')}/ocs/v2.php/core/apppassword",
                 auth=(login_name, app_password),
-                headers=_OCS_HEADERS,
             )
     except Exception as e:
         logger.warning("Could not revoke the refused Login Flow app password: %s", e)

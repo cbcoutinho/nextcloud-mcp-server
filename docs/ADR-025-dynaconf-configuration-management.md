@@ -272,34 +272,51 @@ Replace repetitive `__post_init__` checks with declarative validators:
 validators = [
     # Required unconditionally — needed in all deployment modes
     Validator("NEXTCLOUD_HOST", must_exist=True),
-
     # Deployment mode validation — catch typos at startup
-    Validator("MCP_DEPLOYMENT_MODE", is_in=[
-        "single_user_basic", "multi_user_basic", "login_flow",
-    ], when=Validator("MCP_DEPLOYMENT_MODE", must_exist=True)),
-
+    Validator(
+        "MCP_DEPLOYMENT_MODE",
+        is_in=[
+            "single_user_basic",
+            "multi_user_basic",
+            "login_flow",
+        ],
+        when=Validator("MCP_DEPLOYMENT_MODE", must_exist=True),
+    ),
     # Type and range validation
     Validator("METRICS_PORT", gte=1, lte=65535),
     Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
     Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
     Validator("DOCUMENT_CHUNK_SIZE", gte=128),
     Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
-
     # OTEL_TRACES_SAMPLER_ARG only validated for ratio-based samplers
     Validator(
-        "OTEL_TRACES_SAMPLER_ARG", gte=0.0, lte=1.0,
+        "OTEL_TRACES_SAMPLER_ARG",
+        gte=0.0,
+        lte=1.0,
         when=Validator("OTEL_TRACES_SAMPLER", condition=lambda v: "ratio" in str(v)),
     ),
-
     # Enum validation
     Validator("LOG_FORMAT", is_in=["text", "json"]),
     Validator("LOG_LEVEL", is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
-    Validator("OTEL_TRACES_SAMPLER", is_in=["always_on", "always_off", "parentbased_always_on", "parentbased_always_off", "traceidratio", "parentbased_traceidratio"]),
-
+    Validator(
+        "OTEL_TRACES_SAMPLER",
+        is_in=[
+            "always_on",
+            "always_off",
+            "parentbased_always_on",
+            "parentbased_always_off",
+            "traceidratio",
+            "parentbased_traceidratio",
+        ],
+    ),
     # Mutual exclusivity: QDRANT_URL and non-default QDRANT_LOCATION cannot both be set.
     # QDRANT_LOCATION defaults to ":memory:", so check for non-default values.
     # Note: Validator does not support `ne=` as a constructor kwarg — use `condition=` instead.
-    Validator("QDRANT_URL", must_exist=False, when=Validator("QDRANT_LOCATION", condition=lambda v: v != ":memory:")),
+    Validator(
+        "QDRANT_URL",
+        must_exist=False,
+        when=Validator("QDRANT_LOCATION", condition=lambda v: v != ":memory:"),
+    ),
 ]
 ```
 
@@ -314,13 +331,22 @@ In **Phase 4 (optional, future)**, these could be migrated to dynaconf `post_hoo
 def handle_deprecations(settings):
     """Map deprecated variable names to current names (ADR-021 compatibility)."""
     overrides = {}
-    if settings.exists("VECTOR_SYNC_ENABLED") and not settings.exists("ENABLE_SEMANTIC_SEARCH"):
+    if settings.exists("VECTOR_SYNC_ENABLED") and not settings.exists(
+        "ENABLE_SEMANTIC_SEARCH"
+    ):
         overrides["ENABLE_SEMANTIC_SEARCH"] = settings.VECTOR_SYNC_ENABLED
-        logger.warning("VECTOR_SYNC_ENABLED is deprecated. Use ENABLE_SEMANTIC_SEARCH instead.")
-    if settings.exists("ENABLE_OFFLINE_ACCESS") and not settings.exists("ENABLE_BACKGROUND_OPERATIONS"):
+        logger.warning(
+            "VECTOR_SYNC_ENABLED is deprecated. Use ENABLE_SEMANTIC_SEARCH instead."
+        )
+    if settings.exists("ENABLE_OFFLINE_ACCESS") and not settings.exists(
+        "ENABLE_BACKGROUND_OPERATIONS"
+    ):
         overrides["ENABLE_BACKGROUND_OPERATIONS"] = settings.ENABLE_OFFLINE_ACCESS
-        logger.warning("ENABLE_OFFLINE_ACCESS is deprecated. Use ENABLE_BACKGROUND_OPERATIONS instead.")
+        logger.warning(
+            "ENABLE_OFFLINE_ACCESS is deprecated. Use ENABLE_BACKGROUND_OPERATIONS instead."
+        )
     return overrides if overrides else None
+
 
 # Usage: Dynaconf(post_hooks=[handle_deprecations, resolve_dependencies], ...)
 ```
@@ -344,13 +370,16 @@ def resolve_dependencies(settings):
         or (
             mode != "single_user_basic"
             and not (
-                settings.get("NEXTCLOUD_USERNAME") and settings.get("NEXTCLOUD_PASSWORD")
+                settings.get("NEXTCLOUD_USERNAME")
+                and settings.get("NEXTCLOUD_PASSWORD")
             )
         )
     )
     if settings.get("ENABLE_SEMANTIC_SEARCH", False) and is_multi_user:
         if not settings.get("ENABLE_BACKGROUND_OPERATIONS", False):
-            logger.info("Auto-enabled background operations for semantic search in multi-user mode.")
+            logger.info(
+                "Auto-enabled background operations for semantic search in multi-user mode."
+            )
             return {"ENABLE_BACKGROUND_OPERATIONS": True}
     return None
 ```
@@ -363,6 +392,7 @@ During migration, `get_settings()` continues to return the `Settings` dataclass,
 from dynaconf import Dynaconf
 
 _dynaconf = Dynaconf(...)  # As configured above
+
 
 def get_settings() -> Settings:
     """Get application settings — backed by dynaconf."""
@@ -400,6 +430,7 @@ Tests must not be affected by `settings.toml` or `.secrets.toml` being present i
 import pytest
 from dynaconf import Dynaconf
 
+
 @pytest.fixture
 def test_settings(tmp_path):
     """Create a fresh Dynaconf instance with no file-based config."""
@@ -419,12 +450,15 @@ def test_settings(tmp_path):
 ```python
 from dynaconf import DynaconfDict
 
+
 def test_something():
     """Use DynaconfDict when only a few values are needed."""
-    mock_settings = DynaconfDict({
-        "NEXTCLOUD_HOST": "https://test.example.com",
-        "ENABLE_SEMANTIC_SEARCH": False,
-    })
+    mock_settings = DynaconfDict(
+        {
+            "NEXTCLOUD_HOST": "https://test.example.com",
+            "ENABLE_SEMANTIC_SEARCH": False,
+        }
+    )
     result = some_function(mock_settings)
 ```
 
@@ -443,6 +477,7 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("SETTINGS_FILE_FOR_DYNACONF", str(tmp_path / "empty.toml"))
     (tmp_path / "empty.toml").write_text("[default]\n")
     from nextcloud_mcp_server.config import _dynaconf
+
     _dynaconf.reload()
     yield
     _dynaconf.reload()

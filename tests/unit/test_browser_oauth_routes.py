@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -38,52 +38,31 @@ def _fake_settings(*, cookie_secure, mcp_server_url=""):
 
 
 @pytest.mark.parametrize(
-    "value,expected",
+    ("cookie_secure", "mcp_server_url", "expected"),
     [
-        (True, True),
-        (False, False),
-        ("true", True),
-        ("false", False),
-        ("True", True),
-        ("FALSE", False),
-        ("0", False),
-        ("1", True),
-        ("no", False),
-        ("yes", True),
-        ("off", False),
-        ("on", True),
-        ("", False),
+        # An explicit setting wins over the scheme, in both directions.
+        ("false", "https://mcp.example.com", False),
+        ("True", "http://localhost:8000", True),
+        # Unset or unrecognised: decided by the scheme this server is served on.
+        (None, "https://mcp.example.com", True),
+        (None, "http://localhost:8000", False),
+        ("ture", "https://mcp.example.com", True),
+        ("ture", "http://localhost:8000", False),
     ],
 )
-def test_should_use_secure_cookies_string_coercion(monkeypatch, value, expected):
+def test_should_use_secure_cookies(
+    monkeypatch, cookie_secure, mcp_server_url, expected
+):
+    """Spellings are parse_bool's job (tests/unit/utils/test_parsing.py); this
+    pins only how the setting and the scheme combine."""
     monkeypatch.setattr(
         browser_oauth_routes,
         "get_settings",
-        lambda: _fake_settings(cookie_secure=value),
+        lambda: _fake_settings(
+            cookie_secure=cookie_secure, mcp_server_url=mcp_server_url
+        ),
     )
     assert browser_oauth_routes._should_use_secure_cookies() is expected
-
-
-def test_should_use_secure_cookies_falls_back_to_https_scheme(monkeypatch):
-    monkeypatch.setattr(
-        browser_oauth_routes,
-        "get_settings",
-        lambda: _fake_settings(
-            cookie_secure=None, mcp_server_url="https://mcp.example.com"
-        ),
-    )
-    assert browser_oauth_routes._should_use_secure_cookies() is True
-
-
-def test_should_use_secure_cookies_falls_back_to_http_scheme(monkeypatch):
-    monkeypatch.setattr(
-        browser_oauth_routes,
-        "get_settings",
-        lambda: _fake_settings(
-            cookie_secure=None, mcp_server_url="http://localhost:8000"
-        ),
-    )
-    assert browser_oauth_routes._should_use_secure_cookies() is False
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +121,9 @@ async def test_callback_rejects_token_response_without_refresh_token(
         "token_endpoint": "http://idp.example/token",
     }
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/.well-known/openid-configuration"):
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(discovery).encode(),
                 headers={"content-type": "application/json"},
@@ -152,7 +131,7 @@ async def test_callback_rejects_token_response_without_refresh_token(
         if str(request.url) == "http://idp.example/token":
             # Successful token exchange but no refresh_token (e.g. IdP
             # config without offline_access).
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 content=json.dumps(
                     {
@@ -163,13 +142,13 @@ async def test_callback_rejects_token_response_without_refresh_token(
                 ).encode(),
                 headers={"content-type": "application/json"},
             )
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
     def fake_client(**kwargs):
         kwargs["transport"] = transport
-        return httpx.AsyncClient(**kwargs)
+        return httpx2.AsyncClient(**kwargs)
 
     request = MagicMock()
     request.query_params = {"code": "abc", "state": state}

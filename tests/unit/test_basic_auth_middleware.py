@@ -3,8 +3,25 @@
 import base64
 
 import pytest
+from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.app import BasicAuthMiddleware
+
+
+@pytest.fixture(autouse=True)
+def validate(mocker):
+    """Stub the Nextcloud credential check; accept by default."""
+    return mocker.patch(
+        "nextcloud_mcp_server.app._validate_nextcloud_credentials",
+        return_value=("uid", None),
+    )
+
+
+def _basic_scope(creds: bytes) -> dict:
+    return {
+        "type": "http",
+        "headers": [(b"authorization", b"Basic " + base64.b64encode(creds))],
+    }
 
 
 class MockApp:
@@ -66,24 +83,27 @@ async def test_basic_auth_middleware_password_with_colon():
 
 
 @pytest.mark.unit
-async def test_basic_auth_middleware_invalid_base64():
-    """Test that middleware handles invalid base64 encoding gracefully."""
-    # Arrange
+@pytest.mark.parametrize(
+    "header",
+    [
+        b"Basic INVALID_BASE64!!!",
+        b"Basic " + base64.b64encode(b"username_no_password"),
+        b"Basic " + base64.b64encode(b"\xff\xfe:pw"),
+    ],
+    ids=["bad-base64", "no-colon", "non-utf8"],
+)
+async def test_basic_auth_middleware_malformed_header_rejected(validate, header):
+    """A Basic header that can't be parsed is rejected, not passed through."""
     mock_app = MockApp()
     middleware = BasicAuthMiddleware(mock_app)
+    send = _Sent()
+    scope = {"type": "http", "headers": [(b"authorization", header)]}
 
-    scope = {
-        "type": "http",
-        "headers": [(b"authorization", b"Basic INVALID_BASE64!!!")],
-    }
+    await middleware(scope, None, send)  # type: ignore[arg-type]
 
-    # Act
-    await middleware(scope, None, None)  # type: ignore[arg-type]
-
-    # Assert
-    assert mock_app.called
-    # Should not have basic_auth in state due to error
-    assert "basic_auth" not in scope.get("state", {})
+    assert not mock_app.called
+    assert send.messages[0]["status"] == 401
+    validate.assert_not_called()
 
 
 @pytest.mark.unit
@@ -125,29 +145,6 @@ async def test_basic_auth_middleware_wrong_auth_scheme():
     # Assert
     assert mock_app.called
     # Should not have basic_auth in state
-    assert "basic_auth" not in scope.get("state", {})
-
-
-@pytest.mark.unit
-async def test_basic_auth_middleware_malformed_credentials():
-    """Test that middleware handles credentials without colon separator."""
-    # Arrange
-    mock_app = MockApp()
-    middleware = BasicAuthMiddleware(mock_app)
-
-    # Credentials without colon separator
-    credentials = base64.b64encode(b"username_no_password").decode("utf-8")
-    scope = {
-        "type": "http",
-        "headers": [(b"authorization", f"Basic {credentials}".encode())],
-    }
-
-    # Act
-    await middleware(scope, None, None)  # type: ignore[arg-type]
-
-    # Assert
-    assert mock_app.called
-    # Should not have basic_auth in state due to error
     assert "basic_auth" not in scope.get("state", {})
 
 
@@ -239,3 +236,58 @@ async def test_basic_auth_middleware_unicode_credentials():
     assert mock_app.called
     assert scope["state"]["basic_auth"]["username"] == "üser"
     assert scope["state"]["basic_auth"]["password"] == "pässwörd"
+
+
+class _Sent:
+    """Collect ASGI messages sent by a short-circuited response."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def __call__(self, message):
+        self.messages.append(message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", [401, 502])
+async def test_basic_auth_middleware_rejects_unverified_credentials(validate, status):
+    """A credential Nextcloud rejects (or can't check) never reaches a handler."""
+    validate.return_value = (None, JSONResponse({}, status_code=status))
+    mock_app = MockApp()
+    middleware = BasicAuthMiddleware(mock_app)
+    send = _Sent()
+
+    await middleware(_basic_scope(b"alice:wrong"), None, send)  # type: ignore[arg-type]
+
+    assert not mock_app.called
+    start = send.messages[0]
+    assert start["status"] == status
+    assert (b"www-authenticate", b'Basic realm="nextcloud"') in start["headers"]
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_caches_valid_credentials(validate):
+    """A verified credential is not re-checked within the TTL; a different
+    password for the same user is."""
+    middleware = BasicAuthMiddleware(MockApp())
+
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+    assert validate.call_count == 1
+
+    await middleware(_basic_scope(b"alice:other"), None, None)  # type: ignore[arg-type]
+    assert validate.call_count == 2
+
+
+@pytest.mark.unit
+async def test_basic_auth_middleware_cache_expires(validate):
+    """After the TTL a cached credential is checked against Nextcloud again."""
+    middleware = BasicAuthMiddleware(MockApp())
+
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+    # Expire the entry rather than patching time.monotonic, which the event
+    # loop's own clock also reads.
+    middleware._validated = dict.fromkeys(middleware._validated, 0.0)
+    await middleware(_basic_scope(b"alice:right"), None, None)  # type: ignore[arg-type]
+
+    assert validate.call_count == 2

@@ -200,10 +200,7 @@ async with anyio.create_task_group() as tg:
             continue
         tg.start_soon(_run_verifier, verifier, dtype, items, accessible_by_type)
 
-return [
-    r for r in results
-    if r.id in accessible_by_type.get(r.doc_type, set())
-]
+return [r for r in results if r.id in accessible_by_type.get(r.doc_type, set())]
 ```
 
 A verifier crash maps to "keep all" for that type — we do not want a flaky network blip to silently shrink results.
@@ -219,7 +216,7 @@ Eviction is fire-and-forget from the verification path — wrap it in a backgrou
 In `server/semantic.py::nc_semantic_search`, after the existing dedup and `[:limit]` slice, but **before** context expansion (which is expensive and pointless on inaccessible results):
 
 ```python
-search_results = all_results[:limit * 2]  # fetch extra to absorb evictions
+search_results = all_results[: limit * 2]  # fetch extra to absorb evictions
 search_results = await verify_search_results(client, search_results)
 search_results = search_results[:limit]
 ```

@@ -6,9 +6,9 @@ One wire format covers every backend we care about — Cohere itself
 embedding gateway (``POST /v1/rerank``): request ``{model, query, documents,
 top_n}``, response ``{"results": [{"index", "relevance_score"}]}``. So this is a
 single client and *which* reranker you use is configuration
-(:func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`), not a code path.
+(:func:`nextcloud_mcp_server.features.rerank_endpoint`), not a code path.
 
-A plain-httpx client rather than a :class:`~.base.Provider`: the ``Provider`` ABC
+A plain-httpx2 client rather than a :class:`~.base.Provider`: the ``Provider`` ABC
 is an embedding contract (``embed``/``embed_batch``/``get_dimension``) and a
 reranker satisfies none of it. Mirrors :mod:`.gateway_batch`, the existing
 precedent for a non-embedding upstream surface.
@@ -17,7 +17,7 @@ precedent for a non-embedding upstream surface.
 import logging
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 
 from .gateway import GatewayTokenProvider
 
@@ -106,7 +106,7 @@ class RerankClient:
                 backend (``/rerank``, ``/v1/rerank``, ``/v2/rerank``) and
                 guessing wrong degrades silently to retrieval order rather than
                 erroring. Callers derive it in one place — see
-                :func:`nextcloud_mcp_server.search.rerank.rerank_endpoint`.
+                :func:`nextcloud_mcp_server.features.rerank_endpoint`.
             model: Model id as the endpoint expects it. The Astrolabe gateway
                 needs a ``<provider>/`` prefix; a direct Infinity/vLLM/Cohere
                 endpoint wants the bare id.
@@ -179,8 +179,8 @@ class RerankClient:
             # deliberately aggressive settings, which is exactly when a caller
             # is relying on the number they set.
             connect_timeout = min(_RERANK_CONNECT_TIMEOUT_SECONDS, self._timeout)
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout, connect=connect_timeout)
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(self._timeout, connect=connect_timeout)
             ) as client:
                 resp = await client.post(
                     self._url,
@@ -189,7 +189,7 @@ class RerankClient:
                 )
                 resp.raise_for_status()
                 body = resp.json()
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             raise RerankError(
                 f"rerank endpoint returned HTTP {e.response.status_code}"
             ) from e

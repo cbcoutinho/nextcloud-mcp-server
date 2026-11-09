@@ -49,7 +49,7 @@ class AstrolabeClient:
             Access token string
 
         Raises:
-            httpx.HTTPError: If token request fails
+            httpx2.HTTPError: If token request fails
         """
         # Check cache
         if self._token_cache and time.time() < self._token_cache["expires_at"]:
@@ -108,7 +108,7 @@ class AstrolabeClient:
             provisioned_at (int | None) — Unix seconds, not an ISO string.
 
         Raises:
-            httpx.HTTPError: If the API request fails (except 404, treated as
+            httpx2.HTTPError: If the API request fails (except 404, treated as
             "not provisioned").
         """
         token = await self.get_access_token()

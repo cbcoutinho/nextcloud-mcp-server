@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 import pytest
 from caldav.lib import error as caldav_error
 
@@ -15,11 +15,11 @@ pytestmark = pytest.mark.unit
 _APP_PW = "app-pw"  # NOSONAR(S2068)
 
 
-def _http_response(content: bytes = b"", status_code: int = 207) -> httpx.Response:
-    return httpx.Response(
+def _http_response(content: bytes = b"", status_code: int = 207) -> httpx2.Response:
+    return httpx2.Response(
         status_code,
         content=content,
-        request=httpx.Request("PROPFIND", "https://cloud.example.org/remote.php/dav/"),
+        request=httpx2.Request("PROPFIND", "https://cloud.example.org/remote.php/dav/"),
     )
 
 
@@ -106,13 +106,13 @@ def _calendar_multistatus(principal_id: str) -> str:
 </d:multistatus>"""
 
 
-def _request_error() -> httpx.RequestError:
-    request = httpx.Request("PROPFIND", "https://cloud.example.org/remote.php/dav/")
-    return httpx.RequestError("temporary DAV discovery failure", request=request)
+def _request_error() -> httpx2.RequestError:
+    request = httpx2.Request("PROPFIND", "https://cloud.example.org/remote.php/dav/")
+    return httpx2.RequestError("temporary DAV discovery failure", request=request)
 
 
 async def test_webdav_public_method_discovers_divergent_principal(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     client._make_request = mocker.AsyncMock(
         side_effect=[
             _http_response(_principal_body("alice_1234")),
@@ -131,7 +131,7 @@ async def test_webdav_public_method_discovers_divergent_principal(mocker):
 
 
 def test_webdav_search_scope_uses_discovered_principal(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     client._principal_id = "alice_1234"
 
     body = client._build_search_xml(
@@ -146,7 +146,7 @@ def test_webdav_search_scope_uses_discovered_principal(mocker):
 
 
 async def test_webdav_equal_principal_keeps_username_path(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     file_response = _http_response(b"hello", status_code=200)
     file_response.headers["content-type"] = "text/plain"
     client._make_request = mocker.AsyncMock(
@@ -162,7 +162,7 @@ async def test_webdav_equal_principal_keeps_username_path(mocker):
 
 
 async def test_webdav_discovery_failure_falls_back_to_username(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     file_response = _http_response(b"fallback", status_code=200)
     file_response.headers["content-type"] = "text/plain"
     client._make_request = mocker.AsyncMock(
@@ -178,7 +178,7 @@ async def test_webdav_discovery_failure_falls_back_to_username(mocker):
 
 
 async def test_webdav_successful_discovery_is_cached_per_instance(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     client._make_request = mocker.AsyncMock(
         side_effect=[
             _http_response(_principal_body("alice_1234")),
@@ -199,7 +199,7 @@ async def test_webdav_successful_discovery_is_cached_per_instance(mocker):
 
 
 async def test_webdav_principal_href_is_unquoted(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     file_response = _http_response(b"mailbox", status_code=200)
     file_response.headers["content-type"] = "text/plain"
     client._make_request = mocker.AsyncMock(
@@ -220,7 +220,7 @@ async def test_webdav_principal_href_is_unquoted(mocker):
 
 
 async def test_webdav_missing_principal_href_falls_back_without_caching(mocker):
-    client = WebDAVClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = WebDAVClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     first_file = _http_response(b"fallback", status_code=200)
     first_file.headers["content-type"] = "text/plain"
     second_file = _http_response(b"discovered", status_code=200)
@@ -249,7 +249,7 @@ async def test_webdav_missing_principal_href_falls_back_without_caching(mocker):
 
 
 async def test_carddav_public_method_discovers_divergent_principal(mocker):
-    client = ContactsClient(mocker.AsyncMock(spec=httpx.AsyncClient), "alice")
+    client = ContactsClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "alice")
     client._make_request = mocker.AsyncMock(
         side_effect=[
             _http_response(_principal_body("alice_1234")),

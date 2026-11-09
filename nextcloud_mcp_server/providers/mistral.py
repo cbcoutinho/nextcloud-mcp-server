@@ -49,7 +49,7 @@ def _is_transient(exc: BaseException) -> bool:
 
     Scope is deliberately SDK-level: only ``SDKError`` (an HTTP-status error) is
     caught by the decorator, so a pure connection drop that the Mistral SDK
-    surfaces as a bare ``httpx``/``ConnectionError`` is NOT retried here. The
+    surfaces as a bare ``httpx2``/``ConnectionError`` is NOT retried here. The
     primary pod-rollover resilience target (card 309) is the gateway path via
     the OpenAI-compatible client, which does cover connection errors; direct
     Mistral is a self-hoster fallback where 429/5xx is the common transient.
@@ -268,6 +268,6 @@ class MistralProvider(Provider):
         # The mistralai 2.x client (Speakeasy-generated) does not expose a
         # public close()/aclose() — only the async-context-manager protocol
         # (__aenter__/__aexit__). Calling __aexit__ directly is internal API
-        # and brittle across SDK patch versions; the underlying httpx client
+        # and brittle across SDK patch versions; the underlying httpx2 client
         # is closed during garbage collection, so we leave this as a no-op.
         return None

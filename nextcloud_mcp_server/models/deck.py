@@ -111,7 +111,9 @@ class DeckCard(BaseModel):
     owner: Union[str, DeckUser]  # Can be either string or user object
     description: Optional[str] = None
     duedate: Optional[datetime] = None
+    startdate: Optional[datetime] = None  # Deck >= 1.18
     done: Optional[datetime] = None
+    color: Optional[str] = None  # Deck >= 1.18; bare hex, e.g. "FF0000"
     lastModified: Optional[int] = None
     createdAt: Optional[int] = None
     labels: Optional[List[DeckLabel]] = None
@@ -121,6 +123,8 @@ class DeckCard(BaseModel):
     attachmentCount: Optional[int] = None
     deletedAt: Optional[int] = None
     commentsUnread: Optional[int] = None
+    commentsCount: Optional[int] = None
+    lastEditor: Optional[str] = None
     overdue: Optional[int] = None
     etag: Optional[str] = Field(default=None, alias="ETag")
     url: str | None = Field(default=None, description=CARD_URL_DESCRIPTION)
@@ -172,7 +176,9 @@ class DeckCardSummary(BaseModel):
     stackId: int
     archived: bool = False
     duedate: datetime | None = None
+    startdate: datetime | None = None
     done: datetime | None = None
+    color: str | None = Field(default=None, description="Card color (bare hex)")
     labels: list[str] = Field(
         default_factory=list, description="Label titles assigned to the card"
     )
@@ -183,7 +189,10 @@ class DeckCardSummary(BaseModel):
         default=None, description="Number of attachments on the card"
     )
     commentsUnread: int | None = Field(
-        default=None, description="Number of unread comments (Deck exposes no total)"
+        default=None, description="Number of unread comments"
+    )
+    commentsCount: int | None = Field(
+        default=None, description="Total number of comments"
     )
     hasDescription: bool = Field(
         default=False, description="Whether the card has a non-empty description"

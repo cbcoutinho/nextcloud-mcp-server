@@ -50,6 +50,7 @@ class _Settings:
     search_rerank_timeout_seconds = 30.0
     search_rerank_max_concurrency = 1
     vector_search_rrf_k = 60
+    search_embedding_timeout_seconds = 10.0
 
     def get_collection_name(self):
         return _COLLECTION

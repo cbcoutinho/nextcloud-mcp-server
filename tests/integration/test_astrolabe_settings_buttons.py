@@ -14,7 +14,7 @@ These tests assert the *current* HTTP surface of the settings page:
 - the personal settings page route resolves
 """
 
-import httpx
+import httpx2
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -28,7 +28,7 @@ _UNAUTH = {401, 302, 303, 307, 308}
 
 async def test_revoke_endpoint_requires_auth():
     """The background-sync revoke endpoint exists and rejects anonymous calls."""
-    async with httpx.AsyncClient(follow_redirects=False) as client:
+    async with httpx2.AsyncClient(follow_redirects=False) as client:
         resp = await client.post(
             f"{ASTROLABE}/api/v1/background-sync/credentials/revoke",
             headers={"OCS-APIRequest": "true"},
@@ -47,7 +47,7 @@ async def test_obsolete_oauth_disconnect_route_removed():
     (and the rest of the OAuth authorize/callback/disconnect surface) was
     removed in favour of session-minted JWTs.
     """
-    async with httpx.AsyncClient(follow_redirects=False) as client:
+    async with httpx2.AsyncClient(follow_redirects=False) as client:
         resp = await client.post(f"{ASTROLABE}/oauth/disconnect")
     assert resp.status_code == 404, (
         f"obsolete oauth/disconnect route still resolves ({resp.status_code})"
@@ -56,7 +56,7 @@ async def test_obsolete_oauth_disconnect_route_removed():
 
 async def test_settings_page_route_resolves():
     """The personal settings page route exists (auth-gated when no session)."""
-    async with httpx.AsyncClient(follow_redirects=False) as client:
+    async with httpx2.AsyncClient(follow_redirects=False) as client:
         resp = await client.get(f"{NEXTCLOUD_URL}/settings/user/astrolabe")
     assert resp.status_code in ({200} | _UNAUTH), (
         f"unexpected status for settings page: {resp.status_code}"

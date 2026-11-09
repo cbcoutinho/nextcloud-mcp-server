@@ -35,8 +35,9 @@ import json
 import logging
 import os
 
-import httpx
+import httpx2
 import pytest
+from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult
 
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
@@ -51,7 +52,7 @@ async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
 
     # Test the PRM endpoint directly (RFC 9728 - path includes /mcp resource)
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8004/.well-known/oauth-protected-resource/mcp"
         )
@@ -107,6 +108,7 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
     expected_read_tools = [
         "nc_notes_get_note",  # notes.read
         "nc_notes_search_notes",  # notes.read
+        "nc_notes_list_notes",  # notes.read
         "nc_calendar_list_calendars",  # calendar.read
         "nc_calendar_get_event",  # calendar.read
     ]
@@ -144,7 +146,7 @@ async def _set_stored_scopes(user_id: str, password: str, scopes: list[str]) -> 
     That makes it the cheapest way to put a provisioned session into a
     restricted state without driving a second browser login flow.
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.patch(
             f"{LOGIN_FLOW_MCP_BASE_URL}/api/v1/users/{user_id}/scopes",
             json={"scopes": scopes},
@@ -228,6 +230,38 @@ async def test_token_scopes_enforced_on_tool_call(
     assert "notes.write" in message, (
         f"expected the missing scope to be named in the denial, got: {message}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.login_flow
+@pytest.mark.parametrize(
+    "uri", ["notes://settings", "nc://Deck/boards", "nc://Notes/1"]
+)
+async def test_token_scopes_enforced_on_resource_read(
+    nc_mcp_login_flow_client,
+    nc_mcp_login_flow_client_no_custom_scopes,
+    uri,
+):
+    """resources/read must enforce the same scopes as the tools
+    (GHSA-29mh-jqx8-rg3v): an openid-only token was able to read notes/deck
+    data the matching tools refused.
+
+    Depends on nc_mcp_login_flow_client only to guarantee the user is
+    provisioned, so the refusal comes from the scope check rather than from
+    ProvisioningRequiredError.
+    """
+    with pytest.raises(MCPError):
+        await nc_mcp_login_flow_client_no_custom_scopes.read_resource(uri)
+
+
+@pytest.mark.integration
+@pytest.mark.login_flow
+async def test_resource_read_allowed_with_scope(nc_mcp_login_flow_client_full_access):
+    """The positive mirror: the scope gate must not lock out a granted token."""
+    result = await nc_mcp_login_flow_client_full_access.read_resource(
+        "notes://settings"
+    )
+    assert result.contents
 
 
 @pytest.mark.integration
@@ -379,6 +413,7 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
     expected_read_tools = [
         "nc_notes_get_note",  # notes.read
         "nc_notes_search_notes",  # notes.read
+        "nc_notes_list_notes",  # notes.read
         "nc_calendar_list_calendars",  # calendar.read
     ]
 
@@ -507,7 +542,7 @@ async def test_scope_classification():
     """Test that our scope classification correctly identifies read vs write operations."""
     # `scripts/` is a dev-only helper dir (not an installed package); resolved
     # at runtime via the repo root on sys.path, so ty can't see it.
-    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[import-not-found]
         classify_function,
     )
 
@@ -542,7 +577,7 @@ async def test_all_tools_classified():
     """Verify that all tools can be properly classified as read or write."""
     # `scripts/` is a dev-only helper dir (not an installed package); resolved
     # at runtime via the repo root on sys.path, so ty can't see it.
-    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[import-not-found]
         classify_function,
     )
 

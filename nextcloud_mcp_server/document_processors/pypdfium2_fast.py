@@ -22,9 +22,9 @@ from typing import Any
 import anyio
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.document_source import DocumentSource, resolve_path
 
 from .base import DocumentProcessor, ProcessingResult
-from .source import DocumentSource, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ class Pypdfium2FastProcessor(DocumentProcessor):
             await progress_callback(0, 100, "Extracting text (pypdfium2)")
         settings = get_settings()
         try:
-            full_text, metadata = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+            full_text, metadata = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                 _extract, content, settings.document_parse_page_window
             )
         except Exception as e:

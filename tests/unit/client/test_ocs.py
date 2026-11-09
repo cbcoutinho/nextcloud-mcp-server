@@ -7,9 +7,10 @@ server failure.
 """
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.client.ocs import (
-    OCS_REQUEST_HEADERS,
     OCS_STATUS_UNAUTHENTICATED,
     describe_ocs_failure,
     parse_ocs_envelope,
@@ -17,29 +18,100 @@ from nextcloud_mcp_server.client.ocs import (
 
 pytestmark = pytest.mark.unit
 
+#: Any JSON value. Floats include inf/nan: ``json.loads`` accepts ``Infinity``.
+json_values = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: (
+        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
+    ),
+    max_leaves=10,
+)
 
-def _envelope(status_code: int, message: str = "OK", data=None) -> dict:
-    return {
-        "ocs": {
-            "meta": {"status": "ok", "statuscode": status_code, "message": message},
-            "data": data,
+
+@given(
+    json_values
+    | st.fixed_dictionaries(
+        {
+            "ocs": st.fixed_dictionaries(
+                {}, optional={"meta": json_values, "data": json_values}
+            )
+            | json_values
         }
-    }
+    )
+)
+@example(None)
+@example("not json")
+@example([])
+@example({})
+@example({"ocs": None})
+@example({"ocs": "nope"})
+def test_any_body_parses_without_raising(payload):
+    """Every caller is already handling a failed request when it gets here, so
+    a ``KeyError``/``TypeError`` from parsing would replace a diagnosable server
+    error with an opaque one. Whatever arrives, the parser describes it."""
+    envelope = parse_ocs_envelope(payload)
+
+    assert isinstance(envelope.status_code, int)
+    assert isinstance(envelope.message, str) and envelope.message
+    ocs = payload.get("ocs") if isinstance(payload, dict) else None
+    if not isinstance(ocs, dict):
+        assert not envelope.is_success
+    else:
+        # has_data separates "no data field" (malformed to collectives) from
+        # "data was null"; the distinction is lost if callers test for None.
+        assert envelope.has_data == ("data" in ocs)
+        assert envelope.data is ocs.get("data")
 
 
-@pytest.mark.parametrize("status_code", [100, 200])
-def test_both_documented_success_codes_are_accepted(status_code):
-    """100 is OCS v1's success, 200 is v2's -- which one arrives depends only
-    on the route, so treating either as failure breaks half the API."""
-    envelope = parse_ocs_envelope(_envelope(status_code, data={"id": 1}))
+@st.composite
+def statuscodes(draw):
+    """A raw ``meta.statuscode`` and the status it must parse to.
 
-    assert envelope.is_success
-    assert envelope.data == {"id": 1}
+    Present-but-falsy (``0``, ``""``, ``None``) defaults to 200, as mail's parser
+    did: otherwise it crosses mail's ``>= 400`` gate and turns a success into a
+    raised error (#1343). A non-numeric value is not something to report as
+    success, so it is 500.
+    """
+    kind = draw(st.sampled_from(["int", "numeric", "falsy", "junk"]))
+    if kind == "int":
+        code = draw(st.integers(1, 1000) | st.sampled_from([100, 200, 997]))
+        return code, code
+    if kind == "numeric":
+        code = draw(st.integers(1, 1000))
+        return f" {code} ", code
+    if kind == "falsy":
+        return draw(st.sampled_from([0, "", None, False])), 200
+    junk = draw(
+        st.text().filter(lambda s: s.strip() and not _parses_as_int(s))
+        | st.sampled_from([float("inf"), float("-inf"), float("nan")])
+        | st.lists(st.integers(), min_size=1)
+    )
+    return junk, 500
 
 
-@pytest.mark.parametrize("status_code", [400, 403, 404, 997, 998])
-def test_non_success_codes_are_reported_as_failures(status_code):
-    assert not parse_ocs_envelope(_envelope(status_code)).is_success
+def _parses_as_int(text: str) -> bool:
+    try:
+        int(text)
+    except ValueError:
+        return False
+    return True
+
+
+@given(statuscodes(), st.none() | st.text())
+@example((100, 100), "OK")  # OCS v1 success: which one arrives depends on the route
+@example((200, 200), "OK")  # OCS v2 success
+@example((float("inf"), 500), None)  # int(inf) raised OverflowError
+def test_statuscode_decides_success_and_message_falls_back(case, message):
+    raw, expected = case
+    meta = {"statuscode": raw} | ({} if message is None else {"message": message})
+
+    envelope = parse_ocs_envelope({"ocs": {"meta": meta}})
+
+    assert envelope.status_code == expected
+    assert envelope.is_success == (expected in {100, 200})
+    # One shared fallback for all three clients, used only when the server sent
+    # no message -- a decision on record, not drift.
+    assert envelope.message == (message or "Unknown error")
 
 
 def test_997_names_both_of_its_causes():
@@ -66,83 +138,6 @@ def test_other_failures_keep_the_server_message():
     assert "OCS-APIRequest" not in described
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        None,
-        "not json",
-        [],
-        {},
-        {"ocs": None},
-        {"ocs": "nope"},
-        {"ocs": {"meta": {"statuscode": "not-a-number"}}},
-    ],
-)
-def test_unparseable_payloads_report_failure_without_raising(payload):
-    """A body that is not a usable envelope must describe itself, not raise.
-
-    Every caller is already handling a failed request when it gets here, so a
-    ``KeyError``/``TypeError`` from parsing would replace a diagnosable server
-    error with an opaque one.
-    """
-    envelope = parse_ocs_envelope(payload)
-
-    assert not envelope.is_success
-    assert envelope.message
-
-
-@pytest.mark.parametrize("payload", [{"ocs": {}}, {"ocs": {"meta": None}}])
-def test_absent_meta_is_treated_as_success(payload):
-    """An envelope with no usable ``meta`` defaults to 200, i.e. success.
-
-    Deliberate: all three clients did this before the extraction
-    (``meta.get("statuscode", 200)``), and OCS omits ``meta`` only on responses
-    that succeeded. Tightening it to a failure would be a behaviour change
-    smuggled in under a refactor, so it is pinned here rather than left to be
-    "corrected" by someone reading the parser in isolation.
-    """
-    assert parse_ocs_envelope(payload).is_success
-
-
-def test_missing_data_key_is_distinguishable_from_null_data():
-    """``has_data`` separates "no data field" from "data was null".
-
-    The collectives client treats the former as a malformed response; the
-    distinction is lost if callers only test ``data is None``.
-    """
-    absent = parse_ocs_envelope({"ocs": {"meta": {"statuscode": 200}}})
-    present = parse_ocs_envelope(_envelope(200, data=None))
-
-    assert not absent.has_data
-    assert present.has_data
-
-
-def test_request_headers_carry_the_csrf_header():
-    """Shipping the header from one place is what stops a new call site
-    forgetting it and then hitting the 997 it just made confusing."""
-    assert OCS_REQUEST_HEADERS["OCS-APIRequest"] == "true"
-
-
-@pytest.mark.parametrize("raw", [0, "", None])
-def test_falsy_statuscode_falls_back_to_success(raw):
-    """A present-but-falsy statuscode defaults to 200, as mail's parser did.
-
-    Without this an empty statuscode resolves to 500, which crosses mail's
-    ``>= 400`` gate and turns a response that previously succeeded into a
-    raised error. Caught in review of #1343.
-    """
-    payload = {"ocs": {"meta": {"statuscode": raw}, "data": {}}}
-
-    assert parse_ocs_envelope(payload).is_success
-
-
-def test_unreadable_statuscode_is_a_failure():
-    """A non-numeric status is not something to report as success."""
-    payload = {"ocs": {"meta": {"statuscode": "not-a-number"}}}
-
-    assert parse_ocs_envelope(payload).status_code == 500
-
-
 def test_collectives_error_string_is_not_double_prefixed():
     """``str(OCSError)`` must not repeat the status code.
 
@@ -166,19 +161,3 @@ def test_collectives_error_string_is_not_double_prefixed():
     assert rendered.count("404") == 1, rendered
     assert not rendered.startswith("OCS error 404:")
     assert exc_info.value.status_code == 404
-
-
-@pytest.mark.parametrize(
-    "meta", [{"statuscode": 404}, {"statuscode": 404, "message": ""}]
-)
-def test_absent_server_message_uses_one_shared_default(meta):
-    """All three clients now share a single "no message" fallback.
-
-    They used to differ ("Unknown error" / "OCS error" / "Unknown OCS error").
-    Consolidating is deliberate -- the text appears only when the server sent no
-    message, so a per-client variant conveys nothing actionable -- but it is
-    pinned here so the change is a decision on record rather than drift.
-    """
-    envelope = parse_ocs_envelope({"ocs": {"meta": meta}})
-
-    assert envelope.message == "Unknown error"

@@ -1,8 +1,8 @@
 """Unit tests for the LLM-friendly tool-error formatter (GH #1208)."""
 
-import httpx
+import httpx2
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
@@ -20,10 +20,10 @@ def _http_error(
     url: str = DAV_URL,
     body: str = "",
     headers: dict[str, str] | None = None,
-) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", url)
-    response = httpx.Response(status, text=body, headers=headers, request=request)
-    return httpx.HTTPStatusError("raw httpx text", request=request, response=response)
+) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", url)
+    response = httpx2.Response(status, text=body, headers=headers, request=request)
+    return httpx2.HTTPStatusError("raw httpx2 text", request=request, response=response)
 
 
 def test_dav_404_names_the_user_relative_path_and_no_internals():
@@ -146,11 +146,13 @@ def test_long_server_detail_is_truncated():
 
 def test_unread_streaming_response_formats_without_raising():
     """The streaming download path raises with the body still unread."""
-    request = httpx.Request("GET", DAV_URL)
-    response = httpx.Response(404, stream=httpx.ByteStream(b"ignored"), request=request)
-    exc = httpx.HTTPStatusError("raw", request=request, response=response)
+    request = httpx2.Request("GET", DAV_URL)
+    response = httpx2.Response(
+        404, stream=httpx2.ByteStream(b"ignored"), request=request
+    )
+    exc = httpx2.HTTPStatusError("raw", request=request, response=response)
 
-    with pytest.raises(httpx.ResponseNotRead):
+    with pytest.raises(httpx2.ResponseNotRead):
         _ = response.text  # precondition: the body really is unread
 
     message = friendly_tool_error(exc, "nc_webdav_read_file")
@@ -162,9 +164,9 @@ def test_unread_streaming_response_formats_without_raising():
 
 def test_synthetic_response_without_a_bound_request_is_safe():
     """client/mail.py and auth/client_registration.py raise with one of these."""
-    request = httpx.Request("POST", "http://app/index.php/apps/mail/api/messages")
-    synthetic = httpx.Response(500, text="boom")
-    exc = httpx.HTTPStatusError("raw", request=request, response=synthetic)
+    request = httpx2.Request("POST", "http://app/index.php/apps/mail/api/messages")
+    synthetic = httpx2.Response(500, text="boom")
+    exc = httpx2.HTTPStatusError("raw", request=request, response=synthetic)
 
     with pytest.raises(RuntimeError):
         _ = synthetic.url  # precondition: reading it via the response explodes
@@ -176,7 +178,7 @@ def test_synthetic_response_without_a_bound_request_is_safe():
 
 
 def test_request_error_reports_unreachable_server():
-    exc = httpx.ConnectError("nope", request=httpx.Request("GET", DAV_URL))
+    exc = httpx2.ConnectError("nope", request=httpx2.Request("GET", DAV_URL))
 
     message = friendly_tool_error(exc, "nc_webdav_list_directory")
 

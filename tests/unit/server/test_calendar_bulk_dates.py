@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+from typing import Any
 
 import pytest
 from mcp.client import Client
@@ -22,11 +23,20 @@ def bulk(mocker):
     calendar._ensure_calendar_home = mocker.AsyncMock()
     calendar.get_calendar_events = mocker.AsyncMock(return_value=[])
     calendar.search_events_across_calendars = mocker.AsyncMock(return_value=[])
-    calendar._apply_event_filters.side_effect = lambda events, filters: events
+    calendar._bulk_targets.side_effect = CalendarClient._bulk_targets
     calendar.update_event = mocker.AsyncMock()
+    calendar.delete_event = mocker.AsyncMock(return_value={"success": True})
+    calendar.create_event = mocker.AsyncMock()
 
-    async def update(filters, data):
-        return await CalendarClient.bulk_update_events(calendar, filters, data)
+    async def update(
+        filters: dict[str, Any],
+        data: dict[str, Any],
+        *,
+        apply_to_series: bool = False,
+    ) -> dict[str, Any]:
+        return await CalendarClient.bulk_update_events(
+            calendar, filters, data, apply_to_series=apply_to_series
+        )
 
     calendar.bulk_update_events = mocker.AsyncMock(side_effect=update)
     get_client = mocker.patch(
@@ -175,3 +185,55 @@ async def test_bulk_schema_exposes_optional_timezone(bulk) -> None:
     tool = next(t for t in tools if t.name == "nc_calendar_bulk_operations")
     assert tool.input_schema["properties"]["timezone"]["default"] == "UTC"
     assert "timezone" not in tool.input_schema.get("required", [])
+
+
+@pytest.mark.parametrize("operation", ["update", "delete", "move"])
+@pytest.mark.parametrize("apply_to_series", [False, True])
+async def test_local_day_bulk_preserves_series_opt_in(
+    bulk: tuple[MCPServer, Any, Any, Any], operation: str, apply_to_series: bool
+) -> None:
+    """A local-day match still requires consent to mutate a whole series."""
+    mcp, _, calendar, _ = bulk
+    occurrence = {
+        "calendar_name": "personal",
+        "uid": "series",
+        "title": "Recurring",
+        "recurring": True,
+        "start_datetime": "2026-09-15T03:05:00+09:00",
+    }
+    calendar.search_events_across_calendars.return_value = [
+        occurrence,
+        {**occurrence, "start_datetime": "2026-09-15T04:05:00+09:00"},
+    ]
+    async with Client(mcp) as client:
+        response = await client.call_tool(
+            "nc_calendar_bulk_operations",
+            {
+                "operation": operation,
+                "start_date": "2026-09-15",
+                "end_date": "2026-09-15",
+                "timezone": "Asia/Seoul",
+                "apply_to_series": apply_to_series,
+                "new_location": "Updated",
+                "target_calendar": "target",
+            },
+        )
+    assert response.is_error is False
+    data = json.loads(response.content[0].text)
+    assert data["total_found"] == 1
+    skipped = operation == "move" or not apply_to_series
+    assert data["skipped_count"] == int(skipped)
+    if skipped:
+        assert data["results"][0]["status"] == "skipped"
+        calendar.update_event.assert_not_awaited()
+        calendar.delete_event.assert_not_awaited()
+    elif operation == "update":
+        calendar.update_event.assert_awaited_once_with(
+            "personal", "series", {"location": "Updated"}
+        )
+    else:
+        calendar.delete_event.assert_awaited_once_with("personal", "series")
+    calendar.create_event.assert_not_awaited()
+    query = calendar.search_events_across_calendars.call_args.kwargs
+    assert query["start_datetime"] == dt.datetime(2026, 9, 14, 15, tzinfo=dt.UTC)
+    assert query["end_datetime"] == dt.datetime(2026, 9, 15, 15, tzinfo=dt.UTC)

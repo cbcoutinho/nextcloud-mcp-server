@@ -55,9 +55,7 @@ Many recipe websites include schema.org metadata. The import tool automatically 
 
 ```python
 # Import from a recipe website
-await nc_cookbook_import_recipe(
-    url="https://www.example.com/recipes/chocolate-cake"
-)
+await nc_cookbook_import_recipe(url="https://www.example.com/recipes/chocolate-cake")
 # Returns: Recipe object with all extracted data
 ```
 
@@ -73,7 +71,7 @@ await nc_cookbook_create_recipe(
         "200g tomato sauce",
         "300g mozzarella cheese",
         "Fresh basil leaves",
-        "Olive oil"
+        "Olive oil",
     ],
     instructions=[
         "Preheat oven to 250°C (480°F)",
@@ -81,14 +79,14 @@ await nc_cookbook_create_recipe(
         "Spread tomato sauce evenly",
         "Add mozzarella cheese",
         "Bake for 10-12 minutes",
-        "Top with fresh basil and olive oil"
+        "Top with fresh basil and olive oil",
     ],
     category="Main Course",
     keywords="italian,vegetarian,quick",
-    prep_time="PT20M",      # 20 minutes
-    cook_time="PT12M",      # 12 minutes
-    total_time="PT32M",     # 32 minutes
-    recipe_yield=4          # 4 servings
+    prep_time="PT20M",  # 20 minutes
+    cook_time="PT12M",  # 12 minutes
+    total_time="PT32M",  # 32 minutes
+    recipe_yield=4,  # 4 servings
 )
 ```
 
@@ -100,7 +98,7 @@ await nc_cookbook_update_recipe(
     recipe_id=123,
     description="Updated: Classic homemade pizza - now with video tutorial!",
     url="https://example.com/videos/pizza-tutorial",
-    keywords="italian,vegetarian,quick,video"
+    keywords="italian,vegetarian,quick,video",
 )
 ```
 
@@ -130,9 +128,9 @@ quick_meals = await nc_cookbook_get_recipes_with_keywords(keywords=["quick", "30
 ```python
 # Configure the Cookbook app
 await nc_cookbook_set_config(
-    folder="Recipes",           # Folder path in user's files
-    update_interval=15,         # Auto-rescan every 15 minutes
-    print_image=True           # Print images with recipes
+    folder="Recipes",  # Folder path in user's files
+    update_interval=15,  # Auto-rescan every 15 minutes
+    print_image=True,  # Print images with recipes
 )
 
 # Trigger manual reindex after file changes

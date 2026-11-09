@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Callable, NoReturn
 
-from httpx import HTTPStatusError, RequestError
+from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -512,6 +512,7 @@ async def nc_cookbook_reindex(ctx: Context) -> ReindexResponse:
 
 def configure_cookbook_tools(mcp: MCPServer):
     @mcp.resource("cookbook://version")
+    @require_scopes("cookbook.read")
     async def cookbook_get_version():
         """Get the Cookbook app and API version"""
         ctx = current_context(mcp)
@@ -520,6 +521,7 @@ def configure_cookbook_tools(mcp: MCPServer):
         return Version(**version_data)
 
     @mcp.resource("cookbook://config")
+    @require_scopes("cookbook.read")
     async def cookbook_get_config():
         """Get the Cookbook app configuration"""
         ctx = current_context(mcp)
@@ -528,6 +530,7 @@ def configure_cookbook_tools(mcp: MCPServer):
         return CookbookConfig(**config_data)
 
     @mcp.resource("nc://Cookbook/{recipe_id}")
+    @require_scopes("cookbook.read")
     async def nc_cookbook_get_recipe_resource(recipe_id: int):
         """Get a recipe by ID using resource URI"""
         ctx = current_context(mcp)

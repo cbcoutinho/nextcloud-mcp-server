@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import gzip
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.webdav import (
@@ -27,16 +27,16 @@ from nextcloud_mcp_server.client.webdav import (
 pytestmark = pytest.mark.unit
 
 
-def _response(body: bytes, headers: dict[str, str] | None = None) -> httpx.Response:
-    return httpx.Response(
+def _response(body: bytes, headers: dict[str, str] | None = None) -> httpx2.Response:
+    return httpx2.Response(
         200,
         content=body,
         headers=headers or {},
-        request=httpx.Request("GET", "https://nc/remote.php/dav/files/u/f.pdf"),
+        request=httpx2.Request("GET", "https://nc/remote.php/dav/files/u/f.pdf"),
     )
 
 
-def _client_over(http: httpx.AsyncClient) -> WebDAVClient:
+def _client_over(http: httpx2.AsyncClient) -> WebDAVClient:
     """A WebDAVClient over a caller-supplied transport, principal pre-resolved."""
     client = WebDAVClient(http, "u")
     client._principal_id = "u"
@@ -47,11 +47,11 @@ def _client_over(http: httpx.AsyncClient) -> WebDAVClient:
 def _client(body: bytes, headers: dict[str, str] | None = None) -> WebDAVClient:
     """A WebDAVClient whose transport streams ``body`` back in small chunks."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=body, headers=headers or {})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=body, headers=headers or {})
 
-    transport = httpx.MockTransport(handler)
-    http = httpx.AsyncClient(transport=transport, base_url="https://nc")
+    transport = httpx2.MockTransport(handler)
+    http = httpx2.AsyncClient(transport=transport, base_url="https://nc")
     client = WebDAVClient(http, "u")
     # Principal discovery talks to the server; the transport above answers every
     # request identically, so short-circuit it.
@@ -81,9 +81,9 @@ def test_content_length_guard_matches_buffered_path(body, headers, raises):
     received = len(body)
 
     if raises:
-        with pytest.raises(httpx.RemoteProtocolError):
+        with pytest.raises(httpx2.RemoteProtocolError):
             _read_complete_body(buffered, "f.pdf")
-        with pytest.raises(httpx.RemoteProtocolError):
+        with pytest.raises(httpx2.RemoteProtocolError):
             _verify_content_length(streamed, received, "f.pdf")
     else:
         assert _read_complete_body(buffered, "f.pdf") == body
@@ -94,7 +94,7 @@ def test_content_length_guard_matches_buffered_path(body, headers, raises):
 def test_compressed_response_is_exempt_on_both_paths():
     """#1099: Content-Length is the compressed size, so it cannot be compared.
 
-    Uses genuinely gzipped content because httpx decodes the body transparently,
+    Uses genuinely gzipped content because httpx2 decodes the body transparently,
     so a fake content-encoding header would fail in the decoder rather than
     exercising the carve-out.
     """
@@ -150,7 +150,7 @@ async def test_short_read_raises_and_removes_partial_file(tmp_path):
 
     client = _client(b"short", {"content-length": "9999"})
 
-    with pytest.raises(httpx.RemoteProtocolError):
+    with pytest.raises(httpx2.RemoteProtocolError):
         await client.stream_to_file("/f.pdf", dest)
 
     assert not dest.exists()
@@ -166,7 +166,7 @@ async def test_streaming_compressed_response_skips_the_length_check(tmp_path):
         packed, {"content-length": str(len(packed)), "content-encoding": "gzip"}
     ).stream_to_file("/f.pdf", dest)
 
-    # httpx decodes transparently, so what lands on disk is the real document.
+    # httpx2 decodes transparently, so what lands on disk is the real document.
     assert dest.read_bytes() == raw
     assert written == len(raw)
 
@@ -239,16 +239,16 @@ async def test_stream_retries_on_429_then_succeeds(tmp_path, mocker):
     body = b"%PDF-1.7 recovered"
     calls: list[int] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         calls.append(1)
         if len(calls) == 1:
-            return httpx.Response(429, content=b"slow down")
-        return httpx.Response(
+            return httpx2.Response(429, content=b"slow down")
+        return httpx2.Response(
             200, content=body, headers={"content-length": str(len(body))}
         )
 
-    http = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="https://nc"
+    http = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="https://nc"
     )
     client = _client_over(http)
     # Don't actually wait out the backoff.
@@ -263,17 +263,17 @@ async def test_stream_retries_on_429_then_succeeds(tmp_path, mocker):
 
 
 async def test_stream_gives_up_after_repeated_429(tmp_path, mocker):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, content=b"slow down")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(429, content=b"slow down")
 
-    http = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="https://nc"
+    http = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="https://nc"
     )
     client = _client_over(http)
     mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
     dest = tmp_path / "out.pdf"
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(httpx2.HTTPStatusError):
         await client.stream_to_file("/f.pdf", dest)
 
     assert not dest.exists()

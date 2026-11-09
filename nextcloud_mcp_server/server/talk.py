@@ -3,12 +3,14 @@
 import logging
 import uuid
 
+from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability
+from nextcloud_mcp_server.client.talk import TalkClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
     AddParticipantResponse,
@@ -20,6 +22,7 @@ from nextcloud_mcp_server.models.talk import (
     MarkAsReadResponse,
     ReactionsResponse,
     SendMessageResponse,
+    TalkMessage,
     TalkParticipantSource,
     TalkRoomType,
 )
@@ -42,6 +45,79 @@ def _validate_message_text(message: str) -> None:
         raise ToolError(
             f"Message too long: {len(message)} characters (max {_MESSAGE_MAX_LENGTH})"
         )
+
+
+def _validate_thread_params(
+    thread_id: int | None, thread_title: str | None, reply_to: int | None
+) -> None:
+    """Reject thread parameter combinations spreed's semantics can't satisfy.
+
+    Not documented in docs/chat.md at the time of writing -- confirmed
+    against a live Talk v24.0.5 instance: sending `threadTitle` (no
+    `replyTo`) starts a brand-new thread with this message as its root;
+    sending `threadId` posts a follow-up message inside an existing one.
+    A caller cannot ask for both a brand-new thread and an existing one,
+    and a thread's root message is not itself a reply.
+    """
+    if thread_id is not None and thread_title is not None:
+        raise ToolError(
+            "thread_id and thread_title are mutually exclusive: thread_id "
+            "posts into an existing thread, thread_title starts a new one"
+        )
+    if thread_title is not None:
+        if not thread_title.strip():
+            raise ToolError("thread_title must not be empty or whitespace-only")
+        if reply_to is not None:
+            raise ToolError(
+                "thread_title and reply_to are mutually exclusive: a new "
+                "thread is started as a root message, not as a reply"
+            )
+
+
+def _ocs_error(e: HTTPStatusError) -> str | None:
+    """Return spreed's ``ocs.data.error`` code from a 404, if it sent one."""
+    if e.response.status_code != 404:
+        return None
+    try:
+        data = e.response.json()["ocs"]["data"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return data.get("error") if isinstance(data, dict) else None
+
+
+async def _get_messages(
+    talk: TalkClient,
+    token: str,
+    *,
+    limit: int,
+    last_known_message_id: int | None,
+    include_last_known: bool,
+    thread_id: int | None,
+) -> tuple[list[TalkMessage], int | None]:
+    """Read chat history without moving the read marker.
+
+    Kept out of ``configure_talk_tools`` so the 404 translation does not add
+    to that function's complexity.
+    """
+    try:
+        return await talk.get_messages(
+            token,
+            limit=limit,
+            last_known_message_id=last_known_message_id,
+            look_into_future=False,
+            set_read_marker=False,
+            include_last_known=include_last_known,
+            thread_id=thread_id,
+        )
+    except HTTPStatusError as e:
+        # spreed answers 404 {"error": "thread"} for an unknown thread (Talk
+        # 23+). An unknown room or non-participant is also a 404, with no
+        # "error" key, and must not be reported as a missing thread.
+        if thread_id is not None and _ocs_error(e) == "thread":
+            raise ToolError(
+                f"Thread {thread_id} not found in conversation {token}"
+            ) from e
+        raise
 
 
 def configure_talk_tools(mcp: MCPServer) -> None:
@@ -105,6 +181,7 @@ def configure_talk_tools(mcp: MCPServer) -> None:
         limit: int = 50,
         last_known_message_id: int | None = None,
         include_last_known: bool = False,
+        thread_id: int | None = None,
     ) -> ListMessagesResponse:
         """Read chat history for a Talk conversation.
 
@@ -119,18 +196,28 @@ def configure_talk_tools(mcp: MCPServer) -> None:
                 clamped. Default 50.
             last_known_message_id: Pagination cursor — pass the
                 ``last_known_message_id`` from the previous response to
-                fetch the next (older) page.
+                fetch the next (older) page. An empty page with no
+                ``last_known_message_id`` means there is no older history.
             include_last_known: Include the cursor message in the page
                 instead of starting just before it.
+            thread_id: Optional ID of a thread (its root message ID) to read
+                only that thread: the root message plus every message posted
+                inside it. Use a message's ``threadId``, or the ``id`` of the
+                root returned by ``talk_send_message`` with ``thread_title``.
+                Pagination with ``last_known_message_id`` works the same
+                within the thread. The thread is complete once the root
+                message (``id`` equal to ``thread_id``) has been returned.
+                An unknown thread is an error on Talk 23+, while Talk 22
+                returns an empty page instead.
         """
         client = await get_client(ctx)
-        messages, last_given = await client.talk.get_messages(
+        messages, last_given = await _get_messages(
+            client.talk,
             token,
             limit=limit,
             last_known_message_id=last_known_message_id,
-            look_into_future=False,
-            set_read_marker=False,
             include_last_known=include_last_known,
+            thread_id=thread_id,
         )
         return ListMessagesResponse(
             conversation_token=token,
@@ -177,6 +264,8 @@ def configure_talk_tools(mcp: MCPServer) -> None:
         token: str,
         message: str,
         reply_to: int | None = None,
+        thread_id: int | None = None,
+        thread_title: str | None = None,
         silent: bool = False,
     ) -> SendMessageResponse:
         """Post a chat message into a Talk conversation as the user.
@@ -188,15 +277,28 @@ def configure_talk_tools(mcp: MCPServer) -> None:
             token: Conversation token.
             message: Message text (max 32000 characters).
             reply_to: Optional parent message ID to thread the reply.
+            thread_id: Optional ID of an existing thread to post into (the
+                thread's root message ID). Mutually exclusive with
+                thread_title.
+            thread_title: Optional title that starts a brand-new thread,
+                with this message as its root. Mutually exclusive with
+                thread_id and with reply_to. Instances that do not
+                advertise the "threads" feature under the spreed OCS
+                capability are expected to ignore it rather than error, so
+                this is not gated client-side -- normal message sending
+                and reply_to must keep working regardless.
             silent: When True the message is delivered without push
                 notifications (e.g. for status updates).
         """
         _validate_message_text(message)
+        _validate_thread_params(thread_id, thread_title, reply_to)
         client = await get_client(ctx)
         posted = await client.talk.send_message(
             token,
             message,
             reply_to=reply_to,
+            thread_id=thread_id,
+            thread_title=thread_title,
             # 32 hex chars, no dashes — spreed accepts either UUID format.
             reference_id=uuid.uuid4().hex,
             silent=silent,

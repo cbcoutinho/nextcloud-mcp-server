@@ -27,7 +27,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2
+
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
 
 from .gateway import GatewayTokenProvider
 
@@ -103,19 +105,6 @@ class BatchPollResult:
         return self.status == _FAILED
 
 
-def _parse_retry_after(value: str | None) -> int | None:
-    """Parse a Retry-After header as delta-seconds. The gateway sends an integer
-    number of seconds (never an HTTP-date), so a non-integer / non-positive / absent
-    value yields None and the caller falls back to its configured poll interval."""
-    if value is None:
-        return None
-    try:
-        seconds = int(value.strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
-
-
 class GatewayBatchOcrClient:
     """Submits + polls single-document batch OCR jobs against the gateway."""
 
@@ -152,8 +141,8 @@ class GatewayBatchOcrClient:
                 }
             ],
         }
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(
                 _BATCH_SUBMIT_TIMEOUT_SECONDS, connect=_BATCH_CONNECT_TIMEOUT_SECONDS
             )
         ) as client:
@@ -192,14 +181,14 @@ class GatewayBatchOcrClient:
         """
         # Fetched OUTSIDE the try: the token provider talks to the OIDC token
         # endpoint — a different service from the gateway — and raises the very same
-        # httpx types the except below remaps to PENDING. Left inside, an M2M issuer
+        # httpx2 types the except below remaps to PENDING. Left inside, an M2M issuer
         # outage would read as "the gateway says the job is still running" and every
         # in-flight document would poll forever behind a WARNING instead of surfacing
         # the auth fault. Only the poll request itself is eligible for the remap.
         headers = await self._headers()
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(
                     _BATCH_REQUEST_TIMEOUT_SECONDS,
                     connect=_BATCH_CONNECT_TIMEOUT_SECONDS,
                 )
@@ -215,7 +204,7 @@ class GatewayBatchOcrClient:
                     raise OcrBatchJobNotFound(job_id)
                 resp.raise_for_status()
                 body = resp.json()
-        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+        except (httpx2.TransportError, httpx2.HTTPStatusError) as exc:
             # No usable answer (read/connect timeout, or a gateway 5xx — e.g. its
             # upstream provider leg failing). Indistinguishable from "still working":
             # the job WAS accepted, so the gateway owns its lifecycle (Deck #523) and
@@ -231,16 +220,16 @@ class GatewayBatchOcrClient:
             # drop for a gateway that rate-limits polls under load. Any OTHER 4xx is a
             # real client-side fault and still propagates.
             if (
-                isinstance(exc, httpx.HTTPStatusError)
+                isinstance(exc, httpx2.HTTPStatusError)
                 and exc.response.status_code < 500
-                and exc.response.status_code != httpx.codes.TOO_MANY_REQUESTS
+                and exc.response.status_code != httpx2.codes.TOO_MANY_REQUESTS
             ):
                 raise
             # A 429 (or any error response) may carry Retry-After; honour it so a
             # rate-limited poll backs off as asked instead of at our own interval.
             retry_after = (
-                _parse_retry_after(exc.response.headers.get("Retry-After"))
-                if isinstance(exc, httpx.HTTPStatusError)
+                parse_retry_after(exc.response.headers.get("Retry-After"))
+                if isinstance(exc, httpx2.HTTPStatusError)
                 else None
             )
             logger.warning(
@@ -269,7 +258,7 @@ class GatewayBatchOcrClient:
                 status=status,
                 pages=[],
                 error=body.get("error"),
-                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+                retry_after=parse_retry_after(resp.headers.get("Retry-After")),
             )
         return _result_from_success(body)
 

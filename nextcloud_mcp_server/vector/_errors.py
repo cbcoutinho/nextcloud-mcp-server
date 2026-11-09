@@ -9,7 +9,7 @@ exceptions so log lines name the actual cause in a single concise line -- no
 ``exc_info``/traceback. Tracebacks are reserved for genuinely unhandled
 exceptions; handled errors log the leaf cause only.
 
-Leaves are also *described* rather than plain ``repr``-ed. An httpx transport
+Leaves are also *described* rather than plain ``repr``-ed. An httpx2 transport
 error usually carries an empty message, so the bare repr degrades to
 ``ReadTimeout('')`` -- which says nothing about what timed out (GH #1345: an
 operator seeing that line could not tell the embedding endpoint from Nextcloud
@@ -17,7 +17,7 @@ or Qdrant). ``_describe`` appends the request's method/host/path and any HTTP
 status, so the line names the endpoint that failed.
 
 Credentials are never logged: the URL is rebuilt from scheme/host/port/path
-rather than stringified, because ``str(httpx.URL)`` renders inline userinfo in
+rather than stringified, because ``str(httpx2.URL)`` renders inline userinfo in
 the clear (only ``repr`` obfuscates it) and the query string can carry tokens.
 """
 
@@ -38,19 +38,19 @@ def format_exception_group(exc: BaseException) -> str:
 
 
 def _endpoint(exc: BaseException) -> str | None:
-    """``"POST ollama:11434/api/embed"`` for an httpx error, else ``None``.
+    """``"POST ollama:11434/api/embed"`` for an httpx2 error, else ``None``.
 
-    Deliberately not ``str(request.url)``: httpx renders inline userinfo in the
+    Deliberately not ``str(request.url)``: httpx2 renders inline userinfo in the
     clear there (only ``repr`` obfuscates it) and the query string may carry a
     token, so the URL is rebuilt from the safe components only.
 
-    ``httpx.RequestError.request`` RAISES ``RuntimeError`` when unset rather than
+    ``httpx2.RequestError.request`` RAISES ``RuntimeError`` when unset rather than
     returning None, so a plain ``getattr(exc, "request", None)`` is not enough --
     it would propagate out of a logging helper. Best-effort throughout: anything
     unexpected degrades to no endpoint rather than breaking the log line.
     """
     try:
-        request = exc.request  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # httpx-only, guarded by the except
+        request = exc.request  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # httpx2-only, guarded by the except
         method = request.method
         url = request.url
         host = url.host
@@ -63,7 +63,7 @@ def _endpoint(exc: BaseException) -> str | None:
 
 
 def _describe(exc: BaseException) -> str:
-    """``repr(exc)`` plus the endpoint/status context httpx leaves out."""
+    """``repr(exc)`` plus the endpoint/status context httpx2 leaves out."""
     parts = [repr(exc)]
     endpoint = _endpoint(exc)
     if endpoint:

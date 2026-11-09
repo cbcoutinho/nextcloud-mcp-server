@@ -84,13 +84,13 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Notes** | 7 | Full CRUD, keyword search, semantic search |
 | **Calendar** | 20+ | Events, todos (tasks), recurring events, attendees, availability |
 | **Contacts** | 8 | Full CardDAV support, address books |
-| **Files (WebDAV)** | 14 | Filesystem access, OCR/document processing, file comments |
+| **Files (WebDAV)** | 23 | Filesystem access, in-place text edits, OCR/document processing, file comments |
 | **Deck** | 15 | Boards, stacks, cards, labels, assignments |
 | **Cookbook** | 13 | Recipe management, URL import (schema.org) |
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
 | **News** | 8 | Feeds, folders, items, feed health monitoring |
-| **Mail** | 13 | Accounts, mailboxes, messages, attachments, send; flags (read/unread, star), tags, move, delete |
+| **Mail** | 14 | Accounts, mailboxes, messages, attachments, send, drafts (saved without sending); flags (read/unread, star), tags, move, delete |
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
 | **Shopping List** | 12 | Lists and items — add a whole recipe's ingredients in one call, tick items off, clear checked |
@@ -129,7 +129,7 @@ To set it up, see the [Astrolabe setup guide](https://docs.astrolabecloud.com/us
 
 ## Semantic Search
 
-An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires a vector database and embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
+An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires the `semantic` extra (`pip install 'nextcloud-mcp-server[semantic]'`, included in the Docker image), a vector database and an embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
 
 For result *ordering* — turning the fused rank score into a calibrated relevance score with a cross-encoder, self-hosted via Infinity/vLLM or hosted via Cohere, with or without an embedding gateway — see [docs/reranking.md](docs/reranking.md).
 

@@ -3,17 +3,20 @@ import logging
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx2
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client.calendar import BULK_EVENT_LIMIT
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     AvailabilitySlot,
     Calendar,
     CalendarEventSummary,
+    CalendarReadError,
     CompleteTodoResponse,
     DeleteEventResponse,
     DeleteTodoResponse,
@@ -75,7 +78,7 @@ def _event_search_range(
 def _stale_etag_error(uid: str, e: DavPreconditionFailed) -> ToolError:
     """Turn a 412 into something the caller can act on.
 
-    ``DavPreconditionFailed`` reaches an MCP client as an httpx status error
+    ``DavPreconditionFailed`` reaches an MCP client as an httpx2 status error
     naming a CalDAV URL -- accurate, and useless for deciding what to do. The
     only recovery is to re-read, re-apply and retry, so the message says that
     and names the tool that actually returns a current ETag.
@@ -321,7 +324,8 @@ def configure_calendar_tools(mcp: MCPServer):
                 search_all_calendars=True, in which case it is ignored.
             start_date: Inclusive start date (YYYY-MM-DD), or an ISO datetime.
             end_date: Inclusive end date (YYYY-MM-DD), or an exclusive ISO datetime.
-            limit: Maximum number of events to return
+            limit: Maximum number of events to return, applied after the filters
+                and keeping the earliest by start
             min_attendees: Filter events with at least this many attendees
             min_duration_minutes: Filter events with at least this duration
             categories: Filter events containing any of these categories (comma-separated, e.g., "work,meeting")
@@ -346,6 +350,8 @@ def configure_calendar_tools(mcp: MCPServer):
             raise ToolError(
                 "calendar_name is required when search_all_calendars is False"
             )
+        if limit < 0:
+            raise ToolError("limit must be 0 or greater")
 
         start_datetime, end_datetime = _event_search_range(
             start_date, end_date, timezone
@@ -367,26 +373,32 @@ def configure_calendar_tools(mcp: MCPServer):
         if location_contains is not None:
             filters["location_contains"] = location_contains
 
+        # Fetch one past the limit: a surplus event is how we know the listing
+        # was cut, which the response reports as ``truncated``.
+        failures: list[dict[str, str]] = []
         if search_all_calendars:
             # Search across all calendars with filters
             events = await client.calendar.search_events_across_calendars(
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filters if filters else None,
+                limit=limit + 1,
+                failures=failures,
             )
-            events = events[:limit]
+            # Merged in calendar order, so re-sort before the global cut.
+            events.sort(key=lambda e: e.get("start_datetime", ""))
         else:
             # Search in specific calendar
             events = await client.calendar.get_calendar_events(
                 calendar_name=calendar_name,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
-                limit=limit,
+                limit=limit + 1,
+                filters=filters if filters else None,
             )
-
-            if filters:
-                events = client.calendar._apply_event_filters(events, filters)
-
+        truncated = len(events) > limit
+        events = events[:limit]
+        if not search_all_calendars:
             display_name = calendar_name
             if events:
                 try:
@@ -410,6 +422,8 @@ def configure_calendar_tools(mcp: MCPServer):
             start_date=start_date or None,
             end_date=end_date or None,
             total_found=len(summaries),
+            truncated=truncated,
+            errors=[CalendarReadError(**f) for f in failures],
         )
 
     @mcp.tool(
@@ -578,6 +592,7 @@ def configure_calendar_tools(mcp: MCPServer):
         location: str = "",
         description: str = "",
         reminder_minutes: int = 15,
+        timezone: str = "",
     ):
         """Quick meeting creation with smart defaults
 
@@ -601,11 +616,22 @@ def configure_calendar_tools(mcp: MCPServer):
             location: Meeting location
             description: Meeting description/agenda
             reminder_minutes: Minutes before meeting to send reminder (default: 15)
+            timezone: IANA timezone ``date``/``time`` are expressed in (e.g.
+                ``"Europe/Amsterdam"``). Defaults to the user's Nextcloud
+                timezone setting. Only if that is unset or unreadable is the
+                meeting stored as floating local time.
 
         Returns:
             Dict with meeting creation result
         """
         client = await get_client(ctx)
+
+        if not timezone:
+            try:
+                timezone = await client.users.get_current_user_timezone()
+            except (httpx2.HTTPError, KeyError, ValueError) as e:
+                # Fail open: a floating meeting beats no meeting.
+                logger.warning("Could not read the user's timezone: %s", e)
 
         # Combine date and time for start_datetime
         start_datetime = f"{date}T{time}:00"
@@ -627,6 +653,7 @@ def configure_calendar_tools(mcp: MCPServer):
             "status": "CONFIRMED",
             "priority": 5,
             "privacy": "PUBLIC",
+            "timezone": timezone,
         }
 
         return await client.calendar.create_event(calendar_name, event_data)
@@ -649,6 +676,7 @@ def configure_calendar_tools(mcp: MCPServer):
         now = dt.datetime.now()
         end_datetime = now + dt.timedelta(days=days_ahead)
 
+        failures: list[dict[str, str]] = []
         if calendar_name:
             # Get events from specific calendar
             events = await client.calendar.get_calendar_events(
@@ -661,28 +689,12 @@ def configure_calendar_tools(mcp: MCPServer):
             for event in events:
                 event["calendar_name"] = calendar_name
         else:
-            # Get events from all calendars
-            all_calendars = await client.calendar.list_calendars()
-            all_events = []
-
-            for calendar in all_calendars:
-                try:
-                    cal_events = await client.calendar.get_calendar_events(
-                        calendar_name=calendar["name"],
-                        start_datetime=now,
-                        end_datetime=end_datetime,
-                        limit=limit,
-                    )
-                    for event in cal_events:
-                        event["calendar_name"] = calendar["name"]
-                        event["calendar_display_name"] = calendar["display_name"]
-                    all_events.extend(cal_events)
-                except Exception as e:
-                    logger.warning(
-                        "Error getting events from calendar %s: %s", calendar["name"], e
-                    )
-                    continue
-
+            all_events = await client.calendar.search_events_across_calendars(
+                start_datetime=now,
+                end_datetime=end_datetime,
+                limit=limit,
+                failures=failures,
+            )
             # Sort by start time and limit
             all_events.sort(key=lambda x: x.get("start_datetime", ""))
             events = all_events[:limit]
@@ -692,6 +704,7 @@ def configure_calendar_tools(mcp: MCPServer):
             events=summaries,
             days_ahead=days_ahead,
             calendar_name=calendar_name or None,
+            errors=[CalendarReadError(**f) for f in failures],
         )
 
     @mcp.tool(
@@ -833,6 +846,7 @@ def configure_calendar_tools(mcp: MCPServer):
         new_reminder_minutes: Optional[int] = None,
         # Move operation parameters
         target_calendar: Optional[str] = None,
+        apply_to_series: bool = False,
         timezone: str = "UTC",
     ):
         """Perform bulk operations (update/delete) on events matching filter criteria.
@@ -862,6 +876,12 @@ def configure_calendar_tools(mcp: MCPServer):
 
             # For move operations:
             target_calendar: Calendar to move events to (requires operation="move")
+
+            apply_to_series: A matched occurrence of a recurring event stands for
+                the whole stored series: update/delete act on every occurrence,
+                not only those inside the date filter. Such matches are skipped
+                (status "skipped") unless this is true. Move never takes a
+                recurring series.
 
         Returns:
             Summary of operation results including counts and details
@@ -899,23 +919,25 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
+            targets, skipped = client.calendar._bulk_targets(
+                events, apply_to_series, "delete"
+            )
             deleted_count = 0
             failed_count = 0
-            results = []
+            results = list(skipped)
 
-            for event in events:
+            for event in targets:
                 try:
                     outcome = await client.calendar.delete_event(
                         event.get("calendar_name", calendar_name), event["uid"]
@@ -955,9 +977,10 @@ def configure_calendar_tools(mcp: MCPServer):
 
             return {
                 "operation": "delete",
-                "total_found": len(events),
+                "total_found": len(targets) + len(skipped),
                 "deleted_count": deleted_count,
                 "failed_count": failed_count,
+                "skipped_count": len(skipped),
                 "results": results,
             }
 
@@ -981,7 +1004,7 @@ def configure_calendar_tools(mcp: MCPServer):
                 raise ToolError("No update data provided for update operation")
 
             return await client.calendar.bulk_update_events(
-                filter_criteria, update_data
+                filter_criteria, update_data, apply_to_series=apply_to_series
             )
 
         elif operation == "move":
@@ -994,23 +1017,25 @@ def configure_calendar_tools(mcp: MCPServer):
                     calendar_name=calendar_name,
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
+                    filters=filter_criteria or None,
+                    limit=BULK_EVENT_LIMIT,
                 )
-                if filter_criteria:
-                    events = client.calendar._apply_event_filters(
-                        events, filter_criteria
-                    )
             else:
                 events = await client.calendar.search_events_across_calendars(
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     filters=filter_criteria,
+                    limit=BULK_EVENT_LIMIT,
                 )
 
+            targets, skipped = client.calendar._bulk_targets(
+                events, apply_to_series, "move"
+            )
             moved_count = 0
             failed_count = 0
-            results = []
+            results = list(skipped)
 
-            for event in events:
+            for event in targets:
                 try:
                     # Create event in target calendar
                     event_data = {
@@ -1077,9 +1102,10 @@ def configure_calendar_tools(mcp: MCPServer):
 
             return {
                 "operation": "move",
-                "total_found": len(events),
+                "total_found": len(targets) + len(skipped),
                 "moved_count": moved_count,
                 "failed_count": failed_count,
+                "skipped_count": len(skipped),
                 "target_calendar": target_calendar,
                 "results": results,
             }
@@ -1116,7 +1142,13 @@ def configure_calendar_tools(mcp: MCPServer):
         client = await get_client(ctx)
 
         if action == "list":
-            return await client.calendar.list_calendars()
+            # Wrap in ListCalendarsResponse so the result is one content block,
+            # not one per calendar (GH #568). Mirrors nc_calendar_list_calendars.
+            calendars_data = await client.calendar.list_calendars()
+            calendars = [Calendar(**cal_data) for cal_data in calendars_data]
+            return ListCalendarsResponse(
+                calendars=calendars, total_count=len(calendars)
+            )
 
         elif action == "create":
             if not calendar_name:
@@ -1509,9 +1541,14 @@ def configure_calendar_tools(mcp: MCPServer):
         if summary_contains is not None:
             filters["summary_contains"] = summary_contains
 
+        failures: list[dict[str, str]] = []
         todos_data = await client.calendar.search_todos_across_calendars(
-            filters if filters else None
+            filters if filters else None, failures=failures
         )
 
         todos = [Todo(**todo_data) for todo_data in todos_data]
-        return ListTodosResponse(todos=todos, total_count=len(todos))
+        return ListTodosResponse(
+            todos=todos,
+            total_count=len(todos),
+            errors=[CalendarReadError(**f) for f in failures],
+        )

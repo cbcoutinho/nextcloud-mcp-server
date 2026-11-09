@@ -1,5 +1,6 @@
 """Scope-based authorization for MCP tools."""
 
+import inspect
 import logging
 import time
 from functools import wraps
@@ -12,6 +13,7 @@ from mcp.server.mcpserver.utilities.context_injection import find_context_parame
 
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.request_context import current_context
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,11 @@ def require_scopes(*required_scopes: str):
             ...
         ```
 
+    Handlers without a ``ctx`` parameter (static resources) are authorized
+    against the request Context the middleware publishes. Under OAuth, a call
+    with neither is denied, so unit tests calling ``.fn`` directly in login-flow
+    mode must pass ``ctx`` or set a request context.
+
     Raises:
         ScopeAuthorizationError: If required scopes are not present in the access token
     """
@@ -107,21 +114,41 @@ def require_scopes(*required_scopes: str):
 
         # Find which parameter receives the Context (MCPServer injects it by name)
         context_param_name = find_context_parameter(func)
+        signature = inspect.signature(func)
 
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Extract context from kwargs (where MCPServer injected it)
+            # MCPServer injects ctx by keyword; direct callers may pass it
+            # positionally, so bind instead of reading kwargs alone.
             ctx: Context | None = (
-                kwargs.get(context_param_name) if context_param_name else None
+                signature.bind_partial(*args, **kwargs).arguments.get(
+                    context_param_name
+                )
+                if context_param_name
+                else None
             )
 
             if ctx is None:
-                # No context parameter found - likely BasicAuth mode
-                # In BasicAuth mode, all operations are allowed
-                logger.debug(
-                    "No context parameter for %s - allowing (BasicAuth mode)", func_name
-                )
-                return await func(*args, **kwargs)
+                # No injected Context: static resources (the SDK refuses a ctx
+                # parameter on them) and direct calls. Recover the request's
+                # Context from the middleware contextvar rather than inferring
+                # BasicAuth from the signature — that inference let every
+                # resource bypass scopes (GHSA-29mh-jqx8-rg3v).
+                try:
+                    # No mcp argument: ctx.mcp_server is None, which is safe
+                    # because this wrapper only uses ctx for ctx.elicit().
+                    ctx = current_context()
+                except LookupError:
+                    if get_settings().enable_login_flow:
+                        raise InsufficientScopeError(
+                            list(required_scopes),
+                            f"Access denied to {func_name}: no request context "
+                            f"to authorize against.",
+                        ) from None
+                    logger.debug(
+                        "No context for %s - allowing (BasicAuth mode)", func_name
+                    )
+                    return await func(*args, **kwargs)
 
             # Resolve the verified token from the SDK auth contextvar. It is
             # never an attribute of RequestContext — reading it from there

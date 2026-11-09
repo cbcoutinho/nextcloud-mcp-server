@@ -1,6 +1,6 @@
 """Unit tests for CollectivesClient API methods."""
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.collectives import CollectivesClient, OCSError
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 # --- OCS mock helpers ---
 
 
-def _ocs_response(data: dict | list) -> httpx.Response:
+def _ocs_response(data: dict | list) -> httpx2.Response:
     """Wrap data in an OCS envelope and return as mock response."""
     return create_mock_response(
         status_code=200,
@@ -84,7 +84,7 @@ async def test_get_collectives(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_collectives()
 
     assert isinstance(result, list)
@@ -102,7 +102,7 @@ async def test_create_collective(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.create_collective("New Wiki", emoji="📚")
 
     assert result["id"] == 5
@@ -122,7 +122,7 @@ async def test_trash_collective(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.trash_collective(collective_id=5)
 
     call_args = mock_request.call_args
@@ -138,7 +138,7 @@ async def test_delete_collective(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.delete_collective(collective_id=5)
 
     call_args = mock_request.call_args
@@ -156,7 +156,7 @@ async def test_get_pages(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_pages(collective_id=1)
 
     assert len(result) == 2
@@ -171,7 +171,7 @@ async def test_get_page(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_page(collective_id=1, page_id=10)
 
     assert result["id"] == 10
@@ -189,7 +189,7 @@ async def test_create_page(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.create_page(collective_id=1, parent_id=10, title="New Page")
 
     assert result["id"] == 30
@@ -208,7 +208,7 @@ async def test_trash_page(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.trash_page(collective_id=1, page_id=10)
 
     call_args = mock_request.call_args
@@ -225,7 +225,7 @@ async def test_move_page(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.move_page(
         collective_id=1, page_id=10, parent_id=20, title="Moved Page"
     )
@@ -246,7 +246,7 @@ async def test_search_pages(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.search_pages(collective_id=1, query="test query")
 
     assert len(result) == 1
@@ -266,7 +266,7 @@ async def test_get_tags(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_tags(collective_id=1)
 
     assert len(result) == 2
@@ -281,7 +281,7 @@ async def test_create_tag(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.create_tag(collective_id=1, name="review", color="0000FF")
 
     assert result["id"] == 3
@@ -299,7 +299,7 @@ async def test_assign_tag(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.assign_tag(collective_id=1, page_id=10, tag_id=3)
 
     call_args = mock_request.call_args
@@ -314,7 +314,7 @@ async def test_remove_tag(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.remove_tag(collective_id=1, page_id=10, tag_id=3)
 
     call_args = mock_request.call_args
@@ -332,7 +332,7 @@ async def test_get_trashed_pages(mocker):
     mock_response = _ocs_response({"pages": [trashed]})
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_trashed_pages(collective_id=1)
 
     assert len(result) == 1
@@ -346,7 +346,7 @@ async def test_restore_page(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.restore_page(collective_id=1, page_id=10)
 
     assert result["title"] == "Restored Page"
@@ -370,7 +370,7 @@ async def test_ocs_missing_data_raises_ocs_error(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(OCSError, match="missing 'data' field"):
         await client.get_collectives()
 
@@ -383,7 +383,7 @@ async def test_non_ocs_envelope_raises_ocs_error(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(OCSError, match="not an OCS envelope"):
         await client.get_collectives()
 
@@ -405,7 +405,7 @@ async def test_ocs_error_status_raises(mocker):
     )
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(OCSError, match="Not permitted"):
         await client.get_collectives()
 
@@ -416,22 +416,22 @@ async def test_get_collectives_403(mocker):
         status_code=403, json_data={"message": "Forbidden"}
     )
     mock_response.raise_for_status = lambda: (_ for _ in ()).throw(
-        httpx.HTTPStatusError(
+        httpx2.HTTPStatusError(
             "Forbidden", request=mock_response.request, response=mock_response
         )
     )
     mocker.patch.object(
         CollectivesClient,
         "_make_request",
-        side_effect=httpx.HTTPStatusError(
+        side_effect=httpx2.HTTPStatusError(
             "Forbidden",
-            request=httpx.Request("GET", "http://test"),
+            request=httpx2.Request("GET", "http://test"),
             response=mock_response,
         ),
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    with pytest.raises(httpx.HTTPStatusError):
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    with pytest.raises(httpx2.HTTPStatusError):
         await client.get_collectives()
 
 
@@ -443,15 +443,15 @@ async def test_get_page_404(mocker):
     mocker.patch.object(
         CollectivesClient,
         "_make_request",
-        side_effect=httpx.HTTPStatusError(
+        side_effect=httpx2.HTTPStatusError(
             "Not Found",
-            request=httpx.Request("GET", "http://test"),
+            request=httpx2.Request("GET", "http://test"),
             response=mock_response,
         ),
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    with pytest.raises(httpx.HTTPStatusError):
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    with pytest.raises(httpx2.HTTPStatusError):
         await client.get_page(collective_id=1, page_id=999)
 
 
@@ -460,7 +460,7 @@ async def test_get_page_404(mocker):
 
 async def test_update_collective_no_fields_raises_value_error(mocker):
     """Test that update_collective raises ValueError when called with no fields."""
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     # Omitting emoji entirely (not passing it) should raise
     with pytest.raises(ValueError, match="At least one field"):
         await client.update_collective(collective_id=1)
@@ -475,7 +475,7 @@ async def test_update_collective_clear_emoji(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.update_collective(collective_id=1, emoji=None)
 
     assert result["emoji"] is None
@@ -492,7 +492,7 @@ async def test_set_page_emoji_clear(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.set_page_emoji(collective_id=1, page_id=10, emoji=None)
 
     assert result["emoji"] is None
@@ -509,7 +509,7 @@ async def test_get_trashed_collectives(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.get_trashed_collectives()
 
     assert len(result) == 1
@@ -528,7 +528,7 @@ async def test_restore_collective(mocker):
         CollectivesClient, "_make_request", return_value=mock_response
     )
 
-    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.restore_collective(collective_id=5)
 
     assert result["name"] == "Restored Wiki"

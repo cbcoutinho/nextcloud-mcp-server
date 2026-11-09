@@ -83,3 +83,12 @@ async def test_context_is_cleared_between_requests():
 
     with pytest.raises(LookupError):
         current_context()
+
+
+async def test_initialize_advertises_package_version():
+    """serverInfo.version must be non-empty: the SDK defaults it to "" and
+    strict clients (Astrolabe's PHP SDK) reject the handshake."""
+    from importlib.metadata import version
+
+    async with Client(NextcloudMCPServer("version-test")) as client:
+        assert client.server_info.version == version("nextcloud-mcp-server")

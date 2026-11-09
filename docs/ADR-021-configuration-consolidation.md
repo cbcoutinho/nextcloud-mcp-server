@@ -70,6 +70,7 @@ def enable_background_operations(self) -> bool:
 
     return explicit or legacy or auto_enabled
 
+
 @property
 def enable_semantic_search(self) -> bool:
     """Semantic search - renamed from VECTOR_SYNC_ENABLED."""

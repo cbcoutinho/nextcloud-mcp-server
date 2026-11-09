@@ -55,8 +55,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # "" is the bare install (app tools only); "documents" adds PDF/Office
+        # text extraction; "semantic" adds the vector stack on top of it.
+        extra: ["", "documents", "semantic"]
     runs-on: ${{ matrix.os }}
-    name: package-smoke (${{ matrix.os }})
+    name: package-smoke (${{ matrix.os }}${{ matrix.extra && format(', {0}', matrix.extra) || '' }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Deliberately NOT ./.github/actions/uv-env: that syncs the dev group,
@@ -67,7 +70,7 @@ jobs:
       # "pyroscope-io==1.1.0 ... marked as --no-build but has no binary
       # distribution".
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - name: Build the wheel
@@ -80,7 +83,26 @@ jobs:
       # both runners so the glob expands on Windows too.
       - name: Smoke test CLI (isolated install)
         shell: bash
-        run: uv run --isolated --no-project --no-build --with dist/*.whl nextcloud-mcp-server --help
+        env:
+          EXTRA: ${{ matrix.extra }}
+          NEXTCLOUD_HOST: http://nextcloud.invalid
+          NEXTCLOUD_USERNAME: admin
+          NEXTCLOUD_PASSWORD: admin
+        run: |
+          wheel=$(ls dist/*.whl)
+          req="nextcloud-mcp-server${EXTRA:+[$EXTRA]} @ ./$wheel"
+          run() { uv run --isolated --no-project --no-build --with "$req" "$@"; }
+          run nextcloud-mcp-server --help
+          # Each extra is either fully there or fully absent (semantic includes
+          # documents), and without semantic, semantic search is refused at
+          # startup with the install hint.
+          docs=False; sem=False
+          [ -n "$EXTRA" ] && docs=True
+          [ "$EXTRA" = semantic ] && sem=True
+          run python -c "from nextcloud_mcp_server.features import documents_installed as d, semantic_installed as s; assert (d(), s()) == ($docs, $sem), (d(), s())"
+          if [ "$sem" = False ]; then
+            (export ENABLE_SEMANTIC_SEARCH=true; run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs")
+          fi
 
   integration-test:
     runs-on: ubuntu-latest
@@ -103,9 +125,9 @@ jobs:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
-            nextcloud_image: "docker.io/library/nextcloud:32.0.14@sha256:29d45e778fe42c07cd3b06ddbf5fe4bf383f3f663c69dee8f0def1e7441f48b8"
+            nextcloud_image: "docker.io/library/nextcloud:32.0.15@sha256:68feaa8992524ac26b4c00194b81c1ae6dc8e9f412ac82de0c5f4d4a2ee4bbcd"
           - nextcloud_version: "33"
-            nextcloud_image: "docker.io/library/nextcloud:33.0.8@sha256:9d1261c8e57a512f7e261ddf1774b71a3678a103124e115d3a799054ea4ab622"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.10@sha256:1a18e5248b836a2f925ce553bd28d7dd69b0205632372f4c506356342182be8e"
           # NOTE: the nc34 lanes are EXPECTED TO FAIL until Astrolabe publishes an
           # NC-34-compatible release to the app store. cbcoutinho/astrolabe#242
           # (max-version="34") is merged but not yet released, so
@@ -117,7 +139,7 @@ jobs:
           # A non-zero result means the release is live and these lanes should go
           # green on a re-run.
           - nextcloud_version: "34"
-            nextcloud_image: "docker.io/library/nextcloud:34.0.3@sha256:b97df9e0e1ee3c8c6cc009cb3f12ddce915d624d543b3bb93882025fe323a407"
+            nextcloud_image: "docker.io/library/nextcloud:34.0.5@sha256:b89746a4febc93de82141921417f43b0d5ce69c3746feb485372559e9fbeec3f"
 
           # Mode-specific properties
           - mode: single-user
@@ -211,11 +233,19 @@ jobs:
         if: matrix.mode != 'single-user'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 26
 
-      # Astrolabe is the only app built from its submodule here; oidc is
-      # installed from the app store by app-hooks/post-installation, so it
-      # needs no build step and no mount in docker-compose.yml.
+      # TEMPORARY: oidc is mounted from its submodule (group scope limits are
+      # unreleased). The post-installation hook only uses the mount once it is
+      # built; lanes that skip this step fall back to the app store.
+      - name: Build OIDC app
+        if: matrix.mode != 'single-user'
+        run: |
+          cd third_party/oidc
+          composer install --no-dev --optimize-autoloader
+          npm ci --ignore-scripts
+          npm run build
+
       - name: Build Astrolabe app
         if: matrix.mode != 'single-user'
         run: |
@@ -236,9 +266,21 @@ jobs:
           KEY=$(openssl rand -base64 32 | tr '+/' '-_')
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
+      # Static OIDC client for mcp-login-flow (oidc >= 2.5.0 never approves an
+      # RFC 8707 resource for a DCR client); created by
+      # app-hooks/before-starting/27-create-login-flow-mcp-client.sh. The secret
+      # is per run for the same reason as the key above. 32-64 printable chars.
+      - name: Generate ephemeral login-flow OIDC client credentials
+        run: |
+          echo "LOGIN_FLOW_OIDC_CLIENT_ID=nextcloudMcpLoginFlowServer$(openssl rand -hex 4)" >> "$GITHUB_ENV"
+          SECRET=$(openssl rand -hex 24)
+          # Ephemeral, but mask it anyway so no later step can print it.
+          echo "::add-mask::${SECRET}"
+          echo "LOGIN_FLOW_OIDC_CLIENT_SECRET=${SECRET}" >> "$GITHUB_ENV"
+
       # Start services with the appropriate profile
       - name: Run docker compose
-        uses: hoverkraft-tech/compose-action@ee6af68587292d72db67743171809c19787df4c9 # v3.1.0
+        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }} ${{ matrix.extra-compose-profiles }}"
@@ -246,15 +288,37 @@ jobs:
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
           NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
-          # Inherited from $GITHUB_ENV via the previous step.
+          # Inherited from $GITHUB_ENV via the previous steps.
           TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          LOGIN_FLOW_OIDC_CLIENT_ID: ${{ env.LOGIN_FLOW_OIDC_CLIENT_ID }}
+          LOGIN_FLOW_OIDC_CLIENT_SECRET: ${{ env.LOGIN_FLOW_OIDC_CLIENT_SECRET }}
 
       - name: Set up the uv environment
         uses: ./.github/actions/uv-env
 
+      # The install (apt system deps + browser download) intermittently stalls
+      # with no progress; unbounded, a stall holds the job until GitHub's 6h
+      # limit. Each attempt is capped and a stalled or failed one is retried.
       - name: Install Playwright
         if: matrix.needs-playwright
-        run: uv run --no-build --no-sync playwright install chromium --with-deps
+        timeout-minutes: 20
+        run: |
+          # Wait for the dpkg lock rather than failing on it at once.
+          echo 'DPkg::Lock::Timeout "120";' | sudo tee /etc/apt/apt.conf.d/99-ci-lock-timeout
+          for attempt in 1 2 3; do
+            if timeout 300 uv run --no-build --no-sync playwright install chromium --with-deps; then
+              exit 0
+            fi
+            echo "::warning::Playwright install attempt ${attempt} failed or stalled; retrying"
+            # `timeout` kills playwright but not the `sudo apt-get` it spawned,
+            # which keeps the dpkg lock and fails every retry with "Could not
+            # get lock". Kill it, then finish any install it interrupted.
+            sudo pkill -x apt-get || true
+            sleep 10
+            sudo dpkg --configure -a || true
+          done
+          echo "::error::Playwright install failed after 3 attempts"
+          exit 1
 
       # Wait for Nextcloud to be healthy
       - name: Wait for Nextcloud
@@ -400,7 +464,7 @@ jobs:
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
       - name: Run docker compose (single-user + docling)
-        uses: hoverkraft-tech/compose-action@ee6af68587292d72db67743171809c19787df4c9 # v3.1.0
+        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile single-user --profile docling"
@@ -504,6 +568,122 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: debug-docling
+          path: |
+            /tmp/docker-compose-logs.txt
+            /tmp/nextcloud-app.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Collabora Online conversion lane (ADR-039). Starts the single-user MCP service
+  # plus the docker-compose `collabora` profile (CODE container) and runs the
+  # gated `-m collabora` suite: legacy .doc/.xls/.ppt and ODF .odt files are
+  # converted by coolwsd's convert-to API and read by the native OOXML readers.
+  # Its own job for the same reason as docling: an extra large image, and no
+  # need for the Nextcloud version matrix.
+  collabora-integration:
+    name: integration (collabora)
+    runs-on: ubuntu-latest
+    needs: [linting]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate ephemeral TOKEN_ENCRYPTION_KEY
+        run: |
+          KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
+
+      - name: Run docker compose (single-user + collabora)
+        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
+        with:
+          compose-file: "./docker-compose.yml"
+          compose-flags: "--profile single-user --profile collabora"
+          up-flags: "--build"
+        env:
+          TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+          COLLABORA_URL: "http://collabora:9980"
+
+      - name: Set up the uv environment
+        uses: ./.github/actions/uv-env
+
+      - name: Wait for Nextcloud
+        run: |
+          echo "Waiting for Nextcloud at http://localhost:8080..."
+          max_attempts=60
+          attempt=0
+          until curl -sSf http://localhost:8080/status.php 2>/dev/null | grep -q '"installed":true'; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "Nextcloud did not become ready in time."
+              docker compose logs app
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "Nextcloud is ready."
+
+      - name: Wait for Collabora
+        run: |
+          # The CODE image has no shell for a container healthcheck; its
+          # capabilities endpoint also says whether convert-to is allowed.
+          echo "Waiting for coolwsd /hosting/capabilities on http://localhost:9980..."
+          max_attempts=60
+          attempt=0
+          until curl -sf http://localhost:9980/hosting/capabilities | grep -q '"convert-to":{"available":true'; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "Collabora did not become ready in time."
+              docker compose --profile collabora logs collabora
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "Collabora is ready."
+
+      - name: Wait for MCP service (single-user)
+        run: |
+          echo "Waiting for MCP service on port 8000..."
+          max_attempts=30
+          attempt=0
+          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8000/health 2>/dev/null | grep -qE "200|404|405"; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "MCP service did not become ready in time."
+              docker compose --profile single-user logs mcp
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "MCP service is ready on port 8000."
+
+      - name: Run collabora tests
+        env:
+          NEXTCLOUD_HOST: "http://localhost:8080"
+          NEXTCLOUD_USERNAME: "admin"
+          NEXTCLOUD_PASSWORD: "admin"
+          # Lifts the skipif in tests/integration/test_collabora_convert.py; it
+          # reads this process's environment, not the container's.
+          COLLABORA_URL: "http://collabora:9980"
+        run: |
+          uv run --no-build --no-sync pytest -v \
+            --log-cli-level=WARN \
+            -m collabora \
+            -o "addopts=-p no:asyncio" \
+            --timeout=600
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          docker compose --profile single-user --profile collabora logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+          docker compose exec -T app cat /var/www/html/data/nextcloud.log 2>/dev/null | tail -100 > /tmp/nextcloud-app.log 2>&1 || true
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debug-collabora
           path: |
             /tmp/docker-compose-logs.txt
             /tmp/nextcloud-app.log

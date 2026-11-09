@@ -7,11 +7,11 @@ manager rather than a try/except per tool.
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from httpx import HTTPStatusError, RequestError
+from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _shopping_list_errors(action: str) -> Iterator[None]:
+def _shopping_list_errors(action: str) -> Generator[None]:
     """Re-raise a Shopping List failure as the message the model should act on."""
     try:
         yield

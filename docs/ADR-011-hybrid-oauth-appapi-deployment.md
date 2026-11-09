@@ -192,6 +192,7 @@ While AppAPI provides valuable benefits for Nextcloud integration, research has 
        background.add_task(process_long_operation, ctx, task_id)
        return {"status": "accepted", "task_id": task_id}
 
+
    def process_long_operation(nc: NextcloudApp, task_id: str):
        result = do_work()
        nc.notifications.create("Task completed", f"Result: {result}")
@@ -203,7 +204,9 @@ While AppAPI provides valuable benefits for Nextcloud integration, research has 
    async def semantic_search_answer(query: str, ctx: Context | NextcloudApp):
        if isinstance(ctx, NextcloudApp):
            # AppAPI mode: return documents only, no LLM generation
-           return SearchResponse(results=documents, message="LLM generation not available in AppAPI mode")
+           return SearchResponse(
+               results=documents, message="LLM generation not available in AppAPI mode"
+           )
        else:
            # OAuth mode: use sampling for LLM answer
            answer = await ctx.session.create_message(...)
@@ -222,7 +225,7 @@ nc.webhooks.register(
     http_method="POST",
     uri="/webhook/file_created",
     event="OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-    event_filter={...}
+    event_filter={...},
 )
 ```
 
@@ -231,9 +234,7 @@ nc.webhooks.register(
 ExApps can send notifications to users:
 ```python
 nc.notifications.create(
-    subject="Task completed",
-    message="Your file is ready",
-    link=result_url
+    subject="Task completed", message="Your file is ready", link=result_url
 )
 ```
 
@@ -296,12 +297,12 @@ Context Agent successfully provides agent functionality by **working around the 
 
 **Confirmation Flow Example** (`ex_app/lib/agent.py:105-117`):
 ```python
-if state_snapshot.next == ('dangerous_tools', ):
-    if task['input']['confirmation'] == 0:
+if state_snapshot.next == ("dangerous_tools",):
+    if task["input"]["confirmation"] == 0:
         # User denied via Nextcloud UI - return denial message
         return ToolMessage(
             tool_call_id=tool_call["id"],
-            content=f"API call denied by user. Reasoning: '{task['input']['input']}'"
+            content=f"API call denied by user. Reasoning: '{task['input']['input']}'",
         )
     else:
         # User approved via Nextcloud UI - execute tool
@@ -577,11 +578,13 @@ The following table documents feature support and differences between OAuth and 
 import os
 from typing import Literal
 
+
 def get_deployment_mode() -> Literal["oauth", "exapp"]:
     """Detect deployment mode from environment."""
     if os.getenv("APPAPI_MODE") == "true":
         return "exapp"
     return "oauth"  # Default for backwards compatibility
+
 
 def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     """Get FastMCP app configured for the detected deployment mode."""
@@ -589,10 +592,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     if mode == "exapp":
         from nextcloud_mcp_server.app_exapp import create_exapp_app
+
         return create_exapp_app(transport, enabled_apps)
     else:
         from nextcloud_mcp_server.app_oauth import create_oauth_app
+
         return create_oauth_app(transport, enabled_apps)
+
 
 # Entry point for MCP CLI
 mcp = get_app()
@@ -610,6 +616,7 @@ try:
 except ImportError:
     NextcloudApp = None  # type: ignore
 
+
 async def get_client(ctx: Union[Context, NextcloudApp]) -> NextcloudClient:
     """Get authenticated NextcloudClient for the current request (mode-aware)."""
 
@@ -623,10 +630,12 @@ async def get_client(ctx: Union[Context, NextcloudApp]) -> NextcloudClient:
 
     raise TypeError(f"Unexpected context type: {type(ctx)}")
 
+
 async def _get_exapp_client(nc: NextcloudApp) -> NextcloudClient:
     """Create NextcloudClient from nc_py_api NextcloudApp."""
     # Wrap nc_py_api session in NextcloudClient interface
     return NextcloudClient.from_nc_py_api(nc)
+
 
 async def _get_oauth_client(ctx: Context) -> NextcloudClient:
     """Create NextcloudClient from OAuth access token."""
@@ -634,9 +643,7 @@ async def _get_oauth_client(ctx: Context) -> NextcloudClient:
     access_token = ctx.request_context.access_token
     username = access_token.claims.get("preferred_username")
     return NextcloudClient.from_token(
-        base_url=settings.nextcloud_host,
-        token=access_token.token,
-        username=username
+        base_url=settings.nextcloud_host, token=access_token.token, username=username
     )
 ```
 
@@ -651,6 +658,7 @@ try:
 except ImportError:
     NextcloudApp = type(None)  # Fallback if not installed
 
+
 @mcp.tool()
 @require_scopes("notes:write")
 async def nc_notes_create_note(
@@ -662,14 +670,10 @@ async def nc_notes_create_note(
     """Create a new note."""
     client = await get_client(ctx)  # Mode-aware helper
     result = await client.notes.create_note(
-        title=title,
-        content=content,
-        category=category
+        title=title, content=content, category=category
     )
     return CreateNoteResponse(
-        success=True,
-        note=result,
-        message=f"Created note '{title}'"
+        success=True, note=result, message=f"Created note '{title}'"
     )
 ```
 
@@ -702,7 +706,9 @@ def require_scopes(*required_scopes: str):
             return await func(*args, **kwargs)
 
         return wrapper
+
     return decorator
+
 
 async def _check_exapp_permissions(nc: NextcloudApp, scopes: list[str]) -> None:
     """Validate ExApp has required permissions via Nextcloud capabilities."""
@@ -710,6 +716,7 @@ async def _check_exapp_permissions(nc: NextcloudApp, scopes: list[str]) -> None:
     # Check against user's Nextcloud capabilities for additional validation
     # E.g., "notes:write" → verify user has notes app enabled
     pass  # Implementation depends on Nextcloud capability API
+
 
 async def _check_oauth_scopes(ctx: Context, scopes: list[str]) -> None:
     """Validate OAuth token contains required scopes (existing logic)."""

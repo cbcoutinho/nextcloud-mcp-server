@@ -197,7 +197,7 @@ php occ user_oidc:provider keycloak-realm \
 # MCP server startup
 registration_response = await keycloak_client.register_client(
     client_name="MCP Server Instance",
-    redirect_uris=["http://mcp-server/oauth/callback"]
+    redirect_uris=["http://mcp-server/oauth/callback"],
 )
 # Store: client_id, client_secret
 ```

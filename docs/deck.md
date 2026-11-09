@@ -185,7 +185,7 @@ await deck_create_card(
     description="Create mockups for the new homepage layout",
     type="plain",
     order=1,
-    duedate="2025-08-15T17:00:00"
+    duedate="2025-08-15T17:00:00",
 )
 
 # Create and assign labels for organization
@@ -199,10 +199,10 @@ await deck_assign_user_to_card(board_id=1, stack_id=1, card_id=1, user_id="desig
 # Move cards through workflow
 await deck_reorder_card(
     board_id=1,
-    stack_id=1,        # From "To Do"
+    stack_id=1,  # From "To Do"
     card_id=1,
     order=1,
-    target_stack_id=2  # To "In Progress"
+    target_stack_id=2,  # To "In Progress"
 )
 
 # Update task progress
@@ -211,16 +211,16 @@ await deck_update_card(
     stack_id=2,
     card_id=1,
     description="Homepage mockups completed, starting development",
-    order=1
+    order=1,
 )
 
 # Complete tasks
 await deck_reorder_card(
     board_id=1,
-    stack_id=2,        # From "In Progress"  
+    stack_id=2,  # From "In Progress"
     card_id=1,
     order=1,
-    target_stack_id=3  # To "Done"
+    target_stack_id=3,  # To "Done"
 )
 
 # Archive completed cards

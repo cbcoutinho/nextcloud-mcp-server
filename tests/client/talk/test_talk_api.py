@@ -2,7 +2,7 @@
 
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.talk import TalkClient, _validate_token
@@ -53,7 +53,7 @@ async def test_talk_get_conversation_rejects_path_traversal(mocker):
     """Pathological tokens never reach the HTTP layer."""
     mock_make_request = mocker.patch.object(TalkClient, "_make_request")
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(ValueError, match="Invalid Talk conversation token"):
         await client.get_conversation("../etc/passwd")
 
@@ -96,7 +96,7 @@ async def test_talk_list_conversations(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     rooms = await client.list_conversations()
 
     assert len(rooms) == 2
@@ -122,7 +122,7 @@ async def test_talk_list_conversations_with_modified_since(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.list_conversations(modified_since=1700000000, include_status=True)
 
     params = mock_make_request.call_args[1]["params"]
@@ -139,7 +139,7 @@ async def test_talk_get_conversation(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     room = await client.get_conversation("xyz")
 
     assert isinstance(room, TalkConversation)
@@ -155,14 +155,14 @@ async def test_talk_get_conversation_not_found(mocker):
     """A 404 from spreed propagates as HTTPStatusError."""
     error_response = create_mock_error_response(404, "Conversation not found")
     mock_make_request = mocker.patch.object(TalkClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "404 Not Found",
-        request=httpx.Request("GET", "http://test.local"),
+        request=httpx2.Request("GET", "http://test.local"),
         response=error_response,
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.get_conversation("nope")
     assert excinfo.value.response.status_code == 404
 
@@ -176,7 +176,7 @@ async def test_talk_create_conversation(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     room = await client.create_conversation(room_name="New Room")
 
     assert room.token == "new"
@@ -195,7 +195,7 @@ async def test_talk_delete_conversation(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.delete_conversation("doomed")
 
     call_args = mock_make_request.call_args
@@ -243,7 +243,7 @@ async def test_talk_get_messages(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     messages, last_given = await client.get_messages("abc", limit=20)
 
     assert len(messages) == 2
@@ -272,7 +272,7 @@ async def test_talk_get_messages_pagination_cursor(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     messages, last_given = await client.get_messages(
         "abc", last_known_message_id=500, include_last_known=True
     )
@@ -285,6 +285,44 @@ async def test_talk_get_messages_pagination_cursor(mocker):
     assert params["includeLastKnown"] == 1
 
 
+async def test_talk_get_messages_end_of_history(mocker):
+    """spreed's 304 once no older history remains is an empty last page."""
+    mocker.patch.object(
+        TalkClient,
+        "_make_request",
+        side_effect=httpx2.HTTPStatusError(
+            "304 Not Modified",
+            request=httpx2.Request("GET", "http://test.local"),
+            response=httpx2.Response(304),
+        ),
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    messages, last_given = await client.get_messages(
+        "abc", last_known_message_id=1, thread_id=42
+    )
+
+    assert messages == []
+    assert last_given is None
+
+
+async def test_talk_get_messages_other_http_errors_propagate(mocker):
+    """Only 304 is treated as end of history; other errors still raise."""
+    mocker.patch.object(
+        TalkClient,
+        "_make_request",
+        side_effect=httpx2.HTTPStatusError(
+            "404 Not Found",
+            request=httpx2.Request("GET", "http://test.local"),
+            response=create_mock_error_response(404, "Thread not found"),
+        ),
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    with pytest.raises(httpx2.HTTPStatusError):
+        await client.get_messages("abc", thread_id=42)
+
+
 async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     """A non-numeric X-Chat-Last-Given falls back to None and logs a warning."""
     mock_response = create_mock_response(
@@ -294,7 +332,7 @@ async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     )
     mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.client.talk"):
         messages, last_given = await client.get_messages("abc")
 
@@ -303,6 +341,82 @@ async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     assert any(
         "Invalid X-Chat-Last-Given" in record.message for record in caplog.records
     ), "Expected a warning log for the malformed header"
+
+
+def _chat_message(message_id: int, thread_id: int) -> dict:
+    return {
+        "id": message_id,
+        "token": "abc",
+        "actorType": "users",
+        "actorId": "alice",
+        "actorDisplayName": "Alice",
+        "timestamp": 1700000000 + message_id,
+        "messageType": "comment",
+        "message": f"Message {message_id}",
+        "threadId": thread_id,
+    }
+
+
+async def test_talk_get_messages_thread_id_param(mocker):
+    """thread_id is forwarded as spreed's threadId and omitted when unset."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    await client.get_messages("abc", thread_id=42)
+    assert mock_make_request.call_args[1]["params"]["threadId"] == 42
+
+    await client.get_messages("abc")
+    assert "threadId" not in mock_make_request.call_args[1]["params"]
+
+
+async def test_talk_get_messages_thread_id_filters_ignored_param(mocker):
+    """Messages outside the thread are dropped when spreed ignores threadId.
+
+    spreed ignores threadId where threads are unsupported (e.g. federated
+    rooms) and returns the whole chat; the cursor must still come from the
+    unfiltered page so pagination keeps advancing.
+    """
+    mock_response = create_mock_response(
+        status_code=200,
+        headers={"X-Chat-Last-Given": "40"},
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok"},
+                "data": [
+                    _chat_message(40, 40),
+                    _chat_message(41, 41),
+                    _chat_message(42, 42),
+                    _chat_message(43, 42),
+                    _chat_message(44, 41),
+                ],
+            }
+        },
+    )
+    mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    messages, last_given = await client.get_messages("abc", thread_id=42)
+
+    assert [m.id for m in messages] == [42, 43]
+    assert last_given == 40
+
+
+@pytest.mark.parametrize("bad_thread_id", [0, -5, True])
+async def test_talk_get_messages_invalid_thread_id(mocker, bad_thread_id):
+    """Invalid thread ids are rejected before any request is made."""
+    mock_make_request = mocker.patch.object(TalkClient, "_make_request")
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    with pytest.raises(ValueError):
+        await client.get_messages("abc", thread_id=bad_thread_id)
+
+    mock_make_request.assert_not_called()
 
 
 async def test_talk_send_message(mocker):
@@ -314,7 +428,7 @@ async def test_talk_send_message(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     posted = await client.send_message("abc", "Posted from MCP")
 
     assert isinstance(posted, TalkMessage)
@@ -341,7 +455,7 @@ async def test_talk_send_message_with_reference_id_and_reply(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.send_message(
         "abc",
         "A reply",
@@ -359,6 +473,46 @@ async def test_talk_send_message_with_reference_id_and_reply(mocker):
     }
 
 
+async def test_talk_send_message_with_thread_title_starts_new_thread(mocker):
+    """send_message forwards thread_title, which starts a real new thread."""
+    mock_response = create_mock_talk_message_response(
+        message_id=2001,
+        token="abc",
+        text="Kickoff",
+        threadId=2001,
+        isThread=True,
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    posted = await client.send_message("abc", "Kickoff", thread_title="Budget Q3")
+
+    body = mock_make_request.call_args[1]["json"]
+    assert body == {"message": "Kickoff", "threadTitle": "Budget Q3"}
+    assert posted.threadId == 2001
+    assert posted.isThread is True
+
+
+async def test_talk_send_message_with_thread_id_posts_into_existing_thread(mocker):
+    """send_message forwards thread_id to post a follow-up inside a thread."""
+    mock_response = create_mock_talk_message_response(
+        message_id=2002, token="abc", text="Reply in thread", threadId=2001
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    posted = await client.send_message("abc", "Reply in thread", thread_id=2001)
+
+    body = mock_make_request.call_args[1]["json"]
+    assert body == {"message": "Reply in thread", "threadId": 2001}
+    assert posted.threadId == 2001
+    assert posted.isThread is None
+
+
 async def test_talk_mark_as_read_no_message(mocker):
     """mark_as_read with no message ID sends no body (json=None)."""
     mock_response = create_mock_response(
@@ -369,13 +523,13 @@ async def test_talk_mark_as_read_no_message(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.mark_as_read("abc")
 
     call_args = mock_make_request.call_args
     assert call_args[0][0] == "POST"
     assert "/chat/abc/read" in call_args[0][1]
-    # Empty body is sent as ``json=None`` so httpx skips both the body and
+    # Empty body is sent as ``json=None`` so httpx2 skips both the body and
     # the ``Content-Type: application/json`` header for this bodyless POST.
     assert call_args[1]["json"] is None
 
@@ -390,7 +544,7 @@ async def test_talk_mark_as_read_with_message(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.mark_as_read("abc", last_read_message=500)
 
     assert mock_make_request.call_args[1]["json"] == {"lastReadMessage": 500}
@@ -433,7 +587,7 @@ async def test_talk_list_participants(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     participants = await client.list_participants("abc")
 
     assert len(participants) == 2
@@ -458,7 +612,7 @@ async def test_talk_list_participants_with_include_status(mocker):
         TalkClient, "_make_request", return_value=mock_response
     )
 
-    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.list_participants("abc", include_status=True)
 
     params = mock_make_request.call_args[1]["params"]

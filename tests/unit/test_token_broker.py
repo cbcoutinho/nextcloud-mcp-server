@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -293,7 +293,7 @@ class TestTokenBrokerService:
         # Mock network error
         with patch.object(token_broker, "_get_http_client") as mock_client:
             mock_client.return_value.post = AsyncMock(
-                side_effect=httpx.NetworkError("Connection failed")
+                side_effect=httpx2.NetworkError("Connection failed")
             )
 
             # Should return None on error

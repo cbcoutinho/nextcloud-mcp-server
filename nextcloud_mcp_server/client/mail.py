@@ -8,14 +8,14 @@ Uses two endpoint types:
    ``'ocs'`` section of the Mail app's ``routes.php``.
 
 2. **Direct app routes** — ``/index.php/apps/mail/api/...`` — for listing accounts,
-   mailboxes, and messages, downloading attachments, the two-step outbox send, and
-   every write operation (flags, tags, move, delete), none of which has an OCS
-   equivalent. These REST resource routes (from ``'resources'`` in ``routes.php``)
-   are CSRF-gated for browser sessions, but Nextcloud exempts any request carrying
-   the ``OCS-APIRequest: true`` header from the CSRF check — so Basic Auth (App
-   Password) + that header is sufficient. No ``requesttoken`` round-trip is needed
-   (verified end-to-end against a live Mail 5.x backend; see the GreenMail
-   integration tests).
+   mailboxes, and messages, downloading attachments, the two-step outbox send, the
+   two-step draft save, and every write operation (flags, tags, move, delete),
+   none of which has an OCS equivalent. These REST resource routes (from
+   ``'resources'`` in ``routes.php``) are CSRF-gated for browser sessions, but
+   Nextcloud exempts any request carrying the ``OCS-APIRequest: true`` header from
+   the CSRF check — so Basic Auth (App Password) + that header is sufficient. No
+   ``requesttoken`` round-trip is needed (verified end-to-end against a live Mail
+   5.x backend; see the GreenMail integration tests).
 
 Attachment downloads use the direct route ``/api/messages/{id}/attachment/{id}``,
 which returns the raw file bytes (via core's ``DownloadResponse``). The OCS
@@ -24,11 +24,12 @@ some setups it returns HTTP 200 with an empty, non-JSON body (see GH #989).
 """
 
 import base64
+import logging
 from email.message import Message
 from typing import Any
 from urllib.parse import quote
 
-from httpx import HTTPStatusError, RequestError, Response
+from httpx2 import HTTPStatusError, RequestError, Response
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.client.ocs import (
@@ -36,6 +37,8 @@ from nextcloud_mcp_server.client.ocs import (
     describe_ocs_failure,
     parse_ocs_envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 # Nextcloud's primary blue. Shared with the nc_mail_create_tag tool so the two
 # defaults cannot drift into creating differently-coloured tags for the same
@@ -47,7 +50,7 @@ def _ocs_response(response: Response) -> Any:
     """Unwrap the OCS envelope from a response and validate the meta status.
 
     Args:
-        response: The httpx response object from an OCS endpoint.
+        response: The httpx2 response object from an OCS endpoint.
 
     Returns:
         The ``ocs.data`` payload.
@@ -115,11 +118,11 @@ class MailClient(BaseNextcloudClient):
     # as bare ``/apps/...`` paths (``_resolve_url`` prepends ``/index.php``).
     API_BASE = "/apps/mail/api"
 
-    # The OCS-APIRequest header authenticates the OCS routes and exempts the
-    # direct routes from CSRF, so both families use the same headers.
-    # Shared with the other OCS clients -- see collectives for why the header
-    # set has a single home.
-    _API_HEADERS = dict(OCS_REQUEST_HEADERS)
+    # Both route families want JSON, so they share this ``Accept``-only set. The
+    # OCS-APIRequest header that authenticates the OCS routes and CSRF-exempts
+    # the direct ones is not in it: the httpx2 client sends that on every request
+    # (``http.NEXTCLOUD_DEFAULT_HEADERS``).
+    _API_JSON_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"
 
@@ -145,7 +148,7 @@ class MailClient(BaseNextcloudClient):
             "GET",
             f"{self.OCS_BASE}{path}",
             params=query,
-            headers=self._API_HEADERS,
+            headers=self._API_JSON_HEADERS,
         )
         # ``_make_request`` (base) already raised on any non-2xx status; an OCS
         # meta failure arrives as HTTP 200 and is handled by ``_ocs_response``.
@@ -165,7 +168,7 @@ class MailClient(BaseNextcloudClient):
             "GET",
             f"{self.API_BASE}{path}",
             params=params,
-            headers=self._API_HEADERS,
+            headers=self._API_JSON_HEADERS,
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
         return response.json()
@@ -190,7 +193,7 @@ class MailClient(BaseNextcloudClient):
         # Only declare a JSON content type when there is actually a body: the
         # tag assign/remove and delete routes take none, and announcing
         # application/json for a bodyless request is misleading.
-        headers = dict(self._API_HEADERS)
+        headers = dict(self._API_JSON_HEADERS)
         if json_data is not None:
             headers["Content-Type"] = "application/json"
 
@@ -280,8 +283,50 @@ class MailClient(BaseNextcloudClient):
         if view is not None:
             params["view"] = view
 
-        data = await self._api_get("/messages", params=params)
+        try:
+            data = await self._api_get("/messages", params=params)
+        except HTTPStatusError as e:
+            # Mail answers 400 (MailboxNotCachedException) for a mailbox it has
+            # never synced from IMAP. Background sync only covers INBOX, so
+            # subfolders stay uncached until opened in the web UI (GH #1636).
+            # Do what the UI does — run the initial sync — and retry once.
+            # 400 is overloaded (bad filter/cursor too), so match the exception
+            # type Mail's error middleware puts in the body.
+            if (
+                e.response.status_code != 400
+                or "MailboxNotCachedException" not in e.response.text
+            ):
+                raise
+            logger.debug("Mailbox %s not cached; running initial sync", mailbox_id)
+            await self.sync_mailbox(mailbox_id)
+            data = await self._api_get("/messages", params=params)
         return data if isinstance(data, list) else []
+
+    async def sync_mailbox(self, mailbox_id: int, max_rounds: int = 20) -> None:
+        """Run Mail's initial IMAP→DB sync for a mailbox so it can be listed.
+
+        Uses ``POST /index.php/apps/mail/api/mailboxes/{id}/sync`` with
+        ``init=true``. A large mailbox is cached in chunks: Mail answers 202
+        until the initial sync completes, so repeat until it stops.
+
+        Args:
+            mailbox_id: The mailbox database ID.
+            max_rounds: Upper bound on 202 retries.
+        """
+        for _ in range(max_rounds):
+            response = await self._make_request(
+                "POST",
+                f"{self.API_BASE}/mailboxes/{mailbox_id}/sync",
+                json={"init": True},
+                headers=self._API_JSON_HEADERS,
+            )
+            if response.status_code != 202:
+                return
+        logger.warning(
+            "Initial sync of mailbox %s still incomplete after %d rounds",
+            mailbox_id,
+            max_rounds,
+        )
 
     async def get_message(self, message_id: int) -> dict[str, Any]:
         """Get a single message with full body content and metadata.
@@ -299,10 +344,10 @@ class MailClient(BaseNextcloudClient):
         data = await self._ocs_get(f"/message/{message_id}")
         return data if isinstance(data, dict) else {}
 
-    async def get_attachment(
+    async def download_attachment(
         self, message_id: int, attachment_id: str
-    ) -> dict[str, Any]:
-        """Get an attachment's content from a message.
+    ) -> tuple[bytes, str, str]:
+        """Download an attachment's raw bytes from a message.
 
         Uses the direct route
         ``GET /index.php/apps/mail/api/messages/{id}/attachment/{id}``
@@ -318,20 +363,19 @@ class MailClient(BaseNextcloudClient):
             attachment_id: The attachment ID string.
 
         Returns:
-            Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
-            ``content`` is the raw attachment bytes base64-encoded.
+            ``(content, mime, name)``: the raw bytes, the MIME type without
+            parameters (``application/octet-stream`` when the response has
+            none), and the file name.
         """
         safe_id = quote(attachment_id, safe="")
         # Binary download: unlike the JSON helpers, don't send
         # ``Accept: application/json`` (mirrors ``DeckClient.get_attachment_file``).
-        # The ``OCS-APIRequest`` header still CSRF-exempts this direct route.
+        # The client-wide ``OCS-APIRequest`` header still CSRF-exempts this route.
         response = await self._make_request(
             "GET",
             f"{self.API_BASE}/messages/{message_id}/attachment/{safe_id}",
-            headers={"OCS-APIRequest": "true"},
         )
         # ``_make_request`` (base) already raised on any non-2xx status.
-        raw = response.content
         ctype = (response.headers.get("content-type", "") or "").split(";")[0].strip()
 
         # Recover the real filename from the Content-Disposition header (core's
@@ -342,9 +386,27 @@ class MailClient(BaseNextcloudClient):
             or f"attachment_{message_id}_{attachment_id}"
         )
 
+        return response.content, ctype or "application/octet-stream", name
+
+    async def get_attachment(
+        self, message_id: int, attachment_id: str
+    ) -> dict[str, Any]:
+        """Get an attachment's content from a message, base64-encoded.
+
+        See :meth:`download_attachment` for the route and the id encoding.
+
+        Args:
+            message_id: The message database ID.
+            attachment_id: The attachment ID string.
+
+        Returns:
+            Attachment dict with keys ``name``, ``mime``, ``size``, ``content``.
+            ``content`` is the raw attachment bytes base64-encoded.
+        """
+        raw, mime, name = await self.download_attachment(message_id, attachment_id)
         return {
             "name": name,
-            "mime": ctype or "application/octet-stream",
+            "mime": mime,
             "size": len(raw),
             "content": base64.b64encode(raw).decode("ascii"),
         }
@@ -362,6 +424,50 @@ class MailClient(BaseNextcloudClient):
         msg = Message()
         msg["content-disposition"] = header
         return msg.get_filename()
+
+    @staticmethod
+    def _local_message_payload(
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool,
+        *,
+        cc: list[dict[str, str]] | None,
+        bcc: list[dict[str, str]] | None,
+        in_reply_to: str | None = None,
+        ai_generated: bool = False,
+    ) -> dict[str, Any]:
+        """Build the request body shared by ``POST /api/outbox`` and ``POST /api/drafts``.
+
+        Both routes create a Mail ``LocalMessage`` and take the same parameters
+        (``OutboxController::create`` / ``DraftsController::create``), so one
+        builder keeps the two from drifting apart. ``bodyPlain``/``bodyHtml``
+        exist since Mail 4.2.0; earlier versions took a single ``body``.
+        ``isAiGenerated`` exists since Mail 5.12.0 and is sent only for drafts
+        (``ai_generated``), so the outbox body stays as it was.
+        """
+        payload: dict[str, Any] = {
+            "accountId": account_id,
+            "subject": subject,
+            "isHtml": is_html,
+            "smimeSign": False,
+            "smimeEncrypt": False,
+            "to": to,
+        }
+        if is_html:
+            payload["bodyHtml"] = body
+        else:
+            payload["bodyPlain"] = body
+        if cc:
+            payload["cc"] = cc
+        if bcc:
+            payload["bcc"] = bcc
+        if in_reply_to:
+            payload["inReplyToMessageId"] = in_reply_to
+        if ai_generated:
+            payload["isAiGenerated"] = True
+        return payload
 
     async def send_message(
         self,
@@ -398,24 +504,16 @@ class MailClient(BaseNextcloudClient):
         Returns:
             The response dict from the send step.
         """
-        create_data: dict[str, Any] = {
-            "accountId": account_id,
-            "subject": subject,
-            "isHtml": is_html,
-            "smimeSign": False,
-            "smimeEncrypt": False,
-            "to": to,
-        }
-        if is_html:
-            create_data["bodyHtml"] = body
-        else:
-            create_data["bodyPlain"] = body
-        if cc:
-            create_data["cc"] = cc
-        if bcc:
-            create_data["bcc"] = bcc
-        if references:
-            create_data["inReplyToMessageId"] = references
+        create_data = self._local_message_payload(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html,
+            cc=cc,
+            bcc=bcc,
+            in_reply_to=references,
+        )
 
         create_result = await self._api_write("POST", "/outbox", json_data=create_data)
         outbox_id = create_result.get("data", {}).get("id")
@@ -437,6 +535,168 @@ class MailClient(BaseNextcloudClient):
             "outbox_id": outbox_id,
             "response": send_result,
         }
+
+    async def create_draft(
+        self,
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        cc: list[dict[str, str]] | None = None,
+        bcc: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Stage a draft in the Mail app's database. Never sends anything.
+
+        Uses ``POST /index.php/apps/mail/api/drafts`` (``DraftsController::create``,
+        Mail 2.2.0+), which answers 201 with the new ``LocalMessage`` wrapped in
+        ``data``. At this point the draft exists only in Nextcloud's database;
+        no mail client, including the Mail web UI, lists it until
+        :meth:`move_draft_to_imap` writes it to the account's Drafts mailbox.
+
+        No reply reference is sent. Mail would store ``inReplyToMessageId`` on
+        the local record, but writing the draft to IMAP does not turn it into
+        ``In-Reply-To``/``References`` headers, so the move drops it.
+
+        The draft is always marked as AI-generated (``isAiGenerated``): every
+        draft this client writes comes from an agent. Mail 5.12+ writes an
+        ``X-AI-Generated: 1`` header into the IMAP draft and shows the marker,
+        which the person sending can remove. Older versions ignore the field.
+
+        Args:
+            account_id: The mail account the draft belongs to.
+            to: Recipients ``[{"label": "...", "email": "..."}]`` (may be empty).
+            subject: Subject line.
+            body: Message body (plain text or HTML depending on ``is_html``).
+            is_html: Whether ``body`` contains HTML.
+            cc: Optional CC recipients (same format as ``to``).
+            bcc: Optional BCC recipients (same format as ``to``).
+
+        Returns:
+            The staged ``LocalMessage`` dict (``id``, ``accountId``, ``subject``, ...).
+
+        Raises:
+            RequestError: If the response carries no numeric draft id.
+        """
+        payload = self._local_message_payload(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html,
+            cc=cc,
+            bcc=bcc,
+            ai_generated=True,
+        )
+        result = await self._api_write("POST", "/drafts", json_data=payload)
+        draft = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(draft, dict) or not isinstance(draft.get("id"), int):
+            # Raise rather than return, for the same reason as send_message: the
+            # caller would otherwise go on to move a draft that does not exist.
+            raise RequestError(f"Draft create returned no id; response: {result!r}")
+        return draft
+
+    async def move_draft_to_imap(self, draft_id: int) -> dict[str, Any]:
+        """Write a staged draft to the account's IMAP Drafts mailbox.
+
+        Uses ``POST /index.php/apps/mail/api/drafts/move/{id}`` (Mail 3.3.0+),
+        bodyless, answering 202. Nothing is sent, even though the controller
+        calls ``DraftsService::sendMessage``: Mail APPENDs the message to the
+        Drafts mailbox with the ``\\Draft`` flag. An account without a Drafts
+        mailbox gets one named ``Drafts`` created on the spot.
+
+        On success Mail deletes the local record, so ``draft_id`` is stale
+        afterwards: update, delete and a second move all answer 404. On failure
+        Mail keeps the record but marks it ``failed``, which also excludes it
+        from Mail's own background move (``DraftsJob``).
+
+        Args:
+            draft_id: The staged draft's id from :meth:`create_draft`.
+
+        Returns:
+            The response body, ``{"status": "success", "data": "Message moved to IMAP"}``.
+        """
+        return await self._api_write("POST", f"/drafts/move/{draft_id}")
+
+    async def delete_local_draft(self, draft_id: int) -> None:
+        """Delete a draft that is still staged in the Mail app's database.
+
+        Uses ``DELETE /index.php/apps/mail/api/drafts/{id}``. This only reaches
+        the local record: it never touches IMAP, and it answers 404 once
+        :meth:`move_draft_to_imap` has succeeded.
+
+        Args:
+            draft_id: The staged draft's id from :meth:`create_draft`.
+        """
+        await self._api_write("DELETE", f"/drafts/{draft_id}")
+
+    async def save_draft(
+        self,
+        account_id: int,
+        to: list[dict[str, str]],
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        cc: list[dict[str, str]] | None = None,
+        bcc: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Save a draft to the account's IMAP Drafts mailbox without sending it.
+
+        The same two steps the Mail web UI takes when its composer closes:
+        :meth:`create_draft` stages the draft, :meth:`move_draft_to_imap`
+        writes it to IMAP. Neither step sends anything.
+
+        If the move fails, the staged record is deleted before the error is
+        re-raised. Mail would keep it marked ``failed``, and since nothing lists
+        local drafts and the background move skips failed ones, it would be
+        orphaned in the database.
+
+        Args:
+            account_id: The mail account the draft belongs to.
+            to: Recipients ``[{"label": "...", "email": "..."}]`` (may be empty).
+            subject: Subject line.
+            body: Message body (plain text or HTML depending on ``is_html``).
+            is_html: Whether ``body`` contains HTML.
+            cc: Optional CC recipients (same format as ``to``).
+            bcc: Optional BCC recipients (same format as ``to``).
+
+        Returns:
+            ``{"draft", "response"}``: the staged ``LocalMessage`` dict, and the
+            move step's response body. The staged record's ``id`` is stale once
+            the move succeeds, since Mail deletes the record.
+        """
+        draft = await self.create_draft(
+            account_id,
+            to,
+            subject,
+            body,
+            is_html=is_html,
+            cc=cc,
+            bcc=bcc,
+        )
+        draft_id = draft["id"]
+        try:
+            move_result = await self.move_draft_to_imap(draft_id)
+        except (HTTPStatusError, RequestError):
+            await self._discard_staged_draft(draft_id)
+            raise
+        return {"draft": draft, "response": move_result}
+
+    async def _discard_staged_draft(self, draft_id: int) -> None:
+        """Best-effort removal of a staged draft after its move failed.
+
+        Fail-open on purpose: the move error is what the caller needs to see,
+        so a cleanup failure is logged instead of replacing it. A 404 here
+        usually means the move did complete and only its response was lost.
+        """
+        try:
+            await self.delete_local_draft(draft_id)
+        except (HTTPStatusError, RequestError) as e:
+            logger.warning(
+                "Could not discard staged mail draft %s after a failed move: %s",
+                draft_id,
+                e,
+            )
 
     async def set_flags(self, message_id: int, flags: dict[str, bool]) -> None:
         """Set IMAP flags on a message.

@@ -10,7 +10,7 @@ metrics are wired in, mirroring ``app.py``, since they cost nothing here.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -20,11 +20,13 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
-from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.observability.metrics import instrument_call_tool_outcomes
-from nextcloud_mcp_server.request_context import current_context
-from nextcloud_mcp_server.server import AVAILABLE_APPS, configure_app_tools
+from nextcloud_mcp_server.server import (
+    AVAILABLE_APPS,
+    configure_app_tools,
+    configure_capabilities_resource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ class StdioContext(BasicAuthLifespanContext):
 
 
 @asynccontextmanager
-async def stdio_lifespan(server: MCPServer) -> AsyncIterator[StdioContext]:
+async def stdio_lifespan(server: MCPServer) -> AsyncGenerator[StdioContext]:
     """Create and tear down a single :class:`NextcloudClient`."""
     logger.info("Starting MCP server in stdio mode (single-user BasicAuth)")
     client = NextcloudClient.from_env()
@@ -84,17 +86,7 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> MCPServer:
 
     mcp = NextcloudMCPServer("Nextcloud MCP", lifespan=stdio_lifespan)
 
-    # --- capabilities resource (mirrors app.py) ---
-    # NOTE: current_context() is required here because MCPServer's
-    # FunctionResource (non-template resources) does not support context
-    # parameter injection — only template resources do — and mcp 2.x removed
-    # get_context(). See nextcloud_mcp_server.request_context.
-    @mcp.resource("nc://capabilities")
-    async def nc_get_capabilities():
-        """Get the Nextcloud Host capabilities"""
-        ctx = current_context(mcp)
-        client = await get_nextcloud_client(ctx)
-        return await client.capabilities()
+    configure_capabilities_resource(mcp)
 
     # --- tool registration ---
     if enabled_apps is None:

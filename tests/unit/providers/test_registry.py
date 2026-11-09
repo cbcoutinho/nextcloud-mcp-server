@@ -123,7 +123,7 @@ def test_registry_threads_embed_batch_knobs_to_ollama(clean_provider_env, mocker
     provider = get_provider()
     assert isinstance(provider, OllamaProvider)
     assert provider.max_batch_chars == 8000
-    # Positional httpx.Timeout: read/write/pool take the value, connect stays 5s.
+    # Positional httpx2.Timeout: read/write/pool take the value, connect stays 5s.
     assert provider.client.timeout.read == 30
     assert provider.client.timeout.connect == 5
 

@@ -18,7 +18,7 @@ from nextcloud_mcp_server.client import NextcloudClient, _normalise_search_resul
 def _make_client() -> Any:
     """Build a NextcloudClient with mocked sub-clients.
 
-    The client constructor opens an httpx session; we don't need it, just
+    The client constructor opens an httpx2 session; we don't need it, just
     a stub instance whose ``webdav`` attribute we can replace. Returned as
     ``Any`` so tests can freely reassign mocked methods on the sub-clients
     without fighting the real ``WebDAVClient`` signatures.
@@ -326,7 +326,8 @@ class TestFindFilesByTag:
         assert sorted(f["id"] for f in result) == [11, 12]
         assert next(f for f in result if f["id"] == 11)["name"] == "a.pdf"
 
-    async def test_directory_walk_failure_skips_only_that_directory(self, caplog):
+    async def test_directory_walk_failure_raises_instead_of_partial(self, caplog):
+        """A short list would read as "files deleted" to the scanner (Deck #1373)."""
         client = _make_client()
         client.webdav.get_tag_by_name = AsyncMock(return_value={"id": 5})
         client.webdav.get_files_by_tag = AsyncMock(
@@ -352,12 +353,10 @@ class TestFindFilesByTag:
         import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.client")
-        result = await client.find_files_by_tag(
-            "vector-index", mime_type_filter="application/pdf"
-        )
-
-        # Directly-tagged file survives even though the dir walk blew up.
-        assert {f["id"] for f in result} == {7}
+        with pytest.raises(RuntimeError, match="discovery incomplete"):
+            await client.find_files_by_tag(
+                "vector-index", mime_type_filter="application/pdf"
+            )
         assert "Tag-based directory walk failed" in caplog.text
 
     async def test_no_mime_filter_skips_directory_expansion(self):
@@ -434,7 +433,7 @@ class TestFromEnv:
         ``Settings.nextcloud_host`` is ``str | None``, so an unset
         NEXTCLOUD_HOST used to flow straight into
         ``NextcloudClient(base_url=...)`` and only surface later as a confusing
-        httpx error on the first request. Mirrors the guard ``context.py``
+        httpx2 error on the first request. Mirrors the guard ``context.py``
         already applies for multi-user BasicAuth mode.
 
         ``cfg`` and ``__init__`` are both stubbed so the *only* thing that can

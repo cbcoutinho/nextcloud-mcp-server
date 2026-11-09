@@ -97,27 +97,28 @@ async def test_retrieval_recall(nc_client, nfcorpus_test_data):
     """Test that semantic search retrieves documents containing the answer."""
     for test_case in nfcorpus_test_data:
         # Perform semantic search (retrieval only, no generation)
-        results = await nc_client.notes.semantic_search(
-            query=test_case.query,
-            limit=10
-        )
+        results = await nc_client.notes.semantic_search(query=test_case.query, limit=10)
 
         retrieved_doc_ids = {r.document_id for r in results}
         expected_doc_ids = set(test_case.expected_document_ids)
 
         # Context Recall: Are expected documents in top-k results?
         recall = len(expected_doc_ids & retrieved_doc_ids) / len(expected_doc_ids)
-        assert recall >= 0.8, f"Recall {recall} below threshold for query: {test_case.query}"
+        assert recall >= 0.8, (
+            f"Recall {recall} below threshold for query: {test_case.query}"
+        )
 
 
 # tests/rag_evaluation/test_generation_quality.py
-async def test_answer_correctness(mcp_sampling_client, evaluation_llm, nfcorpus_test_data):
+async def test_answer_correctness(
+    mcp_sampling_client, evaluation_llm, nfcorpus_test_data
+):
     """Test that RAG system generates factually correct answers."""
     for test_case in nfcorpus_test_data:
         # Execute full RAG pipeline (retrieval + generation)
         result = await mcp_sampling_client.call_tool(
             "nc_semantic_search_answer",
-            arguments={"query": test_case.query, "limit": 5}
+            arguments={"query": test_case.query, "limit": 5},
         )
 
         rag_answer = result["generated_answer"]
@@ -136,8 +137,9 @@ Respond with only: TRUE or FALSE"""
 
         evaluation_result = await evaluation_llm(evaluation_prompt)
 
-        assert evaluation_result.strip().upper() == "TRUE", \
+        assert evaluation_result.strip().upper() == "TRUE", (
             f"Answer mismatch for query: {test_case.query}\nGot: {rag_answer}\nExpected: {test_case.ground_truth}"
+        )
 ```
 
 **Dataset Integration**
@@ -167,12 +169,16 @@ Ground truth answers will be generated offline using a script that:
 
 ```python
 # tools/generate_rag_ground_truth.py
-async def generate_ground_truth(query: str, relevant_docs: List[dict], llm: LLMProvider) -> str:
+async def generate_ground_truth(
+    query: str, relevant_docs: List[dict], llm: LLMProvider
+) -> str:
     """Generate synthetic ground truth answer from highly relevant documents."""
-    context = "\n\n".join([
-        f"Document {i+1}:\nTitle: {doc['title']}\n{doc['text']}"
-        for i, doc in enumerate(relevant_docs[:5])
-    ])
+    context = "\n\n".join(
+        [
+            f"Document {i + 1}:\nTitle: {doc['title']}\n{doc['text']}"
+            for i, doc in enumerate(relevant_docs[:5])
+        ]
+    )
 
     prompt = f"""Based on the following documents, provide a comprehensive answer to this question:
 
@@ -203,6 +209,7 @@ Focus on accuracy and completeness."""
 class LLMProvider(Protocol):
     async def generate(self, prompt: str, max_tokens: int = 100) -> str: ...
 
+
 class OllamaProvider:
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url
@@ -211,6 +218,7 @@ class OllamaProvider:
     async def generate(self, prompt: str, max_tokens: int = 100) -> str:
         # Use httpx to call Ollama API
         ...
+
 
 class AnthropicProvider:
     def __init__(self, api_key: str, model: str):
@@ -221,7 +229,7 @@ class AnthropicProvider:
         message = await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
 ```

@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient

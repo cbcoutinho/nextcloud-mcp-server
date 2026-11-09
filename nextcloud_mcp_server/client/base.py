@@ -10,7 +10,7 @@ from functools import wraps
 from urllib.parse import unquote
 
 import anyio
-from httpx import (
+from httpx2 import (
     AsyncClient,
     HTTPError,
     HTTPStatusError,
@@ -28,7 +28,7 @@ from nextcloud_mcp_server.observability.tracing import trace_nextcloud_api_call
 
 #: Marks a request whose body the caller intends to consume incrementally.
 #:
-#: httpx runs response event hooks BEFORE the body is fetched, so a hook that
+#: httpx2 runs response event hooks BEFORE the body is fetched, so a hook that
 #: calls ``aread()`` pulls the whole body into memory and leaves nothing for the
 #: caller's ``aiter_bytes()`` loop -- silently turning a streamed download into a
 #: buffered one. ``log_response`` checks for this marker and skips reading.
@@ -87,8 +87,8 @@ def _lock_backoff(attempt: int) -> float:
 def retry_on_429(func):
     """Retry the two Nextcloud responses that mean "not now" rather than "no".
 
-    The `func` is assumed to be a method that is similar to `httpx.Client.get`,
-    and returns an `httpx.Response` object.
+    The `func` is assumed to be a method that is similar to `httpx2.Client.get`,
+    and returns an `httpx2.Response` object.
 
     * **429 Too Many Requests** -- the server is rate limiting. Waits
       ``RATE_LIMIT_BACKOFF_SECONDS`` and retries, up to ``MAX_RETRIES``
@@ -273,16 +273,18 @@ class BaseNextcloudClient(ABC):
 
     @staticmethod
     def _resolve_url(url: str) -> str:
-        """Prefix bare ``/apps/...`` paths with ``/index.php``.
+        """Prefix bare ``/apps/...`` and ``/core/...`` paths with ``/index.php``.
 
         Pretty URLs (URL rewriting that strips ``index.php``) are an opt-in
         Nextcloud feature; without them, ``/apps/<app>/...`` returns 404 — see
         issue #732. ``/index.php/apps/<app>/...`` is the universal entry point
         and works on every Nextcloud install regardless of web-server config,
-        so we route all app-API calls through it. ``/remote.php/dav/...`` and
-        ``/ocs/...`` have their own dedicated entry points and are unaffected.
+        so we route all app-API calls through it. Core routes such as
+        ``/core/preview.png`` go through the same front controller and need the
+        same prefix. ``/remote.php/dav/...`` and ``/ocs/...`` have their own
+        dedicated entry points and are unaffected.
         """
-        if url.startswith("/apps/"):
+        if url.startswith(("/apps/", "/core/")):
             return "/index.php" + url
         return url
 

@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
-import httpx
+import httpx2
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -99,7 +99,7 @@ class CustomHTTPProcessor(DocumentProcessor):
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx2.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     self.api_url,
                     files=files,
@@ -126,7 +126,7 @@ class CustomHTTPProcessor(DocumentProcessor):
                     success=True,
                 )
 
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             logger.error("Custom processor '%s' HTTP error: %s", self.name, e)
             raise ProcessorError(f"API call failed: {str(e)}") from e
         except Exception as e:
@@ -140,7 +140,7 @@ class CustomHTTPProcessor(DocumentProcessor):
             True if API responds with status < 500
         """
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx2.AsyncClient(timeout=5) as client:
                 # Try GET request to check availability
                 response = await client.get(
                     self.api_url,

@@ -41,6 +41,12 @@ class TalkMessage(BaseModel):
     expirationTimestamp: int | None = None
     referenceId: str | None = None
     markdown: bool | None = None
+    # Present when the room's spreed "threads" feature is enabled (OCS
+    # capability spreed.features includes "threads"); undocumented in
+    # docs/chat.md at the time of writing. threadId is the id of the
+    # thread's root message; isThread is True on that root message itself.
+    threadId: int | None = None
+    isThread: bool | None = None
 
     @field_validator("messageParameters", mode="before")
     @classmethod

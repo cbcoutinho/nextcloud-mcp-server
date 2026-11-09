@@ -19,13 +19,68 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 from ..http import nextcloud_httpx_client
 
 logger = logging.getLogger(__name__)
+
+# Fallback lifetime for a rotated refresh token when the IdP's token response
+# has no usable ``refresh_expires_in`` (it is not part of RFC 6749, and many
+# IdPs omit it).
+_DEFAULT_REFRESH_TOKEN_LIFETIME = timedelta(days=90)
+
+# Ceiling on an IdP-reported lifetime. Some IdPs report "never expires" as a
+# very large number; capping it keeps the timestamp inside the BIGINT
+# ``expires_at`` column and inside ``timedelta``'s range.
+_MAX_REFRESH_TOKEN_LIFETIME = timedelta(days=3650)
+
+
+def refresh_token_lifetime(raw: object) -> int | None:
+    """Seconds of IdP-reported ``refresh_expires_in``, or None when unusable.
+
+    A positive int, float or numeric string (AWS Cognito sends a JSON string)
+    is capped at ``_MAX_REFRESH_TOKEN_LIFETIME``. Absent, zero, negative, a
+    bool, or not a number yields None. Zero is included because Keycloak
+    reports ``0`` for offline tokens that do not expire.
+    """
+    # bool is an int subclass, and ``true`` is not a lifetime.
+    if not isinstance(raw, (int, float, str)) or isinstance(raw, bool):
+        return None
+    try:
+        seconds = int(raw)
+    except (ValueError, OverflowError):  # "abc", "1.5", NaN, infinity
+        return None
+    if seconds <= 0:
+        return None
+    return min(seconds, int(_MAX_REFRESH_TOKEN_LIFETIME.total_seconds()))
+
+
+def _refresh_token_expires_at(token_data: dict) -> int:
+    """Unix timestamp at which the refresh token in *token_data* expires.
+
+    Falls back to ``_DEFAULT_REFRESH_TOKEN_LIFETIME`` when the IdP's lifetime
+    is unusable: the sliding 90-day window the broker has always applied.
+
+    Storage deletes a refresh token once this time passes, so an expiry later
+    than the IdP's keeps a dead token in use, and an earlier one discards a
+    live token.
+    """
+    raw = token_data.get("refresh_expires_in")
+    seconds = refresh_token_lifetime(raw)
+    if seconds is None:
+        if raw is not None:
+            logger.debug(
+                "Ignoring unusable refresh_expires_in=%r, using the %s-day default",
+                raw,
+                _DEFAULT_REFRESH_TOKEN_LIFETIME.days,
+            )
+        lifetime = _DEFAULT_REFRESH_TOKEN_LIFETIME
+    else:
+        lifetime = timedelta(seconds=seconds)
+    return int((datetime.now(timezone.utc) + lifetime).timestamp())
 
 
 class TokenCache:
@@ -133,11 +188,11 @@ class TokenBrokerService:
         self._locks_lock = anyio.Lock()  # Protects the locks dict itself
         self._http_client = None
 
-    async def _get_http_client(self) -> httpx.AsyncClient:
+    async def _get_http_client(self) -> httpx2.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None:
             self._http_client = nextcloud_httpx_client(
-                timeout=httpx.Timeout(30.0), follow_redirects=True
+                timeout=httpx2.Timeout(30.0), follow_redirects=True
             )
         return self._http_client
 
@@ -391,10 +446,7 @@ class TokenBrokerService:
         # Handle refresh token rotation (Nextcloud OIDC rotates on every use)
         new_refresh_token = token_data.get("refresh_token")
         if user_id and new_refresh_token and new_refresh_token != refresh_token:
-            # Calculate expiry as Unix timestamp (90 days from now)
-            expires_at = int(
-                (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
-            )
+            expires_at = _refresh_token_expires_at(token_data)
             await self.storage.store_refresh_token(
                 user_id=user_id,
                 refresh_token=new_refresh_token,
@@ -479,10 +531,7 @@ class TokenBrokerService:
         new_refresh_token = token_data.get("refresh_token")
         if user_id and new_refresh_token and new_refresh_token != refresh_token:
             # Store the new refresh token for future use
-            # Calculate expiry as Unix timestamp (90 days from now)
-            expires_at = int(
-                (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
-            )
+            expires_at = _refresh_token_expires_at(token_data)
             await self.storage.store_refresh_token(
                 user_id=user_id,
                 refresh_token=new_refresh_token,
@@ -555,10 +604,7 @@ class TokenBrokerService:
 
             if new_refresh_token and new_refresh_token != current_refresh_token:
                 # storage.store_refresh_token() handles encryption internally
-                # Convert datetime to Unix timestamp (int) for database storage
-                expires_at = int(
-                    (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
-                )
+                expires_at = _refresh_token_expires_at(token_data)
                 await self.storage.store_refresh_token(
                     user_id=user_id,
                     refresh_token=new_refresh_token,

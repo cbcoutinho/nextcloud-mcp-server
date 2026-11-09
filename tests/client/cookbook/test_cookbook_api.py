@@ -1,6 +1,6 @@
 import logging
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.cookbook import CookbookClient
@@ -27,7 +27,7 @@ async def test_cookbook_version(mocker):
         },
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -53,7 +53,7 @@ async def test_cookbook_config(mocker):
         },
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -76,7 +76,7 @@ async def test_cookbook_list_recipes(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -96,7 +96,7 @@ async def test_cookbook_create_recipe(mocker):
     # Create_recipe returns just the recipe ID
     mock_response = create_mock_response(status_code=200, json_data=123)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -130,7 +130,7 @@ async def test_cookbook_get_recipe(mocker):
         recipeInstructions=["Mix ingredients", "Cook"],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -154,7 +154,7 @@ async def test_cookbook_update_recipe(mocker):
     # Update_recipe returns the recipe ID
     mock_response = create_mock_response(status_code=200, json_data=123)
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -181,7 +181,7 @@ async def test_cookbook_delete_recipe(mocker):
         status_code=200, json_data="Recipe deleted successfully"
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -201,17 +201,17 @@ async def test_cookbook_delete_nonexistent_recipe(mocker):
     """Test that deleting a non-existent recipe raises HTTPStatusError."""
     error_response = create_mock_error_response(404, "Recipe not found")
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(CookbookClient, "_make_request")
-    mock_make_request.side_effect = httpx.HTTPStatusError(
+    mock_make_request.side_effect = httpx2.HTTPStatusError(
         "404 Not Found",
-        request=httpx.Request("DELETE", "http://test.local"),
+        request=httpx2.Request("DELETE", "http://test.local"),
         response=error_response,
     )
 
     client = CookbookClient(mock_client, "testuser")
 
-    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
         await client.delete_recipe(recipe_id=999999999)
 
     assert excinfo.value.response.status_code == 404
@@ -226,7 +226,7 @@ async def test_cookbook_search_recipes(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -253,7 +253,7 @@ async def test_cookbook_list_categories(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -278,7 +278,7 @@ async def test_cookbook_get_recipes_in_category(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -306,7 +306,7 @@ async def test_cookbook_list_keywords(mocker):
         ],
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -331,7 +331,7 @@ async def test_cookbook_get_recipes_with_keywords(mocker):
         ]
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )
@@ -357,7 +357,7 @@ async def test_cookbook_reindex(mocker):
         json_data="Reindex completed successfully",
     )
 
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     mock_make_request = mocker.patch.object(
         CookbookClient, "_make_request", return_value=mock_response
     )

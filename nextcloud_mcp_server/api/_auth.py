@@ -27,7 +27,7 @@ async def get_basic_auth_for_user(user_id: str) -> tuple[str, str]:
 
     Returns:
         Tuple ``(username, app_password)`` ready to pass to
-        ``httpx.BasicAuth``.
+        ``httpx2.BasicAuth``.
 
     Raises:
         ProvisioningRequiredError: No app password is stored for ``user_id``.

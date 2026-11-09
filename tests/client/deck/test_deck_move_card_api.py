@@ -9,7 +9,7 @@ These mock the HTTP layer to assert request construction without a live server:
   issuing the reorder request, while skipping the lookup for same-stack reorders.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.deck import DeckClient
@@ -22,7 +22,7 @@ from tests.client.conftest import (
 pytestmark = pytest.mark.unit
 
 
-def _stacks_list_response(stack_ids: list[int]) -> httpx.Response:
+def _stacks_list_response(stack_ids: list[int]) -> httpx2.Response:
     """Mock response for get_stacks (a JSON array of stack objects)."""
     return create_mock_response(
         status_code=200,
@@ -49,7 +49,7 @@ async def test_move_card_to_board_sends_id_and_target_stack(mocker):
         ],
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     moved = await client.move_card_to_board(
         source_board_id=1,
         source_stack_id=10,
@@ -76,7 +76,7 @@ async def test_move_card_to_board_sends_id_and_target_stack(mocker):
     assert mock_make_request.call_count == 3
 
 
-async def test_move_card_to_board_preserves_duedate(mocker):
+async def test_move_card_to_board_preserves_duedate_and_startdate(mocker):
     """A due date on the source card is forwarded, normalised to UTC "Z" form.
 
     move_card_to_board now shares `_normalize_duedate` with create_card and
@@ -90,13 +90,17 @@ async def test_move_card_to_board_preserves_duedate(mocker):
         side_effect=[
             _stacks_list_response([99]),
             create_mock_deck_card_response(
-                card_id=7, stack_id=10, duedate="2030-01-02T03:04:05+00:00"
+                card_id=7,
+                stack_id=10,
+                duedate="2030-01-02T03:04:05+00:00",
+                startdate="2030-01-01T00:00:00+00:00",
+                color="00FF00",
             ),
             create_mock_deck_card_response(card_id=7, stack_id=99),
         ],
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.move_card_to_board(
         source_board_id=1,
         source_stack_id=10,
@@ -107,6 +111,9 @@ async def test_move_card_to_board_preserves_duedate(mocker):
 
     body = mock_make_request.call_args_list[2].kwargs["json"]
     assert body["duedate"] == "2030-01-02T03:04:05Z"
+    # Deck 1.18.x nulls startdate and color when omitted, so both are carried over.
+    assert body["startdate"] == "2030-01-01T00:00:00Z"
+    assert body["color"] == "00FF00"
 
 
 async def test_move_card_to_board_restores_done_state(mocker):
@@ -127,7 +134,7 @@ async def test_move_card_to_board_restores_done_state(mocker):
         ],
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     result = await client.move_card_to_board(
         source_board_id=1,
         source_stack_id=10,
@@ -155,15 +162,15 @@ async def test_move_card_to_board_done_restore_failure_is_swallowed(mocker):
                 card_id=8, stack_id=10, done="2029-12-31T23:59:00+00:00"
             ),
             create_mock_deck_card_response(card_id=8, stack_id=99, done=None),  # move
-            httpx.HTTPStatusError(  # done PUT fails
+            httpx2.HTTPStatusError(  # done PUT fails
                 "500 Server Error",
-                request=httpx.Request("PUT", "https://test.local"),
+                request=httpx2.Request("PUT", "https://test.local"),
                 response=create_mock_response(status_code=500, json_data={}),
             ),
         ],
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     # Does not raise — the move already committed
     result = await client.move_card_to_board(
         source_board_id=1,
@@ -189,7 +196,7 @@ async def test_move_card_to_board_rejects_stack_not_on_target_board(mocker):
         return_value=_stacks_list_response([50, 51]),  # 99 not present
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(ValueError, match="not a stack on target board"):
         await client.move_card_to_board(
             source_board_id=1,
@@ -211,7 +218,7 @@ async def test_reorder_card_rejects_cross_board_target(mocker):
         return_value=_stacks_list_response([10, 11]),  # target 99 on another board
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     with pytest.raises(ValueError, match="move_card_to_board"):
         await client.reorder_card(
             board_id=1,
@@ -234,7 +241,7 @@ async def test_reorder_card_same_stack_skips_lookup(mocker):
         return_value=create_mock_response(status_code=200, json_data={}),
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.reorder_card(
         board_id=1,
         stack_id=10,
@@ -261,7 +268,7 @@ async def test_reorder_card_allows_same_board_target(mocker):
         ],
     )
 
-    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    client = DeckClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
     await client.reorder_card(
         board_id=1,
         stack_id=10,

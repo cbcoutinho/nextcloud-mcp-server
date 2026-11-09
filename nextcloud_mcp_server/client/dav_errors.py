@@ -23,7 +23,7 @@ Three statuses get their own type because callers branch on them:
 507  :class:`DavInsufficientStorage` quota exhausted
 ===  ==============================  =======================================
 
-Everything here derives from :class:`httpx.HTTPStatusError`, so handlers that
+Everything here derives from :class:`httpx2.HTTPStatusError`, so handlers that
 predate this module keep catching these unchanged.
 
 Both of ``BaseNextcloudClient``'s request paths are wired to this: the buffered
@@ -35,7 +35,7 @@ server's wording -- a 507 download is still a
 
 import xml.etree.ElementTree as ET
 
-from httpx import HTTPStatusError, Request, Response, ResponseNotRead
+from httpx2 import HTTPStatusError, Request, Response, ResponseNotRead
 
 # An XML namespace URI, not an address anything is fetched from. Namespaces are
 # matched as exact strings, so "upgrading" this to https would stop every Sabre
@@ -100,7 +100,7 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
         return None, None
 
     # Anything that is not a real byte body -- a test double, a stub response
-    # from a caller that fakes the httpx surface -- is not a DAV error document.
+    # from a caller that fakes the httpx2 surface -- is not a DAV error document.
     # This runs while another exception is already propagating, so degrading to
     # "no detail" is the only acceptable outcome. Raising here would replace the
     # caller's real failure with a TypeError from the error handler itself.
@@ -112,9 +112,10 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
 
     try:
         root = ET.fromstring(body)
-    except ET.ParseError:
+    except (ET.ParseError, LookupError, ValueError):
         # Not XML (an OCS JSON body, an HTML error page from a proxy) or
-        # truncated. Both are ordinary here, not worth a log line.
+        # truncated. Both are ordinary here, not worth a log line. LookupError:
+        # an XML declaration naming an unknown ``encoding=`` gets past the parser.
         return None, None
 
     exception = root.find(f".//{{{SABREDAV_NAMESPACE}}}exception")
@@ -128,7 +129,7 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
 def dav_error_from_response(
     status: int, *, method: str, url: str, body: bytes | str = b""
 ) -> HTTPStatusError:
-    """Build the typed error for a DAV failure observed outside httpx.
+    """Build the typed error for a DAV failure observed outside httpx2.
 
     The CalDAV client talks through the ``caldav`` library rather than
     ``BaseNextcloudClient._make_request`` (an intentional exception -- it has

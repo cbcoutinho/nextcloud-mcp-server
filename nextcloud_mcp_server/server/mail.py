@@ -1,15 +1,16 @@
-"""MCP tools for Nextcloud Mail app (read, send, flags, tags, move, delete)."""
+"""MCP tools for Nextcloud Mail app (read, send, drafts, flags, tags, move, delete)."""
 
 import json
 import logging
-from collections.abc import Iterator
+import mimetypes
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
 
-from httpx import HTTPStatusError, RequestError
+from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -29,15 +30,25 @@ from nextcloud_mcp_server.models.mail import (
     MailMessageSummary,
     MailTag,
     MailTagResponse,
+    SaveDraftResponse,
     SendMessageResponse,
+    ViewMailAttachmentResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.utils.image_view import (
+    DEFAULT_MAX_SIZE,
+    MAX_SIZE,
+    ImageError,
+    PreparedImage,
+    image_tool_result,
+    prepare_image_in_thread,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _mail_errors(action: str) -> Iterator[None]:
+def _mail_errors(action: str) -> Generator[None]:
     """Map client transport errors onto ``MCPError`` with a consistent message.
 
     Args:
@@ -213,8 +224,10 @@ async def nc_mail_get_message(message_id: int, ctx: Context) -> GetMessageRespon
 
     Returns:
         GetMessageResponse with the full message including body and attachments.
-        Attachments with ``id: null`` are inline body parts and cannot be
-        fetched via nc_mail_get_attachment (which requires a string id).
+        Fetch an attachment with nc_mail_get_attachment, or look at an image
+        one with nc_mail_view_attachment. Attachments with ``id: null`` are
+        inline body parts and cannot be fetched by either (both require a
+        string id).
     """
     client = await get_client(ctx)
     try:
@@ -303,12 +316,151 @@ async def nc_mail_send_message(
         raise MCPError(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
 
 
+def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
+    """Parse a JSON recipient list (``[{"label": "...", "email": "..."}]``).
+
+    Runs before any request is made, so a malformed list fails with an error
+    naming the parameter instead of a half-finished call to the Mail app.
+
+    Args:
+        raw: The JSON string as passed to the tool; ``None`` or ``""`` means
+            no recipients.
+        field: Parameter name for error messages (``to``, ``cc``, ``bcc``).
+
+    Returns:
+        One ``{"email", "label"?}`` dict per recipient. ``label`` is left out
+        when absent, so the Mail app falls back to the address itself.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
+    if not isinstance(parsed, list):
+        raise MCPError(
+            code=-1,
+            message=f"{field} must be a JSON array, got {type(parsed).__name__}",
+        )
+
+    recipients: list[dict[str, str]] = []
+    for entry in parsed:
+        email = entry.get("email") if isinstance(entry, dict) else None
+        if not isinstance(email, str) or not email.strip():
+            raise MCPError(
+                code=-1,
+                message=f"Each {field} entry needs an 'email' string, got {entry!r}",
+            )
+        recipient = {"email": email}
+        label = entry.get("label")
+        if isinstance(label, str) and label:
+            recipient["label"] = label
+        recipients.append(recipient)
+    return recipients
+
+
+@require_scopes("mail.draft")
+@instrument_tool
+async def nc_mail_save_draft(
+    account_id: int,
+    to: str,
+    subject: str,
+    body: str,
+    ctx: Context,
+    is_html: bool = False,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> SaveDraftResponse:
+    """Save an email as a draft WITHOUT sending it (requires mail.draft scope).
+
+    Nothing is delivered to anyone. The draft is written to the account's
+    Drafts mailbox (created as "Drafts" if the account has none), where the
+    user can review, edit and send it from Nextcloud Mail or any other mail
+    client. Use this to prepare a message, for example a reply, that a person
+    sends themselves.
+
+    The ``From:`` identity is derived by the Mail app from ``account_id``.
+    Recipients are JSON arrays of ``{"label": "...", "email": "..."}`` objects,
+    as for nc_mail_send_message. Example for ``to``::
+
+        [{"label": "John Doe", "email": "john@example.com"}]
+
+    To draft a reply, set the subject (e.g. "Re: <original subject>") and the
+    recipients yourself. There is no reply-reference parameter: the Mail app
+    does not keep In-Reply-To/References on drafts it writes to the Drafts
+    mailbox, so a reply sent from the draft is not linked to the original
+    message by those headers.
+
+    Every call saves a new draft. A saved draft cannot be changed through this
+    tool. To revise one, save a new draft and ask the user to discard the old
+    one.
+
+    The draft is marked as AI-generated, which Nextcloud Mail (5.12 and
+    later) shows when the draft is opened. The person sending it can remove
+    the marker.
+
+    Args:
+        account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
+        to: JSON array of To recipients (``[]`` for none yet)
+        subject: Email subject
+        body: Email body (plain text unless is_html is true)
+        is_html: Whether body contains HTML (default false)
+        cc: Optional JSON array of CC recipients
+        bcc: Optional JSON array of BCC recipients
+
+    Returns:
+        SaveDraftResponse confirming the draft was saved. Find the draft in
+        the account's Drafts mailbox.
+    """
+    to_list = _parse_recipients(to, "to")
+    cc_list = _parse_recipients(cc, "cc")
+    bcc_list = _parse_recipients(bcc, "bcc")
+
+    client = await get_client(ctx)
+    try:
+        result = await client.mail.save_draft(
+            account_id=account_id,
+            to=to_list,
+            subject=subject,
+            body=body,
+            is_html=is_html,
+            cc=cc_list or None,
+            bcc=bcc_list or None,
+        )
+    except RequestError as e:
+        raise MCPError(
+            code=-1, message=f"Network error saving draft: {e}. Nothing was sent."
+        ) from e
+    except HTTPStatusError as e:
+        raise MCPError(
+            code=-1,
+            message=f"Failed to save draft: {e.response.status_code} "
+            f"{e.response.text[:500]}. Nothing was sent.",
+        ) from e
+
+    # Mail 3.3-6.0 answer the move with {"status", "data": "Message moved to
+    # IMAP"}. The confirmation is informational only, so an unexpected shape
+    # leaves it empty rather than failing a save that already succeeded.
+    move_response = result.get("response")
+    move_result = move_response.get("data") if isinstance(move_response, dict) else None
+    return SaveDraftResponse(
+        account_id=account_id,
+        subject=subject,
+        move_result=move_result if isinstance(move_result, str) else None,
+        message=f"Draft saved to the Drafts mailbox of account {account_id}. "
+        "Nothing was sent.",
+    )
+
+
 @require_scopes("mail.read")
 @instrument_tool
 async def nc_mail_get_attachment(
     message_id: int, attachment_id: str, ctx: Context
 ) -> GetAttachmentResponse:
     """Get a single mail attachment's metadata and content (requires mail.read scope).
+
+    For an image you want to look at, use nc_mail_view_attachment instead: it
+    shows the picture, where this returns base64 text.
 
     Args:
         message_id: Numeric message id
@@ -338,6 +490,107 @@ async def nc_mail_get_attachment(
             code=-1,
             message=f"Failed to get attachment: {e.response.status_code}",
         )
+
+
+def _not_an_image(mime: str, name: str) -> str | None:
+    """The type an attachment is refused for, or None when it may be an image.
+
+    ``image/*`` goes on. A generic ``application/octet-stream`` (or no type at
+    all) says nothing about the content, so the file name decides: a guess that
+    is not an image is refused, an image guess or no guess is tried. Any other
+    type is refused.
+    """
+    mime = mime.lower()
+    if mime.startswith("image/"):
+        return None
+    if mime in ("", "application/octet-stream"):
+        guessed, _ = mimetypes.guess_type(name)
+        return None if guessed is None or guessed.startswith("image/") else guessed
+    return mime
+
+
+@require_scopes("mail.read")
+@instrument_tool
+async def nc_mail_view_attachment(
+    message_id: int,
+    attachment_id: str,
+    ctx: Context,
+    max_size: Annotated[int, Field(ge=64, le=MAX_SIZE)] = DEFAULT_MAX_SIZE,
+) -> Annotated[CallToolResult, ViewMailAttachmentResponse]:
+    """Show an image attachment so you can look at it (requires mail.read scope).
+
+    Returns the image itself, which a vision model sees as a picture, not as
+    text. Use this instead of nc_mail_get_attachment for images (photos,
+    screenshots, scans): that tool returns base64 text, which you cannot look
+    at.
+
+    The image is scaled down to at most ``max_size`` pixels on its longer
+    edge, 1568 by default, the right size for a vision model. Raise it (up to
+    2576) to read small print, lower it to save tokens. A photo is turned
+    upright according to its orientation data.
+
+    The attachment is decoded on the MCP server (JPEG, PNG, GIF, WebP, BMP,
+    TIFF), which takes at most 80 megapixels for JPEG and 24 for the other
+    formats. Formats such as HEIC are not supported for mail attachments, since
+    Nextcloud renders no preview for them. Attachments that are not images are
+    refused. Use nc_mail_get_attachment for those. Inline body parts
+    (attachments with ``id: null``) cannot be fetched, as with
+    nc_mail_get_attachment.
+
+    Args:
+        message_id: Numeric message id
+        attachment_id: Attachment id (a string, from the message's attachments)
+        max_size: Longest edge of the image you receive, in pixels (64-2576)
+
+    Returns:
+        The image, followed by ``ViewMailAttachmentResponse``: its size and
+        format, and the size of the attachment it was made from (larger than
+        the image you got means a higher ``max_size`` would show more detail).
+    """
+    client = await get_client(ctx)
+    try:
+        raw, mime, name = await client.mail.download_attachment(
+            message_id, attachment_id
+        )
+    except RequestError as e:
+        raise MCPError(
+            code=-1, message=f"Network error getting attachment: {str(e)}"
+        ) from e
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise MCPError(code=-1, message="Attachment not found") from e
+        raise MCPError(
+            code=-1,
+            message=f"Failed to get attachment: {e.response.status_code}",
+        ) from e
+
+    refused = _not_an_image(mime, name)
+    if refused is not None:
+        raise MCPError(
+            code=-1,
+            message=f"Attachment {name!r} is not an image ({refused}). "
+            "Use nc_mail_get_attachment to fetch it.",
+        )
+
+    try:
+        prepared: PreparedImage = await prepare_image_in_thread(raw, max_size)
+    except ImageError as e:
+        raise MCPError(code=-1, message=f"Cannot show attachment {name!r}: {e}.") from e
+
+    return image_tool_result(
+        prepared,
+        ViewMailAttachmentResponse(
+            message_id=message_id,
+            attachment_id=attachment_id,
+            name=name,
+            mime_type=prepared.mime_type,
+            width=prepared.width,
+            height=prepared.height,
+            source_width=prepared.source_width,
+            source_height=prepared.source_height,
+            size=len(prepared.data),
+        ),
+    )
 
 
 @require_scopes("mail.read")
@@ -553,7 +806,7 @@ async def nc_mail_delete_message(message_id: int, ctx: Context) -> MailActionRes
 
 
 def configure_mail_tools(mcp: MCPServer):
-    """Configure Mail app MCP tools (read, send, flags, tags, move, delete)."""
+    """Configure Mail app MCP tools (read, send, drafts, flags, tags, move, delete)."""
 
     mcp.tool(
         title="List Mail Accounts",
@@ -584,9 +837,25 @@ def configure_mail_tools(mcp: MCPServer):
     )(nc_mail_send_message)
 
     mcp.tool(
+        title="Save Mail Draft",
+        annotations=ToolAnnotations(
+            # MCP defaults destructive_hint to true for any tool that is not
+            # read-only, so say explicitly that this one only adds a draft.
+            destructive_hint=False,
+            idempotent_hint=False,  # Saves a new draft each call (ADR-017)
+            open_world_hint=True,
+        ),
+    )(nc_mail_save_draft)
+
+    mcp.tool(
         title="Get Mail Attachment",
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )(nc_mail_get_attachment)
+
+    mcp.tool(
+        title="View Mail Attachment",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )(nc_mail_view_attachment)
 
     mcp.tool(
         title="Get Mail Message Source",

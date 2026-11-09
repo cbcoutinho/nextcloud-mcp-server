@@ -94,6 +94,27 @@ class TestSingleUserBasicValidation:
         assert mode == AuthMode.SINGLE_USER_BASIC
         assert len(errors) == 0
 
+    def test_vector_sync_without_semantic_extra(self):
+        """Semantic search on an install without the extra names the fix."""
+        settings = Settings(
+            nextcloud_host="http://localhost",
+            nextcloud_username="admin",
+            nextcloud_password="password",
+            vector_sync_enabled=True,
+            qdrant_location=":memory:",
+        )
+
+        with patch(
+            "nextcloud_mcp_server.config_validators.semantic_installed",
+            return_value=False,
+        ):
+            _, errors = validate_configuration(settings)
+
+        assert errors == [
+            "[single_user_basic] ENABLE_SEMANTIC_SEARCH requires the semantic "
+            "extra: pip install 'nextcloud-mcp-server[semantic]'"
+        ]
+
     def test_missing_required_host(self):
         """Test error when NEXTCLOUD_HOST is missing."""
         settings = Settings(

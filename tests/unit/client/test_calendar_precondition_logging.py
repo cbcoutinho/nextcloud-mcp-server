@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from httpx import Request, Response
+from httpx2 import Request, Response
 
 from nextcloud_mcp_server.client.calendar import CalendarClient
 from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed

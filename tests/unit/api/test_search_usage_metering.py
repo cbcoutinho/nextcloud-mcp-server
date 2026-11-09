@@ -18,7 +18,11 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api.visualization import unified_search
+from nextcloud_mcp_server.api.visualization import (
+    _build_search_algorithm,
+    unified_search,
+)
+from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
 from nextcloud_mcp_server.vector.oauth_sync import NotProvisionedError
 
 pytestmark = pytest.mark.unit
@@ -196,3 +200,42 @@ def test_error_path_still_records_a_sample():
 
     assert resp.status_code == 500
     assert spy.call_args.kwargs["status"] == "error"
+
+
+def test_unavailable_query_embedding_is_a_503_with_a_code():
+    """Fail fast with a code a client can branch on (Astrolabe offers keyword
+    search for it), not the generic 500 — and still count the request."""
+    resp, spy = _post_metrics(
+        {"query": "q", "algorithm": "hybrid"},
+        algo_raises=QueryEmbeddingUnavailable("no embedding within 10s"),
+    )
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["code"] == "embedding_unavailable"
+    assert "10s" in body["message"]
+    assert spy.call_args.kwargs["status"] == "error"
+
+
+def test_bm25_has_its_own_metric_label():
+    """Keyword search no longer runs the hybrid query, so it must not report
+    on the hybrid series."""
+    resp, spy = _post_metrics({"query": "q", "algorithm": "bm25"})
+
+    assert resp.status_code == 200
+    assert spy.call_args.kwargs["algorithm"] == "bm25"
+
+
+@pytest.mark.parametrize(("algorithm", "dense"), [("bm25", False), ("hybrid", True)])
+def test_only_hybrid_embeds_the_query(algorithm, dense):
+    """``bm25`` must build the keyword-only algorithm: it is what Astrolabe
+    offers when the embedding service is down."""
+    settings = MagicMock()
+    settings.vector_sync_enabled = True
+
+    algo, resolved, _ = _build_search_algorithm(
+        algorithm, settings, score_threshold=0.0, fusion="rrf"
+    )
+
+    assert resolved == algorithm
+    assert algo.dense is dense

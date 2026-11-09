@@ -12,7 +12,7 @@ decide whether a JWT rotation actually reached this Pod
 token silently manufactures confidence.
 """
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server import app as app_module
@@ -56,15 +56,15 @@ def probe(monkeypatch):
     ):
         seen: dict[str, str] = {}
 
-        def _handler(request: httpx.Request) -> httpx.Response:
+        def _handler(request: httpx2.Request) -> httpx2.Response:
             seen["url"] = str(request.url)
             seen["api_key"] = request.headers.get("api-key", "")
             return handler(request)
 
-        real_client = httpx.AsyncClient
+        real_client = httpx2.AsyncClient
 
         def _client(*args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(_handler)
+            kwargs["transport"] = httpx2.MockTransport(_handler)
             return real_client(*args, **kwargs)
 
         monkeypatch.setattr(
@@ -76,7 +76,7 @@ def probe(monkeypatch):
                 collection_raises=collection_raises,
             ),
         )
-        monkeypatch.setattr("nextcloud_mcp_server.app.httpx.AsyncClient", _client)
+        monkeypatch.setattr("nextcloud_mcp_server.app.httpx2.AsyncClient", _client)
         await _check_qdrant_health()
         return seen, _readiness_cache.snapshot().get("qdrant")
 
@@ -88,7 +88,8 @@ class TestQdrantHealthProbeTarget:
     async def test_probes_the_collection_when_vector_sync_enabled(self, probe):
         """The collection endpoint is what exercises the collection-scoped JWT."""
         seen, status = await probe(
-            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+            vector_sync=True,
+            handler=lambda r: httpx2.Response(200, json={"result": {}}),
         )
         assert seen["url"] == "https://qdrant:6333/collections/tenant_abc123"
         assert status.detail == "ok"
@@ -97,14 +98,15 @@ class TestQdrantHealthProbeTarget:
     async def test_forwards_the_api_key(self, probe):
         """Qdrant Cloud's gateway 403s unauthenticated reads."""
         seen, _ = await probe(
-            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+            vector_sync=True,
+            handler=lambda r: httpx2.Response(200, json={"result": {}}),
         )
         assert seen["api_key"] == "tenant-jwt"
 
     async def test_noop_without_a_qdrant_url(self, probe, monkeypatch):
         """Embedded/local mode has no URL to probe — must not blow up."""
         seen, _ = await probe(
-            vector_sync=True, handler=lambda r: httpx.Response(200), url=None
+            vector_sync=True, handler=lambda r: httpx2.Response(200), url=None
         )
         assert seen == {}  # no request issued
 
@@ -127,7 +129,7 @@ class TestQdrantHealthProbeFailureModes:
         Pod holding a dead token.
         """
         _seen, status = await probe(
-            vector_sync=True, handler=lambda r: httpx.Response(status_code)
+            vector_sync=True, handler=lambda r: httpx2.Response(status_code)
         )
         assert status.healthy is False, label
         assert str(status_code) in status.detail
@@ -135,8 +137,8 @@ class TestQdrantHealthProbeFailureModes:
         assert "tenant_abc123" in status.detail
 
     async def test_unhealthy_on_transport_error(self, probe):
-        def _boom(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("connection refused")
+        def _boom(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ConnectError("connection refused")
 
         _seen, status = await probe(vector_sync=True, handler=_boom)
         assert status.healthy is False
@@ -146,7 +148,8 @@ class TestQdrantHealthProbeFailureModes:
         """The control plane's rotate-verify gates on this literal string — a
         decorated success value ("ok (collection ...)") would break it."""
         _seen, status = await probe(
-            vector_sync=True, handler=lambda r: httpx.Response(200, json={"result": {}})
+            vector_sync=True,
+            handler=lambda r: httpx2.Response(200, json={"result": {}}),
         )
         assert status.detail == "ok"
 
@@ -164,7 +167,7 @@ class TestQdrantHealthProbeRobustness:
         """
         _seen, status = await probe(
             vector_sync=True,
-            handler=lambda r: httpx.Response(200, json={"result": {}}),
+            handler=lambda r: httpx2.Response(200, json={"result": {}}),
             collection_raises=True,
         )
         assert status.healthy is False
@@ -179,7 +182,7 @@ class TestQdrantHealthProbeRobustness:
         """
         seen, _status = await probe(
             vector_sync=True,
-            handler=lambda r: httpx.Response(200, json={"result": {}}),
+            handler=lambda r: httpx2.Response(200, json={"result": {}}),
             collection="weird/name with space",
         )
         assert (

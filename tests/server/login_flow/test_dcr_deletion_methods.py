@@ -9,7 +9,7 @@ with various authentication methods to answer the question:
 import logging
 import os
 
-import httpx
+import httpx2
 import pytest
 
 from nextcloud_mcp_server.auth.client_registration import register_client
@@ -41,7 +41,7 @@ async def test_dcr_deletion_authentication_methods(
     auth_states, callback_url = oauth_callback_server
 
     # Discover OIDC endpoints
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
         discovery_response = await client.get(discovery_url)
         discovery_response.raise_for_status()
@@ -67,7 +67,7 @@ async def test_dcr_deletion_authentication_methods(
 
     results = {}
 
-    async with httpx.AsyncClient(timeout=30.0) as test_client:
+    async with httpx2.AsyncClient(timeout=30.0) as test_client:
         # Method 1: HTTP Basic Auth
         logger.info("\n=== Method 1: HTTP Basic Auth ===")
         try:

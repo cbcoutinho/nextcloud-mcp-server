@@ -241,6 +241,8 @@ async def test_mcp_contacts_surfaces_structured_fields_and_survives_bad_cards(
         # listing down with it.
         assert rich_uid in by_uid, "structured contact missing from listing"
         assert geo_uid in by_uid, "unparseable contact took down the whole listing"
+        # Only the bad property is dropped, not the whole projection (#1551).
+        assert by_uid[geo_uid]["fn"] == "Geo Person"
 
         rich = by_uid[rich_uid]
         assert rich["given_name"] == "Alice"
@@ -260,6 +262,149 @@ async def test_mcp_contacts_surfaces_structured_fields_and_survives_bad_cards(
         assert address["label"] == "home"
         assert rich["custom_fields"]["X-ABLABEL"] == ["custom-label"]
 
+    finally:
+        try:
+            await nc_client.contacts.delete_addressbook(name=addressbook_name)
+        except Exception:
+            pass
+
+
+async def test_mcp_contacts_photo_and_paging_parameters(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """The new list parameters survive the MCP schema and the transport.
+
+    Photos are the reason the tool exists in this shape: a base64 PHOTO per
+    contact dwarfs every other field, so it is opt-in and ``has_photo`` carries
+    the information instead.
+    """
+    addressbook_name = f"mcp-photo-{uuid.uuid4().hex[:8]}"
+    suffix = uuid.uuid4().hex[:8]
+    base = (
+        f"/remote.php/dav/addressbooks/users/"
+        f"{nc_client.contacts.username}/{addressbook_name}"
+    )
+    # A recognisable, deliberately chunky payload.
+    photo_b64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" * 20
+
+    await nc_client.contacts.create_addressbook(
+        name=addressbook_name, display_name=f"MCP Photo {suffix}"
+    )
+    try:
+        for index in range(3):
+            uid = f"photo-{suffix}-{index}"
+            vcard = (
+                "BEGIN:VCARD\r\n"
+                "VERSION:3.0\r\n"
+                f"UID:{uid}\r\n"
+                f"FN:Contact {index}\r\n"
+                f"PHOTO;ENCODING=b;TYPE=GIF:{photo_b64}\r\n"
+                "END:VCARD\r\n"
+            )
+            await nc_client.contacts._make_request(
+                "PUT",
+                f"{base}/{uid}.vcf",
+                content=vcard.encode("utf-8"),
+                headers={"Content-Type": "text/vcard; charset=utf-8"},
+            )
+
+        # Default: no photo bytes, but the flag says one exists.
+        default_result = await nc_mcp_client.call_tool(
+            "nc_contacts_list_contacts", {"addressbook": addressbook_name}
+        )
+        assert default_result.is_error is False
+        default_payload = _extract_payload(default_result)
+        assert default_payload["total_count"] == 3
+        assert all(c["photo"] is None for c in default_payload["contacts"])
+        assert all(c["has_photo"] is True for c in default_payload["contacts"])
+
+        # Opt in and the bytes come back.
+        with_photos = await nc_mcp_client.call_tool(
+            "nc_contacts_list_contacts",
+            {"addressbook": addressbook_name, "include_photos": True},
+        )
+        assert with_photos.is_error is False
+        assert all(c["photo"] for c in _extract_payload(with_photos)["contacts"])
+
+        # Paging: total_count stays the addressbook size, not the page size.
+        first = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_list_contacts",
+                {"addressbook": addressbook_name, "limit": 2},
+            )
+        )
+        assert len(first["contacts"]) == 2
+        assert first["total_count"] == 3
+
+        second = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_list_contacts",
+                {"addressbook": addressbook_name, "limit": 2, "offset": 2},
+            )
+        )
+        assert len(second["contacts"]) == 1
+        assert {c["uid"] for c in first["contacts"]}.isdisjoint(
+            c["uid"] for c in second["contacts"]
+        )
+
+        # Search takes the same opt-in.
+        found = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_search_contacts",
+                {"query": "Contact", "addressbook": addressbook_name},
+            )
+        )
+        assert found["total_count"] >= 1
+        assert all(c["photo"] is None for c in found["contacts"])
+        assert all(c["has_photo"] is True for c in found["contacts"])
+    finally:
+        try:
+            await nc_client.contacts.delete_addressbook(name=addressbook_name)
+        except Exception:
+            pass
+
+
+async def test_mcp_contacts_structured_name_round_trip(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """Issue #1749: given/family name are written as N on create and update."""
+    addressbook_name = f"mcp-test-n-{uuid.uuid4().hex[:8]}"
+    contact_uid = f"mcp-n-{uuid.uuid4().hex[:8]}"
+    await nc_client.contacts.create_addressbook(
+        name=addressbook_name, display_name=addressbook_name
+    )
+    try:
+        create_result = await nc_mcp_client.call_tool(
+            "nc_contacts_create_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"given_name": "Jane", "family_name": "Doe"},
+            },
+        )
+        assert create_result.is_error is False
+
+        listed = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_list_contacts", {"addressbook": addressbook_name}
+            )
+        )["contacts"][0]
+        assert listed["fn"] == "Jane Doe"
+        assert listed["given_name"] == "Jane"
+        assert listed["family_name"] == "Doe"
+
+        update_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"family_name": "Roe"},
+            },
+        )
+        assert update_result.is_error is False
+        updated = _extract_payload(update_result)["contact"]
+        assert updated["given_name"] == "Jane"
+        assert updated["family_name"] == "Roe"
     finally:
         try:
             await nc_client.contacts.delete_addressbook(name=addressbook_name)

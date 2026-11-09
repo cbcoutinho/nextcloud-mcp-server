@@ -28,10 +28,13 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         "nc_notes_update_note",
         "nc_notes_append_content",
         "nc_notes_search_notes",
+        "nc_notes_list_notes",
         "nc_notes_delete_note",
         "nc_tables_list_tables",
         "nc_tables_get_schema",
         "nc_tables_read_table",
+        "nc_tables_read_view",
+        "nc_tables_get_row",
         "nc_tables_insert_row",
         "nc_tables_update_row",
         "nc_tables_delete_row",
@@ -281,6 +284,36 @@ async def test_mcp_notes_crud_workflow(
             f"Created note not found in search results. Search returned: {search_response}"
         )
         assert found_note["title"] == updated_title
+
+        # 8b. List notes via MCP: unfiltered includes ours, and the count matches
+        # the Notes API; the category filter narrows to it.
+        list_result = await nc_mcp_client.call_tool(
+            "nc_notes_list_notes", {"limit": 100000}
+        )
+        assert list_result.is_error is False, (
+            f"MCP note list failed: {list_result.content}"
+        )
+        list_response = json.loads(list_result.content[0].text)
+        assert note_id in [n["id"] for n in list_response["results"]]
+        # Compare within one response only: integration runs with xdist, so other
+        # workers create/delete notes for this user between any two calls.
+        assert list_response["total_found"] == len(list_response["results"])
+
+        # limit caps the listing, never the count (our note exists throughout).
+        limited = json.loads(
+            (await nc_mcp_client.call_tool("nc_notes_list_notes", {"limit": 0}))
+            .content[0]
+            .text
+        )
+        assert limited["results"] == []
+        assert limited["total_found"] >= 1
+
+        filtered_result = await nc_mcp_client.call_tool(
+            "nc_notes_list_notes", {"category": test_category}
+        )
+        filtered = json.loads(filtered_result.content[0].text)
+        assert note_id in [n["id"] for n in filtered["results"]]
+        assert all(n["category"] == test_category for n in filtered["results"])
 
         # 9. Delete note via MCP
         logger.info("Deleting note via MCP: %s", note_id)
@@ -749,6 +782,25 @@ async def test_mcp_calendar_workflow(
         # Our event should still be found when searching all calendars
         found_in_all = any(event.get("uid") == event_uid for event in all_events_data)
         assert found_in_all, "Event not found when searching all calendars"
+        assert events_response["truncated"] is False
+
+        # 6b. GH #1774: a match beyond `limit` is reported as truncated, and
+        # min_duration_minutes is applied (the event lasts exactly 60 minutes).
+        async def list_matching(**extra):
+            result = await nc_mcp_client.call_tool(
+                "nc_calendar_list_events",
+                {**all_calendars_data, **extra},
+            )
+            assert result.is_error is False, result.content
+            return json.loads(result.content[0].text)
+
+        cut = await list_matching(limit=0)
+        assert cut["events"] == [] and cut["truncated"] is True
+
+        too_short = await list_matching(min_duration_minutes=61)
+        assert all(e["uid"] != event_uid for e in too_short["events"])
+        long_enough = await list_matching(min_duration_minutes=60)
+        assert any(e["uid"] == event_uid for e in long_enough["events"])
 
         # 7. Update event via MCP
         updated_title = f"Updated {test_event_title}"

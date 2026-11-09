@@ -1,11 +1,11 @@
-"""Bearer token authentication for httpx."""
+"""Bearer token authentication for httpx2."""
 
-from httpx import Auth, Request
+from httpx2 import Auth, Request
 
 
 class BearerAuth(Auth):
     """
-    Bearer token authentication flow for httpx.
+    Bearer token authentication flow for httpx2.
 
     This auth class adds the Authorization: Bearer <token> header
     to all outgoing requests.

@@ -38,7 +38,7 @@ async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
 async def test_missing_file_error_is_llm_friendly(nc_mcp_client: ClientSession):
     """A tool with no bespoke handler still returns actionable text (GH #1208).
 
-    Guards the ``NextcloudMCPServer`` boundary: httpx's raw
+    Guards the ``NextcloudMCPServer`` boundary: httpx2's raw
     ``Client error '404 Not Found' for url 'http://app/remote.php/dav/...'``
     plus an MDN link must not reach the model.
     """
@@ -86,6 +86,27 @@ async def test_tool_missing_required_parameters(nc_mcp_client: ClientSession):
         "required" in response.content[0].text.lower()
         or "missing" in response.content[0].text.lower()
     )
+
+
+async def test_tool_unknown_argument_is_refused(nc_mcp_client: ClientSession):
+    """A guessed argument name is an error, not a silent no-op (card #1460).
+
+    Used to return the note while dropping ``note_idd`` -- or, for a write,
+    report success having done less than asked.
+    """
+    response = await nc_mcp_client.call_tool(
+        "nc_notes_get_note", {"note_id": 999999, "note_idd": 1}
+    )
+
+    assert response.is_error is True
+    text = response.content[0].text
+    assert "unknown argument(s) 'note_idd'" in text
+    assert "valid: note_id" in text
+    # Refused before dispatch: no Nextcloud lookup happened.
+    assert "not found" not in text.lower()
+
+    tools = await nc_mcp_client.list_tools()
+    assert all(t.input_schema["additionalProperties"] is False for t in tools.tools)
 
 
 async def test_update_note_with_invalid_etag(nc_mcp_client: ClientSession, nc_client):

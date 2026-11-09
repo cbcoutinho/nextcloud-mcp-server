@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import importlib
 import json
 import logging
 import os
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -14,28 +16,36 @@ from urllib.parse import quote, urlparse
 
 import anyio
 import click
-import httpx
+import httpx2
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.httpx import (
+    HTTPX2ClientInstrumentor,
+    HTTPXClientInstrumentor,
+)
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse
-from starlette.routing import Mount, Route
+from starlette.requests import Request
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
+from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as StarletteScope
 
-from nextcloud_mcp_server.admin.payload_backfill import handle_payload_backfill
 from nextcloud_mcp_server.api import (
     delete_app_password,
     get_app_password_status,
-    get_chunk_context,
     get_installed_apps,
     get_server_status,
     get_user_access,
@@ -43,12 +53,10 @@ from nextcloud_mcp_server.api import (
     get_vector_sync_status,
     list_supported_scopes,
     provision_app_password,
-    purge_doc_types_route,
     revoke_user_access,
-    unified_search,
     update_user_scopes,
-    vector_search,
 )
+from nextcloud_mcp_server.api.passwords import _validate_nextcloud_credentials
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     discover_all_scopes,
@@ -95,8 +103,8 @@ from nextcloud_mcp_server.config_validators import (
     get_mode_summary,
     validate_configuration,
 )
-from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.errors import NextcloudMCPServer
+from nextcloud_mcp_server.features import semantic_installed
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
@@ -111,43 +119,47 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.observability.readiness import ReadinessCache
-from nextcloud_mcp_server.request_context import current_context
+from nextcloud_mcp_server.plugins import (
+    load_plugins,
+    plugin_routes,
+    register_plugin_tools,
+)
 from nextcloud_mcp_server.retry import retry_on_transient
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
     configure_app_tools,
-    configure_semantic_tools,
+    configure_capabilities_resource,
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
-from nextcloud_mcp_server.vector.metrics_publisher import (
-    usage_stock_task,
-    vector_density_snapshot_task,
-    vector_sync_metrics_task,
-)
-from nextcloud_mcp_server.vector.oauth_sync import (
-    ProvisionSignal,
-    credential_cleanup_task,
-    oauth_processor_task,
-    user_manager_task,
-)
-from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
-from nextcloud_mcp_server.vector.processor import processor_task
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.queue import build_transport
-from nextcloud_mcp_server.vector.scanner import scanner_task
-from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
+from nextcloud_mcp_server.utils.parsing import split_csv
+
+# The vector/semantic-search stack (vector/, search/, document_processors/,
+# admin/payload_backfill, api/{visualization,vector_sync,sar}, server/{semantic,
+# sar}) is NEVER imported at module level here. It pulls in optional heavy
+# dependencies (qdrant-client, fastembed, pymupdf, provider SDKs), and the core
+# server must start without them. Each use imports it inside the branch that is
+# already gated on VECTOR_SYNC_ENABLED / a plugin being available, or via _lazy_endpoint
+# for routes that are mounted unconditionally.
+# tests/unit/test_core_import_boundary.py enforces this.
 
 if TYPE_CHECKING:
     # Annotation-only in this module (the file uses `from __future__ import
     # annotations`, so these are never evaluated at runtime).
+    from nextcloud_mcp_server.vector.oauth_sync import ProvisionSignal
     from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
-HTTPXClientInstrumentor().instrument()
+HTTPX2ClientInstrumentor().instrument()  # our clients, mcp, openai, mistralai
+HTTPXClientInstrumentor().instrument()  # qdrant-client and huggingface-hub still use httpx
 
 
-def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool) -> str:
+def build_dcr_scopes(
+    *,
+    vector_sync_enabled: bool,
+    offline_access_enabled: bool,
+    plugin_scopes: Iterable[tuple[frozenset[str], bool]] = (),
+) -> str:
     """Build the space-separated scope list this server registers via DCR.
 
     When we register as a resource server (with resource_url) the allowed
@@ -162,12 +174,20 @@ def build_dcr_scopes(*, vector_sync_enabled: bool, offline_access_enabled: bool)
     scope) ungrantable in OAuth mode despite being in use. semantic.read is
     subtracted and re-added conditionally so it is advertised only when
     semantic search is enabled — subtracting is what keeps it from being
-    emitted twice now that it is a member of the vocabulary.
+    emitted twice now that it is a member of the vocabulary. Each plugin's
+    scopes are handled the same way: ``plugin_scopes`` holds one
+    ``(scopes, available)`` pair per installed plugin, and a plugin's scopes are
+    advertised only while it is available.
     """
+    per_plugin = list(plugin_scopes)
+    withheld = frozenset().union(*(s for s, _ in per_plugin))
     scopes = ["openid", "profile", "email"]
-    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"})
+    scopes += sorted(ALL_SUPPORTED_SCOPES - {"semantic.read"} - withheld)
     if vector_sync_enabled:
         scopes.append("semantic.read")
+    for plugin_scope_set, available in per_plugin:
+        if available:
+            scopes += sorted(plugin_scope_set)
     if offline_access_enabled:
         scopes.append("offline_access")
     return " ".join(scopes)
@@ -419,6 +439,12 @@ def notify_user_provisioned() -> None:
         signal.ring()
 
 
+def background_task_group() -> TaskGroup | None:
+    """The lifespan's long-lived task group, for background work started from a
+    request (e.g. SAR export, ADR-040). ``None`` outside the lifespan."""
+    return _vector_sync_state.eviction_task_group
+
+
 def _wire_vector_sync_state(
     app: Starlette,
     transport: IngestTransport,
@@ -595,7 +621,7 @@ async def _check_qdrant_health() -> None:
         probe_url = f"{qdrant_url}/collections/{quote(collection, safe='')}"
         probe_desc = f"collection {collection}"
 
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.get(probe_url, headers=headers)
         healthy = response.status_code == 200
         # Keep the healthy detail exactly "ok" — the control plane's rotate-verify
@@ -619,7 +645,7 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
     network-policy convergence), which is worth retrying. A genuine
     misconfiguration (bad URL/API key surfacing as a 4xx) is not transient and
     should fail fast. Transient signals, mirroring the OIDC-discovery split:
-    connection-level failures — ``httpx.TransportError`` (raw) or qdrant's
+    connection-level failures — ``httpx2.TransportError`` (raw) or qdrant's
     ``ResponseHandlingException`` (wrapper) — and a ``5xx`` from a reachable but
     overloaded/starting Qdrant (qdrant's ``UnexpectedResponse.status_code``). A
     ``4xx`` (auth/URL) is not transient. Walks the ``__cause__``/``__context__``
@@ -630,7 +656,7 @@ def _qdrant_init_error_is_transient(exc: BaseException) -> bool:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if type(current).__name__ == "ResponseHandlingException" or isinstance(
-            current, httpx.TransportError
+            current, httpx2.TransportError
         ):
             return True
         # qdrant's UnexpectedResponse carries the HTTP status: 5xx is a transient
@@ -670,6 +696,10 @@ async def _init_qdrant_collection_with_retry() -> None:
         jitter=True,
     )
     async def _attempt() -> None:
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
+        )
+
         await get_qdrant_client()  # Triggers collection creation if needed
 
     try:
@@ -781,19 +811,70 @@ class OAuthAppContext:
         return _vector_sync_state.eviction_task_group
 
 
+def _auth_scheme(auth_header: str) -> str:
+    """The Authorization scheme, safe to log; never any credential material.
+
+    Only known schemes are echoed: a header without one may be a bare token, and
+    its first word would then be the secret itself.
+    """
+    scheme = auth_header.split(" ", 1)[0]
+    return scheme if scheme.lower() in ("basic", "bearer") else "<other>"
+
+
 class BasicAuthMiddleware:
-    """Middleware to extract BasicAuth credentials from Authorization header.
+    """Middleware to extract and verify BasicAuth credentials.
 
     For multi-user BasicAuth pass-through mode, this middleware extracts
-    username/password from the Authorization: Basic header and stores them
-    in the request state for use by the context layer.
+    username/password from the Authorization: Basic header, verifies them
+    against Nextcloud, and stores them in the request state for use by the
+    context layer.
 
-    The credentials are NOT stored persistently - they are passed through
-    directly to Nextcloud APIs for each request (stateless).
+    Verification happens here, once, before any handler runs: some handlers
+    serve server-side state keyed by the username without themselves calling
+    Nextcloud, so they cannot be relied on to reject a bad credential. A
+    failed check is rejected with 401 (or 502 when Nextcloud is unreachable) —
+    fail closed.
+
+    The credentials are NOT stored persistently. A successful check is
+    remembered for ``_VALID_TTL`` seconds, keyed by a hash of the header, so
+    each request doesn't cost a Nextcloud round-trip. Failures are not cached:
+    a negative cache only dedupes an identical bad header, not varied guesses,
+    and before this check every bad tool call already reached Nextcloud, whose
+    brute-force protection remains the throttle.
     """
+
+    # ponytail: a revoked password stays accepted for up to this long; lower it
+    # if revocation latency matters more than one OCS call per request.
+    _VALID_TTL = 60.0
+    _PRUNE_AT = 256
 
     def __init__(self, app: ASGIApp):
         self.app = app
+        self._validated: dict[bytes, float] = {}
+
+    async def _verify(
+        self, auth_header: bytes, username: str, password: str
+    ) -> JSONResponse | None:
+        """Return ``None`` if the credential is valid, else the error response."""
+        key = hashlib.sha256(auth_header).digest()
+        now = time.monotonic()
+        if self._validated.get(key, 0.0) > now:
+            return None
+
+        _, error = await _validate_nextcloud_credentials(
+            get_settings().nextcloud_host or "",
+            username,
+            password,
+            invalid_credential_error="Invalid credentials",
+        )
+        if error is not None:
+            return error
+
+        # Drop expired entries so the map is bounded by recently-active users.
+        if len(self._validated) >= self._PRUNE_AT:
+            self._validated = {k: t for k, t in self._validated.items() if t > now}
+        self._validated[key] = now + self._VALID_TTL
+        return None
 
     async def __call__(
         self, scope: StarletteScope, receive: Receive, send: Send
@@ -809,18 +890,27 @@ class BasicAuthMiddleware:
                     encoded = auth_header[6:]  # Skip "Basic "
                     decoded = base64.b64decode(encoded).decode("utf-8")
                     username, password = decoded.split(":", 1)
-
-                    # Store in request state
-                    scope.setdefault("state", {})
-                    scope["state"]["basic_auth"] = {
-                        "username": username,
-                        "password": password,
-                    }
-                    logger.debug(
-                        "BasicAuth credentials extracted for user: %s", username
-                    )
                 except Exception as e:
                     logger.warning("Failed to extract BasicAuth credentials: %s", e)
+                    error = JSONResponse(
+                        {"success": False, "error": "Malformed credentials"},
+                        status_code=401,
+                    )
+                else:
+                    error = await self._verify(auth_header, username, password)
+
+                if error is not None:
+                    error.headers["WWW-Authenticate"] = 'Basic realm="nextcloud"'
+                    await error(scope, receive, send)
+                    return
+
+                # Store in request state
+                scope.setdefault("state", {})
+                scope["state"]["basic_auth"] = {
+                    "username": username,
+                    "password": password,
+                }
+                logger.debug("BasicAuth credentials extracted for user: %s", username)
 
         await self.app(scope, receive, send)
 
@@ -883,6 +973,9 @@ async def load_oauth_client_credentials(
         dcr_scopes = build_dcr_scopes(
             vector_sync_enabled=dcr_settings.vector_sync_enabled,
             offline_access_enabled=enable_offline_access,
+            plugin_scopes=[
+                (p.scopes, p.available(dcr_settings)) for p in load_plugins()
+            ],
         )
         if dcr_settings.vector_sync_enabled:
             logger.info("✓ semantic.read scope enabled for semantic search tools")
@@ -932,7 +1025,7 @@ async def load_oauth_client_credentials(
 
 
 @asynccontextmanager
-async def app_lifespan_basic(server: MCPServer) -> AsyncIterator[AppContext]:
+async def app_lifespan_basic(server: MCPServer) -> AsyncGenerator[AppContext]:
     """
     Manage application lifecycle for BasicAuth mode (MCPServer session lifespan).
 
@@ -1001,7 +1094,7 @@ async def app_lifespan_basic(server: MCPServer) -> AsyncIterator[AppContext]:
 def _oidc_discovery_error_is_transient(exc: BaseException) -> bool:
     """Whether an OIDC-discovery failure is worth retrying.
 
-    ``httpx.RequestError`` is the broad network-layer base (transport
+    ``httpx2.RequestError`` is the broad network-layer base (transport
     timeouts/connection errors plus TooManyRedirects, DecodingError, …), and a
     malformed 200 body — e.g. a proxy/gateway "warming up" HTML placeholder
     served during cold start — raises ``JSONDecodeError``. Both are transient
@@ -1011,7 +1104,7 @@ def _oidc_discovery_error_is_transient(exc: BaseException) -> bool:
     A 4xx is a misconfiguration (wrong URL, no OIDC app), so it fails fast and
     the operator sees the real error instead of a retry storm.
     """
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return 500 <= exc.response.status_code < 600
     return True
 
@@ -1033,12 +1126,12 @@ async def _perform_oidc_discovery(
     responses are treated as transient and retried. A 4xx response is a
     configuration error, not a transient condition, so it is raised immediately.
 
-    ``timeout`` overrides the per-attempt httpx timeout (seconds); ``None`` keeps
-    httpx's default. The hybrid multi-user-basic path passes an explicit,
+    ``timeout`` overrides the per-attempt httpx2 timeout (seconds); ``None`` keeps
+    httpx2's default. The hybrid multi-user-basic path passes an explicit,
     longer budget here so it keeps its original per-attempt timeout while also
     gaining the retries.
     """
-    # Pass timeout through only when set — httpx treats an explicit
+    # Pass timeout through only when set — httpx2 treats an explicit
     # timeout=None as "disable timeout" rather than "use the default".
     client_kwargs: dict[str, Any] = {"follow_redirects": True}
     if timeout is not None:
@@ -1049,7 +1142,7 @@ async def _perform_oidc_discovery(
     # gte=1/gte=0 dynaconf validators, and a negative backoff would otherwise
     # flip random.uniform(0, delay) into a reversed range.
     @retry_on_transient(
-        (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError),
+        (httpx2.RequestError, httpx2.HTTPStatusError, json.JSONDecodeError),
         should_retry=_oidc_discovery_error_is_transient,
         provider_name="OIDC discovery",
         label="transient error",
@@ -1338,7 +1431,7 @@ async def setup_oauth_config_for_multi_user_basic(
 
     Raises:
         ValueError: If NEXTCLOUD_HOST is not set
-        httpx.HTTPError: If OIDC discovery fails
+        httpx2.HTTPError: If OIDC discovery fails
     """
     nextcloud_host = settings.nextcloud_host
     if not nextcloud_host:
@@ -1365,7 +1458,7 @@ async def setup_oauth_config_for_multi_user_basic(
     # subclass) all fall through to the handlers below.
     try:
         discovery = await _perform_oidc_discovery(discovery_url, settings, timeout=30.0)
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         logger.error(
             "OIDC discovery failed: HTTP %s from %s",
             e.response.status_code,
@@ -1375,7 +1468,7 @@ async def setup_oauth_config_for_multi_user_basic(
             f"OIDC discovery failed: HTTP {e.response.status_code} from {discovery_url}. "
             "Ensure Nextcloud OIDC (user_oidc app) is installed and configured."
         ) from e
-    except httpx.RequestError as e:
+    except httpx2.RequestError as e:
         logger.error("OIDC discovery failed: %s", e)
         raise ValueError(
             f"OIDC discovery failed: Cannot connect to {discovery_url}. Error: {e}"
@@ -1470,11 +1563,6 @@ async def setup_oauth_config_for_multi_user_basic(
     return (token_verifier, refresh_token_storage, client_id, client_secret)
 
 
-def _csv_setting(raw: str) -> list[str]:
-    """Split a comma-separated setting into a list, dropping blanks."""
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 #: Room for the JSON-RPC envelope around a maximum-size `nc_webdav_write_file`
 #: argument: method, id, path, content_type, and the quoting of the base64 blob.
 _REQUEST_ENVELOPE_SLACK = 1024 * 1024
@@ -1515,8 +1603,8 @@ def _build_transport_security() -> TransportSecuritySettings:
     """
     settings = get_settings()
     enabled = settings.mcp_dns_rebinding_protection
-    hosts = _csv_setting(settings.mcp_allowed_hosts)
-    origins = _csv_setting(settings.mcp_allowed_origins)
+    hosts = split_csv(settings.mcp_allowed_hosts)
+    origins = split_csv(settings.mcp_allowed_origins)
 
     if not enabled and (hosts or origins):
         logger.warning(
@@ -1554,6 +1642,28 @@ def _build_transport_security() -> TransportSecuritySettings:
     return TransportSecuritySettings(**kwargs)
 
 
+def _lazy_endpoint(module: str, name: str) -> Callable[[Request], Awaitable[Response]]:
+    """A route endpoint that imports its real handler on first request.
+
+    For routes mounted regardless of VECTOR_SYNC_ENABLED whose handler lives in
+    the optional vector stack: the route table stays the same, but the stack is
+    only imported once such a route is actually hit. Without the ``semantic``
+    extra installed the route answers 404, as a removed endpoint would.
+    """
+
+    async def endpoint(request: Request) -> Response:
+        if not semantic_installed():
+            return JSONResponse(
+                {"error": "Semantic search is not installed on this server"},
+                status_code=404,
+            )
+        handler = getattr(importlib.import_module(module), name)
+        return await handler(request)
+
+    endpoint.__name__ = name
+    return endpoint
+
+
 def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
@@ -1572,6 +1682,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         raise ValueError(error_msg)
 
     logger.info("✅ Configuration validated successfully for %s mode", mode.value)
+
+    # Load plugins now so a broken one fails startup, not every later call
+    # (e.g. /api/v1/status) -- load_plugins() caches only a success.
+    for plugin in load_plugins():
+        logger.info("Plugin installed: %s", plugin.name)
     logger.debug("Mode details:\\n%s", get_mode_summary(mode))
 
     # Derive helper variables for backward compatibility with existing code.
@@ -1716,9 +1831,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info(
                     "✓ OAuth infrastructure setup complete for multi-user BasicAuth hybrid mode"
                 )
-            except (httpx.HTTPError, ValueError, KeyError) as e:
+            except (httpx2.HTTPError, ValueError, KeyError) as e:
                 # Expected errors during OAuth infrastructure setup:
-                # - httpx.HTTPError: Network issues, OIDC discovery failures
+                # - httpx2.HTTPError: Network issues, OIDC discovery failures
                 # - ValueError: Missing required configuration (NEXTCLOUD_HOST)
                 # - KeyError: Missing required fields in OIDC discovery response
                 logger.error("Failed to setup OAuth infrastructure: %s", e)
@@ -1756,7 +1871,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Create lifespan function with captured OAuth context (closure)
         @asynccontextmanager
-        async def oauth_lifespan(server: MCPServer) -> AsyncIterator[OAuthAppContext]:
+        async def oauth_lifespan(server: MCPServer) -> AsyncGenerator[OAuthAppContext]:
             """
             Lifespan context for OAuth mode - captures OAuth configuration from outer scope.
             """
@@ -1827,12 +1942,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             lifespan=app_lifespan_basic,
         )
 
-    @mcp.resource("nc://capabilities")
-    async def nc_get_capabilities():
-        """Get the Nextcloud Host capabilities"""
-        ctx = current_context(mcp)
-        client = await get_nextcloud_client(ctx)
-        return await client.capabilities()
+    configure_capabilities_resource(mcp)
 
     # If no specific apps are specified, enable all
     if enabled_apps is None:
@@ -1852,10 +1962,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     if settings.vector_sync_enabled:
+        from nextcloud_mcp_server.server.semantic import (  # noqa: PLC0415
+            configure_semantic_tools,
+        )
+
         logger.info("Configuring search tools (vector sync enabled, hybrid search)")
         configure_semantic_tools(mcp)
     else:
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
+
+    register_plugin_tools(mcp, settings)
 
     # Register OAuth provisioning tools (only when offline access is enabled)
     enable_offline_access_for_tools = settings.enable_offline_access
@@ -1920,7 +2036,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             return allowed_tools
 
         # Replace the tool manager's list_tools method
-        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
         logger.info(
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
@@ -2017,6 +2133,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         """
         if not settings.vector_sync_orphan_sweep_enabled:
             return
+        from nextcloud_mcp_server.vector.placeholder import (  # noqa: PLC0415
+            sweep_orphan_placeholders,
+        )
+        from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+            get_qdrant_client,
+        )
+
         try:
             qdrant_client = await get_qdrant_client()
             collection = settings.get_collection_name()
@@ -2200,6 +2323,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             and not settings.enable_multi_user_basic_auth
         ):
             # BasicAuth mode - single user sync
+            from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+                usage_stock_task,
+                vector_density_snapshot_task,
+                vector_sync_metrics_task,
+            )
+            from nextcloud_mcp_server.vector.processor import (  # noqa: PLC0415
+                processor_task,
+            )
+            from nextcloud_mcp_server.vector.queue import (  # noqa: PLC0415
+                build_transport,
+            )
+            from nextcloud_mcp_server.vector.scanner import (  # noqa: PLC0415
+                scanner_task,
+            )
+
             logger.info("Starting background vector sync tasks for BasicAuth mode")
 
             # Get username from settings
@@ -2322,6 +2460,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         ):
             # OAuth mode with background operations - multi-user sync
             # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords or OAuth)
+            from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+                usage_stock_task,
+                vector_density_snapshot_task,
+                vector_sync_metrics_task,
+            )
+            from nextcloud_mcp_server.vector.oauth_sync import (  # noqa: PLC0415
+                ProvisionSignal,
+                credential_cleanup_task,
+                oauth_processor_task,
+                user_manager_task,
+            )
+            from nextcloud_mcp_server.vector.queue import (  # noqa: PLC0415
+                build_transport,
+            )
+
             mode_desc = "OAuth mode" if oauth_enabled else "Multi-user BasicAuth mode"
             logger.info("Starting background vector sync tasks for %s", mode_desc)
 
@@ -2382,7 +2535,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 # Store token broker in oauth_context for management API (revoke endpoint)
                 if hasattr(app.state, "oauth_context"):
-                    app.state.oauth_context["token_broker"] = token_broker  # ty: ignore[invalid-assignment]  # Starlette app.state bag is heterogeneous; the inferred value union is too narrow
+                    app.state.oauth_context["token_broker"] = token_broker
                     logger.info(
                         "Token broker added to oauth_context for management API"
                     )
@@ -2679,7 +2832,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
 
     # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
-    routes = []
+    routes: list[BaseRoute] = []
 
     # Add health check routes (available in both OAuth and BasicAuth modes)
     routes.append(Route("/health/live", health_live, methods=["GET"]))
@@ -2697,7 +2850,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # feature is off and vector sync still reconciles via the polling scanner.
     if settings.webhook_secret:
         routes.append(
-            Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
+            Route(
+                "/webhooks/nextcloud",
+                _lazy_endpoint(
+                    "nextcloud_mcp_server.vector.webhook_receiver",
+                    "handle_nextcloud_webhook",
+                ),
+                methods=["POST"],
+            )
         )
         logger.info("Webhook endpoint enabled: /webhooks/nextcloud")
     else:
@@ -2733,7 +2893,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route(
                 "/api/v1/admin/payload-backfill",
-                handle_payload_backfill,
+                _lazy_endpoint(
+                    "nextcloud_mcp_server.admin.payload_backfill",
+                    "handle_payload_backfill",
+                ),
                 methods=["POST"],
             )
         )
@@ -2773,20 +2936,39 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 methods=["DELETE"],
             )
         )
+        viz = "nextcloud_mcp_server.api.visualization"
         routes.append(
-            Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])
+            Route(
+                "/api/v1/vector-viz/search",
+                _lazy_endpoint(viz, "vector_search"),
+                methods=["POST"],
+            )
         )
         routes.append(
-            Route("/api/v1/chunk-context", get_chunk_context, methods=["GET"])
+            Route(
+                "/api/v1/chunk-context",
+                _lazy_endpoint(viz, "get_chunk_context"),
+                methods=["GET"],
+            )
         )
         # ADR-018: Unified search endpoint for Nextcloud PHP app integration
-        routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
+        routes.append(
+            Route(
+                "/api/v1/search",
+                _lazy_endpoint(viz, "unified_search"),
+                methods=["POST"],
+            )
+        )
         routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
         # Vector-sync admin: purge indexed vectors by doc type (admin consent —
         # called by Astrolabe when a source is disabled for semantic search).
         # Gated on vector_sync_enabled: without it there is no Qdrant client, so
         # the purge would 500 rather than no-op.
         if settings.vector_sync_enabled:
+            from nextcloud_mcp_server.api.vector_sync import (  # noqa: PLC0415
+                purge_doc_types_route,
+            )
+
             routes.append(
                 Route(
                     "/api/v1/vector-sync/purge",
@@ -2795,6 +2977,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             )
             logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
+        # Plugin routes (e.g. SAR, ADR-040), advertised as <name>_available.
+        # Mounted only inside this authenticated-management block: keep it in
+        # step with the `served` gate of api.management._plugin_availability,
+        # or status would advertise routes that are not mounted.
+        routes += plugin_routes(settings)
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(
@@ -3045,16 +3232,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         app.state.supported_scopes = discover_all_scopes(mcp)
 
     # Add debugging middleware to log Authorization headers and client capabilities
-    @app.middleware("http")
     async def log_auth_headers(request, call_next):
         auth_header = request.headers.get("authorization")
         if request.url.path.startswith("/mcp"):
             if auth_header:
-                # Log first 50 chars of token for debugging
-                token_preview = (
-                    auth_header[:50] + "..." if len(auth_header) > 50 else auth_header
+                logger.debug(
+                    "🔑 /mcp request with Authorization scheme: %s",
+                    _auth_scheme(auth_header),
                 )
-                logger.info("🔑 /mcp request with Authorization: %s", token_preview)
             else:
                 # Only warn about missing Authorization in OAuth mode
                 # In BasicAuth mode, /mcp requests without Authorization are expected
@@ -3112,12 +3297,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         response = await call_next(request)
         return response
 
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_auth_headers)  # type: ignore[invalid-argument-type]
+
     # Log the inbound User-Agent on management API and webhook receiver routes
     # so we can tell which Astrolabe (or other PHP-side client) build is
     # talking to the backend. Astrolabe sends ``Nextcloud-Astrolabe/<version>``.
     _UA_LOGGED_PATH_PREFIXES = ("/api/v1/", "/webhooks/nextcloud")
 
-    @app.middleware("http")
     async def log_client_user_agent(request, call_next):
         path = request.url.path
         if path.startswith(_UA_LOGGED_PATH_PREFIXES):
@@ -3135,6 +3321,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
         return await call_next(request)
 
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_client_user_agent)  # type: ignore[invalid-argument-type]
+
     # Add CORS middleware to allow browser-based clients like MCP Inspector.
     #
     # The default is still "*", so behaviour is unchanged — but it is now a
@@ -3145,7 +3333,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # so *any* origin may send credentialed requests. Fine behind a private
     # network or for local Inspector use; not something to leave unexamined on a
     # server reachable from a browser.
-    cors_origins = _csv_setting(get_settings().cors_allow_origins)
+    cors_origins = split_csv(get_settings().cors_allow_origins)
     if "*" in cors_origins:
         logger.warning(
             "CORS allows any origin with credentials (CORS_ALLOW_ORIGINS='*'). "
@@ -3169,9 +3357,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
 
-        @app.exception_handler(InsufficientScopeError)
-        async def handle_insufficient_scope(request, exc: InsufficientScopeError):
+        def handle_insufficient_scope(request, exc: Exception):
             """Return 403 with WWW-Authenticate header for scope challenges."""
+            assert isinstance(exc, InsufficientScopeError)  # registered for this type
             resource_url = (
                 settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
@@ -3192,6 +3380,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 },
             )
 
+        app.add_exception_handler(InsufficientScopeError, handle_insufficient_scope)
         logger.info("WWW-Authenticate scope challenge handler enabled")
 
     # Apply BasicAuthMiddleware for multi-user BasicAuth pass-through mode

@@ -17,7 +17,7 @@ from nextcloud_mcp_server.document_processors.base import (
     ProcessingResult,
 )
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
-from nextcloud_mcp_server.document_processors.source import MemoryDocumentSource
+from nextcloud_mcp_server.document_source import MemoryDocumentSource
 
 pytestmark = pytest.mark.unit
 

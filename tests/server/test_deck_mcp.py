@@ -4,7 +4,7 @@ import re
 import uuid
 
 import pytest
-from httpx import HTTPStatusError
+from httpx2 import HTTPStatusError
 from mcp import ClientSession
 
 from nextcloud_mcp_server.client import NextcloudClient

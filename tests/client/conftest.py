@@ -1,6 +1,6 @@
 import json
 
-import httpx
+import httpx2
 
 # ============================================================================
 # Mock Response Helpers for Unit Tests
@@ -12,8 +12,8 @@ def create_mock_response(
     json_data: dict | list | None = None,
     headers: dict | None = None,
     content: bytes | None = None,
-) -> httpx.Response:
-    """Create a mock httpx.Response for testing.
+) -> httpx2.Response:
+    """Create a mock httpx2.Response for testing.
 
     Args:
         status_code: HTTP status code
@@ -22,7 +22,7 @@ def create_mock_response(
         content: Raw response content (if not using json_data)
 
     Returns:
-        Mock httpx.Response object
+        Mock httpx2.Response object
     """
 
     if headers is None:
@@ -37,10 +37,10 @@ def create_mock_response(
         content = b""
 
     # Create a mock request
-    request = httpx.Request("GET", "http://test.local/api")
+    request = httpx2.Request("GET", "http://test.local/api")
 
     # Create the response
-    return httpx.Response(
+    return httpx2.Response(
         status_code=status_code,
         headers=headers,
         content=content,
@@ -55,7 +55,7 @@ def create_mock_note_response(
     category: str = "Test",
     etag: str = "abc123",
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud note.
 
     Args:
@@ -67,7 +67,7 @@ def create_mock_note_response(
         **kwargs: Additional note fields
 
     Returns:
-        Mock httpx.Response with note data
+        Mock httpx2.Response with note data
     """
     note_data = {
         "id": note_id,
@@ -90,7 +90,7 @@ def create_mock_note_response(
 def create_mock_error_response(
     status_code: int,
     message: str = "Error",
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock error response.
 
     Args:
@@ -98,7 +98,7 @@ def create_mock_error_response(
         message: Error message
 
     Returns:
-        Mock httpx.Response with error
+        Mock httpx2.Response with error
     """
     return create_mock_response(
         status_code=status_code,
@@ -114,7 +114,7 @@ def create_mock_recipe_response(
     keywords: str = "test",
     recipe_yield: int = 4,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Cookbook recipe.
 
     Args:
@@ -127,7 +127,7 @@ def create_mock_recipe_response(
         **kwargs: Additional recipe fields (recipeIngredient, recipeInstructions, etc.)
 
     Returns:
-        Mock httpx.Response with recipe data
+        Mock httpx2.Response with recipe data
     """
     recipe_data = {
         "id": recipe_id,
@@ -165,14 +165,14 @@ def create_mock_recipe_response(
 
 def create_mock_recipe_list_response(
     recipes: list[dict] = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a list of recipe stubs.
 
     Args:
         recipes: List of recipe stub dictionaries. If None, returns empty list.
 
     Returns:
-        Mock httpx.Response with recipe list data
+        Mock httpx2.Response with recipe list data
     """
     if recipes is None:
         recipes = []
@@ -188,7 +188,7 @@ def create_mock_deck_board_response(
     title: str = "Test Board",
     color: str = "0000FF",
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Deck board.
 
     Args:
@@ -198,7 +198,7 @@ def create_mock_deck_board_response(
         **kwargs: Additional board fields
 
     Returns:
-        Mock httpx.Response with board data
+        Mock httpx2.Response with board data
     """
     board_data = {
         "id": board_id,
@@ -232,7 +232,7 @@ def create_mock_deck_stack_response(
     board_id: int = 1,
     order: int = 1,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Deck stack.
 
     Args:
@@ -243,7 +243,7 @@ def create_mock_deck_stack_response(
         **kwargs: Additional stack fields
 
     Returns:
-        Mock httpx.Response with stack data
+        Mock httpx2.Response with stack data
     """
     stack_data = {
         "id": stack_id,
@@ -263,7 +263,7 @@ def create_mock_deck_card_response(
     stack_id: int = 1,
     description: str = "Test description",
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Deck card.
 
     Args:
@@ -274,7 +274,7 @@ def create_mock_deck_card_response(
         **kwargs: Additional card fields
 
     Returns:
-        Mock httpx.Response with card data
+        Mock httpx2.Response with card data
     """
     card_data = {
         "id": card_id,
@@ -299,7 +299,7 @@ def create_mock_deck_label_response(
     color: str = "FF0000",
     board_id: int = 1,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Deck label.
 
     Args:
@@ -310,7 +310,7 @@ def create_mock_deck_label_response(
         **kwargs: Additional label fields
 
     Returns:
-        Mock httpx.Response with label data
+        Mock httpx2.Response with label data
     """
     label_data = {
         "id": label_id,
@@ -328,7 +328,7 @@ def create_mock_deck_comment_response(
     message: str = "Test comment",
     card_id: int = 1,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a Nextcloud Deck comment (OCS format).
 
     Args:
@@ -338,7 +338,7 @@ def create_mock_deck_comment_response(
         **kwargs: Additional comment fields
 
     Returns:
-        Mock httpx.Response with comment data in OCS format
+        Mock httpx2.Response with comment data in OCS format
     """
     comment_data = {
         "id": comment_id,
@@ -364,7 +364,7 @@ def create_mock_talk_room_response(
     name: str = "Test Conversation",
     room_type: int = 2,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock OCS response for a Nextcloud Talk conversation.
 
     Args:
@@ -375,7 +375,7 @@ def create_mock_talk_room_response(
         **kwargs: Additional conversation fields (override defaults)
 
     Returns:
-        Mock httpx.Response with conversation data wrapped in OCS format.
+        Mock httpx2.Response with conversation data wrapped in OCS format.
     """
     room_data = {
         "id": conversation_id,
@@ -406,7 +406,7 @@ def create_mock_talk_message_response(
     text: str = "Hello, world!",
     actor_id: str = "testuser",
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock OCS response for a Nextcloud Talk chat message.
 
     Args:
@@ -417,7 +417,7 @@ def create_mock_talk_message_response(
         **kwargs: Additional message fields (override defaults)
 
     Returns:
-        Mock httpx.Response with message data wrapped in OCS format.
+        Mock httpx2.Response with message data wrapped in OCS format.
     """
     message_data = {
         "id": message_id,
@@ -439,14 +439,14 @@ def create_mock_talk_message_response(
 
 def create_mock_tables_list_response(
     tables: list[dict] = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for list of Nextcloud Tables (OCS format).
 
     Args:
         tables: List of table dictionaries. If None, returns empty list.
 
     Returns:
-        Mock httpx.Response with tables list data in OCS format
+        Mock httpx2.Response with tables list data in OCS format
     """
     if tables is None:
         tables = []
@@ -460,7 +460,7 @@ def create_mock_table_schema_response(
     table_id: int = 1,
     columns: list[dict] = None,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for Nextcloud Tables schema.
 
     Args:
@@ -469,7 +469,7 @@ def create_mock_table_schema_response(
         **kwargs: Additional schema fields
 
     Returns:
-        Mock httpx.Response with table schema data
+        Mock httpx2.Response with table schema data
     """
     if columns is None:
         columns = [
@@ -491,7 +491,7 @@ def create_mock_table_row_response(
     table_id: int = 1,
     data: list[dict] = None,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for Nextcloud Tables row.
 
     Args:
@@ -501,7 +501,7 @@ def create_mock_table_row_response(
         **kwargs: Additional row fields
 
     Returns:
-        Mock httpx.Response with row data
+        Mock httpx2.Response with row data
     """
     if data is None:
         data = [
@@ -528,7 +528,7 @@ def create_mock_table_row_ocs_response(
     table_id: int = 1,
     data: list[dict] = None,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock OCS response for Nextcloud Tables row (used by create_row).
 
     Args:
@@ -538,7 +538,7 @@ def create_mock_table_row_ocs_response(
         **kwargs: Additional row fields
 
     Returns:
-        Mock httpx.Response with row data in OCS format
+        Mock httpx2.Response with row data in OCS format
     """
     if data is None:
         data = [
@@ -569,14 +569,14 @@ def create_mock_table_row_ocs_response(
 
 def create_mock_news_folders_response(
     folders: list[dict] | None = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for News folders list.
 
     Args:
         folders: List of folder dictionaries. If None, returns empty list.
 
     Returns:
-        Mock httpx.Response with folders data
+        Mock httpx2.Response with folders data
     """
     if folders is None:
         folders = []
@@ -588,7 +588,7 @@ def create_mock_news_folder_response(
     folder_id: int = 1,
     name: str = "Test Folder",
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a News folder.
 
     Args:
@@ -597,7 +597,7 @@ def create_mock_news_folder_response(
         **kwargs: Additional folder fields
 
     Returns:
-        Mock httpx.Response with folder data
+        Mock httpx2.Response with folder data
     """
     folder_data = {
         "id": folder_id,
@@ -612,7 +612,7 @@ def create_mock_news_feeds_response(
     feeds: list[dict] | None = None,
     starred_count: int = 0,
     newest_item_id: int | None = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for News feeds list.
 
     Args:
@@ -621,7 +621,7 @@ def create_mock_news_feeds_response(
         newest_item_id: ID of newest item
 
     Returns:
-        Mock httpx.Response with feeds data
+        Mock httpx2.Response with feeds data
     """
     if feeds is None:
         feeds = []
@@ -644,7 +644,7 @@ def create_mock_news_feed_response(
     folder_id: int | None = None,
     unread_count: int = 0,
     **kwargs,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for a News feed.
 
     Args:
@@ -657,7 +657,7 @@ def create_mock_news_feed_response(
         **kwargs: Additional feed fields
 
     Returns:
-        Mock httpx.Response with feed data
+        Mock httpx2.Response with feed data
     """
     feed_data = {
         "id": feed_id,
@@ -682,14 +682,14 @@ def create_mock_news_feed_response(
 
 def create_mock_news_items_response(
     items: list[dict] | None = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for News items list.
 
     Args:
         items: List of item dictionaries. If None, returns empty list.
 
     Returns:
-        Mock httpx.Response with items data
+        Mock httpx2.Response with items data
     """
     if items is None:
         items = []
@@ -763,7 +763,7 @@ def create_mock_news_item(
 def create_mock_news_status_response(
     version: str = "25.0.0",
     warnings: dict | None = None,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Create a mock response for News status.
 
     Args:
@@ -771,7 +771,7 @@ def create_mock_news_status_response(
         warnings: Warning messages
 
     Returns:
-        Mock httpx.Response with status data
+        Mock httpx2.Response with status data
     """
     data = {
         "version": version,

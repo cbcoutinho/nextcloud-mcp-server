@@ -34,9 +34,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from .base import (
     EMPTY_DOCUMENT_REASON,
@@ -302,8 +303,8 @@ class _GatewayOcrBackend(_OcrBackend):
         # honoured; a live tenant change still needs a restart because the backend
         # instance itself is cached for the pod's lifetime.
         ocr_timeout = get_settings().document_ocr_timeout_seconds
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(ocr_timeout, connect=_OCR_CONNECT_TIMEOUT_SECONDS)
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(ocr_timeout, connect=_OCR_CONNECT_TIMEOUT_SECONDS)
         ) as client:
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
@@ -338,7 +339,7 @@ class _MistralOcrBackend(_OcrBackend):
             f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
         )
         # Apply DOCUMENT_OCR_TIMEOUT_SECONDS uniformly with the gateway backend.
-        # The Mistral SDK manages its own httpx client, so wrap the call in an
+        # The Mistral SDK manages its own httpx2 client, so wrap the call in an
         # anyio cancel-scope timeout rather than threading a per-request timeout
         # through the SDK; on expiry this raises TimeoutError, which the
         # OcrProcessor turns into a clean parse failure.
@@ -595,9 +596,7 @@ def build_ocr_backend(
     # docling is explicit-only: "auto" never selects it (it needs a self-hosted
     # URL that auto can't presume), so this branch omits "auto" deliberately.
     if provider == "docling" and settings.docling_api_url:
-        lang = [
-            s.strip() for s in (settings.docling_ocr_lang or "").split(",") if s.strip()
-        ]
+        lang = split_csv(settings.docling_ocr_lang)
         # VLM OCR is ~30-150s per page; the default 180s OCR timeout is often too
         # low. Warn (don't override) so the operator raises it deliberately (D3).
         if (
@@ -767,11 +766,11 @@ class OcrProcessor(DocumentProcessor):
             text, boundaries, block_spans = await backend.ocr(
                 content, content_type.split(";")[0].strip().lower()
             )
-        except (TimeoutError, httpx.TimeoutException):
+        except (TimeoutError, httpx2.TimeoutException):
             # Two timeout shapes reach here: the Mistral backend's
             # anyio.fail_after raises the builtin TimeoutError, while the gateway
-            # backend's httpx.Timeout raises httpx.ReadTimeout (a
-            # httpx.TimeoutException, NOT a TimeoutError). Catch both so a
+            # backend's httpx2.Timeout raises httpx2.ReadTimeout (a
+            # httpx2.TimeoutException, NOT a TimeoutError). Catch both so a
             # too-low DOCUMENT_OCR_TIMEOUT_SECONDS lands in its own reason bucket
             # rather than being conflated with provider errors.
             timeout = settings.document_ocr_timeout_seconds

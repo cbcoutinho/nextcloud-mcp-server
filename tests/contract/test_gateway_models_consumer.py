@@ -81,7 +81,11 @@ async def test_detect_dimension_reads_the_model_catalogue(gateway_consumer_pact)
 
     with gateway_consumer_pact.serve() as srv:
         provider = GatewayProvider(base_url=str(srv.url), embedding_model=_EMBED_MODEL)
-        await provider._detect_dimension()
+        try:
+            await provider._detect_dimension()
+        finally:
+            # See test_gateway_embeddings_consumer: close on this test's loop.
+            await provider.close()
 
     assert provider._dimension == _DIMENSION
 

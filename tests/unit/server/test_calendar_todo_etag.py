@@ -8,14 +8,14 @@ the caller's actual read-modify-write cycle unguarded.
 
 Two things are pinned here: that the caller's ETag reaches the client
 unchanged, and that a stale one comes back as something the caller can act on.
-A bare ``DavPreconditionFailed`` reaches an MCP client as an httpx status error
+A bare ``DavPreconditionFailed`` reaches an MCP client as an httpx2 status error
 naming a CalDAV URL -- correct, and no help in deciding what to do next.
 """
 
 from __future__ import annotations
 
 import pytest
-from httpx import Request, Response
+from httpx2 import Request, Response
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 

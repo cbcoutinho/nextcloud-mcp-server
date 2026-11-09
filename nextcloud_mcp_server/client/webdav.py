@@ -6,11 +6,11 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
 
 import anyio
-from httpx import HTTPStatusError, RemoteProtocolError, Response
+from httpx2 import HTTPStatusError, RemoteProtocolError, Response
 
 from nextcloud_mcp_server.observability.metrics import (
     document_download_truncated_total,
@@ -22,16 +22,12 @@ from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
-# The ``{"OCS-APIRequest": "true"}`` headers throughout this module are
-# deliberately NOT ``ocs.OCS_REQUEST_HEADERS``. These are DAV requests
-# (PROPFIND / PUT / MKCOL / REPORT / MOVE / COPY), not OCS ones: they send the
-# header only to identify themselves as API traffic to Nextcloud's CSRF check,
-# and Sabre answers them in XML. The OCS constant also carries
-# ``Accept: application/json``, which would be a lie here. Most of these sites
-# additionally carry request-specific ``Depth`` / ``Content-Type`` values, so
-# there is nothing shared left to hoist -- keep writing them inline. The guard
-# in ``tests/unit/test_ocs_headers_are_shared`` only rejects the OCS+JSON
-# pairing, so these stay legal by construction rather than by exemption.
+# ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx2
+# client sends it on every request (``http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
+# requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
+# ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
+# Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
+_XML_CONTENT_TYPE = "text/xml"
 
 
 class OversizeDownload(Exception):
@@ -50,9 +46,9 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     back an empty/short body that the document parser then reads as ``0 chars``
     and the vector-sync processor permanently dead-letters (#965). Compare the
     received byte count against the declared ``Content-Length`` and raise a
-    retryable :class:`httpx.RemoteProtocolError` on a mismatch: the processor
+    retryable :class:`httpx2.RemoteProtocolError` on a mismatch: the processor
     retries/re-queues a raised transport error instead of dead-lettering the
-    document, so a healthy file recovers on the next scan. (httpx already
+    document, so a healthy file recovers on the next scan. (httpx2 already
     raises on most genuine truncations during the read; this is the
     belt-and-suspenders guard for the cases it returns intact. The robust
     mitigation for connection poisoning is ``NEXTCLOUD_HTTP_KEEPALIVE=false``.)
@@ -60,7 +56,7 @@ def _read_complete_body(response: Response, label: str) -> bytes:
     the check so legitimately header-less responses never raise.
 
     ``Content-Length`` on a compressed response describes the compressed
-    size on the wire, not the decompressed ``response.content`` httpx hands
+    size on the wire, not the decompressed ``response.content`` httpx2 hands
     back — comparing the two would misfire on every compressible file
     Nextcloud happens to gzip, so the check only applies to identity-encoded
     responses (see #1099).
@@ -74,7 +70,7 @@ def _expected_content_length(response: Response) -> int | None:
     """The comparable ``Content-Length``, or ``None`` when the check can't apply.
 
     Returns ``None`` for a compressed response (the header describes the
-    compressed size on the wire, not the decompressed bytes httpx hands back --
+    compressed size on the wire, not the decompressed bytes httpx2 hands back --
     see #1099), a missing header (e.g. ``Transfer-Encoding: chunked``), a
     malformed one, or a degenerate negative length.
     """
@@ -130,11 +126,20 @@ def _verify_content_length(response: Response, received: int, label: str) -> Non
 # Paging defaults for WebDAV SEARCH. Nextcloud's SEARCH returns a server-default
 # page (~100 results) when no ``<d:nresults>`` is sent, silently truncating large
 # folders. ``search_files_all`` pages explicitly to fetch the complete result set.
-WEBDAV_SEARCH_PAGE_SIZE = 500
+# Small enough that one page returns well inside the client read timeout even on a
+# slow instance: a single 50k-row SEARCH over a ~10k-file folder exceeded 30 s and
+# the resulting truncated discovery purged the index (Deck #1373).
+WEBDAV_SEARCH_PAGE_SIZE = 1000
+# Nextcloud's SEARCH (icewind/searchdav) reads the offset from its *own* XML
+# namespace, not ``DAV:`` -- a ``<d:firstresult>`` is silently ignored.
+SEARCHDAV_NS = "https://github.com/icewind1991/SearchDAV/ns"
 # Hard ceiling so a pathologically large folder can't drive an unbounded crawl.
 # Crossing it is logged as a truncation warning (and surfaced via a metric) so the
 # cap can never again silently hide files.
 WEBDAV_SEARCH_MAX_RESULTS = 50000
+# ids OR-ed into one ``find_files_by_ids`` SEARCH. A search page verifies at most
+# a few hundred files, so this is usually a single request.
+FILE_ID_BATCH = 100
 
 
 def _reject_path_traversal(path: str) -> str:
@@ -162,7 +167,7 @@ def _reject_path_traversal(path: str) -> str:
     return path
 
 
-def _normalize_etag(raw: Optional[str]) -> Optional[str]:
+def normalize_etag(raw: Optional[str]) -> Optional[str]:
     """Strip the quotes an ETag is transported in, so callers can pass it back.
 
     Every etag this client surfaces goes through here — ``read_file``,
@@ -178,7 +183,8 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     value (RFC 9110 requires strong comparison there anyway). The prefix is now
     removed first.
 
-    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` to the
+    *Content-coding suffixes.* Apache's ``mod_deflate`` appends ``-gzip`` (and
+    front ends that compress with zstd append ``-zstd``) to the
     ETag of every compressed response unless ``DeflateAlterETag NoChange`` is
     set; ``AddSuffix`` is the default and the directive did not exist before
     Apache 2.4.15, so many deployments never set it. The etag a caller reads
@@ -188,14 +194,18 @@ def _normalize_etag(raw: Optional[str]) -> Optional[str]:
     """
     if raw is None:
         return None
-    cleaned = raw.strip()
-    if cleaned.startswith("W/"):
-        cleaned = cleaned[2:]
-    cleaned = cleaned.strip('"')
-    for suffix in ("-gzip", "-br", "-deflate"):
-        if cleaned.endswith(suffix):
-            return cleaned[: -len(suffix)]
-    return cleaned
+    # Repeat until nothing changes, so the result is a fixed point: normalising
+    # a normalised etag must be a no-op, or the value handed out drifts from the
+    # one ``_write_precondition_header`` re-normalises. One pass was not enough
+    # for whitespace inside the quotes (``'"\r0'``) or a stacked suffix.
+    cleaned = raw
+    while True:
+        previous = cleaned
+        cleaned = cleaned.strip().removeprefix("W/").strip('"')
+        for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
+            cleaned = cleaned.removesuffix(suffix)
+        if cleaned == previous:
+            return cleaned
 
 
 #: Collection holding one file's comments, addressed by file id.
@@ -345,7 +355,7 @@ def _write_precondition_header(if_match: Optional[str]) -> dict[str, str]:
         return {"If-None-Match": "*"}
     if if_match == "*":
         return {"If-Match": "*"}
-    return {"If-Match": f'"{_normalize_etag(if_match)}"'}
+    return {"If-Match": f'"{normalize_etag(if_match)}"'}
 
 
 def _write_conflict_result(
@@ -442,10 +452,9 @@ class WebDAVClient(BaseNextcloudClient):
         webdav_path = self._webdav_path(path_with_slash)
         logger.debug("Deleting WebDAV resource: %s", webdav_path)
 
-        headers = {"OCS-APIRequest": "true"}
         try:
             # First try a PROPFIND to verify resource exists
-            propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+            propfind_headers = {"Depth": "0"}
             try:
                 propfind_resp = await self._make_request(
                     "PROPFIND", webdav_path, headers=propfind_headers
@@ -462,7 +471,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # For other errors, continue with deletion attempt
 
             # Proceed with deletion
-            response = await self._make_request("DELETE", webdav_path, headers=headers)
+            response = await self._make_request("DELETE", webdav_path)
             logger.debug("Successfully deleted WebDAV resource '%s'", path)
             return {"status_code": response.status_code}
 
@@ -581,11 +590,11 @@ class WebDAVClient(BaseNextcloudClient):
             if not mime_type:
                 mime_type = "application/octet-stream"
 
-        headers = {"Content-Type": mime_type, "OCS-APIRequest": "true"}
+        headers = {"Content-Type": mime_type}
         try:
             # First check if we can access WebDAV at all
             notes_dir_path = self._webdav_path("Notes")
-            propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
+            propfind_headers = {"Depth": "0"}
             notes_dir_response = await self._make_request(
                 "PROPFIND", notes_dir_path, headers=propfind_headers
             )
@@ -605,10 +614,7 @@ class WebDAVClient(BaseNextcloudClient):
                 notes_dir_response.raise_for_status()
 
             # Ensure the parent directory exists using MKCOL
-            mkcol_headers = {"OCS-APIRequest": "true"}
-            mkcol_response = await self._make_request(
-                "MKCOL", parent_dir_path, headers=mkcol_headers
-            )
+            mkcol_response = await self._make_request("MKCOL", parent_dir_path)
 
             # MKCOL should return 201 Created or 405 Method Not Allowed (if directory already exists)
             if mkcol_response.status_code not in [201, 405]:
@@ -717,7 +723,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "1", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "1", "Content-Type": _XML_CONTENT_TYPE}
 
         try:
             response = await self._make_request(
@@ -782,7 +788,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # if_match, which re-adds the quotes for the If-Match header).
                 etag_elem = prop.find(".//{DAV:}getetag")
                 etag = (
-                    _normalize_etag(etag_elem.text)
+                    normalize_etag(etag_elem.text)
                     if etag_elem is not None and etag_elem.text
                     else None
                 )
@@ -851,7 +857,7 @@ class WebDAVClient(BaseNextcloudClient):
         hand the etag back as ``write_file``'s ``if_match`` (or report it) without
         a second request. The etag is ``None`` if the server sent no ``ETag``.
         Raises :class:`OversizeDownload` if ``max_bytes`` is exceeded, or
-        :class:`httpx.RemoteProtocolError` on a short read (#965).
+        :class:`httpx2.RemoteProtocolError` on a short read (#965).
         """
         await self._ensure_principal_id()
         webdav_path = self._webdav_path(path)
@@ -864,7 +870,7 @@ class WebDAVClient(BaseNextcloudClient):
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
-                etag = _normalize_etag(response.headers.get("etag"))
+                etag = normalize_etag(response.headers.get("etag"))
                 # anyio's async file wrapper, not pathlib.Path.open: the writes
                 # run on a worker thread, so streaming a multi-hundred-MB
                 # document does not block the event loop (and with it every other
@@ -913,7 +919,7 @@ class WebDAVClient(BaseNextcloudClient):
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
-            etag = _normalize_etag(response.headers.get("etag"))
+            etag = normalize_etag(response.headers.get("etag"))
 
             logger.debug("Successfully read file '%s' (%s bytes)", path, len(content))
             return content, content_type, etag
@@ -924,6 +930,47 @@ class WebDAVClient(BaseNextcloudClient):
         except Exception as e:
             logger.error("Unexpected error reading file '%s': %s", path, e)
             raise e
+
+    async def get_preview(self, path: str, size: int) -> tuple[bytes, str]:
+        """Fetch Nextcloud's preview of a file, scaled to fit ``size`` x ``size``.
+
+        Uses ``GET /index.php/core/preview.png?file=<path>``, the route the
+        Files app loads thumbnails from. Despite the name it answers with what
+        the preview provider produces: JPEG for photos, PNG for images with
+        transparency. Nextcloud keeps the aspect ratio (``a=1``), applies the
+        EXIF orientation, never upscales, and only renders a few sizes,
+        rounding the request up to the next one (256, 1024, or the largest
+        preview the server allows).
+
+        ``forceIcon=0`` and ``mimeFallback=false`` make a file without a
+        preview provider answer 404 instead of a generic file-type icon.
+
+        Args:
+            path: File path relative to the user's files root.
+            size: Requested bounding box edge, in pixels.
+
+        Returns:
+            ``(content, content_type)`` of the preview image.
+
+        Raises:
+            HTTPStatusError: 404 when the file does not exist or Nextcloud
+                cannot render a preview for it.
+        """
+        response = await self._make_request(
+            "GET",
+            "/core/preview.png",
+            params={
+                "file": "/" + path.lstrip("/"),
+                "x": size,
+                "y": size,
+                "a": 1,
+                "forceIcon": 0,
+                "mimeFallback": "false",
+            },
+        )
+        content = _read_complete_body(response, path)
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        return content, content_type
 
     async def write_file(
         self,
@@ -976,7 +1023,7 @@ class WebDAVClient(BaseNextcloudClient):
             if not content_type:
                 content_type = "application/octet-stream"
 
-        headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
+        headers = {"Content-Type": content_type}
         # Always send a precondition so a write can never silently clobber an
         # existing file. The server (Sabre checkPreconditions) evaluates it
         # atomically before the PUT, so this is race-free.
@@ -996,7 +1043,7 @@ class WebDAVClient(BaseNextcloudClient):
             # write.
             return {
                 "status_code": response.status_code,
-                "etag": _normalize_etag(
+                "etag": normalize_etag(
                     response.headers.get("etag") or response.headers.get("oc-etag")
                 ),
             }
@@ -1024,10 +1071,8 @@ class WebDAVClient(BaseNextcloudClient):
 
         logger.debug("Creating directory: %s", path)
 
-        headers = {"OCS-APIRequest": "true"}
-
         try:
-            response = await self._make_request("MKCOL", webdav_path, headers=headers)
+            response = await self._make_request("MKCOL", webdav_path)
             response.raise_for_status()
 
             logger.debug("Successfully created directory '%s'", path)
@@ -1144,7 +1189,6 @@ class WebDAVClient(BaseNextcloudClient):
         _validate_destination_precondition(if_destination_match, overwrite)
 
         headers = {
-            "OCS-APIRequest": "true",
             "Destination": destination_webdav_path,
             "Overwrite": "T" if overwrite else "F",
         }
@@ -1291,7 +1335,7 @@ class WebDAVClient(BaseNextcloudClient):
             properties: List of property names to retrieve (defaults to basic set)
             order_by: List of (property, direction) tuples for sorting, e.g. [("getlastmodified", "descending")]
             limit: Maximum number of results to return
-            offset: Number of leading results to skip (``<d:firstresult>``). Note
+            offset: Number of leading results to skip (``<sd:firstresult>``). Note
                 that not every Nextcloud release honours offset paging; callers
                 that need guaranteed completeness should use ``search_files_all``,
                 which detects an ignored offset and falls back.
@@ -1324,7 +1368,7 @@ class WebDAVClient(BaseNextcloudClient):
         # The SEARCH endpoint is at the dav root
         search_path = "/remote.php/dav/"
 
-        headers = {"Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Content-Type": _XML_CONTENT_TYPE}
 
         logger.debug("Searching files in scope: %s", scope)
 
@@ -1343,7 +1387,7 @@ class WebDAVClient(BaseNextcloudClient):
         except HTTPStatusError as e:
             # Surface the server's actual reason: Nextcloud/Sabre returns an XML
             # error body (e.g. "<s:message>...</s:message>") that pinpoints the
-            # cause — far more actionable than the generic httpx
+            # cause — far more actionable than the generic httpx2
             # "Client error '400 Bad Request' for url '.../dav/'" string. A 400
             # here almost always means a malformed SEARCH body (commonly an
             # un-escaped character in the scope path).
@@ -1374,7 +1418,7 @@ class WebDAVClient(BaseNextcloudClient):
 
         A plain ``search_files`` with no ``limit`` returns only Nextcloud's default
         page (~100), silently dropping the rest of a large folder. This method pages
-        with ``<d:firstresult>`` until a short page signals the end. If the server
+        with ``<sd:firstresult>`` until a short page signals the end. If the server
         ignores the offset (a page repeats results already seen), it falls back to a
         single fetch with an explicit large ``nresults`` so completeness never depends
         on offset support.
@@ -1412,7 +1456,7 @@ class WebDAVClient(BaseNextcloudClient):
         page_size: int,
         max_results: int,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Page the SEARCH with ``<d:firstresult>`` until exhausted.
+        """Page the SEARCH with ``<sd:firstresult>`` until exhausted.
 
         Returns the accumulated rows, or ``None`` when the server ignores the
         offset (a page repeats already-seen rows, or an offset page errors) and
@@ -1455,6 +1499,7 @@ class WebDAVClient(BaseNextcloudClient):
                     "WebDAV SEARCH offset page failed for scope %r; "
                     "falling back to single fetch",
                     scope,
+                    exc_info=True,
                 )
                 return None
 
@@ -1573,22 +1618,23 @@ class WebDAVClient(BaseNextcloudClient):
         else:
             orderby_xml = ""
 
-        # Build limit clause. ``<d:nresults>`` caps the page size; ``<d:firstresult>``
-        # is the paging offset. Nextcloud silently ignores an unsupported offset
-        # (returns the first page again) rather than erroring -- ``search_files_all``
-        # detects that non-progress and falls back to a single bounded fetch.
+        # Build limit clause. ``<d:nresults>`` caps the page size; ``<sd:firstresult>``
+        # is the paging offset, in the searchdav namespace (see ``SEARCHDAV_NS``).
+        # A server that still ignores it returns the first page again rather than
+        # erroring -- ``search_files_all`` detects that non-progress and falls back
+        # to a single bounded fetch.
         limit_parts = []
         if limit:
             limit_parts.append(f"<d:nresults>{limit}</d:nresults>")
         # ``is not None`` (not truthiness) so a future explicit offset=0 is
         # emitted rather than silently dropped.
         if offset is not None:
-            limit_parts.append(f"<d:firstresult>{offset}</d:firstresult>")
+            limit_parts.append(f"<sd:firstresult>{offset}</sd:firstresult>")
         limit_xml = f"<d:limit>{''.join(limit_parts)}</d:limit>" if limit_parts else ""
 
         # Construct the full SEARCH XML
         search_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:sd="{SEARCHDAV_NS}">
     <d:basicsearch>
         <d:select>
             <d:prop>
@@ -1723,7 +1769,7 @@ class WebDAVClient(BaseNextcloudClient):
                 elif tag == "getlastmodified":
                     item["last_modified"] = value
                 elif tag == "getetag":
-                    item["etag"] = _normalize_etag(value) if value else None
+                    item["etag"] = normalize_etag(value) if value else None
                 elif tag == "fileid":
                     item["file_id"] = int(value) if value else None
                 elif tag == "favorite":
@@ -1997,6 +2043,46 @@ class WebDAVClient(BaseNextcloudClient):
         )
         return len(results) > 0
 
+    async def find_files_by_ids(self, file_ids: list[int]) -> list[dict[str, Any]]:
+        """The files among ``file_ids`` the user can currently reach.
+
+        Batched form of :meth:`file_accessible_by_id`: one SEARCH over the
+        user's whole files tree (incl. mounted shares) per ``FILE_ID_BATCH``
+        ids, OR-ing an ``oc:fileid`` match per id. Each row carries ``file_id``,
+        the user-relative ``path`` and ``content_type``; an id absent from the
+        result is not in the user's tree. Raises on transport/server errors,
+        like ``file_accessible_by_id``.
+        """
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(file_ids), FILE_ID_BATCH):
+            batch = file_ids[start : start + FILE_ID_BATCH]
+            matches = "".join(
+                "<d:eq><d:prop><oc:fileid/></d:prop>"
+                f"<d:literal>{int(file_id)}</d:literal></d:eq>"
+                for file_id in batch
+            )
+            # Headroom over len(batch): a file mounted at two paths (shared to
+            # the user twice) returns one row per path.
+            limit = 2 * len(batch)
+            page = await self.search_files(
+                scope="",
+                where_conditions=matches
+                if len(batch) == 1
+                else f"<d:or>{matches}</d:or>",
+                properties=["fileid", "getcontenttype"],
+                limit=limit,
+            )
+            if len(page) >= limit:
+                # A full page may be truncated, and a missing row reads as
+                # "inaccessible", which evicts a live file. Raise instead so
+                # the caller fails open.
+                raise RuntimeError(
+                    f"SEARCH-by-fileid returned a full page ({limit} rows) "
+                    f"for {len(batch)} ids; result may be truncated"
+                )
+            found += page
+        return found
+
     async def get_fileid(self, path: str) -> str | None:
         """Return the Nextcloud fileid of a file/folder path, or None if absent.
 
@@ -2014,7 +2100,7 @@ class WebDAVClient(BaseNextcloudClient):
             '<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
             "<d:prop><oc:fileid/></d:prop></d:propfind>"
         )
-        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "0", "Content-Type": _XML_CONTENT_TYPE}
         try:
             response = await self._make_request(
                 "PROPFIND", webdav_path, content=propfind_body, headers=headers
@@ -2069,8 +2155,7 @@ class WebDAVClient(BaseNextcloudClient):
             content=body,
             headers={
                 "Depth": "0",
-                "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
         )
 
@@ -2109,7 +2194,6 @@ class WebDAVClient(BaseNextcloudClient):
             "POST",
             f"{_COMMENTS_PATH}/{int(file_id)}",
             json={"actorType": "users", "verb": "comment", "message": message},
-            headers={"OCS-APIRequest": "true"},
         )
 
         location = response.headers.get("Content-Location", "")
@@ -2152,7 +2236,7 @@ class WebDAVClient(BaseNextcloudClient):
             </d:prop>
         </d:propfind>"""
 
-        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+        headers = {"Depth": "0", "Content-Type": _XML_CONTENT_TYPE}
 
         response = await self._make_request(
             "PROPFIND", meta_path, content=propfind_body, headers=headers
@@ -2197,7 +2281,7 @@ class WebDAVClient(BaseNextcloudClient):
 
         etag_elem = prop.find(".//{DAV:}getetag")
         etag = (
-            _normalize_etag(etag_elem.text)
+            normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None
         )
@@ -2251,8 +2335,7 @@ class WebDAVClient(BaseNextcloudClient):
             "/remote.php/dav/systemtags/",
             headers={
                 "Depth": "1",
-                "Content-Type": "text/xml",
-                "OCS-APIRequest": "true",
+                "Content-Type": _XML_CONTENT_TYPE,
             },
             content=propfind_body,
         )
@@ -2342,7 +2425,7 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
-            headers={"Content-Type": "text/xml", "OCS-APIRequest": "true"},
+            headers={"Content-Type": _XML_CONTENT_TYPE},
             content=report_body,
         )
         # Redundant after _make_request (which raises on non-2xx) but
@@ -2407,8 +2490,10 @@ class WebDAVClient(BaseNextcloudClient):
                 try:
                     dt = parsedate_to_datetime(lastmodified_elem.text)
                     last_modified_timestamp = int(dt.timestamp())
-                except Exception:
-                    pass
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Unparseable getlastmodified %r", lastmodified_elem.text
+                    )
 
             file_info = {
                 "id": int(fileid_elem.text),
@@ -2539,7 +2624,7 @@ class WebDAVClient(BaseNextcloudClient):
             "last_modified": lastmodified_elem.text
             if lastmodified_elem is not None
             else None,
-            "etag": _normalize_etag(etag_elem.text)
+            "etag": normalize_etag(etag_elem.text)
             if etag_elem is not None and etag_elem.text
             else None,
             "is_directory": is_directory,
@@ -2587,7 +2672,7 @@ class WebDAVClient(BaseNextcloudClient):
             try:
                 tag_id = int(content_location.rstrip("/").split("/")[-1])
             except (ValueError, IndexError):
-                pass
+                logger.debug("No tag id in Content-Location %r", content_location)
 
         tag_info = {
             "id": tag_id,
@@ -2685,3 +2770,281 @@ class WebDAVClient(BaseNextcloudClient):
 
         response.raise_for_status()
         return True
+
+    # -- Trash bin and file versions ----------------------------------------
+    #
+    # Nextcloud serves both from dedicated DAV endpoints rather than the files
+    # endpoint:
+    #   /remote.php/dav/trashbin/<principal>/trash
+    #   /remote.php/dav/versions/<principal>/versions/<fileid>
+    # Restoring is a MOVE into a "restore" collection in both cases -- that is
+    # the interface Nextcloud provides, not a workaround.
+
+    _TRASH_PROPS = (
+        ("trashbin_filename", "{http://nextcloud.org/ns}trashbin-filename"),
+        ("original_location", "{http://nextcloud.org/ns}trashbin-original-location"),
+        ("deleted_at", "{http://nextcloud.org/ns}trashbin-deletion-time"),
+        ("size", "{DAV:}getcontentlength"),
+    )
+
+    _VERSION_PROPS = (
+        ("size", "{DAV:}getcontentlength"),
+        ("modified", "{DAV:}getlastmodified"),
+        ("label", "{http://nextcloud.org/ns}version-label"),
+    )
+
+    def _trashbin_base(self) -> str:
+        return f"/remote.php/dav/trashbin/{self._principal_or_username()}"
+
+    def _versions_base(self) -> str:
+        return f"/remote.php/dav/versions/{self._principal_or_username()}"
+
+    @staticmethod
+    def _propfind_body(props: tuple[tuple[str, str], ...]) -> str:
+        lines = []
+        for _, qualified in props:
+            namespace, _, local = qualified.partition("}")
+            namespace = namespace.lstrip("{")
+            prefix = "d" if namespace == "DAV:" else "nc"
+            lines.append(f"<{prefix}:{local} />")
+        inner = "".join(lines)
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">'
+            f"<d:prop>{inner}</d:prop>"
+            "</d:propfind>"
+        )
+
+    @staticmethod
+    def _read_props(
+        response_elem: "ET.Element", props: tuple[tuple[str, str], ...]
+    ) -> Dict[str, Any]:
+        """Read the requested properties out of a multistatus response.
+
+        Only the ``200 OK`` propstat block is consulted. A response carries one
+        block per status, and the 404 one lists the properties the server does
+        *not* have -- folding those in would fabricate values for them.
+        """
+        # _dav_props_ok keys by local name; the tables here carry the fully
+        # qualified name, so strip the namespace before the lookup.
+        available = _dav_props_ok(response_elem)
+        return {
+            key: available.get(qualified.rpartition("}")[2]) for key, qualified in props
+        }
+
+    async def list_trash(self) -> List[Dict[str, Any]]:
+        """List the files currently in the trash bin."""
+        await self._ensure_principal_id()
+        response = await self._make_request(
+            "PROPFIND",
+            f"{self._trashbin_base()}/trash",
+            content=self._propfind_body(self._TRASH_PROPS),
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+            },
+        )
+
+        root = ET.fromstring(response.content)
+        items: List[Dict[str, Any]] = []
+        for response_elem in root.findall(".//{DAV:}response"):
+            href_elem = response_elem.find("{DAV:}href")
+            if href_elem is None or not href_elem.text:
+                continue
+            href = href_elem.text
+            entry_id = unquote(href.rstrip("/").split("/")[-1])
+            # The 'trash' collection itself is not an entry.
+            if not entry_id or entry_id == "trash":
+                continue
+            entry = self._read_props(response_elem, self._TRASH_PROPS)
+            entry["id"] = entry_id
+            entry["href"] = href
+            items.append(entry)
+        return items
+
+    async def restore_from_trash(self, entry_id: str) -> Dict[str, Any]:
+        """Restore a trashed entry to the location it was deleted from."""
+        await self._ensure_principal_id()
+        source = f"{self._trashbin_base()}/trash/{quote(entry_id, safe='')}"
+        destination = f"{self._trashbin_base()}/restore/{quote(entry_id, safe='')}"
+        # No Overwrite header: "restore" is a virtual collection, and with
+        # "Overwrite: F" Sabre reports HTTP 412 "destination node already
+        # exists" even when nothing sits at the original location. Nextcloud's
+        # own web UI does not send the header either.
+        await self._make_request(
+            "MOVE",
+            source,
+            headers={
+                "Destination": self._resolve_url(destination),
+            },
+        )
+        return {"restored": entry_id}
+
+    async def list_versions(
+        self, path: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        """List the stored previous versions of a file.
+
+        ``file_id`` lets a caller that already resolved the path (e.g. the
+        MCP tool layer, which does so for the excluded-tag guard) skip a
+        second ``get_fileid`` round-trip. Resolved internally when omitted,
+        so the method still works standalone.
+        """
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        response = await self._make_request(
+            "PROPFIND",
+            f"{self._versions_base()}/versions/{file_id}",
+            content=self._propfind_body(self._VERSION_PROPS),
+            headers={
+                "Depth": "1",
+                "Content-Type": "application/xml",
+            },
+        )
+
+        root = ET.fromstring(response.content)
+        versions: List[Dict[str, Any]] = []
+        for response_elem in root.findall(".//{DAV:}response"):
+            href_elem = response_elem.find("{DAV:}href")
+            if href_elem is None or not href_elem.text:
+                continue
+            version_id = unquote(href_elem.text.rstrip("/").split("/")[-1])
+            # The collection itself is named after the file id.
+            if not version_id or version_id == str(file_id):
+                continue
+            entry = self._read_props(response_elem, self._VERSION_PROPS)
+            entry["version_id"] = version_id
+            versions.append(entry)
+        return {"path": path, "file_id": file_id, "versions": versions}
+
+    async def restore_version(
+        self, path: str, version_id: str, *, file_id: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        """Roll a file back to an earlier version.
+
+        The current content is not lost: Nextcloud stores it as a version in
+        turn, so the rollback itself can be undone.
+
+        ``file_id``: see :meth:`list_versions`.
+        """
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        source = (
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}"
+        )
+        destination = f"{self._versions_base()}/restore/target"
+        await self._make_request(
+            "MOVE",
+            source,
+            headers={
+                "Destination": self._resolve_url(destination),
+            },
+        )
+        return {"path": path, "restored_version": version_id}
+
+    # -- File tags (systemtags) ---------------------------------------------
+    #
+    # The client already covered tags (create/assign/remove/search); only two
+    # read paths were missing: list every tag, and list the tags of one file.
+
+    _TAG_PROPFIND = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:id/>
+    <oc:display-name/>
+    <oc:user-visible/>
+    <oc:user-assignable/>
+  </d:prop>
+</d:propfind>"""
+
+    async def list_tags(self) -> List[Dict[str, Any]]:
+        """Every system tag defined on this instance."""
+        response = await self._make_request(
+            "PROPFIND",
+            "/remote.php/dav/systemtags/",
+            headers={
+                "Depth": "1",
+                "Content-Type": _XML_CONTENT_TYPE,
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        return self._tags_from_multistatus(ET.fromstring(response.content))
+
+    @staticmethod
+    def _tags_from_multistatus(root: Any) -> List[Dict[str, Any]]:
+        """Extract tags from a systemtags PROPFIND response.
+
+        The collection itself comes back as a response element and is skipped.
+        An entry without an id or display name cannot be used for anything, so
+        it is dropped rather than surfaced with placeholder values.
+        """
+        tags: List[Dict[str, Any]] = []
+        for response_elem in root.findall("{DAV:}response"):
+            href = response_elem.find("{DAV:}href")
+            if href is None or href.text == "/remote.php/dav/systemtags/":
+                continue
+            name_elem = response_elem.find(".//{http://owncloud.org/ns}display-name")
+            id_elem = response_elem.find(".//{http://owncloud.org/ns}id")
+            # An entry without a usable id or name cannot be acted on, and an
+            # empty display name would also make the sort key ambiguous.
+            if id_elem is None or not id_elem.text:
+                continue
+            if name_elem is None or not (name_elem.text or "").strip():
+                continue
+            assignable = response_elem.find(
+                ".//{http://owncloud.org/ns}user-assignable"
+            )
+            tags.append(
+                {
+                    "id": int(id_elem.text),
+                    "name": name_elem.text or "",
+                    "assignable": (assignable is None or assignable.text != "false"),
+                }
+            )
+        return sorted(tags, key=lambda t: t["name"].lower())
+
+    async def get_file_tags(self, path: str) -> Dict[str, Any]:
+        """The tags assigned to one file.
+
+        Nextcloud only reports tag *ids* on the file, so the names are looked
+        up from the full list. That is one extra call, but ids alone are of
+        little use to the caller -- and unguessable for a language model.
+        """
+        file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        response = await self._make_request(
+            "PROPFIND",
+            f"/remote.php/dav/systemtags-relations/files/{file_id}",
+            headers={
+                "Depth": "1",
+                "Content-Type": _XML_CONTENT_TYPE,
+            },
+            content=self._TAG_PROPFIND,
+        )
+
+        root = ET.fromstring(response.content)
+        ids: List[int] = []
+        for id_elem in root.findall(".//{http://owncloud.org/ns}id"):
+            if id_elem.text and id_elem.text.isdigit():
+                ids.append(int(id_elem.text))
+
+        names = {t["id"]: t["name"] for t in await self.list_tags()}
+        return {
+            "path": path,
+            "file_id": file_id,
+            "tags": [
+                {"id": i, "name": names.get(i, f"(unknown tag {i})")}
+                for i in sorted(set(ids))
+            ],
+        }

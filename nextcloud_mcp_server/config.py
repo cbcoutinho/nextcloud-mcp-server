@@ -15,7 +15,12 @@ from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
+from nextcloud_mcp_server.utils.parsing import parse_bool, split_csv
+
 logger = logging.getLogger(__name__)
+
+# Below this, the PDF parse worker's imports barely fit under RLIMIT_AS (#1635).
+_PARSE_MEM_LIMIT_WARN_MB = 1024
 
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
@@ -82,6 +87,9 @@ _DEFAULTS: dict[str, Any] = {
     "mcp_server_client_secret": None,
     "allowed_mcp_clients": "",
     "allowed_mgmt_client": "",
+    # Hosts whose Client ID Metadata Documents the AS proxy trusts (GH #1470).
+    # Empty = CIMD disabled; "*" = any publicly routable host. See auth/cimd.py.
+    "cimd_allowed_hosts": "",
     "enable_dcr": False,
     # Container-runtime / webhook self-URL overrides (local-dev docker-compose).
     "docker_container": False,
@@ -164,6 +172,10 @@ _DEFAULTS: dict[str, Any] = {
     # embedding cost) into the SAME collection as hybrid files; ``vector-index``
     # wins if a file carries both. Set empty to disable the second tag entirely.
     "vector_sync_keyword_tag": "keyword-index",
+    # Which MIME types tagged-file discovery will enqueue. None (unset) means
+    # every type a registered processor can read; a comma-separated list
+    # narrows it, and an empty string indexes no files.
+    "vector_sync_indexable_mime_types": None,
     # Mail tag (an IMAP keyword) restricting which messages are indexed. Empty
     # (the default) indexes every message in every mailbox, which is the
     # behaviour before this setting existed. Set it to a tag display name and
@@ -287,6 +299,11 @@ _DEFAULTS: dict[str, Any] = {
     # Generous headroom over a normal rerank, not a target. Exceeding it
     # degrades to retrieval order rather than failing the search.
     "search_rerank_timeout_seconds": 30.0,
+    # How long a search waits for its query embedding before failing fast with
+    # 503 embedding_unavailable. The provider's own timeout (120 s) and retries
+    # are sized for ingest; a search must answer well inside Astrolabe's 30 s
+    # HTTP timeout, and a healthy query embed takes well under a second.
+    "search_embedding_timeout_seconds": 10.0,
     # Concurrent rerank calls this process keeps in flight against the reranker.
     #
     # Conservative at 1 because reranking is the heaviest request this server
@@ -298,6 +315,26 @@ _DEFAULTS: dict[str, Any] = {
     # else it serves, is its business. Raise it if yours has headroom — a CPU
     # cross-encoder almost certainly does not.
     "search_rerank_max_concurrency": 1,
+    # --- SAR export redaction (ADR-040) -------------------------------------
+    # Names are detected by the embedding gateway's ``POST /v1/ner``, so SAR
+    # export is available only with EMBEDDING_GATEWAY_URL set.
+    # NER model, addressed the gateway way (``<provider>/<model>``).
+    # Subject access request cases and redacted export (ADR-040). Off by
+    # default: a deployment opts in, since only some need it. Also requires
+    # vector sync and EMBEDDING_GATEWAY_URL (for name detection).
+    "sar_enabled": False,
+    "ner_model": "local/urchade/gliner_multi_pii-v1",
+    # Per-request budget. Export runs in the background, so this only needs to
+    # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
+    "ner_timeout_seconds": 120.0,
+    # Texts (of up to 2,000 chars) per /v1/ner request. Small for CPU GLiNER,
+    # which must finish a batch inside the gateway's own upstream timeout; raise
+    # it (e.g. 32) on a GPU backend.
+    "ner_batch_size": 8,
+    # Minimum model confidence for a span to count as a person. Lower raises
+    # recall at the cost of over-redaction, which is the safe direction for a
+    # disclosure; 0.5 is GLiNER's customary operating point.
+    "ner_threshold": 0.5,
     # Chunking config generation. Bump whenever chunker behaviour changes (size,
     # overlap, page-aware, page-pack, split strategy) so the pricing model's
     # density reference can't silently go stale. Pinned in stripe-catalog.tf.
@@ -460,6 +497,40 @@ _DEFAULTS: dict[str, Any] = {
     # VLM preset name sent when docling_pipeline == "vlm". None -> docling-serve
     # picks its own DOCLING_SERVE_DEFAULT_VLM_PRESET. Preset names are server-defined.
     "docling_vlm_preset": None,
+    # Caption raster pictures embedded in .pptx/.docx/.xlsx via the same
+    # docling-serve instance (ADR-037). Explicit opt-in beyond a bare
+    # DOCLING_API_URL, like DOCUMENT_OCR_PROVIDER=docling needs its own
+    # selection: a deployment that only wants docling for scanned-PDF OCR
+    # shouldn't start captioning every picture in every document for free. The
+    # native readers have no rendering engine, so this only reaches actual
+    # pictures -- native vector drawings (SmartArt, shapes) are unaffected.
+    "office_caption_images": False,
+    # Cap on pictures captioned per file (one docling-serve round trip each).
+    # nc_webdav_read_file blocks synchronously for the whole parse, so this
+    # bounds the worst case rather than leaving it to the file's picture count.
+    "office_caption_max_images": 8,
+    # Per-picture docling-serve request timeout (seconds). Deliberately short
+    # and independent of DOCLING_TIMEOUT/DOCUMENT_OCR_TIMEOUT_SECONDS (other
+    # touchpoints, other latency profiles): a caption is meant to be a quick
+    # per-picture round trip repeated up to OFFICE_CAPTION_MAX_IMAGES times, not
+    # a single long convert. Raise it if DOCLING_PIPELINE=vlm makes captions
+    # time out (VLM is far slower than the standard pipeline -- see ADR-032).
+    "office_caption_timeout_seconds": 15.0,
+    # Collabora Online (coolwsd) base URL for converting legacy .doc/.xls/.ppt
+    # and ODF .odt/.ods/.odp to OOXML, which the native readers then parse
+    # (ADR-039). Unset = those types are not claimed. coolwsd only answers
+    # convert-to for clients in its net.post_allow list (private ranges by
+    # default).
+    "collabora_url": None,
+    # Per-file convert-to request timeout (seconds). A typical document
+    # converts in well under a second; the headroom is for large workbooks.
+    "collabora_timeout_seconds": 60.0,
+    # Deprecated PPTX_CAPTION_* spellings (0.193.0, pptx-only) of the three keys
+    # above; see _apply_legacy_caption_settings. Declared so dynaconf reads
+    # them at all, with the same defaults so their validators still apply.
+    "pptx_caption_images": False,
+    "pptx_caption_max_images": 8,
+    "pptx_caption_timeout_seconds": 15.0,
     # Tag-based file exclusion (issue #710): comma-separated list of
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
@@ -628,6 +699,11 @@ _dynaconf = Dynaconf(
         Validator("OIDC_DISCOVERY_MAX_ATTEMPTS", gte=1),
         Validator("OIDC_DISCOVERY_BACKOFF_BASE", gte=0),
         Validator("OIDC_DISCOVERY_BACKOFF_MAX", gte=0),
+        Validator("OFFICE_CAPTION_MAX_IMAGES", gte=0),
+        Validator("OFFICE_CAPTION_TIMEOUT_SECONDS", gt=0),
+        Validator("COLLABORA_TIMEOUT_SECONDS", gt=0),
+        Validator("PPTX_CAPTION_MAX_IMAGES", gte=0),
+        Validator("PPTX_CAPTION_TIMEOUT_SECONDS", gt=0),
         Validator("QDRANT_INIT_MAX_ATTEMPTS", gte=1),
         Validator("QDRANT_INIT_BACKOFF_BASE", gte=0),
         Validator("QDRANT_INIT_BACKOFF_MAX", gte=0),
@@ -712,6 +788,7 @@ _dynaconf = Dynaconf(
         Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
         Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
         Validator("SEARCH_RERANK_TIMEOUT_SECONDS", gt=0),
+        Validator("SEARCH_EMBEDDING_TIMEOUT_SECONDS", gt=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_TAG", len_min=1),
         # VECTOR_SYNC_KEYWORD_TAG is optional (empty disables keyword-only
@@ -739,6 +816,27 @@ _dynaconf = Dynaconf(
         ),
     ],
 )
+
+
+def _warn_low_parse_mem_limit(mem_limit_mb: int) -> None:
+    """Warn when the parse cap leaves the worker too little room (#1635).
+
+    The parse worker spends ~600 MiB of address space on imports alone (its
+    share of the app plus pymupdf4llm, which loads onnxruntime even in classic
+    mode), before any page is read. At 640 the markdown promotion failed
+    intermittently with "failed to map segment". The validator's floor of 128
+    only rejects nonsense, so this warns instead of refusing to start.
+    """
+    if mem_limit_mb < _PARSE_MEM_LIMIT_WARN_MB:
+        logger.warning(
+            "DOCUMENT_PARSE_MEM_LIMIT_MB=%d is below %d. The PDF parse worker "
+            "needs ~600 MiB of address space for its imports alone, so markdown "
+            "promotion is likely to fail (ImportError: failed to map segment). "
+            "The default is %d.",
+            mem_limit_mb,
+            _PARSE_MEM_LIMIT_WARN_MB,
+            _DEFAULTS["document_parse_mem_limit_mb"],
+        )
 
 
 def _reload_config():
@@ -871,6 +969,17 @@ LOGGING_CONFIG = {
             "handlers": ["default"],
             "level": "INFO",
         },
+        "httpx2": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
+        "httpcore2": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,  # Prevent propagation to root logger
+        },
+        # Legacy httpx: still used by qdrant-client and huggingface-hub
         "httpx": {
             "handlers": ["default"],
             "level": "INFO",
@@ -940,9 +1049,7 @@ def get_document_processor_config() -> dict[str, Any]:
             "api_url": _dynaconf.get("UNSTRUCTURED_API_URL"),
             "timeout": _dynaconf.get("UNSTRUCTURED_TIMEOUT"),
             "strategy": _dynaconf.get("UNSTRUCTURED_STRATEGY"),
-            "languages": [
-                lang.strip() for lang in languages_str.split(",") if lang.strip()
-            ],
+            "languages": split_csv(languages_str),
             "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
         }
 
@@ -965,9 +1072,7 @@ def get_document_processor_config() -> dict[str, Any]:
         custom_url = _dynaconf.get("CUSTOM_PROCESSOR_URL")
         if custom_url:
             supported_types_str = _dynaconf.get("CUSTOM_PROCESSOR_TYPES")
-            supported_types = {
-                t.strip() for t in supported_types_str.split(",") if t.strip()
-            }
+            supported_types = set(split_csv(supported_types_str))
 
             config["processors"]["custom"] = {
                 "name": _dynaconf.get("CUSTOM_PROCESSOR_NAME"),
@@ -990,7 +1095,7 @@ def get_document_processor_config() -> dict[str, Any]:
             config["processors"]["docling"] = {
                 "api_url": docling_url,
                 "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
-                "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
+                "ocr_lang": split_csv(lang_str),
                 "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
                 # Normalize like Settings.__post_init__ does (.strip().lower()) so the
                 # image path matches convert_file()'s ``pipeline == "vlm"`` check --
@@ -1083,7 +1188,7 @@ class Settings:
     nextcloud_verify_ssl: bool = True
     nextcloud_ca_bundle: str | None = None
 
-    # Reuse pooled keep-alive connections for the Nextcloud httpx client.
+    # Reuse pooled keep-alive connections for the Nextcloud httpx2 client.
     # Default True preserves low-latency interactive traffic. Set
     # NEXTCLOUD_HTTP_KEEPALIVE=false to force a fresh connection per request
     # (max_keepalive_connections=0) — mirrors the DATABASE_POOL_SIZE→NullPool
@@ -1216,6 +1321,25 @@ class Settings:
     # Set empty to disable the second tag entirely.
     vector_sync_keyword_tag: str = "keyword-index"
 
+    # Comma-separated MIME types that tagged-file discovery enqueues. Unset
+    # (the default) means every type an enabled processor can read, so enabling
+    # a processor (e.g. Collabora for ODF) is what opts its types in. Set it to
+    # narrow that; set it empty to index no files at all.
+    vector_sync_indexable_mime_types: str | None = None
+
+    @property
+    def indexable_mime_types(self) -> tuple[str, ...]:
+        """The MIME types discovery enqueues, sorted, blanks dropped."""
+        if self.vector_sync_indexable_mime_types is None:
+            # Imported here: the processor package registers its processors on
+            # import, which is kept off the startup path (#877).
+            from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+                get_registry,
+            )
+
+            return tuple(sorted(get_registry().supported_mime_types()))
+        return tuple(split_csv(self.vector_sync_indexable_mime_types))
+
     # Mail tag (an IMAP keyword) restricting which messages are indexed — the
     # mail analogue of ``vector_sync_tag``. Empty (default) indexes every
     # message in every mailbox. Set to a tag display name and the scanner
@@ -1316,7 +1440,14 @@ class Settings:
     search_rerank_model: str = "local/BAAI/bge-reranker-v2-m3"
     search_rerank_pool_size: int = 200
     search_rerank_timeout_seconds: float = 30.0
+    search_embedding_timeout_seconds: float = 10.0
     search_rerank_max_concurrency: int = 1
+    # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
+    sar_enabled: bool = False
+    ner_model: str = "local/urchade/gliner_multi_pii-v1"
+    ner_timeout_seconds: float = 120.0
+    ner_batch_size: int = 8
+    ner_threshold: float = 0.5
     # Greedy page-packing (Deck #636). When True, the page-aware chunker merges
     # consecutive sub-budget pages into one chunk (page-range citation via
     # page_number/page_end) instead of one-chunk-per-page — the density fix for
@@ -1442,7 +1573,7 @@ class Settings:
     # direct mistral backend strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
     # OCR backend HTTP request timeout (seconds). float for parity with the
-    # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
+    # parse timeout / httpx2.Timeout; per-tenant tunable so a gateway with a
     # shorter ceiling isn't masked by the 180s default.
     document_ocr_timeout_seconds: float = 180.0
     # OCR execution mode: "sync" | "batch" (Deck #332). batch is opt-in and routes
@@ -1475,6 +1606,17 @@ class Settings:
     docling_ocr_lang: str = "en,de"
     docling_pipeline: str = "standard"
     docling_vlm_preset: str | None = None
+
+    # OOXML picture captioning, a second touchpoint on the same docling-serve
+    # instance (ADR-037). See _DEFAULTS above for the reasoning.
+    office_caption_images: bool = False
+    office_caption_max_images: int = 8
+    office_caption_timeout_seconds: float = 15.0
+
+    # Collabora Online conversion service for legacy/ODF office formats
+    # (ADR-039). See _DEFAULTS above.
+    collabora_url: str | None = None
+    collabora_timeout_seconds: float = 60.0
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1581,6 +1723,8 @@ class Settings:
                     f"NEXTCLOUD_CA_BUNDLE path does not exist: {self.nextcloud_ca_bundle}"
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
+
+        _warn_low_parse_mem_limit(self.document_parse_mem_limit_mb)
 
         # Page-packing is a sub-mode of page-aware chunking (the packing logic
         # only runs inside the page-aware branch). Enabling it without page-aware
@@ -1724,6 +1868,16 @@ class Settings:
                 "of a Cohere-protocol rerank endpoint — Infinity, vLLM, Cohere) "
                 "or EMBEDDING_GATEWAY_URL"
             )
+        # SAR cases search and read documents from the index and detect names
+        # through the gateway. Opting in without either would advertise nothing
+        # and look like the feature is broken: fail at startup instead.
+        if self.sar_enabled and not (
+            self.vector_sync_enabled and self.embedding_gateway_url
+        ):
+            raise ValueError(
+                "SAR_ENABLED requires semantic search (ENABLE_SEMANTIC_SEARCH) and "
+                "EMBEDDING_GATEWAY_URL (names are detected through its /v1/ner)"
+            )
         # The default model id is namespaced for the gateway's routing layer. A
         # direct endpoint has no such layer and will 404/422 on `local/...`,
         # which degrades to retrieval order with `reranked: false` — i.e. it
@@ -1743,6 +1897,21 @@ class Settings:
                     f"{_prefix}/",
                     _bare,
                 )
+        self.ner_threshold = float(self.ner_threshold)
+        if not 0.0 < self.ner_threshold <= 1.0:
+            raise ValueError(
+                f"NER_THRESHOLD must be in (0, 1]; got {self.ner_threshold!r}"
+            )
+        self.ner_batch_size = int(self.ner_batch_size)
+        if self.ner_batch_size < 1:
+            raise ValueError(f"NER_BATCH_SIZE must be >= 1; got {self.ner_batch_size}")
+        # 0 would give httpx2 no time budget: every NER call would time out at
+        # request time instead of failing here with a clear message.
+        self.ner_timeout_seconds = float(self.ner_timeout_seconds)
+        if self.ner_timeout_seconds <= 0:
+            raise ValueError(
+                f"NER_TIMEOUT_SECONDS must be > 0; got {self.ner_timeout_seconds}"
+            )
         # Optional interactive read-parse cap (nc_webdav_read_file). Unset / empty =
         # disabled; when set it must be a positive number of seconds. An empty string
         # (a bare `DOCUMENT_READ_TIMEOUT_SECONDS=` from a compose passthrough) is
@@ -2082,6 +2251,39 @@ def _get_semantic_search_enabled() -> bool:
     return new_value or old_value
 
 
+def _apply_legacy_caption_settings(kwargs: dict) -> None:
+    """Honor the deprecated ``PPTX_CAPTION_*`` names for ``OFFICE_CAPTION_*``.
+
+    Both are declared with the same default, so "set" means "differs from the
+    default": a legacy value wins only where the new key was left at its
+    default. Deprecated in the release that generalized captioning beyond
+    .pptx; removal will be a ``BREAKING CHANGE``.
+    """
+    for suffix in ("images", "max_images", "timeout_seconds"):
+        new_field = f"office_caption_{suffix}"
+        legacy = _dynaconf.get(f"PPTX_CAPTION_{suffix.upper()}")
+        default = _DEFAULTS[new_field]
+        if legacy == default:
+            continue
+        name = suffix.upper()
+        if kwargs.get(new_field, default) != default:
+            logger.warning(
+                "Both OFFICE_CAPTION_%s and PPTX_CAPTION_%s are set. Using "
+                "OFFICE_CAPTION_%s; PPTX_CAPTION_%s is deprecated.",
+                name,
+                name,
+                name,
+                name,
+            )
+            continue
+        logger.warning(
+            "PPTX_CAPTION_%s is deprecated; use OFFICE_CAPTION_%s instead.",
+            name,
+            name,
+        )
+        kwargs[new_field] = legacy
+
+
 def _is_multi_user_mode() -> bool:
     """Detect if this is a multi-user deployment mode.
 
@@ -2214,13 +2416,11 @@ def cfg_bool(key: str, default: bool = False) -> bool:
     syntax, which only recognises lowercase ``true``/``false``, so
     ``SOME_FLAG=False`` survives as the *string* ``"False"`` — and
     ``bool("False")`` is ``True``, inverting the operator's intent. This accepts
-    the spellings a human plausibly types (``true``/``1``/``yes``/``on``, any
-    case) and treats everything else as false.
+    the spellings a human plausibly types (``true``/``1``/``yes``/``on`` and
+    ``false``/``0``/``no``/``off``, any case). An unrecognised value yields
+    *default* and logs a warning naming *key* (see ``parse_bool``).
     """
-    value = cfg(key, default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return parse_bool(cfg(key, default), default, name=key)
 
 
 def set_override(key: str, value) -> None:
@@ -2295,6 +2495,7 @@ def _build_settings() -> Settings:
     # Smart dependency overrides (always set, regardless of dynaconf)
     kwargs["vector_sync_enabled"] = enable_semantic_search
     kwargs["enable_offline_access"] = enable_background_operations
+    _apply_legacy_caption_settings(kwargs)
 
     return Settings(**kwargs)
 
@@ -2332,7 +2533,7 @@ def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
 
 @functools.cache
 def get_nextcloud_http_keepalive() -> bool:
-    """Return whether the Nextcloud httpx client may reuse pooled connections.
+    """Return whether the Nextcloud httpx2 client may reuse pooled connections.
 
     Returns:
         - False if NEXTCLOUD_HTTP_KEEPALIVE=false (fresh connection per

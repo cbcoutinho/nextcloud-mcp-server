@@ -6,9 +6,10 @@ import time
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
 
 from ..http import nextcloud_httpx_client
 
@@ -105,7 +106,7 @@ async def register_client(
         ClientInfo with registration details
 
     Raises:
-        httpx.HTTPStatusError: If registration fails
+        httpx2.HTTPStatusError: If registration fails
         ValueError: If response is invalid
 
     Note:
@@ -148,7 +149,9 @@ async def register_client(
                 if response.status_code == 429:
                     # Rate limited - retry with exponential backoff
                     if attempt < max_retries - 1:
-                        retry_after = int(response.headers.get("Retry-After", 2))
+                        retry_after = (
+                            parse_retry_after(response.headers.get("Retry-After")) or 2
+                        )
                         wait_time = min(retry_after, 2**attempt)
                         logger.warning(
                             "Rate limited (429) registering client, retrying in %ss (attempt %s/%s)",
@@ -208,7 +211,7 @@ async def register_client(
                     registration_client_uri=client_info.get("registration_client_uri"),
                 )
 
-            except httpx.HTTPStatusError as e:
+            except httpx2.HTTPStatusError as e:
                 logger.error(
                     "Failed to register client: HTTP %s", e.response.status_code
                 )
@@ -221,10 +224,10 @@ async def register_client(
                 raise ValueError(f"Invalid registration response: missing {e}")
 
     # Should not reach here, but raise if we do
-    raise httpx.HTTPStatusError(
+    raise httpx2.HTTPStatusError(
         "Registration failed after retries",
-        request=httpx.Request("POST", registration_endpoint),
-        response=httpx.Response(429),
+        request=httpx2.Request("POST", registration_endpoint),
+        response=httpx2.Response(429),
     )
 
 
@@ -306,7 +309,9 @@ async def delete_client(
                 elif response.status_code == 429:
                     # Rate limited - retry with exponential backoff
                     if attempt < max_retries - 1:
-                        retry_after = int(response.headers.get("Retry-After", 2))
+                        retry_after = (
+                            parse_retry_after(response.headers.get("Retry-After")) or 2
+                        )
                         wait_time = min(
                             retry_after, 2**attempt
                         )  # Exponential backoff, max from header
@@ -347,7 +352,7 @@ async def delete_client(
                     logger.debug("Response: %s", response.text)
                     return False
 
-            except httpx.HTTPStatusError as e:
+            except httpx2.HTTPStatusError as e:
                 logger.error(
                     "HTTP error deleting client %s...: %s",
                     client_id[:16],
@@ -398,7 +403,7 @@ async def ensure_oauth_client(
         ClientInfo with valid credentials
 
     Raises:
-        httpx.HTTPStatusError: If registration fails
+        httpx2.HTTPStatusError: If registration fails
         ValueError: If response is invalid
     """
     # Try to load existing client from SQLite

@@ -23,7 +23,7 @@ after a lock race would give up early.
 from __future__ import annotations
 
 import pytest
-from httpx import HTTPStatusError, Request, Response
+from httpx2 import HTTPStatusError, Request, Response
 
 from nextcloud_mcp_server.client.base import (
     LOCK_MAX_RETRIES,

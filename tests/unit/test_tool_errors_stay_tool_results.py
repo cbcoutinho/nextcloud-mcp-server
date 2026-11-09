@@ -14,7 +14,7 @@ exactly this reason. These tests pin that from the *client* side, over a real
 only vantage point where "raised at the caller" and "returned as content" differ.
 """
 
-import httpx
+import httpx2
 import pytest
 from mcp.client import Client
 from mcp.shared.exceptions import MCPError
@@ -24,10 +24,10 @@ from nextcloud_mcp_server.errors import NextcloudMCPServer
 pytestmark = pytest.mark.unit
 
 
-def _http_error(status: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://nc/remote.php/dav/files/admin/notes/5.md")
-    return httpx.HTTPStatusError(
-        f"{status}", request=request, response=httpx.Response(status, request=request)
+def _http_error(status: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "http://nc/remote.php/dav/files/admin/notes/5.md")
+    return httpx2.HTTPStatusError(
+        f"{status}", request=request, response=httpx2.Response(status, request=request)
     )
 
 

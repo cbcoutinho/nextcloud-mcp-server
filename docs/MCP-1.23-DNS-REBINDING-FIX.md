@@ -46,7 +46,7 @@ Modified `nextcloud_mcp_server/app.py`:
 
 Each now includes:
 ```python
-transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 ```
 
 ## Impact
@@ -76,13 +76,13 @@ DNS rebinding protection defends against attacks where:
 If DNS rebinding protection is needed for specific deployments, it can be re-enabled with a custom allowed hosts list:
 
 ```python
-transport_security=TransportSecuritySettings(
+transport_security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=[
         "nextcloud-mcp-server.default.svc.cluster.local:*",
         "mcp.example.com:*",
         # Add all your expected Host header values
-    ]
+    ],
 )
 ```
 

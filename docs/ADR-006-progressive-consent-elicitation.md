@@ -61,7 +61,7 @@ async def tool_provision_access(ctx: Context) -> ProvisioningResult:
     return ProvisioningResult(
         success=True,
         authorization_url=auth_url,  # User must copy this
-        message="Please visit the authorization URL..."
+        message="Please visit the authorization URL...",
     )
 ```
 
@@ -154,7 +154,7 @@ async def request_access(ctx: Context) -> ElicitationResponse:
         mode="url",
         url=generate_oauth_url(),
         message="Grant access to Nextcloud",
-        elicitation_id=generate_id()
+        elicitation_id=generate_id(),
     )
 ```
 
@@ -169,6 +169,7 @@ Replace explicit provisioning checks with a decorator that returns `ElicitationR
 ```python
 # nextcloud_mcp_server/auth/provisioning_decorator.py
 
+
 def require_provisioning(func):
     """
     Decorator that ensures user has provisioned Nextcloud access.
@@ -176,6 +177,7 @@ def require_provisioning(func):
     If not provisioned, returns ElicitationRequired error with OAuth URL.
     Otherwise, proceeds with normal tool execution.
     """
+
     @functools.wraps(func)
     async def wrapper(ctx: Context, *args, **kwargs):
         # Extract user ID from token
@@ -189,9 +191,7 @@ def require_provisioning(func):
             # Not provisioned - return ElicitationRequired error
             elicitation_id = str(uuid.uuid4())
             oauth_url = await generate_oauth_url_for_provisioning(
-                user_id=user_id,
-                elicitation_id=elicitation_id,
-                ctx=ctx
+                user_id=user_id, elicitation_id=elicitation_id, ctx=ctx
             )
 
             # Store elicitation for tracking
@@ -199,7 +199,7 @@ def require_provisioning(func):
                 elicitation_id=elicitation_id,
                 user_id=user_id,
                 status="pending",
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
             )
 
             raise McpError(
@@ -214,10 +214,10 @@ def require_provisioning(func):
                             "message": (
                                 "Grant the MCP server access to your Nextcloud "
                                 "account to continue. This is a one-time setup."
-                            )
+                            ),
                         }
                     ]
-                }
+                },
             )
 
         # Already provisioned - proceed normally
@@ -233,11 +233,9 @@ Implement `elicitation/track` to provide progress updates:
 ```python
 # nextcloud_mcp_server/server/elicitation.py
 
+
 @mcp.request_handler("elicitation/track")
-async def track_elicitation(
-    elicitation_id: str,
-    _meta: dict = None
-) -> dict:
+async def track_elicitation(elicitation_id: str, _meta: dict = None) -> dict:
     """
     Track progress of an elicitation request.
 
@@ -258,7 +256,7 @@ async def track_elicitation(
         if not elicitation:
             raise McpError(
                 code=-32602,  # Invalid params
-                message=f"Unknown elicitation ID: {elicitation_id}"
+                message=f"Unknown elicitation ID: {elicitation_id}",
             )
 
         # Send progress notification if token provided
@@ -266,7 +264,7 @@ async def track_elicitation(
             await send_progress_notification(
                 progress_token=progress_token,
                 progress=50,
-                message="Waiting for OAuth authorization..."
+                message="Waiting for OAuth authorization...",
             )
 
         # Check if complete
@@ -275,10 +273,7 @@ async def track_elicitation(
 
         # Check if failed
         if elicitation["status"] == "failed":
-            return {
-                "status": "failed",
-                "error": elicitation.get("error_message")
-            }
+            return {"status": "failed", "error": elicitation.get("error_message")}
 
         # Wait before polling again
         await asyncio.sleep(2)
@@ -286,7 +281,7 @@ async def track_elicitation(
     # Timeout
     raise McpError(
         code=-32000,
-        message="Elicitation timed out - user did not complete authorization"
+        message="Elicitation timed out - user did not complete authorization",
     )
 ```
 
@@ -296,6 +291,7 @@ Update the OAuth callback to mark elicitations as complete:
 
 ```python
 # nextcloud_mcp_server/auth/oauth_routes.py
+
 
 async def oauth_callback(request: Request) -> Response:
     """Handle OAuth callback and mark elicitation complete."""
@@ -307,8 +303,7 @@ async def oauth_callback(request: Request) -> Response:
 
     # Store refresh token
     await storage.store_refresh_token(
-        user_id=user_id,
-        refresh_token=tokens["refresh_token"]
+        user_id=user_id, refresh_token=tokens["refresh_token"]
     )
 
     # Mark elicitation as complete
@@ -317,13 +312,13 @@ async def oauth_callback(request: Request) -> Response:
         await storage.update_elicitation(
             elicitation_id=elicitation_id,
             status="complete",
-            completed_at=datetime.now(timezone.utc)
+            completed_at=datetime.now(timezone.utc),
         )
 
     return Response(
         content="<h1>Authorization Complete!</h1>"
         "<p>You can close this window and return to the application.</p>",
-        media_type="text/html"
+        media_type="text/html",
     )
 ```
 
@@ -334,12 +329,12 @@ Add `@require_provisioning` decorator to all Nextcloud tools:
 ```python
 # nextcloud_mcp_server/server/notes.py
 
+
 @mcp.tool()
 @require_scopes("notes:read")
 @require_provisioning  # NEW: Auto-triggers provisioning
 async def nc_notes_list_notes(
-    ctx: Context,
-    category: Optional[str] = None
+    ctx: Context, category: Optional[str] = None
 ) -> NotesListResponse:
     """List all notes - automatically handles provisioning."""
     client = await get_client(ctx)
@@ -499,8 +494,7 @@ Assistant: "Here are your notes: ..."
        # Start tracking
        track_task = asyncio.create_task(
            nc_mcp_oauth_client.track_elicitation(
-               elicitation_id=elicitation_id,
-               progress_token="test-token"
+               elicitation_id=elicitation_id, progress_token="test-token"
            )
        )
 
@@ -540,7 +534,7 @@ Assistant: "Here are your notes: ..."
        with pytest.raises(McpError, match="timed out"):
            await nc_mcp_oauth_client.track_elicitation(
                elicitation_id=elicitation_id,
-               timeout=5  # 5 seconds
+               timeout=5,  # 5 seconds
            )
    ```
 
@@ -674,12 +668,15 @@ Instead of waiting for URL mode elicitation, we implemented a `check_logged_in` 
 ```python
 # nextcloud_mcp_server/server/oauth_tools.py
 
+
 class LoginConfirmation(BaseModel):
     """Schema for login confirmation elicitation."""
+
     acknowledged: bool = Field(
         default=False,
         description="Check this box after completing login at the provided URL",
     )
+
 
 @mcp.tool(name="check_logged_in")
 @require_scopes("openid")
@@ -803,10 +800,12 @@ Integration tests validate the current inline form elicitation:
 ```python
 # tests/server/oauth/test_login_elicitation.py
 
+
 async def test_check_logged_in_already_authenticated(nc_mcp_oauth_client):
     """Test immediate 'yes' for authenticated users."""
     result = await nc_mcp_oauth_client.call_tool("check_logged_in", arguments={})
     assert "yes" in result.content[0].text.lower()
+
 
 async def test_check_logged_in_url_format(nc_mcp_oauth_client):
     """Test that login URL (when needed) contains correct OAuth parameters."""

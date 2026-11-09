@@ -106,7 +106,13 @@ async def test_embeddings_honour_the_requested_output_width(gateway_consumer_pac
             embedding_model=_MODEL,
             embedding_dimensions=_TRUNCATED,
         )
-        embedding = await provider.embed(_INPUT)
+        try:
+            embedding = await provider.embed(_INPUT)
+        finally:
+            # Close on this test's loop: an unclosed AsyncOpenAI client is
+            # aclose()d from __del__ on whatever loop runs at GC time, which
+            # fails a later test with "Event loop is closed".
+            await provider.close()
 
     # Decoded client-side by the SDK, and accepted by _record_dimension — which
     # would have raised had the width disagreed with the request.

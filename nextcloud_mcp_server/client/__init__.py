@@ -1,18 +1,20 @@
 import logging
+from collections.abc import Sequence
 from email.utils import parsedate_to_datetime
 
-from httpx import (
+import anyio
+from httpx2 import (
     AsyncBaseTransport,
-    AsyncClient,
     Auth,
     BasicAuth,
     Request,
+    RequestNotRead,
     Response,
     Timeout,
 )
 
 from ..controllers.notes_search import NotesSearchController
-from ..http import nextcloud_httpx_transport
+from ..http import nextcloud_httpx_client, nextcloud_httpx_transport
 from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
 from .collectives import CollectivesClient
@@ -34,13 +36,27 @@ from .webdav import WebDAVClient
 logger = logging.getLogger(__name__)
 
 
-async def log_request(request: Request):
+async def log_request(request: Request) -> None:
+    """Log the outgoing request at DEBUG, without touching a streamed body.
+
+    httpx2 only buffers a request body up front when it is given as bytes, str,
+    form data or JSON. For a streamed body (an async iterable, or multipart
+    ``files=``) ``request.content`` raises ``RequestNotRead`` instead. It used
+    to be evaluated as a log argument even with DEBUG off, so any such request
+    on the shared client would fail in this hook before it was sent.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     logger.debug(
         "Request event hook: %s %s - Waiting for content",
         request.method,
         request.url,
     )
-    logger.debug("Request body: %s", request.content)
+    try:
+        body: object = request.content
+    except RequestNotRead:
+        body = "<streaming; body not read>"
+    logger.debug("Request body: %s", body)
     logger.debug("Headers: %s", request.headers)
 
 
@@ -53,7 +69,7 @@ async def log_response(response: Response):
     1. ``aread()`` ran **unconditionally**, while only the logging was gated by
        DEBUG. Every response in the app was therefore fully buffered and
        stringified regardless of log level, purely to serve a line nobody saw.
-    2. httpx invokes response hooks BEFORE the body is fetched, so on a streamed
+    2. httpx2 invokes response hooks BEFORE the body is fetched, so on a streamed
        GET that ``aread()`` pulled the whole document into memory and left the
        caller's ``aiter_bytes()`` loop with nothing to stream. A 1 GB ingest
        download became a 1 GB buffer plus its decoded ``.text`` copy -- ~3.6x the
@@ -70,6 +86,25 @@ async def log_response(response: Response):
         return
     await response.aread()
     logger.debug("Response [%s] %s", response.status_code, response.text)
+
+
+def _as_mime_tuple(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    """Normalise one-or-many MIME types to a tuple.
+
+    A tuple specifically: it is passed straight to ``str.startswith``, which
+    accepts a tuple of prefixes and so does the OR for free. A bare string is
+    wrapped rather than iterated -- iterating it would match every file whose
+    content type starts with any single letter of the type.
+    """
+    # One return, so the varying length is plainly a collection rather than a
+    # record whose shape a caller might unpack (python:S8495).
+    if value is None:
+        types: Sequence[str] = ()
+    elif isinstance(value, str):
+        types = (value,)
+    else:
+        types = value
+    return tuple(types)
 
 
 def _normalise_search_result(item: dict) -> dict:
@@ -104,9 +139,9 @@ def _normalise_search_result(item: dict) -> dict:
 
 
 class AsyncDisableCookieTransport(AsyncBaseTransport):
-    """This Transport disable cookies from accumulating in the httpx AsyncClient
+    """This Transport disable cookies from accumulating in the httpx2 AsyncClient
 
-    Thanks to: https://github.com/encode/httpx/issues/2992#issuecomment-2133258994
+    Thanks to: https://github.com/encode/httpx2/issues/2992#issuecomment-2133258994
     """
 
     def __init__(self, transport: AsyncBaseTransport):
@@ -138,11 +173,11 @@ class NextcloudClient:
         # loginName), which differs from the UID for OIDC-provisioned users.
         # Defaults to ``username`` so single-user and OAuth modes are unchanged.
         # Callers pass the matching ``auth=BasicAuth(auth_username, ...)`` for
-        # the httpx leg; ``auth_username`` is threaded to the CalDAV client,
+        # the httpx2 leg; ``auth_username`` is threaded to the CalDAV client,
         # which builds its own auth object from the raw credential.
         self.username = username
         auth_username = auth_username or username
-        self._client = AsyncClient(
+        self._client = nextcloud_httpx_client(
             base_url=base_url,
             auth=auth,
             transport=AsyncDisableCookieTransport(nextcloud_httpx_transport()),
@@ -156,7 +191,7 @@ class NextcloudClient:
         self.tables = TablesClient(self._client, username)
         # CalendarClient takes raw credentials so caldav (which uses niquests as
         # its preferred backend in v3.x) builds a backend-compatible auth object
-        # itself — passing httpx.BasicAuth here breaks under niquests (#731).
+        # itself — passing httpx2.BasicAuth here breaks under niquests (#731).
         self.calendar = CalendarClient(
             base_url,
             username,
@@ -276,10 +311,69 @@ class NextcloudClient:
         all_notes = self.notes.get_all_notes()
         return await self._notes_search.search_notes(all_notes, query)
 
+    async def _walk_tagged_dir(
+        self,
+        dir_path: str,
+        mime_types: tuple[str, ...],
+        tag_name: str,
+    ) -> tuple[list[dict], bool]:
+        """Descendants of ``dir_path`` matching any of ``mime_types``.
+
+        Nextcloud's SEARCH takes a single content type per query, so this is one
+        request per type -- issued concurrently rather than in sequence, or a
+        tagged folder would cost six sequential round-trips at the default type
+        list where it used to cost one, and discovery latency scales with the
+        number of tagged folders.
+
+        Returns the descendants found plus whether any type's walk failed; each
+        failure is logged per type, and ``find_files_by_tag`` turns any failure
+        into an error rather than a partial result.
+        """
+        results: list[list[dict]] = [[] for _ in mime_types]
+        failed = False
+
+        async def walk(index: int, mime_type: str) -> None:
+            nonlocal failed
+            try:
+                # find_all_by_type pages past Nextcloud's default ~100-result
+                # SEARCH page so every tagged-folder descendant is discovered;
+                # find_by_type would silently cap a large folder.
+                results[index] = await self.webdav.find_all_by_type(
+                    mime_type, scope=dir_path
+                )
+            except Exception as e:
+                failed = True
+                logger.warning(
+                    "Tag-based directory walk failed for %r (tag %r, mime %s): "
+                    "%s. Files of that type under this folder will NOT be "
+                    "indexed until the walk succeeds.",
+                    dir_path,
+                    tag_name,
+                    mime_type,
+                    e,
+                )
+
+        # Results are collected by index rather than appended, so the order does
+        # not depend on which request finished first -- discovery output stays
+        # deterministic for the same corpus.
+        async with anyio.create_task_group() as tg:
+            for index, mime_type in enumerate(mime_types):
+                tg.start_soon(walk, index, mime_type)
+
+        return [row for rows in results for row in rows], failed
+
     async def find_files_by_tag(
-        self, tag_name: str, mime_type_filter: str | None = None
+        self,
+        tag_name: str,
+        mime_type_filter: str | Sequence[str] | None = None,
     ) -> list[dict]:
-        """Return files carrying ``tag_name``, expanding tagged folders into matching descendants when ``mime_type_filter`` is set."""
+        """Return files carrying ``tag_name``, expanding tagged folders into matching descendants when ``mime_type_filter`` is set.
+
+        ``mime_type_filter`` accepts one MIME type or several. Several are
+        OR-ed: a tagged folder is expanded once per type, because Nextcloud's
+        SEARCH takes a single content type per query.
+        """
+        mime_types = _as_mime_tuple(mime_type_filter)
         tag = await self.webdav.get_tag_by_name(tag_name)
         if not tag:
             logger.debug("Tag %r not found, returning empty list", tag_name)
@@ -301,9 +395,7 @@ class NextcloudClient:
             if item.get("is_directory"):
                 tagged_dirs.append(item)
                 continue
-            if mime_type_filter and not item.get("content_type", "").startswith(
-                mime_type_filter
-            ):
+            if mime_types and not item.get("content_type", "").startswith(mime_types):
                 continue
             file_id = item.get("id")
             if file_id is None:
@@ -312,26 +404,19 @@ class NextcloudClient:
 
         # Expand each tagged directory into its descendant files matching
         # the MIME filter. Skip when no MIME filter is set — see docstring.
-        if mime_type_filter and tagged_dirs:
+        if mime_types and tagged_dirs:
             for dir_info in tagged_dirs:
                 dir_path = dir_info.get("path", "").strip("/")
-                try:
-                    # find_all_by_type pages past Nextcloud's default ~100-result
-                    # SEARCH page so every tagged-folder descendant is discovered;
-                    # find_by_type would silently cap a large folder.
-                    descendants = await self.webdav.find_all_by_type(
-                        mime_type_filter, scope=dir_path
+                descendants, walk_failed = await self._walk_tagged_dir(
+                    dir_path, mime_types, tag_name
+                )
+                # Never return a short list as if complete: the scanner treats
+                # every indexed file missing from it as deleted (Deck #1373).
+                if walk_failed:
+                    raise RuntimeError(
+                        f"Tag {tag_name!r} discovery incomplete: walk of "
+                        f"{dir_path!r} failed"
                     )
-                except Exception as e:
-                    logger.warning(
-                        "Tag-based directory walk failed for %r (tag %r): %s. "
-                        "Skipping this folder and all its descendants — those "
-                        "files will NOT be indexed until the walk succeeds.",
-                        dir_path,
-                        tag_name,
-                        e,
-                    )
-                    continue
 
                 added = 0
                 for d in descendants:
@@ -356,17 +441,17 @@ class NextcloudClient:
                     tag_name,
                     dir_path,
                     added,
-                    mime_type_filter,
+                    ", ".join(mime_types),
                 )
 
         files = list(by_id.values())
-        if mime_type_filter:
+        if mime_types:
             logger.info(
                 "Returning %d file(s) with tag %r (mime_type=%s, "
                 "%d directly-tagged folder(s) expanded)",
                 len(files),
                 tag_name,
-                mime_type_filter,
+                ", ".join(mime_types),
                 len(tagged_dirs),
             )
         else:

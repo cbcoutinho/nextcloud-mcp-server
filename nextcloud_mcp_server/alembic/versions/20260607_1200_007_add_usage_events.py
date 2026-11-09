@@ -33,6 +33,8 @@ depends_on = None
 
 def upgrade() -> None:
     is_pg = op.get_bind().dialect.name == "postgresql"
+    # Widened so ty doesn't pin Column's type param to JSONB's Python type.
+    metadata_type: sa.types.TypeEngine = postgresql.JSONB() if is_pg else sa.Text()
 
     # Retention: this table has no TTL by design — the control-plane rollup
     # owns the lifecycle (it pulls rows read-only into usage_daily, then
@@ -67,7 +69,7 @@ def upgrade() -> None:
         # (json.dumps) on SQLite.
         sa.Column(
             "metadata",
-            postgresql.JSONB() if is_pg else sa.Text(),
+            metadata_type,
             nullable=True,
         ),
     )

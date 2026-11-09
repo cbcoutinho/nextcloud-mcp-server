@@ -202,7 +202,7 @@ async def test_gateway_detect_dimension_ignores_catalogue_when_truncating(mocker
         embedding_model="openrouter/openai/text-embedding-3-small",
         embedding_dimensions=_TRUNCATED,
     )
-    catalogue = mocker.patch("httpx.AsyncClient.get")
+    catalogue = mocker.patch("httpx2.AsyncClient.get")
     # Patch the wire, not ``embed`` — the width is recorded by embed() itself,
     # so mocking that away would test nothing.
     provider.client.embeddings.create = AsyncMock(

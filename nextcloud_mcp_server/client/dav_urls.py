@@ -8,7 +8,7 @@ verbatim unless something encodes them.
 
 Two transports, two different ways that hurts:
 
-* **httpx** (Notes, WebDAV, Contacts) parses an unencoded ``#`` as a URL
+* **httpx2** (Notes, WebDAV, Contacts) parses an unencoded ``#`` as a URL
   fragment and silently truncates the request path -> spurious 404 on an
   otherwise-valid file (PR #891, e.g. filenames with ``#``, commas, or
   double/trailing spaces).

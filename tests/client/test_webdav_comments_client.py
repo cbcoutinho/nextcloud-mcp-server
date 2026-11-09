@@ -6,7 +6,7 @@ reads its result out of a response *header*. Both are pinned here.
 """
 
 import pytest
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from nextcloud_mcp_server.client.webdav import WebDAVClient
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def webdav_client(mocker):
-    """WebDAVClient with a mocked underlying httpx client."""
+    """WebDAVClient with a mocked underlying httpx2 client."""
     return WebDAVClient(mocker.AsyncMock(spec=AsyncClient), "testuser")
 
 
@@ -86,9 +86,6 @@ async def test_list_comments_request_and_parsing(webdav_client, mocker):
     headers = make_request.call_args.kwargs["headers"]
     assert headers["Depth"] == "0"
     assert headers["Content-Type"] == "text/xml"
-    # Sent on every WebDAV request in this client; a reverse proxy may enforce
-    # it as a CSRF guard even where the dev stack does not.
-    assert headers["OCS-APIRequest"] == "true"
 
     assert [c["id"] for c in comments] == [7, 6]
     assert comments[0] == {
@@ -154,7 +151,6 @@ async def test_create_comment_payload_and_id(webdav_client, mocker):
         "verb": "comment",
         "message": 'ping @"alice"',
     }
-    assert make_request.call_args.kwargs["headers"]["OCS-APIRequest"] == "true"
 
 
 async def test_create_comment_without_content_location(webdav_client, mocker):

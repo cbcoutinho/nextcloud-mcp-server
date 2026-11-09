@@ -96,7 +96,9 @@ class DocumentProcessor(ABC):
         pass
 
     @abstractmethod
-    async def fetch_document(self, doc_task: DocumentTask, nc_client: NextcloudClient) -> dict:
+    async def fetch_document(
+        self, doc_task: DocumentTask, nc_client: NextcloudClient
+    ) -> dict:
         """Fetch full document from Nextcloud."""
         pass
 
@@ -155,7 +157,9 @@ The task queue is implemented using Python's built-in `asyncio.Queue`, which pro
 class DocumentTask:
     user_id: str
     doc_id: str
-    doc_type: str  # "note", "calendar_event", "calendar_todo", "deck_card", "file", "contact"
+    doc_type: (
+        str  # "note", "calendar_event", "calendar_todo", "deck_card", "file", "contact"
+    )
     operation: str  # "index" or "delete"
     modified_at: int
 ```
@@ -178,10 +182,7 @@ async def processor_task(worker_id: int, ctx: LifespanContext):
     while not ctx.shutdown_event.is_set():
         try:
             # Get document with timeout (allows checking shutdown periodically)
-            doc_task = await asyncio.wait_for(
-                ctx.document_queue.get(),
-                timeout=1.0
-            )
+            doc_task = await asyncio.wait_for(ctx.document_queue.get(), timeout=1.0)
 
             # Process document (I/O bound - embedding API calls)
             await process_document(doc_task, ctx)
@@ -262,7 +263,7 @@ async def enable_vector_sync(ctx: Context) -> dict:
         return {
             "status": "error",
             "message": "You must provision offline access first. "
-                       "Run the 'provision_nextcloud_access' tool."
+            "Run the 'provision_nextcloud_access' tool.",
         }
 
     # Enable in settings
@@ -272,13 +273,13 @@ async def enable_vector_sync(ctx: Context) -> dict:
     # Trigger immediate scan by waking up scanner
     # (scanner will detect new enabled user on next iteration)
     lifespan_ctx = ctx.request_context.lifespan_context
-    if hasattr(lifespan_ctx, 'scanner_wake_event'):
+    if hasattr(lifespan_ctx, "scanner_wake_event"):
         lifespan_ctx.scanner_wake_event.set()
 
     return {
         "status": "enabled",
         "message": "Vector sync enabled. Initial indexing will begin shortly.",
-        "note": "You can check progress with get_vector_sync_status()"
+        "note": "You can check progress with get_vector_sync_status()",
     }
 
 
@@ -306,18 +307,13 @@ async def disable_vector_sync(ctx: Context) -> dict:
     await qdrant_client.delete(
         collection_name="nextcloud_content",
         points_selector=Filter(
-            must=[
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(value=user_id)
-                )
-            ]
-        )
+            must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
+        ),
     )
 
     return {
         "status": "disabled",
-        "message": "Vector sync disabled. All indexed content removed."
+        "message": "Vector sync disabled. All indexed content removed.",
     }
 
 
@@ -342,7 +338,7 @@ async def get_vector_sync_status(ctx: Context) -> dict:
     if not settings or not settings.enabled:
         return {
             "enabled": False,
-            "message": "Vector sync is not enabled for this user."
+            "message": "Vector sync is not enabled for this user.",
         }
 
     # Get indexed count from Qdrant
@@ -350,19 +346,14 @@ async def get_vector_sync_status(ctx: Context) -> dict:
     count = await qdrant_client.count(
         collection_name="nextcloud_content",
         count_filter=Filter(
-            must=[
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(value=user_id)
-                )
-            ]
-        )
+            must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
+        ),
     )
 
     # Get pending queue size from in-memory queue
     lifespan_ctx = ctx.request_context.lifespan_context
     pending_count = 0
-    if hasattr(lifespan_ctx, 'document_queue'):
+    if hasattr(lifespan_ctx, "document_queue"):
         pending_count = lifespan_ctx.document_queue.qsize()
 
     status = "syncing" if pending_count > 0 else "idle"
@@ -373,7 +364,7 @@ async def get_vector_sync_status(ctx: Context) -> dict:
         "pending_count": pending_count,
         "status": status,
         "message": f"{count.count} documents indexed, Status: {status.title()}"
-                  + (f" ({pending_count} pending)" if pending_count > 0 else "")
+        + (f" ({pending_count} pending)" if pending_count > 0 else ""),
     }
 ```
 
@@ -403,6 +394,7 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("Nextcloud")
 
+
 @asynccontextmanager
 async def lifespan(app):
     """
@@ -427,21 +419,11 @@ async def lifespan(app):
 
     async with anyio.create_task_group() as tg:
         # Start scanner task
-        tg.start_soon(
-            scanner_task,
-            document_queue,
-            shutdown_event,
-            scanner_wake_event
-        )
+        tg.start_soon(scanner_task, document_queue, shutdown_event, scanner_wake_event)
 
         # Start processor pool (3 concurrent workers)
         for i in range(settings.vector_sync_processor_workers):
-            tg.start_soon(
-                processor_task,
-                i,
-                document_queue,
-                shutdown_event
-            )
+            tg.start_soon(processor_task, i, document_queue, shutdown_event)
 
         logger.info("Background sync tasks started")
 
@@ -454,6 +436,7 @@ async def lifespan(app):
         # TaskGroup automatically cancels all tasks on exit
         logger.info("Background sync tasks stopped")
 
+
 # Register lifespan
 mcp.app.router.lifespan_context = lifespan
 ```
@@ -464,9 +447,7 @@ The scanner runs in an infinite loop with periodic sleep intervals:
 
 ```python
 async def scanner_task(
-    document_queue: asyncio.Queue,
-    shutdown_event: anyio.Event,
-    wake_event: anyio.Event
+    document_queue: asyncio.Queue, shutdown_event: anyio.Event, wake_event: anyio.Event
 ):
     """
     Periodic scanner that detects changed documents for all enabled users.
@@ -493,6 +474,7 @@ async def scanner_task(
             with anyio.move_on_after(settings.vector_sync_scan_interval):
                 # Wait for wake event or shutdown
                 async with anyio.create_task_group() as tg:
+
                     async def wait_wake():
                         await wake_event.wait()
                         wake_event.clear()
@@ -525,16 +507,11 @@ async def scan_all_enabled_users(document_queue: asyncio.Queue):
             await scan_user_documents(user.user_id, document_queue)
         except Exception as e:
             logger.error(f"Failed to scan user {user.user_id}: {e}")
-            await settings_repo.update(
-                user_id=user.user_id,
-                last_sync_status="error"
-            )
+            await settings_repo.update(user_id=user.user_id, last_sync_status="error")
 
 
 async def scan_user_documents(
-    user_id: str,
-    document_queue: asyncio.Queue,
-    initial_sync: bool = False
+    user_id: str, document_queue: asyncio.Queue, initial_sync: bool = False
 ):
     """
     Scan a single user's documents and queue changes.
@@ -552,19 +529,20 @@ async def scan_user_documents(
 
     idp_client = get_idp_client()
     access_token_response = await idp_client.refresh_token(
-        refresh_token=refresh_token.token,
-        audience='nextcloud'
+        refresh_token=refresh_token.token, audience="nextcloud"
     )
 
     client = NextcloudClient.from_token(
         base_url=settings.nextcloud_host,
         token=access_token_response.access_token,
-        username=user_id
+        username=user_id,
     )
 
     # Get list of enabled apps for this user from database
     # Users configure this via nc_enable_vector_sync tool
-    enabled_apps = await get_enabled_apps_for_user(user_id)  # ["note", "calendar_event", "deck_card", ...]
+    enabled_apps = await get_enabled_apps_for_user(
+        user_id
+    )  # ["note", "calendar_event", "deck_card", ...]
 
     queued = 0
 
@@ -587,7 +565,7 @@ async def scan_user_documents(
                         doc_id=scanner.extract_doc_id(doc),
                         doc_type=doc_type,
                         operation="index",
-                        modified_at=scanner.extract_modified_at(doc)
+                        modified_at=scanner.extract_modified_at(doc),
                     )
                 )
                 queued += 1
@@ -600,12 +578,12 @@ async def scan_user_documents(
             scroll_filter=Filter(
                 must=[
                     FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
                 ]
             ),
             with_payload=["doc_id", "indexed_at"],
             with_vectors=False,
-            limit=10000
+            limit=10000,
         )
 
         indexed_docs = {
@@ -626,7 +604,7 @@ async def scan_user_documents(
                         doc_id=doc_id,
                         doc_type=doc_type,
                         operation="index",
-                        modified_at=scanner.extract_modified_at(doc)
+                        modified_at=scanner.extract_modified_at(doc),
                     )
                 )
                 queued += 1
@@ -641,7 +619,7 @@ async def scan_user_documents(
                         doc_id=doc_id,
                         doc_type=doc_type,
                         operation="delete",
-                        modified_at=0
+                        modified_at=0,
                     )
                 )
                 queued += 1
@@ -656,7 +634,7 @@ async def scan_user_documents(
     await settings_repo.update(
         user_id=user_id,
         last_scan_at=int(time.time()),
-        last_sync_status="idle" if queued == 0 else "syncing"
+        last_sync_status="idle" if queued == 0 else "syncing",
     )
 ```
 
@@ -666,9 +644,7 @@ Multiple processor tasks run concurrently, each pulling from the shared queue:
 
 ```python
 async def processor_task(
-    worker_id: int,
-    document_queue: asyncio.Queue,
-    shutdown_event: anyio.Event
+    worker_id: int, document_queue: asyncio.Queue, shutdown_event: anyio.Event
 ):
     """
     Process documents from queue concurrently.
@@ -688,10 +664,7 @@ async def processor_task(
     while not shutdown_event.is_set():
         try:
             # Get document with timeout (allows checking shutdown)
-            doc_task = await asyncio.wait_for(
-                document_queue.get(),
-                timeout=1.0
-            )
+            doc_task = await asyncio.wait_for(document_queue.get(), timeout=1.0)
 
             # Process document
             await process_document(doc_task)
@@ -707,7 +680,7 @@ async def processor_task(
             logger.error(
                 f"Processor {worker_id} error processing "
                 f"{doc_task.doc_type}_{doc_task.doc_id}: {e}",
-                exc_info=True
+                exc_info=True,
             )
             # Mark task done even on error to prevent queue blocking
             try:
@@ -738,23 +711,19 @@ async def process_document(doc_task: DocumentTask):
             points_selector=Filter(
                 must=[
                     FieldCondition(
-                        key="user_id",
-                        match=MatchValue(value=doc_task.user_id)
+                        key="user_id", match=MatchValue(value=doc_task.user_id)
                     ),
                     FieldCondition(
-                        key="doc_id",
-                        match=MatchValue(value=doc_task.doc_id)
+                        key="doc_id", match=MatchValue(value=doc_task.doc_id)
                     ),
                     FieldCondition(
-                        key="doc_type",
-                        match=MatchValue(value=doc_task.doc_type)
-                    )
+                        key="doc_type", match=MatchValue(value=doc_task.doc_type)
+                    ),
                 ]
-            )
+            ),
         )
         logger.info(
-            f"Deleted {doc_task.doc_type}_{doc_task.doc_id} "
-            f"for {doc_task.user_id}"
+            f"Deleted {doc_task.doc_type}_{doc_task.doc_id} for {doc_task.user_id}"
         )
         return
 
@@ -794,14 +763,13 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
 
     idp_client = get_idp_client()
     access_token_response = await idp_client.refresh_token(
-        refresh_token=refresh_token.token,
-        audience='nextcloud'
+        refresh_token=refresh_token.token, audience="nextcloud"
     )
 
     client = NextcloudClient.from_token(
         base_url=settings.nextcloud_host,
         token=access_token_response.access_token,
-        username=doc_task.user_id
+        username=doc_task.user_id,
     )
 
     # Get processor for this document type
@@ -843,16 +811,14 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
                     "chunk_index": i,
                     "total_chunks": len(chunks),
                     # App-specific metadata (e.g., category for notes, location for calendar)
-                    "metadata": metadata
-                }
+                    "metadata": metadata,
+                },
             )
         )
 
     # Upsert to Qdrant
     await qdrant_client.upsert(
-        collection_name="nextcloud_content",
-        points=points,
-        wait=True
+        collection_name="nextcloud_content", points=points, wait=True
     )
 
     logger.info(

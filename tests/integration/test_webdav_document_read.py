@@ -177,3 +177,120 @@ async def test_raw_read_is_linked_too(
 
     file_id = await nc_client.webdav.get_fileid(text_layer_pdf)
     assert result["url"].endswith(f"/index.php/f/{file_id}")
+
+
+@pytest.fixture
+async def three_page_pdf(nc_client: NextcloudClient, test_base_path: str):
+    """A born-digital PDF whose pages carry distinct markers (Deck #1337)."""
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    for page in (1, 2, 3):
+        c.drawString(72, 750, f"Chapter {page} PageMarker{page}")
+        for offset, line in enumerate(_BODY, start=1):
+            c.drawString(72, 750 - offset * 20, line)
+        c.showPage()
+    c.save()
+
+    path = f"{test_base_path}/chapters.pdf"
+    await nc_client.webdav.write_file(
+        path, buffer.getvalue(), content_type="application/pdf"
+    )
+    return path
+
+
+@pytest.mark.parametrize("parse_document", ["auto", "markdown"])
+async def test_page_range_returns_only_those_pages(
+    nc_mcp_client: ClientSession, three_page_pdf: str, parse_document: str
+):
+    """Only the requested page comes back, numbered as in the original document.
+
+    The markdown case drives the structured tier, i.e. the one-shot parse
+    subprocess, inside the real MCP container.
+    """
+    result = await _read(
+        nc_mcp_client,
+        three_page_pdf,
+        parse_document=parse_document,
+        page_start=2,
+        page_end=2,
+    )
+
+    assert result["parse_status"] == "parsed"
+    assert "PageMarker2" in result["content"]
+    assert "PageMarker1" not in result["content"]
+    assert "PageMarker3" not in result["content"]
+    assert (result["page_count"], result["page_start"], result["page_end"]) == (3, 2, 2)
+    pages = [b["page"] for b in result["parsing_metadata"]["page_boundaries"]]
+    assert pages == [2]
+
+
+async def test_whole_read_reports_the_page_count(
+    nc_mcp_client: ClientSession, three_page_pdf: str
+):
+    result = await _read(nc_mcp_client, three_page_pdf)
+
+    assert result["page_count"] == 3
+    assert result["page_start"] is None
+    assert all(f"PageMarker{n}" in result["content"] for n in (1, 2, 3))
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+async def test_docx_reads_as_markdown_without_an_optional_processor(
+    nc_client: NextcloudClient, nc_mcp_client: ClientSession, test_base_path: str
+):
+    """The native reader (ADR-038) needs no unstructured service. A picture is
+    counted even with captioning off, and the response says so."""
+    from docx import Document  # noqa: PLC0415
+    from docx.shared import Inches  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415
+
+    doc = Document()
+    doc.add_heading(f"Report {MARKER}", level=1)
+    table = doc.add_table(rows=2, cols=2)
+    for r, row in enumerate([["Quarter", "Revenue"], ["Q1", "42"]]):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+    image = BytesIO()
+    Image.new("RGB", (120, 120), (200, 50, 50)).save(image, "PNG")
+    doc.add_picture(BytesIO(image.getvalue()), width=Inches(1))
+    buffer = BytesIO()
+    doc.save(buffer)
+    path = f"{test_base_path}/document.docx"
+    await nc_client.webdav.write_file(path, buffer.getvalue(), content_type=DOCX_MIME)
+
+    result = await _read(nc_mcp_client, path)
+
+    assert result["parse_status"] == "parsed"
+    assert f"# Report {MARKER}" in result["content"]
+    assert "| Q1 | 42 |" in result["content"]
+    assert any("1 picture(s)" in note for note in result["parse_notes"])
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+async def test_xlsx_reads_as_markdown_tables_without_an_optional_processor(
+    nc_client: NextcloudClient, nc_mcp_client: ClientSession, test_base_path: str
+):
+    """The native reader (ADR-038) renders one markdown table per sheet."""
+    from openpyxl import Workbook  # noqa: PLC0415
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Revenue"
+    ws.append(["Quarter", MARKER])
+    ws.append(["Q1", 42])
+    buffer = BytesIO()
+    wb.save(buffer)
+    path = f"{test_base_path}/workbook.xlsx"
+    await nc_client.webdav.write_file(path, buffer.getvalue(), content_type=XLSX_MIME)
+
+    result = await _read(nc_mcp_client, path)
+
+    assert result["parse_status"] == "parsed"
+    assert "## Sheet: Revenue" in result["content"]
+    assert f"| Quarter | {MARKER} |" in result["content"]
+    assert "| Q1 | 42 |" in result["content"]
+    assert result["parse_notes"] == []

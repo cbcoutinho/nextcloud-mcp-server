@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
 
+async def _skip_unless_threads_supported(nc_client: NextcloudClient) -> None:
+    """Skip when this Nextcloud instance's spreed app doesn't advertise threads."""
+    payload = await nc_client.capabilities()
+    features = (
+        payload.get("ocs", {})
+        .get("data", {})
+        .get("capabilities", {})
+        .get("spreed", {})
+        .get("features", [])
+    )
+    if "threads" not in features:
+        pytest.skip("Nextcloud Talk instance does not advertise 'threads'")
+
+
 EXPECTED_TALK_TOOLS = {
     "talk_list_conversations",
     "talk_get_conversation",
@@ -90,6 +104,135 @@ async def test_talk_send_and_read_workflow(
     assert mark_payload["success"] is True
     assert mark_payload["conversation_token"] == token
     assert mark_payload["last_read_message"] == posted_id
+
+
+async def test_talk_send_message_thread_title_creates_real_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """A thread_title with no reply_to starts a new, real Talk thread."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Kickoff", "thread_title": "Budget Q3 review"},
+    )
+    assert result.is_error is False, result.content[0].text
+    posted = json.loads(result.content[0].text)["message"]
+    assert posted["isThread"] is True
+    assert posted["threadId"] == posted["id"]
+
+
+async def test_talk_send_message_thread_id_posts_into_existing_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """A thread_id posts a follow-up message inside that thread."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    root = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Root", "thread_title": "Follow-up thread"},
+    )
+    thread_id = json.loads(root.content[0].text)["message"]["threadId"]
+
+    reply = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "Reply inside thread", "thread_id": thread_id},
+    )
+    assert reply.is_error is False, reply.content[0].text
+    reply_payload = json.loads(reply.content[0].text)["message"]
+    assert reply_payload["threadId"] == thread_id
+
+
+async def test_talk_get_messages_thread_id_reads_only_that_thread(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """thread_id returns the thread's root and replies, nothing else."""
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    async def send(arguments: dict) -> dict:
+        result = await nc_mcp_client.call_tool(
+            "talk_send_message", {"token": token, **arguments}
+        )
+        assert result.is_error is False, result.content[0].text
+        return json.loads(result.content[0].text)["message"]
+
+    root_a = await send({"message": "Root A", "thread_title": "Thread A"})
+    root_b = await send({"message": "Root B", "thread_title": "Thread B"})
+    reply_a = await send({"message": "Reply A", "thread_id": root_a["threadId"]})
+    await send({"message": "Reply B", "thread_id": root_b["threadId"]})
+    await send({"message": "Outside any thread"})
+
+    result = await nc_mcp_client.call_tool(
+        "talk_get_messages",
+        {"token": token, "limit": 50, "thread_id": root_a["threadId"]},
+    )
+    assert result.is_error is False, result.content[0].text
+    messages = json.loads(result.content[0].text)["results"]
+
+    assert all(m["threadId"] == root_a["threadId"] for m in messages)
+    comment_ids = {m["id"] for m in messages if m["messageType"] == "comment"}
+    assert comment_ids == {root_a["id"], reply_a["id"]}
+
+
+async def test_talk_get_messages_unknown_thread_id(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_conversation: dict,
+):
+    """An unknown thread_id is reported as not found, not a bare HTTP error.
+
+    Talk 22 (nc32) advertises "threads" but has no thread 404 in
+    receiveMessages -- it answers with an empty page instead.
+    """
+    await _skip_unless_threads_supported(nc_client)
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_get_messages", {"token": token, "thread_id": 999999999}
+    )
+    if result.is_error:
+        assert "not found" in result.content[0].text.lower()
+    else:
+        assert json.loads(result.content[0].text)["results"] == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_snippet"),
+    [
+        ({"thread_id": 1, "thread_title": "x"}, "mutually exclusive"),
+        ({"thread_title": "x", "reply_to": 1}, "mutually exclusive"),
+        ({"thread_title": "   "}, "whitespace"),
+    ],
+    ids=["thread_id-and-title", "title-and-reply_to", "blank-title"],
+)
+async def test_talk_send_message_thread_param_validation(
+    nc_mcp_client: ClientSession,
+    temporary_conversation: dict,
+    arguments: dict,
+    expected_snippet: str,
+):
+    """Contradictory or blank thread parameters are rejected client-side.
+
+    These never reach the network, so they don't need the threads-capability
+    skip: the ToolError fires before any request is built.
+    """
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "irrelevant", **arguments},
+    )
+    assert result.is_error is True
+    assert expected_snippet in result.content[0].text.lower()
 
 
 async def test_talk_list_conversations_includes_temp_room(
