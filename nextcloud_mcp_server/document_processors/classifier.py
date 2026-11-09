@@ -75,13 +75,21 @@ _WORD_RE = re.compile(r"\S+")
 #     HTML tags (``<br>``, ``<u>``) and table pipes, all emitted by the
 #     structured tier's markdown. The image path embeds the document name, so
 #     it may itself hold ")" (``report (1).pdf``): the reference ends at the
-#     first ")" followed by whitespace or end of text.
+#     first ")" followed by whitespace or end of text. Alt text and path are
+#     length-capped: page text is untrusted, and an uncapped pattern makes a
+#     line of unclosed "![](" quadratic on the event loop.
+#   * anything in angle brackets that looks like a tag (``<br>``, ``</u>``,
+#     and a ``<name>`` placeholder too -- harmless, it only shortens tokens).
 # Emphasis/heading markers (``**_Appendix_**``, ``# Title``) are then dropped
 # outright, since they are glued to the word they decorate. That deliberately
 # also flattens identifiers (``snake_case`` -> ``snakecase``); it can only
 # shorten a token. Mashed junk is letters/digits, so none of this hides a junk
 # layer.
-_LAYOUT_RE = re.compile(r"([.·…_\-–—])\1{3,}|!\[[^\]]*\]\(.*?\)(?=\s|$)|</?\w+/?>|\|")
+_LAYOUT_RE = re.compile(
+    r"([.·…_\-–—])\1{3,}"
+    r"|!\[[^\]\n]{0,512}\]\(.{0,512}?\)(?=\s|$)"
+    r"|</?\w+/?>|\|"
+)
 _EMPHASIS_RE = re.compile(r"[*_#`]+")
 
 # Whitespace control characters that legitimately appear in extracted text

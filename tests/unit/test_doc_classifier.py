@@ -10,6 +10,8 @@ extraction tier a PDF starts in:
   * the text-quality score distinguishes clean prose from mashed/space-less junk.
 """
 
+import time
+
 import pymupdf
 import pytest
 
@@ -95,6 +97,15 @@ def test_text_quality_ignores_markdown_markup():
     )
     assert clf._text_quality(plain) == pytest.approx(1.0)
     assert clf._text_quality(markdown) == pytest.approx(1.0)
+
+
+def test_text_quality_unclosed_image_references_stay_linear():
+    # Untrusted page text: a long line of unclosed "![](" must neither raise nor
+    # go quadratic (uncapped this line takes ~45s; capped ~0.2s).
+    line = "![](/tmp/pdf-images/a " * 20_000
+    started = time.perf_counter()
+    assert 0.0 <= clf._text_quality(line) <= 1.0
+    assert time.perf_counter() - started < 5.0
 
 
 def test_text_quality_markup_does_not_mask_junk():
