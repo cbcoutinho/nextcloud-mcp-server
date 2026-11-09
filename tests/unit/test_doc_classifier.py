@@ -71,6 +71,21 @@ def test_text_quality_mashed_tokens_scores_low():
     assert clf._text_quality(mashed) < clf.MIN_TEXT_QUALITY
 
 
+def test_text_quality_ignores_toc_leaders():
+    # GH #1802: each leader run is one >20-char token, which zeroed the score of
+    # every table-of-contents page and sent page-range reads to paid OCR.
+    toc = "".join(
+        f"Chapter {i} Getting started {leader * 70} {i}\n"
+        for i, leader in enumerate(".·…_-–—" * 3, start=1)
+    )
+    assert clf._text_quality(toc) == pytest.approx(1.0)
+
+
+def test_text_quality_leaders_do_not_mask_junk():
+    mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
+    assert clf._text_quality(f"{mashed} {'.' * 40} 3") < clf.MIN_TEXT_QUALITY
+
+
 def test_text_quality_empty_is_zero():
     assert clf._text_quality("") == pytest.approx(0.0)
 

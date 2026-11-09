@@ -794,6 +794,20 @@ class ProcessorRegistry:
                 exc_info=True,
             )
             return None
+        if classification.recommended_tier != "fast":
+            # The scores behind an escalation verdict; without them a
+            # "reason=low_confidence" log can't be diagnosed (GH #1802).
+            logger.info(
+                "Classified %s as %s: mean_text_quality=%s ocr_page_fraction=%s "
+                "mean_control_ratio=%s flags=%s pages=%s",
+                filename or "<bytes>",
+                classification.recommended_tier,
+                classification.mean_text_quality,
+                classification.ocr_page_fraction,
+                classification.mean_control_ratio,
+                sorted(classification.flags),
+                classification.page_count,
+            )
         if record:
             record_document_classification(
                 classification.recommended_tier,
