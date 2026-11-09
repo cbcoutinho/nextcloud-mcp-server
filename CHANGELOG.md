@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.207.3 (2026-11-09)
+
+### Fix
+
+- **mail**: type recipients as list[MailRecipient] only and validate addresses
+- **mail**: accept recipient arrays in send_message and save_draft
+
 ## v0.207.2 (2026-11-09)
 
 ### Fix
