@@ -630,7 +630,8 @@ def test_gate_runs_markdown_at_or_below_ceiling(tmp_path):
 def test_worker_disables_pymupdf4llm_layout_mode(tmp_path):
     """The worker must stay on the classic (pymupdf_rag) extractor.
 
-    pymupdf4llm >= 1.27.2.1 enables an ONNX layout model on import. Under this
+    pymupdf4llm >= 1.27.2.1 enables an ONNX layout model by default (loaded at
+    import in 1.x, on the first to_markdown since 2.0). Under this
     worker's RLIMIT_AS cap onnxruntime cannot reserve its address space and
     aborts mid-inference ("Missing Input: image_features"), failing the parse
     outright -- content-dependently, so some PDFs pass and others do not. It
@@ -843,11 +844,12 @@ def test_ingest_import_graph_does_not_load_pymupdf4llm():
     """Nothing on the ingest path may import pymupdf4llm at module scope.
 
     ``anyio.to_process`` re-imports the parent's ``__main__`` inside every parse
-    worker before the worker function runs, so a module-level import anywhere in
-    that graph loads ``pymupdf.layout`` (~1.1 GiB of address space) into the
-    child. Under the 1536 MiB RLIMIT_AS that left ~117 MiB to parse in, and
-    healthy documents were dead-lettered (Deck #911). The worker's own
-    ``sys.modules`` guard cannot help -- by then the import already happened.
+    worker before the worker function runs. Under pymupdf 1.x a module-level
+    import anywhere in that graph loaded ``pymupdf.layout`` (~1.1 GiB of address
+    space) into the child; under the 1536 MiB RLIMIT_AS that left ~117 MiB to
+    parse in, and healthy documents were dead-lettered (Deck #911). 2.x defers
+    the model to ``to_markdown``, but the import still prints a banner on the
+    worker's IPC stdout and bypasses ``load_classic_pymupdf4llm``.
     """
     result = subprocess.run(
         [
