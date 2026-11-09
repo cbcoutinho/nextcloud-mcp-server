@@ -68,7 +68,9 @@ _WORD_RE = re.compile(r"\S+")
 # Table-of-contents leaders ("Getting started ........ 5"): a run of one
 # repeated filler char. Each run is a single >20-char token that would zero the
 # overlong/merge scores of an otherwise clean page (GH #1802), so runs are
-# replaced by a space before scoring. Mashed junk is letters/digits, so this
+# replaced by a space before scoring (which also nudges whitespace_ratio up, as
+# intended). Markdown table rules (|-----|) and signature lines (_____) are
+# stripped too, for the same reason. Mashed junk is letters/digits, so this
 # never hides a junk layer.
 _LEADER_RE = re.compile(r"([.·…_\-–—])\1{3,}")
 
