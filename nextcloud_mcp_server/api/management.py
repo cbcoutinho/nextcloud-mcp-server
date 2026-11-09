@@ -39,7 +39,8 @@ _server_start_time = time.time()
 
 # The search algorithms astrolabe's McpServerClient understands (the ``algorithm``
 # request param to /api/v1/search and /api/v1/vector-viz/search): ``semantic``
-# (dense only), ``bm25``, ``hybrid``.
+# (dense only), ``bm25``, ``hybrid``, and ``exact`` (every document containing
+# the query as a phrase, unranked; see search/exact.py).
 # Single source of truth, also consumed by api/visualization.py for validation.
 #
 # CAVEAT — ``bm25`` and ``hybrid`` are currently BEHAVIOURALLY IDENTICAL. Both are
@@ -55,7 +56,7 @@ _server_start_time = time.time()
 # fused score, bounded by ``2/VECTOR_SEARCH_RRF_K``, or an unbounded DBSF score.
 # Either giving ``bm25`` a genuinely sparse-only path or dropping it from the
 # advertised set is a behaviour change and is tracked on Deck #958, not here.
-SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid")
+SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid", "exact")
 
 
 def supported_search_types(settings: Settings) -> list[str]:
@@ -65,10 +66,11 @@ def supported_search_types(settings: Settings) -> list[str]:
     it offers:
 
     - vector sync disabled → ``[]`` (no Qdrant-backed search at all)
-    - vector sync enabled  → all three (``semantic``, ``bm25``, ``hybrid``). The
-      collection is always dense-capable; keyword-only documents
-      (``keyword-index`` tag) simply contribute to ``bm25``/``hybrid`` via their
-      sparse vector.
+    - vector sync enabled  → all four (``semantic``, ``bm25``, ``hybrid``,
+      ``exact``). The collection is always dense-capable; keyword-only
+      documents (``keyword-index`` tag) simply contribute to ``bm25``/``hybrid``
+      via their sparse vector. ``exact`` is a different mechanism: a filtered
+      scroll over chunk text, needing no vectors at all.
 
     Order follows ``SUPPORTED_SEARCH_ALGORITHMS`` for a stable contract.
     """

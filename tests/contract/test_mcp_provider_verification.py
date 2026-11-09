@@ -85,7 +85,7 @@ def _state_admin_can_purge() -> None:
 
 def _state_search_mode_hybrid() -> None:
     """Provider state for astrolabe's status pact when it expects the full search
-    advertisement (``supported_search_types == ["semantic", "bm25", "hybrid"]``).
+    advertisement (``supported_search_types == ["semantic", "bm25", "hybrid", "exact"]``).
 
     The integration stack runs with vector sync enabled, so the running server
     already advertises all three types — no setup needed. Registered (not relying

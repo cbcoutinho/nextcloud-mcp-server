@@ -129,6 +129,49 @@ def test_index_mode_indexed_as_keyword():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_excerpt_index(request, mocker):
+    """The _ensure_payload_indexes tests count _PAYLOAD_INDEX_FIELDS; the
+    settings-gated excerpt index has its own tests below."""
+    if request.node.name.startswith("test_ensure_payload_indexes"):
+        mocker.patch.object(
+            qdrant_module,
+            "get_settings",
+            return_value=SimpleNamespace(exact_match_index_enabled=False),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_excerpt_phrase_index_follows_its_setting(mocker, enabled):
+    """algorithm="exact" filters chunk text by phrase, which needs a TEXT
+    index with phrase matching. Not awaited: a large collection must not hold
+    up startup while Qdrant builds it."""
+    mocker.patch.object(
+        qdrant_module,
+        "get_settings",
+        return_value=SimpleNamespace(exact_match_index_enabled=enabled),
+    )
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = _empty_collection_info()
+
+    await _ensure_payload_indexes(client, "test-collection")
+
+    excerpt = [
+        c
+        for c in client.create_payload_index.await_args_list
+        if c.kwargs["field_name"] == "excerpt"
+    ]
+    if not enabled:
+        assert excerpt == []
+        return
+    [created] = excerpt
+    assert created.kwargs["wait"] is False
+    params = created.kwargs["field_schema"]
+    assert params.phrase_matching is True
+    assert params.lowercase is True
+
+
 @pytest.mark.unit
 async def test_ensure_payload_indexes_creates_each_field(mocker):
     """Happy path: every field in _PAYLOAD_INDEX_FIELDS gets its declared schema.
@@ -209,6 +252,38 @@ async def test_ensure_payload_indexes_skips_fields_already_indexed(mocker, caplo
     # No INFO log fires for the already-indexed field.
     info_messages = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert not any("doc_id" in m for m in info_messages), info_messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phrase_matching", [True, False])
+async def test_excerpt_index_without_phrase_matching_is_reported(
+    mocker, caplog, phrase_matching
+):
+    """A TEXT index on excerpt built without phrase matching has the right
+    type, but MatchPhrase cannot use it: say so, don't keep it silently."""
+    mocker.patch.object(
+        qdrant_module,
+        "get_settings",
+        return_value=SimpleNamespace(exact_match_index_enabled=True),
+    )
+    existing = SimpleNamespace(
+        data_type=PayloadSchemaType.TEXT,
+        params=SimpleNamespace(phrase_matching=phrase_matching),
+    )
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = SimpleNamespace(
+        payload_schema={"excerpt": existing}
+    )
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_payload_indexes(client, "test-collection")
+
+    created = {
+        c.kwargs["field_name"] for c in client.create_payload_index.await_args_list
+    }
+    assert "excerpt" not in created
+    warned = any("no phrase matching" in r.getMessage() for r in caplog.records)
+    assert warned is not phrase_matching
 
 
 @pytest.mark.unit
