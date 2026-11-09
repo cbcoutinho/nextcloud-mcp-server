@@ -88,6 +88,29 @@ class _LadderState:
         self.classification = classify(result, False)
 
 
+def _log_escalation_verdict(
+    classification: DocClassification, filename: str | None
+) -> None:
+    """Log the scores behind a non-``fast`` verdict.
+
+    Without them a ``reason=low_confidence`` escalation can't be diagnosed from
+    the logs (GH #1802).
+    """
+    if classification.recommended_tier == "fast":
+        return
+    logger.info(
+        "Classified %s as %s: mean_text_quality=%s ocr_page_fraction=%s "
+        "mean_control_ratio=%s flags=%s pages=%s",
+        filename or "<bytes>",
+        classification.recommended_tier,
+        classification.mean_text_quality,
+        classification.ocr_page_fraction,
+        classification.mean_control_ratio,
+        sorted(classification.flags),
+        classification.page_count,
+    )
+
+
 class ProcessorRegistry:
     """Central registry for document processors.
 
@@ -794,20 +817,7 @@ class ProcessorRegistry:
                 exc_info=True,
             )
             return None
-        if classification.recommended_tier != "fast":
-            # The scores behind an escalation verdict; without them a
-            # "reason=low_confidence" log can't be diagnosed (GH #1802).
-            logger.info(
-                "Classified %s as %s: mean_text_quality=%s ocr_page_fraction=%s "
-                "mean_control_ratio=%s flags=%s pages=%s",
-                filename or "<bytes>",
-                classification.recommended_tier,
-                classification.mean_text_quality,
-                classification.ocr_page_fraction,
-                classification.mean_control_ratio,
-                sorted(classification.flags),
-                classification.page_count,
-            )
+        _log_escalation_verdict(classification, filename)
         if record:
             record_document_classification(
                 classification.recommended_tier,
