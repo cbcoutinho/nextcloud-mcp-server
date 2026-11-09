@@ -71,6 +71,35 @@ def test_text_quality_mashed_tokens_scores_low():
     assert clf._text_quality(mashed) < clf.MIN_TEXT_QUALITY
 
 
+def test_text_quality_ignores_toc_leaders():
+    # GH #1802: each leader run is one >20-char token, which zeroed the score of
+    # every table-of-contents page and sent page-range reads to paid OCR.
+    toc = "".join(
+        f"Chapter {i} Getting started {leader * 70} {i}\n"
+        for i, leader in enumerate(".·…_-–—" * 3, start=1)
+    )
+    assert clf._text_quality(toc) == pytest.approx(1.0)
+
+
+def test_toc_pages_in_a_short_range_stay_fast():
+    # GH #1802 end to end: 2 TOC pages out of 4 used to hit page_fraction=0.5.
+    toc = "".join(f"Chapter {i} Getting started {'.' * 70} {i}\n" for i in range(24))
+    prose = "This page is ordinary prose with normal words and spacing. " * 20
+    pages = [toc, prose, toc, prose]
+    bounds, off = [], 0
+    for i, p in enumerate(pages):
+        bounds.append({"page": i, "start_offset": off, "end_offset": off + len(p)})
+        off += len(p)
+    c = clf.classify_from_text("".join(pages), bounds)
+    assert c.recommended_tier == "fast"
+    assert c.ocr_page_fraction == pytest.approx(0.0)
+
+
+def test_text_quality_leaders_do_not_mask_junk():
+    mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
+    assert clf._text_quality(f"{mashed} {'.' * 40} 3") < clf.MIN_TEXT_QUALITY
+
+
 def test_text_quality_empty_is_zero():
     assert clf._text_quality("") == pytest.approx(0.0)
 

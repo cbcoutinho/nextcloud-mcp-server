@@ -65,6 +65,14 @@ MIN_PAGE_CHARS = 16
 GLYPH_CORRUPTION_RATIO = 0.02
 
 _WORD_RE = re.compile(r"\S+")
+# Table-of-contents leaders ("Getting started ........ 5"): a run of one
+# repeated filler char. Each run is a single >20-char token that would zero the
+# overlong/merge scores of an otherwise clean page (GH #1802), so runs are
+# replaced by a space before scoring (which also nudges whitespace_ratio up, as
+# intended). Markdown table rules (|-----|) and signature lines (_____) are
+# stripped too, for the same reason. Mashed junk is letters/digits, so this
+# never hides a junk layer.
+_LEADER_RE = re.compile(r"([.·…_\-–—])\1{3,}")
 
 # Whitespace control characters that legitimately appear in extracted text
 # (tab / newline / carriage-return / form-feed / vertical-tab). Every OTHER C0
@@ -105,8 +113,9 @@ def _text_quality(text: str) -> float:
 
     Penalises the two hallmarks of a junk/OCR-mangled layer: too little
     whitespace (words mashed together) and very long tokens. Empty text scores
-    0 -- "no usable layer".
+    0 -- "no usable layer". TOC leader runs are ignored (see ``_LEADER_RE``).
     """
+    text = _LEADER_RE.sub(" ", text)
     if not text:
         return 0.0
     tokens = _WORD_RE.findall(text)
