@@ -10,6 +10,8 @@ extraction tier a PDF starts in:
   * the text-quality score distinguishes clean prose from mashed/space-less junk.
 """
 
+import time
+
 import pymupdf
 import pytest
 
@@ -79,6 +81,37 @@ def test_text_quality_ignores_toc_leaders():
         for i, leader in enumerate(".·…_-–—" * 3, start=1)
     )
     assert clf._text_quality(toc) == pytest.approx(1.0)
+
+
+def test_text_quality_ignores_markdown_markup():
+    # GH #1802: a sparse figure page from the structured tier's markdown. The
+    # image references, <br>/pipes and emphasis are markup glued into long
+    # tokens; the page must score as its plain text does.
+    plain = "Remove the screws and lift the cover off the base unit\nSee figure"
+    markdown = (
+        "**_Disassemble_** the screws and lift the cover off the base unit\n"
+        "![](/tmp/pdf-images/manual.pdf-1-0.png)\n"
+        "|Heat<br>sink|See<br>figure|\n"
+        # The path embeds the document name, which may itself hold ")".
+        "![](/tmp/pdf-images/report (1).pdf/report (1).pdf-1-1.png)\n"
+    )
+    assert clf._text_quality(plain) == pytest.approx(1.0)
+    assert clf._text_quality(markdown) == pytest.approx(1.0)
+
+
+def test_text_quality_unclosed_image_references_stay_linear():
+    # Untrusted page text: a long line of unclosed "![](" must neither raise nor
+    # go quadratic (uncapped this line takes ~45s; capped ~0.2s).
+    line = "![](/tmp/pdf-images/a " * 20_000
+    started = time.perf_counter()
+    assert 0.0 <= clf._text_quality(line) <= 1.0
+    assert time.perf_counter() - started < 5.0
+
+
+def test_text_quality_markup_does_not_mask_junk():
+    mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
+    markdown = f"**{mashed}**\n![](/tmp/pdf-images/manual.pdf-0-0.png)\n|{mashed}|"
+    assert clf._text_quality(markdown) < clf.MIN_TEXT_QUALITY
 
 
 def test_toc_pages_in_a_short_range_stay_fast():
