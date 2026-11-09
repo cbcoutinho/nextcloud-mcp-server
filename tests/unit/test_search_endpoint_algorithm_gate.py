@@ -85,11 +85,11 @@ def test_supported_algorithm_is_not_rejected(path: str, algorithm: str):
             new=AsyncMock(return_value=("alice", {})),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             side_effect=RuntimeError("stop after the gate"),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.SemanticSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.SemanticSearchAlgorithm",
             side_effect=RuntimeError("stop after the gate"),
         ),
     ):
