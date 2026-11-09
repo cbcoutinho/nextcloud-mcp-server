@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.207.2 (2026-11-09)
+
+### Fix
+
+- **classifier**: ignore TOC dot leaders when scoring text quality
+
+### Refactor
+
+- **registry**: move the verdict log into a helper and pin the #1802 repro
+
 ## v0.207.1 (2026-11-08)
 
 ### Fix
