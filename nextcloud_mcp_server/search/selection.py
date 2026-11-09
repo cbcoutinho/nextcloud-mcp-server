@@ -30,7 +30,9 @@ def build_search_algorithm(
 
     ``fusion`` is passed through as given: the BM25 algorithms reject an
     unknown mode, so a caller that wants the lenient HTTP behaviour normalizes
-    it first (``normalize_fusion``). "hybrid" fuses dense semantic + sparse BM25 (keyword-only documents
+    it first (``normalize_fusion``).
+
+    "hybrid" fuses dense semantic + sparse BM25 (keyword-only documents
     contribute via the sparse side of the same query). "bm25" runs the sparse
     prefetch alone and never embeds the query, so it keeps working while the
     embedding service is down. "exact" is a filtered scroll, not a ranking.

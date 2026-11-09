@@ -146,10 +146,14 @@ def _post_metrics(body, *, algo_raises=None):
             "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             return_value=algo,
         ),
-        # `algorithm="semantic"` resolves to the dense-only class, so both must
-        # be stubbed or that parametrisation reaches a real search.
+        # Every algorithm resolves to its own class, so each must be stubbed
+        # or that parametrisation reaches a real search.
         patch(
             "nextcloud_mcp_server.search.selection.SemanticSearchAlgorithm",
+            return_value=algo,
+        ),
+        patch(
+            "nextcloud_mcp_server.search.selection.ExactMatchAlgorithm",
             return_value=algo,
         ),
         patch("nextcloud_mcp_server.api.visualization.record_search_request", new=spy),
@@ -215,6 +219,20 @@ def test_unavailable_query_embedding_is_a_503_with_a_code():
     assert body["code"] == "embedding_unavailable"
     assert "10s" in body["message"]
     assert spy.call_args.kwargs["status"] == "error"
+
+
+def test_exact_has_its_own_label_on_success_and_error():
+    """An exact match is not a hybrid search: it must not land on the hybrid
+    series, and its success and error samples must share one label."""
+    ok, ok_spy = _post_metrics({"query": "q", "algorithm": "exact"})
+    bad, bad_spy = _post_metrics(
+        {"query": "q", "algorithm": "exact"},
+        algo_raises=RuntimeError("qdrant exploded"),
+    )
+
+    assert (ok.status_code, bad.status_code) == (200, 500)
+    assert ok_spy.call_args.kwargs["algorithm"] == "exact"
+    assert bad_spy.call_args.kwargs["algorithm"] == "exact"
 
 
 def test_bm25_has_its_own_metric_label():

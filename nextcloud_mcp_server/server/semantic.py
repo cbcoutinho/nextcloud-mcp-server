@@ -536,7 +536,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
                 "contains its words, one row per document, all with relevance "
                 "1.0, and `total_found` is the true count. Use it to "
                 "enumerate all documents mentioning a name or term; page "
-                "through them with `offset` while offset < total_found."
+                "through them with `offset` while offset < total_found. "
+                "total_found counts indexed matches, and documents you can "
+                "no longer access are dropped from each page, so a page can "
+                "be shorter than `limit` before the end: keep paging."
             ),
         ),
     ] = "hybrid",
