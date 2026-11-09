@@ -833,6 +833,7 @@ def configure_calendar_tools(mcp: MCPServer):
         new_reminder_minutes: Optional[int] = None,
         # Move operation parameters
         target_calendar: Optional[str] = None,
+        timezone: str = "UTC",
     ):
         """Perform bulk operations (update/delete) on events matching filter criteria.
 
@@ -844,8 +845,10 @@ def configure_calendar_tools(mcp: MCPServer):
             title_contains: Filter events where title contains this text
             categories: Filter events containing any of these categories (comma-separated)
             calendar_name: Filter events from this specific calendar
-            start_date: Filter events starting from this date (YYYY-MM-DD)
-            end_date: Filter events ending before this date (YYYY-MM-DD)
+            start_date: Inclusive local start date (YYYY-MM-DD) or ISO datetime
+            end_date: Inclusive local end date, or exclusive ISO datetime boundary
+            timezone: IANA timezone for dates and offset-free datetimes (default UTC).
+                Explicit datetime offsets take precedence.
             status: Filter events by status (CONFIRMED, TENTATIVE, CANCELLED)
             location_contains: Filter events where location contains this text
 
@@ -863,28 +866,13 @@ def configure_calendar_tools(mcp: MCPServer):
         Returns:
             Summary of operation results including counts and details
         """
-        client = await get_client(ctx)
-
         if operation not in ["update", "delete", "move"]:
             raise ToolError("Operation must be 'update', 'delete', or 'move'")
 
-        # Convert date strings to datetime objects
-        start_datetime = None
-        end_datetime = None
-
-        if start_date:
-            try:
-                start_datetime = dt.datetime.strptime(start_date, "%Y-%m-%d")
-            except ValueError:
-                logger.warning("Invalid start_date format: %s", start_date)
-
-        if end_date:
-            try:
-                end_datetime = dt.datetime.strptime(end_date, "%Y-%m-%d").replace(
-                    hour=23, minute=59, second=59
-                )
-            except ValueError:
-                logger.warning("Invalid end_date format: %s", end_date)
+        start_datetime, end_datetime = _event_search_range(
+            start_date, end_date, timezone
+        )
+        client = await get_client(ctx)
 
         # Build filter criteria
         filter_criteria = {}
@@ -898,11 +886,11 @@ def configure_calendar_tools(mcp: MCPServer):
             filter_criteria["status"] = status
         if location_contains is not None:
             filter_criteria["location_contains"] = location_contains
-        # Add datetime strings for client compatibility
-        if start_date:
-            filter_criteria["start_date"] = start_date
-        if end_date:
-            filter_criteria["end_date"] = end_date
+        # bulk_update_events parses these ISO instants; do not reapply local dates.
+        if start_datetime is not None:
+            filter_criteria["start_date"] = start_datetime.isoformat()
+        if end_datetime is not None:
+            filter_criteria["end_date"] = end_datetime.isoformat()
 
         if operation == "delete":
             # Find matching events and delete them
