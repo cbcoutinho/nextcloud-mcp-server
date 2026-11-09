@@ -51,7 +51,6 @@ from nextcloud_mcp_server.search.rerank import (
     rerank_results,
 )
 from nextcloud_mcp_server.search.selection import (
-    FUSION_MODES,
     SearchAlgorithmName,
     build_search_algorithm,
     search_algorithm_label,
@@ -472,6 +471,27 @@ async def _expand_results_with_context(
     return results
 
 
+def _exact_page(
+    results: list[SearchResult], *, offset: int, limit: int
+) -> tuple[list[SearchResult], int]:
+    """One page of an exact match, and the number of matches.
+
+    Every match, in a stable order so pages do not overlap, cut to the page
+    BEFORE verify-on-read (one Nextcloud round-trip per document; an exact
+    match can hold thousands). The count is therefore of indexed matches, as
+    on the HTTP API.
+    """
+    results.sort(key=lambda r: (r.doc_type, (r.title or "").casefold(), r.id))
+    return results[offset : offset + limit], len(results)
+
+
+def _exact_truncated(search_algo: SearchAlgorithm) -> bool | None:
+    """Whether an exact match stopped at its cap; None for ranked searches."""
+    if isinstance(search_algo, ExactMatchAlgorithm):
+        return search_algo.truncated
+    return None
+
+
 def _check_algorithm_options(
     algorithm: str,
     *,
@@ -794,6 +814,8 @@ async def nc_semantic_search(  # NOSONAR(S107)
         modified_after, modified_before
     )
 
+    # Before the metric-recording try, like _parse_modified_bounds above: a
+    # malformed request is not a search, so it records no sample.
     granularity = _check_algorithm_options(
         algorithm,
         granularity=granularity,
@@ -902,11 +924,8 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # Built by the same helper as the HTTP search API, so "semantic",
         # "bm25", "hybrid" and "exact" mean the same on both surfaces. Every
         # algorithm takes accessible_owners, so search is ACL-aware throughout.
-        # Checked for every algorithm, not only the ones that fuse: a silently
-        # ignored option reads like a ranking bug. A ValueError, so it takes
-        # the same reported path (and metric sample) as before.
-        if fusion not in FUSION_MODES:
-            raise ValueError(f"Invalid fusion {fusion!r}: must be 'rrf' or 'dbsf'")
+        # An invalid fusion raises ValueError here, inside the try, so the
+        # rejection is reported and still records its metric sample.
         search_algo = build_search_algorithm(
             algorithm, score_threshold=score_threshold, fusion=fusion
         )
@@ -941,17 +960,11 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # away against the single-query branch.
         record_search_stage("mcp", "retrieve", anyio.current_time() - retrieve_start)
 
-        exact_total = 0
+        exact_total: int | None = None
         if exact:
-            # Every match, in a stable order so pages do not overlap, cut to
-            # the page BEFORE verify-on-read (one Nextcloud round-trip per
-            # document; an exact match can hold thousands). total_found thus
-            # counts indexed matches, as on the HTTP API.
-            all_results.sort(
-                key=lambda r: (r.doc_type, (r.title or "").casefold(), r.id)
+            all_results, exact_total = _exact_page(
+                all_results, offset=offset, limit=limit
             )
-            exact_total = len(all_results)
-            all_results = all_results[offset : offset + limit]
 
         # Rerank the merged pool BEFORE verification, and before trimming to
         # the verification budget. After the merge so one cross-encoder pass
@@ -1070,14 +1083,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
         return SemanticSearchResponse(
             results=results,
             query=query,
-            total_found=exact_total if exact else len(results),
+            total_found=len(results) if exact_total is None else exact_total,
             search_method=search_method,
             granularity=granularity,
-            truncated=(
-                search_algo.truncated
-                if isinstance(search_algo, ExactMatchAlgorithm)
-                else None
-            ),
+            truncated=_exact_truncated(search_algo),
             reranked=rerank_outcome == RERANK_APPLIED,
             rerank_model=(
                 settings.search_rerank_model

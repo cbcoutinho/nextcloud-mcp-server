@@ -29,15 +29,18 @@ def build_search_algorithm(
 ) -> SearchAlgorithm:
     """Instantiate ``algorithm`` (already validated).
 
-    ``fusion`` is passed through as given: the BM25 algorithms reject an
-    unknown mode, so a caller that wants the lenient HTTP behaviour normalizes
-    it first (``normalize_fusion``).
+    An unknown ``fusion`` raises ``ValueError`` for every algorithm, not only
+    the ones that fuse: a silently ignored option reads like a ranking bug. A
+    caller that wants the lenient HTTP behaviour normalizes it first
+    (``normalize_fusion``).
 
     "hybrid" fuses dense semantic + sparse BM25 (keyword-only documents
     contribute via the sparse side of the same query). "bm25" runs the sparse
     prefetch alone and never embeds the query, so it keeps working while the
     embedding service is down. "exact" is a filtered scroll, not a ranking.
     """
+    if fusion not in FUSION_MODES:
+        raise ValueError(f"Invalid fusion {fusion!r}: must be 'rrf' or 'dbsf'")
     if algorithm == "exact":
         return ExactMatchAlgorithm()
     if algorithm == "semantic":
