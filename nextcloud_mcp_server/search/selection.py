@@ -16,11 +16,12 @@ from nextcloud_mcp_server.search.exact import ExactMatchAlgorithm
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 
 SearchAlgorithmName = Literal["hybrid", "semantic", "bm25", "exact"]
+FUSION_MODES = ("rrf", "dbsf")
 
 
 def normalize_fusion(fusion: str | None) -> str:
     """``fusion`` when it is a known mode, else the ``rrf`` default."""
-    return fusion if fusion in ("rrf", "dbsf") else "rrf"
+    return fusion if fusion in FUSION_MODES else "rrf"
 
 
 def build_search_algorithm(

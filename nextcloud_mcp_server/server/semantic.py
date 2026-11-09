@@ -51,6 +51,7 @@ from nextcloud_mcp_server.search.rerank import (
     rerank_results,
 )
 from nextcloud_mcp_server.search.selection import (
+    FUSION_MODES,
     SearchAlgorithmName,
     build_search_algorithm,
     search_algorithm_label,
@@ -545,7 +546,9 @@ async def nc_semantic_search(  # NOSONAR(S107)
                 "through them with `offset` while offset < total_found. "
                 "total_found counts indexed matches, and documents you can "
                 "no longer access are dropped from each page, so a page can "
-                "be shorter than `limit` before the end: keep paging."
+                "be shorter than `limit` before the end: keep paging. Each "
+                "row is the document's first matching chunk, so "
+                "include_context shows the text around that match."
             ),
         ),
     ] = "hybrid",
@@ -902,7 +905,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # Checked for every algorithm, not only the ones that fuse: a silently
         # ignored option reads like a ranking bug. A ValueError, so it takes
         # the same reported path (and metric sample) as before.
-        if fusion not in ("rrf", "dbsf"):
+        if fusion not in FUSION_MODES:
             raise ValueError(f"Invalid fusion {fusion!r}: must be 'rrf' or 'dbsf'")
         search_algo = build_search_algorithm(
             algorithm, score_threshold=score_threshold, fusion=fusion
