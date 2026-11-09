@@ -1,6 +1,5 @@
 """MCP tools for Nextcloud Mail app (read, send, drafts, flags, tags, move, delete)."""
 
-import json
 import logging
 import mimetypes
 from collections.abc import Generator
@@ -47,10 +46,13 @@ from nextcloud_mcp_server.utils.image_view import (
 
 logger = logging.getLogger(__name__)
 
-# Recipient parameters accept a real array, so the tool schema advertises one
-# and clients can pass it as such. A JSON-encoded string is still accepted for
-# callers written against the original string-only signature.
-Recipients = list[MailRecipient] | str
+# Recipient parameters are typed as an array, so the tool schema advertises one.
+# Callers written against the old string signature keep working: for any
+# annotation other than ``str``, the SDK's ``pre_parse_json`` decodes a JSON
+# string argument before validation. A malformed list, an entry without an
+# address, or a list encoded twice fails that validation with an error naming
+# the parameter, before any request reaches the Mail app.
+Recipients = list[MailRecipient]
 
 
 @contextmanager
@@ -282,23 +284,25 @@ async def nc_mail_send_message(
 
     Args:
         account_id: Mail account ID to send from (from nc_mail_list_accounts)
-        to: Array of To recipients (at least one)
+        to: Array of To recipients (``[]`` when sending only to cc/bcc)
         subject: Email subject
         body: Email body (plain text unless is_html is true)
         is_html: Whether body contains HTML (default false)
         cc: Optional array of CC recipients
-        bcc: Optional array of BCC recipients
+        bcc: Optional array of BCC recipients. At least one recipient is
+            needed across to, cc and bcc.
         references: Optional RFC 2822 Message-ID for reply threading
 
     Returns:
         SendMessageResponse with success status and optional message
     """
-    to_list = _parse_recipients(to, "to")
-    cc_list = _parse_recipients(cc, "cc")
-    bcc_list = _parse_recipients(bcc, "bcc")
-    if not to_list:
+    to_list = _recipient_dicts(to)
+    cc_list = _recipient_dicts(cc)
+    bcc_list = _recipient_dicts(bcc)
+    if not (to_list or cc_list or bcc_list):
         raise MCPError(
-            code=-1, message="to needs at least one recipient. Nothing was sent."
+            code=-1,
+            message="No recipients: to, cc and bcc are all empty. Nothing was sent.",
         )
 
     client = await get_client(ctx)
@@ -324,60 +328,16 @@ async def nc_mail_send_message(
         )
 
 
-def _parse_recipients(
-    raw: list[MailRecipient] | list[dict] | str | None, field: str
-) -> list[dict[str, str]]:
-    """Normalise a recipient list (``[{"label": "...", "email": "..."}]``).
+def _recipient_dicts(recipients: list[MailRecipient] | None) -> list[dict[str, str]]:
+    """Turn validated recipients into the ``{"email", "label"?}`` dicts Mail takes.
 
-    Accepts the array itself or its JSON encoding. Runs before any request is
-    made, so a malformed list fails with an error naming the parameter instead
-    of reaching the Mail app, which answers it with a bare 500. That includes
-    a JSON string that decodes to a string rather than an array, which is
-    what a client produces when it encodes an array twice.
-
-    Args:
-        raw: The value as passed to the tool; ``None``, ``""`` or ``[]``
-            means no recipients.
-        field: Parameter name for error messages (``to``, ``cc``, ``bcc``).
-
-    Returns:
-        One ``{"email", "label"?}`` dict per recipient. ``label`` is left out
-        when absent, so the Mail app falls back to the address itself.
+    ``label`` is left out when empty, so the Mail app falls back to the address
+    itself. Validation (shape, required ``email``) has already run in the SDK.
     """
-    if not raw:
-        return []
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
-    else:
-        parsed = [
-            entry.model_dump(exclude_none=True)
-            if isinstance(entry, MailRecipient)
-            else entry
-            for entry in raw
-        ]
-    if not isinstance(parsed, list):
-        raise MCPError(
-            code=-1,
-            message=f"{field} must be a JSON array, got {type(parsed).__name__}",
-        )
-
-    recipients: list[dict[str, str]] = []
-    for entry in parsed:
-        email = entry.get("email") if isinstance(entry, dict) else None
-        if not isinstance(email, str) or not email.strip():
-            raise MCPError(
-                code=-1,
-                message=f"Each {field} entry needs an 'email' string, got {entry!r}",
-            )
-        recipient = {"email": email}
-        label = entry.get("label")
-        if isinstance(label, str) and label:
-            recipient["label"] = label
-        recipients.append(recipient)
-    return recipients
+    return [
+        {"email": r.email, "label": r.label} if r.label else {"email": r.email}
+        for r in recipients or []
+    ]
 
 
 @require_scopes("mail.draft")
@@ -433,9 +393,9 @@ async def nc_mail_save_draft(
         SaveDraftResponse confirming the draft was saved. Find the draft in
         the account's Drafts mailbox.
     """
-    to_list = _parse_recipients(to, "to")
-    cc_list = _parse_recipients(cc, "cc")
-    bcc_list = _parse_recipients(bcc, "bcc")
+    to_list = _recipient_dicts(to)
+    cc_list = _recipient_dicts(cc)
+    bcc_list = _recipient_dicts(bcc)
 
     client = await get_client(ctx)
     try:

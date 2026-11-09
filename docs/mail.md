@@ -46,10 +46,13 @@ arrays of `{"label", "email"}` objects; `label` is optional:
 [{"label": "John Doe", "email": "john@example.com"}]
 ```
 
-The JSON encoding of that array, passed as a string, is also accepted. A list
-that is malformed, or encoded twice so that it decodes to a string, is refused
-with an error naming the parameter before any request reaches the Mail app.
-`nc_mail_send_message` also refuses an empty `to`.
+The JSON encoding of that array, passed as a string, is also accepted: the MCP
+SDK decodes it before validation. A malformed list, an entry without an
+`email`, an `email` that is not an address (no `@`, or a space inside), or a
+list encoded twice fails argument validation with an error naming the
+parameter, before any request reaches the Mail app. Surrounding spaces are
+stripped from addresses. `nc_mail_send_message` needs at least one recipient
+across `to`, `cc` and `bcc`, so a Bcc-only message is fine.
 
 ### Saving drafts
 

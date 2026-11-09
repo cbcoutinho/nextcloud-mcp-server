@@ -22,12 +22,13 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import LATEST_PROTOCOL_VERSION
 
 from nextcloud_mcp_server.auth.scope_authorization import InsufficientScopeError
-from nextcloud_mcp_server.models.mail import SaveDraftResponse
+from nextcloud_mcp_server.models.mail import MailRecipient, SaveDraftResponse
 from nextcloud_mcp_server.server.mail import configure_mail_tools
 
 pytestmark = pytest.mark.unit
 
-_RECIPIENTS = '[{"email": "alice@example.com"}]'
+# Already validated, as the SDK hands it to the tool function.
+_RECIPIENTS = [MailRecipient(email="alice@example.com")]
 
 
 def _make_ctx() -> Context:

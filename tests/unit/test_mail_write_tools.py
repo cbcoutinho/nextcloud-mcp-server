@@ -15,6 +15,7 @@ import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
+from pydantic import ValidationError
 
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.models.mail import (
@@ -230,18 +231,33 @@ def _saved_draft(draft_id: int = 42) -> dict:
     }
 
 
+def _validated(tool, **arguments) -> dict:
+    """Run the SDK's own argument validation, as ``call_tool`` does.
+
+    Recipient handling lives in that validation (JSON-string decoding, the
+    ``MailRecipient`` model), so tests that call ``tool.fn`` directly would not
+    show what a real client gets.
+    """
+    return tool.fn_metadata.validate_arguments(arguments)
+
+
+async def _call(tool, **arguments):
+    """Validate like ``call_tool``, then run the tool function."""
+    return await tool.fn(ctx=_ctx(), **_validated(tool, **arguments))
+
+
 async def test_save_draft_parses_recipients_and_returns_a_typed_response(
     mail_tools, fake_mail
 ):
     """JSON recipients reach the client as dicts, and nothing reaches send."""
     fake_mail.save_draft.return_value = _saved_draft()
 
-    result = await mail_tools["nc_mail_save_draft"].fn(
-        1,
-        '[{"label": "Alice", "email": "alice@example.com"}]',
-        "Re: Hi",
-        "Thanks!",
-        _ctx(),
+    result = await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to='[{"label": "Alice", "email": "alice@example.com"}]',
+        subject="Re: Hi",
+        body="Thanks!",
         cc='[{"email": "bob@example.com"}]',
     )
 
@@ -275,31 +291,15 @@ async def test_save_draft_accepts_a_draft_without_recipients(mail_tools, fake_ma
     """Unlike sending, a draft may be saved before its recipients are known."""
     fake_mail.save_draft.return_value = _saved_draft()
 
-    await mail_tools["nc_mail_save_draft"].fn(1, "[]", "Hi", "body", _ctx())
+    await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="Hi",
+        body="body",
+    )
 
     assert fake_mail.save_draft.await_args.kwargs["to"] == []
-
-
-@pytest.mark.parametrize(
-    ("to", "expected"),
-    [
-        ("not json", "Invalid JSON in to"),
-        ('{"email": "a@b.com"}', "to must be a JSON array"),
-        ('[{"label": "no address"}]', "needs an 'email' string"),
-        ('["a@b.com"]', "needs an 'email' string"),
-    ],
-)
-async def test_save_draft_rejects_malformed_recipients_before_any_request(
-    mail_tools, fake_mail, to, expected
-):
-    """A bad recipient list fails with a message naming it, before any request."""
-    save_draft = mail_tools["nc_mail_save_draft"].fn
-    ctx = _ctx()
-    with pytest.raises(MCPError) as exc_info:
-        await save_draft(1, to, "Hi", "body", ctx)
-
-    assert expected in str(exc_info.value)
-    fake_mail.save_draft.assert_not_awaited()
 
 
 async def test_save_draft_failure_says_nothing_was_sent(mail_tools, fake_mail):
@@ -315,10 +315,17 @@ async def test_save_draft_failure_says_nothing_was_sent(mail_tools, fake_mail):
     fake_mail.save_draft.side_effect = httpx2.HTTPStatusError(
         "HTTP 500", request=request, response=response
     )
+    kwargs = _validated(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="Hi",
+        body="body",
+    )
     save_draft = mail_tools["nc_mail_save_draft"].fn
     ctx = _ctx()
     with pytest.raises(MCPError) as exc_info:
-        await save_draft(1, "[]", "Hi", "body", ctx)
+        await save_draft(ctx=ctx, **kwargs)
 
     message = str(exc_info.value)
     assert "500" in message
@@ -355,152 +362,148 @@ def test_save_draft_annotations_and_description(mail_tools):
     assert "WITHOUT sending" in tool.description
 
 
-# --- Recipient arrays ---------------------------------------------------------
+# --- Recipients ---------------------------------------------------------------
 #
-# ``to``, ``cc`` and ``bcc`` used to be typed ``str``, so the schema told
-# clients to send a string. A client that passed the array itself was refused
-# by validation; one that passed it JSON-encoded twice got through, and the Mail
-# app answered the resulting string with a bare 500.
+# ``to``, ``cc`` and ``bcc`` used to be typed ``str``. For any annotation other
+# than ``str`` the SDK JSON-decodes string arguments before validation, so a
+# ``cc`` passed as a JSON string became a list and failed ``str | None``: cc and
+# bcc could not be passed at all. Encoding the list twice got past validation,
+# and the Mail app answered the decoded string with a bare 500.
 
 RECIPIENT_FIELDS = ("to", "cc", "bcc")
 WRITE_TOOLS = ("nc_mail_send_message", "nc_mail_save_draft")
-
-
-def _validated(tool, **arguments) -> dict:
-    """Run the SDK's own argument validation, as ``call_tool`` does."""
-    return tool.fn_metadata.validate_arguments(arguments)
 
 
 @pytest.mark.parametrize("tool_name", WRITE_TOOLS)
 @pytest.mark.parametrize("field", RECIPIENT_FIELDS)
 def test_recipient_schema_advertises_an_array(mail_tools, tool_name, field):
     """Clients read the schema to decide what to send, so it must offer an array."""
-    schema = mail_tools[tool_name].parameters
-    prop = schema["properties"][field]
+    prop = mail_tools[tool_name].parameters["properties"][field]
     variants = prop.get("anyOf", [prop])
 
-    assert any(v.get("type") == "array" for v in variants), prop
+    assert [v["type"] for v in variants if v.get("type") != "null"] == ["array"]
 
 
-async def test_send_message_accepts_recipient_arrays(mail_tools, fake_mail):
-    """The call that failed in practice: CC as an array, through validation."""
-    tool = mail_tools["nc_mail_send_message"]
-    kwargs = _validated(
-        tool,
+@pytest.mark.parametrize("tool_name", WRITE_TOOLS)
+@pytest.mark.parametrize(
+    "cc",
+    [
+        [{"label": "Nassrin", "email": "nassrin@example.com"}],
+        '[{"label": "Nassrin", "email": "nassrin@example.com"}]',
+    ],
+    ids=["array", "json-string"],
+)
+async def test_cc_reaches_the_mail_client(mail_tools, fake_mail, tool_name, cc):
+    """The call that failed in practice: a reply with one CC, in either form."""
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    await _call(
+        mail_tools[tool_name],
         account_id=5,
         to=[{"label": "Joyce", "email": "joyce@example.com"}],
-        cc=[{"label": "Nassrin", "email": "nassrin@example.com"}],
+        cc=cc,
+        subject="Re: Hi",
+        body="Done.",
+    )
+
+    client_call = getattr(fake_mail, tool_name.removeprefix("nc_mail_"))
+    kwargs = client_call.await_args.kwargs
+    assert kwargs["to"] == [{"email": "joyce@example.com", "label": "Joyce"}]
+    assert kwargs["cc"] == [{"email": "nassrin@example.com", "label": "Nassrin"}]
+    assert kwargs["bcc"] is None
+
+
+async def test_send_message_forwards_references(mail_tools, fake_mail):
+    await _call(
+        mail_tools["nc_mail_send_message"],
+        account_id=5,
+        to=[{"email": "joyce@example.com"}],
         subject="Re: Hi",
         body="Done.",
         references="<abc@example.com>",
     )
 
-    result = await tool.fn(ctx=_ctx(), **kwargs)
-
-    assert result.success is True
     fake_mail.send_message.assert_awaited_once_with(
         account_id=5,
-        to=[{"email": "joyce@example.com", "label": "Joyce"}],
+        to=[{"email": "joyce@example.com"}],
         subject="Re: Hi",
         body="Done.",
         is_html=False,
-        cc=[{"email": "nassrin@example.com", "label": "Nassrin"}],
+        cc=None,
         bcc=None,
         references="<abc@example.com>",
     )
 
 
-async def test_send_message_still_accepts_json_strings(mail_tools, fake_mail):
-    """Callers written against the old string signature keep working."""
-    tool = mail_tools["nc_mail_send_message"]
-    kwargs = _validated(
-        tool,
+async def test_send_message_allows_bcc_only(mail_tools, fake_mail):
+    """An announcement that hides its recipients has an empty ``to``."""
+    await _call(
+        mail_tools["nc_mail_send_message"],
         account_id=5,
-        to='[{"email": "joyce@example.com"}]',
-        cc='[{"email": "nassrin@example.com"}]',
-        subject="Hi",
+        to=[],
+        bcc=[{"email": "list@example.com"}],
+        subject="News",
         body="body",
     )
 
-    await tool.fn(ctx=_ctx(), **kwargs)
-
-    call = fake_mail.send_message.await_args.kwargs
-    assert call["to"] == [{"email": "joyce@example.com"}]
-    assert call["cc"] == [{"email": "nassrin@example.com"}]
+    kwargs = fake_mail.send_message.await_args.kwargs
+    assert kwargs["to"] == []
+    assert kwargs["bcc"] == [{"email": "list@example.com"}]
 
 
-async def test_send_message_rejects_a_double_encoded_list_before_sending(
-    mail_tools, fake_mail
-):
-    """A list encoded twice fails with a message naming the field, not a 500."""
-    tool = mail_tools["nc_mail_send_message"]
-    double_encoded = json.dumps(json.dumps([{"email": "nassrin@example.com"}]))
+async def test_send_message_without_any_recipient_sends_nothing(mail_tools, fake_mail):
     kwargs = _validated(
-        tool,
+        mail_tools["nc_mail_send_message"],
         account_id=5,
-        to=[{"email": "joyce@example.com"}],
-        cc=double_encoded,
+        to=[],
         subject="Hi",
         body="body",
     )
-    ctx = _ctx()
-
-    with pytest.raises(MCPError, match="cc must be a JSON array, got str"):
-        await tool.fn(ctx=ctx, **kwargs)
-    fake_mail.send_message.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    ("to", "expected"),
-    [
-        ("[]", "to needs at least one recipient"),
-        ('[{"label": "no address"}]', "needs an 'email' string"),
-        ("not json", "Invalid JSON in to"),
-    ],
-)
-async def test_send_message_rejects_bad_recipients_before_sending(
-    mail_tools, fake_mail, to, expected
-):
     send = mail_tools["nc_mail_send_message"].fn
     ctx = _ctx()
 
-    with pytest.raises(MCPError) as exc_info:
-        await send(5, to, "Hi", "body", ctx)
-
-    assert expected in str(exc_info.value)
+    with pytest.raises(MCPError, match="No recipients.*Nothing was sent"):
+        await send(ctx=ctx, **kwargs)
     fake_mail.send_message.assert_not_awaited()
 
 
-def test_recipient_array_entries_need_an_email(mail_tools):
-    """With a real array, the SDK itself refuses an entry without an address."""
-    tool = mail_tools["nc_mail_send_message"]
-
-    with pytest.raises(ValueError, match="email"):
-        _validated(
-            tool,
-            account_id=5,
-            to=[{"label": "no address"}],
-            subject="Hi",
-            body="body",
-        )
-
-
-async def test_save_draft_accepts_recipient_arrays(mail_tools, fake_mail):
-    fake_mail.save_draft.return_value = _saved_draft()
-    tool = mail_tools["nc_mail_save_draft"]
-    kwargs = _validated(
-        tool,
+async def test_recipient_address_is_stripped(mail_tools, fake_mail):
+    await _call(
+        mail_tools["nc_mail_send_message"],
         account_id=5,
-        to=[{"label": "Joyce", "email": "joyce@example.com"}],
-        bcc=[{"email": "archive@example.com"}],
-        subject="Re: Hi",
-        body="Draft.",
+        to=[{"email": "  joyce@example.com "}],
+        subject="Hi",
+        body="body",
     )
 
-    await tool.fn(ctx=_ctx(), **kwargs)
+    assert fake_mail.send_message.await_args.kwargs["to"] == [
+        {"email": "joyce@example.com"}
+    ]
 
-    call = fake_mail.save_draft.await_args.kwargs
-    assert call["to"] == [{"email": "joyce@example.com", "label": "Joyce"}]
-    assert call["cc"] is None
-    assert call["bcc"] == [{"email": "archive@example.com"}]
-    fake_mail.send_message.assert_not_awaited()
+
+@pytest.mark.parametrize("tool_name", WRITE_TOOLS)
+@pytest.mark.parametrize(
+    "to",
+    [
+        pytest.param("not json", id="not-json"),
+        pytest.param('{"email": "a@b.com"}', id="object-not-array"),
+        pytest.param('[{"label": "no address"}]', id="no-email"),
+        pytest.param('["a@b.com"]', id="bare-string-entry"),
+        pytest.param([{"email": "joyce"}], id="no-at-sign"),
+        pytest.param([{"email": "jo yce@example.com"}], id="inner-space"),
+        pytest.param(
+            json.dumps(json.dumps([{"email": "a@b.com"}])), id="double-encoded"
+        ),
+    ],
+)
+def test_malformed_recipients_fail_validation_naming_the_field(
+    mail_tools, tool_name, to
+):
+    """What a client gets for a bad list: a validation error that names ``to``,
+    raised before the tool runs, so nothing reaches the Mail app."""
+    with pytest.raises(ValidationError) as exc_info:
+        _validated(
+            mail_tools[tool_name], account_id=5, to=to, subject="Hi", body="body"
+        )
+
+    assert {error["loc"][0] for error in exc_info.value.errors()} == {"to"}

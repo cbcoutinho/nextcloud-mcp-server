@@ -1,24 +1,44 @@
 """Pydantic models for Nextcloud Mail app responses."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, StatusResponse
 
 
-class MailAddress(BaseModel):
-    """An email address with an optional display label."""
+class _LabelledAddress(BaseModel):
+    """Fields shared by addresses the Mail app returns and recipients we send.
+
+    Each subclass declares ``email`` itself: optional when read from Mail,
+    required when sending. A subclass may not narrow a field it inherits.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
     label: str | None = Field(None, description="Display name")
+
+
+class MailAddress(_LabelledAddress):
+    """An email address with an optional display label."""
+
     email: str | None = Field(None, description="Email address")
 
 
-class MailRecipient(BaseModel):
-    """A recipient passed to the send and draft tools."""
+class MailRecipient(_LabelledAddress):
+    """A recipient passed to the send and draft tools: ``email`` is required
+    and has the shape of an address."""
 
     email: str = Field(description="Email address")
-    label: str | None = Field(None, description="Display name")
+
+    @field_validator("email")
+    @classmethod
+    def _looks_like_an_address(cls, value: str) -> str:
+        # Not full RFC 5322 validation: enough to refuse what the Mail app
+        # would otherwise answer with a bare 500 (a name, a stray space).
+        address = value.strip()
+        local, at, domain = address.rpartition("@")
+        if not at or not local or not domain or any(c.isspace() for c in address):
+            raise ValueError(f"not an email address: {value!r}")
+        return address
 
 
 class MailAccount(BaseModel):
