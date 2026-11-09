@@ -40,9 +40,7 @@ from nextcloud_mcp_server.search import (
     GRANULARITY_CHUNK,
     GRANULARITY_DOCUMENT,
     VALID_GRANULARITIES,
-    BM25HybridSearchAlgorithm,
     SearchAlgorithm,
-    SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.search.access_filter import (
     AccessibleScope,
@@ -51,7 +49,6 @@ from nextcloud_mcp_server.search.access_filter import (
     normalize_path_prefixes,
 )
 from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
-from nextcloud_mcp_server.search.bm25_hybrid import search_method_label
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
@@ -70,6 +67,11 @@ from nextcloud_mcp_server.search.rerank import (
     effective_pool_size,
     rerank_available,
     rerank_results,
+)
+from nextcloud_mcp_server.search.selection import (
+    build_search_algorithm,
+    normalize_fusion,
+    search_algorithm_label,
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
@@ -102,19 +104,10 @@ def _search_algorithm_label(algorithm: str, fusion: str) -> str:
     """The ``algorithm`` label for search metrics.
 
     Shared by every ``record_search_request`` call site so success and error
-    samples land on the SAME series. Normalising in one place and using the raw
-    value in another fragments ``astrolabe_search_requests_total`` into
-    non-comparable series and quietly breaks "error rate by algorithm" — exactly
-    the surface drift these metrics exist to prevent.
-
-    Matches the MCP tool's ``search_method`` convention
-    (``bm25_hybrid_<fusion>``) so the two entrypoints stay comparable.
+    samples land on the SAME series, and with the MCP tool (via
+    ``search_algorithm_label``) so the two entrypoints stay comparable.
     """
-    if algorithm in ("semantic", "bm25"):
-        return algorithm
-    # Shared helper: clamps an unrecognised fusion so a caller-supplied string
-    # can never reach a Prometheus label from either surface.
-    return search_method_label(fusion)
+    return search_algorithm_label(algorithm, fusion)
 
 
 def _embedding_unavailable_response(e: QueryEmbeddingUnavailable) -> JSONResponse:
@@ -269,31 +262,11 @@ def _build_search_algorithm(
     malformed-but-plausible body. Callers must use the returned value.
     """
     algorithm = select_search_algorithm(requested_algorithm, settings)
-    # Normalize before the branch so every caller gets a usable value, including
-    # the dense-only path where fusion is moot but still reaches metric labels.
-    fusion = fusion if fusion in ("rrf", "dbsf") else "rrf"
-    if algorithm == "exact":
-        return ExactMatchAlgorithm(), algorithm, fusion
-    if algorithm == "semantic":
-        return (
-            SemanticSearchAlgorithm(score_threshold=score_threshold),
-            algorithm,
-            fusion,
-        )
-    # "hybrid" fuses dense semantic + sparse BM25 (keyword-only documents
-    # contribute via the sparse side of the same query). "bm25" runs the sparse
-    # prefetch alone and never embeds the query, so it keeps working while the
-    # embedding service is down — it is what Astrolabe offers when a search
-    # times out.
-    return (
-        BM25HybridSearchAlgorithm(
-            score_threshold=score_threshold,
-            fusion=fusion,
-            dense=algorithm != "bm25",
-        ),
-        algorithm,
-        fusion,
+    fusion = normalize_fusion(fusion)
+    search_algo = build_search_algorithm(
+        algorithm, score_threshold=score_threshold, fusion=fusion
     )
+    return search_algo, algorithm, fusion
 
 
 async def _search_with_acl(

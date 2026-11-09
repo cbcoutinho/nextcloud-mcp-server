@@ -78,7 +78,7 @@ def _post(handler, path, body, *, rows):
             f"{mod}.validate_token_and_get_user",
             new=AsyncMock(return_value=("alice", {})),
         ),
-        patch(f"{mod}.BM25HybridSearchAlgorithm", return_value=algo),
+        patch(f"{mod}.build_search_algorithm", return_value=algo),
         patch(
             f"{mod}.get_user_client_basic_auth",
             new=AsyncMock(side_effect=NotProvisionedError("not provisioned")),

@@ -57,7 +57,7 @@ def _post(body, *, metering_enabled=True, token_count=42):
             new=AsyncMock(return_value=("alice", {})),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             return_value=algo,
         ),
         patch("nextcloud_mcp_server.api.visualization.record_search_usage", new=usage),
@@ -143,13 +143,13 @@ def _post_metrics(body, *, algo_raises=None):
             new=AsyncMock(return_value=("alice", {})),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             return_value=algo,
         ),
         # `algorithm="semantic"` resolves to the dense-only class, so both must
         # be stubbed or that parametrisation reaches a real search.
         patch(
-            "nextcloud_mcp_server.api.visualization.SemanticSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.SemanticSearchAlgorithm",
             return_value=algo,
         ),
         patch("nextcloud_mcp_server.api.visualization.record_search_request", new=spy),
