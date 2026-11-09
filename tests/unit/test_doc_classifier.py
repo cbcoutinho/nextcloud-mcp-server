@@ -81,6 +81,21 @@ def test_text_quality_ignores_toc_leaders():
     assert clf._text_quality(toc) == pytest.approx(1.0)
 
 
+def test_text_quality_ignores_markdown_markup():
+    # GH #1802: a sparse figure page from the structured tier's markdown. The
+    # image references, <br>/pipes and emphasis are markup glued into long
+    # tokens; the page must score as its plain text does.
+    plain = "Remove the screws and lift the cover off the base unit\nSee figure"
+    markdown = (
+        "**_Disassemble_** the screws and lift the cover off the base unit\n"
+        "![](/tmp/pdf-images/manual.pdf-1-0.png)\n"
+        "|Heat<br>sink|See<br>figure|\n"
+        "![](/tmp/pdf-images/manual.pdf-1-1.png)\n"
+    )
+    assert clf._text_quality(plain) == pytest.approx(1.0)
+    assert clf._text_quality(markdown) == pytest.approx(1.0)
+
+
 def test_toc_pages_in_a_short_range_stay_fast():
     # GH #1802 end to end: 2 TOC pages out of 4 used to hit page_fraction=0.5.
     toc = "".join(f"Chapter {i} Getting started {'.' * 70} {i}\n" for i in range(24))

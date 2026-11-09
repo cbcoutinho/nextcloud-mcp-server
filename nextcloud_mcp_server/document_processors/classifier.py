@@ -65,14 +65,20 @@ MIN_PAGE_CHARS = 16
 GLYPH_CORRUPTION_RATIO = 0.02
 
 _WORD_RE = re.compile(r"\S+")
-# Table-of-contents leaders ("Getting started ........ 5"): a run of one
-# repeated filler char. Each run is a single >20-char token that would zero the
-# overlong/merge scores of an otherwise clean page (GH #1802), so runs are
-# replaced by a space before scoring (which also nudges whitespace_ratio up, as
-# intended). Markdown table rules (|-----|) and signature lines (_____) are
-# stripped too, for the same reason. Mashed junk is letters/digits, so this
-# never hides a junk layer.
-_LEADER_RE = re.compile(r"([.·…_\-–—])\1{3,}")
+# Layout and markup that is not text, but would be scored as long tokens
+# (GH #1802). Each would zero the overlong/merge scores of an otherwise clean
+# page, so it is replaced by a space before scoring (which also nudges
+# whitespace_ratio up, as intended):
+#   * table-of-contents leaders ("Getting started ........ 5"), and with them
+#     markdown table rules (|-----|) and signature lines (_____);
+#   * markdown image references (``![](/tmp/pdf-images/doc.pdf-1-0.png)``),
+#     HTML tags (``<br>``, ``<u>``) and table pipes, all emitted by the
+#     structured tier's markdown.
+# Emphasis/heading markers (``**_Appendix_**``, ``# Title``) are then dropped
+# outright, since they are glued to the word they decorate. Mashed junk is
+# letters/digits, so none of this hides a junk layer.
+_LAYOUT_RE = re.compile(r"([.·…_\-–—])\1{3,}|!\[[^\]]*\]\([^)]*\)|</?\w+/?>|\|")
+_EMPHASIS_RE = re.compile(r"[*_#`]+")
 
 # Whitespace control characters that legitimately appear in extracted text
 # (tab / newline / carriage-return / form-feed / vertical-tab). Every OTHER C0
@@ -113,9 +119,10 @@ def _text_quality(text: str) -> float:
 
     Penalises the two hallmarks of a junk/OCR-mangled layer: too little
     whitespace (words mashed together) and very long tokens. Empty text scores
-    0 -- "no usable layer". TOC leader runs are ignored (see ``_LEADER_RE``).
+    0 -- "no usable layer". TOC leaders and markdown markup are ignored (see
+    ``_LAYOUT_RE``), so plain and markdown output of one page score alike.
     """
-    text = _LEADER_RE.sub(" ", text)
+    text = _EMPHASIS_RE.sub("", _LAYOUT_RE.sub(" ", text))
     if not text:
         return 0.0
     tokens = _WORD_RE.findall(text)
