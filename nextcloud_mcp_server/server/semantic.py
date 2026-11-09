@@ -472,15 +472,18 @@ async def _expand_results_with_context(
 
 
 def _exact_page(
-    results: list[SearchResult], *, offset: int, limit: int
-) -> tuple[list[SearchResult], int]:
-    """One page of an exact match, and the number of matches.
+    results: list[SearchResult], *, exact: bool, offset: int, limit: int
+) -> tuple[list[SearchResult], int | None]:
+    """One page of an exact match, and the number of matches; ranked
+    results pass through unchanged, with no count.
 
     Every match, in a stable order so pages do not overlap, cut to the page
     BEFORE verify-on-read (one Nextcloud round-trip per document; an exact
     match can hold thousands). The count is therefore of indexed matches, as
     on the HTTP API.
     """
+    if not exact:
+        return results, None
     results.sort(key=lambda r: (r.doc_type, (r.title or "").casefold(), r.id))
     return results[offset : offset + limit], len(results)
 
@@ -960,11 +963,9 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # away against the single-query branch.
         record_search_stage("mcp", "retrieve", anyio.current_time() - retrieve_start)
 
-        exact_total: int | None = None
-        if exact:
-            all_results, exact_total = _exact_page(
-                all_results, offset=offset, limit=limit
-            )
+        all_results, exact_total = _exact_page(
+            all_results, exact=exact, offset=offset, limit=limit
+        )
 
         # Rerank the merged pool BEFORE verification, and before trimming to
         # the verification budget. After the merge so one cross-encoder pass
