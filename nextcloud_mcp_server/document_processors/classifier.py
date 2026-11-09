@@ -73,11 +73,15 @@ _WORD_RE = re.compile(r"\S+")
 #     markdown table rules (|-----|) and signature lines (_____);
 #   * markdown image references (``![](/tmp/pdf-images/doc.pdf-1-0.png)``),
 #     HTML tags (``<br>``, ``<u>``) and table pipes, all emitted by the
-#     structured tier's markdown.
+#     structured tier's markdown. The image path embeds the document name, so
+#     it may itself hold ")" (``report (1).pdf``): the reference ends at the
+#     first ")" followed by whitespace or end of text.
 # Emphasis/heading markers (``**_Appendix_**``, ``# Title``) are then dropped
-# outright, since they are glued to the word they decorate. Mashed junk is
-# letters/digits, so none of this hides a junk layer.
-_LAYOUT_RE = re.compile(r"([.·…_\-–—])\1{3,}|!\[[^\]]*\]\([^)]*\)|</?\w+/?>|\|")
+# outright, since they are glued to the word they decorate. That deliberately
+# also flattens identifiers (``snake_case`` -> ``snakecase``); it can only
+# shorten a token. Mashed junk is letters/digits, so none of this hides a junk
+# layer.
+_LAYOUT_RE = re.compile(r"([.·…_\-–—])\1{3,}|!\[[^\]]*\]\(.*?\)(?=\s|$)|</?\w+/?>|\|")
 _EMPHASIS_RE = re.compile(r"[*_#`]+")
 
 # Whitespace control characters that legitimately appear in extracted text
