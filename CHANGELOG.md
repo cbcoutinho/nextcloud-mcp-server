@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.208.0 (2026-11-09)
+
+### Feat
+
+- **search**: exhaustive phrase match as algorithm "exact"
+
+### Fix
+
+- **search**: report exact truncation only when a document was cut
+- **sar**: compare title-free words on both sides of the subject check
+- **sar**: keep the subject's titled full name; ignore kept addresses as name words
+- **search**: bound exact scans by chunks; report a phrase-less excerpt index
+- **search**: refuse algorithm exact on the deprecated vector-viz endpoint
+- **sar**: keep the subject's name when detected with a title or alone
+
+### Refactor
+
+- **search**: split exact scan and index checks; document per-type caps
+
 ## v0.207.3 (2026-11-09)
 
 ### Fix
