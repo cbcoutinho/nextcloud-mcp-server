@@ -38,6 +38,12 @@ from .contacts import (
     UpdateContactResponse,
 )
 
+# FullTextSearch models
+from .fulltextsearch import (
+    FullTextSearchHit,
+    FullTextSearchResponse,
+)
+
 # Notes models
 from .notes import (
     AppendContentResponse,
@@ -133,6 +139,9 @@ __all__ = [
     # Sharing models
     "PublicDownloadLinkResponse",
     "ShareType",
+    # FullTextSearch models
+    "FullTextSearchHit",
+    "FullTextSearchResponse",
     # Tables models
     "Table",
     "TableColumn",
