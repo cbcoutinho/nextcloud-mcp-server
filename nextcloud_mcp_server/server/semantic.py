@@ -477,6 +477,7 @@ def _check_algorithm_options(
     granularity: Literal["chunk", "document"],
     rerank: bool,
     offset: int,
+    score_threshold: float,
 ) -> Literal["chunk", "document"]:
     """Reject option combinations ``algorithm`` cannot honour; return the
     granularity to use.
@@ -491,6 +492,11 @@ def _check_algorithm_options(
         if rerank:
             raise MCPError(
                 code=-1, message="rerank does not apply to algorithm='exact'"
+            )
+        if score_threshold:
+            raise MCPError(
+                code=-1,
+                message="score_threshold does not apply to algorithm='exact'",
             )
         return "document"
     if offset:
@@ -786,7 +792,11 @@ async def nc_semantic_search(  # NOSONAR(S107)
     )
 
     granularity = _check_algorithm_options(
-        algorithm, granularity=granularity, rerank=rerank, offset=offset
+        algorithm,
+        granularity=granularity,
+        rerank=rerank,
+        offset=offset,
+        score_threshold=score_threshold,
     )
 
     # Capability gate. Rejecting is deliberate: silently returning
@@ -889,6 +899,11 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # Built by the same helper as the HTTP search API, so "semantic",
         # "bm25", "hybrid" and "exact" mean the same on both surfaces. Every
         # algorithm takes accessible_owners, so search is ACL-aware throughout.
+        # Checked for every algorithm, not only the ones that fuse: a silently
+        # ignored option reads like a ranking bug. A ValueError, so it takes
+        # the same reported path (and metric sample) as before.
+        if fusion not in ("rrf", "dbsf"):
+            raise ValueError(f"Invalid fusion {fusion!r}: must be 'rrf' or 'dbsf'")
         search_algo = build_search_algorithm(
             algorithm, score_threshold=score_threshold, fusion=fusion
         )

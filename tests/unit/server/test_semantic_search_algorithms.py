@@ -157,6 +157,7 @@ def test_exact_reports_truncation():
             {"algorithm": "semantic", "granularity": "document"},
             "granularity='document'",
         ),
+        ({"algorithm": "exact", "score_threshold": 0.5}, "score_threshold"),
     ],
 )
 def test_option_combinations_an_algorithm_cannot_honour_are_rejected(kwargs, message):
@@ -168,8 +169,11 @@ def test_option_combinations_an_algorithm_cannot_honour_are_rejected(kwargs, mes
     search.assert_not_awaited()
 
 
-def test_an_invalid_fusion_is_still_rejected():
-    err, _ = _call(AsyncMock(return_value=[]), fusion="not-a-mode")
+@pytest.mark.parametrize("algorithm", ["hybrid", "semantic", "bm25", "exact"])
+def test_an_invalid_fusion_is_rejected_for_every_algorithm(algorithm):
+    search = AsyncMock(return_value=[])
+    err, _ = _call(search, algorithm=algorithm, fusion="not-a-mode")
 
     assert isinstance(err, MCPError)
     assert "Invalid fusion" in str(err)
+    search.assert_not_awaited()
