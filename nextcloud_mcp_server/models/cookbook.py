@@ -109,7 +109,11 @@ class Recipe(BaseModel):
     prepTime: Optional[str] = Field(None, description="Preparation time (ISO8601)")
     cookTime: Optional[str] = Field(None, description="Cooking time (ISO8601)")
     totalTime: Optional[str] = Field(None, description="Total time (ISO8601)")
-    recipeYield: Union[int, str] = Field(default=1, description="Number of servings")
+    # Cookbook's FixRecipeYieldFilter writes `null` for recipes with no
+    # serving count, so None must be a valid value here, not just the default.
+    recipeYield: Optional[Union[int, str]] = Field(
+        default=1, description="Number of servings"
+    )
     recipeCategory: str = Field(default="", description="Recipe category")
     tool: List[str] = Field(default_factory=list, description="Required tools")
     recipeIngredient: List[str] = Field(
