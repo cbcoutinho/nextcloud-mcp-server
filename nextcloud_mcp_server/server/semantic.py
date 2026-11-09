@@ -788,8 +788,8 @@ async def nc_semantic_search(  # NOSONAR(S107)
     # constructed inside the try below — but this value becomes a Prometheus
     # label on every exit path including the error one, so an arbitrary
     # string here would mint a permanent time series per distinct value. An
-    # invalid mode still raises when a BM25 algorithm is built; this only
-    # bounds what gets reported.
+    # invalid mode still raises when the algorithm is built; this only bounds
+    # what gets reported.
     search_method = search_algorithm_label(algorithm, fusion)
     exact = algorithm == "exact"
 
@@ -1052,13 +1052,12 @@ async def nc_semantic_search(  # NOSONAR(S107)
 
         # Usage metering (Deck #67): record the query embedding's token
         # count as a billable 'tokens_embedded' event. query_token_count
-        # is set by the algorithm during the search() above (None for bm25
-        # and exact, which embed nothing); the
-        # doc_types loop reuses one search_algo instance for the same query
-        # and the algorithm caches the dense embedding per query, so the
-        # query is embedded — and metered — exactly once regardless of how
-        # many doc_types were searched. See record_search_usage for the
-        # metric/privacy details.
+        # is set by the algorithm during the search() above, and is None for
+        # bm25 and exact, which embed nothing. For the algorithms that do
+        # embed, the doc_types loop reuses one search_algo instance and the
+        # embedding is cached per query, so the query is embedded — and
+        # metered — exactly once however many doc_types were searched. See
+        # record_search_usage for the metric/privacy details.
         #
         # NOTE (v1 billing gap): this fires only on a fully successful
         # search. If the query embed succeeded (provider billed the tokens,
