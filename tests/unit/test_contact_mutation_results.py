@@ -12,10 +12,27 @@ from pytest_mock import MockerFixture
 
 from nextcloud_mcp_server.client.contacts import ContactsClient
 from nextcloud_mcp_server.errors import NextcloudMCPServer
-from nextcloud_mcp_server.models.contacts import ContactMutationResponse
+from nextcloud_mcp_server.models.contacts import (
+    AddressBook,
+    Contact,
+    CreateAddressBookResponse,
+    CreateContactResponse,
+    DeleteAddressBookResponse,
+    DeleteContactResponse,
+)
 from nextcloud_mcp_server.server.contacts import configure_contacts_tools
 
 pytestmark = pytest.mark.unit
+
+
+def test_existing_create_response_constructors() -> None:
+    """Existing callers can still supply full objects without receipt metadata."""
+    contact = Contact(uid="alice", fn="Alice")
+    response = CreateContactResponse(contact=contact, addressbook="friends")
+    assert response.contact == contact
+    assert response.uid is None
+    addressbook = AddressBook(uri="friends", displayname="My Friends")
+    assert CreateAddressBookResponse(addressbook=addressbook).addressbook == addressbook
 
 
 @pytest.fixture
@@ -51,6 +68,7 @@ async def test_mutation_receipt(
     object_name: str,
     etag: str | None,
 ) -> None:
+    """Contact writes expose receipts without re-reading the written resource."""
     addressbook = "friends"
     base = f"/remote.php/dav/addressbooks/users/canonical-user/{addressbook}"
     path = f"{base}/{object_name}"
@@ -99,19 +117,101 @@ async def test_mutation_receipt(
             assert payload == result.structured_content
             assert payload["success"] is True
             assert payload["timestamp"]
-            ContactMutationResponse.model_validate(payload)
+            if operation == "create":
+                CreateContactResponse.model_validate(payload)
+                assert payload["contact"] is None
+            else:
+                DeleteContactResponse.model_validate(payload)
         else:
             payload = await getattr(contacts, f"{operation}_contact")(**arguments)
 
-    assert payload["uid"] == uid
+    assert payload["uid" if operation == "create" else "deleted_uid"] == uid
     assert payload["addressbook"] == addressbook
-    assert payload["resource_path"] == path
+    assert "resource_path" not in payload
     assert payload["status_code"] == status
     assert payload.get("etag") == etag
-    assert "contact" not in payload
+    assert payload.get("contact") is None
     assert [r.method for r in requests] == (
         ["PUT"] if operation == "create" else ["PROPFIND", "DELETE"]
     )
+
+
+@pytest.mark.parametrize("via_mcp", [False, True], ids=["direct", "mcp"])
+@pytest.mark.parametrize("operation", ["create", "delete"])
+@pytest.mark.parametrize("failure_status", [None, 403, 404, 409, 412])
+async def test_addressbook_mutation_receipt(
+    mocker: MockerFixture,
+    mutation_server: NextcloudMCPServer,
+    via_mcp: bool,
+    operation: str,
+    failure_status: int | None,
+) -> None:
+    """Address book writes return typed receipts only when the DAV request succeeds."""
+    requests: list[httpx.Request] = []
+    status = failure_status or (201 if operation == "create" else 204)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == ("MKCOL" if operation == "create" else "DELETE")
+        assert request.url.path == (
+            "/remote.php/dav/addressbooks/users/canonical-user/friends/"
+        )
+        return httpx.Response(status)
+
+    async with httpx.AsyncClient(
+        base_url="https://nextcloud.example", transport=httpx.MockTransport(handle)
+    ) as http:
+        contacts = ContactsClient(http, "login-name")
+        contacts._principal_id = "canonical-user"
+        contacts._principal_discovered = True
+        mocker.patch(
+            "nextcloud_mcp_server.server.contacts.get_client",
+            return_value=SimpleNamespace(contacts=contacts),
+        )
+        arguments = {"name": "friends"}
+        if operation == "create":
+            arguments["display_name"] = "My Friends"
+        if via_mcp:
+            async with Client(mutation_server) as client:
+                result = await client.call_tool(
+                    f"nc_contacts_{operation}_addressbook", arguments
+                )
+            if failure_status:
+                assert result.is_error
+                assert result.content
+                assert result.structured_content is None
+                assert len(requests) == 1
+                return
+            assert not result.is_error
+            assert len(result.content) == 1
+            assert isinstance(result.content[0], TextContent)
+            payload = json.loads(result.content[0].text)
+            assert payload == result.structured_content
+            assert payload["success"] is True
+            assert payload["timestamp"]
+            if operation == "create":
+                CreateAddressBookResponse.model_validate(payload)
+            else:
+                DeleteAddressBookResponse.model_validate(payload)
+        else:
+            mutation = getattr(contacts, f"{operation}_addressbook")(**arguments)
+            if failure_status:
+                with pytest.raises(httpx.HTTPStatusError) as exc:
+                    await mutation
+                assert exc.value.response.status_code == failure_status
+                assert len(requests) == 1
+                return
+            payload = await mutation
+
+    assert payload["status_code"] == status
+    assert "resource_path" not in payload
+    if operation == "create":
+        assert payload["addressbook"]["uri"] == "friends"
+        assert payload["addressbook"]["displayname"] == "My Friends"
+        assert payload["addressbook"].get("ctag") is None
+    else:
+        assert payload["deleted_name"] == "friends"
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("via_mcp", [False, True], ids=["direct", "mcp"])
@@ -124,6 +224,7 @@ async def test_mutation_http_failure(
     operation: str,
     status: int,
 ) -> None:
+    """Failed contact writes remain errors through the client and MCP boundary."""
     requests: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:

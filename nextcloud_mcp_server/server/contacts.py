@@ -13,7 +13,10 @@ from nextcloud_mcp_server.models.contacts import (
     AddressBook,
     Contact,
     ContactField,
-    ContactMutationResponse,
+    CreateAddressBookResponse,
+    CreateContactResponse,
+    DeleteAddressBookResponse,
+    DeleteContactResponse,
     ListAddressBooksResponse,
     ListContactsResponse,
     UpdateContactResponse,
@@ -400,17 +403,22 @@ def configure_contacts_tools(mcp: MCPServer):
     @instrument_tool
     async def nc_contacts_create_addressbook(
         ctx: Context, *, name: str, display_name: str
-    ):
+    ) -> CreateAddressBookResponse:
         """Create a new addressbook.
 
         Args:
             name: The name of the addressbook.
             display_name: The display name of the addressbook.
+
+        Returns:
+            Creation receipt with the supplied URI and display name and HTTP status.
+            Server-generated metadata is not fetched after creation.
         """
         client = await get_client(ctx)
-        return await client.contacts.create_addressbook(
+        result = await client.contacts.create_addressbook(
             name=name, display_name=display_name
         )
+        return CreateAddressBookResponse(**result)
 
     @mcp.tool(
         title="Delete Address Book",
@@ -420,10 +428,13 @@ def configure_contacts_tools(mcp: MCPServer):
     )
     @require_scopes("contacts.write")
     @instrument_tool
-    async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
-        """Delete an addressbook."""
+    async def nc_contacts_delete_addressbook(
+        ctx: Context, *, name: str
+    ) -> DeleteAddressBookResponse:
+        """Delete an addressbook and return its name and HTTP status after success."""
         client = await get_client(ctx)
-        return await client.contacts.delete_addressbook(name=name)
+        result = await client.contacts.delete_addressbook(name=name)
+        return DeleteAddressBookResponse(**result)
 
     @mcp.tool(
         title="Create Contact",
@@ -433,7 +444,7 @@ def configure_contacts_tools(mcp: MCPServer):
     @instrument_tool
     async def nc_contacts_create_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict
-    ) -> ContactMutationResponse:
+    ) -> CreateContactResponse:
         """Create a new contact.
 
         Args:
@@ -467,14 +478,14 @@ def configure_contacts_tools(mcp: MCPServer):
                 "organization": "Acme", "note": "Met at conference"}``.
 
         Returns:
-            Mutation receipt with the resource path, HTTP status and ETag when
-            supplied by the server. No read-after-write is performed.
+            Creation receipt with UID, address book, HTTP status and ETag when
+            supplied by the server. Contact is null: no read-after-write is performed.
         """
         client = await get_client(ctx)
         result = await client.contacts.create_contact(
             addressbook=addressbook, uid=uid, contact_data=contact_data
         )
-        return ContactMutationResponse(**result)
+        return CreateContactResponse(**result)
 
     @mcp.tool(
         title="Delete Contact",
@@ -486,7 +497,7 @@ def configure_contacts_tools(mcp: MCPServer):
     @instrument_tool
     async def nc_contacts_delete_contact(
         ctx: Context, *, addressbook: str, uid: str
-    ) -> ContactMutationResponse:
+    ) -> DeleteContactResponse:
         """Delete a contact.
 
         Args:
@@ -496,12 +507,12 @@ def configure_contacts_tools(mcp: MCPServer):
             uid: The unique ID of the contact to delete.
 
         Returns:
-            Mutation receipt with the resolved resource path and HTTP status.
+            Deletion receipt with the deleted UID, address book and HTTP status.
             A missing contact still raises rather than reporting success.
         """
         client = await get_client(ctx)
         result = await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
-        return ContactMutationResponse(**result)
+        return DeleteContactResponse(**result)
 
     @mcp.tool(
         title="Update Contact",

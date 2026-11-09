@@ -649,8 +649,10 @@ class ContactsClient(BaseNextcloudClient):
         logger.debug("Found %s addressbooks", len(addressbooks))
         return addressbooks
 
-    async def create_addressbook(self, *, name: str, display_name: str):
-        """Create a new addressbook."""
+    async def create_addressbook(
+        self, *, name: str, display_name: str
+    ) -> dict[str, Any]:
+        """Create an addressbook and return supplied metadata without re-fetching."""
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
@@ -672,14 +674,21 @@ class ContactsClient(BaseNextcloudClient):
             "Content-Type": "application/xml",
         }
 
-        await self._make_request("MKCOL", url, content=prop_body, headers=headers)
+        response = await self._make_request(
+            "MKCOL", url, content=prop_body, headers=headers
+        )
+        return {
+            "addressbook": {"uri": name, "displayname": display_name},
+            "status_code": response.status_code,
+        }
 
-    async def delete_addressbook(self, *, name: str):
-        """Delete an addressbook."""
+    async def delete_addressbook(self, *, name: str) -> dict[str, Any]:
+        """Delete an addressbook and return a receipt after the DELETE succeeds."""
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
-        await self._make_request("DELETE", url)
+        response = await self._make_request("DELETE", url)
+        return {"deleted_name": name, "status_code": response.status_code}
 
     async def create_contact(
         self, *, addressbook: str, uid: str, contact_data: dict[str, Any]
@@ -702,7 +711,6 @@ class ContactsClient(BaseNextcloudClient):
         return {
             "uid": uid,
             "addressbook": addressbook,
-            "resource_path": url,
             "status_code": response.status_code,
             "etag": response.headers.get("etag"),
         }
@@ -723,9 +731,8 @@ class ContactsClient(BaseNextcloudClient):
         url = f"{carddav_path}/{addressbook}/{object_name}"
         response = await self._make_request("DELETE", url)
         return {
-            "uid": uid,
+            "deleted_uid": uid,
             "addressbook": addressbook,
-            "resource_path": url,
             "status_code": response.status_code,
         }
 

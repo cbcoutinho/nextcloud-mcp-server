@@ -43,6 +43,15 @@ async def test_mcp_contacts_workflow(
             {"name": addressbook_name, "display_name": f"MCP Test {addressbook_name}"},
         )
         assert create_ab_result.is_error is False
+        create_ab_payload = _extract_payload(create_ab_result)
+        assert create_ab_payload == create_ab_result.structured_content
+        assert create_ab_payload["success"] is True
+        assert create_ab_payload["addressbook"]["uri"] == addressbook_name
+        assert create_ab_payload["addressbook"]["displayname"] == (
+            f"MCP Test {addressbook_name}"
+        )
+        assert create_ab_payload["addressbook"]["ctag"] is None
+        assert create_ab_payload["status_code"] == 201
 
         # 2. Verify address book creation
         addressbooks = await nc_client.contacts.list_addressbooks()
@@ -64,9 +73,9 @@ async def test_mcp_contacts_workflow(
         assert create_payload["success"] is True
         assert create_payload["uid"] == contact_uid
         assert create_payload["addressbook"] == addressbook_name
-        assert create_payload["resource_path"].endswith(
-            f"/{addressbook_name}/{contact_uid}.vcf"
-        )
+        assert "resource_path" not in create_payload
+        assert create_payload["contact"] is None
+        assert "etag" in create_payload
         assert create_payload["status_code"] == 201
 
         # 4. Verify contact creation (and that all fields — #716 — actually persisted)
@@ -165,9 +174,9 @@ async def test_mcp_contacts_workflow(
         delete_payload = _extract_payload(delete_c_result)
         assert delete_payload == delete_c_result.structured_content
         assert delete_payload["success"] is True
-        assert delete_payload["uid"] == contact_uid
+        assert delete_payload["deleted_uid"] == contact_uid
         assert delete_payload["addressbook"] == addressbook_name
-        assert delete_payload["resource_path"] == create_payload["resource_path"]
+        assert "resource_path" not in delete_payload
         assert delete_payload["status_code"] == 204
 
         # 6. Verify contact deletion
@@ -180,6 +189,11 @@ async def test_mcp_contacts_workflow(
             "nc_contacts_delete_addressbook", {"name": addressbook_name}
         )
         assert delete_ab_result.is_error is False
+        delete_ab_payload = _extract_payload(delete_ab_result)
+        assert delete_ab_payload == delete_ab_result.structured_content
+        assert delete_ab_payload["success"] is True
+        assert delete_ab_payload["deleted_name"] == addressbook_name
+        assert delete_ab_payload["status_code"] == 204
 
         # 8. Verify address book deletion
         addressbooks = await nc_client.contacts.list_addressbooks()

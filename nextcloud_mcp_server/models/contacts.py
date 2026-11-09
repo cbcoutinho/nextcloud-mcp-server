@@ -143,26 +143,19 @@ class ListContactsResponse(BaseResponse):
     total_count: int = Field(description="Total number of contacts")
 
 
-class ContactMutationResponse(BaseResponse):
-    """Receipt for a successful contact create or delete, not a contact projection."""
-
-    uid: str = Field(description="Contact ID supplied to the mutation")
-    addressbook: str = Field(description="Address book URI slug")
-    resource_path: str = Field(
-        description="CardDAV resource path targeted by the mutation"
-    )
-    status_code: int = Field(description="HTTP status returned by the mutation")
-    etag: str | None = Field(
-        None,
-        description="ETag from the create response, or None if omitted or deleted",
-    )
-
-
 class CreateContactResponse(BaseResponse):
     """Response model for contact creation."""
 
-    contact: Contact = Field(description="The created contact")
+    contact: Contact | None = Field(
+        None,
+        description="The created contact when available; not fetched after creation",
+    )
     addressbook: str = Field(description="Address book the contact was created in")
+    uid: str | None = Field(None, description="UID supplied when creating the contact")
+    status_code: int | None = Field(
+        None, description="HTTP status returned by creation"
+    )
+    etag: str | None = Field(None, description="ETag returned by creation, if supplied")
 
 
 class UpdateContactResponse(BaseResponse):
@@ -182,7 +175,12 @@ class DeleteContactResponse(StatusResponse):
 class CreateAddressBookResponse(BaseResponse):
     """Response model for address book creation."""
 
-    addressbook: AddressBook = Field(description="The created address book")
+    addressbook: AddressBook = Field(
+        description="Created address book identity and supplied metadata; not re-fetched"
+    )
+    status_code: int | None = Field(
+        None, description="HTTP status returned by creation"
+    )
 
 
 class DeleteAddressBookResponse(StatusResponse):
