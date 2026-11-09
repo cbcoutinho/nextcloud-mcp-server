@@ -14,6 +14,13 @@ class MailAddress(BaseModel):
     email: str | None = Field(None, description="Email address")
 
 
+class MailRecipient(BaseModel):
+    """A recipient passed to the send and draft tools."""
+
+    email: str = Field(description="Email address")
+    label: str | None = Field(None, description="Display name")
+
+
 class MailAccount(BaseModel):
     """A configured mail account (from the ``/api/accounts`` endpoint)."""
 

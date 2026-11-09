@@ -28,6 +28,7 @@ from nextcloud_mcp_server.models.mail import (
     MailMailbox,
     MailMessage,
     MailMessageSummary,
+    MailRecipient,
     MailTag,
     MailTagResponse,
     SaveDraftResponse,
@@ -45,6 +46,11 @@ from nextcloud_mcp_server.utils.image_view import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Recipient parameters accept a real array, so the tool schema advertises one
+# and clients can pass it as such. A JSON-encoded string is still accepted for
+# callers written against the original string-only signature.
+Recipients = list[MailRecipient] | str
 
 
 @contextmanager
@@ -257,42 +263,46 @@ async def nc_mail_get_message(message_id: int, ctx: Context) -> GetMessageRespon
 @instrument_tool
 async def nc_mail_send_message(
     account_id: int,
-    to: str,
+    to: Recipients,
     subject: str,
     body: str,
     ctx: Context,
     is_html: bool = False,
-    cc: str | None = None,
-    bcc: str | None = None,
+    cc: Recipients | None = None,
+    bcc: Recipients | None = None,
     references: str | None = None,
 ) -> SendMessageResponse:
     """Send an email through a configured Nextcloud Mail account (requires mail.send scope).
 
     The ``From:`` identity is derived by the Mail app from ``account_id``.
-    Recipients are specified as JSON arrays of ``{"label": "...", "email": "..."}``
-    objects.  Example for ``to``::
+    Recipients are arrays of ``{"label": "...", "email": "..."}`` objects
+    (``label`` is optional). Example for ``to``::
 
         [{"label": "John Doe", "email": "john@example.com"}]
 
     Args:
         account_id: Mail account ID to send from (from nc_mail_list_accounts)
-        to: JSON array of To recipients
+        to: Array of To recipients (at least one)
         subject: Email subject
         body: Email body (plain text unless is_html is true)
         is_html: Whether body contains HTML (default false)
-        cc: Optional JSON array of CC recipients
-        bcc: Optional JSON array of BCC recipients
+        cc: Optional array of CC recipients
+        bcc: Optional array of BCC recipients
         references: Optional RFC 2822 Message-ID for reply threading
 
     Returns:
         SendMessageResponse with success status and optional message
     """
+    to_list = _parse_recipients(to, "to")
+    cc_list = _parse_recipients(cc, "cc")
+    bcc_list = _parse_recipients(bcc, "bcc")
+    if not to_list:
+        raise MCPError(
+            code=-1, message="to needs at least one recipient. Nothing was sent."
+        )
+
     client = await get_client(ctx)
     try:
-        to_list = json.loads(to)  # `to` is a required JSON-array string
-        cc_list = json.loads(cc) if isinstance(cc, str) else (cc or [])
-        bcc_list = json.loads(bcc) if isinstance(bcc, str) else (bcc or [])
-
         await client.mail.send_message(
             account_id=account_id,
             to=to_list,
@@ -312,19 +322,22 @@ async def nc_mail_send_message(
             message=f"Failed to send message: {e.response.status_code} "
             f"{e.response.text[:500]}",
         )
-    except json.JSONDecodeError as e:
-        raise MCPError(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
 
 
-def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
-    """Parse a JSON recipient list (``[{"label": "...", "email": "..."}]``).
+def _parse_recipients(
+    raw: list[MailRecipient] | list[dict] | str | None, field: str
+) -> list[dict[str, str]]:
+    """Normalise a recipient list (``[{"label": "...", "email": "..."}]``).
 
-    Runs before any request is made, so a malformed list fails with an error
-    naming the parameter instead of a half-finished call to the Mail app.
+    Accepts the array itself or its JSON encoding. Runs before any request is
+    made, so a malformed list fails with an error naming the parameter instead
+    of reaching the Mail app, which answers it with a bare 500. That includes
+    a JSON string that decodes to a string rather than an array, which is
+    what a client produces when it encodes an array twice.
 
     Args:
-        raw: The JSON string as passed to the tool; ``None`` or ``""`` means
-            no recipients.
+        raw: The value as passed to the tool; ``None``, ``""`` or ``[]``
+            means no recipients.
         field: Parameter name for error messages (``to``, ``cc``, ``bcc``).
 
     Returns:
@@ -333,10 +346,18 @@ def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
     """
     if not raw:
         return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
+    else:
+        parsed = [
+            entry.model_dump(exclude_none=True)
+            if isinstance(entry, MailRecipient)
+            else entry
+            for entry in raw
+        ]
     if not isinstance(parsed, list):
         raise MCPError(
             code=-1,
@@ -363,13 +384,13 @@ def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
 @instrument_tool
 async def nc_mail_save_draft(
     account_id: int,
-    to: str,
+    to: Recipients,
     subject: str,
     body: str,
     ctx: Context,
     is_html: bool = False,
-    cc: str | None = None,
-    bcc: str | None = None,
+    cc: Recipients | None = None,
+    bcc: Recipients | None = None,
 ) -> SaveDraftResponse:
     """Save an email as a draft WITHOUT sending it (requires mail.draft scope).
 
@@ -380,8 +401,8 @@ async def nc_mail_save_draft(
     sends themselves.
 
     The ``From:`` identity is derived by the Mail app from ``account_id``.
-    Recipients are JSON arrays of ``{"label": "...", "email": "..."}`` objects,
-    as for nc_mail_send_message. Example for ``to``::
+    Recipients are arrays of ``{"label": "...", "email": "..."}`` objects
+    (``label`` is optional), as for nc_mail_send_message. Example for ``to``::
 
         [{"label": "John Doe", "email": "john@example.com"}]
 
@@ -401,12 +422,12 @@ async def nc_mail_save_draft(
 
     Args:
         account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
-        to: JSON array of To recipients (``[]`` for none yet)
+        to: Array of To recipients (``[]`` for none yet)
         subject: Email subject
         body: Email body (plain text unless is_html is true)
         is_html: Whether body contains HTML (default false)
-        cc: Optional JSON array of CC recipients
-        bcc: Optional JSON array of BCC recipients
+        cc: Optional array of CC recipients
+        bcc: Optional array of BCC recipients
 
     Returns:
         SaveDraftResponse confirming the draft was saved. Find the draft in

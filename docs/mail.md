@@ -37,10 +37,24 @@ does not grant sending, and `mail.send` does not grant saving drafts. Granting
 `mail.read` + `mail.draft` while withholding `mail.send` lets an agent read mail
 and prepare replies that a person reviews and sends.
 
+### Recipients
+
+`to`, `cc` and `bcc` on `nc_mail_send_message` and `nc_mail_save_draft` are
+arrays of `{"label", "email"}` objects; `label` is optional:
+
+```json
+[{"label": "John Doe", "email": "john@example.com"}]
+```
+
+The JSON encoding of that array, passed as a string, is also accepted. A list
+that is malformed, or encoded twice so that it decodes to a string, is refused
+with an error naming the parameter before any request reaches the Mail app.
+`nc_mail_send_message` also refuses an empty `to`.
+
 ### Saving drafts
 
 `nc_mail_save_draft` prepares a message without sending it. It takes the same
-`account_id`, `to`/`cc`/`bcc` (JSON arrays of `{"label", "email"}`), `subject`,
+`account_id`, `to`/`cc`/`bcc`, `subject`,
 `body` and `is_html` as `nc_mail_send_message`, and saves the result to the
 account's IMAP **Drafts** mailbox, where the user finds it in Nextcloud Mail and
 in any other mail client and sends it from there.
