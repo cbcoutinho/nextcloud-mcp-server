@@ -1260,6 +1260,16 @@ class TestAddress:
         card = _vcard(fn="Jane", adr={"street": "Main St; Apt 2", "locality": "A,B"})
         assert "ADR:;;Main St\\; Apt 2;A\\,B;;;" in card
 
+    @pytest.mark.parametrize("bad_type", [5, True, {"work": 1}, 1.5], ids=repr)
+    def test_non_str_type_is_rejected_not_raised(self, bad_type, caplog):
+        """A non-iterable type used to raise; a dict wrote its keys as TYPE."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        adr = {"street": "S", "type": bad_type}
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
+                assert "ADR:;;S;;;;" in card
+        assert "invalid ADR type" in caplog.text
+
     def test_type_cannot_inject_a_property(self):
         adr = {"street": "S", "type": ["home", "work\nEMAIL:evil@x"]}
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"

@@ -100,11 +100,18 @@ def _safe_param_tokens(types: Any) -> list[str]:
     TYPE lands unescaped in the property head on both write paths, so a value
     like ``"work\\nEMAIL:x"`` would otherwise inject a line.
     """
-    safe, rejected = [], []
-    for t in [types] if isinstance(types, str) else list(types or []):
-        (safe if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t) else rejected).append(
-            t
-        )
+    if types is None:
+        return []
+    # Only a str or a list/tuple is a TYPE value; anything else (5, True, a
+    # dict, which would iterate its keys) is one rejected value, not a crash.
+    candidates = list(types) if isinstance(types, (list, tuple)) else [types]
+    safe: list[str] = []
+    rejected: list[Any] = []
+    for t in candidates:
+        if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t):
+            safe.append(t)
+        else:
+            rejected.append(t)
     if rejected:
         # Count only: a rejected value is arbitrary caller input.
         logger.warning("Ignoring %d invalid ADR type value(s)", len(rejected))
