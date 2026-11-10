@@ -64,6 +64,8 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
         types: Any = None
         if isinstance(item, str):
             comps = item.split(";")
+            if len(comps) > len(_ADR_COMPONENTS):
+                logger.warning("Truncating ADR string to 7 components: %r", item)
         elif isinstance(item, dict):
             comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
             types = item.get("type")
@@ -82,8 +84,8 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
         # value like "work\nEMAIL:x" would inject a line. Keep only RFC 6350
         # param tokens.
         safe = [t for t in types if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t)]
-        if len(safe) != len(types):
-            logger.warning("Ignoring invalid ADR type values: %r", types)
+        if rejected := [t for t in types if t not in safe]:
+            logger.warning("Ignoring invalid ADR type values: %r", rejected)
         if safe:
             entry["type"] = safe
         out.append(entry)

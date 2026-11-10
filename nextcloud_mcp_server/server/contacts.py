@@ -539,7 +539,8 @@ def configure_contacts_tools(mcp: MCPServer):
                   on update. Multi-URL contacts should use create_contact.
                 - ``adr`` / ``address`` (dict or list of dicts, same shape as
                   create): **Replaces all** existing addresses, so pass every
-                  address the contact should keep. ``[]`` removes them all.
+                  address the contact should keep. ``[]`` removes them all,
+                  and so does a value whose entries are all empty.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control. Pass the

@@ -1319,6 +1319,12 @@ class TestAddress:
         assert card.count("ADR") == 1
         assert "42" in caplog.text
 
+    def test_overlong_string_is_truncated_with_warning(self, caplog):
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            card = _vcard(fn="J", adr="a;b;c;d;e;f;g;extra")
+        assert "ADR:a;b;c;d;e;f;g\r\n" in card
+        assert "Truncating" in caplog.text
+
 
 @given(
     st.lists(_component, min_size=7, max_size=7), st.sampled_from(["create", "update"])
