@@ -8,11 +8,12 @@ PR #719 review without standing up the compose stack.
 from datetime import date
 
 import pytest
-from hypothesis import example, given
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from pythonvCard4.vcard import Contact, ValidationError
 
 from nextcloud_mcp_server.client.contacts import (
+    _ADR_COMPONENTS,
     _N_COMPONENTS,
     ContactsClient,
     _build_contact_from_data,
@@ -433,8 +434,12 @@ class TestNormalizeContactData:
         _normalize_contact_data(original)
         assert original == {"phone": "123", "organization": "Acme"}
 
-    def test_passthrough_for_unknown_keys(self):
-        assert _normalize_contact_data({"foo": "bar"}) == {"foo": "bar"}
+    def test_unknown_keys_dropped_with_warning(self, caplog):
+        """GH #1814: a dropped key must be visible, on create and update alike."""
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            out = _normalize_contact_data({"fn": "x", "foo": "bar"})
+        assert out == {"fn": "x"}
+        assert "['foo']" in caplog.text
 
 
 class TestMergeVcardProperties:
@@ -1208,3 +1213,90 @@ def test_structured_values_parse_into_their_components(n, adr, nickname, categor
     assert contact.adr == [{"value": [_crlf_to_lf(c) for c in adr], "type": ["home"]}]
     assert contact.nickname == [_crlf_to_lf(c) for c in nickname]
     assert contact.categories == [_crlf_to_lf(c) for c in categories]
+
+
+def _merge(raw: str, data: dict) -> str:
+    client = ContactsClient.__new__(ContactsClient)
+    return client._merge_vcard_properties(raw, _normalize_contact_data(data))
+
+
+class TestAddress:
+    """GH #1814: write vCard ADR on create and update."""
+
+    WORK = {
+        "type": "work",
+        "street": "Example Street 1",
+        "locality": "Hamburg",
+        "region": "Hamburg",
+        "postal_code": "20095",
+        "country": "Germany",
+    }
+    WORK_LINE = "ADR;TYPE=work:;;Example Street 1;Hamburg;Hamburg;20095;Germany"
+
+    def test_create_writes_adr_and_reads_back(self):
+        card = _vcard(fn="Jane", adr=self.WORK)
+        assert self.WORK_LINE in card
+        assert _project_contact(_parse_vcard(card))["adr"] == [
+            {
+                "value": [
+                    "",
+                    "",
+                    "Example Street 1",
+                    "Hamburg",
+                    "Hamburg",
+                    "20095",
+                    "Germany",
+                ],
+                "type": ["work"],
+            }
+        ]
+
+    def test_create_list_string_and_address_alias(self):
+        card = _vcard(fn="Jane", address=[self.WORK, ";;Home St;Kiel;;24103;DE"])
+        assert card.count("ADR") == 2
+        assert "ADR:;;Home St;Kiel;;24103;DE" in card
+
+    def test_create_escapes_separators(self):
+        card = _vcard(fn="Jane", adr={"street": "Main St; Apt 2", "locality": "A,B"})
+        assert "ADR:;;Main St\\; Apt 2;A\\,B;;;" in card
+
+    def test_type_cannot_inject_a_property(self):
+        adr = {"street": "S", "type": ["home", "work\nEMAIL:evil@x"]}
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
+            assert "ADR;TYPE=home:;;S;;;;" in card
+            assert "EMAIL" not in card
+
+    def test_empty_address_is_skipped(self):
+        assert "ADR" not in _vcard(fn="Jane", adr={"type": "home"})
+
+    def test_update_replaces_all_addresses_in_place(self):
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\n"
+            "ADR;TYPE=home:;;Old 1;X;;;\nNOTE:n\nADR;TYPE=work:;;Old 2;Y;;;\n"
+            "END:VCARD\n"
+        )
+        lines = _merge(existing, {"adr": self.WORK}).split("\r\n")
+        assert lines[4] == self.WORK_LINE
+        assert "NOTE:n" in lines
+        assert not any("Old" in line for line in lines)
+
+    def test_update_adds_adr_when_missing(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        result = _merge(existing, {"adr": self.WORK})
+        assert self.WORK_LINE in result
+
+    def test_update_empty_list_clears_none_keeps(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nADR:;;Old;X;;;\nEND:VCARD\n"
+        assert "ADR" not in _merge(existing, {"adr": []})
+        assert "ADR:;;Old;X;;;" in _merge(existing, {"adr": None, "note": "x"})
+
+
+@given(st.lists(_component, min_size=7, max_size=7))
+def test_updated_adr_components_round_trip(components):
+    """Any seven components written by update parse back unchanged."""
+    existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+    adr = dict(zip(_ADR_COMPONENTS, components))
+    assume(any(c.strip() for c in components))
+    result = _parse_vcard(_merge(existing, {"adr": adr}))
+    assert result.adr[0]["value"] == [_crlf_to_lf(c) for c in components]

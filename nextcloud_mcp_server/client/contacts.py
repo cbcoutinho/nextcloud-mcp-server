@@ -31,8 +31,64 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
         "bday",
         "categories",
         "url",
+        "adr",
     }
 )
+
+# vCard ADR components, in RFC 6350 §6.3.1 order.
+_ADR_COMPONENTS = (
+    "po_box",
+    "extended",
+    "street",
+    "locality",
+    "region",
+    "postal_code",
+    "country",
+)
+_PARAM_TOKEN = re.compile(r"[A-Za-z0-9-]+")
+
+
+def _adr_entries(value: Any) -> list[dict[str, Any]]:
+    """Normalise ``adr`` input into pythonvCard4's ``[{value, type}]`` shape.
+
+    Accepts a dict keyed by ``_ADR_COMPONENTS`` plus an optional ``type`` (str or
+    list), a raw ``"pobox;ext;street;locality;region;code;country"`` string
+    (split on ``;`` as-is, like ``n``), or a list of either. Entries with no
+    non-empty component are dropped. ``type`` is omitted when not given.
+    """
+    if value is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value if isinstance(value, list) else [value]:
+        types: Any = None
+        if isinstance(item, str):
+            comps = item.split(";")
+        elif isinstance(item, dict):
+            comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
+            types = item.get("type")
+        else:
+            continue
+        comps = (comps + [""] * len(_ADR_COMPONENTS))[: len(_ADR_COMPONENTS)]
+        if not any(c.strip() for c in comps):
+            continue
+        entry: dict[str, Any] = {"value": comps}
+        types = [types] if isinstance(types, str) else list(types or [])
+        # TYPE lands unescaped in the property head on both write paths, so a
+        # value like "work\nEMAIL:x" would inject a line. Keep only RFC 6350
+        # param tokens.
+        safe = [t for t in types if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t)]
+        if len(safe) != len(types):
+            logger.warning("Ignoring invalid ADR type values: %r", types)
+        if safe:
+            entry["type"] = safe
+        out.append(entry)
+    return out
+
+
+def _adr_line(entry: dict[str, Any]) -> str:
+    params = f";TYPE={','.join(entry['type'])}" if entry.get("type") else ""
+    comps = ";".join(_escape_n_component(c) for c in entry["value"])
+    return f"ADR{params}:{comps}"
 
 
 # vCard N components, in RFC 6350 §6.2.2 order.
@@ -162,6 +218,19 @@ def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
         normalised["org"] = normalised.pop("organization")
     else:
         normalised.pop("organization", None)
+    if "address" in normalised and "adr" not in normalised:
+        normalised["adr"] = normalised.pop("address")
+    else:
+        normalised.pop("address", None)
+    if normalised.get("adr") is None:
+        # ``None`` = not supplied (as for name parts), so an update keeps ADR.
+        normalised.pop("adr", None)
+    unknown = set(normalised) - _SUPPORTED_CONTACT_KEYS
+    if unknown:
+        # Warning, not debug: a dropped key is otherwise invisible (GH #1814).
+        logger.warning("Ignoring unknown contact_data keys: %s", sorted(unknown))
+        for key in unknown:
+            del normalised[key]
     return normalised
 
 
@@ -496,9 +565,9 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     if bday is not None:
         kwargs["bday"] = bday
 
-    unknown = set(data) - _SUPPORTED_CONTACT_KEYS
-    if unknown:
-        logger.debug("Ignoring unknown contact_data keys: %s", sorted(unknown))
+    addresses = _adr_entries(data.get("adr"))
+    if addresses:
+        kwargs["adr"] = addresses
 
     # kwargs built dynamically from contact_data; pythonvCard4's Contact typeshed
     # has specific typed params and doesn't accept **dict[str, Any].
@@ -1121,6 +1190,14 @@ class ContactsClient(BaseNextcloudClient):
                 else:
                     # Keep additional URLs unchanged
                     updated_lines.append(line)
+            elif property_name == "ADR" and "adr" in contact_data:
+                # A supplied ``adr`` is the contact's full address set: emit it in
+                # place of the first existing ADR and drop the rest.
+                if "adr" not in updated_properties:
+                    updated_lines.extend(
+                        _adr_line(e) for e in _adr_entries(contact_data["adr"])
+                    )
+                    updated_properties.add("adr")
             else:
                 # Keep all other properties unchanged (preserves all extended/custom fields)
                 updated_lines.append(line)
@@ -1168,6 +1245,8 @@ class ContactsClient(BaseNextcloudClient):
                     url_value = value[0] if isinstance(value, list) and value else value
                     if url_value:
                         updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
+                elif key == "adr":
+                    updated_lines.extend(_adr_line(e) for e in _adr_entries(value))
 
         # Add the END:VCARD line
         updated_lines.append("END:VCARD")
