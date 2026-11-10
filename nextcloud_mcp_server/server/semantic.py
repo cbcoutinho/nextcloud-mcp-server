@@ -34,13 +34,10 @@ from nextcloud_mcp_server.search.access_filter import (
     normalize_path_prefixes,
     resolve_prefix_folder_ids,
 )
-from nextcloud_mcp_server.search.algorithms import SearchResult
-from nextcloud_mcp_server.search.bm25_hybrid import (
-    GRANULARITY_DOCUMENT,
-    BM25HybridSearchAlgorithm,
-    search_method_label,
-)
+from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.search.bm25_hybrid import GRANULARITY_DOCUMENT
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.exact import ExactMatchAlgorithm
 from nextcloud_mcp_server.search.relevance import (
     filter_by_relevance,
     relevance_for,
@@ -52,6 +49,11 @@ from nextcloud_mcp_server.search.rerank import (
     effective_pool_size,
     rerank_available,
     rerank_results,
+)
+from nextcloud_mcp_server.search.selection import (
+    SearchAlgorithmName,
+    build_search_algorithm,
+    search_algorithm_label,
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
@@ -121,7 +123,7 @@ def _parse_modified_bounds(
 
 
 async def _retrieve_candidates(
-    search_algo: BM25HybridSearchAlgorithm,
+    search_algo: SearchAlgorithm,
     *,
     doc_types: list[str] | None,
     fetch_limit: int,
@@ -153,6 +155,10 @@ async def _retrieve_candidates(
     all_results: list[SearchResult] = []
     for dtype in doc_types:
         all_results.extend(await search_algo.search(doc_type=dtype, **search_kwargs))
+
+    # An exact match is every document, not a ranking: the caller pages it.
+    if isinstance(search_algo, ExactMatchAlgorithm):
+        return all_results
 
     # Sort then cap to match the cross-app branch's over-fetch budget. Without
     # this, N doc_types x fetch_limit results would all flow into verification,
@@ -227,6 +233,7 @@ def _to_semantic_results(
     *,
     browser_base: str | None,
     fusion: str,
+    algorithm: str,
     rerank_model: str | None,
 ) -> list[SemanticSearchResult]:
     """Map retrieved rows onto the public response model.
@@ -261,10 +268,7 @@ def _to_semantic_results(
             rerank_score=r.rerank_score,
             score=r.score,
             fusion=fusion,
-            # This tool always runs BM25HybridSearchAlgorithm, so the
-            # fused-score branch is the right one; it never takes the
-            # dense-only cosine path.
-            algorithm="hybrid",
+            algorithm=algorithm,
             rerank_model=rerank_model,
         )
         metadata = r.metadata or {}
@@ -467,6 +471,77 @@ async def _expand_results_with_context(
     return results
 
 
+def _exact_page(
+    results: list[SearchResult], *, exact: bool, offset: int, limit: int
+) -> tuple[list[SearchResult], int | None]:
+    """One page of an exact match, and the number of matches; ranked
+    results pass through unchanged, with no count.
+
+    Every match, in a stable order so pages do not overlap, cut to the page
+    BEFORE verify-on-read (one Nextcloud round-trip per document; an exact
+    match can hold thousands). The count is therefore of indexed matches, as
+    on the HTTP API.
+    """
+    if not exact:
+        return results, None
+    results.sort(key=lambda r: (r.doc_type, (r.title or "").casefold(), r.id))
+    return results[offset : offset + limit], len(results)
+
+
+def _exact_truncated(search_algo: SearchAlgorithm) -> bool | None:
+    """Whether an exact match stopped at its cap; None for ranked searches."""
+    if isinstance(search_algo, ExactMatchAlgorithm):
+        return search_algo.truncated
+    return None
+
+
+def _check_algorithm_options(
+    algorithm: str,
+    *,
+    granularity: Literal["chunk", "document"],
+    rerank: bool,
+    offset: int,
+    score_threshold: float,
+) -> Literal["chunk", "document"]:
+    """Reject option combinations ``algorithm`` cannot honour; return the
+    granularity to use.
+
+    Mirrors the HTTP search API: an exact match is a set, so it is always one
+    row per document and has nothing for a reranker to order, and only the
+    BM25-backed algorithms implement grouping by document. Rejecting rather
+    than ignoring, since a silently dropped option is indistinguishable from a
+    ranking bug.
+    """
+    if algorithm == "exact":
+        if rerank:
+            raise MCPError(
+                code=-1, message="rerank does not apply to algorithm='exact'"
+            )
+        if score_threshold:
+            raise MCPError(
+                code=-1,
+                message="score_threshold does not apply to algorithm='exact'",
+            )
+        return "document"
+    if offset:
+        raise MCPError(
+            code=-1,
+            message=(
+                "offset is supported only for algorithm='exact'; ranked "
+                "results are not stable across pages, so raise limit instead"
+            ),
+        )
+    if algorithm == "semantic" and granularity == GRANULARITY_DOCUMENT:
+        raise MCPError(
+            code=-1,
+            message=(
+                "granularity='document' needs algorithm 'hybrid', 'bm25' or "
+                "'exact'; 'semantic' returns passages only"
+            ),
+        )
+    return granularity
+
+
 @require_scopes("semantic.read")
 @instrument_tool
 async def nc_semantic_search(  # NOSONAR(S107)
@@ -477,7 +552,41 @@ async def nc_semantic_search(  # NOSONAR(S107)
     # so the smell is inherent to the surface rather than to this function.
     query: str,
     ctx: Context,
+    algorithm: Annotated[
+        SearchAlgorithmName,
+        Field(
+            description=(
+                "How to search. 'hybrid' (default) fuses dense semantic and "
+                "BM25 keyword retrieval: the best general choice. 'semantic' "
+                "is dense vectors only, for conceptual matches with no shared "
+                "words. 'bm25' is keyword only, for exact terms, codes and "
+                "acronyms; it never calls the embedding service. 'exact' is "
+                "not ranked: it returns EVERY document whose text contains "
+                "the query as a phrase (case-insensitive) or whose path "
+                "contains its words, one row per document, all with relevance "
+                "1.0, and `total_found` is the true count. Use it to "
+                "enumerate all documents mentioning a name or term; page "
+                "through them with `offset` while offset < total_found. "
+                "total_found counts indexed matches, and documents you can "
+                "no longer access are dropped from each page, so a page can "
+                "be shorter than `limit` before the end: keep paging. Each "
+                "row is the document's first matching chunk, so "
+                "include_context shows the text around that match."
+            ),
+        ),
+    ] = "hybrid",
     limit: Annotated[int, Field(ge=1, le=100)] = 10,
+    offset: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "algorithm='exact' only: skip this many matching documents "
+                "(stable order: doc_type, then title). Ranked algorithms "
+                "reject a non-zero offset, since their pages are not stable."
+            ),
+        ),
+    ] = 0,
     doc_types: list[str] | None = None,
     score_threshold: Annotated[float, Field(ge=0.0)] = 0.0,
     min_relevance: Annotated[
@@ -599,9 +708,11 @@ async def nc_semantic_search(  # NOSONAR(S107)
     """
     Search Nextcloud content across apps, indexed in Qdrant.
 
-    Qdrant native hybrid search combining dense semantic vectors (conceptual
-    similarity, natural language) and BM25 sparse vectors (precise
+    By default, Qdrant native hybrid search combining dense semantic vectors
+    (conceptual similarity, natural language) and BM25 sparse vectors (precise
     keyword/acronym matching), fused in the database for optimal relevance.
+    `algorithm` selects dense-only ('semantic'), keyword-only ('bm25'), or an
+    unranked exhaustive phrase match ('exact') instead.
     Documents indexed keyword-only (``keyword-index`` tag) carry no dense
     vector and so contribute via the BM25 sparse side only. They appear in the
     same unified result set.
@@ -651,7 +762,9 @@ async def nc_semantic_search(  # NOSONAR(S107)
     the supported way to search "just this subdirectory".
 
     Returns:
-        SemanticSearchResponse with matching documents ranked by fusion scores.
+        SemanticSearchResponse with matching documents, ranked (or, for
+        'exact', in a stable doc_type/title order with `truncated` set when
+        the match hit its cap).
 
         Each result carries a `url` that opens that exact chunk in the
         Astrolabe UI. Offer it alongside anything you quote from `excerpt`
@@ -671,17 +784,17 @@ async def nc_semantic_search(  # NOSONAR(S107)
     client = await get_client(ctx)
     username = client.username
 
-    # Self-describing method label, mirroring BM25HybridSearchAlgorithm: the
-    # query always fuses dense + sparse prefetches (keyword-only documents
-    # contribute via the sparse side), so the label is always the fusion one.
-    # Derived from the BOUNDED label helper, not by interpolating the raw
-    # parameter. `fusion` is caller-controlled and is not validated until
-    # the algorithm is constructed inside the try below — but this value
-    # becomes a Prometheus label on every exit path including the error one,
-    # so an arbitrary string here would mint a permanent time series per
-    # distinct value. An invalid mode still raises when the algorithm is
-    # built; this only bounds what gets reported.
-    search_method = search_method_label(fusion)
+    # Self-describing method label: `bm25_hybrid_<fusion>` for hybrid (as
+    # before), the algorithm's own name otherwise. Derived from the BOUNDED
+    # label helper, not by interpolating the raw parameter. `fusion` is
+    # caller-controlled and is not validated until the algorithm is
+    # constructed inside the try below — but this value becomes a Prometheus
+    # label on every exit path including the error one, so an arbitrary
+    # string here would mint a permanent time series per distinct value. An
+    # invalid mode still raises when the algorithm is built; this only bounds
+    # what gets reported.
+    search_method = search_algorithm_label(algorithm, fusion)
+    exact = algorithm == "exact"
 
     logger.info(
         "%s: query=%r, user=%s, limit=%d, score_threshold=%s, fusion=%s",
@@ -702,6 +815,16 @@ async def nc_semantic_search(  # NOSONAR(S107)
 
     modified_after_ts, modified_before_ts = _parse_modified_bounds(
         modified_after, modified_before
+    )
+
+    # Before the metric-recording try, like _parse_modified_bounds above: a
+    # malformed request is not a search, so it records no sample.
+    granularity = _check_algorithm_options(
+        algorithm,
+        granularity=granularity,
+        rerank=rerank,
+        offset=offset,
+        score_threshold=score_threshold,
     )
 
     # Capability gate. Rejecting is deliberate: silently returning
@@ -801,14 +924,13 @@ async def nc_semantic_search(  # NOSONAR(S107)
     metric_reranked = "false"
 
     try:
-        # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
-        # sparse with RRF/DBSF fusion) as the single tool-layer algorithm.
-        # SemanticSearchAlgorithm is not dead code — it backs the dense-only
-        # option that the API surface exposes explicitly
-        # (api/visualization.py). Both algorithms take accessible_owners,
-        # so ACL-aware search works on every surface.
-        search_algo = BM25HybridSearchAlgorithm(
-            score_threshold=score_threshold, fusion=fusion
+        # Built by the same helper as the HTTP search API, so "semantic",
+        # "bm25", "hybrid" and "exact" mean the same on both surfaces. Every
+        # algorithm takes accessible_owners, so search is ACL-aware throughout.
+        # An invalid fusion raises ValueError here, inside the try, so the
+        # rejection is reported and still records its metric sample.
+        search_algo = build_search_algorithm(
+            algorithm, score_threshold=score_threshold, fusion=fusion
         )
 
         overfetch = limit * 2
@@ -840,6 +962,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
         # per-doc_type loop's higher cost is visible rather than averaged
         # away against the single-query branch.
         record_search_stage("mcp", "retrieve", anyio.current_time() - retrieve_start)
+
+        all_results, exact_total = _exact_page(
+            all_results, exact=exact, offset=offset, limit=limit
+        )
 
         # Rerank the merged pool BEFORE verification, and before trimming to
         # the verification budget. After the merge so one cross-encoder pass
@@ -896,7 +1022,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
             verified_results,
             min_relevance=min_relevance,
             fusion=fusion,
-            algorithm="hybrid",
+            algorithm=algorithm,
             rerank_model=settings.search_rerank_model,
         )
         search_results = verified_results[:limit]
@@ -910,6 +1036,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
             search_results,
             browser_base=browser_base,
             fusion=fusion,
+            algorithm=algorithm,
             rerank_model=settings.search_rerank_model,
         )
         # Expand results with surrounding context if requested
@@ -926,12 +1053,12 @@ async def nc_semantic_search(  # NOSONAR(S107)
 
         # Usage metering (Deck #67): record the query embedding's token
         # count as a billable 'tokens_embedded' event. query_token_count
-        # is set by BM25HybridSearchAlgorithm during the search() above; the
-        # doc_types loop reuses one search_algo instance for the same query
-        # and the algorithm caches the dense embedding per query, so the
-        # query is embedded — and metered — exactly once regardless of how
-        # many doc_types were searched. See record_search_usage for the
-        # metric/privacy details.
+        # is set by the algorithm during the search() above, and is None for
+        # bm25 and exact, which embed nothing. For the algorithms that do
+        # embed, the doc_types loop reuses one search_algo instance and the
+        # embedding is cached per query, so the query is embedded — and
+        # metered — exactly once however many doc_types were searched. See
+        # record_search_usage for the metric/privacy details.
         #
         # NOTE (v1 billing gap): this fires only on a fully successful
         # search. If the query embed succeeded (provider billed the tokens,
@@ -956,9 +1083,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
         return SemanticSearchResponse(
             results=results,
             query=query,
-            total_found=len(results),
+            total_found=len(results) if exact_total is None else exact_total,
             search_method=search_method,
             granularity=granularity,
+            truncated=_exact_truncated(search_algo),
             reranked=rerank_outcome == RERANK_APPLIED,
             rerank_model=(
                 settings.search_rerank_model
