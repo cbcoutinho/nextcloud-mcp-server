@@ -53,7 +53,8 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
 
     Accepts a dict keyed by ``_ADR_COMPONENTS`` plus an optional ``type`` (str or
     list), a raw ``"pobox;ext;street;locality;region;code;country"`` string
-    (split on ``;`` as-is, like ``n``), or a list of either. Entries with no
+    (split on ``;`` as-is, like ``n``, so a component containing ``;`` or ``,``
+    needs the dict form), or a list of either. Entries with no
     non-empty component are dropped. ``type`` is omitted when not given.
     """
     if value is None:
@@ -67,6 +68,7 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
             comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
             types = item.get("type")
         else:
+            logger.warning("Ignoring ADR entry that is not a dict or str: %r", item)
             continue
         # Normalise CR here: pythonvCard4's escape_text (create path) escapes
         # only LF, so a bare CR was written raw and lost on read.
@@ -203,7 +205,8 @@ def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
 def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     """Map documented aliases to canonical keys.
 
-    ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
+    ``phone`` → ``tel``, ``organization`` → ``org``, ``address`` → ``adr``. A
+    ``None`` value counts as not supplied. The canonical key wins if both
     are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
     Structured-name keys (``given_name``, ``family_name``, …, or ``n``) collapse
     into ``n`` as a ``{component: value}`` dict — see ``_pop_name_parts``.
@@ -213,21 +216,18 @@ def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     name_parts = _pop_name_parts(normalised)
     if name_parts:
         normalised["n"] = name_parts
-    if "phone" in normalised and "tel" not in normalised:
-        normalised["tel"] = normalised.pop("phone")
-    else:
-        normalised.pop("phone", None)
-    if "organization" in normalised and "org" not in normalised:
-        normalised["org"] = normalised.pop("organization")
-    else:
-        normalised.pop("organization", None)
-    if "address" in normalised and "adr" not in normalised:
-        normalised["adr"] = normalised.pop("address")
-    else:
-        normalised.pop("address", None)
-    if normalised.get("adr") is None:
-        # ``None`` = not supplied (as for name parts), so an update keeps ADR.
-        normalised.pop("adr", None)
+    for alias, canonical in (
+        ("phone", "tel"),
+        ("organization", "org"),
+        ("address", "adr"),
+    ):
+        # ``None`` = not supplied (as for name parts): an update keeps the
+        # property, and a ``None`` canonical key doesn't shadow its alias.
+        if normalised.get(canonical) is None:
+            normalised.pop(canonical, None)
+            if normalised.get(alias) is not None:
+                normalised[canonical] = normalised[alias]
+        normalised.pop(alias, None)
     unknown = set(normalised) - _SUPPORTED_CONTACT_KEYS
     if unknown:
         # Warning, not debug: a dropped key is otherwise invisible (GH #1814).

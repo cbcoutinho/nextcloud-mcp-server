@@ -1291,6 +1291,34 @@ class TestAddress:
         assert "ADR" not in _merge(existing, {"adr": []})
         assert "ADR:;;Old;X;;;" in _merge(existing, {"adr": None, "note": "x"})
 
+    @pytest.mark.parametrize(
+        ("alias", "canonical"),
+        [("address", "adr"), ("phone", "tel"), ("organization", "org")],
+    )
+    def test_none_canonical_does_not_shadow_alias(self, alias, canonical):
+        out = _normalize_contact_data({canonical: None, alias: "v"})
+        assert out == {canonical: "v"}
+
+    def test_update_org_none_keeps_existing_org(self):
+        """``None`` used to be written verbatim as ``ORG:None``."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nORG:Acme\nEND:VCARD\n"
+        assert "ORG:Acme" in _merge(existing, {"org": None})
+
+    def test_update_replaces_grouped_adr(self):
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\n"
+            "item1.ADR:;;Old;X;;;\nitem1.X-ABLabel:office\nEND:VCARD\n"
+        )
+        result = _merge(existing, {"adr": self.WORK})
+        assert "Old" not in result
+        assert result.count("ADR") == 1
+
+    def test_non_dict_entry_is_logged_and_skipped(self, caplog):
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            card = _vcard(fn="J", adr=[42, self.WORK])
+        assert card.count("ADR") == 1
+        assert "42" in caplog.text
+
 
 @given(
     st.lists(_component, min_size=7, max_size=7), st.sampled_from(["create", "update"])
