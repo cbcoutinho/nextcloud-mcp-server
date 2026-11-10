@@ -410,3 +410,70 @@ async def test_mcp_contacts_structured_name_round_trip(
             await nc_client.contacts.delete_addressbook(name=addressbook_name)
         except Exception:
             pass
+
+
+async def test_mcp_contacts_address_round_trip(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """GH #1814: addresses are written as ADR on create and replaced on update."""
+    addressbook_name = f"mcp-test-adr-{uuid.uuid4().hex[:8]}"
+    contact_uid = f"mcp-adr-{uuid.uuid4().hex[:8]}"
+    await nc_client.contacts.create_addressbook(
+        name=addressbook_name, display_name=addressbook_name
+    )
+    try:
+        create_result = await nc_mcp_client.call_tool(
+            "nc_contacts_create_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {
+                    "fn": "Jane Doe",
+                    "adr": {
+                        "type": "work",
+                        "street": "Example Street 1",
+                        "locality": "Hamburg",
+                        "postal_code": "20095",
+                        "country": "Germany",
+                    },
+                },
+            },
+        )
+        assert create_result.is_error is False
+
+        listed = _extract_payload(
+            await nc_mcp_client.call_tool(
+                "nc_contacts_list_contacts", {"addressbook": addressbook_name}
+            )
+        )["contacts"][0]
+        assert len(listed["addresses"]) == 1
+        assert listed["addresses"][0]["label"] == "work"
+        assert listed["addresses"][0]["components"] == [
+            "",
+            "",
+            "Example Street 1",
+            "Hamburg",
+            "",
+            "20095",
+            "Germany",
+        ]
+
+        update_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {
+                    "adr": [{"type": "home", "street": "Home St 2", "locality": "Kiel"}]
+                },
+            },
+        )
+        assert update_result.is_error is False
+        addresses = _extract_payload(update_result)["contact"]["addresses"]
+        assert [a["components"][2] for a in addresses] == ["Home St 2"]
+        assert addresses[0]["label"] == "home"
+    finally:
+        try:
+            await nc_client.contacts.delete_addressbook(name=addressbook_name)
+        except Exception:
+            pass
