@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.209.0 (2026-11-10)
+
+### Feat
+
+- **search**: select hybrid, semantic, bm25 or exact on nc_semantic_search
+
+### Fix
+
+- **search**: reject an invalid fusion for every algorithm, and score_threshold with exact
+- **search**: note short exact pages; pin the exact metric label
+
+### Refactor
+
+- **search**: fold the exact branch into _exact_page (S3776)
+- **search**: extract exact paging and truncation from nc_semantic_search
+- **search**: one list of fusion modes; document context with exact
+
 ## v0.208.1 (2026-11-09)
 
 ### Fix
