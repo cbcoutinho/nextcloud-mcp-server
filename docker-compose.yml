@@ -147,7 +147,7 @@ services:
   # raise SEARCH_RERANK_TIMEOUT_SECONDS or lower SEARCH_RERANK_POOL_SIZE, or
   # use the GPU image (drop the "-cpu" suffix) for real workloads.
   infinity:
-    image: docker.io/michaelf34/infinity:0.0.78-cpu@sha256:0dda7c4fd26da2734ffbfa4054f880e81a7c7f941c7aa1f4c257523ee7fc70a3
+    image: docker.io/michaelf34/infinity:0.0.80-cpu@sha256:2e1bc9e82f06c9f4616813dc66617ebe2caa241351f602f3e97453de1ef55896
     restart: always
     command:
       - v2
