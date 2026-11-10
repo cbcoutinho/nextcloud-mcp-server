@@ -1,6 +1,7 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import os
 import re
 import traceback
 import xml.etree.ElementTree as ET
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 # Canonical keys accepted by _build_contact_from_data. Callers normalise aliases
-# (``phone``→``tel``, ``organization``→``org``) via _normalize_contact_data beforehand
+# (``phone``→``tel``, ``organization``→``org``, ``address``→``adr``) via
+# _normalize_contact_data beforehand
 # so the set never needs to list them.
 _SUPPORTED_CONTACT_KEYS = frozenset(
     {
@@ -435,7 +437,8 @@ def _exc_summary(exc: BaseException) -> str:
     vCard parsing use this instead of ``exc_info=True``.
     """
     frames = traceback.extract_tb(exc.__traceback__)
-    where = f" at {frames[-1].filename}:{frames[-1].lineno}" if frames else ""
+    last = frames[-1] if frames else None
+    where = f" at {os.path.basename(last.filename)}:{last.lineno}" if last else ""
     return f"{type(exc).__name__}{where}"
 
 
@@ -913,7 +916,8 @@ class ContactsClient(BaseNextcloudClient):
             # Broad by intent: pythonvCard4 is third-party and its parse failure
             # modes aren't enumerable. Whatever it raises, the write stands.
             # _exc_summary, not logger.exception: the message carries card data.
-            logger.error(
+            # Warning, not error: the write itself succeeded.
+            logger.warning(
                 "Contact %s was updated successfully but the written vCard could "
                 "not be re-parsed for the response projection (%s); returning the "
                 "raw card and ETag instead",
