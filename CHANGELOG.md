@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.210.0 (2026-11-10)
+
+### Feat
+
+- **contacts**: write addresses (ADR) on create and update
+
+### Fix
+
+- **contacts**: log the post-update re-parse failure as a warning
+- **contacts**: reject a non-str/list ADR type instead of raising
+- **contacts**: keep contact data out of all contacts-client logs
+- **contacts**: keep address values out of logs, parse adr once
+- **contacts**: never let unusable adr input wipe addresses on update
+- **contacts**: warn on truncated ADR strings, log only rejected types
+- **contacts**: treat a None canonical key as absent before aliasing
+- **contacts**: keep a bare CR in ADR components on create
+
 ## v0.209.0 (2026-11-10)
 
 ### Feat
