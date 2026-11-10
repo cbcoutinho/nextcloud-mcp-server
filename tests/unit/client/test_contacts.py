@@ -1297,7 +1297,8 @@ class TestAddress:
     )
     def test_none_canonical_does_not_shadow_alias(self, alias, canonical):
         out = _normalize_contact_data({canonical: None, alias: "v"})
-        assert out == {canonical: "v"}
+        assert out == _normalize_contact_data({canonical: "v"})
+        assert out[canonical]
 
     def test_update_org_none_keeps_existing_org(self):
         """``None`` used to be written verbatim as ``ORG:None``."""
@@ -1332,15 +1333,24 @@ class TestAddress:
 
     def test_non_dict_entry_is_logged_and_skipped(self, caplog):
         with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
-            card = _vcard(fn="J", adr=[42, self.WORK])
+            card = _vcard(fn="J", adr=[4242, self.WORK])
         assert card.count("ADR") == 1
-        assert "42" in caplog.text
+        assert "not a dict or str: int" in caplog.text
+        assert "4242" not in caplog.text
 
     def test_overlong_string_is_truncated_with_warning(self, caplog):
         with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
-            card = _vcard(fn="J", adr="a;b;c;d;e;f;g;extra")
-        assert "ADR:a;b;c;d;e;f;g\r\n" in card
-        assert "Truncating" in caplog.text
+            card = _vcard(fn="J", adr="a;b;c;d;e;f;Secret St;extra")
+        assert "ADR:a;b;c;d;e;f;Secret St\r\n" in card
+        # Logged once (parsed once) and without the address itself: it is PII.
+        assert caplog.text.count("Truncating ADR string from 8") == 1
+        assert "Secret" not in caplog.text
+
+    def test_no_usable_address_warning_has_no_values(self, caplog):
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            _normalize_contact_data({"fn": "J", "adr": {"zip": "SecretZip"}})
+        assert "no usable address (dict)" in caplog.text
+        assert "SecretZip" not in caplog.text
 
 
 @given(

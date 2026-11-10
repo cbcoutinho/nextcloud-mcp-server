@@ -540,7 +540,9 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``adr`` / ``address`` (dict or list of dicts, same shape as
                   create): **Replaces all** existing addresses, so pass every
                   address the contact should keep. Only ``[]`` removes them
-                  all. A value with no usable address is ignored.
+                  all. A value with no usable address is ignored. A grouped
+                  ``item1.ADR`` is replaced ungrouped, so its ``X-ABLabel``
+                  label no longer applies.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control. Pass the

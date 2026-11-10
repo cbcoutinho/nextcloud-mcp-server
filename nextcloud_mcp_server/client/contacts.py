@@ -69,14 +69,17 @@ def _adr_entry(item: Any) -> dict[str, Any] | None:
     if isinstance(item, str):
         comps = item.split(";")
         if len(comps) > len(_ADR_COMPONENTS):
-            logger.warning("Truncating ADR string to 7 components: %r", item)
+            # Shape only: address values are personal data.
+            logger.warning("Truncating ADR string from %d to 7 components", len(comps))
     elif isinstance(item, dict):
         if unknown := set(item) - {*_ADR_COMPONENTS, "type"}:
             logger.warning("Ignoring unknown ADR keys: %s", sorted(unknown))
         comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
         types = item.get("type")
     else:
-        logger.warning("Ignoring ADR entry that is not a dict or str: %r", item)
+        logger.warning(
+            "Ignoring ADR entry that is not a dict or str: %s", type(item).__name__
+        )
         return None
     # Normalise CR here: pythonvCard4's escape_text (create path) escapes
     # only LF, so a bare CR was written raw and lost on read.
@@ -244,12 +247,17 @@ def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
             if normalised.get(alias) is not None:
                 normalised[canonical] = normalised[alias]
         normalised.pop(alias, None)
-    adr = normalised.get("adr")
-    if adr is not None and adr != [] and not _adr_entries(adr):
-        # Only a literal ``[]`` clears addresses on update. Input that yields no
-        # entry (all empty, misspelled keys) is far likelier a mistake.
-        logger.warning("Ignoring adr with no usable address: %r", adr)
-        del normalised["adr"]
+    if "adr" in normalised:
+        # Parsed once here; both write paths consume ``adr`` as ready entries.
+        raw_adr = normalised["adr"]
+        normalised["adr"] = _adr_entries(raw_adr)
+        if raw_adr != [] and not normalised["adr"]:
+            # Only a literal ``[]`` clears addresses on update. Input that yields
+            # no entry (all empty, misspelled keys) is far likelier a mistake.
+            logger.warning(
+                "Ignoring adr with no usable address (%s)", type(raw_adr).__name__
+            )
+            del normalised["adr"]
     unknown = set(normalised) - _SUPPORTED_CONTACT_KEYS
     if unknown:
         # Warning, not debug: a dropped key is otherwise invisible (GH #1814).
@@ -590,9 +598,8 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     if bday is not None:
         kwargs["bday"] = bday
 
-    addresses = _adr_entries(data.get("adr"))
-    if addresses:
-        kwargs["adr"] = addresses
+    if data.get("adr"):
+        kwargs["adr"] = data["adr"]  # already entries, see _normalize_contact_data
 
     # kwargs built dynamically from contact_data; pythonvCard4's Contact typeshed
     # has specific typed params and doesn't accept **dict[str, Any].
@@ -1219,9 +1226,7 @@ class ContactsClient(BaseNextcloudClient):
                 # A supplied ``adr`` is the contact's full address set: emit it in
                 # place of the first existing ADR and drop the rest.
                 if "adr" not in updated_properties:
-                    updated_lines.extend(
-                        _adr_line(e) for e in _adr_entries(contact_data["adr"])
-                    )
+                    updated_lines.extend(_adr_line(e) for e in contact_data["adr"])
                     updated_properties.add("adr")
             else:
                 # Keep all other properties unchanged (preserves all extended/custom fields)
@@ -1271,7 +1276,7 @@ class ContactsClient(BaseNextcloudClient):
                     if url_value:
                         updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
                 elif key == "adr":
-                    updated_lines.extend(_adr_line(e) for e in _adr_entries(value))
+                    updated_lines.extend(_adr_line(e) for e in value)
 
         # Add the END:VCARD line
         updated_lines.append("END:VCARD")
