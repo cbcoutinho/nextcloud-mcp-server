@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 from mcp.client import Client
 from mcp.types import TextContent
@@ -73,14 +73,14 @@ async def test_mutation_receipt(
     base = f"/remote.php/dav/addressbooks/users/canonical-user/{addressbook}"
     path = f"{base}/{object_name}"
     status = 201 if operation == "create" else 204
-    requests: list[httpx.Request] = []
+    requests: list[httpx2.Request] = []
 
-    def handle(request: httpx.Request) -> httpx.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         if request.method == "PROPFIND":
             assert operation == "delete"
             assert request.url.path == base
-            return httpx.Response(
+            return httpx2.Response(
                 207,
                 text=f'<d:multistatus xmlns:d="DAV:"><d:response>'
                 f"<d:href>{path}</d:href></d:response></d:multistatus>",
@@ -90,10 +90,10 @@ async def test_mutation_receipt(
         if operation == "create":
             assert request.headers["If-None-Match"] == "*"
             assert f"UID:{uid}" in request.content.decode()
-        return httpx.Response(status, headers={"ETag": etag} if etag else {})
+        return httpx2.Response(status, headers={"ETag": etag} if etag else {})
 
-    async with httpx.AsyncClient(
-        base_url="https://nextcloud.example", transport=httpx.MockTransport(handle)
+    async with httpx2.AsyncClient(
+        base_url="https://nextcloud.example", transport=httpx2.MockTransport(handle)
     ) as http:
         contacts = ContactsClient(http, "login-name")
         contacts._principal_id = "canonical-user"
@@ -147,19 +147,19 @@ async def test_addressbook_mutation_receipt(
     failure_status: int | None,
 ) -> None:
     """Address book writes return typed receipts only when the DAV request succeeds."""
-    requests: list[httpx.Request] = []
+    requests: list[httpx2.Request] = []
     status = failure_status or (201 if operation == "create" else 204)
 
-    def handle(request: httpx.Request) -> httpx.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         assert request.method == ("MKCOL" if operation == "create" else "DELETE")
         assert request.url.path == (
             "/remote.php/dav/addressbooks/users/canonical-user/friends/"
         )
-        return httpx.Response(status)
+        return httpx2.Response(status)
 
-    async with httpx.AsyncClient(
-        base_url="https://nextcloud.example", transport=httpx.MockTransport(handle)
+    async with httpx2.AsyncClient(
+        base_url="https://nextcloud.example", transport=httpx2.MockTransport(handle)
     ) as http:
         contacts = ContactsClient(http, "login-name")
         contacts._principal_id = "canonical-user"
@@ -196,7 +196,7 @@ async def test_addressbook_mutation_receipt(
         else:
             mutation = getattr(contacts, f"{operation}_addressbook")(**arguments)
             if failure_status:
-                with pytest.raises(httpx.HTTPStatusError) as exc:
+                with pytest.raises(httpx2.HTTPStatusError) as exc:
                     await mutation
                 assert exc.value.response.status_code == failure_status
                 assert len(requests) == 1
@@ -225,18 +225,18 @@ async def test_mutation_http_failure(
     status: int,
 ) -> None:
     """Failed contact writes remain errors through the client and MCP boundary."""
-    requests: list[httpx.Request] = []
+    requests: list[httpx2.Request] = []
 
-    def handle(request: httpx.Request) -> httpx.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         if request.method == "PROPFIND":
             # No match retains the existing fallback to <uid>.vcf, including 404.
-            return httpx.Response(207, text='<d:multistatus xmlns:d="DAV:"/>')
+            return httpx2.Response(207, text='<d:multistatus xmlns:d="DAV:"/>')
         assert request.url.path.endswith("/contacts/missing.vcf")
-        return httpx.Response(status)
+        return httpx2.Response(status)
 
-    async with httpx.AsyncClient(
-        base_url="https://nextcloud.example", transport=httpx.MockTransport(handle)
+    async with httpx2.AsyncClient(
+        base_url="https://nextcloud.example", transport=httpx2.MockTransport(handle)
     ) as http:
         contacts = ContactsClient(http, "testuser")
         contacts._principal_discovered = True
@@ -257,7 +257,7 @@ async def test_mutation_http_failure(
             assert result.structured_content is None
         else:
             mutation = getattr(contacts, f"{operation}_contact")(**arguments)
-            with pytest.raises(httpx.HTTPStatusError) as exc:
+            with pytest.raises(httpx2.HTTPStatusError) as exc:
                 await mutation
             assert exc.value.response.status_code == status
 
