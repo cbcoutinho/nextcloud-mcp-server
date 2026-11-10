@@ -1313,6 +1313,23 @@ class TestAddress:
         assert "Old" not in result
         assert result.count("ADR") == 1
 
+    @pytest.mark.parametrize(
+        "adr", [{"street": ""}, {"zip": "123"}, [{}], "", ";;;"], ids=repr
+    )
+    def test_update_with_no_usable_address_keeps_existing(self, adr, caplog):
+        """Only a literal ``[]`` clears; a misspelled key must not wipe ADR."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nADR:;;Old;X;;;\nEND:VCARD\n"
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            result = _merge(existing, {"adr": adr})
+        assert "ADR:;;Old;X;;;" in result
+        assert "no usable address" in caplog.text
+
+    def test_unknown_adr_keys_are_logged(self, caplog):
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+            card = _vcard(fn="J", adr={"street": "S", "zip": "123"})
+        assert "ADR:;;S;;;;" in card
+        assert "['zip']" in caplog.text
+
     def test_non_dict_entry_is_logged_and_skipped(self, caplog):
         with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
             card = _vcard(fn="J", adr=[42, self.WORK])

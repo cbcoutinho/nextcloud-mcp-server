@@ -59,37 +59,51 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
     """
     if value is None:
         return []
-    out: list[dict[str, Any]] = []
-    for item in value if isinstance(value, list) else [value]:
-        types: Any = None
-        if isinstance(item, str):
-            comps = item.split(";")
-            if len(comps) > len(_ADR_COMPONENTS):
-                logger.warning("Truncating ADR string to 7 components: %r", item)
-        elif isinstance(item, dict):
-            comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
-            types = item.get("type")
-        else:
-            logger.warning("Ignoring ADR entry that is not a dict or str: %r", item)
-            continue
-        # Normalise CR here: pythonvCard4's escape_text (create path) escapes
-        # only LF, so a bare CR was written raw and lost on read.
-        comps = [c.replace("\r\n", "\n").replace("\r", "\n") for c in comps]
-        comps = (comps + [""] * len(_ADR_COMPONENTS))[: len(_ADR_COMPONENTS)]
-        if not any(c.strip() for c in comps):
-            continue
-        entry: dict[str, Any] = {"value": comps}
-        types = [types] if isinstance(types, str) else list(types or [])
-        # TYPE lands unescaped in the property head on both write paths, so a
-        # value like "work\nEMAIL:x" would inject a line. Keep only RFC 6350
-        # param tokens.
-        safe = [t for t in types if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t)]
-        if rejected := [t for t in types if t not in safe]:
-            logger.warning("Ignoring invalid ADR type values: %r", rejected)
-        if safe:
-            entry["type"] = safe
-        out.append(entry)
-    return out
+    items = value if isinstance(value, list) else [value]
+    return [e for e in map(_adr_entry, items) if e is not None]
+
+
+def _adr_entry(item: Any) -> dict[str, Any] | None:
+    """One ``adr`` item to ``{value, type}``; ``None`` (logged) if unusable."""
+    types: Any = None
+    if isinstance(item, str):
+        comps = item.split(";")
+        if len(comps) > len(_ADR_COMPONENTS):
+            logger.warning("Truncating ADR string to 7 components: %r", item)
+    elif isinstance(item, dict):
+        if unknown := set(item) - {*_ADR_COMPONENTS, "type"}:
+            logger.warning("Ignoring unknown ADR keys: %s", sorted(unknown))
+        comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
+        types = item.get("type")
+    else:
+        logger.warning("Ignoring ADR entry that is not a dict or str: %r", item)
+        return None
+    # Normalise CR here: pythonvCard4's escape_text (create path) escapes
+    # only LF, so a bare CR was written raw and lost on read.
+    comps = [c.replace("\r\n", "\n").replace("\r", "\n") for c in comps]
+    comps = (comps + [""] * len(_ADR_COMPONENTS))[: len(_ADR_COMPONENTS)]
+    if not any(c.strip() for c in comps):
+        return None
+    entry: dict[str, Any] = {"value": comps}
+    if safe := _safe_param_tokens(types):
+        entry["type"] = safe
+    return entry
+
+
+def _safe_param_tokens(types: Any) -> list[str]:
+    """Keep only RFC 6350 param tokens, logging the rest.
+
+    TYPE lands unescaped in the property head on both write paths, so a value
+    like ``"work\\nEMAIL:x"`` would otherwise inject a line.
+    """
+    safe, rejected = [], []
+    for t in [types] if isinstance(types, str) else list(types or []):
+        (safe if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t) else rejected).append(
+            t
+        )
+    if rejected:
+        logger.warning("Ignoring invalid ADR type values: %r", rejected)
+    return safe
 
 
 def _adr_line(entry: dict[str, Any]) -> str:
@@ -230,6 +244,12 @@ def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
             if normalised.get(alias) is not None:
                 normalised[canonical] = normalised[alias]
         normalised.pop(alias, None)
+    adr = normalised.get("adr")
+    if adr is not None and adr != [] and not _adr_entries(adr):
+        # Only a literal ``[]`` clears addresses on update. Input that yields no
+        # entry (all empty, misspelled keys) is far likelier a mistake.
+        logger.warning("Ignoring adr with no usable address: %r", adr)
+        del normalised["adr"]
     unknown = set(normalised) - _SUPPORTED_CONTACT_KEYS
     if unknown:
         # Warning, not debug: a dropped key is otherwise invisible (GH #1814).
