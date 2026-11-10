@@ -68,6 +68,9 @@ def _adr_entries(value: Any) -> list[dict[str, Any]]:
             types = item.get("type")
         else:
             continue
+        # Normalise CR here: pythonvCard4's escape_text (create path) escapes
+        # only LF, so a bare CR was written raw and lost on read.
+        comps = [c.replace("\r\n", "\n").replace("\r", "\n") for c in comps]
         comps = (comps + [""] * len(_ADR_COMPONENTS))[: len(_ADR_COMPONENTS)]
         if not any(c.strip() for c in comps):
             continue

@@ -1292,11 +1292,18 @@ class TestAddress:
         assert "ADR:;;Old;X;;;" in _merge(existing, {"adr": None, "note": "x"})
 
 
-@given(st.lists(_component, min_size=7, max_size=7))
-def test_updated_adr_components_round_trip(components):
-    """Any seven components written by update parse back unchanged."""
-    existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
-    adr = dict(zip(_ADR_COMPONENTS, components))
+@given(
+    st.lists(_component, min_size=7, max_size=7), st.sampled_from(["create", "update"])
+)
+# pythonvCard4's escape_text leaves a bare CR unescaped, so create lost it.
+@example(["", "", "", "", "", "", "0\r"], "create")
+def test_adr_components_round_trip(components, path):
+    """Any seven components written by create or update parse back unchanged."""
     assume(any(c.strip() for c in components))
-    result = _parse_vcard(_merge(existing, {"adr": adr}))
-    assert result.adr[0]["value"] == [_crlf_to_lf(c) for c in components]
+    adr = dict(zip(_ADR_COMPONENTS, components))
+    if path == "create":
+        card = _vcard(fn="J", adr=adr)
+    else:
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        card = _merge(existing, {"adr": adr})
+    assert _parse_vcard(card).adr[0]["value"] == [_crlf_to_lf(c) for c in components]
