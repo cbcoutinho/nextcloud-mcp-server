@@ -2,6 +2,7 @@
 
 import logging
 import re
+import traceback
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -105,7 +106,8 @@ def _safe_param_tokens(types: Any) -> list[str]:
             t
         )
     if rejected:
-        logger.warning("Ignoring invalid ADR type values: %r", rejected)
+        # Count only: a rejected value is arbitrary caller input.
+        logger.warning("Ignoring %d invalid ADR type value(s)", len(rejected))
     return safe
 
 
@@ -332,7 +334,8 @@ def _parse_bday(value: str | date | None) -> date | None:
         try:
             return date.fromisoformat(value)
         except ValueError:
-            logger.warning("Ignoring non-ISO bday value: %r", value)
+            # Not the value itself: a birthday is personal data.
+            logger.warning("Ignoring non-ISO bday value (expected YYYY-MM-DD)")
     return None
 
 
@@ -414,6 +417,19 @@ def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[s
         for key, value in custom.items()
         if key.upper() not in _CUSTOM_KEYS_ALREADY_SURFACED
     }
+
+
+def _exc_summary(exc: BaseException) -> str:
+    """Exception class and raising frame, without the message.
+
+    Contact data is personal data and must not reach the logs. pythonvCard4's
+    parse errors carry the offending value in their message (``date.fromisoformat``
+    -> ``Invalid isoformat string: '<the birthday>'``), so log handlers around
+    vCard parsing use this instead of ``exc_info=True``.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = f" at {frames[-1].filename}:{frames[-1].lineno}" if frames else ""
+    return f"{type(exc).__name__}{where}"
 
 
 def _parses_alone(line: str) -> bool:
@@ -886,14 +902,16 @@ class ContactsClient(BaseNextcloudClient):
         # ``addressdata``, so nothing is withheld.
         try:
             contact_projection = _project_contact(_parse_vcard(vcard_content))
-        except Exception:
+        except Exception as exc:
             # Broad by intent: pythonvCard4 is third-party and its parse failure
             # modes aren't enumerable. Whatever it raises, the write stands.
-            logger.exception(
+            # _exc_summary, not logger.exception: the message carries card data.
+            logger.error(
                 "Contact %s was updated successfully but the written vCard could "
-                "not be re-parsed for the response projection; returning the raw "
-                "card and ETag instead",
+                "not be re-parsed for the response projection (%s); returning the "
+                "raw card and ETag instead",
                 uid,
+                _exc_summary(exc),
             )
             contact_projection = {}
 
@@ -995,13 +1013,14 @@ class ContactsClient(BaseNextcloudClient):
             # parsed convenience fields for that one contact, not the listing.
             try:
                 contact_projection = _project_contact(_parse_vcard(addressdata))
-            except Exception:
+            except Exception as exc:
+                # _exc_summary, not exc_info: the message carries card data.
                 logger.warning(
-                    "Could not parse vCard for %s in addressbook %s; returning it "
-                    "with raw addressdata only",
+                    "Could not parse vCard for %s in addressbook %s (%s); returning "
+                    "it with raw addressdata only",
                     object_name,
                     addressbook,
-                    exc_info=True,
+                    _exc_summary(exc),
                 )
                 contact_projection = {}
 
@@ -1075,12 +1094,12 @@ class ContactsClient(BaseNextcloudClient):
             _value = contact_data.get(_key)
             if _value is not None and not isinstance(_value, str):
                 logger.warning(
-                    "update_contact: %s=%r (dict/list shape) is not applied via "
+                    "update_contact: %s (a %s, dict/list shape) is not applied via "
                     "the text-merge update path; existing %s lines are preserved "
                     "unchanged. Use a plain string to update %s here, or recreate "
                     "via create_contact for multi-entry support.",
                     _key,
-                    _value,
+                    type(_value).__name__,  # not the value: it is personal data
                     _key.upper(),
                     _key.upper(),
                 )

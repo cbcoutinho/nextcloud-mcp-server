@@ -1368,3 +1368,78 @@ def test_adr_components_round_trip(components, path):
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
         card = _merge(existing, {"adr": adr})
     assert _parse_vcard(card).adr[0]["value"] == [_crlf_to_lf(c) for c in components]
+
+
+class TestNoContactDataInLogs:
+    """Contact values are personal data: no log line may carry one.
+
+    Each test feeds a sentinel through a path that logs, and asserts the sentinel
+    is absent from every captured record, tracebacks included.
+    """
+
+    SECRET = "SENTINEL-PII-1990"
+    LOGGER = "nextcloud_mcp_server.client.contacts"
+
+    def _assert_clean(self, caplog):
+        assert caplog.records, "the path under test should have logged"
+        assert self.SECRET not in caplog.text
+
+    def test_invalid_bday(self, caplog):
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            _vcard(fn="J", bday=self.SECRET)
+        self._assert_clean(caplog)
+
+    def test_dict_email_on_update(self, caplog):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            _merge(existing, {"email": {"value": self.SECRET}})
+        self._assert_clean(caplog)
+
+    def test_rejected_adr_type(self, caplog):
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            _vcard(fn="J", adr={"street": "S", "type": f"x\nEMAIL:{self.SECRET}"})
+        self._assert_clean(caplog)
+
+    async def test_reparse_failure_after_update(self, mocker, caplog):
+        """pythonvCard4 puts the bad value in the message (date.fromisoformat)."""
+        client = _update_client(
+            mocker,
+            object_name="u.vcf",
+            raw_vcard="BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n",
+        )
+        mocker.patch(
+            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            side_effect=ValueError(f"Invalid isoformat string: '{self.SECRET}'"),
+        )
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            await client.update_contact(
+                addressbook="contacts", uid="u", contact_data={"fn": "J"}
+            )
+        self._assert_clean(caplog)
+        assert "ValueError" in caplog.text  # still diagnosable
+
+    async def test_unparseable_card_in_list(self, mocker, caplog):
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        client._principal_discovered = True
+        response = mocker.Mock()
+        response.content = (
+            b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" '
+            b'xmlns:card="urn:ietf:params:xml:ns:carddav"><d:response>'
+            b"<d:href>/remote.php/dav/addressbooks/users/testuser/c/u.vcf</d:href>"
+            b"<d:propstat><d:prop><d:getetag>e</d:getetag><card:address-data>"
+            b"BEGIN:VCARD\nFN:J\nEND:VCARD</card:address-data></d:prop>"
+            b"</d:propstat></d:response></d:multistatus>"
+        )
+        mocker.patch.object(
+            client, "_make_request", mocker.AsyncMock(return_value=response)
+        )
+        mocker.patch(
+            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            side_effect=ValueError(f"Invalid isoformat string: '{self.SECRET}'"),
+        )
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            contacts = await client.list_contacts(addressbook="c")
+        assert contacts[0]["contact"] == {}
+        self._assert_clean(caplog)
+        assert "ValueError" in caplog.text
