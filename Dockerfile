@@ -20,12 +20,16 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR /src
 
 COPY pyproject.toml uv.lock README.md .
+# uv resolves the workspace from every member's pyproject.toml, so the
+# nextcloud-client member's metadata is needed before the dependency layer.
+COPY packages/nextcloud-client/pyproject.toml packages/nextcloud-client/
 
 # --no-build: every third-party dependency must arrive as a wheel, so no
 # dependency's setup.py executes at image-build time (docker:S8541). This is
-# the sync that installs them all; the second one only adds the project itself,
-# which by definition has to be built and cannot carry the flag.
-RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache \
+# the sync that installs them all; the second one only adds the workspace's own
+# packages (the server and nextcloud-client), which by definition have to be
+# built and cannot carry the flag.
+RUN uv sync --locked --no-dev --no-install-workspace --no-build --no-cache \
     --extra semantic --extra postgres --extra observability
 
 COPY . .

@@ -12,8 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.client.availability import (
+from nextcloud_client.availability import (
     busy_spans_from_events,
     busy_spans_from_vfreebusy,
     daily_windows,

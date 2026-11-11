@@ -24,8 +24,7 @@ from __future__ import annotations
 
 import pytest
 from httpx2 import HTTPStatusError, Request, Response
-
-from nextcloud_mcp_server.client.base import (
+from nextcloud_client.base import (
     LOCK_MAX_RETRIES,
     MAX_RETRIES,
     retry_on_429,
@@ -37,7 +36,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def no_sleep(mocker):
     """Keep the backoffs from actually elapsing."""
-    return mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep")
+    return mocker.patch("nextcloud_client.base.anyio.sleep")
 
 
 def _status_error(status: int) -> HTTPStatusError:
@@ -105,7 +104,7 @@ def test_lock_backoff_is_jittered():
     lockstep collision that could never resolve. Randomising the wait is what
     lets one of them win.
     """
-    from nextcloud_mcp_server.client.base import _lock_backoff
+    from nextcloud_client.base import _lock_backoff
 
     draws = {_lock_backoff(2) for _ in range(50)}
 

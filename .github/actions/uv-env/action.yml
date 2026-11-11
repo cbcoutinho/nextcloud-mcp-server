@@ -29,6 +29,9 @@ runs:
         # NOTE: `uv sync` installs the dev group, which carries pyroscope-io --
         # no Windows wheel. Any job on a Windows runner must skip this action
         # and build the wheel directly (see package-smoke).
-        uv sync --frozen --no-build --no-install-project
-        uv build --wheel --out-dir dist
+        #
+        # The same holds for the nextcloud-client workspace member, hence
+        # --no-install-workspace and --all-packages.
+        uv sync --frozen --no-build --no-install-workspace
+        uv build --all-packages --wheel --out-dir dist
         uv pip install --no-deps --no-build dist/*.whl

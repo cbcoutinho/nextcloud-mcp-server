@@ -27,8 +27,8 @@ import logging
 import uuid
 
 import pytest
+from nextcloud_client import NextcloudClient
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,

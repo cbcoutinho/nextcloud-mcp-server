@@ -20,6 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nextcloud_client import NextcloudClient
 from pydantic import BaseModel, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -28,7 +29,6 @@ from nextcloud_mcp_server.api.management import (
     _sanitize_error_for_client,
     validate_token_and_get_user,
 )
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.models.sar import (
     SarCaseCreate,

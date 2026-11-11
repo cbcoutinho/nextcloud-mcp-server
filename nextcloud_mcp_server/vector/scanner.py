@@ -14,6 +14,9 @@ from typing import TYPE_CHECKING, cast
 import anyio
 from anyio.abc import TaskStatus
 from httpx2 import HTTPStatusError
+from nextcloud_client import NextcloudClient
+from nextcloud_client.models.deck import DeckCard
+from nextcloud_client.news import NewsItemType
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     FieldCondition,
@@ -26,10 +29,7 @@ from qdrant_client.models import (
 )
 
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import Settings, get_settings
-from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_vector_sync_deletions_suppressed,
     record_vector_sync_scan,

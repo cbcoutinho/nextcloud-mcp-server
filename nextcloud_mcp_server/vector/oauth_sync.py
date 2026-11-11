@@ -27,10 +27,11 @@ import anyio
 from anyio.abc import TaskGroup, TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx2 import BasicAuth, HTTPStatusError
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.http import nextcloud_client_from_env, nextcloud_client_kwargs
 from nextcloud_mcp_server.utils.parsing import parse_retry_after
 from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.processor import process_document
@@ -218,6 +219,7 @@ async def get_user_client_basic_auth(
         auth_username=login_name,
         auth=BasicAuth(login_name, app_password),
         password=app_password,
+        **nextcloud_client_kwargs(),
     )
 
 
@@ -238,7 +240,7 @@ async def resolve_background_client(user_id: str) -> NextcloudClient:
 
     settings = get_settings()
     if detect_auth_mode(settings) == AuthMode.SINGLE_USER_BASIC:
-        return NextcloudClient.from_env()
+        return nextcloud_client_from_env()
     host = settings.nextcloud_host
     if not host:
         raise ValueError("NEXTCLOUD_HOST is required for multi-user background work")

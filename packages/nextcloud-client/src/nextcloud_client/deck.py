@@ -5,9 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from httpx2 import HTTPStatusError, RequestError
 
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
-from nextcloud_mcp_server.models.deck import (
+from .base import BaseNextcloudClient
+from .models.deck import (
     DeckACL,
     DeckAttachment,
     DeckBoard,
@@ -18,6 +17,7 @@ from nextcloud_mcp_server.models.deck import (
     DeckSession,
     DeckStack,
 )
+from .ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 

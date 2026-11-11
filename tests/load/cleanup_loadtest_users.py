@@ -16,7 +16,7 @@ import sys
 import anyio
 import click
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.http import nextcloud_client_from_env
 
 
 async def cleanup_users(prefix: str = "loadtest", dry_run: bool = False):
@@ -30,7 +30,7 @@ async def cleanup_users(prefix: str = "loadtest", dry_run: bool = False):
     print(f"Searching for users with prefix '{prefix}'...")
 
     try:
-        client = NextcloudClient.from_env()
+        client = nextcloud_client_from_env()
         users = await client.users.search_users(search=prefix)
 
         if not users:

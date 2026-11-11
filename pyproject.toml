@@ -10,6 +10,9 @@ license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.11"
 keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude", "webdav", "caldav", "carddav"]
 dependencies = [
+    # The Nextcloud API clients (packages/nextcloud-client, a workspace member).
+    # Released in lockstep: commitizen bumps this pin with the version.
+    "nextcloud-client==0.210.1",
     "mcp[cli] (>=2.3,<2.4)",
     "httpx2>=2.5.0",
     # Imported directly at runtime. Each was previously reachable only because
@@ -19,17 +22,12 @@ dependencies = [
     "anyio>=4.0", # structured concurrency, used throughout
     "uvicorn>=0.30", # cli.py serves the ASGI app
     "cryptography>=42.0", # auth/storage.py token encryption
-    "lxml>=5.0", # client/calendar.py CalDAV XML parsing
     "packaging>=24.0", # capabilities.py compares advertised app versions
-    # pythonvcard4 imports PIL at module level, so this is core (contacts), not
-    # semantic. Upper bound for fastembed compatibility in the semantic extra.
+    # utils/image_view.py, search/pdf_highlighter.py. Upper bound for fastembed
+    # compatibility in the semantic extra.
     "pillow (>=10.3.0,<12.0.0)",
-    "icalendar (>=7.3.0,<7.4.0)",
-    "pythonvcard4>=0.2.0", # _parse_vcard works around sharf-shawon/pythonvCard4#2 (GH #1551)
     "pydantic>=2.11.4",
     "click>=8.1.8",
-    "caldav>=3.0.1,<4.0",
-    "recurring-ical-events>=3.8.0,<4.0", # Client-side recurrence expansion (preserves TZID/floating semantics)
     "pyjwt[crypto]>=2.8.0",
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "alembic>=1.14.0", # Database migrations
@@ -102,6 +100,14 @@ version_scheme = "pep440"
 version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
+# nextcloud-client is released in lockstep with the server: bump its version
+# and the server's exact pin on it, then re-lock so uv.lock records both
+# (cz commits with -a, so the refreshed lock lands in the bump commit).
+version_files = [
+    "packages/nextcloud-client/pyproject.toml:^version",
+    "pyproject.toml:nextcloud-client==",
+]
+pre_bump_hooks = ["uv lock"]
 
 [tool.ruff.lint]
 # ruff 0.17 widened the default rule set (1698 new findings); pin the pre-0.17
@@ -129,6 +135,8 @@ extend-select = ["I", "PLC0415", "G004", "TID251"]
 # (re-exports, plugin-only deps like pyroscope-io) and stay off.
 [tool.deptry]
 ignore = ["DEP002", "DEP004"]
+# Workspace members declare their own dependencies; CI runs deptry on each.
+extend_exclude = ["packages"]
 
 [tool.deptry.per_rule_ignores]
 # Optional local-OCR extra, imported inside a try/except ImportError.
@@ -141,6 +149,12 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "nextcloud_mcp_server"
 module-root = ""
+
+[tool.uv.workspace]
+members = ["packages/nextcloud-client"]
+
+[tool.uv.sources]
+nextcloud-client = { workspace = true }
 
 [dependency-groups]
 dev = [

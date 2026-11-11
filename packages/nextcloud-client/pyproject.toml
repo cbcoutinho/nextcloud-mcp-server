@@ -1,0 +1,48 @@
+[project]
+name = "nextcloud-client"
+# Released in lockstep with nextcloud-mcp-server: commitizen bumps this line
+# (version_files in the root pyproject.toml), never edit it by hand.
+version = "0.210.1"
+description = "Async Python clients for the Nextcloud APIs: WebDAV, CalDAV, CardDAV, Notes, Deck, Tables, Talk, Mail and more"
+authors = [
+    {name = "Chris Coutinho", email = "chris@coutinho.io"}
+]
+readme = "README.md"
+license = {text = "AGPL-3.0-only"}
+requires-python = ">=3.11"
+keywords = ["nextcloud", "webdav", "caldav", "carddav", "deck", "async", "httpx"]
+dependencies = [
+    "httpx2>=2.5.0",
+    "anyio>=4.0",
+    "pydantic>=2.11.4",
+    "lxml>=5.0", # calendar.py CalDAV XML parsing
+    "caldav>=3.0.1,<4.0",
+    "icalendar (>=7.3.0,<7.4.0)",
+    "recurring-ical-events>=3.8.0,<4.0", # Client-side recurrence expansion (preserves TZID/floating semantics)
+    "pythonvcard4>=0.2.0", # contacts.py _parse_vcard works around sharf-shawon/pythonvCard4#2 (GH #1551)
+    # pythonvcard4 imports PIL at module level. No upper bound here: the server
+    # caps it (<12) for its fastembed extra, which a library user need not inherit.
+    "pillow>=10.3.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AnyIO",
+    "Topic :: Internet :: WWW/HTTP",
+]
+
+[project.urls]
+Repository = "https://github.com/cbcoutinho/nextcloud-mcp-server"
+
+[tool.deptry.per_rule_ignores]
+# Declared for pythonvcard4, which imports PIL at module level without
+# depending on it; nothing here imports it directly.
+DEP002 = ["pillow"]
+
+[build-system]
+requires = ["uv_build>=0.13.3,<0.14.0"]
+build-backend = "uv_build"

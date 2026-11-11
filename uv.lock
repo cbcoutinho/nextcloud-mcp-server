@@ -14,6 +14,12 @@ resolution-markers = [
     "python_full_version < '3.11.5'",
 ]
 
+[manifest]
+members = [
+    "nextcloud-client",
+    "nextcloud-mcp-server",
+]
+
 [[package]]
 name = "aiosqlite"
 version = "0.22.1"
@@ -2275,6 +2281,35 @@ wheels = [
 ]
 
 [[package]]
+name = "nextcloud-client"
+version = "0.210.1"
+source = { editable = "packages/nextcloud-client" }
+dependencies = [
+    { name = "anyio" },
+    { name = "caldav" },
+    { name = "httpx2" },
+    { name = "icalendar" },
+    { name = "lxml" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pythonvcard4" },
+    { name = "recurring-ical-events" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = ">=4.0" },
+    { name = "caldav", specifier = ">=3.0.1,<4.0" },
+    { name = "httpx2", specifier = ">=2.5.0" },
+    { name = "icalendar", specifier = ">=7.3.0,<7.4.0" },
+    { name = "lxml", specifier = ">=5.0" },
+    { name = "pillow", specifier = ">=10.3.0" },
+    { name = "pydantic", specifier = ">=2.11.4" },
+    { name = "pythonvcard4", specifier = ">=0.2.0" },
+    { name = "recurring-ical-events", specifier = ">=3.8.0,<4.0" },
+]
+
+[[package]]
 name = "nextcloud-mcp-server"
 version = "0.210.1"
 source = { editable = "." }
@@ -2283,16 +2318,14 @@ dependencies = [
     { name = "alembic" },
     { name = "anyio" },
     { name = "authlib" },
-    { name = "caldav" },
     { name = "click" },
     { name = "cryptography" },
     { name = "dynaconf" },
     { name = "httpx2" },
-    { name = "icalendar" },
     { name = "jinja2" },
     { name = "langchain-text-splitters" },
-    { name = "lxml" },
     { name = "mcp", extra = ["cli"] },
+    { name = "nextcloud-client" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-instrumentation-asgi" },
@@ -2305,8 +2338,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-json-logger" },
-    { name = "pythonvcard4" },
-    { name = "recurring-ical-events" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -2381,19 +2412,17 @@ requires-dist = [
     { name = "authlib", specifier = ">=1.6.5" },
     { name = "boto3", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
     { name = "botocore", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
-    { name = "caldav", specifier = ">=3.0.1,<4.0" },
     { name = "click", specifier = ">=8.1.8" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "dynaconf", specifier = ">=3.2.13,<4.0" },
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.7.3" },
     { name = "httpx2", specifier = ">=2.5.0" },
-    { name = "icalendar", specifier = ">=7.3.0,<7.4.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain-text-splitters", specifier = ">=1.0.0" },
-    { name = "lxml", specifier = ">=5.0" },
     { name = "markdownify", marker = "extra == 'semantic'", specifier = ">=0.14.1" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.3,<2.4" },
     { name = "mistralai", marker = "extra == 'documents'", specifier = ">=2.4.5" },
+    { name = "nextcloud-client", editable = "packages/nextcloud-client" },
     { name = "nextcloud-mcp-server", extras = ["documents"], marker = "extra == 'semantic'" },
     { name = "numpy", marker = "extra == 'semantic'", specifier = ">=1.26" },
     { name = "olefile", marker = "extra == 'documents'", specifier = ">=0.47" },
@@ -2419,9 +2448,7 @@ requires-dist = [
     { name = "python-docx", marker = "extra == 'documents'", specifier = ">=1.2.0" },
     { name = "python-json-logger", specifier = ">=3.2.0" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0.2" },
-    { name = "pythonvcard4", specifier = ">=0.2.0" },
     { name = "qdrant-client", marker = "extra == 'semantic'", specifier = ">=1.17.0" },
-    { name = "recurring-ical-events", specifier = ">=3.8.0,<4.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "starlette", specifier = "<1.11" },
     { name = "uvicorn", specifier = ">=0.30" },

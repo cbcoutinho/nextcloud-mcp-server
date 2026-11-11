@@ -3,8 +3,8 @@
 import httpx2
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.talk import TalkClient
 
-from nextcloud_mcp_server.client.talk import TalkClient
 from nextcloud_mcp_server.server.talk import _get_messages
 
 pytestmark = pytest.mark.unit

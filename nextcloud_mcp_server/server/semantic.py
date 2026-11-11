@@ -65,7 +65,7 @@ from nextcloud_mcp_server.vector.metrics_publisher import (
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
-    from nextcloud_mcp_server.client import NextcloudClient
+    from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 

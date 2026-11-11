@@ -27,9 +27,9 @@ import pymupdf
 from anyio import CapacityLimiter, to_thread
 from anyio.abc import TaskGroup
 from httpx2 import HTTPStatusError
+from nextcloud_client import NextcloudClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.models.sar import (
     SarExportStatus,

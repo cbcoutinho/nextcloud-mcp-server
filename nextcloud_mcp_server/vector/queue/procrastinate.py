@@ -59,7 +59,7 @@ from .. import payload_keys
 from ..scanner import DocumentTask
 
 if TYPE_CHECKING:
-    from ...client import NextcloudClient
+    from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
