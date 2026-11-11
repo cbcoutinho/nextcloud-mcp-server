@@ -20,10 +20,10 @@ from unittest.mock import patch
 import certifi
 import httpx2
 import pytest
+from nextcloud_client import NextcloudClient
+from nextcloud_client.http import nextcloud_httpx_transport
 
 from nextcloud_mcp_server import http as http_module
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.http import nextcloud_httpx_transport
 from nextcloud_mcp_server.config import (
     Settings,
     _reload_config,

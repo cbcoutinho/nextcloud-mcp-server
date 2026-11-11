@@ -21,9 +21,9 @@ from hypothesis import strategies as st
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ImageContent, TextContent
+from nextcloud_client.webdav import OversizeDownload, WebDAVClient
 from PIL import Image
 
-from nextcloud_mcp_server.client.webdav import OversizeDownload, WebDAVClient
 from nextcloud_mcp_server.models.webdav import ViewImageResponse
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 from nextcloud_mcp_server.server.webdav_image import (

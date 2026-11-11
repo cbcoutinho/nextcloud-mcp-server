@@ -7,10 +7,9 @@ import logging
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.mcpserver import Context
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.http import nextcloud_client_kwargs
-
-from ..client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 

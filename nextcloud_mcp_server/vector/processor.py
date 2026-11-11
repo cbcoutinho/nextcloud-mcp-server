@@ -28,10 +28,11 @@ if TYPE_CHECKING:
 
 from contextlib import AsyncExitStack
 
+from nextcloud_client import NextcloudClient
+from nextcloud_client.models.deck import DeckCard
+
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.models.deck import DeckCard
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_source import (
     DocumentSource,

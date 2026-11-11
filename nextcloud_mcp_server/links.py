@@ -20,18 +20,18 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel
-
-# The resolver is app-agnostic despite the module it lives in: it validates that
-# the configured Nextcloud base URL is something a browser can actually open.
-from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base as browser_base
-from nextcloud_mcp_server.client.models.deck import (
+from nextcloud_client.models.deck import (
     DeckAttachment,
     DeckBoard,
     DeckCard,
     DeckCardSummary,
     DeckStack,
 )
+from pydantic import BaseModel
+
+# The resolver is app-agnostic despite the module it lives in: it validates that
+# the configured Nextcloud base URL is something a browser can actually open.
+from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base as browser_base
 from nextcloud_mcp_server.models.deck import CardOperationResponse, CreateCardResponse
 from nextcloud_mcp_server.models.notes import (
     AppendContentResponse,

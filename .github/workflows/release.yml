@@ -59,12 +59,20 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Install Python 3.11
         run: uv python install 3.11
+      # Both workspace packages, released in lockstep: the server pins
+      # nextcloud-client==<this version>.
       - name: Build
-        run: uv build
+        run: uv build --all-packages
+      # --find-links: the pinned nextcloud-client is the one just built, which
+      # is not on PyPI until the publish step below.
       - name: Smoke test (wheel)
-        run: uv run --isolated --no-project --with dist/*.whl nextcloud-mcp-server --help
+        run: uv run --isolated --no-project --find-links dist --with dist/nextcloud_mcp_server-*.whl nextcloud-mcp-server --help
       - name: Smoke test (source distribution)
-        run: uv run --isolated --no-project --with dist/*.tar.gz nextcloud-mcp-server --help
+        run: uv run --isolated --no-project --find-links dist --with dist/nextcloud_mcp_server-*.tar.gz nextcloud-mcp-server --help
+      - name: Smoke test (nextcloud-client wheel)
+        run: uv run --isolated --no-project --with dist/nextcloud_client-*.whl python -c "import nextcloud_client"
+      # Uploads everything in dist/. Trusted publishing must be configured for
+      # both PyPI projects (nextcloud-mcp-server and nextcloud-client).
       - name: Publish
         run: uv publish
 

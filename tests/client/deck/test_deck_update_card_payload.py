@@ -11,12 +11,12 @@ checked fields they had just set, which is why the bug survived.
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.deck import (
+from nextcloud_client.deck import (
     DeckClient,
     _normalize_color,
     _normalize_duedate,
 )
+
 from tests.client.conftest import create_mock_deck_card_response, create_mock_response
 
 pytestmark = pytest.mark.unit

@@ -10,8 +10,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from nextcloud_mcp_server.client import NextcloudClient, _normalise_search_result
+from nextcloud_client import NextcloudClient, _normalise_search_result
 
 
 def _make_client() -> Any:
@@ -351,7 +350,7 @@ class TestFindFilesByTag:
 
         import logging
 
-        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.client")
+        caplog.set_level(logging.WARNING, logger="nextcloud_client")
         with pytest.raises(RuntimeError, match="discovery incomplete"):
             await client.find_files_by_tag(
                 "vector-index", mime_type_filter="application/pdf"

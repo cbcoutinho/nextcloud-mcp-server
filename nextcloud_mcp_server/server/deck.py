@@ -7,12 +7,9 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
-
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.deck import _normalize_color
-from nextcloud_mcp_server.client.models.deck import (
+from nextcloud_client import NextcloudClient
+from nextcloud_client.deck import _normalize_color
+from nextcloud_client.models.deck import (
     DeckAssignedUser,
     DeckBoard,
     DeckCard,
@@ -23,6 +20,9 @@ from nextcloud_mcp_server.client.models.deck import (
     DeckStack,
     DeckUser,
 )
+
+from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.deck import (

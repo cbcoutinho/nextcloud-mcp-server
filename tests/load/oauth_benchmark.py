@@ -25,11 +25,11 @@ from urllib.parse import parse_qs, urlparse
 import anyio
 import click
 import httpx2
+from nextcloud_client import NextcloudClient
 from playwright.async_api import async_playwright
 
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.http import nextcloud_client_from_env
 from tests.load.oauth_metrics import OAuthBenchmarkMetrics
 from tests.load.oauth_pool import (

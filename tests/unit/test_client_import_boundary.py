@@ -1,11 +1,11 @@
 """Guard: the Nextcloud clients import nothing from the MCP server.
 
-``nextcloud_mcp_server.client`` is meant to ship as a standalone package
-(``nextcloud-client``, Deck card #1484). A client module that imports
-``nextcloud_mcp_server.config`` (dynaconf), ``.observability`` (mcp,
-prometheus, the OpenTelemetry SDK) or any other server module would drag the
-whole server back in. This test imports the package in a fresh interpreter
-where those imports raise.
+``nextcloud_client`` ships as the standalone ``nextcloud-client`` package, and
+its declared dependencies do not include the server or the server's
+libraries. In the dev environment both are installed, so a stray
+``import nextcloud_mcp_server...`` or ``import prometheus_client`` in a client
+module would pass every other test and only fail for PyPI users. This test
+imports every client module in a fresh interpreter where those imports raise.
 """
 
 import subprocess
@@ -16,8 +16,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-#: Third-party packages that only the server needs.
+#: The server itself, and third-party packages that only the server needs.
 SERVER_ONLY = (
+    "nextcloud_mcp_server",
     "mcp",
     "dynaconf",
     "prometheus_client",
@@ -38,11 +39,7 @@ PROBE = textwrap.dedent(
 
     class Block:
         def find_spec(self, name, path=None, target=None):
-            top = name.partition(".")[0]
-            own = name.startswith("nextcloud_mcp_server.")
-            if top in SERVER_ONLY or (
-                own and not name.startswith("nextcloud_mcp_server.client")
-            ):
+            if name.partition(".")[0] in SERVER_ONLY:
                 raise ImportError(f"client imported server-only module {{name}}")
             return None
 
@@ -50,7 +47,7 @@ PROBE = textwrap.dedent(
 
     import pkgutil
     import importlib
-    import nextcloud_mcp_server.client as pkg
+    import nextcloud_client as pkg
 
     for mod in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         importlib.import_module(mod.name)
@@ -72,7 +69,8 @@ def test_client_package_imports_without_server_modules():
 
 def test_server_installs_metric_hooks():
     """Importing the server's metrics module routes client hooks to prometheus."""
-    from nextcloud_mcp_server.client import instrumentation
+    from nextcloud_client import instrumentation
+
     from nextcloud_mcp_server.observability import metrics
 
     counter = metrics.nextcloud_api_requests_total.labels(
@@ -122,4 +120,4 @@ def test_probe_catches_a_leak():
         [sys.executable, "-c", leaky], capture_output=True, text=True, timeout=120
     )
     assert result.returncode != 0
-    assert "server-only module nextcloud_mcp_server.config" in result.stderr
+    assert "server-only module nextcloud_mcp_server" in result.stderr

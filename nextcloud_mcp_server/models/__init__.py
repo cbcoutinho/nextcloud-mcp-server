@@ -1,7 +1,7 @@
 """Pydantic models for structured MCP server responses."""
 
 # Base models
-from nextcloud_mcp_server.client.models.sharing import ShareType
+from nextcloud_client.models.sharing import ShareType
 
 from .base import BaseResponse, IdResponse, StatusResponse
 

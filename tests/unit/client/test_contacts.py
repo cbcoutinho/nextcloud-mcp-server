@@ -10,9 +10,7 @@ from datetime import date
 import pytest
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
-from pythonvCard4.vcard import Contact, ValidationError
-
-from nextcloud_mcp_server.client.contacts import (
+from nextcloud_client.contacts import (
     _ADR_COMPONENTS,
     _N_COMPONENTS,
     ContactsClient,
@@ -27,6 +25,7 @@ from nextcloud_mcp_server.client.contacts import (
     _unescape_component,
     _wrap_contact_field,
 )
+from pythonvCard4.vcard import Contact, ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -118,9 +117,7 @@ def test_invalid_bday_is_dropped_not_raised(caplog):
     """An unparseable BDAY must warn and be omitted, not crash the call."""
     import logging
 
-    with caplog.at_level(
-        logging.WARNING, logger="nextcloud_mcp_server.client.contacts"
-    ):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.contacts"):
         vcard = _vcard(fn="Alice", bday="not-a-date")
     assert "BDAY" not in vcard
     assert any("bday" in r.message.lower() for r in caplog.records)
@@ -189,7 +186,7 @@ def test_unknown_keys_are_ignored_without_error(caplog):
     """Future-compat: callers sending unknown keys shouldn't blow up."""
     import logging
 
-    with caplog.at_level(logging.DEBUG, logger="nextcloud_mcp_server.client.contacts"):
+    with caplog.at_level(logging.DEBUG, logger="nextcloud_client.contacts"):
         vcard = _vcard(fn="Alice", totally_made_up_field="ignored")
     assert "FN:Alice" in vcard
     assert "totally_made_up_field" not in vcard
@@ -240,9 +237,7 @@ def test_missing_fn_logs_warning(caplog):
     """A missing ``fn`` should log a warning so operators notice malformed payloads."""
     import logging
 
-    with caplog.at_level(
-        logging.WARNING, logger="nextcloud_mcp_server.client.contacts"
-    ):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.contacts"):
         try:
             _build_contact_from_data({"email": "x@example.com"}, uid="no-fn-uid")
         except Exception:
@@ -436,7 +431,7 @@ class TestNormalizeContactData:
 
     def test_unknown_keys_dropped_with_warning(self, caplog):
         """GH #1814: a dropped key must be visible, on create and update alike."""
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             out = _normalize_contact_data({"fn": "x", "foo": "bar"})
         assert out == {"fn": "x"}
         assert "['foo']" in caplog.text
@@ -452,7 +447,7 @@ class TestMergeVcardProperties:
 
     @staticmethod
     def _merge(raw: str, data: dict) -> str:
-        from nextcloud_mcp_server.client.contacts import ContactsClient
+        from nextcloud_client.contacts import ContactsClient
 
         client = ContactsClient.__new__(ContactsClient)  # no HTTP / no __init__
         return client._merge_vcard_properties(raw, data)
@@ -769,7 +764,7 @@ class TestUpdatePreservesUnsupportedProperties:
             mocker, object_name="alice.vcf", raw_vcard=self.RICH_VCARD
         )
         mocker.patch(
-            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            "nextcloud_client.contacts.Contact.from_vcard",
             side_effect=ValueError("unparseable"),
         )
 
@@ -817,7 +812,7 @@ class TestVcardLineFolding:
 
     @staticmethod
     def _merge(raw: str, data: dict) -> str:
-        from nextcloud_mcp_server.client.contacts import ContactsClient
+        from nextcloud_client.contacts import ContactsClient
 
         client = ContactsClient.__new__(ContactsClient)
         return client._merge_vcard_properties(raw, data)
@@ -1265,7 +1260,7 @@ class TestAddress:
         """A non-iterable type used to raise; a dict wrote its keys as TYPE."""
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
         adr = {"street": "S", "type": bad_type}
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
                 assert "ADR:;;S;;;;" in card
         assert "invalid ADR type" in caplog.text
@@ -1330,26 +1325,26 @@ class TestAddress:
     def test_update_with_no_usable_address_keeps_existing(self, adr, caplog):
         """Only a literal ``[]`` clears; a misspelled key must not wipe ADR."""
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nADR:;;Old;X;;;\nEND:VCARD\n"
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             result = _merge(existing, {"adr": adr})
         assert "ADR:;;Old;X;;;" in result
         assert "no usable address" in caplog.text
 
     def test_unknown_adr_keys_are_logged(self, caplog):
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             card = _vcard(fn="J", adr={"street": "S", "zip": "123"})
         assert "ADR:;;S;;;;" in card
         assert "['zip']" in caplog.text
 
     def test_non_dict_entry_is_logged_and_skipped(self, caplog):
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             card = _vcard(fn="J", adr=[4242, self.WORK])
         assert card.count("ADR") == 1
         assert "not a dict or str: int" in caplog.text
         assert "4242" not in caplog.text
 
     def test_overlong_string_is_truncated_with_warning(self, caplog):
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             card = _vcard(fn="J", adr="a;b;c;d;e;f;Secret St;extra")
         assert "ADR:a;b;c;d;e;f;Secret St\r\n" in card
         # Logged once (parsed once) and without the address itself: it is PII.
@@ -1357,7 +1352,7 @@ class TestAddress:
         assert "Secret" not in caplog.text
 
     def test_no_usable_address_warning_has_no_values(self, caplog):
-        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.client.contacts"):
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
             _normalize_contact_data({"fn": "J", "adr": {"zip": "SecretZip"}})
         assert "no usable address (dict)" in caplog.text
         assert "SecretZip" not in caplog.text
@@ -1388,7 +1383,7 @@ class TestNoContactDataInLogs:
     """
 
     SECRET = "SENTINEL-PII-1990"
-    LOGGER = "nextcloud_mcp_server.client.contacts"
+    LOGGER = "nextcloud_client.contacts"
 
     def _assert_clean(self, caplog):
         assert caplog.records, "the path under test should have logged"
@@ -1418,7 +1413,7 @@ class TestNoContactDataInLogs:
             raw_vcard="BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n",
         )
         mocker.patch(
-            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            "nextcloud_client.contacts.Contact.from_vcard",
             side_effect=ValueError(f"Invalid isoformat string: '{self.SECRET}'"),
         )
         with caplog.at_level("WARNING", logger=self.LOGGER):
@@ -1445,7 +1440,7 @@ class TestNoContactDataInLogs:
             client, "_make_request", mocker.AsyncMock(return_value=response)
         )
         mocker.patch(
-            "nextcloud_mcp_server.client.contacts.Contact.from_vcard",
+            "nextcloud_client.contacts.Contact.from_vcard",
             side_effect=ValueError(f"Invalid isoformat string: '{self.SECRET}'"),
         )
         with caplog.at_level("WARNING", logger=self.LOGGER):

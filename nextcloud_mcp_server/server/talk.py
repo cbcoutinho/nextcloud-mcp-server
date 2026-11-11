@@ -7,15 +7,15 @@ from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.capabilities import require_capability
-from nextcloud_mcp_server.client.models.talk import (
+from nextcloud_client.models.talk import (
     TalkMessage,
     TalkParticipantSource,
     TalkRoomType,
 )
-from nextcloud_mcp_server.client.talk import TalkClient
+from nextcloud_client.talk import TalkClient
+
+from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import require_capability
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.talk import (
     AddParticipantResponse,

@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from typing import cast
 
 from httpx2 import HTTPStatusError
+from nextcloud_client import NextcloudClient
+from nextcloud_client.models.deck import DeckCard
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.models.deck import DeckCard
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id

@@ -33,10 +33,10 @@ See ADR-029 for the overall contract-testing architecture.
 
 import pytest
 from httpx2 import BasicAuth
+from nextcloud_client import NextcloudClient
 from pact import match
 
 from nextcloud_mcp_server.capabilities import allowed_doc_types, clear_cache
-from nextcloud_mcp_server.client import NextcloudClient
 
 pytestmark = pytest.mark.contract
 

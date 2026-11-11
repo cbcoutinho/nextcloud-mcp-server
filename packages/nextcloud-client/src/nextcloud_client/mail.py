@@ -121,7 +121,7 @@ class MailClient(BaseNextcloudClient):
     # Both route families want JSON, so they share this ``Accept``-only set. The
     # OCS-APIRequest header that authenticates the OCS routes and CSRF-exempts
     # the direct ones is not in it: the httpx2 client sends that on every request
-    # (``client.http.NEXTCLOUD_DEFAULT_HEADERS``).
+    # (``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``).
     _API_JSON_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"

@@ -242,7 +242,7 @@ docker compose exec app php occ group:adduser <appropriate-group> mcp-sync
 **For Background Operations**:
 ```python
 # Use service account with BasicAuth
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 # In background worker
 sync_client = NextcloudClient(

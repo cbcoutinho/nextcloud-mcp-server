@@ -4,13 +4,13 @@ import logging
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.models.talk import (
+from nextcloud_client.models.talk import (
     TalkConversation,
     TalkMessage,
     TalkParticipant,
 )
-from nextcloud_mcp_server.client.talk import TalkClient, _validate_token
+from nextcloud_client.talk import TalkClient, _validate_token
+
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_response,
@@ -333,7 +333,7 @@ async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
     mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
 
     client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
-    with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.client.talk"):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.talk"):
         messages, last_given = await client.get_messages("abc")
 
     assert messages == []

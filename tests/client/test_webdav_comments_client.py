@@ -7,8 +7,7 @@ reads its result out of a response *header*. Both are pinned here.
 
 import pytest
 from httpx2 import AsyncClient
-
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_client.webdav import WebDAVClient
 
 pytestmark = pytest.mark.unit
 

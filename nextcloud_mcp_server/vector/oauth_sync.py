@@ -27,9 +27,9 @@ import anyio
 from anyio.abc import TaskGroup, TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx2 import BasicAuth, HTTPStatusError
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.http import nextcloud_client_from_env, nextcloud_client_kwargs
 from nextcloud_mcp_server.utils.parsing import parse_retry_after

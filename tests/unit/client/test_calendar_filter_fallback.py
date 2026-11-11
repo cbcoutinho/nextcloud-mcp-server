@@ -9,12 +9,11 @@ and that it is logged with the traceback.
 import logging
 
 import pytest
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
+from nextcloud_client.calendar import CalendarClient
 
 pytestmark = pytest.mark.unit
 
-LOGGER = "nextcloud_mcp_server.client.calendar"
+LOGGER = "nextcloud_client.calendar"
 
 
 @pytest.fixture

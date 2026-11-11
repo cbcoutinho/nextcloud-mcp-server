@@ -19,7 +19,7 @@ from .dav_urls import encode_dav_path
 logger = logging.getLogger(__name__)
 
 # ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx2
-# client sends it on every request (``client.http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
+# client sends it on every request (``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
 # requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.

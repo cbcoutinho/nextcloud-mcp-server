@@ -10,10 +10,10 @@ backend. It is now a `@property` that reads the module singleton live (like
 from typing import cast
 
 import pytest
+from nextcloud_client import NextcloudClient
 
 import nextcloud_mcp_server.app as app_module
 from nextcloud_mcp_server.app import AppContext, OAuthAppContext
-from nextcloud_mcp_server.client import NextcloudClient
 
 pytestmark = pytest.mark.unit
 

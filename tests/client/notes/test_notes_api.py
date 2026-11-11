@@ -2,8 +2,8 @@ import logging
 
 import httpx2
 import pytest
+from nextcloud_client.notes import NotesClient
 
-from nextcloud_mcp_server.client.notes import NotesClient
 from tests.client.conftest import create_mock_error_response, create_mock_note_response
 
 logger = logging.getLogger(__name__)

@@ -1,8 +1,6 @@
 from typing import List
 
-from pydantic import BaseModel, Field
-
-from nextcloud_mcp_server.client.models.deck import (
+from nextcloud_client.models.deck import (
     CARD_URL_DESCRIPTION,
     DeckAttachment,
     DeckBoard,
@@ -13,6 +11,7 @@ from nextcloud_mcp_server.client.models.deck import (
     DeckLabel,
     DeckStack,
 )
+from pydantic import BaseModel, Field
 
 from .base import BaseResponse, StatusResponse
 

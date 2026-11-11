@@ -2,15 +2,14 @@
 
 from typing import Any
 
-from pydantic import Field, field_validator
-
-from nextcloud_mcp_server.client.models.talk import (
+from nextcloud_client.models.talk import (
     TalkConversation,
     TalkMessage,
     TalkParticipant,
     TalkParticipantSource,
     TalkReactionActor,
 )
+from pydantic import Field, field_validator
 
 from .base import BaseResponse, StatusResponse
 

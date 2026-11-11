@@ -19,11 +19,11 @@ from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ToolAnnotations
+from nextcloud_client.webdav import OversizeDownload
 from pydantic import Field
 
 from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.webdav import OversizeDownload
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import file_url
@@ -43,7 +43,7 @@ from nextcloud_mcp_server.utils.image_view import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, as in server/webdav.py
-    from nextcloud_mcp_server.client import NextcloudClient
+    from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 

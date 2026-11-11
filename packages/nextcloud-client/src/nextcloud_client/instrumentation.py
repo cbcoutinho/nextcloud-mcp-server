@@ -5,7 +5,7 @@ wants metrics or traces subclasses :class:`Instrumentation` and installs an
 instance at startup. The MCP server does so in
 ``nextcloud_mcp_server.observability.metrics``::
 
-    from nextcloud_mcp_server.client import instrumentation
+    from nextcloud_client import instrumentation
 
     class MyHooks(instrumentation.Instrumentation):
         def on_api_call(self, app, method, status_code, duration): ...

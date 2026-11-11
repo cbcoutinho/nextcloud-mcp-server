@@ -68,7 +68,7 @@ If the user names a different base (e.g. `main`, a stacked branch), use that ins
 |---|---|
 | `nextcloud_mcp_server/auth/`, `*scope*`, `*token*`, `*verifier*` | **security-sensitive** (escalate B, J, K to blocking) |
 | `nextcloud_mcp_server/server/*.py` (new `@mcp.tool`) | **MCP surface** (D4, I1 mandatory) |
-| `nextcloud_mcp_server/client/*.py` | **client layer** (B1–B4, H1, retry/backoff) |
+| `packages/nextcloud-client/src/nextcloud_client/*.py` | **client layer** (B1–B4, H1, retry/backoff) |
 | `nextcloud_mcp_server/models/*.py` | **schema** (D1–D3, validators for PHP quirks) |
 | `nextcloud_mcp_server/search/`, `nextcloud_mcp_server/vector/` | **vector subsystem** (E*, F3, latency budget) |
 | Webhooks, `nextcloud_mcp_server/auth/webhook_*` | **webhook handler** (J3, J4, K1) |
@@ -205,7 +205,7 @@ PRs #733, #734, #735, #736, #737, #741, #745, #746, #747, #750.
 - **F2** — Fail-open paths have a test: any verifier or handler with a fail-open branch (non-numeric id, malformed payload) has a unit test that exercises it. (#750-r5, #750-r6)
 - **F3** — CI guard tests for registries: registries (e.g. `INDEXED_DOC_TYPES → verifier`) should have a test that the registry is exhaustive. (#750-r2)
 - **F4** — New public functions have tests: any new MCP tool, client method, or Pydantic model without a unit test is a 🟡 finding (or 🟢 if integration-only).
-- **F5** — `caplog` is logger-scoped: prefer `caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.client.notes")` over plain `caplog.at_level("WARNING")` to avoid false positives from other loggers. (#736)
+- **F5** — `caplog` is logger-scoped: prefer `caplog.set_level(logging.WARNING, logger="nextcloud_client.notes")` over plain `caplog.at_level("WARNING")` to avoid false positives from other loggers. (#736)
 - **F6** — Wire-through tests at the right layer: pure-unit tests on the leaf class are great, but a test that the parent (`NextcloudClient.from_env`) actually threads the param through is a common gap. (#734)
 - **F7** — Production-evidence regressions get a unit test: any bug found via CloudWatch / production logs (not in tests) needs a unit test added in the fix PR. (#746)
 - **F8** — Test docstring consistency: if 4 of 5 new tests have docstrings, give the 5th one too. (#735)
@@ -299,7 +299,7 @@ If a category has zero applicable findings, omit it from the punch list. Don't p
 
 ### 🔴 Blocking (<count>)
 
-1. **[J1]** `nextcloud_mcp_server/client/talk.py:42` — Token interpolated into
+1. **[J1]** `packages/nextcloud-client/src/nextcloud_client/talk.py:42` — Token interpolated into
    URL before validation; path-traversal risk. Move `_validate_token(token)`
    above the `httpx2.URL(...)` call.
 

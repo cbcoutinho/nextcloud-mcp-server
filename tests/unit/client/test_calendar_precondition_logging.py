@@ -17,13 +17,12 @@ import logging
 
 import pytest
 from httpx2 import Request, Response
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
-from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
+from nextcloud_client.calendar import CalendarClient
+from nextcloud_client.dav_errors import DavPreconditionFailed
 
 pytestmark = pytest.mark.unit
 
-CALENDAR_LOGGER = "nextcloud_mcp_server.client.calendar"
+CALENDAR_LOGGER = "nextcloud_client.calendar"
 
 
 def _precondition_failed() -> DavPreconditionFailed:

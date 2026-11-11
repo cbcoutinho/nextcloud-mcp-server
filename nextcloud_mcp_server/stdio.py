@@ -15,8 +15,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from mcp.server.mcpserver import MCPServer
+from nextcloud_client import NextcloudClient
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
 from nextcloud_mcp_server.context import BasicAuthLifespanContext

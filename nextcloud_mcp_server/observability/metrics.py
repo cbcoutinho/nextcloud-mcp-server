@@ -25,6 +25,7 @@ from typing import Any
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.context import CallNext, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from nextcloud_client import instrumentation as _nc_instrumentation
 from prometheus_client import (
     REGISTRY,
     Counter,
@@ -35,7 +36,6 @@ from prometheus_client import (
 from prometheus_client.core import GaugeHistogramMetricFamily
 from prometheus_client.registry import Collector
 
-from nextcloud_mcp_server.client import instrumentation as _nc_instrumentation
 from nextcloud_mcp_server.observability.tracing import (
     trace_nextcloud_api_call,
     trace_operation,

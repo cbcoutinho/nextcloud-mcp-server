@@ -3,7 +3,7 @@
 All outbound connections to Nextcloud (API calls, OIDC endpoints) should use
 these factories, so they get consistent TLS settings from the environment
 (NEXTCLOUD_VERIFY_SSL, NEXTCLOUD_CA_BUNDLE, NEXTCLOUD_HTTP_KEEPALIVE). They wrap
-the configuration-free factories in ``nextcloud_mcp_server.client.http``.
+the configuration-free factories in ``nextcloud_client.http``.
 """
 
 import logging
@@ -11,9 +11,9 @@ import ssl
 from typing import Any, TypedDict
 
 import httpx2
+from nextcloud_client import NextcloudClient
+from nextcloud_client.http import nextcloud_httpx_client as _nextcloud_httpx_client
 
-from .client import NextcloudClient
-from .client.http import nextcloud_httpx_client as _nextcloud_httpx_client
 from .config import (
     cfg,
     get_nextcloud_http_keepalive,
@@ -47,7 +47,7 @@ def nextcloud_client_kwargs() -> NextcloudClientKwargs:
 
 
 def nextcloud_httpx_client(**kwargs: Any) -> httpx2.AsyncClient:
-    """``client.http.nextcloud_httpx_client`` with the configured TLS settings.
+    """``nextcloud_client.http.nextcloud_httpx_client`` with the configured TLS settings.
 
     A caller-supplied ``verify`` kwarg takes precedence.
     """

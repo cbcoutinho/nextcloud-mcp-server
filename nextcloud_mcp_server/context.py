@@ -5,11 +5,11 @@ from typing import Any, Protocol, runtime_checkable
 
 from httpx2 import BasicAuth
 from mcp.server.mcpserver import Context
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 from nextcloud_mcp_server.auth.storage import get_shared_storage
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.http import nextcloud_client_kwargs
 
