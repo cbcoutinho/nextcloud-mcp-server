@@ -1667,8 +1667,8 @@ class WebDAVClient(BaseNextcloudClient):
             # Map namespace URIs to prefixes
             ns_map = {
                 "DAV:": "d",
-                "http://owncloud.org/ns": "oc",
-                "http://nextcloud.org/ns": "nc",
+                "http://owncloud.org/ns": "oc",  # NOSONAR(S5332) XML namespace URI, never fetched
+                "http://nextcloud.org/ns": "nc",  # NOSONAR(S5332) XML namespace URI, never fetched
             }
 
             prefix = ns_map.get(namespace, "d")
@@ -2345,7 +2345,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in root.findall("d:response", ns):
@@ -2433,7 +2433,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         files = []
@@ -2574,7 +2574,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         response_elem = root.find("d:response", ns)

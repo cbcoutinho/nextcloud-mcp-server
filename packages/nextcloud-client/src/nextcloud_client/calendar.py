@@ -731,9 +731,9 @@ class CalendarClient:
         tree = etree.fromstring(response.raw.encode("utf-8"))
         ns = {
             "d": "DAV:",
-            "cs": "http://calendarserver.org/ns/",
+            "cs": "http://calendarserver.org/ns/",  # NOSONAR(S5332) XML namespace URI, never fetched
             "c": "urn:ietf:params:xml:ns:caldav",
-            "ical": "http://apple.com/ns/ical/",
+            "ical": "http://apple.com/ns/ical/",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in tree.findall(".//d:response", ns):

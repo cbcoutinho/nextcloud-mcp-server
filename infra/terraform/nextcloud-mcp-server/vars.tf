@@ -150,3 +150,9 @@ variable "qdrant_memory" {
   type        = number
   default     = 1024
 }
+
+variable "access_logs_bucket" {
+  description = "S3 bucket for ALB access logs (must allow ELB log delivery). null disables access logging."
+  type        = string
+  default     = null
+}
