@@ -21,7 +21,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
-from nextcloud_mcp_server.models.deck import DeckComment
+from nextcloud_mcp_server.client.models.deck import DeckComment
 from nextcloud_mcp_server.server import deck as deck_module
 from nextcloud_mcp_server.server.deck import (
     _COMMENT_MAX_LENGTH,

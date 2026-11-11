@@ -19,12 +19,8 @@ from httpx2 import (
     codes,
 )
 
-from nextcloud_mcp_server.client.dav_errors import enrich_dav_error
-from nextcloud_mcp_server.observability.metrics import (
-    record_nextcloud_api_call,
-    record_nextcloud_api_retry,
-)
-from nextcloud_mcp_server.observability.tracing import trace_nextcloud_api_call
+from . import instrumentation
+from .dav_errors import enrich_dav_error
 
 #: Marks a request whose body the caller intends to consume incrementally.
 #:
@@ -128,7 +124,9 @@ def retry_on_429(func):
                     )
                     # Record retry metric (extract app name from args if available)
                     if len(args) > 0 and hasattr(args[0], "app_name"):
-                        record_nextcloud_api_retry(app=args[0].app_name, reason="429")
+                        instrumentation.hooks.on_api_retry(
+                            app=args[0].app_name, reason="429"
+                        )
                     await anyio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
                     # Sleep first, then give up: preserves the original
                     # accounting, where the last attempt also waited.
@@ -161,7 +159,9 @@ def retry_on_429(func):
                         e,
                     )
                     if len(args) > 0 and hasattr(args[0], "app_name"):
-                        record_nextcloud_api_retry(app=args[0].app_name, reason="423")
+                        instrumentation.hooks.on_api_retry(
+                            app=args[0].app_name, reason="423"
+                        )
                     await anyio.sleep(delay)
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
@@ -324,7 +324,7 @@ class BaseNextcloudClient(ABC):
             # entirely unrecorded on mcp_nextcloud_api_requests_total.
             status_code = 0
             try:
-                with trace_nextcloud_api_call(
+                with instrumentation.hooks.trace_api_call(
                     app=self.app_name, method=method, path=url
                 ):
                     async with self._client.stream(
@@ -343,7 +343,7 @@ class BaseNextcloudClient(ABC):
                         "429 Too Many Requests on streaming download, attempt %s",
                         attempt,
                     )
-                    record_nextcloud_api_retry(app=self.app_name, reason="429")
+                    instrumentation.hooks.on_api_retry(app=self.app_name, reason="429")
                     await anyio.sleep(5)
                     continue
                 # Same typing as the buffered path. The body is unread here (the
@@ -357,7 +357,7 @@ class BaseNextcloudClient(ABC):
             finally:
                 # A retried 429 is metered as its own attempt, matching how
                 # retry_on_429 accounts for the buffered path.
-                record_nextcloud_api_call(
+                instrumentation.hooks.on_api_call(
                     app=self.app_name,
                     method=method,
                     status_code=status_code,
@@ -388,7 +388,7 @@ class BaseNextcloudClient(ABC):
 
         try:
             # Wrap request in trace span
-            with trace_nextcloud_api_call(
+            with instrumentation.hooks.trace_api_call(
                 app=self.app_name,
                 method=method,
                 path=url,
@@ -399,7 +399,7 @@ class BaseNextcloudClient(ABC):
 
                 # Record successful API call metrics
                 duration = time.time() - start_time
-                record_nextcloud_api_call(
+                instrumentation.hooks.on_api_call(
                     app=self.app_name,
                     method=method,
                     status_code=status_code,
@@ -416,7 +416,7 @@ class BaseNextcloudClient(ABC):
                 status_code = 0  # Connection error, no status code
 
             duration = time.time() - start_time
-            record_nextcloud_api_call(
+            instrumentation.hooks.on_api_call(
                 app=self.app_name,
                 method=method,
                 status_code=status_code,

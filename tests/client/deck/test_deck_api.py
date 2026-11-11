@@ -4,7 +4,7 @@ import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.deck import DeckClient
-from nextcloud_mcp_server.models.deck import (
+from nextcloud_mcp_server.client.models.deck import (
     DeckBoard,
     DeckCard,
     DeckComment,

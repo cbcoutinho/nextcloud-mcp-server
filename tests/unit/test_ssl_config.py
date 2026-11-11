@@ -12,12 +12,16 @@ by libpq/psycopg — see ``TestProcrastinateConninfo`` in
 import logging
 import os
 import ssl
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import certifi
 import httpx2
 import pytest
 
+from nextcloud_mcp_server import http as http_module
+from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.client.http import nextcloud_httpx_transport
 from nextcloud_mcp_server.config import (
     Settings,
     _reload_config,
@@ -25,7 +29,11 @@ from nextcloud_mcp_server.config import (
     get_nextcloud_ssl_verify,
     get_settings,
 )
-from nextcloud_mcp_server.http import nextcloud_httpx_client, nextcloud_httpx_transport
+from nextcloud_mcp_server.http import (
+    nextcloud_client_from_env,
+    nextcloud_client_kwargs,
+    nextcloud_httpx_client,
+)
 
 
 class TestSSLSettings:
@@ -182,13 +190,6 @@ class TestHTTPClientFactory:
             client = nextcloud_httpx_client(verify=False)
             assert isinstance(client, httpx2.AsyncClient)
 
-    def test_transport_applies_verify(self):
-        with patch(
-            "nextcloud_mcp_server.http.get_nextcloud_ssl_verify", return_value=False
-        ):
-            transport = nextcloud_httpx_transport()
-            assert isinstance(transport, httpx2.AsyncHTTPTransport)
-
     def test_client_passes_extra_kwargs(self):
         with patch(
             "nextcloud_mcp_server.http.get_nextcloud_ssl_verify", return_value=True
@@ -197,40 +198,83 @@ class TestHTTPClientFactory:
             assert isinstance(client, httpx2.AsyncClient)
 
 
+def _pool_keepalive(client: NextcloudClient) -> int:
+    # AsyncDisableCookieTransport wraps the httpx2 transport.
+    return client._client._transport.transport._pool._max_keepalive_connections  # ty: ignore[unresolved-attribute]
+
+
 class TestHTTPKeepalive:
     """NEXTCLOUD_HTTP_KEEPALIVE wiring into the Nextcloud httpx2 transport (#965).
 
-    The assertions reach into ``transport._pool._max_keepalive_connections`` —
+    The assertions reach into ``transport._pool._max_keepalive_connections``,
     a private httpcore attribute. It is the most direct way to verify the limit
-    actually reached the pool; httpx2/httpcore is pinned, so the breakage risk on
-    a rename is low and would be caught immediately by these tests.
+    actually reached the pool. httpx2/httpcore is pinned, so a rename is
+    unlikely, and these tests would catch one immediately.
     """
 
     def test_default_keeps_pooled_connections(self):
         """Default (keep-alive enabled) leaves httpx2's default pool limits."""
-        with patch(
-            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=True
-        ):
-            transport = nextcloud_httpx_transport()
-            assert transport._pool._max_keepalive_connections == 20
+        assert nextcloud_httpx_transport()._pool._max_keepalive_connections == 20
 
     def test_disabled_forces_fresh_connection_per_request(self):
-        """NEXTCLOUD_HTTP_KEEPALIVE=false → max_keepalive_connections=0."""
-        with patch(
-            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=False
-        ):
-            transport = nextcloud_httpx_transport()
-            assert transport._pool._max_keepalive_connections == 0
+        """keepalive=False → max_keepalive_connections=0."""
+        transport = nextcloud_httpx_transport(keepalive=False)
+        assert transport._pool._max_keepalive_connections == 0
 
     def test_caller_supplied_limits_take_precedence(self):
         """An explicit limits kwarg is not overridden even when keep-alive is off."""
+        transport = nextcloud_httpx_transport(
+            keepalive=False, limits=httpx2.Limits(max_keepalive_connections=7)
+        )
+        assert transport._pool._max_keepalive_connections == 7
+
+    @pytest.mark.parametrize(("keepalive", "expected"), [(True, 20), (False, 0)])
+    def test_setting_reaches_nextcloud_client(self, keepalive, expected):
+        """NEXTCLOUD_HTTP_KEEPALIVE → nextcloud_client_kwargs → the client's pool."""
         with patch(
-            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive", return_value=False
+            "nextcloud_mcp_server.http.get_nextcloud_http_keepalive",
+            return_value=keepalive,
         ):
-            transport = nextcloud_httpx_transport(
-                limits=httpx2.Limits(max_keepalive_connections=7)
+            client = NextcloudClient(
+                "https://nc.example", "alice", **nextcloud_client_kwargs()
             )
-            assert transport._pool._max_keepalive_connections == 7
+        assert _pool_keepalive(client) == expected
+
+
+class TestNextcloudClientKwargs:
+    def test_carries_configured_verify(self):
+        ctx = ssl.create_default_context()
+        with patch(
+            "nextcloud_mcp_server.http.get_nextcloud_ssl_verify", return_value=ctx
+        ):
+            assert nextcloud_client_kwargs()["verify"] is ctx
+
+
+class TestClientFromEnv:
+    def test_raises_when_nextcloud_host_unset(self, monkeypatch):
+        """It must fail loudly, not build a client with a ``None`` URL.
+
+        ``Settings.nextcloud_host`` is ``str | None``, so an unset
+        NEXTCLOUD_HOST used to flow straight into
+        ``NextcloudClient(base_url=...)`` and only surface later as a confusing
+        httpx2 error on the first request. This mirrors the guard ``context.py``
+        already applies for multi-user BasicAuth mode.
+
+        ``cfg`` and ``__init__`` are both stubbed, so the host guard is the only
+        thing that can raise. Drop the guard and the call returns a client, so
+        the test fails on "DID NOT RAISE". That makes it a real guard rather
+        than one satisfied by an incidental error from a thin settings stub.
+        """
+        monkeypatch.setattr(
+            http_module, "get_settings", lambda: SimpleNamespace(nextcloud_host=None)
+        )
+        monkeypatch.setattr(http_module, "cfg", lambda key, *a, **kw: "stub")
+        monkeypatch.setattr(
+            NextcloudClient, "__init__", lambda self, *a, **kw: None, raising=True
+        )
+
+        with pytest.raises(ValueError, match="NEXTCLOUD_HOST"):
+            nextcloud_client_from_env()
 
 
 class TestGetNextcloudHTTPKeepalive:

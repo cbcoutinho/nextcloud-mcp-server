@@ -4,6 +4,7 @@ import datetime as dt
 import inspect
 import logging
 import re
+import ssl
 import uuid
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -20,7 +21,6 @@ from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[import-not-found]
 
-from ..config import get_nextcloud_ssl_verify
 from .availability import (
     Span,
     busy_spans_from_events,
@@ -330,6 +330,7 @@ class CalendarClient:
         auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
+        verify: bool | ssl.SSLContext = True,
     ):
         """Initialize CalendarClient with AsyncDAVClient.
 
@@ -347,6 +348,8 @@ class CalendarClient:
                 the UID for OIDC-provisioned users.
             password: App password / login password — selects ``auth_type="basic"``
             token: OAuth bearer token — selects ``auth_type="bearer"``
+            verify: TLS verification: False disables it, an SSLContext carries
+                a custom CA
 
         Pass exactly one of ``password`` or ``token``. Passing neither leaves
         the underlying client unauthenticated.
@@ -380,7 +383,7 @@ class CalendarClient:
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=auth_username,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            ssl_verify_cert=verify,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
             headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )

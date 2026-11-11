@@ -8,6 +8,8 @@ import logging
 from mcp.server.auth.provider import AccessToken
 from mcp.server.mcpserver import Context
 
+from nextcloud_mcp_server.http import nextcloud_client_kwargs
+
 from ..client import NextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -61,7 +63,10 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
         # Token was validated to have MCP audience
         # Nextcloud will validate its own audience independently
         return NextcloudClient.from_token(
-            base_url=base_url, token=access_token.token, username=username
+            base_url=base_url,
+            token=access_token.token,
+            username=username,
+            **nextcloud_client_kwargs(),
         )
 
     except AttributeError as e:

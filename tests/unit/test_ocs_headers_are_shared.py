@@ -5,7 +5,7 @@ routes answer ``meta.statuscode: 997`` without it, and ``#[CORS]`` app routes
 log the session out and re-authenticate, which 404s Tables v1 on Nextcloud 33
 (GH #1664). While each client opted in per call, the Tables v1 calls never did.
 
-So the header lives in exactly one place -- ``http.NEXTCLOUD_DEFAULT_HEADERS``,
+So the header lives in exactly one place -- ``client.http.NEXTCLOUD_DEFAULT_HEADERS``,
 applied by ``nextcloud_httpx_client`` -- and this module pins both halves of
 that: no module spells the header itself, and no module builds a raw
 ``httpx2.AsyncClient`` (which would skip the default) unless it talks to
@@ -23,13 +23,16 @@ import pytest
 
 import nextcloud_mcp_server as root_pkg
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.client.http import (
+    NEXTCLOUD_DEFAULT_HEADERS,
+    nextcloud_httpx_client,
+)
 from nextcloud_mcp_server.client.tables import TablesClient
-from nextcloud_mcp_server.http import NEXTCLOUD_DEFAULT_HEADERS, nextcloud_httpx_client
 
 pytestmark = pytest.mark.unit
 
 #: The one module allowed to spell the header and to build a raw client.
-DEFINING_MODULE = "http.py"
+DEFINING_MODULE = "client/http.py"
 
 #: Modules whose raw ``httpx2.AsyncClient`` talks to a non-Nextcloud service, so
 #: the Nextcloud default headers do not belong on it. Adding a module here is a
@@ -113,7 +116,7 @@ def test_no_module_spells_the_header():
         for line in _header_spellings(tree)
     ]
     assert not offenders, (
-        "OCS-APIRequest is a client default (http.NEXTCLOUD_DEFAULT_HEADERS); "
+        "OCS-APIRequest is a client default (client.http.NEXTCLOUD_DEFAULT_HEADERS); "
         f"drop it from these call sites: {offenders}"
     )
 

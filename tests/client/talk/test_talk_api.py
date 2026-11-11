@@ -5,12 +5,12 @@ import logging
 import httpx2
 import pytest
 
-from nextcloud_mcp_server.client.talk import TalkClient, _validate_token
-from nextcloud_mcp_server.models.talk import (
+from nextcloud_mcp_server.client.models.talk import (
     TalkConversation,
     TalkMessage,
     TalkParticipant,
 )
+from nextcloud_mcp_server.client.talk import TalkClient, _validate_token
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_response,

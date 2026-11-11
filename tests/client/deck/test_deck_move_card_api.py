@@ -13,7 +13,7 @@ import httpx2
 import pytest
 
 from nextcloud_mcp_server.client.deck import DeckClient
-from nextcloud_mcp_server.models.deck import DeckCard
+from nextcloud_mcp_server.client.models.deck import DeckCard
 from tests.client.conftest import (
     create_mock_deck_card_response,
     create_mock_response,

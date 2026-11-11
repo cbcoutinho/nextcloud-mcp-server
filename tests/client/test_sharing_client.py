@@ -266,7 +266,9 @@ async def test_sharing_calls_are_metered_like_every_other_client(
     sample and no ``trace_nextcloud_api_call`` span -- invisible in exactly the
     dashboards that exist to spot a failing Nextcloud.
     """
-    record = mocker.patch("nextcloud_mcp_server.client.base.record_nextcloud_api_call")
+    record = mocker.patch(
+        "nextcloud_mcp_server.client.instrumentation.hooks.on_api_call"
+    )
     sharing_client._client.request.return_value = _ok_share_response(mocker)
 
     await sharing_client.list_shares()

@@ -21,6 +21,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
 from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.errors import NextcloudMCPServer
+from nextcloud_mcp_server.http import nextcloud_client_from_env
 from nextcloud_mcp_server.observability.metrics import instrument_call_tool_outcomes
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
@@ -47,7 +48,7 @@ class StdioContext(BasicAuthLifespanContext):
 async def stdio_lifespan(server: MCPServer) -> AsyncGenerator[StdioContext]:
     """Create and tear down a single :class:`NextcloudClient`."""
     logger.info("Starting MCP server in stdio mode (single-user BasicAuth)")
-    client = NextcloudClient.from_env()
+    client = nextcloud_client_from_env()
     try:
         yield StdioContext(client=client)
     finally:

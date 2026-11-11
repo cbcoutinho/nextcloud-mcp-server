@@ -105,7 +105,7 @@ from nextcloud_mcp_server.config_validators import (
 )
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.features import semantic_installed
-from nextcloud_mcp_server.http import nextcloud_httpx_client
+from nextcloud_mcp_server.http import nextcloud_client_from_env, nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
@@ -1051,7 +1051,7 @@ async def app_lifespan_basic(server: MCPServer) -> AsyncGenerator[AppContext]:
     client = None
     if not is_multi_user:
         logger.info("Creating shared Nextcloud client with BasicAuth")
-        client = NextcloudClient.from_env()
+        client = nextcloud_client_from_env()
         logger.info("Client initialization complete")
     else:
         logger.info(
@@ -2348,7 +2348,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
             # Create client for vector sync (server-level, not per-session)
-            client = NextcloudClient.from_env()
+            client = nextcloud_client_from_env()
 
             # Initialize Qdrant collection before starting background tasks
             logger.info("Initializing Qdrant collection...")

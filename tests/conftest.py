@@ -25,6 +25,7 @@ from mcp.types import ElicitRequestParams, ElicitResult, ErrorData
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.http import nextcloud_client_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +263,7 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         pytest.fail(f"Nextcloud server at {host} is not ready")
 
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
-    client = NextcloudClient.from_env()
+    client = nextcloud_client_from_env()
 
     # Perform a quick check to ensure connection works
     try:

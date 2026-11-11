@@ -34,7 +34,11 @@ from prometheus_client import (
 from prometheus_client.core import GaugeHistogramMetricFamily
 from prometheus_client.registry import Collector
 
-from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.client import instrumentation as _nc_instrumentation
+from nextcloud_mcp_server.observability.tracing import (
+    trace_nextcloud_api_call,
+    trace_operation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2201,3 +2205,33 @@ def instrument_tool(func):
                 raise
 
     return wrapper
+
+
+class _ServerInstrumentation(_nc_instrumentation.Instrumentation):
+    """Feeds the Nextcloud clients' hooks into the server's metrics and traces.
+
+    The clients call only no-op hooks, which keeps them free of prometheus and
+    OpenTelemetry. The instance is installed below at import, because every
+    server entrypoint imports this module, as the clients did before the hooks
+    existed.
+    """
+
+    def on_api_call(
+        self, app: str, method: str, status_code: int, duration: float
+    ) -> None:
+        record_nextcloud_api_call(app, method, status_code, duration)
+
+    def on_api_retry(self, app: str, reason: str) -> None:
+        record_nextcloud_api_retry(app, reason)
+
+    def on_download_truncated(self) -> None:
+        document_download_truncated_total.inc()
+
+    def on_scan_truncated(self) -> None:
+        document_scan_truncated_total.inc()
+
+    def trace_api_call(self, app: str, method: str, path: str | None = None):
+        return trace_nextcloud_api_call(app, method, path)
+
+
+_nc_instrumentation.hooks = _ServerInstrumentation()

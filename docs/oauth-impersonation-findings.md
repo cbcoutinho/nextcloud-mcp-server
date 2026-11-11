@@ -149,7 +149,7 @@ public function impersonate(string $userId): JSONResponse {
 ### Option A: Admin Credentials (Current Implementation)
 ✅ **BasicAuth mode with admin account**:
 ```python
-client = NextcloudClient.from_env()  # Uses NEXTCLOUD_USERNAME/PASSWORD
+client = nextcloud_client_from_env()  # Uses NEXTCLOUD_USERNAME/PASSWORD
 # Can access all APIs with admin permissions
 ```
 

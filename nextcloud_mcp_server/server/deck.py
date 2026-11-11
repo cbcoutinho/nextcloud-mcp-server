@@ -12,6 +12,17 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.capabilities import require_capability, unmet_capability
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.deck import _normalize_color
+from nextcloud_mcp_server.client.models.deck import (
+    DeckAssignedUser,
+    DeckBoard,
+    DeckCard,
+    DeckCardSummary,
+    DeckComment,
+    DeckCommentSummary,
+    DeckLabel,
+    DeckStack,
+    DeckUser,
+)
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.deck import (
@@ -25,15 +36,6 @@ from nextcloud_mcp_server.models.deck import (
     CreateCardResponse,
     CreateLabelResponse,
     CreateStackResponse,
-    DeckAssignedUser,
-    DeckBoard,
-    DeckCard,
-    DeckCardSummary,
-    DeckComment,
-    DeckCommentSummary,
-    DeckLabel,
-    DeckStack,
-    DeckUser,
     LabelOperationResponse,
     ListAttachmentsResponse,
     ListBoardsResponse,

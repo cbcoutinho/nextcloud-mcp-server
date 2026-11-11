@@ -103,6 +103,22 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
 ### Architectural Patterns
+- **`client/` imports nothing from the server.** `nextcloud_mcp_server/client/`
+  is being extracted as the standalone `nextcloud-client` package (Deck card
+  #1484). Code under `client/` must not import `nextcloud_mcp_server.<anything
+  outside client>` or server-only libraries (mcp, dynaconf, prometheus,
+  OpenTelemetry, sqlalchemy, …). `tests/unit/test_client_import_boundary.py`
+  enforces this. Consequences:
+  - Settings arrive as arguments. `NextcloudClient(..., verify=, keepalive=)`.
+    Server code builds clients with `**nextcloud_client_kwargs()` or
+    `nextcloud_client_from_env()` (both in `nextcloud_mcp_server/http.py`). A
+    bare `NextcloudClient(...)` in server code ignores `NEXTCLOUD_VERIFY_SSL`,
+    `NEXTCLOUD_CA_BUNDLE` and `NEXTCLOUD_HTTP_KEEPALIVE`.
+  - Metrics and traces go through `client.instrumentation.hooks` (no-op by
+    default). `observability/metrics.py` installs the server's implementation.
+    Add a hook method rather than importing `observability` from a client.
+  - Data models a client returns live in `client/models/`. The MCP
+    `BaseResponse` envelopes stay in `nextcloud_mcp_server/models/`.
 - **Base classes**: **All app API clients MUST extend `BaseNextcloudClient`** and
   issue requests through its `_make_request`. That method centralizes `_resolve_url`
   (prepends `/index.php` to bare `/apps/...` paths — the universal entry point that
@@ -114,9 +130,11 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
   - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx2 client
-    sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
+    sends it as a client default (`client.http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
     `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
-    Nextcloud-bound `httpx2.AsyncClient` through that factory. Pass only
+    Nextcloud-bound `httpx2.AsyncClient` through that factory (server code:
+    `nextcloud_mcp_server.http.nextcloud_httpx_client`, which adds the
+    configured TLS settings). Pass only
     request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
     `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
     both rules (GH #1664: the per-call opt-in left the Tables v1 routes without

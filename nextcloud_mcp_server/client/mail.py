@@ -31,8 +31,8 @@ from urllib.parse import quote
 
 from httpx2 import HTTPStatusError, RequestError, Response
 
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.ocs import (
+from .base import BaseNextcloudClient
+from .ocs import (
     OCS_REQUEST_HEADERS,
     describe_ocs_failure,
     parse_ocs_envelope,
@@ -121,7 +121,7 @@ class MailClient(BaseNextcloudClient):
     # Both route families want JSON, so they share this ``Accept``-only set. The
     # OCS-APIRequest header that authenticates the OCS routes and CSRF-exempts
     # the direct ones is not in it: the httpx2 client sends that on every request
-    # (``http.NEXTCLOUD_DEFAULT_HEADERS``).
+    # (``client.http.NEXTCLOUD_DEFAULT_HEADERS``).
     _API_JSON_HEADERS = dict(OCS_REQUEST_HEADERS)
 
     app_name = "mail"
