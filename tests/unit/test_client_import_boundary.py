@@ -100,7 +100,7 @@ def test_entrypoints_install_server_hooks(entrypoint):
         f"""
         import importlib
         importlib.import_module({entrypoint!r})
-        from nextcloud_mcp_server.client import instrumentation
+        from nextcloud_client import instrumentation
         print(type(instrumentation.hooks).__name__)
         """
     )

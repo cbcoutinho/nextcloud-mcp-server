@@ -66,19 +66,30 @@ jobs:
       # --find-links: the pinned nextcloud-client is the one just built, which
       # is not on PyPI until the publish step below.
       - name: Smoke test (wheel)
-        run: uv run --isolated --no-project --find-links dist --with dist/nextcloud_mcp_server-*.whl nextcloud-mcp-server --help
+        run: uv run --isolated --no-project --no-build --find-links dist --with dist/nextcloud_mcp_server-*.whl nextcloud-mcp-server --help
       - name: Smoke test (source distribution)
         run: uv run --isolated --no-project --find-links dist --with dist/nextcloud_mcp_server-*.tar.gz nextcloud-mcp-server --help
+      # Same check as package-smoke: the client wheel installs alone and brings
+      # none of the server's stack with it.
       - name: Smoke test (nextcloud-client wheel)
-        run: uv run --isolated --no-project --with dist/nextcloud_client-*.whl python -c "import nextcloud_client"
+        run: |
+          uv run --isolated --no-project --no-build --with dist/nextcloud_client-*.whl python -c "
+          import importlib.util as u
+          import nextcloud_client
+          leaked = [m for m in ('nextcloud_mcp_server', 'mcp', 'dynaconf', 'prometheus_client', 'sqlalchemy') if u.find_spec(m)]
+          assert not leaked, leaked
+          "
       # Client first: the server pins nextcloud-client==<this version>, so a
       # server published without its client is uninstallable from PyPI. If the
       # client upload fails, the job stops before the server goes out. Trusted
       # publishing must be configured for both PyPI projects.
+      #
+      # --check-url skips files PyPI already has, so re-running a release whose
+      # client went out but whose server upload failed retries only the server.
       - name: Publish nextcloud-client
-        run: uv publish dist/nextcloud_client-*
+        run: uv publish --check-url https://pypi.org/simple/ dist/nextcloud_client-*
       - name: Publish nextcloud-mcp-server
-        run: uv publish dist/nextcloud_mcp_server-*
+        run: uv publish --check-url https://pypi.org/simple/ dist/nextcloud_mcp_server-*
 
   github-release:
     name: Create GitHub Release
