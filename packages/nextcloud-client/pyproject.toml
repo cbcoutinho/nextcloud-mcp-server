@@ -2,7 +2,7 @@
 name = "nextcloud-client"
 # Released in lockstep with nextcloud-mcp-server: commitizen bumps this line
 # (version_files in the root pyproject.toml), never edit it by hand.
-version = "0.210.1"
+version = "0.211.0"
 description = "Async Python clients for the Nextcloud APIs: WebDAV, CalDAV, CardDAV, Notes, Deck, Tables, Talk, Mail and more"
 authors = [
     {name = "Chris Coutinho", email = "chris@coutinho.io"}

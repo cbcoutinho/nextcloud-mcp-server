@@ -5,6 +5,32 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.211.0 (2026-11-11)
+
+### BREAKING CHANGE
+
+- the Nextcloud client loggers are renamed from
+`nextcloud_mcp_server.client.*` to `nextcloud_client.*`; update any log
+filters, Loki queries or logging config that match the old names.
+- `nextcloud_mcp_server.client` is now the separate
+`nextcloud_client` package; import from `nextcloud_client` instead.
+- removed `NextcloudClient.from_env()` (use
+`nextcloud_mcp_server.http.nextcloud_client_from_env()`),
+`nextcloud_mcp_server.auth.BearerAuth` (now
+`nextcloud_mcp_server.client.auth.BearerAuth`), the
+`nextcloud_mcp_server.controllers` package and
+`nextcloud_mcp_server.models.users` (now
+`nextcloud_mcp_server.client.models.users`).
+
+### Feat
+
+- **client**: ship py.typed so downstream type checkers use the annotations
+- **client**: publish the Nextcloud clients as the nextcloud-client package
+
+### Refactor
+
+- **client**: decouple the Nextcloud clients from the server
+
 ## v0.210.1 (2026-11-11)
 
 ### Fix
