@@ -117,7 +117,7 @@ jobs:
         shell: bash
         run: |
           wheel=$(ls dist/nextcloud_client-*.whl)
-          uv run --isolated --no-project --no-build --with "./$wheel" python -c "
+          uv run --isolated --no-project --no-build --with "./$wheel" python -I -c "
           import importlib.util as u
           from nextcloud_client import NextcloudClient
           NextcloudClient('https://nextcloud.invalid', 'alice')
