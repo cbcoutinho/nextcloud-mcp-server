@@ -262,8 +262,6 @@ class TestNextcloudClientKwargs:
         sites, offenders = 0, []
         for path in sorted(server_root.rglob("*.py")):
             rel = path.relative_to(server_root).as_posix()
-            if rel.startswith("client/"):
-                continue  # the client itself: from_token forwards its own args
             for node in ast.walk(ast.parse(path.read_text())):
                 if not (isinstance(node, ast.Call) and _builds_nextcloud_client(node)):
                     continue

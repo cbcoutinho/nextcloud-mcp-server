@@ -71,10 +71,14 @@ jobs:
         run: uv run --isolated --no-project --find-links dist --with dist/nextcloud_mcp_server-*.tar.gz nextcloud-mcp-server --help
       - name: Smoke test (nextcloud-client wheel)
         run: uv run --isolated --no-project --with dist/nextcloud_client-*.whl python -c "import nextcloud_client"
-      # Uploads everything in dist/. Trusted publishing must be configured for
-      # both PyPI projects (nextcloud-mcp-server and nextcloud-client).
-      - name: Publish
-        run: uv publish
+      # Client first: the server pins nextcloud-client==<this version>, so a
+      # server published without its client is uninstallable from PyPI. If the
+      # client upload fails, the job stops before the server goes out. Trusted
+      # publishing must be configured for both PyPI projects.
+      - name: Publish nextcloud-client
+        run: uv publish dist/nextcloud_client-*
+      - name: Publish nextcloud-mcp-server
+        run: uv publish dist/nextcloud_mcp_server-*
 
   github-release:
     name: Create GitHub Release
