@@ -72,13 +72,7 @@ jobs:
       # Same check as package-smoke: the client wheel installs alone and brings
       # none of the server's stack with it.
       - name: Smoke test (nextcloud-client wheel)
-        run: |
-          uv run --isolated --no-project --no-build --with dist/nextcloud_client-*.whl python -c "
-          import importlib.util as u
-          import nextcloud_client
-          leaked = [m for m in ('nextcloud_mcp_server', 'mcp', 'dynaconf', 'prometheus_client', 'sqlalchemy') if u.find_spec(m)]
-          assert not leaked, leaked
-          "
+        run: uv run --isolated --no-project --no-build --find-links dist --with dist/nextcloud_client-*.whl python -c "import importlib.util as u, nextcloud_client; leaked = [m for m in ('nextcloud_mcp_server', 'mcp', 'dynaconf', 'prometheus_client', 'sqlalchemy') if u.find_spec(m)]; assert not leaked, leaked"
       # Client first: the server pins nextcloud-client==<this version>, so a
       # server published without its client is uninstallable from PyPI. If the
       # client upload fails, the job stops before the server goes out. Trusted
