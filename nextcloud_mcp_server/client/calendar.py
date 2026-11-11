@@ -1060,7 +1060,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[missing-union-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,
