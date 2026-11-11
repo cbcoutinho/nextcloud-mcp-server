@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from typing import Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -2230,7 +2231,9 @@ class _ServerInstrumentation(_nc_instrumentation.Instrumentation):
     def on_scan_truncated(self) -> None:
         document_scan_truncated_total.inc()
 
-    def trace_api_call(self, app: str, method: str, path: str | None = None):
+    def trace_api_call(
+        self, app: str, method: str, path: str | None = None
+    ) -> AbstractContextManager[object]:
         return trace_nextcloud_api_call(app, method, path)
 
 

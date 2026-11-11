@@ -85,6 +85,34 @@ def test_server_installs_metric_hooks():
     assert counter._value.get() == before + 1
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "nextcloud_mcp_server.cli",  # the console script (HTTP server, workers)
+        "nextcloud_mcp_server.app",
+        "nextcloud_mcp_server.stdio",
+    ],
+)
+def test_entrypoints_install_server_hooks(entrypoint):
+    """The server hooks are installed as an import side effect of
+    ``observability.metrics``. An entrypoint that stopped importing it would
+    build clients that drop every metric and span with no warning.
+    """
+    probe = textwrap.dedent(
+        f"""
+        import importlib
+        importlib.import_module({entrypoint!r})
+        from nextcloud_mcp_server.client import instrumentation
+        print(type(instrumentation.hooks).__name__)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "_ServerInstrumentation"
+
+
 def test_probe_catches_a_leak():
     """Guard the guard: the blocker must actually reject a server import."""
     leaky = PROBE.format(server_only=SERVER_ONLY).replace(
