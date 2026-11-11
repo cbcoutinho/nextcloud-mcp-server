@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.211.0"
+version = "0.211.1"
 description = "Model Context Protocol (MCP) server for Nextcloud integration - enables AI assistants to interact with Nextcloud data"
 authors = [
     {name = "Chris Coutinho", email = "chris@coutinho.io"}
@@ -12,7 +12,7 @@ keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude",
 dependencies = [
     # The Nextcloud API clients (packages/nextcloud-client, a workspace member).
     # Released in lockstep: commitizen bumps this pin with the version.
-    "nextcloud-client==0.211.0",
+    "nextcloud-client==0.211.1",
     "mcp[cli] (>=2.3,<2.4)",
     "httpx2>=2.5.0",
     # Imported directly at runtime. Each was previously reachable only because
