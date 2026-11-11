@@ -9,9 +9,11 @@ by libpq/psycopg — see ``TestProcrastinateConninfo`` in
 ``test_decomposition_config.py``.
 """
 
+import ast
 import logging
 import os
 import ssl
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -248,6 +250,47 @@ class TestNextcloudClientKwargs:
             "nextcloud_mcp_server.http.get_nextcloud_ssl_verify", return_value=ctx
         ):
             assert nextcloud_client_kwargs()["verify"] is ctx
+
+    def test_every_server_construction_site_passes_it(self):
+        """A server-side ``NextcloudClient(...)`` without it ignores the TLS settings.
+
+        The client defaults to ``verify=True, keepalive=True``, so a missed call
+        site fails silently: no error, just ``NEXTCLOUD_VERIFY_SSL``,
+        ``NEXTCLOUD_CA_BUNDLE`` and ``NEXTCLOUD_HTTP_KEEPALIVE`` not applied.
+        """
+        server_root = Path(http_module.__file__).parent
+        sites, offenders = 0, []
+        for path in sorted(server_root.rglob("*.py")):
+            rel = path.relative_to(server_root).as_posix()
+            if rel.startswith("client/"):
+                continue  # the client itself: from_token forwards its own args
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not (isinstance(node, ast.Call) and _builds_nextcloud_client(node)):
+                    continue
+                sites += 1
+                if not any(
+                    kw.arg is None
+                    and isinstance(kw.value, ast.Call)
+                    and isinstance(kw.value.func, ast.Name)
+                    and kw.value.func.id == "nextcloud_client_kwargs"
+                    for kw in node.keywords
+                ):
+                    offenders.append(f"{rel}:{node.lineno}")
+        assert sites >= 5, "scan found too few construction sites; is it broken?"
+        assert not offenders, f"pass **nextcloud_client_kwargs() at: {offenders}"
+
+
+def _builds_nextcloud_client(call: ast.Call) -> bool:
+    """``NextcloudClient(...)`` or ``NextcloudClient.from_token(...)``."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id == "NextcloudClient"
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "from_token"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "NextcloudClient"
+    )
 
 
 class TestClientFromEnv:

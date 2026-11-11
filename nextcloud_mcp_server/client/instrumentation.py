@@ -20,7 +20,11 @@ from contextlib import AbstractContextManager, nullcontext
 
 
 class Instrumentation:
-    """No-op hooks. Override the ones you need."""
+    """No-op hooks. Override the ones you need.
+
+    Hooks run inline in the request path and must not raise. Calls are not
+    wrapped, so an exception from a hook fails the API call it observes.
+    """
 
     def on_api_call(
         self, app: str, method: str, status_code: int, duration: float
