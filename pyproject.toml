@@ -46,6 +46,7 @@ dependencies = [
     "langchain-text-splitters>=1.0.0", # utils/message_splitter.py (Deck/WebDAV comments)
     "dynaconf>=3.2.13,<4.0",
     "sqlalchemy[asyncio]>=2.0",
+    "markupsafe>=3.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

@@ -4,7 +4,7 @@ Periodically scans enabled users' content and queues changed documents for proce
 """
 
 import logging
-import random
+import secrets
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -883,7 +883,7 @@ async def scan_user_documents(
         initial_sync: If True, send all documents (first-time sync)
     """
 
-    scan_id = random.randint(1000, 9999)
+    scan_id = 1000 + secrets.randbelow(9000)
     logger.info(
         "[SCAN-%s] Starting scan for user: %s, initial_sync=%s",
         scan_id,
