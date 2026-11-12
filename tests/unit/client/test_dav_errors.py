@@ -10,9 +10,8 @@ import httpx2
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.dav_errors import (
+from nextcloud_client.base import BaseNextcloudClient
+from nextcloud_client.dav_errors import (
     MAX_ERROR_BODY_BYTES,
     DavError,
     DavInsufficientStorage,

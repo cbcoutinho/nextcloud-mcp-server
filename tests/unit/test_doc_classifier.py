@@ -10,6 +10,8 @@ extraction tier a PDF starts in:
   * the text-quality score distinguishes clean prose from mashed/space-less junk.
 """
 
+import time
+
 import pymupdf
 import pytest
 
@@ -69,6 +71,66 @@ def test_text_quality_mashed_tokens_scores_low():
     # space-less / mashed layer (the "Student 147" failure mode)
     mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
     assert clf._text_quality(mashed) < clf.MIN_TEXT_QUALITY
+
+
+def test_text_quality_ignores_toc_leaders():
+    # GH #1802: each leader run is one >20-char token, which zeroed the score of
+    # every table-of-contents page and sent page-range reads to paid OCR.
+    toc = "".join(
+        f"Chapter {i} Getting started {leader * 70} {i}\n"
+        for i, leader in enumerate(".·…_-–—" * 3, start=1)
+    )
+    assert clf._text_quality(toc) == pytest.approx(1.0)
+
+
+def test_text_quality_ignores_markdown_markup():
+    # GH #1802: a sparse figure page from the structured tier's markdown. The
+    # image references, <br>/pipes and emphasis are markup glued into long
+    # tokens; the page must score as its plain text does.
+    plain = "Remove the screws and lift the cover off the base unit\nSee figure"
+    markdown = (
+        "**_Disassemble_** the screws and lift the cover off the base unit\n"
+        "![](/tmp/pdf-images/manual.pdf-1-0.png)\n"
+        "|Heat<br>sink|See<br>figure|\n"
+        # The path embeds the document name, which may itself hold ")".
+        "![](/tmp/pdf-images/report (1).pdf/report (1).pdf-1-1.png)\n"
+    )
+    assert clf._text_quality(plain) == pytest.approx(1.0)
+    assert clf._text_quality(markdown) == pytest.approx(1.0)
+
+
+def test_text_quality_unclosed_image_references_stay_linear():
+    # Untrusted page text: a long line of unclosed "![](" must neither raise nor
+    # go quadratic (uncapped this line takes ~45s; capped ~0.2s).
+    line = "![](/tmp/pdf-images/a " * 20_000
+    started = time.perf_counter()
+    assert 0.0 <= clf._text_quality(line) <= 1.0
+    assert time.perf_counter() - started < 5.0
+
+
+def test_text_quality_markup_does_not_mask_junk():
+    mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
+    markdown = f"**{mashed}**\n![](/tmp/pdf-images/manual.pdf-0-0.png)\n|{mashed}|"
+    assert clf._text_quality(markdown) < clf.MIN_TEXT_QUALITY
+
+
+def test_toc_pages_in_a_short_range_stay_fast():
+    # GH #1802 end to end: 2 TOC pages out of 4 used to hit page_fraction=0.5.
+    toc = "".join(f"Chapter {i} Getting started {'.' * 70} {i}\n" for i in range(24))
+    prose = "This page is ordinary prose with normal words and spacing. " * 20
+    pages = [toc, prose, toc, prose]
+    bounds, off = [], 0
+    for i, p in enumerate(pages):
+        bounds.append({"page": i, "start_offset": off, "end_offset": off + len(p)})
+        off += len(p)
+    c = clf.classify_from_text("".join(pages), bounds)
+    assert c.recommended_tier == "fast"
+    assert c.ocr_page_fraction == pytest.approx(0.0)
+
+
+def test_text_quality_leaders_do_not_mask_junk():
+    mashed = "01322234567mobileoutstandingresilienceacademicachievementhurdles"
+    assert clf._text_quality(f"{mashed} {'.' * 40} 3") < clf.MIN_TEXT_QUALITY
 
 
 def test_text_quality_empty_is_zero():

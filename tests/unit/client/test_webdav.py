@@ -8,8 +8,7 @@ import pytest
 from httpx2 import HTTPStatusError
 from hypothesis import example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.client.webdav import (
+from nextcloud_client.webdav import (
     WebDAVClient,
     like_predicate,
     normalize_etag,

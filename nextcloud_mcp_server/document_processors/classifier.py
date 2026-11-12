@@ -65,6 +65,32 @@ MIN_PAGE_CHARS = 16
 GLYPH_CORRUPTION_RATIO = 0.02
 
 _WORD_RE = re.compile(r"\S+")
+# Layout and markup that is not text, but would be scored as long tokens
+# (GH #1802). Each would zero the overlong/merge scores of an otherwise clean
+# page, so it is replaced by a space before scoring (which also nudges
+# whitespace_ratio up, as intended):
+#   * table-of-contents leaders ("Getting started ........ 5"), and with them
+#     markdown table rules (|-----|) and signature lines (_____);
+#   * markdown image references (``![](/tmp/pdf-images/doc.pdf-1-0.png)``),
+#     HTML tags (``<br>``, ``<u>``) and table pipes, all emitted by the
+#     structured tier's markdown. The image path embeds the document name, so
+#     it may itself hold ")" (``report (1).pdf``): the reference ends at the
+#     first ")" followed by whitespace or end of text. Alt text and path are
+#     length-capped: page text is untrusted, and an uncapped pattern makes a
+#     line of unclosed "![](" quadratic on the event loop.
+#   * anything in angle brackets that looks like a tag (``<br>``, ``</u>``,
+#     and a ``<name>`` placeholder too -- harmless, it only shortens tokens).
+# Emphasis/heading markers (``**_Appendix_**``, ``# Title``) are then dropped
+# outright, since they are glued to the word they decorate. That deliberately
+# also flattens identifiers (``snake_case`` -> ``snakecase``); it can only
+# shorten a token. Mashed junk is letters/digits, so none of this hides a junk
+# layer.
+_LAYOUT_RE = re.compile(
+    r"([.·…_\-–—])\1{3,}"
+    r"|!\[[^\]\n]{0,512}\]\(.{0,512}?\)(?=\s|$)"
+    r"|</?\w+/?>|\|"
+)
+_EMPHASIS_RE = re.compile(r"[*_#`]+")
 
 # Whitespace control characters that legitimately appear in extracted text
 # (tab / newline / carriage-return / form-feed / vertical-tab). Every OTHER C0
@@ -105,8 +131,10 @@ def _text_quality(text: str) -> float:
 
     Penalises the two hallmarks of a junk/OCR-mangled layer: too little
     whitespace (words mashed together) and very long tokens. Empty text scores
-    0 -- "no usable layer".
+    0 -- "no usable layer". TOC leaders and markdown markup are ignored (see
+    ``_LAYOUT_RE``), so plain and markdown output of one page score alike.
     """
+    text = _EMPHASIS_RE.sub("", _LAYOUT_RE.sub(" ", text))
     if not text:
         return 0.0
     tokens = _WORD_RE.findall(text)

@@ -17,15 +17,15 @@ from typing import Any
 
 from httpx2 import HTTPStatusError, codes
 
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
-from nextcloud_mcp_server.models.talk import (
+from .base import BaseNextcloudClient
+from .models.talk import (
     TalkConversation,
     TalkMessage,
     TalkParticipant,
     TalkParticipantSource,
     TalkRoomType,
 )
+from .ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 

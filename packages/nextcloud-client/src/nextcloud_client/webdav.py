@@ -12,18 +12,14 @@ from xml.sax.saxutils import escape as xml_escape
 import anyio
 from httpx2 import HTTPStatusError, RemoteProtocolError, Response
 
-from nextcloud_mcp_server.observability.metrics import (
-    document_download_truncated_total,
-    document_scan_truncated_total,
-)
-
+from . import instrumentation
 from .base import BaseNextcloudClient
 from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
 # ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx2
-# client sends it on every request (``http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
+# client sends it on every request (``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
 # requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
@@ -104,7 +100,7 @@ def _verify_content_length(response: Response, received: int, label: str) -> Non
     expected = _expected_content_length(response)
     if expected is None or received == expected:
         return
-    document_download_truncated_total.inc()
+    instrumentation.hooks.on_download_truncated()
     # Log here, not just in the message: callers funnel this through a
     # generic ``except Exception`` that would otherwise report it as an
     # opaque "Unexpected error reading file".
@@ -1556,7 +1552,7 @@ class WebDAVClient(BaseNextcloudClient):
     def _warn_if_truncated(count: int, scope: str, max_results: int) -> None:
         """Warn + count when a SEARCH hit the ceiling, so a cap is never silent."""
         if count >= max_results:
-            document_scan_truncated_total.inc()
+            instrumentation.hooks.on_scan_truncated()
             logger.warning(
                 "WebDAV SEARCH reached max_results=%d for scope %r; "
                 "results may be truncated -- raise WEBDAV_SEARCH_MAX_RESULTS",
@@ -1671,8 +1667,8 @@ class WebDAVClient(BaseNextcloudClient):
             # Map namespace URIs to prefixes
             ns_map = {
                 "DAV:": "d",
-                "http://owncloud.org/ns": "oc",
-                "http://nextcloud.org/ns": "nc",
+                "http://owncloud.org/ns": "oc",  # NOSONAR(S5332) XML namespace URI, never fetched
+                "http://nextcloud.org/ns": "nc",  # NOSONAR(S5332) XML namespace URI, never fetched
             }
 
             prefix = ns_map.get(namespace, "d")
@@ -2349,7 +2345,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in root.findall("d:response", ns):
@@ -2437,7 +2433,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         files = []
@@ -2578,7 +2574,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         response_elem = root.find("d:response", ns)

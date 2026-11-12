@@ -24,8 +24,8 @@ is created with ``user_assignable=false``.
 import logging
 
 import anyio
+from nextcloud_client.webdav import WebDAVClient
 
-from nextcloud_mcp_server.client.webdav import WebDAVClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.utils.parsing import split_csv
 

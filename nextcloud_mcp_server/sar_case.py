@@ -30,10 +30,10 @@ from typing import Literal
 import anyio
 from anyio.abc import TaskGroup
 from httpx2 import HTTPStatusError
+from nextcloud_client import NextcloudClient
+from nextcloud_client.webdav import like_predicate
 from pydantic import ValidationError
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.webdav import like_predicate
 from nextcloud_mcp_server.models.sar import (
     MAX_CASE_ITEMS,
     MAX_CASE_QUERIES,

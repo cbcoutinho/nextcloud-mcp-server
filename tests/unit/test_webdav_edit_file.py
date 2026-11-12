@@ -13,8 +13,8 @@ import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.webdav import OversizeDownload
 
-from nextcloud_mcp_server.client.webdav import OversizeDownload
 from nextcloud_mcp_server.models.webdav import EditFileResponse, FileEdit
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 

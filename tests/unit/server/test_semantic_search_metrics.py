@@ -96,7 +96,7 @@ def _run(
         patch(f"{mod}.allowed_doc_types", new=AsyncMock(return_value=allowed)),
         patch(f"{mod}.normalize_path_prefixes", return_value=[]),
         patch(f"{mod}.resolve_prefix_folder_ids", new=AsyncMock(return_value=[])),
-        patch(f"{mod}.BM25HybridSearchAlgorithm", return_value=algo),
+        patch(f"{mod}.build_search_algorithm", return_value=algo),
         patch(f"{mod}.verify_search_results", new=AsyncMock(return_value=([], 0))),
         patch(f"{mod}.record_search_usage", new=AsyncMock()),
         patch(f"{mod}.record_search_request", new=spy),
@@ -180,7 +180,7 @@ def test_arbitrary_fusion_cannot_reach_the_metric_label():
     assert spy.call_count == 1
     assert spy.call_args.kwargs["algorithm"] == "bm25_hybrid_rrf"
 
-    # This harness stubs BM25HybridSearchAlgorithm, so it cannot show that the
+    # This harness stubs the algorithm, so it cannot show that the
     # bad mode still fails the request — asserting that here would only be
     # testing the mock. The real rejection is pinned one layer down, below.
 

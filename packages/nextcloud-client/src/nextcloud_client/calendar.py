@@ -4,6 +4,7 @@ import datetime as dt
 import inspect
 import logging
 import re
+import ssl
 import uuid
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -20,7 +21,6 @@ from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[import-not-found]
 
-from ..config import get_nextcloud_ssl_verify
 from .availability import (
     Span,
     busy_spans_from_events,
@@ -350,6 +350,7 @@ class CalendarClient:
         auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
+        verify: bool | ssl.SSLContext = True,
     ):
         """Initialize CalendarClient with AsyncDAVClient.
 
@@ -367,6 +368,8 @@ class CalendarClient:
                 the UID for OIDC-provisioned users.
             password: App password / login password — selects ``auth_type="basic"``
             token: OAuth bearer token — selects ``auth_type="bearer"``
+            verify: TLS verification: False disables it, an SSLContext carries
+                a custom CA
 
         Pass exactly one of ``password`` or ``token``. Passing neither leaves
         the underlying client unauthenticated.
@@ -400,7 +403,7 @@ class CalendarClient:
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=auth_username,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            ssl_verify_cert=verify,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
             headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )
@@ -756,9 +759,9 @@ class CalendarClient:
         tree = etree.fromstring(response.raw.encode("utf-8"))
         ns = {
             "d": "DAV:",
-            "cs": "http://calendarserver.org/ns/",
+            "cs": "http://calendarserver.org/ns/",  # NOSONAR(S5332) XML namespace URI, never fetched
             "c": "urn:ietf:params:xml:ns:caldav",
-            "ical": "http://apple.com/ns/ical/",
+            "ical": "http://apple.com/ns/ical/",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in tree.findall(".//d:response", ns):
@@ -1089,7 +1092,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[missing-union-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,

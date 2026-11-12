@@ -24,10 +24,15 @@ jobs:
       - name: Linting
         run: uv run --no-build --no-sync ruff check
       - name: Type check
-        run: uv run --no-build --no-sync ty check -- nextcloud_mcp_server
+        run: uv run --no-build --no-sync ty check -- nextcloud_mcp_server packages/nextcloud-client/src
       # Fails if a module is imported at runtime but not declared in
       # [project.dependencies] (#1285). Config in pyproject.toml [tool.deptry].
       - name: Check for undeclared dependencies
+        run: uv run --no-build --no-sync deptry .
+      # nextcloud-client is published on its own, so it must declare everything
+      # it imports in its own pyproject.toml, not lean on the server's.
+      - name: Check for undeclared dependencies (nextcloud-client)
+        working-directory: packages/nextcloud-client
         run: uv run --no-build --no-sync deptry .
 
   unit-test:
@@ -73,9 +78,9 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
-      - name: Build the wheel
+      - name: Build the wheels
         shell: bash
-        run: uv build --wheel --out-dir dist
+        run: uv build --all-packages --wheel --out-dir dist
       # Installs the built wheel (not the source tree) into a throwaway
       # environment: --no-build cannot install this project from source, and
       # the wheel is the artifact users actually get. Its runtime dependencies
@@ -89,9 +94,11 @@ jobs:
           NEXTCLOUD_USERNAME: admin
           NEXTCLOUD_PASSWORD: admin
         run: |
-          wheel=$(ls dist/*.whl)
+          wheel=$(ls dist/nextcloud_mcp_server-*.whl)
           req="nextcloud-mcp-server${EXTRA:+[$EXTRA]} @ ./$wheel"
-          run() { uv run --isolated --no-project --no-build --with "$req" "$@"; }
+          # --find-links: the server pins the nextcloud-client of the same
+          # version, which is built alongside it and may not be on PyPI yet.
+          run() { uv run --isolated --no-project --no-build --find-links dist --with "$req" "$@"; }
           run nextcloud-mcp-server --help
           # Each extra is either fully there or fully absent (semantic includes
           # documents), and without semantic, semantic search is refused at
@@ -103,6 +110,20 @@ jobs:
           if [ "$sem" = False ]; then
             (export ENABLE_SEMANTIC_SEARCH=true; run python -c "from nextcloud_mcp_server.config import get_settings; from nextcloud_mcp_server.config_validators import validate_configuration as v; _, errs = v(get_settings()); assert any('[semantic]' in e for e in errs), errs")
           fi
+      # nextcloud-client on its own: it imports, and none of the server's stack
+      # comes with it. Once per OS; it has no extras.
+      - name: Smoke test nextcloud-client (isolated install)
+        if: matrix.extra == ''
+        shell: bash
+        run: |
+          wheel=$(ls dist/nextcloud_client-*.whl)
+          uv run --isolated --no-project --no-build --with "./$wheel" python -I -c "
+          import importlib.util as u
+          from nextcloud_client import NextcloudClient
+          NextcloudClient('https://nextcloud.invalid', 'alice')
+          leaked = [m for m in ('nextcloud_mcp_server', 'mcp', 'dynaconf', 'prometheus_client', 'sqlalchemy') if u.find_spec(m)]
+          assert not leaked, leaked
+          "
 
   integration-test:
     runs-on: ubuntu-latest
@@ -127,7 +148,7 @@ jobs:
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.15@sha256:68feaa8992524ac26b4c00194b81c1ae6dc8e9f412ac82de0c5f4d4a2ee4bbcd"
           - nextcloud_version: "33"
-            nextcloud_image: "docker.io/library/nextcloud:33.0.10@sha256:1a18e5248b836a2f925ce553bd28d7dd69b0205632372f4c506356342182be8e"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.10@sha256:81cb09055a20142521a267cea2bc27e6a81a065871c70850d209f08803567dbc"
           # NOTE: the nc34 lanes are EXPECTED TO FAIL until Astrolabe publishes an
           # NC-34-compatible release to the app store. cbcoutinho/astrolabe#242
           # (max-version="34") is merged but not yet released, so
@@ -139,7 +160,7 @@ jobs:
           # A non-zero result means the release is live and these lanes should go
           # green on a re-run.
           - nextcloud_version: "34"
-            nextcloud_image: "docker.io/library/nextcloud:34.0.5@sha256:b89746a4febc93de82141921417f43b0d5ce69c3746feb485372559e9fbeec3f"
+            nextcloud_image: "docker.io/library/nextcloud:34.0.5@sha256:d8ad0b77c863611b9fab6e72a82a5d35fbcb218b660f9f20fec9941a50806281"
 
           # Mode-specific properties
           - mode: single-user
@@ -150,7 +171,9 @@ jobs:
             needs-playwright: false
             # Also start GreenMail (SMTP/IMAP) so the Mail integration tests have
             # a real backend; the Mail account is provisioned in a step below.
-            extra-compose-profiles: "--profile mail"
+            # And a Qdrant server, for tests of what only a server evaluates
+            # (test_exact_match_qdrant_server.py: the phrase text index).
+            extra-compose-profiles: "--profile mail --profile qdrant"
             # This is the long pole of the whole workflow (~15min of pytest),
             # and the only lane that can be fanned out: the other modes go
             # through the OAuth fixtures, whose callback server binds a fixed

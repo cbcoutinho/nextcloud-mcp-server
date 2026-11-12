@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration

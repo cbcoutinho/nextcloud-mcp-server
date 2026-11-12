@@ -1,6 +1,5 @@
 import pytest
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 pytestmark = pytest.mark.integration
 

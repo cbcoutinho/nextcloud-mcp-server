@@ -409,7 +409,8 @@ async def test_send_message_via_outbox(nc_mcp_client, provisioned_mail_account):
     """Send a message through the Mail outbox (create succeeds; SMTP send is env-limited)."""
     account_id = await _first_account_id(nc_mcp_client)
     subject = "Sent from MCP via outbox"
-    # The tool takes `to` as a JSON-array string; From is derived from account_id.
+    # `to` as a JSON-array string, the form older callers use; the SDK decodes
+    # it before validation. From is derived from account_id.
     data = _tool_payload(
         await nc_mcp_client.call_tool(
             "nc_mail_send_message",
@@ -445,6 +446,7 @@ async def test_save_draft_lands_in_drafts_and_delivers_nothing(
     token = uuid.uuid4().hex[:8]
     subject = f"Draft probe {token}"
     recipient = f"draft-probe-{token}@example.org"
+    cc_recipient = f"draft-cc-{token}@example.org"
 
     account_id = await _first_account_id(nc_mcp_client)
     saved = _tool_payload(
@@ -452,7 +454,11 @@ async def test_save_draft_lands_in_drafts_and_delivers_nothing(
             "nc_mail_save_draft",
             {
                 "account_id": account_id,
-                "to": json.dumps([{"label": "Draft Probe", "email": recipient}]),
+                # The array form, as the schema advertises it, with a cc: cc
+                # and bcc could not be passed at all before they were typed as
+                # arrays.
+                "to": [{"label": "Draft Probe", "email": recipient}],
+                "cc": [{"email": cc_recipient}],
                 "subject": subject,
                 "body": "prepared through the MCP server, never sent",
             },
@@ -483,6 +489,8 @@ async def test_save_draft_lands_in_drafts_and_delivers_nothing(
         # (5.12+) writes into the IMAP draft as a header.
         _, header = imap.fetch(ids[0], "(BODY.PEEK[HEADER.FIELDS (X-AI-GENERATED)])")
         assert b"X-AI-Generated: 1" in header[0][1], f"draft not marked: {header}"
+        _, cc_header = imap.fetch(ids[0], "(BODY.PEEK[HEADER.FIELDS (CC)])")
+        assert cc_recipient.encode() in cc_header[0][1], f"cc lost: {cc_header}"
     finally:
         imap.logout()
 

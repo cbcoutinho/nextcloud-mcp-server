@@ -12,9 +12,8 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
+from nextcloud_client import NextcloudClient
+from nextcloud_client.dav_errors import DavPreconditionFailed
 
 logger = logging.getLogger(__name__)
 

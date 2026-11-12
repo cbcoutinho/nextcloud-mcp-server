@@ -15,6 +15,7 @@ routes precisely because the blast radius is global.
 import logging
 
 import httpx2
+from nextcloud_client.users import UsersClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -24,7 +25,6 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
-from nextcloud_mcp_server.client.users import UsersClient
 from nextcloud_mcp_server.vector.purge import purge_doc_types
 
 from ..http import nextcloud_httpx_client

@@ -10,15 +10,15 @@ from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
-
-from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.webdav import (
+from nextcloud_client.webdav import (
     OversizeDownload,
     like_predicate,
     normalize_etag,
 )
+from pydantic import Field
+
+from nextcloud_mcp_server.astrolabe_links import astrolabe_browser_base
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.features import documents_installed
@@ -75,7 +75,8 @@ from nextcloud_mcp_server.utils.text_edit import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle / lazy-import guard
-    from nextcloud_mcp_server.client import NextcloudClient
+    from nextcloud_client import NextcloudClient
+
     from nextcloud_mcp_server.document_source import DocumentSource
 
 logger = logging.getLogger(__name__)
@@ -652,7 +653,8 @@ def configure_webdav_tools(mcp: MCPServer):
         # Imported as a MODULE, not by name: this tool has a parameter called
         # ``parse_document``, and ``from ... import parse_document`` would rebind
         # it and silently discard the caller's choice.
-        from nextcloud_mcp_server.client.webdav import OversizeDownload  # noqa: PLC0415
+        from nextcloud_client.webdav import OversizeDownload  # noqa: PLC0415
+
         from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
             download_ceiling,
             spooled_document,

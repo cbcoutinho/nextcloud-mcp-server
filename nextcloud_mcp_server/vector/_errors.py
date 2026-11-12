@@ -50,7 +50,7 @@ def _endpoint(exc: BaseException) -> str | None:
     unexpected degrades to no endpoint rather than breaking the log line.
     """
     try:
-        request = exc.request  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # httpx2-only, guarded by the except
+        request = exc.request  # type: ignore[attr-defined]  # ty: ignore[missing-attribute]  # httpx2-only, guarded by the except
         method = request.method
         url = request.url
         host = url.host

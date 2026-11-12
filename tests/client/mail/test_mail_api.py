@@ -28,8 +28,8 @@ from typing import Any
 
 import httpx2
 import pytest
+from nextcloud_client.mail import MailClient
 
-from nextcloud_mcp_server.client.mail import MailClient
 from tests.client.conftest import create_mock_response
 
 logger = logging.getLogger(__name__)
@@ -875,7 +875,7 @@ async def test_save_draft_reports_the_move_error_when_cleanup_also_fails(
     mocker, caplog
 ):
     """The cleanup is best-effort: its failure is logged, the move error raised."""
-    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.client.mail")
+    caplog.set_level(logging.WARNING, logger="nextcloud_client.mail")
     move_error = _http_error(500)
     mocker.patch.object(
         MailClient,

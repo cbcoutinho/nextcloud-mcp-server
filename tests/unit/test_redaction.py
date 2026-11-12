@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.features import (
     ner_endpoint,
@@ -10,6 +12,7 @@ from nextcloud_mcp_server.features import (
     sar_available,
 )
 from nextcloud_mcp_server.redaction import (
+    _NOT_NAMES,
     Redactor,
     counts,
     detect_entities,
@@ -97,6 +100,63 @@ def test_shared_token_with_third_party_is_redacted():
     )
     r = Redactor({"Jane Doe", "John Doe"}, keep=["Jane Doe", "Doe"])
     assert r.redact("Doe") == "Doe"
+
+
+def test_subject_detected_with_a_title_or_first_name_alone_is_kept():
+    # The model tags "Mr Jane Doe" in an address block and "Jane" alone in a
+    # salutation. Both are the subject; neither may become a placeholder.
+    r = Redactor({"Mr Jane Doe", "Jane", "Mr Sam Roe", "Sam"}, keep=["Jane Doe"])
+    text = "Mr Jane Doe\nDear Jane\nSigned Mr Sam Roe. Regards, Sam"
+    assert r.redact(text) == (
+        "Mr Jane Doe\nDear Jane\nSigned [PERSON_1]. Regards, [PERSON_1]"
+    )
+
+
+def test_subject_form_sharing_a_word_with_a_third_party_is_redacted():
+    # "Doe" alone could be the subject or "John Doe": it stays redacted, while
+    # the title-led full name is still the subject.
+    r = Redactor({"Mr Jane Doe", "Doe", "John Doe"}, keep=["Jane Doe"])
+    assert r.redact("Mr Jane Doe; Doe; John Doe") == (
+        "Mr Jane Doe; [PERSON_1]; [PERSON_2]"
+    )
+
+
+def test_a_kept_name_with_a_title_is_the_whole_name():
+    # keep holds "Mr Jane Doe"; the model tags "Jane Doe" and "Ms Jane Doe".
+    r = Redactor({"Jane Doe", "Ms Jane Doe", "John Doe"}, keep=["Mr Jane Doe"])
+    assert r.redact("Jane Doe; Ms Jane Doe; John Doe") == (
+        "Jane Doe; Ms Jane Doe; [PERSON_1]"
+    )
+
+
+def test_a_kept_address_does_not_make_a_third_party_the_subject():
+    # "Jane" is a word of the subject's kept address, not of their name.
+    r = Redactor({"Jane"}, keep=["Sam Roe", "12 Jane Street"])
+    assert r.redact("Jane called") == "[PERSON_1] called"
+
+
+# Titles and role words change how a name is treated; keep them out.
+_WORD = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=3, max_size=8).filter(
+    lambda w: w not in _NOT_NAMES
+)
+
+
+@given(
+    first=_WORD,
+    last=_WORD,
+    title=st.sampled_from(["", "Mr ", "Ms ", "Dr "]),
+    others=st.lists(st.tuples(_WORD, _WORD), max_size=3),
+)
+@example(first="jane", last="doe", title="Mr ", others=[("sam", "roe")])
+def test_subject_forms_survive_when_no_third_party_shares_a_word(
+    first, last, title, others
+):
+    subject = {first, last}
+    others = [(a, b) for a, b in others if not {a, b} & subject]
+    names = {f"{title}{first} {last}", first, *(f"{a} {b}" for a, b in others)}
+    r = Redactor(names, keep=[f"{first} {last}"])
+    text = f"{title}{first} {last}; Dear {first}"
+    assert r.redact(text) == text
 
 
 def test_honorifics_and_short_tokens_are_not_expanded():

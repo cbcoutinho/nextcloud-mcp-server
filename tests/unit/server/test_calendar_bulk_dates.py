@@ -8,8 +8,8 @@ import pytest
 from mcp.client import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.calendar import CalendarClient
 
-from nextcloud_mcp_server.client.calendar import CalendarClient
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
 
 pytestmark = pytest.mark.unit

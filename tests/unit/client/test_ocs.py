@@ -9,8 +9,7 @@ server failure.
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.client.ocs import (
+from nextcloud_client.ocs import (
     OCS_STATUS_UNAUTHENTICATED,
     describe_ocs_failure,
     parse_ocs_envelope,
@@ -149,7 +148,7 @@ def test_collectives_error_string_is_not_double_prefixed():
     constructing the exception directly, since that is where the two layers
     meet. Caught in review of #1343.
     """
-    from nextcloud_mcp_server.client.collectives import CollectivesClient, OCSError
+    from nextcloud_client.collectives import CollectivesClient, OCSError
 
     client = CollectivesClient.__new__(CollectivesClient)
     payload = {"ocs": {"meta": {"statuscode": 404, "message": "Not found"}}}

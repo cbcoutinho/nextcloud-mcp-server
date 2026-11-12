@@ -13,8 +13,7 @@ calendar order rather than whichever REPORT happened to finish first.
 
 import anyio
 import pytest
-
-from nextcloud_mcp_server.client.calendar import CALENDAR_FANOUT, CalendarClient
+from nextcloud_client.calendar import CALENDAR_FANOUT, CalendarClient
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +23,7 @@ CALENDARS = [{"name": f"cal{i}", "display_name": f"Cal {i}"} for i in range(6)]
 @pytest.fixture
 def client(mocker):
     """CalendarClient with its DAV client and calendar home mocked out."""
-    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+    mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     client = CalendarClient("https://cloud.example.org", "alice", password="pw")
     mocker.patch.object(client, "_ensure_calendar_home", return_value=None)
     mocker.patch.object(client, "list_calendars", return_value=list(CALENDARS))

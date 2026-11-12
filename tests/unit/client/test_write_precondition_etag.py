@@ -12,8 +12,7 @@ values through it rather than re-quoting whatever it was handed.
 """
 
 import pytest
-
-from nextcloud_mcp_server.client.webdav import _write_precondition_header
+from nextcloud_client.webdav import _write_precondition_header
 
 pytestmark = pytest.mark.unit
 

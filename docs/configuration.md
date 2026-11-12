@@ -1470,10 +1470,23 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `SEARCH_RERANK_TIMEOUT_SECONDS` | ⚠️ Optional | `30.0` | Per-request rerank timeout. Generous headroom rather than a target — on expiry the search returns retrieval ordering with `reranked: false` rather than failing. Must be `> 0`. |
 | `SEARCH_RERANK_MAX_CONCURRENCY` | ⚠️ Optional | `1` | Concurrent rerank calls in flight, process-wide. Bounds how many rerank requests this process keeps in flight against the reranker, so a burst of searches cannot queue unbounded work on a service that may also serve this server's embedding traffic and other callers. A client-side courtesy rather than a throughput control — raise it if yours has headroom, which a CPU cross-encoder almost certainly does not. Must be `>= 1`. |
 | `SAR_ENABLED` | ⚠️ Optional | `false` | Serve subject access request cases and redacted export (ADR-040): the `sar_case_*` tools, `/api/v1/sar/*`, the `sar.read`/`sar.write` scopes, and `sar_available: true` on `GET /api/v1/status`, which is what makes Astrolabe show its SAR page. Opt-in per deployment. Requires semantic search (`ENABLE_SEMANTIC_SEARCH`) and `EMBEDDING_GATEWAY_URL`; the server refuses to start with it set and either missing. |
+| `EXACT_MATCH_INDEX_ENABLED` | ⚠️ Optional | `true` | Build a TEXT payload index (word tokenizer, lowercased, phrase matching) on chunk text (`excerpt`) for `algorithm: "exact"` on `POST /api/v1/search`: every document containing the query as a phrase, unranked, with a true `total_found`. This is how a SAR case finds every document that mentions the subject. Created in the background at startup (not awaited); costs disk and RAM roughly in proportion to the indexed text. With it off, exact searches still work by scanning, more slowly, except on Qdrant in strict mode, which refuses a filter on an unindexed field. Phrase matching needs **Qdrant 1.15 or later** (the bundled compose stack runs 1.20); on an older server the index is not created and exact searches fail. |
 | `NER_MODEL` | ⚠️ Optional | `local/urchade/gliner_multi_pii-v1` | Name-detection model for SAR export redaction (ADR-040), addressed the gateway way (`<provider>/<model>`). Names are detected by the embedding gateway's `POST /v1/ner`, so SAR export needs `EMBEDDING_GATEWAY_URL`. |
 | `NER_TIMEOUT_SECONDS` | ⚠️ Optional | `120` | Per-request NER budget. Export runs in the background, so this only has to cover one batch on the slowest backend. A document whose detection fails is reported as failed in the archive, never exported unredacted. |
 | `NER_BATCH_SIZE` | ⚠️ Optional | `8` | Texts (up to 2,000 characters each) per `/v1/ner` request. Keep it small on a CPU backend, which must finish a batch inside the gateway's own upstream timeout; raise it (e.g. `32`) on a GPU. Must be `>= 1`. |
 | `NER_THRESHOLD` | ⚠️ Optional | `0.5` | Minimum model confidence, in `(0, 1]`, for a span to count as a person name. Lower it to raise recall; the cost is over-redaction, which is the safe direction for a disclosure. |
+
+**Recovering a payload index** that startup reports as wrong (a wrong schema
+type, or `excerpt` without phrase matching): startup never replaces an existing
+index, so drop it and restart. The next startup creates it as it should be.
+
+```bash
+curl -X DELETE "$QDRANT_URL/collections/<collection>/index/<field>" \
+  -H "api-key: $QDRANT_API_KEY"
+```
+
+Until it is rebuilt, filters on that field scan (or, on Qdrant in strict mode,
+are refused); `excerpt` is rebuilt in the background.
 
 **Deprecated variables (still functional):**
 - `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)

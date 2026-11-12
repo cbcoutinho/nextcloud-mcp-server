@@ -32,9 +32,10 @@ The data subject passes through via ``keep``: their names, aliases, emails,
 phone numbers, NI numbers and addresses. A detected address is kept when it is a
 kept address or its leading part (house number first), never a bare street.
 Kept names match first (longest match wins) and
-are left as written. Tokens of a detected name that is itself kept are not
-expanded, so a bare "Jane" survives when only "Jane Doe" is the subject — unless
-"Jane" is also a token of some third party's name, in which case it is redacted.
+are left as written. A detected name whose words, titles aside, all belong to a
+kept name is kept too: "Mr Jane Doe" and a bare "Jane" survive when "Jane Doe"
+is the subject — unless one of those words is also in some third party's name,
+in which case it is redacted. Tokens of a kept name are not expanded.
 
 Detection needs the embedding gateway's ``POST /v1/ner``, so redaction is
 available only with ``EMBEDDING_GATEWAY_URL`` configured.
@@ -310,6 +311,37 @@ def _address_pattern(
     )
 
 
+def _subject_forms(names: Iterable[str], kept: set[str]) -> set[str]:
+    """Detected names that are the subject written another way: "Mr Jane Doe"
+    or a bare "Jane" when "Jane Doe" is kept.
+
+    A detection counts when its title-free words are a whole kept name, or all
+    belong to one kept name and none of them belongs to a third party's name.
+    A bare "Doe" shared with a third party "John Doe" is ambiguous, so it is
+    still redacted; "Mr Jane Doe" is not.
+    """
+
+    def words(key: str) -> set[str]:
+        return {t for t in key.split() if t not in _HONORIFICS}
+
+    # Title-free on both sides, so a kept "Mr Jane Doe" is the whole name too.
+    kept_words = [words(k) for k in kept]
+
+    def subject(key: str) -> bool:
+        w = words(key)
+        return bool(w) and any(w <= k for k in kept_words)
+
+    keys = {_key(n) for n in names}
+    third_party = {t for k in keys if not subject(k) for t in words(k)}
+    # The whole kept name under a title ("Mr Jane Doe") is unambiguous even
+    # when a third party shares one of its words; only a part of it is not.
+    return {
+        k
+        for k in keys
+        if subject(k) and (words(k) in kept_words or not words(k) & third_party)
+    }
+
+
 def _name_forms(
     names: Iterable[str], kept: set[str]
 ) -> tuple[set[str], dict[str, set[str]]]:
@@ -366,6 +398,16 @@ class Redactor:
             n for k in keep if _NI_RE.fullmatch(k.strip()) and (n := _ni_key(k))
         }
         self._keep = {key for k in keep if "@" not in k and (key := _key(k))}
+        # Materialised once: ``names`` may be a one-shot iterable, read twice.
+        names = [n for n in names if _key(n)]
+        # Only names count as the subject's name words: an address, phone or NI
+        # number in ``keep`` ("12 Jane Street") must not make a third party
+        # "Jane" look like the subject. Entries with a digit are dropped, which
+        # covers phone and NI numbers and numbered addresses.
+        # ponytail: a number-less address ("Rose Cottage") still counts as name
+        # words; pass it via ``addresses`` or split keep by kind if that bites.
+        kept_names = {k for k in self._keep if not any(c.isdigit() for c in k)}
+        self._keep |= _subject_forms(names, kept_names)
         forms, owners = _name_forms(names, self._keep)
         # A bare token shares its full name's number only when it is
         # unambiguous: it belongs to exactly one detected third party and to
@@ -374,7 +416,8 @@ class Redactor:
         # archive never attributes an ambiguous mention to a specific person.
         # ponytail: string-level alias resolution; a person-entity layer
         # (Deck P9) would reconcile initials and nicknames too.
-        kept_tokens = {t for k in self._keep for t in k.split()}
+        # Titles are not name tokens: a kept "mr jane doe" adds no "mr" here.
+        kept_tokens = {t for k in self._keep for t in k.split() if t not in _HONORIFICS}
         self._canonical = {
             token: next(iter(full))
             for token, full in owners.items()

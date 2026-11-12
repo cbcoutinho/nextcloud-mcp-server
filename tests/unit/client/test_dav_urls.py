@@ -13,8 +13,7 @@ from urllib.parse import unquote
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.client.dav_urls import encode_dav_path, encode_dav_url
+from nextcloud_client.dav_urls import encode_dav_path, encode_dav_url
 
 pytestmark = pytest.mark.unit
 

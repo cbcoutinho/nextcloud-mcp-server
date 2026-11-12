@@ -6,8 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from caldav.response import DAVResponse
 from lxml import etree
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
+from nextcloud_client.calendar import CalendarClient
 
 pytestmark = pytest.mark.unit
 

@@ -11,8 +11,7 @@ These verify the payload shape sent to Nextcloud. Coverage includes:
 
 import pytest
 from httpx2 import AsyncClient, HTTPStatusError, Request
-
-from nextcloud_mcp_server.client.sharing import SharingClient
+from nextcloud_client.sharing import SharingClient
 
 pytestmark = pytest.mark.unit
 
@@ -266,7 +265,7 @@ async def test_sharing_calls_are_metered_like_every_other_client(
     sample and no ``trace_nextcloud_api_call`` span -- invisible in exactly the
     dashboards that exist to spot a failing Nextcloud.
     """
-    record = mocker.patch("nextcloud_mcp_server.client.base.record_nextcloud_api_call")
+    record = mocker.patch("nextcloud_client.instrumentation.hooks.on_api_call")
     sharing_client._client.request.return_value = _ok_share_response(mocker)
 
     await sharing_client.list_shares()
@@ -288,7 +287,7 @@ async def test_rate_limit_retry_budget_survives_the_migration(sharing_client, mo
     did not leave the calls with no retry at all. The mocked sleep keeps it
     fast.
     """
-    sleep = mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep")
+    sleep = mocker.patch("nextcloud_client.base.anyio.sleep")
 
     response = mocker.Mock()
     response.status_code = 429
