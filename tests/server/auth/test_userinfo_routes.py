@@ -6,6 +6,7 @@ These unit tests cover the simple _query_idp_userinfo helper function.
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from markupsafe import Markup
 
 from nextcloud_mcp_server.auth.userinfo_routes import (
     _jinja_env,
@@ -84,14 +85,14 @@ def test_templates_autoescape():
 
 
 def test_user_info_safe_fragments_are_still_raw():
-    """The three `|safe` fragments must keep passing HTML through.
+    """The pre-built fragments, passed as `Markup`, must keep passing HTML through.
 
     Autoescaping them would double-escape markup this module builds itself; the
     values *inside* those fragments are escaped where they are read instead.
     """
     rendered = _jinja_env.get_template("user_info.html").render(
-        user_info_tab_html="<table><tr><td>marker-cell</td></tr></table>",
-        vector_sync_tab_html="",
+        user_info_tab_html=Markup("<table><tr><td>marker-cell</td></tr></table>"),
+        vector_sync_tab_html=Markup(""),
         show_vector_sync_tab=False,
         logout_url=None,
     )

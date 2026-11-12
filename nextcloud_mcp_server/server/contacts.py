@@ -472,8 +472,12 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
                 - ``categories`` (list of str, or comma-separated str).
                 - ``url`` (str or list of str).
+                - ``adr`` / ``address`` (dict or list of dicts): Postal
+                  address(es) with keys ``po_box``, ``extended``, ``street``,
+                  ``locality``, ``region``, ``postal_code``, ``country`` and an
+                  optional ``type`` (e.g. ``"work"``, ``"home"``).
 
-                Unknown keys are ignored. Example:
+                Unknown keys are ignored and logged as a warning. Example:
                 ``{"fn": "John Doe", "email": "john@example.com",
                 "organization": "Acme", "note": "Met at conference"}``.
 
@@ -557,6 +561,12 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``categories`` (list of str, or comma-separated str).
                 - ``url`` (str or list of str). Only the first URL is written
                   on update. Multi-URL contacts should use create_contact.
+                - ``adr`` / ``address`` (dict or list of dicts, same shape as
+                  create): **Replaces all** existing addresses, so pass every
+                  address the contact should keep. Only ``[]`` removes them
+                  all. A value with no usable address is ignored. A grouped
+                  ``item1.ADR`` is replaced ungrouped, so its ``X-ABLabel``
+                  label no longer applies.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control. Pass the

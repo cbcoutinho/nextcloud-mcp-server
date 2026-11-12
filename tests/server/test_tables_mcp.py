@@ -14,9 +14,8 @@ import uuid
 
 import pytest
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
+from nextcloud_client import NextcloudClient
+from nextcloud_client.ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration

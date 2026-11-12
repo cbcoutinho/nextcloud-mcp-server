@@ -6,10 +6,10 @@ import httpx2
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from nextcloud_client.calendar import BULK_EVENT_LIMIT
+from nextcloud_client.dav_errors import DavPreconditionFailed
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.calendar import BULK_EVENT_LIMIT
-from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     AvailabilitySlot,

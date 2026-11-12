@@ -2,8 +2,8 @@ import logging
 
 import httpx2
 import pytest
+from nextcloud_client.tables import TablesClient
 
-from nextcloud_mcp_server.client.tables import TablesClient
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_response,

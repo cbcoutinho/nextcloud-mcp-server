@@ -6,9 +6,9 @@ from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from nextcloud_client.news import NewsItemType
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.news import (
     FeedHealthResponse,

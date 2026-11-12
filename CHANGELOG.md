@@ -5,6 +5,78 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.211.1 (2026-11-11)
+
+### Fix
+
+- clear SonarCloud new-code security findings on master
+
+## v0.211.0 (2026-11-11)
+
+### BREAKING CHANGE
+
+- the Nextcloud client loggers are renamed from
+`nextcloud_mcp_server.client.*` to `nextcloud_client.*`; update any log
+filters, Loki queries or logging config that match the old names.
+- `nextcloud_mcp_server.client` is now the separate
+`nextcloud_client` package; import from `nextcloud_client` instead.
+- removed `NextcloudClient.from_env()` (use
+`nextcloud_mcp_server.http.nextcloud_client_from_env()`),
+`nextcloud_mcp_server.auth.BearerAuth` (now
+`nextcloud_mcp_server.client.auth.BearerAuth`), the
+`nextcloud_mcp_server.controllers` package and
+`nextcloud_mcp_server.models.users` (now
+`nextcloud_mcp_server.client.models.users`).
+
+### Feat
+
+- **client**: ship py.typed so downstream type checkers use the annotations
+- **client**: publish the Nextcloud clients as the nextcloud-client package
+
+### Refactor
+
+- **client**: decouple the Nextcloud clients from the server
+
+## v0.210.1 (2026-11-11)
+
+### Fix
+
+- **lint**: rename ty ignore rules for ty 0.0.100
+
+## v0.210.0 (2026-11-10)
+
+### Feat
+
+- **contacts**: write addresses (ADR) on create and update
+
+### Fix
+
+- **contacts**: log the post-update re-parse failure as a warning
+- **contacts**: reject a non-str/list ADR type instead of raising
+- **contacts**: keep contact data out of all contacts-client logs
+- **contacts**: keep address values out of logs, parse adr once
+- **contacts**: never let unusable adr input wipe addresses on update
+- **contacts**: warn on truncated ADR strings, log only rejected types
+- **contacts**: treat a None canonical key as absent before aliasing
+- **contacts**: keep a bare CR in ADR components on create
+
+## v0.209.0 (2026-11-10)
+
+### Feat
+
+- **search**: select hybrid, semantic, bm25 or exact on nc_semantic_search
+
+### Fix
+
+- **search**: reject an invalid fusion for every algorithm, and score_threshold with exact
+- **search**: note short exact pages; pin the exact metric label
+
+### Refactor
+
+- **search**: fold the exact branch into _exact_page (S3776)
+- **search**: extract exact paging and truncation from nc_semantic_search
+- **search**: one list of fusion modes; document context with exact
+
 ## v0.208.1 (2026-11-09)
 
 ### Fix

@@ -66,11 +66,11 @@ Consequences:
 ### Complete Example: Creating a Note with Embedded Image
 
 ```python
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.http import nextcloud_client_from_env
 import os
 
 # Create client
-client = NextcloudClient.from_env()
+client = nextcloud_client_from_env()
 
 # 1. Create the note
 note = client.notes_create_note(

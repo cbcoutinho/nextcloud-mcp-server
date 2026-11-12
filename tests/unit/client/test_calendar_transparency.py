@@ -11,8 +11,8 @@ birthdays, subscribed holiday feeds and explicitly free events as busy.
 """
 
 import pytest
+from nextcloud_client.calendar import _calendar_is_transparent
 
-from nextcloud_mcp_server.client.calendar import _calendar_is_transparent
 from nextcloud_mcp_server.models.calendar import Calendar, CalendarEventSummary
 
 pytestmark = pytest.mark.unit
@@ -81,8 +81,7 @@ class TestEventTransp:
     @staticmethod
     def _extract(ics: str) -> dict:
         from icalendar import Calendar as ICalendar
-
-        from nextcloud_mcp_server.client.calendar import CalendarClient
+        from nextcloud_client.calendar import CalendarClient
 
         cal = ICalendar.from_ical(ics)
         vevent = next(c for c in cal.walk() if c.name == "VEVENT")

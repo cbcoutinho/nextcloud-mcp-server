@@ -18,8 +18,8 @@ import pytest
 from httpx2 import Request, Response
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.dav_errors import DavPreconditionFailed
 
-from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
 
 pytestmark = pytest.mark.unit

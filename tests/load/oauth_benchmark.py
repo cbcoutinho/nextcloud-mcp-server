@@ -25,11 +25,12 @@ from urllib.parse import parse_qs, urlparse
 import anyio
 import click
 import httpx2
+from nextcloud_client import NextcloudClient
 from playwright.async_api import async_playwright
 
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.http import nextcloud_client_from_env
 from tests.load.oauth_metrics import OAuthBenchmarkMetrics
 from tests.load.oauth_pool import (
     OAuthUserPool,
@@ -397,7 +398,7 @@ async def run_oauth_benchmark(
 
         # Step 4: Create admin client and user pool
         print("Step 4/6: Initializing admin client and user pool...")
-        admin_client = NextcloudClient.from_env()
+        admin_client = nextcloud_client_from_env()
         user_pool = OAuthUserPool(
             admin_client=admin_client,
             client_id=oauth_credentials["client_id"],
@@ -597,7 +598,7 @@ async def run_oauth_benchmark(
             print(f"\nCleaning up {len(created_users)} test users...")
             # Create a new admin client for cleanup (don't rely on the existing one)
             try:
-                cleanup_client = NextcloudClient.from_env()
+                cleanup_client = nextcloud_client_from_env()
                 for username in created_users:
                     try:
                         await cleanup_client.users.delete_user(userid=username)

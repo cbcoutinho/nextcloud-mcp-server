@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Type all function signatures** - Parameters and return types
 - **Type checker**: `ty` is configured for static type checking
   ```bash
-  uv run ty check -- nextcloud_mcp_server
+  uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
   ```
 
 ### Code Quality
@@ -36,7 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   ```bash
   uv run ruff check
   uv run ruff format
-  uv run ty check -- nextcloud_mcp_server
+  uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
   uv run pytest -m unit -n auto -q
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
@@ -103,6 +103,23 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
 ### Architectural Patterns
+- **The Nextcloud clients are a separate package: `nextcloud_client`.** The
+  source is `packages/nextcloud-client/src/nextcloud_client/`, a uv workspace
+  member published to PyPI as `nextcloud-client` in lockstep with the server
+  (Deck card #1484). It must not import `nextcloud_mcp_server` or server-only
+  libraries (mcp, dynaconf, prometheus, OpenTelemetry, sqlalchemy, …). A new
+  third-party import there goes in *its* `pyproject.toml`.
+  `tests/unit/test_client_import_boundary.py` enforces this. Consequences:
+  - Settings arrive as arguments. `NextcloudClient(..., verify=, keepalive=)`.
+    Server code builds clients with `**nextcloud_client_kwargs()` or
+    `nextcloud_client_from_env()` (both in `nextcloud_mcp_server/http.py`). A
+    bare `NextcloudClient(...)` in server code ignores `NEXTCLOUD_VERIFY_SSL`,
+    `NEXTCLOUD_CA_BUNDLE` and `NEXTCLOUD_HTTP_KEEPALIVE`.
+  - Metrics and traces go through `nextcloud_client.instrumentation.hooks` (no-op by
+    default). `observability/metrics.py` installs the server's implementation.
+    Add a hook method rather than importing `observability` from a client.
+  - Data models a client returns live in `nextcloud_client.models`. The MCP
+    `BaseResponse` envelopes stay in `nextcloud_mcp_server/models/`.
 - **Base classes**: **All app API clients MUST extend `BaseNextcloudClient`** and
   issue requests through its `_make_request`. That method centralizes `_resolve_url`
   (prepends `/index.php` to bare `/apps/...` paths — the universal entry point that
@@ -114,9 +131,11 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
   - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx2 client
-    sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
+    sends it as a client default (`nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
     `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
-    Nextcloud-bound `httpx2.AsyncClient` through that factory. Pass only
+    Nextcloud-bound `httpx2.AsyncClient` through that factory (server code:
+    `nextcloud_mcp_server.http.nextcloud_httpx_client`, which adds the
+    configured TLS settings). Pass only
     request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
     `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
     both rules (GH #1664: the per-call opt-in left the Tables v1 routes without
@@ -258,7 +277,7 @@ from mcp.types import ToolAnnotations
 **See**: `docs/ADR-017-mcp-tool-annotations.md` for detailed rationale and examples
 
 ### Project Structure
-- `nextcloud_mcp_server/client/` - HTTP clients for Nextcloud APIs
+- `packages/nextcloud-client/src/nextcloud_client/` - HTTP clients for Nextcloud APIs
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 - `nextcloud_mcp_server/models/` - Pydantic response models
@@ -461,7 +480,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 
 **Core Components**:
 - `nextcloud_mcp_server/app.py` - MCPServer entry point
-- `nextcloud_mcp_server/client/` - HTTP clients (Notes, Calendar, Contacts, Tables, WebDAV)
+- `packages/nextcloud-client/src/nextcloud_client/` - HTTP clients (Notes, Calendar, Contacts, Tables, WebDAV)
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 

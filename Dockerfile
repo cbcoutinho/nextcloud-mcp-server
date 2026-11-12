@@ -20,17 +20,25 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR /src
 
 COPY pyproject.toml uv.lock README.md .
+# uv resolves the workspace from every member's pyproject.toml, so the
+# nextcloud-client member's metadata is needed before the dependency layer.
+COPY packages/nextcloud-client/pyproject.toml packages/nextcloud-client/
 
 # --no-build: every third-party dependency must arrive as a wheel, so no
-# dependency's setup.py executes at image-build time (docker:S8541). This is
-# the sync that installs them all; the second one only adds the project itself,
-# which by definition has to be built and cannot carry the flag.
-RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache \
+# dependency's setup.py executes at image-build time (docker:S8541). The
+# workspace's own packages are still built by the second sync: their backend
+# is uv_build, which runs inside uv, and --no-build only forbids *editable*
+# installs of them, so --no-editable keeps both syncs under the flag.
+RUN uv sync --locked --no-dev --no-install-workspace --no-build --no-cache \
     --extra semantic --extra postgres --extra observability
 
-COPY . .
+# Explicit sources rather than `COPY . .` (docker:S6470); .dockerignore is an
+# allowlist of the same paths.
+COPY nextcloud_mcp_server/ nextcloud_mcp_server/
+COPY packages/ packages/
 
-RUN uv sync --locked --no-dev --no-editable --no-cache --extra semantic --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-editable --no-build --no-cache \
+    --extra semantic --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault

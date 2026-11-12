@@ -28,8 +28,8 @@ import uuid
 
 import pytest
 from httpx2 import BasicAuth, HTTPStatusError
+from nextcloud_client import NextcloudClient
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult

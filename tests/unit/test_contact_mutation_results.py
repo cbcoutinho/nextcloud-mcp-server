@@ -8,9 +8,9 @@ import httpx2
 import pytest
 from mcp.client import Client
 from mcp.types import TextContent
+from nextcloud_client.contacts import ContactsClient
 from pytest_mock import MockerFixture
 
-from nextcloud_mcp_server.client.contacts import ContactsClient
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.models.contacts import (
     AddressBook,

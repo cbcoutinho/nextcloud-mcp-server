@@ -22,13 +22,12 @@ import logging
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client import log_response
-from nextcloud_mcp_server.client.base import STREAMING_REQUEST_EXTENSION
+from nextcloud_client import log_response
+from nextcloud_client.base import STREAMING_REQUEST_EXTENSION
 
 pytestmark = pytest.mark.unit
 
-HOOK_LOGGER = "nextcloud_mcp_server.client"
+HOOK_LOGGER = "nextcloud_client"
 
 
 class _AsyncStream(httpx2.AsyncByteStream):
