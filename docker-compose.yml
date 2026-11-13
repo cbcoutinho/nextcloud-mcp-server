@@ -540,7 +540,7 @@ services:
   # Bring up with:  docker compose --profile postgres up -d postgres-test
   # See ADR-026 for the pluggable-database-backend design.
   postgres-test:
-    image: docker.io/library/postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    image: docker.io/library/postgres:18-alpine@sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
     restart: unless-stopped
     environment:
       POSTGRES_USER: mcp
