@@ -808,7 +808,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # Detect dimension dynamically (Ollama/Bedrock/gateway providers
             # only learn it from the service).
             if hasattr(provider, "_detect_dimension"):
-                await provider._detect_dimension()  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
+                await provider._detect_dimension()  # type: ignore[call-non-callable]  # ty: ignore[not-callable]
 
             expected_dimension = provider.get_dimension()
 
