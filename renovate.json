@@ -20,10 +20,6 @@
     },
     {
       "description": "Pin each Nextcloud matrix entry to its own major version",
-      "matchDepNames": ["nextcloud-32"],
-      "allowedVersions": "/^32\\./"
-    },
-    {
       "matchDepNames": ["nextcloud-33"],
       "allowedVersions": "/^33\\./"
     },
@@ -32,10 +28,10 @@
       "allowedVersions": "/^34\\./"
     },
     {
-      "description": "Pin docker-compose.yml Nextcloud image to 32.x",
+      "description": "Pin docker-compose.yml Nextcloud image to 33.x",
       "matchPackageNames": ["docker.io/library/nextcloud"],
       "matchFileNames": ["docker-compose.yml"],
-      "allowedVersions": "/^32\\./"
+      "allowedVersions": "/^33\\./"
     },
     {
       "description": "Cap Python at 3.14 until psycopg-binary ships cp315 wheels — 3.15 broke bump-version",
