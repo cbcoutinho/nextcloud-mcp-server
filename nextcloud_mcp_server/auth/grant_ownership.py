@@ -34,8 +34,11 @@ stored, and the app password it produced is revoked so nobody keeps it.
 import logging
 from typing import Any
 
+from httpx import Cookies
+
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.http import nextcloud_httpx_client
+from nextcloud_mcp_server.http import nextcloud_httpx_client, nextcloud_httpx_transport
+from nextcloud_mcp_server.session_cookies import AsyncSessionCookieTransport
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +50,13 @@ async def _ocs_whoami(
     *,
     auth: tuple[str, str] | None = None,
     bearer: str | None = None,
+    session_cookies: Cookies | None = None,
 ) -> str | None:
-    """Canonical Nextcloud UID a credential authenticates as, else ``None``."""
+    """Canonical Nextcloud UID a credential authenticates as, else ``None``.
+
+    ``session_cookies`` is the bearer's jar from a ``SessionCookieStore``; with
+    it the lookup joins that token's Nextcloud session instead of logging in.
+    """
     host = get_settings().nextcloud_host
     if not host:
         return None
@@ -57,8 +65,14 @@ async def _ocs_whoami(
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
 
+    client_kwargs: dict[str, Any] = {"timeout": _TIMEOUT}
+    if session_cookies is not None:
+        client_kwargs["transport"] = AsyncSessionCookieTransport(
+            nextcloud_httpx_transport(), session_cookies
+        )
+
     try:
-        async with nextcloud_httpx_client(timeout=_TIMEOUT) as client:
+        async with nextcloud_httpx_client(**client_kwargs) as client:
             response = await client.get(
                 f"{host.rstrip('/')}/ocs/v2.php/cloud/user",
                 auth=auth,

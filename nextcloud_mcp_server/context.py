@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any, Protocol, runtime_checkable
 
-from httpx import BasicAuth
+from httpx import BasicAuth, Cookies
 from mcp.server.mcpserver import Context
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context
@@ -14,6 +14,7 @@ from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredEr
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.session_cookies import SessionCookieStore
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +114,15 @@ _BEARER_UID_TTL_SECONDS = 60.0
 _BEARER_UID_CACHE_MAX = 1024
 _bearer_uid_cache: dict[str, tuple[str, float]] = {}
 
+# sha256(token) -> Nextcloud session cookies. Without them every bearer request
+# is a fresh login on the Nextcloud side (see session_cookies.py). One jar per
+# token, so one caller's session is never sent with another caller's token.
+_bearer_session_cookies = SessionCookieStore()
 
-async def _resolve_bearer_uid(token: str) -> str | None:
+
+async def _resolve_bearer_uid(
+    token: str, session_cookies: Cookies | None = None
+) -> str | None:
     """Nextcloud UID a bearer token authenticates as (OCS ``/cloud/user``).
 
     The UID cannot be read from the token: with an external IdP,
@@ -126,7 +134,7 @@ async def _resolve_bearer_uid(token: str) -> str | None:
     if cached and cached[1] > now:
         return cached[0]
 
-    uid = await _ocs_whoami(bearer=token)
+    uid = await _ocs_whoami(bearer=token, session_cookies=session_cookies)
     if uid:
         if len(_bearer_uid_cache) >= _BEARER_UID_CACHE_MAX:
             for k in [k for k, (_, exp) in _bearer_uid_cache.items() if exp <= now]:
@@ -155,7 +163,8 @@ async def _get_client_from_bearer(token: str) -> NextcloudClient:
             "NEXTCLOUD_HOST environment variable must be set for multi-user BasicAuth mode"
         )
 
-    username = await _resolve_bearer_uid(token)
+    session_cookies = _bearer_session_cookies.get(token)
+    username = await _resolve_bearer_uid(token, session_cookies)
     if not username:
         raise ValueError(
             "Bearer token was not accepted by Nextcloud. "
@@ -170,7 +179,10 @@ async def _get_client_from_bearer(token: str) -> NextcloudClient:
     )
     # Same construction the OAuth mode uses (auth/context_helper.py).
     return NextcloudClient.from_token(
-        base_url=settings.nextcloud_host, token=token, username=username
+        base_url=settings.nextcloud_host,
+        token=token,
+        username=username,
+        session_cookies=session_cookies,
     )
 
 

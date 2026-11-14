@@ -8,6 +8,7 @@ from httpx import (
     AsyncClient,
     Auth,
     BasicAuth,
+    Cookies,
     Request,
     Response,
     Timeout,
@@ -15,6 +16,7 @@ from httpx import (
 
 from ..controllers.notes_search import NotesSearchController
 from ..http import nextcloud_httpx_transport
+from ..session_cookies import AsyncSessionCookieTransport
 from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
 from .collectives import CollectivesClient
@@ -152,6 +154,7 @@ class NextcloudClient:
         auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
+        session_cookies: Cookies | None = None,
     ):
         # ``username`` is the Nextcloud UID and DAV path fallback. Discovery can
         # replace that fallback with the canonical principal id when Nextcloud
@@ -164,10 +167,21 @@ class NextcloudClient:
         # which builds its own auth object from the raw credential.
         self.username = username
         auth_username = auth_username or username
+        # Cookies are dropped unless the caller supplies a jar to keep
+        # Nextcloud's session in (bearer pass-through, one jar per token; see
+        # session_cookies.py). The CalDAV client below has its own HTTP stack
+        # and takes no part in that.
+        transport: AsyncBaseTransport
+        if session_cookies is None:
+            transport = AsyncDisableCookieTransport(nextcloud_httpx_transport())
+        else:
+            transport = AsyncSessionCookieTransport(
+                nextcloud_httpx_transport(), session_cookies
+            )
         self._client = AsyncClient(
             base_url=base_url,
             auth=auth,
-            transport=AsyncDisableCookieTransport(nextcloud_httpx_transport()),
+            transport=transport,
             event_hooks={"request": [log_request], "response": [log_response]},
             timeout=Timeout(timeout=30, connect=5),
         )
@@ -224,13 +238,22 @@ class NextcloudClient:
         )
 
     @classmethod
-    def from_token(cls, base_url: str, token: str, username: str):
+    def from_token(
+        cls,
+        base_url: str,
+        token: str,
+        username: str,
+        *,
+        session_cookies: Cookies | None = None,
+    ):
         """Create NextcloudClient with OAuth bearer token.
 
         Args:
             base_url: Nextcloud base URL
             token: OAuth access token
             username: Nextcloud username
+            session_cookies: Jar that keeps this token's Nextcloud session
+                between clients. Omit to drop cookies, as before.
 
         Returns:
             NextcloudClient configured with bearer token authentication
@@ -243,6 +266,7 @@ class NextcloudClient:
             username=username,
             auth=BearerAuth(token),
             token=token,
+            session_cookies=session_cookies,
         )
 
     async def capabilities(self):
