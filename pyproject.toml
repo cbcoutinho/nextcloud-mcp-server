@@ -182,7 +182,11 @@ dev = [
     # fixed. Upper bound is renovate-managed (one minor at a time).
     "ty>=0.0.104,<0.0.105",
     "pytest-otel>=2.0.1",
-    "procrastinate>=3.8",
+    # Capped: we only create procrastinate's schema when it's missing and never run
+    # its upgrade migrations, so a bump must also migrate existing DBs (3.11 adds
+    # one). 3.12+ ships Alembic revisions (procrastinate PR 1584), adopt them then.
+    # Upper bound is renovate-managed (one minor at a time).
+    "procrastinate>=3.8,<3.11",
     "psycopg[binary,pool]>=3.2",
     "pact-python>=3.4.0",
     # Linux-only dev/CI: exercise the profiling configured-path tests. The
@@ -240,7 +244,8 @@ documents = [
     "olefile>=0.47",
 ]
 postgres = [
-    "procrastinate>=3.8",
+    # Capped in lockstep with the dev group, see the note there.
+    "procrastinate>=3.8,<3.11",
     "psycopg[binary,pool]>=3.2",
 ]
 # Continuous profiling (Pyroscope push SDK). Kept OUT of the default deps: it's
