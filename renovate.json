@@ -4,7 +4,9 @@
     "config:best-practices",
     "mergeConfidence:all-badges"
   ],
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "packageRules": [
     {
       "matchPackageNames": [
