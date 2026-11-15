@@ -157,6 +157,9 @@ $$;
 
 
 def _has_ingest_queue() -> bool:
+    # Resolved via search_path, the same way procrastinate's unqualified SQL
+    # finds its tables: both use DATABASE_URL, so a queue in a non-default
+    # schema is found here exactly when the workers find it.
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return False

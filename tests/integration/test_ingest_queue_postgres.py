@@ -317,11 +317,16 @@ async def test_alembic_011_upgrades_existing_ingest_queue(fresh_app, postgres_ur
 
 async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
     """With no procrastinate schema yet (fresh install), 011 is a no-op."""
+    from alembic.script import ScriptDirectory
     from anyio import to_thread
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    from nextcloud_mcp_server.migrations import get_current_revision, upgrade_database
+    from nextcloud_mcp_server.migrations import (
+        get_alembic_config,
+        get_current_revision,
+        upgrade_database,
+    )
 
     engine = create_async_engine(postgres_url, future=True)
     try:
@@ -333,8 +338,11 @@ async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
 
     await to_thread.run_sync(upgrade_database, postgres_url, "head")
 
-    # 011 ran (and skipped its SQL) rather than the upgrade stopping short of it.
-    assert (get_current_revision(postgres_url) or "") >= "011"
+    # The chain ran through 011 (skipping its SQL) to the current head.
+    head = ScriptDirectory.from_config(
+        get_alembic_config(postgres_url)
+    ).get_current_head()
+    assert get_current_revision(postgres_url) == head
     engine = create_async_engine(postgres_url, future=True)
     try:
         async with engine.connect() as conn:
