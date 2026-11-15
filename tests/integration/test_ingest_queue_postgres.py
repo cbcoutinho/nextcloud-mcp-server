@@ -333,7 +333,8 @@ async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
 
     await to_thread.run_sync(upgrade_database, postgres_url, "head")
 
-    assert get_current_revision(postgres_url) == "011"
+    # 011 ran (and skipped its SQL) rather than the upgrade stopping short of it.
+    assert (get_current_revision(postgres_url) or "") >= "011"
     engine = create_async_engine(postgres_url, future=True)
     try:
         async with engine.connect() as conn:
