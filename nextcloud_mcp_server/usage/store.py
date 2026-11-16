@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -34,7 +34,11 @@ from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_st
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import record_db_operation
 from nextcloud_mcp_server.observability.tracing import trace_db_operation
-from nextcloud_mcp_server.providers.base import ByokUsage
+
+if TYPE_CHECKING:
+    # Annotation only: importing the providers package at runtime would pull
+    # every provider SDK into the usage layer.
+    from nextcloud_mcp_server.providers.base import ByokUsage
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +77,7 @@ class UsageEvent:
 
 def embedding_token_events(
     token_count: int,
-    byok: ByokUsage | None,
+    byok: "ByokUsage | None",
     metadata: dict[str, Any] | None,
 ) -> list[UsageEvent]:
     """Split one embedding call's tokens into billed and BYOK usage events.

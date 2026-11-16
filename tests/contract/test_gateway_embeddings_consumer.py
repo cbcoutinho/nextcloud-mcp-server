@@ -127,6 +127,15 @@ async def test_embeddings_honour_the_requested_output_width(gateway_consumer_pac
 
 
 _BYOK_MODEL = "mistral/mistral-embed"
+# Unsigned JWT-shaped example, shared with the web pact: the gateway pre-checks
+# the payload (aud contains astrolabe-gateway, exp in the future) before
+# TokenReview, and an auth-enforced provider run replays this value.
+# Payload: aud ["astrolabe-gateway"], exp 2100, sub system:serviceaccount:pact:example.
+_EXAMPLE_SA_TOKEN = (
+    "eyJhbGciOiJub25lIn0."
+    "eyJhdWQiOlsiYXN0cm9sYWJlLWdhdGV3YXkiXSwiZXhwIjo0MTAyNDQ0ODAwLCJzdWIiOiJz"
+    "eXN0ZW06c2VydmljZWFjY291bnQ6cGFjdDpleGFtcGxlIn0.sig"
+)
 _BYOK_EMBEDDING = base64.b64encode(array.array("f", [0.0123] * 8).tobytes()).decode()
 
 
@@ -136,7 +145,7 @@ async def test_byok_embedding_request_reports_its_key_source(
     """An authenticated request the gateway served on the tenant's own provider
     key says so in ``X-Astrolabe-Key-Source``; the client meters it as BYOK."""
     token_file = tmp_path / "token"
-    token_file.write_text("projected-sa-token\n")
+    token_file.write_text(_EXAMPLE_SA_TOKEN + "\n")
     (
         gateway_consumer_pact.upon_receiving(
             "an authenticated embedding request served with a BYOK key"
@@ -145,7 +154,7 @@ async def test_byok_embedding_request_reports_its_key_source(
         .with_request("POST", "/v1/embeddings")
         .with_header(
             "Authorization",
-            match.regex("Bearer projected-sa-token", regex=r"^Bearer \S+$"),
+            match.regex(f"Bearer {_EXAMPLE_SA_TOKEN}", regex=r"^Bearer \S+$"),
         )
         .with_body(
             {

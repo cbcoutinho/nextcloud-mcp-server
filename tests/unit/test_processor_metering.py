@@ -487,3 +487,29 @@ def test_byok_request_without_reported_tokens_writes_no_zero_row():
     no zero-value tokens_embedded_byok row is written."""
     events = embedding_token_events(0, ByokUsage(tokens=0, requests=1), None)
     assert {e.metric: e.value for e in events} == {"embedding_requests_byok": 1}
+
+
+@pytest.mark.unit
+async def test_byok_request_with_zero_tokens_still_counts_request(store_spy):
+    """A BYOK request whose usage was absent (token_count 0) is still counted
+    on the ingest path, without a zero-value token row."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="gateway",
+        model="mistral/mistral-embed",
+        doc_type="note",
+        user_id="alice",
+        index_mode="hybrid",
+        chunk_count=1,
+        token_count=0,
+        total_chars=200,
+        page_count=None,
+        bytes_ingested=200,
+        bytes_stored=200,
+        byok=ByokUsage(tokens=0, requests=1),
+    )
+
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
+    assert by_metric["embedding_requests_byok"] == 1
+    assert "tokens_embedded" not in by_metric
+    assert "tokens_embedded_byok" not in by_metric

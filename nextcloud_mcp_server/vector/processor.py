@@ -708,9 +708,10 @@ async def record_indexing_usage(  # NOSONAR(S107): keyword-only metering record
 
     # tokens_embedded first (intentional ordering): captured before the
     # conditional parsing/byte costs — don't reverse this in a refactor. Skipped
-    # for keyword docs (token_count == 0), which never embed, so no zero-value
-    # embedding row is written.
-    if token_count > 0:
+    # for keyword docs (token_count == 0, no byok), which never embed, so no
+    # zero-value embedding row is written. A BYOK request that reported no
+    # tokens still counts toward embedding_requests_byok.
+    if token_count > 0 or (byok is not None and byok.requests > 0):
         events.extend(embedding_token_events(token_count, byok, metadata))
     # pages_embedded: parsed pages only, and only a strictly positive count. Text
     # content has no page_count; a zero/negative count is skipped rather than

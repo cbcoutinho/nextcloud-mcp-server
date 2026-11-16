@@ -7,9 +7,14 @@ and ``api/`` must not import from ``server/``. ``server.semantic`` re-exports
 """
 
 import logging
+from typing import TYPE_CHECKING
 
-from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.usage.store import UsageEventStore, embedding_token_events
+
+if TYPE_CHECKING:
+    # Annotation only: importing the providers package at runtime would pull
+    # every provider SDK into the usage layer.
+    from nextcloud_mcp_server.providers.base import ByokUsage
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,7 @@ async def record_search_usage(
     doc_types: list[str] | None,
     token_count: int | None,
     surface: str = "mcp",
-    byok: ByokUsage | None = None,
+    byok: "ByokUsage | None" = None,
 ) -> None:
     """Record the billable ``tokens_embedded`` event for one semantic search.
 
