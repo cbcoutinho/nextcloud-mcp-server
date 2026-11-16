@@ -55,7 +55,7 @@ def create_provider() -> Provider:
             "Using embedding gateway provider: url=%s, model=%s, auth=%s",
             settings.embedding_gateway_url,
             settings.embedding_gateway_model,
-            type(token_provider).__name__ if token_provider else "none",
+            token_provider.auth_label if token_provider else "none",
         )
         return GatewayProvider(
             base_url=settings.embedding_gateway_url,

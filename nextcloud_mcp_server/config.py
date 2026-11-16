@@ -1965,17 +1965,19 @@ class Settings:
             self.embedding_gateway_client_id,
             self.embedding_gateway_client_secret,
         )
-        if any(_gw_creds) and not all(_gw_creds):
-            raise ValueError(
-                "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
-                "EMBEDDING_GATEWAY_CLIENT_SECRET must be set together (M2M OIDC "
-                "client-credentials) or all left unset (unauthenticated gateway)"
-            )
+        # Checked first so a token file plus a partial trio reports the real
+        # conflict rather than asking for the rest of the trio.
         if self.embedding_gateway_token_file and any(_gw_creds):
             raise ValueError(
                 "EMBEDDING_GATEWAY_TOKEN_FILE and the EMBEDDING_GATEWAY_TOKEN_URL/"
                 "CLIENT_ID/CLIENT_SECRET client-credentials settings are mutually "
                 "exclusive; set one or the other"
+            )
+        if any(_gw_creds) and not all(_gw_creds):
+            raise ValueError(
+                "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
+                "EMBEDDING_GATEWAY_CLIENT_SECRET must be set together (M2M OIDC "
+                "client-credentials) or all left unset (unauthenticated gateway)"
             )
 
         # --- ADR-022 follow-up: deployment mode is the single source of truth ---

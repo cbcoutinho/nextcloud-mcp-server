@@ -56,6 +56,9 @@ class GatewayTokenProvider:
     before expiry.
     """
 
+    # Log label for the configured auth mode (see GatewayProvider's init log).
+    auth_label = "oidc-m2m"
+
     def __init__(
         self,
         token_url: str,
@@ -122,12 +125,36 @@ class FileTokenProvider:
     each time rather than cached. A small local read per gateway request.
     """
 
+    # Log label for the configured auth mode (see GatewayProvider's init log).
+    auth_label = "token-file"
+
     def __init__(self, path: str):
         self.path = path
 
     async def get_token(self, *, force_refresh: bool = False) -> str:
-        # force_refresh is accepted for interface parity; every call re-reads.
-        return (await anyio.Path(self.path).read_text()).strip()
+        """Return the file's current contents, stripped.
+
+        ``force_refresh`` is accepted for interface parity with
+        :class:`GatewayTokenProvider`; every call re-reads, so it has no effect.
+
+        Raises:
+            OSError: the file is missing or unreadable (logged with the path).
+            RuntimeError: the file is empty, which would otherwise send a bare
+                ``Bearer `` header and surface only as an opaque gateway 401.
+        """
+        try:
+            token = (await anyio.Path(self.path).read_text()).strip()
+        except OSError:
+            logger.error(
+                "Cannot read embedding-gateway token file %s "
+                "(EMBEDDING_GATEWAY_TOKEN_FILE); is the projected volume mounted?",
+                self.path,
+                exc_info=True,
+            )
+            raise
+        if not token:
+            raise RuntimeError(f"Embedding-gateway token file {self.path} is empty")
+        return token
 
 
 # Anything with ``async get_token(*, force_refresh=False) -> str``.
@@ -174,7 +201,7 @@ class GatewayProvider(OpenAIProvider):
             "auth=%s, requested_dimensions=%s",
             normalized_base_url,
             embedding_model,
-            type(token_provider).__name__ if token_provider else "none",
+            token_provider.auth_label if token_provider else "none",
             embedding_dimensions,
         )
 
@@ -283,9 +310,9 @@ def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:
     ``EMBEDDING_GATEWAY_TOKEN_FILE`` (projected SA token) wins; Settings
     rejects it combined with the M2M triple, so at most one is set.
 
-    Lives beside ``GatewayTokenProvider`` because every gateway sub-client needs
-    it — embeddings, sync OCR, batch OCR, rerank and NER — so the all-or-nothing M2M-triple
-    validation has exactly one home. ``document_processors.ocr`` re-exports it
+    Lives beside ``GatewayTokenProvider`` because every gateway sub-client
+    needs it (embeddings, sync OCR, batch OCR, rerank and NER), so the
+    all-or-nothing M2M-triple validation has exactly one home. ``document_processors.ocr`` re-exports it
     under its historical private name.
     """
     if settings.embedding_gateway_token_file:

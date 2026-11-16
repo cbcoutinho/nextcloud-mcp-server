@@ -106,6 +106,33 @@ async def test_file_token_provider_rereads_rotated_file(tmp_path):
     assert await provider.get_token() == "rotated-token"
 
 
+def test_token_file_with_partial_m2m_creds_rejected():
+    """Even a partial M2M set next to the token file is a startup error."""
+    with pytest.raises(ValueError, match="EMBEDDING_GATEWAY_TOKEN_FILE"):
+        Settings(
+            embedding_provider="gateway",
+            embedding_gateway_url="https://gateway:8083",
+            embedding_gateway_token_file="/var/run/secrets/astrolabe-gateway/token",
+            embedding_gateway_client_id="mcp-server",
+        )
+
+
+async def test_file_token_provider_empty_file_raises(tmp_path):
+    """An empty file must not become a bare ``Bearer `` header."""
+    token = tmp_path / "token"
+    token.write_text("  \n")
+    with pytest.raises(RuntimeError, match="is empty"):
+        await FileTokenProvider(str(token)).get_token()
+
+
+async def test_file_token_provider_missing_file_raises(tmp_path, caplog):
+    """A missing file fails loudly (no unauthenticated fallback) and logs the path."""
+    path = str(tmp_path / "absent")
+    with pytest.raises(FileNotFoundError):
+        await FileTokenProvider(path).get_token()
+    assert path in caplog.text
+
+
 async def test_gateway_bearer_comes_from_token_file(tmp_path):
     token = tmp_path / "token"
     token.write_text("sa-jwt\n")
