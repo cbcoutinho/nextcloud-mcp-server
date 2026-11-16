@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.213.0 (2026-11-16)
+
+### Feat
+
+- **gateway**: authenticate with a projected ServiceAccount token file
+
+### Fix
+
+- **gateway**: address Sonar findings on FileTokenProvider
+- **gateway**: diagnosable token-file failures and stable auth log labels
+
 ## v0.212.0 (2026-11-15)
 
 ### Feat
