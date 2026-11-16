@@ -629,6 +629,11 @@ _DEFAULTS: dict[str, Any] = {
     "embedding_gateway_client_id": None,
     "embedding_gateway_client_secret": None,
     "embedding_gateway_scope": None,  # e.g. astrolabe-embedding-gateway/embed
+    # Alternative to the M2M triple: a file holding the bearer, re-read per
+    # request — a Kubernetes projected ServiceAccount token (audience
+    # astrolabe-gateway, e.g. /var/run/secrets/astrolabe-gateway/token).
+    # Mutually exclusive with the M2M triple.
+    "embedding_gateway_token_file": None,
     # Query-side ACL pre-filter (design §11). OFF by default: a Qdrant
     # `match any` on `acl_hash` excludes points missing the key, so enabling
     # this before a real ACL backfill would silently drop legacy results.
@@ -1688,6 +1693,7 @@ class Settings:
     embedding_gateway_client_id: str | None = None
     embedding_gateway_client_secret: str | None = None
     embedding_gateway_scope: str | None = None
+    embedding_gateway_token_file: str | None = None  # projected SA token path
     acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
     # Usage metering (Deck #67); OFF by default. When true, billable ops
     # record best-effort rows into the app-DB usage_events table for the
@@ -1959,6 +1965,14 @@ class Settings:
             self.embedding_gateway_client_id,
             self.embedding_gateway_client_secret,
         )
+        # Checked first so a token file plus a partial trio reports the real
+        # conflict rather than asking for the rest of the trio.
+        if self.embedding_gateway_token_file and any(_gw_creds):
+            raise ValueError(
+                "EMBEDDING_GATEWAY_TOKEN_FILE and the EMBEDDING_GATEWAY_TOKEN_URL/"
+                "CLIENT_ID/CLIENT_SECRET client-credentials settings are mutually "
+                "exclusive; set one or the other"
+            )
         if any(_gw_creds) and not all(_gw_creds):
             raise ValueError(
                 "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
