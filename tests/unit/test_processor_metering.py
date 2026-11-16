@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nextcloud_mcp_server.providers.base import ByokUsage
+from nextcloud_mcp_server.usage import embedding_token_events
 from nextcloud_mcp_server.vector import processor
 
 
@@ -478,3 +479,11 @@ async def test_all_byok_writes_no_tokens_embedded(store_spy):
     assert "tokens_embedded" not in by_metric
     assert by_metric["tokens_embedded_byok"] == 50
     assert by_metric["embedding_requests_byok"] == 1
+
+
+@pytest.mark.unit
+def test_byok_request_without_reported_tokens_writes_no_zero_row():
+    """A BYOK request whose usage was absent still counts as a request, but
+    no zero-value tokens_embedded_byok row is written."""
+    events = embedding_token_events(0, ByokUsage(tokens=0, requests=1), None)
+    assert {e.metric: e.value for e in events} == {"embedding_requests_byok": 1}

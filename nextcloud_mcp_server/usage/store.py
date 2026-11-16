@@ -92,7 +92,8 @@ def embedding_token_events(
         events.append(
             UsageEvent("tokens_embedded", token_count - byok.tokens, metadata)
         )
-    events.append(UsageEvent("tokens_embedded_byok", byok.tokens, metadata))
+    if byok.tokens > 0:
+        events.append(UsageEvent("tokens_embedded_byok", byok.tokens, metadata))
     events.append(UsageEvent("embedding_requests_byok", byok.requests, metadata))
     return events
 

@@ -35,7 +35,7 @@ import httpx2
 
 from ..config import Settings
 from ..providers.base import ByokUsage
-from ..providers.openai import EMBED_BATCH_SIZE, OpenAIProvider, _retry_transient
+from ..providers.openai import OpenAIProvider, _retry_transient
 
 logger = logging.getLogger(__name__)
 
@@ -292,53 +292,20 @@ class GatewayProvider(OpenAIProvider):
 
     # Bearer-refresh override topology. OpenAIProvider routes embed_batch(),
     # embed_with_usage() and embed_batch_with_usage() all through
-    # embed_batch_with_usage(); only embed() (single) is self-contained. Here
-    # embed_batch_with_usage() funnels into embed_batch_with_key_source(), so
-    # the bearer is refreshed exactly once on every path: in embed() and in
-    # embed_batch_with_key_source(). Overriding embed_batch() as well would
-    # double-call _ensure_bearer().
+    # embed_batch_with_key_source(); only embed() (single) is self-contained.
+    # So the bearer is refreshed exactly once on every path by overriding just
+    # embed() and embed_batch_with_key_source(). Overriding embed_batch() as
+    # well would double-call _ensure_bearer().
 
     async def embed(self, text: str) -> list[float]:
         await self._ensure_bearer()
         return await super().embed(text)
 
-    async def embed_batch_with_usage(
-        self, texts: list[str]
-    ) -> tuple[list[list[float]], int]:
-        embeddings, tokens, _ = await self.embed_batch_with_key_source(texts)
-        return embeddings, tokens
-
     async def embed_batch_with_key_source(
         self, texts: list[str]
     ) -> tuple[list[list[float]], int, ByokUsage]:
-        """Embed via the gateway, splitting out tokens served on a BYOK key.
-
-        Same batching as :meth:`OpenAIProvider.embed_batch_with_usage`, but each
-        request goes through ``with_raw_response`` so the
-        ``X-Astrolabe-Key-Source`` header is visible (the SDK's parsed response
-        drops headers).
-        """
-        if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
-        if not texts:
-            return [], 0, ByokUsage()
         await self._ensure_bearer()
-
-        all_embeddings: list[list[float]] = []
-        total_tokens = byok_tokens = byok_requests = 0
-        for i in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[i : i + EMBED_BATCH_SIZE]
-            embeddings, tokens, byok = await self._embed_batch_request_attributed(batch)
-            all_embeddings.extend(embeddings)
-            total_tokens += tokens
-            if byok:
-                byok_tokens += tokens
-                byok_requests += 1
-            if embeddings:
-                self._record_dimension(len(embeddings[0]))
-        return all_embeddings, total_tokens, ByokUsage(byok_tokens, byok_requests)
+        return await super().embed_batch_with_key_source(texts)
 
     @_retry_transient
     async def _embed_batch_request_attributed(
@@ -346,8 +313,10 @@ class GatewayProvider(OpenAIProvider):
     ) -> tuple[list[list[float]], int, bool]:
         """One ``POST /v1/embeddings``: ``(embeddings, tokens, served_by_byok)``.
 
-        A missing or unknown header means the platform key (older gateways never
-        send it).
+        Goes through ``with_raw_response`` because the SDK's parsed response
+        drops headers. A missing or unknown ``X-Astrolabe-Key-Source`` means the
+        platform key (older gateways never send it). Retried as one unit, so a
+        retried request is attributed by its successful attempt only.
         """
         assert self.embedding_model is not None  # Type narrowing
         raw = await self.client.embeddings.with_raw_response.create(

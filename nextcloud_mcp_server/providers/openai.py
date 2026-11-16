@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Om
 from openai.types import CreateEmbeddingResponse
 
 from ..retry import retry_on_transient
-from .base import Provider
+from .base import ByokUsage, Provider
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +207,20 @@ class OpenAIProvider(Provider):
 
         Returns ``(embeddings, total_tokens)`` where ``total_tokens`` sums
         ``response.usage.total_tokens`` across the sub-requests (the unit the
-        provider bills on). Used by the usage-metering hooks (Deck #67). Also
-        serves the gateway path via :class:`GatewayProvider`.
+        provider bills on). Used by the usage-metering hooks (Deck #67).
+        """
+        embeddings, tokens, _ = await self.embed_batch_with_key_source(texts)
+        return embeddings, tokens
+
+    async def embed_batch_with_key_source(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int, ByokUsage]:
+        """The single batching loop behind every batch embed on this provider.
+
+        Splits ``texts`` into ``EMBED_BATCH_SIZE`` requests and sums their
+        tokens, attributing to ``ByokUsage`` the requests that
+        :meth:`_embed_batch_request_attributed` reports as BYOK. Only the
+        gateway subclass can report any; plain OpenAI never does.
         """
         if not self.supports_embeddings:
             raise NotImplementedError(
@@ -216,25 +228,41 @@ class OpenAIProvider(Provider):
             )
 
         if not texts:
-            return [], 0
+            return [], 0, ByokUsage()
 
-        # OpenAI supports batches up to 2048, but use smaller batches for safety
-        batch_size = EMBED_BATCH_SIZE
         all_embeddings: list[list[float]] = []
-        total_tokens = 0
+        total_tokens = byok_tokens = byok_requests = 0
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for i in range(0, len(texts), EMBED_BATCH_SIZE):
+            batch = texts[i : i + EMBED_BATCH_SIZE]
 
-            # Use helper method with retry logic for each batch
-            batch_embeddings, batch_tokens = await self._embed_batch_request(batch)
+            # Retried per request, so only the successful attempt is attributed.
+            (
+                batch_embeddings,
+                batch_tokens,
+                byok,
+            ) = await self._embed_batch_request_attributed(batch)
             all_embeddings.extend(batch_embeddings)
             total_tokens += batch_tokens
+            if byok:
+                byok_tokens += batch_tokens
+                byok_requests += 1
 
             if batch_embeddings:
                 self._record_dimension(len(batch_embeddings[0]))
 
-        return all_embeddings, total_tokens
+        return all_embeddings, total_tokens, ByokUsage(byok_tokens, byok_requests)
+
+    async def _embed_batch_request_attributed(
+        self, batch: list[str]
+    ) -> tuple[list[list[float]], int, bool]:
+        """One request: ``(embeddings, tokens, served_by_byok)``.
+
+        Plain OpenAI-compatible endpoints have no BYOK; the gateway overrides
+        this to read its key-source header.
+        """
+        embeddings, tokens = await self._embed_batch_request(batch)
+        return embeddings, tokens, False
 
     @_retry_transient
     async def _embed_batch_request(

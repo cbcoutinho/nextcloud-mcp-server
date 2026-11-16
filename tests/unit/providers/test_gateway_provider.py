@@ -12,7 +12,7 @@ import httpx2
 import pytest
 
 from nextcloud_mcp_server.config import Settings
-from nextcloud_mcp_server.providers import gateway as gateway_module
+from nextcloud_mcp_server.providers import openai as openai_module
 from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.providers.gateway import (
     FileTokenProvider,
@@ -553,7 +553,7 @@ async def test_key_source_header_attributes_byok(monkeypatch, headers, expected)
 async def test_key_source_counted_per_gateway_request(monkeypatch):
     """A multi-request batch sums only the BYOK requests' tokens and counts
     one embedding_requests_byok per BYOK request."""
-    monkeypatch.setattr(gateway_module, "EMBED_BATCH_SIZE", 1)
+    monkeypatch.setattr(openai_module, "EMBED_BATCH_SIZE", 1)
     provider = GatewayProvider(
         base_url="https://gw:8083", embedding_model="mistral/mistral-embed"
     )
