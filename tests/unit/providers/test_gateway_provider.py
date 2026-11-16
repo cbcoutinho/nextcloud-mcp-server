@@ -550,6 +550,38 @@ async def test_key_source_header_attributes_byok(monkeypatch, headers, expected)
 
 
 @pytest.mark.unit
+async def test_gateway_query_embed_keeps_byok_attribution(monkeypatch):
+    """The search query path (single text) carries the key source through."""
+    provider = GatewayProvider(
+        base_url="https://gw:8083", embedding_model="mistral/mistral-embed"
+    )
+    _patch_raw_create(
+        monkeypatch,
+        provider,
+        (_embed_response(4, [0.5]), {"X-Astrolabe-Key-Source": "byok"}),
+    )
+
+    embedding, tokens, byok = await provider.embed_with_key_source("query")
+
+    assert embedding == [0.5]
+    assert tokens == 4
+    assert byok == ByokUsage(tokens=4, requests=1)
+
+
+@pytest.mark.unit
+async def test_non_gateway_query_path_is_unchanged():
+    """Providers without BYOK answer embed_with_key_source with exactly their
+    own embed_with_usage result (no batch-path detour) and no BYOK."""
+    provider = SimpleProvider()
+    expected = await provider.embed_with_usage("query")
+
+    embedding, tokens, byok = await provider.embed_with_key_source("query")
+
+    assert (embedding, tokens) == expected
+    assert byok == ByokUsage()
+
+
+@pytest.mark.unit
 async def test_key_source_counted_per_gateway_request(monkeypatch):
     """A multi-request batch sums only the BYOK requests' tokens and counts
     one embedding_requests_byok per BYOK request."""

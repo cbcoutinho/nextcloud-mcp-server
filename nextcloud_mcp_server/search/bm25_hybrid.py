@@ -176,13 +176,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 return self.query_embedding
             with query_embedding_budget(settings.search_embedding_timeout_seconds):
                 (
-                    embeddings,
+                    dense_embedding,
                     query_tokens,
                     query_byok,
-                ) = await provider.embed_batch_with_key_source([query])
-            if not embeddings:
-                raise RuntimeError("Embedding provider returned no query embedding")
-            dense_embedding = embeddings[0]
+                ) = await provider.embed_with_key_source(query)
             # Store for reuse by callers (e.g. the PCA projection in
             # vector/visualization.py) and for the usage-metering hook in
             # server/semantic.py (token count).

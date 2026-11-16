@@ -192,13 +192,20 @@ class OpenAIProvider(Provider):
 
     async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
         """Embed one text, reporting the request's token count."""
-        embeddings, tokens = await self.embed_batch_with_usage([text])
+        embedding, tokens, _ = await self.embed_with_key_source(text)
+        return embedding, tokens
+
+    async def embed_with_key_source(
+        self, text: str
+    ) -> tuple[list[float], int, ByokUsage]:
+        """One text through the batch funnel, keeping its BYOK attribution."""
+        embeddings, tokens, byok = await self.embed_batch_with_key_source([text])
         if not embeddings:
             raise RuntimeError(
                 "OpenAI embeddings API returned no embedding for model "
                 f"{self.embedding_model}"
             )
-        return embeddings[0], tokens
+        return embeddings[0], tokens, byok
 
     async def embed_batch_with_usage(
         self, texts: list[str]

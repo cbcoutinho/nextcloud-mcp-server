@@ -15,6 +15,9 @@ class ByokUsage:
 
     ``tokens`` is a subset of the call's total token count; ``requests`` counts
     gateway requests. Metered as display-only ``*_byok`` metrics, never billed.
+    Only callers that use ``embed_with_key_source`` / ``embed_batch_with_key_source``
+    (the ingest and search metering paths) see the split; plain ``embed()`` /
+    ``*_with_usage`` callers get totals only.
     """
 
     tokens: int = 0
@@ -164,6 +167,17 @@ class Provider(ABC):
         """
         embeddings = await self.embed_batch(texts)
         return embeddings, self._estimate_tokens(texts)
+
+    async def embed_with_key_source(
+        self, text: str
+    ) -> tuple[list[float], int, ByokUsage]:
+        """:meth:`embed_with_usage` plus which tokens ran on a BYOK key.
+
+        The default is exactly :meth:`embed_with_usage` with no BYOK, so a
+        provider's own single-text path is unchanged.
+        """
+        embedding, tokens = await self.embed_with_usage(text)
+        return embedding, tokens, ByokUsage()
 
     async def embed_batch_with_key_source(
         self, texts: list[str]

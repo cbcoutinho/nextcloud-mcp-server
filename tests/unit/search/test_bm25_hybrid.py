@@ -68,9 +68,9 @@ def _make_search_deps(monkeypatch):
     """Stub the embedding / BM25 / Qdrant / settings deps of ``search()`` and
     return ``(embed, qdrant)`` mocks. One builder serves both modes: the
     keyword-only (``dense=False``) tests assert the embed mock is never used."""
-    embed = AsyncMock(return_value=([[0.1, 0.2, 0.3]], 7, ByokUsage()))
+    embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7, ByokUsage()))
     svc = MagicMock()
-    svc.embed_batch_with_key_source = embed
+    svc.embed_with_key_source = embed
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.bm25_hybrid.get_provider", lambda: svc
     )
