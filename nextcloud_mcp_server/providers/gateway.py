@@ -312,8 +312,8 @@ def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:
 
     Lives beside ``GatewayTokenProvider`` because every gateway sub-client
     needs it (embeddings, sync OCR, batch OCR, rerank and NER), so the
-    all-or-nothing M2M-triple validation has exactly one home. ``document_processors.ocr`` re-exports it
-    under its historical private name.
+    all-or-nothing M2M-triple validation has exactly one home.
+    ``document_processors.ocr`` re-exports it under its historical private name.
     """
     if settings.embedding_gateway_token_file:
         return FileTokenProvider(settings.embedding_gateway_token_file)
