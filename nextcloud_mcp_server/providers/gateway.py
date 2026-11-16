@@ -131,25 +131,27 @@ class FileTokenProvider:
     def __init__(self, path: str):
         self.path = path
 
-    async def get_token(self, *, force_refresh: bool = False) -> str:
+    async def get_token(self, *, force_refresh: bool = False) -> str:  # NOSONAR
         """Return the file's current contents, stripped.
 
         ``force_refresh`` is accepted for interface parity with
-        :class:`GatewayTokenProvider`; every call re-reads, so it has no effect.
+        :class:`GatewayTokenProvider` (hence the S1172 suppression); every call
+        re-reads, so it has no effect. The per-call read is deliberate: do not
+        cache, kubelet rotates the file.
 
         Raises:
             OSError: the file is missing or unreadable (logged with the path).
-            RuntimeError: the file is empty, which would otherwise send a bare
-                ``Bearer `` header and surface only as an opaque gateway 401.
+            RuntimeError: the file is empty or whitespace-only, which would
+                otherwise send a bare ``Bearer `` header and surface only as an
+                opaque gateway 401.
         """
         try:
             token = (await anyio.Path(self.path).read_text()).strip()
         except OSError:
-            logger.error(
+            logger.exception(
                 "Cannot read embedding-gateway token file %s "
                 "(EMBEDDING_GATEWAY_TOKEN_FILE); is the projected volume mounted?",
                 self.path,
-                exc_info=True,
             )
             raise
         if not token:
