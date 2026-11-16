@@ -7,6 +7,7 @@ Supports:
 """
 
 import logging
+from typing import Any
 
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Omit, omit
 from openai.types import CreateEmbeddingResponse
@@ -281,13 +282,20 @@ class OpenAIProvider(Provider):
         response's ``usage.total_tokens`` and falls back to a char-based
         estimate if the API omits usage.
         """
-        assert self.embedding_model is not None  # Type narrowing
         response = await self.client.embeddings.create(
-            input=batch,
-            model=self.embedding_model,
-            dimensions=self._dimensions_arg(),
+            **self._embeddings_request_kwargs(batch)
         )
         return self._parse_embeddings_response(response, batch)
+
+    def _embeddings_request_kwargs(self, batch: list[str]) -> dict[str, Any]:
+        """The ``embeddings.create`` arguments, shared with the gateway's
+        raw-response request so a new parameter reaches both."""
+        assert self.embedding_model is not None  # Type narrowing
+        return {
+            "input": batch,
+            "model": self.embedding_model,
+            "dimensions": self._dimensions_arg(),
+        }
 
     def _parse_embeddings_response(
         self, response: CreateEmbeddingResponse, batch: list[str]

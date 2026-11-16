@@ -268,7 +268,8 @@ again, so a period sum measures *churn*:
   keyword-index documents embed nothing and skip the row entirely. Semantic
   search records the query embedding's tokens under the same metric.
 - `tokens_embedded_byok` / `embedding_requests_byok` - Embedding tokens and
-  gateway requests served with the tenant's own provider key (the gateway
+  gateway requests (one per `/v1/embeddings` call of up to 100 texts, not per
+  text) served with the tenant's own provider key (the gateway
   answered `X-Astrolabe-Key-Source: byok`). Recorded *instead of*
   `tokens_embedded` for those requests, by both ingest and search. Display-only:
   the control plane never bills them.

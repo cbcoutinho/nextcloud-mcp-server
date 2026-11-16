@@ -318,11 +318,8 @@ class GatewayProvider(OpenAIProvider):
         platform key (older gateways never send it). Retried as one unit, so a
         retried request is attributed by its successful attempt only.
         """
-        assert self.embedding_model is not None  # Type narrowing
         raw = await self.client.embeddings.with_raw_response.create(
-            input=batch,
-            model=self.embedding_model,
-            dimensions=self._dimensions_arg(),
+            **self._embeddings_request_kwargs(batch)
         )
         embeddings, tokens = self._parse_embeddings_response(raw.parse(), batch)
         key_source = raw.headers.get(KEY_SOURCE_HEADER, "").strip().lower()
