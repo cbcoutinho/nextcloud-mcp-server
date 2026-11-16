@@ -15,6 +15,11 @@ mirrors the control-plane CLI's ``fetch_m2m_token`` pattern
 M2M creds are configured the client calls the gateway unauthenticated — matching
 the gateway's current (not-yet-authenticated) state.
 
+Alternatively ``EMBEDDING_GATEWAY_TOKEN_FILE`` points at a Kubernetes projected
+ServiceAccount token (audience ``astrolabe-gateway``) that the gateway checks
+via TokenReview; :class:`FileTokenProvider` re-reads it per request because
+kubelet rotates it.
+
 The gateway speaks the OpenAI ``/v1/embeddings`` wire format and routes by model
 name (e.g. ``mistral-embed`` → Mistral for the MVP). Embeddings-only: ``generate``
 is disabled (inherited ``NotImplementedError``).
@@ -109,6 +114,26 @@ class GatewayTokenProvider:
             return self._cache[0]
 
 
+class FileTokenProvider:
+    """Reads the gateway bearer from a file on every call.
+
+    For a Kubernetes projected ServiceAccount token (audience
+    ``astrolabe-gateway``): kubelet rotates the file in place, so it is re-read
+    each time rather than cached. A small local read per gateway request.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+
+    async def get_token(self, *, force_refresh: bool = False) -> str:
+        # force_refresh is accepted for interface parity; every call re-reads.
+        return (await anyio.Path(self.path).read_text()).strip()
+
+
+# Anything with ``async get_token(*, force_refresh=False) -> str``.
+TokenProvider = GatewayTokenProvider | FileTokenProvider
+
+
 class GatewayProvider(OpenAIProvider):
     """Embeddings-only OpenAI-compatible provider pointed at the gateway."""
 
@@ -117,7 +142,7 @@ class GatewayProvider(OpenAIProvider):
         *,
         base_url: str,
         embedding_model: str,
-        token_provider: GatewayTokenProvider | None = None,
+        token_provider: TokenProvider | None = None,
         timeout: float = 120.0,
         embedding_dimensions: int | None = None,
     ):
@@ -149,7 +174,7 @@ class GatewayProvider(OpenAIProvider):
             "auth=%s, requested_dimensions=%s",
             normalized_base_url,
             embedding_model,
-            "oidc-m2m" if token_provider else "none",
+            type(token_provider).__name__ if token_provider else "none",
             embedding_dimensions,
         )
 
@@ -251,15 +276,20 @@ class GatewayProvider(OpenAIProvider):
         return await super().embed_batch_with_usage(texts)
 
 
-def build_gateway_token_provider(settings: Settings) -> GatewayTokenProvider | None:
-    """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
-    client-id is configured (unauthenticated gateway).
+def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:
+    """Build the gateway bearer source from settings, or ``None`` when neither a
+    token file nor a client-id is configured (unauthenticated gateway).
+
+    ``EMBEDDING_GATEWAY_TOKEN_FILE`` (projected SA token) wins; Settings
+    rejects it combined with the M2M triple, so at most one is set.
 
     Lives beside ``GatewayTokenProvider`` because every gateway sub-client needs
-    it — sync OCR, batch OCR, and rerank — so the all-or-nothing M2M-triple
+    it — embeddings, sync OCR, batch OCR, rerank and NER — so the all-or-nothing M2M-triple
     validation has exactly one home. ``document_processors.ocr`` re-exports it
     under its historical private name.
     """
+    if settings.embedding_gateway_token_file:
+        return FileTokenProvider(settings.embedding_gateway_token_file)
     if not settings.embedding_gateway_client_id:
         return None
 

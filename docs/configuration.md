@@ -1542,6 +1542,10 @@ EMBEDDING_GATEWAY_URL=https://embedding-gateway.internal
 EMBEDDING_GATEWAY_TOKEN_URL=...
 EMBEDDING_GATEWAY_CLIENT_ID=...
 EMBEDDING_GATEWAY_CLIENT_SECRET=...
+# ...or a bearer read from a file on every request (Kubernetes projected
+# ServiceAccount token, audience astrolabe-gateway). Mutually exclusive with
+# the three settings above.
+EMBEDDING_GATEWAY_TOKEN_FILE=/var/run/secrets/astrolabe-gateway/token
 
 # Ingest queue backend. Default (unset) is "memory" — the in-process anyio
 # queue — *regardless of DATABASE_URL*. procrastinate is strictly opt-in: set

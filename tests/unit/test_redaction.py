@@ -346,6 +346,7 @@ async def test_get_ner_client_targets_gateway_and_is_cached():
     settings = SimpleNamespace(
         embedding_gateway_url="https://gw",
         embedding_gateway_client_id=None,
+        embedding_gateway_token_file=None,
         ner_model="local/m",
         ner_timeout_seconds=5,
         ner_threshold=0.3,
