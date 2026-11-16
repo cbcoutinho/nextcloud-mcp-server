@@ -602,7 +602,7 @@ def _record_ingest_vector_cost(
         logger.warning("vector-cost observability hook skipped: %s", exc)
 
 
-async def record_indexing_usage(
+async def record_indexing_usage(  # NOSONAR(S107): keyword-only metering record
     *,
     enabled: bool,
     provider: str,

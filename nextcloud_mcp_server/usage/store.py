@@ -84,9 +84,20 @@ def embedding_token_events(
     on the billed ``tokens_embedded``. With no BYOK the result is exactly the
     historical single ``tokens_embedded`` event, including a 0-token one, so
     callers keep their own zero-value guards.
+
+    The events share one ``metadata`` dict; the store only serializes it, so
+    copy before mutating any event's metadata.
     """
     if byok is None or byok.requests == 0:
         return [UsageEvent("tokens_embedded", token_count, metadata)]
+    if byok.tokens > token_count:
+        # BYOK tokens are a subset of the total by construction, so this is a
+        # provider bug; record what we have but make it visible.
+        logger.warning(
+            "BYOK tokens (%s) exceed the embedding call's total (%s)",
+            byok.tokens,
+            token_count,
+        )
     events: list[UsageEvent] = []
     if token_count > byok.tokens:
         events.append(
