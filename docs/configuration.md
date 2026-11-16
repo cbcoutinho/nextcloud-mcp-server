@@ -1544,7 +1544,9 @@ EMBEDDING_GATEWAY_CLIENT_ID=...
 EMBEDDING_GATEWAY_CLIENT_SECRET=...
 # ...or a bearer read from a file on every request (Kubernetes projected
 # ServiceAccount token, audience astrolabe-gateway). Mutually exclusive with
-# the three settings above.
+# the three settings above. A missing, unreadable or empty file fails each
+# gateway call (logged with the path); it never falls back to unauthenticated,
+# so mount the volume in the same change that sets this variable.
 EMBEDDING_GATEWAY_TOKEN_FILE=/var/run/secrets/astrolabe-gateway/token
 
 # Ingest queue backend. Default (unset) is "memory" — the in-process anyio
