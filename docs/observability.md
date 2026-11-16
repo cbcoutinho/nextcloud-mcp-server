@@ -265,7 +265,13 @@ Two kinds, and the difference decides how the control plane aggregates them:
 again, so a period sum measures *churn*:
 
 - `tokens_embedded` - Embedding request tokens. Hybrid documents only —
-  keyword-index documents embed nothing and skip the row entirely.
+  keyword-index documents embed nothing and skip the row entirely. Semantic
+  search records the query embedding's tokens under the same metric.
+- `tokens_embedded_byok` / `embedding_requests_byok` - Embedding tokens and
+  gateway requests served with the tenant's own provider key (the gateway
+  answered `X-Astrolabe-Key-Source: byok`). Recorded *instead of*
+  `tokens_embedded` for those requests, by both ingest and search. Display-only:
+  the control plane never bills them.
 - `pages_embedded` - Pages parsed. Text doc types (notes, Deck cards, news,
   mail) are never parsed and carry no page count, so they accrue no row.
 - `pages_ocr` - Pages that hit the OCR tier specifically, billed separately

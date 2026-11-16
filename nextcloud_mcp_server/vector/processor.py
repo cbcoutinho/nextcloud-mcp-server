@@ -59,8 +59,13 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.providers import get_bm25_service, get_provider
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
-from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
+from nextcloud_mcp_server.usage import (
+    UsageEvent,
+    UsageEventStore,
+    embedding_token_events,
+)
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector._errors import format_exception_group
@@ -612,6 +617,7 @@ async def record_indexing_usage(
     bytes_ingested: int,
     bytes_stored: int,
     pipeline_tier: str | None = None,
+    byok: ByokUsage | None = None,
 ) -> None:
     """Record the billable usage events for one indexed document.
 
@@ -628,6 +634,9 @@ async def record_indexing_usage(
       every *hybrid* document (skipped when ``token_count`` is 0, i.e. keyword
       docs). The same metric search records, so the meter bills embedding tokens
       whether they were incurred indexing a document or embedding a query.
+      Tokens the gateway served on the tenant's own key (``byok``) go to the
+      display-only ``tokens_embedded_byok`` / ``embedding_requests_byok``
+      instead (see ``embedding_token_events``).
     - ``pages_embedded`` — a charge for **parsing** (PDF page extraction / OCR),
       not a normalized content size. ``page_count`` is the real number of pages
       the document processor parsed. Text content (notes, deck cards, news
@@ -702,9 +711,7 @@ async def record_indexing_usage(
     # for keyword docs (token_count == 0), which never embed, so no zero-value
     # embedding row is written.
     if token_count > 0:
-        events.append(
-            UsageEvent(metric="tokens_embedded", value=token_count, metadata=metadata)
-        )
+        events.extend(embedding_token_events(token_count, byok, metadata))
     # pages_embedded: parsed pages only, and only a strictly positive count. Text
     # content has no page_count; a zero/negative count is skipped rather than
     # writing a row that would misrepresent a no-parse document as billable
@@ -1903,6 +1910,7 @@ async def _index_document_inner(
     # embed). Captured as a nonlocal so the post-task-group metering can record
     # ``tokens_embedded`` for hybrid docs while byte/page metering covers both.
     dense_embed_tokens: int = 0
+    dense_embed_byok = ByokUsage()
     # chunk_index -> list[(x0, y0, x1, y1)] of normalized rectangles
     # in [0, 1] relative to page width/height. The page is taken from
     # `chunk.page_number` (offset-based) and stored as `page_number`
@@ -1918,7 +1926,7 @@ async def _index_document_inner(
     # Define async tasks for parallel execution
     async def generate_dense_embeddings():
         """Generate dense embeddings (I/O bound - external API call)."""
-        nonlocal dense_embeddings, dense_embed_tokens
+        nonlocal dense_embeddings, dense_embed_tokens, dense_embed_byok
         provider = settings.get_embedding_provider_family()
         total_chars = sum(len(t) for t in chunk_texts)
         with trace_operation(
@@ -1937,7 +1945,8 @@ async def _index_document_inner(
                 (
                     dense_embeddings,
                     embed_tokens,
-                ) = await embedding_provider.embed_batch_with_usage(chunk_texts)
+                    dense_embed_byok,
+                ) = await embedding_provider.embed_batch_with_key_source(chunk_texts)
             except Exception:
                 record_embedding(
                     "dense", provider, time.time() - embed_start, status="error"
@@ -2186,6 +2195,7 @@ async def _index_document_inner(
         index_mode=doc_task.index_mode,
         chunk_count=len(chunk_texts),
         token_count=dense_embed_tokens,
+        byok=dense_embed_byok,
         total_chars=_meter_total_chars,
         page_count=(
             _meter_raw_page_count

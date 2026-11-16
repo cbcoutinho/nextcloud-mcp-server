@@ -31,7 +31,12 @@ interaction under a different provider state, and this client has no branch for
 it beyond failing loudly. Consumer-side handling of a width that comes back wrong
 lives a tier down in tests/unit/providers/test_embedding_dimensions.py.
 
-The gateway is unauthenticated today, so no bearer is sent. See ADR-029.
+The truncation interaction sends no bearer (an unauthenticated deployment). The
+BYOK interaction below pins the authenticated path: the projected
+ServiceAccount token as ``Authorization: Bearer``, and the
+``X-Astrolabe-Key-Source`` response header that moves the request's tokens to
+the display-only ``tokens_embedded_byok`` / ``embedding_requests_byok`` metrics.
+See ADR-029.
 """
 
 import array
@@ -40,7 +45,8 @@ import base64
 import pytest
 from pact import match
 
-from nextcloud_mcp_server.providers.gateway import GatewayProvider
+from nextcloud_mcp_server.providers.base import ByokUsage
+from nextcloud_mcp_server.providers.gateway import FileTokenProvider, GatewayProvider
 
 pytestmark = pytest.mark.contract
 
@@ -118,3 +124,74 @@ async def test_embeddings_honour_the_requested_output_width(gateway_consumer_pac
     # would have raised had the width disagreed with the request.
     assert len(embedding) == _TRUNCATED
     assert provider.get_dimension() == _TRUNCATED
+
+
+_BYOK_MODEL = "mistral/mistral-embed"
+_BYOK_EMBEDDING = base64.b64encode(array.array("f", [0.0123] * 8).tobytes()).decode()
+
+
+async def test_byok_embedding_request_reports_its_key_source(
+    gateway_consumer_pact, tmp_path
+):
+    """An authenticated request the gateway served on the tenant's own provider
+    key says so in ``X-Astrolabe-Key-Source``; the client meters it as BYOK."""
+    token_file = tmp_path / "token"
+    token_file.write_text("projected-sa-token\n")
+    (
+        gateway_consumer_pact.upon_receiving(
+            "an authenticated embedding request served with a BYOK key"
+        )
+        .given("the calling tenant has a BYOK key for mistral")
+        .with_request("POST", "/v1/embeddings")
+        .with_header(
+            "Authorization",
+            match.regex("Bearer projected-sa-token", regex=r"^Bearer \S+$"),
+        )
+        .with_body(
+            {
+                # The batch path (indexing, query metering) always sends a list.
+                "input": [_INPUT],
+                "model": _BYOK_MODEL,
+                "encoding_format": "base64",
+            },
+            content_type="application/json",
+        )
+        .will_respond_with(200)
+        .with_header("X-Astrolabe-Key-Source", "byok")
+        .with_body(
+            {
+                "object": match.string("list"),
+                "data": [
+                    {
+                        "object": match.string("embedding"),
+                        "index": match.integer(0),
+                        "embedding": match.regex(
+                            _BYOK_EMBEDDING, regex=r"^[A-Za-z0-9+/=]+$"
+                        ),
+                    }
+                ],
+                "model": match.string(_BYOK_MODEL),
+                "usage": {
+                    "prompt_tokens": match.integer(7),
+                    "total_tokens": match.integer(7),
+                },
+            },
+            content_type="application/json",
+        )
+    )
+
+    with gateway_consumer_pact.serve() as srv:
+        provider = GatewayProvider(
+            base_url=str(srv.url),
+            embedding_model=_BYOK_MODEL,
+            token_provider=FileTokenProvider(str(token_file)),
+        )
+        try:
+            embeddings, tokens, byok = await provider.embed_batch_with_key_source(
+                [_INPUT]
+            )
+        finally:
+            await provider.close()
+
+    assert len(embeddings) == 1
+    assert byok == ByokUsage(tokens=tokens, requests=1)

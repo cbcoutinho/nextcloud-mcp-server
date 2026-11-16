@@ -11,6 +11,7 @@ import anyio
 from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -357,11 +358,14 @@ class SearchAlgorithm(ABC):
             that embed the query so the usage-metering hook can bill
             ``tokens_embedded`` by tokens (Deck #67). The instance is
             per-request, so this side-channel is concurrency-safe.
+        query_byok: The part of ``query_token_count`` the gateway served on the
+            tenant's own key (``ByokUsage``), for the same hook.
     """
 
     # Class-level defaults are a safety net; __init__ shadows them per instance.
     query_embedding: list[float] | None = None
     query_token_count: int | None = None
+    query_byok: ByokUsage | None = None
 
     def __init__(self) -> None:
         # Set the query-embedding side-channel as instance attributes so
@@ -371,6 +375,7 @@ class SearchAlgorithm(ABC):
         # Subclasses with their own __init__ should call super().__init__().
         self.query_embedding: list[float] | None = None
         self.query_token_count: int | None = None
+        self.query_byok: ByokUsage | None = None
 
     @abstractmethod
     async def search(

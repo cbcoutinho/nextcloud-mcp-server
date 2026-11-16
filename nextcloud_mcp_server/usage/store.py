@@ -34,6 +34,7 @@ from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_st
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import record_db_operation
 from nextcloud_mcp_server.observability.tracing import trace_db_operation
+from nextcloud_mcp_server.providers.base import ByokUsage
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,32 @@ class UsageEvent:
     metadata: dict[str, Any] | None = None
     occurred_at: datetime | None = None
     event_id: str | None = None
+
+
+def embedding_token_events(
+    token_count: int,
+    byok: ByokUsage | None,
+    metadata: dict[str, Any] | None,
+) -> list[UsageEvent]:
+    """Split one embedding call's tokens into billed and BYOK usage events.
+
+    Tokens the gateway served on the tenant's own key (``byok.tokens``) go to
+    ``tokens_embedded_byok`` plus ``embedding_requests_byok`` (one per gateway
+    request). The control plane shows both but never bills them. The rest stays
+    on the billed ``tokens_embedded``. With no BYOK the result is exactly the
+    historical single ``tokens_embedded`` event, including a 0-token one, so
+    callers keep their own zero-value guards.
+    """
+    if byok is None or byok.requests == 0:
+        return [UsageEvent("tokens_embedded", token_count, metadata)]
+    events: list[UsageEvent] = []
+    if token_count > byok.tokens:
+        events.append(
+            UsageEvent("tokens_embedded", token_count - byok.tokens, metadata)
+        )
+    events.append(UsageEvent("tokens_embedded_byok", byok.tokens, metadata))
+    events.append(UsageEvent("embedding_requests_byok", byok.requests, metadata))
+    return events
 
 
 class UsageEventStore:

@@ -3,8 +3,22 @@
 import logging
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ByokUsage:
+    """The part of an embedding call the gateway served with the tenant's own
+    provider key (``X-Astrolabe-Key-Source: byok``).
+
+    ``tokens`` is a subset of the call's total token count; ``requests`` counts
+    gateway requests. Metered as display-only ``*_byok`` metrics, never billed.
+    """
+
+    tokens: int = 0
+    requests: int = 0
 
 
 class Provider(ABC):
@@ -150,6 +164,17 @@ class Provider(ABC):
         """
         embeddings = await self.embed_batch(texts)
         return embeddings, self._estimate_tokens(texts)
+
+    async def embed_batch_with_key_source(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int, ByokUsage]:
+        """:meth:`embed_batch_with_usage` plus which tokens ran on a BYOK key.
+
+        Returns ``(embeddings, total_tokens, byok)``. Only the embedding gateway
+        can serve BYOK, so the default reports none.
+        """
+        embeddings, tokens = await self.embed_batch_with_usage(texts)
+        return embeddings, tokens, ByokUsage()
 
     @abstractmethod
     def get_dimension(self) -> int:

@@ -1073,6 +1073,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
             fusion=fusion,
             doc_types=doc_types,
             token_count=search_algo.query_token_count,
+            byok=search_algo.query_byok,
             surface="mcp",
         )
 

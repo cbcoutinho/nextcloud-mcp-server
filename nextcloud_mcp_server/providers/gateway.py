@@ -34,7 +34,8 @@ import anyio
 import httpx2
 
 from ..config import Settings
-from ..providers.openai import OpenAIProvider
+from ..providers.base import ByokUsage
+from ..providers.openai import EMBED_BATCH_SIZE, OpenAIProvider, _retry_transient
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,10 @@ _EARLY_REFRESH_SECONDS = 60
 # unauthenticated mode the gateway ignores the bearer; when a token provider is
 # configured, the real M2M token replaces this before each request.
 _UNAUTHENTICATED_PLACEHOLDER = "unauthenticated"
+
+# Response header on /v1/embeddings: "byok" when the gateway used the tenant's
+# own provider key, "platform" (or absent) for the platform key.
+KEY_SOURCE_HEADER = "X-Astrolabe-Key-Source"
 
 
 class GatewayTokenProvider:
@@ -287,12 +292,11 @@ class GatewayProvider(OpenAIProvider):
 
     # Bearer-refresh override topology. OpenAIProvider routes embed_batch(),
     # embed_with_usage() and embed_batch_with_usage() all through
-    # embed_batch_with_usage(); only embed() (single) is self-contained. So we
-    # override exactly two methods to refresh the bearer exactly once on every
-    # path: embed() (its own entrypoint) and embed_batch_with_usage() (the
-    # shared funnel for the other three). Overriding embed_batch() as well would
-    # double-call _ensure_bearer() (override → super().embed_batch() →
-    # self.embed_batch_with_usage() → override again).
+    # embed_batch_with_usage(); only embed() (single) is self-contained. Here
+    # embed_batch_with_usage() funnels into embed_batch_with_key_source(), so
+    # the bearer is refreshed exactly once on every path: in embed() and in
+    # embed_batch_with_key_source(). Overriding embed_batch() as well would
+    # double-call _ensure_bearer().
 
     async def embed(self, text: str) -> list[float]:
         await self._ensure_bearer()
@@ -301,8 +305,59 @@ class GatewayProvider(OpenAIProvider):
     async def embed_batch_with_usage(
         self, texts: list[str]
     ) -> tuple[list[list[float]], int]:
+        embeddings, tokens, _ = await self.embed_batch_with_key_source(texts)
+        return embeddings, tokens
+
+    async def embed_batch_with_key_source(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int, ByokUsage]:
+        """Embed via the gateway, splitting out tokens served on a BYOK key.
+
+        Same batching as :meth:`OpenAIProvider.embed_batch_with_usage`, but each
+        request goes through ``with_raw_response`` so the
+        ``X-Astrolabe-Key-Source`` header is visible (the SDK's parsed response
+        drops headers).
+        """
+        if not self.supports_embeddings:
+            raise NotImplementedError(
+                "Embedding not supported - no embedding_model configured"
+            )
+        if not texts:
+            return [], 0, ByokUsage()
         await self._ensure_bearer()
-        return await super().embed_batch_with_usage(texts)
+
+        all_embeddings: list[list[float]] = []
+        total_tokens = byok_tokens = byok_requests = 0
+        for i in range(0, len(texts), EMBED_BATCH_SIZE):
+            batch = texts[i : i + EMBED_BATCH_SIZE]
+            embeddings, tokens, byok = await self._embed_batch_request_attributed(batch)
+            all_embeddings.extend(embeddings)
+            total_tokens += tokens
+            if byok:
+                byok_tokens += tokens
+                byok_requests += 1
+            if embeddings:
+                self._record_dimension(len(embeddings[0]))
+        return all_embeddings, total_tokens, ByokUsage(byok_tokens, byok_requests)
+
+    @_retry_transient
+    async def _embed_batch_request_attributed(
+        self, batch: list[str]
+    ) -> tuple[list[list[float]], int, bool]:
+        """One ``POST /v1/embeddings``: ``(embeddings, tokens, served_by_byok)``.
+
+        A missing or unknown header means the platform key (older gateways never
+        send it).
+        """
+        assert self.embedding_model is not None  # Type narrowing
+        raw = await self.client.embeddings.with_raw_response.create(
+            input=batch,
+            model=self.embedding_model,
+            dimensions=self._dimensions_arg(),
+        )
+        embeddings, tokens = self._parse_embeddings_response(raw.parse(), batch)
+        key_source = raw.headers.get(KEY_SOURCE_HEADER, "").strip().lower()
+        return embeddings, tokens, key_source == "byok"
 
 
 def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:

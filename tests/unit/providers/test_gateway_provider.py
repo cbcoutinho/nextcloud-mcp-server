@@ -12,6 +12,8 @@ import httpx2
 import pytest
 
 from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.providers import gateway as gateway_module
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.providers.gateway import (
     FileTokenProvider,
     GatewayProvider,
@@ -27,6 +29,43 @@ def _patch_settings(monkeypatch, settings):
         "nextcloud_mcp_server.providers.registry.get_settings", lambda: settings
     )
     reset_provider()
+
+
+def _embed_response(total_tokens: int, *vectors: list[float]):
+    data = []
+    for i, vec in enumerate(vectors):
+        item = MagicMock()
+        item.embedding = vec
+        item.index = i
+        data.append(item)
+    response = MagicMock()
+    response.data = data
+    response.usage = MagicMock(total_tokens=total_tokens)
+    return response
+
+
+def _patch_raw_create(monkeypatch, provider, *responses, on_call=None):
+    """Stub ``client.embeddings.with_raw_response.create``.
+
+    Each entry of ``responses`` is ``(parsed_response, headers)``, returned in
+    order, one per gateway request.
+    """
+    queue = list(responses)
+
+    async def _create(**_kwargs):
+        if on_call:
+            on_call()
+        parsed, headers = queue.pop(0)
+        raw = MagicMock()
+        raw.parse.return_value = parsed
+        raw.headers = httpx2.Headers(headers)
+        return raw
+
+    monkeypatch.setattr(
+        provider.client.embeddings,
+        "with_raw_response",
+        MagicMock(create=AsyncMock(side_effect=_create)),
+    )
 
 
 def test_gateway_selected_unauthenticated(monkeypatch):
@@ -425,18 +464,12 @@ async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
 
     monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
 
-    item = MagicMock()
-    item.embedding = [0.1, 0.2]
-    item.index = 0
-    response = MagicMock()
-    response.data = [item]
-    response.usage = MagicMock(total_tokens=8)
-
-    async def _create(**_kwargs):
-        order.append("embed")
-        return response
-
-    monkeypatch.setattr(provider.client.embeddings, "create", _create)
+    _patch_raw_create(
+        monkeypatch,
+        provider,
+        (_embed_response(8, [0.1, 0.2]), {}),
+        on_call=lambda: order.append("embed"),
+    )
 
     embedding, tokens = await provider.embed_with_usage("hello")
 
@@ -459,15 +492,7 @@ async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch)
 
     monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
 
-    item = MagicMock()
-    item.embedding = [0.3, 0.4]
-    item.index = 0
-    response = MagicMock()
-    response.data = [item]
-    response.usage = MagicMock(total_tokens=5)
-    monkeypatch.setattr(
-        provider.client.embeddings, "create", AsyncMock(return_value=response)
-    )
+    _patch_raw_create(monkeypatch, provider, (_embed_response(5, [0.3, 0.4]), {}))
 
     embeddings, tokens = await provider.embed_batch_with_usage(["x"])
 
@@ -479,7 +504,8 @@ async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch)
 @pytest.mark.unit
 async def test_gateway_embed_batch_ensures_bearer_once(monkeypatch):
     """embed_batch() has no override: it routes through the inherited OpenAI
-    embed_batch() → embed_batch_with_usage() (overridden), so the bearer is
+    embed_batch() → embed_batch_with_usage() → embed_batch_with_key_source()
+    (both overridden), so the bearer is
     refreshed exactly once — not twice."""
     # https mock host (never contacted — the OpenAI client is patched below).
     provider = GatewayProvider(
@@ -492,20 +518,61 @@ async def test_gateway_embed_batch_ensures_bearer_once(monkeypatch):
 
     monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
 
-    item = MagicMock()
-    item.embedding = [0.1, 0.2]
-    item.index = 0
-    response = MagicMock()
-    response.data = [item]
-    response.usage = MagicMock(total_tokens=4)
-    monkeypatch.setattr(
-        provider.client.embeddings, "create", AsyncMock(return_value=response)
-    )
+    _patch_raw_create(monkeypatch, provider, (_embed_response(4, [0.1, 0.2]), {}))
 
     embeddings = await provider.embed_batch(["x"])
 
     assert embeddings == [[0.1, 0.2]]
     assert ensured["n"] == 1  # not 2 — embed_batch() must not double-refresh
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"X-Astrolabe-Key-Source": "byok"}, ByokUsage(tokens=6, requests=1)),
+        ({"x-astrolabe-key-source": " BYOK "}, ByokUsage(tokens=6, requests=1)),
+        ({"X-Astrolabe-Key-Source": "platform"}, ByokUsage()),
+        ({}, ByokUsage()),  # older gateway: absent means platform
+    ],
+)
+async def test_key_source_header_attributes_byok(monkeypatch, headers, expected):
+    provider = GatewayProvider(
+        base_url="https://gw:8083", embedding_model="mistral/mistral-embed"
+    )
+    _patch_raw_create(monkeypatch, provider, (_embed_response(6, [0.1]), headers))
+
+    embeddings, tokens, byok = await provider.embed_batch_with_key_source(["x"])
+
+    assert embeddings == [[0.1]]
+    assert tokens == 6
+    assert byok == expected
+
+
+@pytest.mark.unit
+async def test_key_source_counted_per_gateway_request(monkeypatch):
+    """A multi-request batch sums only the BYOK requests' tokens and counts
+    one embedding_requests_byok per BYOK request."""
+    monkeypatch.setattr(gateway_module, "EMBED_BATCH_SIZE", 1)
+    provider = GatewayProvider(
+        base_url="https://gw:8083", embedding_model="mistral/mistral-embed"
+    )
+    byok = {"X-Astrolabe-Key-Source": "byok"}
+    _patch_raw_create(
+        monkeypatch,
+        provider,
+        (_embed_response(3, [0.1]), byok),
+        (_embed_response(4, [0.2]), {"X-Astrolabe-Key-Source": "platform"}),
+        (_embed_response(5, [0.3]), byok),
+    )
+
+    embeddings, tokens, usage = await provider.embed_batch_with_key_source(
+        ["a", "b", "c"]
+    )
+
+    assert embeddings == [[0.1], [0.2], [0.3]]
+    assert tokens == 12
+    assert usage == ByokUsage(tokens=8, requests=2)
 
 
 async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):

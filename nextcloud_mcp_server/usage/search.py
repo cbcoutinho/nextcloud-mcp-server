@@ -8,7 +8,8 @@ and ``api/`` must not import from ``server/``. ``server.semantic`` re-exports
 
 import logging
 
-from nextcloud_mcp_server.usage.store import UsageEventStore
+from nextcloud_mcp_server.providers.base import ByokUsage
+from nextcloud_mcp_server.usage.store import UsageEventStore, embedding_token_events
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ async def record_search_usage(
     doc_types: list[str] | None,
     token_count: int | None,
     surface: str = "mcp",
+    byok: ByokUsage | None = None,
 ) -> None:
     """Record the billable ``tokens_embedded`` event for one semantic search.
 
@@ -63,25 +65,27 @@ async def record_search_usage(
             surface began recording later than the MCP one, so a step change in
             ``tokens_embedded`` is expected at that point rather than a
             regression.
+        byok: The part of the query embedding the gateway served on the
+            tenant's own key; recorded as display-only ``*_byok`` metrics
+            instead of ``tokens_embedded`` (see ``embedding_token_events``).
     """
     if not enabled:
         return
     try:
+        metadata = {
+            "user_id": user_id,
+            "fusion": fusion,
+            "surface": surface,
+            # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES. Both None and
+            # [] normalize to null so a future metadata->'doc_types' IS NULL
+            # query counts the all-types case consistently.
+            "doc_types": (
+                doc_types[:_USAGE_METADATA_MAX_DOC_TYPES] if doc_types else None
+            ),
+        }
         store = await UsageEventStore.shared()
-        await store.record_usage_event(
-            metric="tokens_embedded",
-            value=token_count or 0,
-            metadata={
-                "user_id": user_id,
-                "fusion": fusion,
-                "surface": surface,
-                # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES. Both None and
-                # [] normalize to null so a future metadata->'doc_types' IS NULL
-                # query counts the all-types case consistently.
-                "doc_types": (
-                    doc_types[:_USAGE_METADATA_MAX_DOC_TYPES] if doc_types else None
-                ),
-            },
+        await store.record_usage_events(
+            embedding_token_events(token_count or 0, byok, metadata),
             # The caller already confirmed the flag, so pass enabled=True
             # directly — the store then skips a second uncached Settings build on
             # this hot query path (ADR-024).

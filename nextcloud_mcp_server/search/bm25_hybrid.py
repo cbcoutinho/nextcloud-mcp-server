@@ -175,12 +175,20 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             if self.query_embedding is not None and self._embedded_query == query:
                 return self.query_embedding
             with query_embedding_budget(settings.search_embedding_timeout_seconds):
-                dense_embedding, query_tokens = await provider.embed_with_usage(query)
+                (
+                    embeddings,
+                    query_tokens,
+                    query_byok,
+                ) = await provider.embed_batch_with_key_source([query])
+            if not embeddings:
+                raise RuntimeError("Embedding provider returned no query embedding")
+            dense_embedding = embeddings[0]
             # Store for reuse by callers (e.g. the PCA projection in
             # vector/visualization.py) and for the usage-metering hook in
             # server/semantic.py (token count).
             self.query_embedding = dense_embedding
             self.query_token_count = query_tokens
+            self.query_byok = query_byok
             self._embedded_query = query
             # Export query-embedding token cost to Prometheus (operation=query),
             # mirroring the per-search billing record in server/semantic.py.

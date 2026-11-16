@@ -9,11 +9,15 @@ Supports:
 import logging
 
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Omit, omit
+from openai.types import CreateEmbeddingResponse
 
 from ..retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
+
+# Inputs per /embeddings request. OpenAI accepts up to 2048; smaller for safety.
+EMBED_BATCH_SIZE = 100
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -215,7 +219,7 @@ class OpenAIProvider(Provider):
             return [], 0
 
         # OpenAI supports batches up to 2048, but use smaller batches for safety
-        batch_size = 100
+        batch_size = EMBED_BATCH_SIZE
         all_embeddings: list[list[float]] = []
         total_tokens = 0
 
@@ -248,6 +252,12 @@ class OpenAIProvider(Provider):
             model=self.embedding_model,
             dimensions=self._dimensions_arg(),
         )
+        return self._parse_embeddings_response(response, batch)
+
+    def _parse_embeddings_response(
+        self, response: CreateEmbeddingResponse, batch: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """``(embeddings, token_count)`` from one ``/embeddings`` response."""
         # Sort by index to maintain order
         sorted_data = sorted(response.data, key=lambda x: x.index)
         embeddings = [item.embedding for item in sorted_data]

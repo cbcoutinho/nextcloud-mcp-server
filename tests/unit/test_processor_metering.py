@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.vector import processor
 
 
@@ -427,3 +428,53 @@ async def test_hybrid_zero_tokens_still_skips_tokens_row(store_spy):
     metrics = {e.metric for e in _events(store_spy)}
     assert "tokens_embedded" not in metrics
     assert metrics == {"bytes_ingested", "bytes_stored", "chunks_ingested"}
+
+
+@pytest.mark.unit
+async def test_byok_tokens_split_from_billed_tokens(store_spy):
+    """Tokens the gateway served on the tenant's own key go to the display-only
+    BYOK metrics; only the platform-key remainder stays on tokens_embedded."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="gateway",
+        model="mistral/mistral-embed",
+        doc_type="note",
+        user_id="alice",
+        index_mode="hybrid",
+        chunk_count=4,
+        token_count=500,
+        total_chars=7000,
+        page_count=None,
+        bytes_ingested=7100,
+        bytes_stored=8200,
+        byok=ByokUsage(tokens=300, requests=2),
+    )
+
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
+    assert by_metric["tokens_embedded"] == 200
+    assert by_metric["tokens_embedded_byok"] == 300
+    assert by_metric["embedding_requests_byok"] == 2
+
+
+@pytest.mark.unit
+async def test_all_byok_writes_no_tokens_embedded(store_spy):
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="gateway",
+        model="mistral/mistral-embed",
+        doc_type="note",
+        user_id="alice",
+        index_mode="hybrid",
+        chunk_count=1,
+        token_count=50,
+        total_chars=200,
+        page_count=None,
+        bytes_ingested=200,
+        bytes_stored=200,
+        byok=ByokUsage(tokens=50, requests=1),
+    )
+
+    by_metric = {e.metric: e.value for e in _events(store_spy)}
+    assert "tokens_embedded" not in by_metric
+    assert by_metric["tokens_embedded_byok"] == 50
+    assert by_metric["embedding_requests_byok"] == 1
