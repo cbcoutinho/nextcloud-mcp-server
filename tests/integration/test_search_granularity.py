@@ -24,6 +24,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.search.algorithms import QueryEmbeddingUnavailable
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 
@@ -88,7 +89,9 @@ async def granularity_collection(monkeypatch):
     settings.acl_prefilter_enabled = False
 
     provider = MagicMock()
-    provider.embed_with_usage = AsyncMock(return_value=(_QUERY_VEC, 3))
+    provider.embed_with_key_source = AsyncMock(
+        return_value=(_QUERY_VEC, 3, ByokUsage())
+    )
     bm25 = MagicMock()
     bm25.encode_async = AsyncMock(return_value={"indices": [1], "values": [1.0]})
 
@@ -228,7 +231,7 @@ def _break_embeddings(monkeypatch) -> AsyncMock:
     gateway answers 502."""
     embed = AsyncMock(side_effect=RuntimeError("502 Bad Gateway"))
     provider = MagicMock()
-    provider.embed_with_usage = embed
+    provider.embed_with_key_source = embed
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.bm25_hybrid.get_provider", lambda: provider
     )

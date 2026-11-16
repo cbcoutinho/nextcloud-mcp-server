@@ -26,6 +26,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from nextcloud_mcp_server.providers.base import ByokUsage
 from nextcloud_mcp_server.providers.rerank import (
     RerankedIndex,
     RerankError,
@@ -106,8 +107,8 @@ def _patch_algo(monkeypatch, client):
     settings = _Settings()
 
     class _Provider:
-        async def embed_with_usage(self, text):
-            return _QUERY_VEC, 3
+        async def embed_with_key_source(self, text):
+            return _QUERY_VEC, 3, ByokUsage()
 
     class _Bm25:
         async def encode_async(self, text):
