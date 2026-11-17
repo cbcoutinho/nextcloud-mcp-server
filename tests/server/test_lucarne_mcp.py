@@ -9,11 +9,10 @@ import json
 import logging
 import uuid
 
-import httpx
+import httpx2
 import pytest
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
@@ -29,7 +28,7 @@ async def lucarne(nc_client: NextcloudClient):
     """The Lucarne client, or a skip when the app is not installed."""
     try:
         await nc_client.lucarne.get_catalogs()
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+    except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
         pytest.skip(f"Lucarne is not installed or not reachable: {e}")
     return nc_client.lucarne
 

@@ -7,8 +7,8 @@ the tool layer can see.
 
 import httpx2
 import pytest
-
 from nextcloud_client.lucarne import LucarneClient
+
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit
