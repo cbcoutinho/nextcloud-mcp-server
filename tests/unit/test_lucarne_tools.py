@@ -10,7 +10,7 @@ than replacing them, and how HTTP failures read to the model.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
-import httpx
+import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
@@ -56,14 +56,14 @@ def ctx() -> SimpleNamespace:
     return SimpleNamespace()
 
 
-def _http_error(status: int, body: dict | str | None = None) -> httpx.HTTPStatusError:
+def _http_error(status: int, body: dict | str | None = None) -> httpx2.HTTPStatusError:
     """An HTTP failure, optionally with the JSON (or raw) body Lucarne would send."""
-    request = httpx.Request("GET", "http://nc/test")
+    request = httpx2.Request("GET", "http://nc/test")
     if isinstance(body, dict):
-        response = httpx.Response(status, json=body, request=request)
+        response = httpx2.Response(status, json=body, request=request)
     else:
-        response = httpx.Response(status, text=body or "", request=request)
-    return httpx.HTTPStatusError("boom", request=request, response=response)
+        response = httpx2.Response(status, text=body or "", request=request)
+    return httpx2.HTTPStatusError("boom", request=request, response=response)
 
 
 def test_registers_the_expected_tools(tools):
@@ -210,7 +210,7 @@ async def test_an_error_without_a_message_falls_back_to_the_status(
 
 
 async def test_network_error_is_reported(tools, lucarne, ctx):
-    lucarne.get_catalogs.side_effect = httpx.ConnectError("down")
+    lucarne.get_catalogs.side_effect = httpx2.ConnectError("down")
     list_catalogs = tools["nc_lucarne_list_catalogs"]
 
     with pytest.raises(MCPError, match="Network error"):
