@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from nextcloud_mcp_server.app import build_dcr_scopes
+from nextcloud_mcp_server.cli import DEFAULT_OIDC_SCOPES
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES, SAR_SCOPES
 from tests.conftest import DEFAULT_FULL_SCOPES
 
@@ -115,3 +116,16 @@ def test_dcr_withholds_every_plugin_scope_and_advertises_available_ones():
     ).split()
     assert scopes.count("sar.read") == 1
     assert "sar.write" not in scopes
+
+
+def test_cli_default_upstream_scopes_cover_every_supported_scope():
+    """The AS proxy requests these from Nextcloud on top of the MCP client's
+    own request when NEXTCLOUD_OIDC_SCOPES is unset.
+
+    A client that cached an older scopes_supported never asks for a scope added
+    since, so this default is the only way that scope reaches its token. The
+    list predated semantic.read, mail.*, talk.* and sar.*, so SAR stayed
+    unreachable from Mistral after it was enabled.
+    """
+    missing = ALL_SUPPORTED_SCOPES - set(DEFAULT_OIDC_SCOPES.split())
+    assert not missing, f"DEFAULT_OIDC_SCOPES is missing: {sorted(missing)}"
