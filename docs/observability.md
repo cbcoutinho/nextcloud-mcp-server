@@ -41,6 +41,7 @@ For Kubernetes deployments with Helm, see the [Helm chart repository](https://gi
 | `OTEL_SERVICE_NAME` | `nextcloud-mcp-server` | Service name in traces |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Trace sampling strategy. Read directly from the environment by the OpenTelemetry SDK, not through our config — so it is env-var only (no `settings.toml` equivalent). |
 | `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling rate (0.0-1.0), applied only by the `traceidratio` samplers. Also read directly by the SDK. |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `http/dup` in the image, unset elsewhere | Which HTTP semconv the OTel httpx instrumentation emits. `http/dup` emits the stable keys (`http.response.status_code`, `http.request.method`) next to the old ones (`http.status_code`, `http.method`). Set it yourself when running outside the image (`uv run`). The custom `nextcloud.api.*` and `HTTP …` spans set both sets of keys regardless. |
 | `LOG_FORMAT` | `json` | Log format (`json` or `text`) |
 | `LOG_LEVEL` | `INFO` | Minimum log level |
 | `LOG_INCLUDE_TRACE_CONTEXT` | `true` | Include trace IDs in logs |
@@ -337,7 +338,7 @@ HTTP POST /messages
 ### Span Attributes
 
 - **MCP tools**: `mcp.tool.name`, `mcp.tool.args` (sanitized)
-- **Nextcloud API**: `nextcloud.app`, `http.method`, `http.status_code`
+- **Nextcloud API**: `nextcloud.app`, `http.method`/`http.request.method`, `http.response.status_code` (absent when no response arrived)
 - **OAuth**: `oauth.operation`, `oauth.method`
 - **Vector sync**: `vector_sync.operation`, `vector_sync.document_count`
 
