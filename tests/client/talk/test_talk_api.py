@@ -112,6 +112,92 @@ async def test_talk_list_conversations(mocker):
     assert call_args[1]["params"]["noStatusUpdate"] == 1
 
 
+async def test_talk_list_conversations_federated_last_message(mocker):
+    """A federated room's lastMessage has no id or token; listing must not fail.
+
+    spreed proxies federated conversations and caches only part of the last
+    message (Talk 25 / Nextcloud 35: actor, message, parameters, timestamp,
+    type), so ``id`` and ``token`` are absent. One such room used to fail
+    validation of the whole list.
+    """
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok"},
+                "data": [
+                    {
+                        "id": 1,
+                        "token": "abc",
+                        "type": 2,
+                        "name": "Local",
+                        "displayName": "Local",
+                        "lastMessage": {
+                            "id": 42,
+                            "token": "abc",
+                            "actorType": "users",
+                            "actorId": "alice",
+                            "actorDisplayName": "Alice",
+                            "timestamp": 1700000000,
+                            "messageType": "comment",
+                            "message": "hi",
+                            "messageParameters": [],
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "token": "fed",
+                        "type": 2,
+                        "name": "Federated",
+                        "displayName": "Federated",
+                        "remoteServer": "https://other.example.com",
+                        "remoteToken": "remote1",
+                        "lastMessage": {
+                            "actorType": "federated_users",
+                            "actorId": "bob@other.example.com",
+                            "actorDisplayName": "Bob",
+                            "timestamp": 1700000100,
+                            "systemMessage": "",
+                            "messageType": "comment",
+                            "message": "hello from afar",
+                            "messageParameters": [],
+                            "expirationTimestamp": 0,
+                        },
+                    },
+                ],
+            }
+        },
+    )
+    mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    rooms = await client.list_conversations()
+
+    assert len(rooms) == 2
+    assert rooms[0].lastMessage is not None
+    assert rooms[0].lastMessage.id == 42
+    federated = rooms[1].lastMessage
+    assert federated is not None
+    assert federated.id is None
+    assert federated.token is None
+    assert federated.message == "hello from afar"
+
+
+def test_talk_message_still_requires_id_and_token():
+    """Chat history messages keep their strict id/token contract."""
+    with pytest.raises(ValueError):
+        TalkMessage.model_validate(
+            {
+                "actorType": "users",
+                "actorId": "alice",
+                "actorDisplayName": "Alice",
+                "timestamp": 1,
+                "messageType": "comment",
+                "message": "x",
+            }
+        )
+
+
 async def test_talk_list_conversations_with_modified_since(mocker):
     """modifiedSince and includeStatus are forwarded as query params."""
     mock_response = create_mock_response(

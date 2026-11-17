@@ -56,6 +56,20 @@ class TalkMessage(BaseModel):
         return v
 
 
+class TalkLastMessage(TalkMessage):
+    """The ``lastMessage`` of a conversation in the room list.
+
+    Same shape as :class:`TalkMessage`, except ``id`` and ``token`` may be
+    absent: for a federated conversation spreed returns its cached copy of
+    the host's last message, which carries only actor, text, parameters,
+    timestamp and type (seen on Talk 25 / Nextcloud 35). Chat history
+    messages keep the strict :class:`TalkMessage` contract.
+    """
+
+    id: int | None = None  # type: ignore[assignment]  # ty: ignore[incompatible-attribute-override]
+    token: str | None = None  # type: ignore[assignment]  # ty: ignore[incompatible-attribute-override]
+
+
 class TalkConversation(BaseModel):
     """A Talk conversation (room).
 
@@ -94,7 +108,7 @@ class TalkConversation(BaseModel):
     # message in the room yet — compare to ``None`` explicitly rather
     # than relying on truthiness, since `0` is falsy but valid.
     lastReadMessage: int | None = None
-    lastMessage: TalkMessage | None = None
+    lastMessage: TalkLastMessage | None = None
     readOnly: int | None = None
     isFavorite: bool | None = None
     notificationLevel: int | None = None
