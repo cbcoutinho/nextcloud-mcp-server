@@ -92,7 +92,10 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                     f"HTTP {method} {endpoint}",
                     carrier=request.headers,
                     attributes={
+                        # Old and stable HTTP semconv keys side by side, matching
+                        # OTEL_SEMCONV_STABILITY_OPT_IN=http/dup in the Dockerfile.
                         "http.method": method,
+                        "http.request.method": method,
                         "http.route": endpoint,
                         "http.path": path,
                         "http.scheme": request.url.scheme,
@@ -105,6 +108,9 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
 
                     # Add response status to span
                     add_span_attribute("http.status_code", response.status_code)
+                    add_span_attribute(
+                        "http.response.status_code", response.status_code
+                    )
 
                     # A handler that catches its own exception and returns a 500
                     # (which every /api/v1 handler does) never raises past this

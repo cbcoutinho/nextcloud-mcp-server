@@ -51,6 +51,11 @@ ENV PYTHONFAULTHANDLER=1
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+# OTel HTTP instrumentation emits the old semconv (http.status_code) unless
+# opted in. "http/dup" emits the stable keys (http.response.status_code,
+# http.request.method) as well, so existing dashboards keep working. Set here,
+# not in the chart, so every deployment gets it (Deck #1511).
+ENV OTEL_SEMCONV_STABILITY_OPT_IN=http/dup
 
 # Runtime directory: the settings.toml mount and data/ only. Pre-creating
 # data/ with the right owner matters -- docker seeds a named volume's

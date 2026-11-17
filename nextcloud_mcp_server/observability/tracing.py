@@ -288,7 +288,8 @@ def trace_nextcloud_api_call(
     """
     attributes = {
         "nextcloud.app": app,
-        "http.method": method,
+        "http.method": method,  # old semconv, kept for existing queries
+        "http.request.method": method,
     }
 
     if path:
