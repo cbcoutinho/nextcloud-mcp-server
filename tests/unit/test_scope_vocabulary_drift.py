@@ -127,5 +127,10 @@ def test_cli_default_upstream_scopes_cover_every_supported_scope():
     list predated semantic.read, mail.*, talk.* and sar.*, so SAR stayed
     unreachable from Mistral after it was enabled.
     """
-    missing = ALL_SUPPORTED_SCOPES - set(DEFAULT_OIDC_SCOPES.split())
+    default = set(DEFAULT_OIDC_SCOPES.split())
+    missing = ALL_SUPPORTED_SCOPES - default
     assert not missing, f"DEFAULT_OIDC_SCOPES is missing: {sorted(missing)}"
+    # And nothing stale or misspelt: a typo would pass the check above while
+    # leaving the real scope out.
+    unknown = default - ALL_SUPPORTED_SCOPES - {"openid", "profile", "email"}
+    assert not unknown, f"DEFAULT_OIDC_SCOPES has unknown scopes: {sorted(unknown)}"
