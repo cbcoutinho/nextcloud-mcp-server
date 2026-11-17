@@ -130,7 +130,7 @@ logger = logging.getLogger(__name__)
     envvar="NEXTCLOUD_OIDC_SCOPES",
     default=DEFAULT_OIDC_SCOPES,
     show_default=True,
-    help="OAuth scopes to request from Nextcloud: registered for the client during DCR, and added by the AS proxy to every upstream authorization request on top of what the MCP client asks for. Nextcloud grants only those allowed on its OIDC client. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
+    help="OAuth scopes the AS proxy adds to every upstream Nextcloud authorization request, on top of what the MCP client asks for. Nextcloud grants only those allowed on its OIDC client. DCR registration derives its scopes separately. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
 @click.option(
     "--oauth-token-type",
