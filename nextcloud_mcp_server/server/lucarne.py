@@ -7,7 +7,7 @@ try/except per tool.
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
 
@@ -55,7 +55,7 @@ def _reason(response: Response) -> str | None:
 
 
 @contextmanager
-def _lucarne_errors(action: str) -> Iterator[None]:
+def _lucarne_errors(action: str) -> Generator[None]:
     """Re-raise a Lucarne failure as the message the model should act on.
 
     Lucarne explains its own 400, 404 and 409 answers, so that text is passed
