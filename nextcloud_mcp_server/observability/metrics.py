@@ -37,6 +37,7 @@ from prometheus_client.core import GaugeHistogramMetricFamily
 from prometheus_client.registry import Collector
 
 from nextcloud_mcp_server.observability.tracing import (
+    add_span_attribute,
     trace_nextcloud_api_call,
     trace_operation,
 )
@@ -2221,6 +2222,9 @@ class _ServerInstrumentation(_nc_instrumentation.Instrumentation):
         self, app: str, method: str, status_code: int, duration: float
     ) -> None:
         record_nextcloud_api_call(app, method, status_code, duration)
+        # Called inside the trace_api_call span; 0 means no response arrived.
+        if status_code:
+            add_span_attribute("http.response.status_code", status_code)
 
     def on_api_retry(self, app: str, reason: str) -> None:
         record_nextcloud_api_retry(app, reason)

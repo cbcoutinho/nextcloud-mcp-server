@@ -715,6 +715,25 @@ async def _init_qdrant_collection_with_retry() -> None:
     logger.info("Qdrant collection ready")
 
 
+async def _load_bm25_model() -> None:
+    """Load the BM25 sparse model at startup instead of on the first search.
+
+    The first ``get_bm25_service()`` call takes ~1.7 s (HF Hub fetch + load),
+    and concurrent first searches on a fresh pod each paid it (Deck #1511).
+    Loading it here, before the server takes traffic, removes that race.
+    Non-fatal: on failure the lazy load in the search path is the fallback.
+    """
+    from nextcloud_mcp_server.providers import get_bm25_service  # noqa: PLC0415
+
+    try:
+        await get_bm25_service()
+    except Exception:
+        logger.warning(
+            "BM25 model load at startup failed; loading lazily on first search",
+            exc_info=True,
+        )
+
+
 async def _refresh_dependency_health() -> None:
     """Refresh all external dependency statuses concurrently (one pass)."""
     settings = get_settings()
@@ -2354,6 +2373,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             logger.info("Initializing Qdrant collection...")
 
             await _init_qdrant_collection_with_retry()
+            await _load_bm25_model()
 
             # Orphan-sweep before scanner starts — card #101.
             await _sweep_orphan_placeholders_if_enabled()
@@ -2544,6 +2564,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info("Initializing Qdrant collection...")
 
                 await _init_qdrant_collection_with_retry()
+                await _load_bm25_model()
 
                 # Orphan-sweep before scanners spawn — card #101. Runs once
                 # across the shared (per-tenant) collection regardless of

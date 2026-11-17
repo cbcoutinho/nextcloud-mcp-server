@@ -327,14 +327,25 @@ class BaseNextcloudClient(ABC):
                 with instrumentation.hooks.trace_api_call(
                     app=self.app_name, method=method, path=url
                 ):
-                    async with self._client.stream(
-                        method, url, extensions=stream_extensions, **kwargs
-                    ) as response:
-                        status_code = response.status_code
-                        # Raised inside the stream context so the connection is
-                        # released before the 429 handler sleeps and retries.
-                        response.raise_for_status()
-                        yield response
+                    try:
+                        async with self._client.stream(
+                            method, url, extensions=stream_extensions, **kwargs
+                        ) as response:
+                            status_code = response.status_code
+                            # Raised inside the stream context so the connection
+                            # is released before the 429 handler sleeps and retries.
+                            response.raise_for_status()
+                            yield response
+                    finally:
+                        # Inside the span, so a hook can tag it with the status.
+                        # A retried 429 is metered as its own attempt, matching
+                        # how retry_on_429 accounts for the buffered path.
+                        instrumentation.hooks.on_api_call(
+                            app=self.app_name,
+                            method=method,
+                            status_code=status_code,
+                            duration=time.time() - start_time,
+                        )
                 return
             except HTTPStatusError as e:
                 status_code = e.response.status_code
@@ -354,15 +365,6 @@ class BaseNextcloudClient(ABC):
                 if enriched is not e:
                     raise enriched from e
                 raise
-            finally:
-                # A retried 429 is metered as its own attempt, matching how
-                # retry_on_429 accounts for the buffered path.
-                instrumentation.hooks.on_api_call(
-                    app=self.app_name,
-                    method=method,
-                    status_code=status_code,
-                    duration=time.time() - start_time,
-                )
         raise RuntimeError(
             f"Maximum number of retries ({max_retries}) exceeded without success"
         )
@@ -387,42 +389,28 @@ class BaseNextcloudClient(ABC):
         status_code = 0
 
         try:
-            # Wrap request in trace span
             with instrumentation.hooks.trace_api_call(
                 app=self.app_name,
                 method=method,
                 path=url,
             ):
-                response = await self._client.request(method, url, **kwargs)
-                status_code = response.status_code
-                response.raise_for_status()
-
-                # Record successful API call metrics
-                duration = time.time() - start_time
-                instrumentation.hooks.on_api_call(
-                    app=self.app_name,
-                    method=method,
-                    status_code=status_code,
-                    duration=duration,
-                )
-
-                return response
+                # on_api_call runs inside the span, on success and failure
+                # alike, so a hook can tag the span with the status code.
+                # status_code stays 0 for a transport error.
+                try:
+                    response = await self._client.request(method, url, **kwargs)
+                    status_code = response.status_code
+                    response.raise_for_status()
+                    return response
+                finally:
+                    instrumentation.hooks.on_api_call(
+                        app=self.app_name,
+                        method=method,
+                        status_code=status_code,
+                        duration=time.time() - start_time,
+                    )
 
         except (HTTPStatusError, RequestError) as e:
-            # Record error metrics
-            if isinstance(e, HTTPStatusError):
-                status_code = e.response.status_code
-            else:
-                status_code = 0  # Connection error, no status code
-
-            duration = time.time() - start_time
-            instrumentation.hooks.on_api_call(
-                app=self.app_name,
-                method=method,
-                status_code=status_code,
-                duration=duration,
-            )
-
             # Attach the server's own explanation before re-raising. DAV replies
             # name the concrete failure in the body (Sabre s:exception/s:message)
             # and 412/423/507 become distinguishable types. Non-DAV responses are
