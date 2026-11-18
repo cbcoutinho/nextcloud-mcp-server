@@ -139,7 +139,9 @@ FILE_ID_BATCH = 100
 # Order ``search_files_all`` pages by when the caller gives none. Without
 # ``ORDER BY`` the database may return LIMIT/OFFSET pages in any order, so pages
 # can overlap and skip rows. ``fileid`` is not sortable in Nextcloud's SEARCH
-# (``FileSearchBackend``); modification time, name and size are.
+# (``FileSearchBackend``); modification time, name and size are. They are not
+# unique, though: rows that tie on all three (e.g. same-named, same-sized files
+# with one mtime from a bulk copy) can still be skipped at a page boundary.
 WEBDAV_SEARCH_ALL_ORDER = [
     ("getlastmodified", "ascending"),
     ("displayname", "ascending"),
@@ -1433,7 +1435,7 @@ class WebDAVClient(BaseNextcloudClient):
             where_conditions: XML where-clause conditions
             properties: Properties to retrieve (must include ``fileid`` for dedup)
             order_by: Sort order; defaults to ``WEBDAV_SEARCH_ALL_ORDER`` so that
-                offset pages are stable
+                offset pages are stable, except for rows that tie on every key
             page_size: Results requested per page
             max_results: Hard ceiling; crossing it logs a truncation warning and
                 increments ``webdav_search_truncated_total``
