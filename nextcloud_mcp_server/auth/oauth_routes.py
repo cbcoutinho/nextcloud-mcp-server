@@ -150,6 +150,18 @@ _SECRET_FIELDS = frozenset(
 )
 
 
+def _without_id_token(token_response: dict[str, Any]) -> dict[str, Any]:
+    """Drop the IdP's ``id_token`` before handing a token response to a client.
+
+    This proxy is an OAuth 2.1 AS, not an OpenID Provider: it advertises no
+    ``jwks_uri`` and its ``issuer`` is not the id_token's ``iss``. A client
+    that sees an ``id_token`` (authlib, e.g. OpenWebUI) tries to validate it
+    against our metadata and fails with ``Missing "jwks_uri"`` (GH #1859).
+    The proxy already verified the id_token itself in the callback.
+    """
+    return {k: v for k, v in token_response.items() if k != "id_token"}
+
+
 def _redact_form(form: Any) -> dict[str, Any]:
     """Redact a submitted form body, preserving repeated keys.
 
@@ -1546,8 +1558,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         "authorization_code", "success", "issued" if has_refresh else "absent"
     )
 
-    # Return the stored Nextcloud token response directly
-    return JSONResponse(entry.nc_token_response)
+    return JSONResponse(_without_id_token(entry.nc_token_response))
 
 
 async def _token_refresh(request: Request, form) -> JSONResponse:
@@ -1671,7 +1682,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
         "refresh_token", "success", "issued" if has_refresh else "absent"
     )
 
-    return JSONResponse(refreshed)
+    return JSONResponse(_without_id_token(refreshed))
 
 
 async def oauth_register_proxy(request: Request) -> JSONResponse:
