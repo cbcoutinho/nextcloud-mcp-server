@@ -344,6 +344,16 @@ class TestGrantMetricWiring:
 
         assert any("refresh_token=ABSENT" in r.getMessage() for r in caplog.records)
 
+    async def test_id_token_is_not_returned_to_the_client(self):
+        """GH #1859: we are an OAuth AS, not an OP (no jwks_uri), so an
+        id_token sent onward makes authlib clients fail validation."""
+        response = await self._exchange(dict(_TOKEN_RESPONSE))
+
+        body = json.loads(response.body)
+        assert "id_token" not in body
+        assert body["access_token"] == _TOKEN_RESPONSE["access_token"]
+        assert body["refresh_token"] == _TOKEN_RESPONSE["refresh_token"]
+
     async def test_no_secret_reaches_the_log_on_a_real_exchange(self, caplog):
         """End-to-end guard: the redactor is wired into the live path, not
         just unit-tested in isolation."""

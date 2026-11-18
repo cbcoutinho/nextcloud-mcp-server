@@ -362,6 +362,17 @@ class TestRegressionGuards:
         assert seen["form"]["grant_type"] == "refresh_token"
         assert seen["form"]["refresh_token"] == _REFRESH_TOKEN
 
+    async def test_id_token_is_not_returned_to_the_client(self, idp):
+        """GH #1859: an id_token sent onward makes authlib clients look for a
+        jwks_uri we (an OAuth AS, not an OP) do not advertise."""
+        tokens = {"access_token": "a", "token_type": "Bearer", "id_token": "x.y.z"}
+
+        response = await _refresh(
+            idp, lambda request: httpx2.Response(200, json=tokens)
+        )
+        assert response.status_code == 200
+        assert _body(response) == {"access_token": "a", "token_type": "Bearer"}
+
     @pytest.mark.parametrize("status", [400, 401, 503])
     async def test_no_secret_reaches_the_client_or_the_log(self, idp, caplog, status):
         """An IdP that echoes the submitted credentials in its error body must
