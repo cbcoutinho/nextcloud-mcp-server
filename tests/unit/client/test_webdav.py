@@ -1674,7 +1674,7 @@ def _multistatus(*entries: tuple[str, str]) -> bytes:
 
 
 _FOLDER = "<d:resourcetype><d:collection/></d:resourcetype>"
-_DAV_ROOT = "/remote.php/dav/files/testuser"
+_FOLDER_SIZE_DAV_ROOT = "/remote.php/dav/files/testuser"
 
 
 @pytest.fixture
@@ -1682,7 +1682,9 @@ def webdav_client(mocker):
     client = WebDAVClient(AsyncMock(), "testuser")
     mocker.patch.object(client, "_ensure_principal_id", return_value="testuser")
     mocker.patch.object(
-        client, "_webdav_path", side_effect=lambda path: f"{_DAV_ROOT}/{path}"
+        client,
+        "_webdav_path",
+        side_effect=lambda path: f"{_FOLDER_SIZE_DAV_ROOT}/{path}",
     )
     return client
 
@@ -1704,8 +1706,8 @@ async def test_list_directory_reports_folder_size(
 ):
     response = mocker.Mock(
         content=_multistatus(
-            (f"{_DAV_ROOT}/docs/", _FOLDER),
-            (f"{_DAV_ROOT}/docs/sub/", _FOLDER + oc_size),
+            (f"{_FOLDER_SIZE_DAV_ROOT}/docs/", _FOLDER),
+            (f"{_FOLDER_SIZE_DAV_ROOT}/docs/sub/", _FOLDER + oc_size),
         )
     )
     request = mocker.patch.object(webdav_client, "_make_request", return_value=response)
@@ -1723,9 +1725,9 @@ async def test_list_directory_file_size_comes_from_content_length(
 ):
     response = mocker.Mock(
         content=_multistatus(
-            (f"{_DAV_ROOT}/docs/", _FOLDER),
+            (f"{_FOLDER_SIZE_DAV_ROOT}/docs/", _FOLDER),
             (
-                f"{_DAV_ROOT}/docs/a.txt",
+                f"{_FOLDER_SIZE_DAV_ROOT}/docs/a.txt",
                 "<d:resourcetype/><d:getcontentlength>42</d:getcontentlength>"
                 "<oc:size>99</oc:size>",
             ),
@@ -1745,7 +1747,7 @@ async def test_list_directory_file_size_comes_from_content_length(
 )
 def test_search_response_reports_folder_size(webdav_client, oc_size, expected):
     items = webdav_client._parse_search_response(
-        _multistatus((f"{_DAV_ROOT}/docs/", _FOLDER + oc_size)), ""
+        _multistatus((f"{_FOLDER_SIZE_DAV_ROOT}/docs/", _FOLDER + oc_size)), ""
     )
 
     assert items[0]["size"] == expected
@@ -1756,7 +1758,7 @@ def test_search_response_file_size_comes_from_content_length(webdav_client):
     items = webdav_client._parse_search_response(
         _multistatus(
             (
-                f"{_DAV_ROOT}/a.txt",
+                f"{_FOLDER_SIZE_DAV_ROOT}/a.txt",
                 "<d:resourcetype/><d:getcontentlength>42</d:getcontentlength>"
                 "<oc:size>99</oc:size>",
             )
