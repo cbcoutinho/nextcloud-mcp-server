@@ -1546,9 +1546,9 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         "authorization_code", "success", "issued" if has_refresh else "absent"
     )
 
-    # Return the stored Nextcloud token response directly
-    return JSONResponse(entry.nc_token_response)
-
+    response_data = dict(entry.nc_token_response)
+    response_data.pop("id_token", None)
+    return JSONResponse(response_data)
 
 async def _token_refresh(request: Request, form) -> JSONResponse:
     """Handle refresh_token grant type by proxying to Nextcloud."""
@@ -1670,7 +1670,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
     record_oauth_grant(
         "refresh_token", "success", "issued" if has_refresh else "absent"
     )
-
+    refreshed.pop("id_token", None)
     return JSONResponse(refreshed)
 
 
