@@ -2,11 +2,13 @@
 
 import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
+from urllib.parse import unquote
 
 import pytest
 from httpx2 import HTTPStatusError
-
-from nextcloud_mcp_server.client.webdav import (
+from hypothesis import example, given
+from hypothesis import strategies as st
+from nextcloud_client.webdav import (
     WebDAVClient,
     like_predicate,
     normalize_etag,
@@ -570,60 +572,48 @@ def _request_url(mock_http_client) -> str:
     return mock_http_client.request.call_args[0][1]
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "path, expected",
-    [
-        ("", "/remote.php/dav/files/testuser/"),
-        ("/Documents/notes.txt", "/remote.php/dav/files/testuser/Documents/notes.txt"),
-        ("Documents/notes.txt", "/remote.php/dav/files/testuser/Documents/notes.txt"),
-        ("a/b #1.pdf", "/remote.php/dav/files/testuser/a/b%20%231.pdf"),
-        ("law/x, y  z.pdf", "/remote.php/dav/files/testuser/law/x%2C%20y%20%20z.pdf"),
-        (
-            "学生邮箱/r.pdf",
-            "/remote.php/dav/files/testuser/%E5%AD%A6%E7%94%9F%E9%82%AE%E7%AE%B1/r.pdf",
-        ),
-    ],
-)
-def test_webdav_path_encoding(path, expected):
-    """_webdav_path encodes the decoded caller path once, preserving '/', and
-    strips a leading slash. Every caller-path builder routes through this, so
-    it is the single source of truth for their encoding."""
-    client = WebDAVClient(AsyncMock(), "testuser")
-    assert client._webdav_path(path) == expected
+_DAV_ROOT = "/remote.php/dav/files/testuser/"
+# A path segment: anything but a separator, and not the parent reference.
+_segments = st.text(
+    st.characters(blacklist_categories=("Cs",), blacklist_characters="/\\"),
+    min_size=1,
+).filter(lambda s: s != "..")
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "path",
-    [
-        "../otheruser/secret.txt",
-        "Documents/../../otheruser/secret.txt",
-        "/../otheruser",
-        "..",
-        "Documents/..",
-        r"Documents\..\..\otheruser",
-    ],
-)
-def test_webdav_path_rejects_traversal(path):
-    """Guarding the shared builder covers read/write/delete/move/copy/list at
-    once: '..' is normalised away by the URL layer before the request is sent,
-    so it would address another user's home under the same DAV root."""
-    client = WebDAVClient(AsyncMock(), "testuser")
+@given(st.lists(_segments), st.booleans())
+@example(["a", "b #1.pdf"], False)  # `#` would truncate the URL to a fragment
+@example(["law", "x, y  z.pdf"], True)
+@example(["学生邮箱", "r.pdf"], False)
+@example(["..hidden.txt"], False)  # only a whole `..` segment escapes
+@example(["a..b", "file...txt"], False)
+@example([], True)
+def test_webdav_path_encodes_the_decoded_path_exactly_once(segments, leading_slash):
+    """Every caller-path builder routes through _webdav_path: the decoded path,
+    leading slash stripped, encoded once under the user's DAV root."""
+    path = ("/" if leading_slash else "") + "/".join(segments)
+
+    built = WebDAVClient(AsyncMock(), "testuser")._webdav_path(path)
+
+    assert built.startswith(_DAV_ROOT)
+    encoded = built.removeprefix(_DAV_ROOT)
+    assert not set(encoded) & set("#? ")
+    assert unquote(encoded) == path.lstrip("/")
+
+
+@pytest.mark.unit
+@given(st.lists(_segments), st.integers(min_value=0), st.sampled_from("/\\"))
+@example([], 0, "/")  # a bare ".."
+@example(["Documents"], 1, "\\")  # Documents\..
+def test_webdav_path_rejects_any_parent_segment(segments, position, separator):
+    """'..' is normalised away by the URL layer before the request is sent, so
+    it would address another user's home under the same DAV root. A backslash
+    separates too: the URL layer folds it to '/'."""
+    at = position % (len(segments) + 1)
+    path = separator.join([*segments[:at], "..", *segments[at:]])
+
     with pytest.raises(ValueError, match=r"\.\."):
-        client._webdav_path(path)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "path",
-    ["..hidden.txt", "Documents/..trailing", "a..b/c", "file...txt"],
-)
-def test_webdav_path_allows_dots_inside_names(path):
-    """Only a whole '..' *segment* escapes; leading/embedded dots are ordinary
-    filename characters and must still be reachable."""
-    client = WebDAVClient(AsyncMock(), "testuser")
-    assert client._webdav_path(path).startswith("/remote.php/dav/files/testuser/")
+        WebDAVClient(AsyncMock(), "testuser")._webdav_path(path)
 
 
 @pytest.mark.unit
@@ -1301,35 +1291,62 @@ async def test_write_file_etag_is_none_when_absent(mocker):
     assert result["etag"] is None
 
 
+_ETAG_SUFFIXES = ("-gzip", "-br", "-deflate", "-zstd")
+
+
+@st.composite
+def transported_etags(draw):
+    """An origin etag, and that etag as it may arrive after transport.
+
+    Wrappings, all of which ``normalize_etag`` must undo: surrounding whitespace,
+    the quotes, a weak ``W/`` prefix (``strip`` alone used to leave ``W/"abc``),
+    and the content-coding suffix Apache's mod_deflate appends by default
+    (``DeflateAlterETag AddSuffix``), which broke every conditional overwrite
+    behind such a proxy.
+    """
+    origin = draw(
+        st.text(alphabet="0123456789abcdefgipzr-", max_size=40).filter(
+            lambda e: not e.endswith(_ETAG_SUFFIXES)
+        )
+    )
+    raw = origin + draw(st.sampled_from(("", *_ETAG_SUFFIXES)))
+    if draw(st.booleans()):
+        raw = f'"{raw}"'
+    if draw(st.booleans()):
+        raw = "W/" + raw
+    pad = st.text(alphabet=" \t", max_size=3)
+    return draw(pad) + raw + draw(pad), origin
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ('"abc"', "abc"),
-        ("abc", "abc"),
-        ('""', ""),
-        (None, None),
-        # Weak validators used to come out as W/"abc — strip only removes
-        # characters from the ends, and the leading W protected the opening
-        # quote. The prefix is dropped first now, so the result is usable.
-        ('W/"abc"', "abc"),
-        # Apache's mod_deflate appends -gzip to the ETag of every compressed
-        # response (DeflateAlterETag AddSuffix, the default). Left in place it
-        # breaks every conditional overwrite behind such a proxy.
-        ('"abc-gzip"', "abc"),
-        ("abc-br", "abc"),
-        ("abc-deflate", "abc"),
-        ("abc-zstd", "abc"),
-        ('"abc-zstd"', "abc"),
-        ('W/"abc-gzip"', "abc"),
-        # Only a trailing suffix counts: a name that merely contains one
-        # survives untouched.
-        ("gzip-abc", "gzip-abc"),
-        ("   abc   ", "abc"),
-    ],
-)
-def test_normalize_etag(raw, expected):
-    assert normalize_etag(raw) == expected
+@given(transported_etags())
+@example(('"abc"', "abc"))
+@example(('""', ""))
+@example(('W/"abc-gzip"', "abc"))
+@example(("gzip-abc", "gzip-abc"))  # only a *trailing* suffix counts
+@example(("abc-gzip-gzip", "abc"))
+def test_normalize_etag_recovers_the_origin_etag(case):
+    raw, origin = case
+    assert normalize_etag(raw) == origin
+
+
+#: Arbitrary text almost never combines quotes, ``W/``, inner whitespace and
+#: suffixes in the orders that defeat a single pass, so build from those parts.
+_etag_fragments = st.lists(
+    st.sampled_from(['"', "W/", " ", "\t", "\r", "a", "0", *_ETAG_SUFFIXES])
+).map("".join)
+
+
+@pytest.mark.unit
+@given(st.none() | _etag_fragments | st.text())
+@example('"\r0"')  # whitespace inside the quotes needed a second pass
+@example('"W/abc"')
+def test_normalize_etag_is_idempotent(raw):
+    """The value handed out is re-normalised by the write precondition, so a
+    second pass must be a no-op or the two representations drift apart."""
+    once = normalize_etag(raw)
+    assert normalize_etag(once) == once
+    assert (once is None) == (raw is None)
 
 
 @pytest.mark.unit
@@ -1622,32 +1639,22 @@ async def test_list_directory_survives_a_non_numeric_fileid(mocker):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("value", "escaped"),
-    [
-        ("Costs & Revenue%", "Costs &amp; Revenue%"),
-        ("<draft>%", "&lt;draft&gt;%"),
-        ("a > b", "a &gt; b"),
-    ],
+@given(
+    st.text(
+        # Characters XML 1.0 can carry. A literal \r is normalised to \n by
+        # any XML parser, so it is not round-trippable by construction.
+        st.characters(blacklist_categories=("Cs", "Cc")) | st.sampled_from("\t\n")
+    )
 )
-def test_like_predicate_escapes_the_literal(value, escaped):
-    """Every caller-supplied literal is escaped by construction."""
+@example("Costs & Revenue%")  # raised ParseError before escaping
+@example("<draft>%")
+@example("%vector-index%")  # `%` is SEARCH syntax, not XML: left alone
+def test_like_predicate_carries_any_literal_verbatim(value):
+    """Every caller-supplied literal is escaped by construction: the predicate
+    is well-formed and the server reads back exactly the value given."""
     predicate = like_predicate("d:displayname", value)
 
-    # Well-formed once namespaced (raised ParseError when unescaped).
-    ET.fromstring(f"<root xmlns:d='DAV:'>{predicate}</root>")
-    assert escaped in predicate
-    assert value not in predicate
-
-
-@pytest.mark.unit
-def test_like_predicate_keeps_wildcards_intact():
-    """``%`` is SEARCH syntax, not XML -- escaping must leave it alone."""
-    predicate = like_predicate("oc:tags", "%vector-index%")
-
-    root = ET.fromstring(
-        f"<root xmlns:d='DAV:' xmlns:oc='http://owncloud.org/ns'>{predicate}</root>"
-    )
+    root = ET.fromstring(f"<root xmlns:d='DAV:'>{predicate}</root>")
     literal = root.find(".//{DAV:}literal")
     assert literal is not None
-    assert literal.text == "%vector-index%"
+    assert (literal.text or "") == value

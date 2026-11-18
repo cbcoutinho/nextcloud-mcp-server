@@ -14,9 +14,8 @@ import uuid
 
 import pytest
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
+from nextcloud_client import NextcloudClient
+from nextcloud_client.ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
@@ -101,3 +100,67 @@ async def test_mcp_tables_v1_round_trip(nc_mcp_client: ClientSession, temporary_
     assert updated_value not in _text(
         await nc_mcp_client.call_tool("nc_tables_read_table", {"table_id": table_id})
     )
+
+
+async def test_mcp_tables_read_view_and_get_row(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_table
+):
+    """A view applies its owner-managed filter; get_row and columns project (#1796)."""
+    table_id, column_id = temporary_table
+    marker = f"keep-{uuid.uuid4().hex[:8]}"
+
+    async def insert(value: str) -> int:
+        result = await nc_mcp_client.call_tool(
+            "nc_tables_insert_row",
+            {"table_id": table_id, "data": {str(column_id): value}},
+        )
+        return json.loads(_text(result))["id"]
+
+    kept_id = await insert(marker)
+    await insert(f"drop-{uuid.uuid4().hex[:8]}")
+
+    # Views are created and configured by the table owner; do it via the API.
+    http = nc_client._client
+    response = await http.post(
+        f"/apps/tables/api/1/tables/{table_id}/views",
+        json={"title": "MCP filtered view", "emoji": "🔎"},
+    )
+    response.raise_for_status()
+    view_id = response.json()["id"]
+    response = await http.put(
+        f"/apps/tables/api/1/views/{view_id}",
+        json={
+            "data": {
+                # ``columns`` 500s on the installed Tables release.
+                "columnSettings": [{"columnId": column_id, "order": 0}],
+                "filter": [
+                    [{"columnId": column_id, "operator": "contains", "value": "keep-"}]
+                ],
+            }
+        },
+    )
+    response.raise_for_status()
+
+    view = json.loads(
+        _text(
+            await nc_mcp_client.call_tool(
+                "nc_tables_read_view", {"view_id": view_id, "columns": [column_id]}
+            )
+        )
+    )
+    assert [row["id"] for row in view["rows"]] == [kept_id]
+    assert view["rows"][0]["data"] == {str(column_id): marker}
+
+    row = json.loads(
+        _text(await nc_mcp_client.call_tool("nc_tables_get_row", {"row_id": kept_id}))
+    )["row"]
+    assert row["data"][str(column_id)] == marker
+
+    projected = json.loads(
+        _text(
+            await nc_mcp_client.call_tool(
+                "nc_tables_get_row", {"row_id": kept_id, "columns": [column_id]}
+            )
+        )
+    )["row"]
+    assert projected["data"] == {str(column_id): marker}

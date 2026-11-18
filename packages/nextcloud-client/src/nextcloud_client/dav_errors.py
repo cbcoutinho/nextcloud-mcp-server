@@ -112,9 +112,10 @@ def parse_dav_error_body(response: Response) -> tuple[str | None, str | None]:
 
     try:
         root = ET.fromstring(body)
-    except ET.ParseError:
+    except (ET.ParseError, LookupError, ValueError):
         # Not XML (an OCS JSON body, an HTML error page from a proxy) or
-        # truncated. Both are ordinary here, not worth a log line.
+        # truncated. Both are ordinary here, not worth a log line. LookupError:
+        # an XML declaration naming an unknown ``encoding=`` gets past the parser.
         return None, None
 
     exception = root.find(f".//{{{SABREDAV_NAMESPACE}}}exception")

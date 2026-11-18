@@ -30,6 +30,7 @@ from nextcloud_mcp_server.observability.metrics import (
     oauth_token_cache_hits_total,
     record_oauth_token_validation,
 )
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from ..http import nextcloud_httpx_client
 
@@ -112,9 +113,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         # independent. These may be consolidated into a single env var later
         # once the deployment story stabilises.
         self._allowed_mgmt_clients: frozenset[str] = frozenset(
-            entry.strip()
-            for entry in cfg("ALLOWED_MGMT_CLIENT", "").split(",")
-            if entry.strip()
+            split_csv(cfg("ALLOWED_MGMT_CLIENT", ""))
         )
         if not self._allowed_mgmt_clients:
             if self.userinfo_uri:

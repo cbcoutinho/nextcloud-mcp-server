@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
@@ -576,11 +575,18 @@ async def test_mcp_complete_todo_sets_all_three_properties(
         {
             "calendar_name": calendar_name,
             "summary": f"Complete-me {unique}",
-            "percent_complete": 25,
         },
     )
     assert create_result.is_error is False
     todo_uid = json.loads(create_result.content[0].text)["uid"]
+
+    # create_todo takes no percent_complete (passing it was silently dropped
+    # until unknown arguments were refused), so seed the stale value here.
+    seed_result = await nc_mcp_client.call_tool(
+        "nc_calendar_update_todo",
+        {"calendar_name": calendar_name, "todo_uid": todo_uid, "percent_complete": 25},
+    )
+    assert seed_result.is_error is False
 
     complete_result = await nc_mcp_client.call_tool(
         "nc_calendar_complete_todo",

@@ -12,18 +12,14 @@ from xml.sax.saxutils import escape as xml_escape
 import anyio
 from httpx2 import HTTPStatusError, RemoteProtocolError, Response
 
-from nextcloud_mcp_server.observability.metrics import (
-    document_download_truncated_total,
-    document_scan_truncated_total,
-)
-
+from . import instrumentation
 from .base import BaseNextcloudClient
 from .dav_urls import encode_dav_path
 
 logger = logging.getLogger(__name__)
 
 # ``OCS-APIRequest`` is not spelled anywhere in this module: the shared httpx2
-# client sends it on every request (``http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
+# client sends it on every request (``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``). DAV
 # requests here pass only their request-specific ``Depth`` / ``Content-Type`` /
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
@@ -104,7 +100,7 @@ def _verify_content_length(response: Response, received: int, label: str) -> Non
     expected = _expected_content_length(response)
     if expected is None or received == expected:
         return
-    document_download_truncated_total.inc()
+    instrumentation.hooks.on_download_truncated()
     # Log here, not just in the message: callers funnel this through a
     # generic ``except Exception`` that would otherwise report it as an
     # opaque "Unexpected error reading file".
@@ -194,14 +190,18 @@ def normalize_etag(raw: Optional[str]) -> Optional[str]:
     """
     if raw is None:
         return None
-    cleaned = raw.strip()
-    if cleaned.startswith("W/"):
-        cleaned = cleaned[2:]
-    cleaned = cleaned.strip('"')
-    for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
-        if cleaned.endswith(suffix):
-            return cleaned[: -len(suffix)]
-    return cleaned
+    # Repeat until nothing changes, so the result is a fixed point: normalising
+    # a normalised etag must be a no-op, or the value handed out drifts from the
+    # one ``_write_precondition_header`` re-normalises. One pass was not enough
+    # for whitespace inside the quotes (``'"\r0'``) or a stacked suffix.
+    cleaned = raw
+    while True:
+        previous = cleaned
+        cleaned = cleaned.strip().removeprefix("W/").strip('"')
+        for suffix in ("-gzip", "-br", "-deflate", "-zstd"):
+            cleaned = cleaned.removesuffix(suffix)
+        if cleaned == previous:
+            return cleaned
 
 
 #: Collection holding one file's comments, addressed by file id.
@@ -1495,6 +1495,7 @@ class WebDAVClient(BaseNextcloudClient):
                     "WebDAV SEARCH offset page failed for scope %r; "
                     "falling back to single fetch",
                     scope,
+                    exc_info=True,
                 )
                 return None
 
@@ -1551,7 +1552,7 @@ class WebDAVClient(BaseNextcloudClient):
     def _warn_if_truncated(count: int, scope: str, max_results: int) -> None:
         """Warn + count when a SEARCH hit the ceiling, so a cap is never silent."""
         if count >= max_results:
-            document_scan_truncated_total.inc()
+            instrumentation.hooks.on_scan_truncated()
             logger.warning(
                 "WebDAV SEARCH reached max_results=%d for scope %r; "
                 "results may be truncated -- raise WEBDAV_SEARCH_MAX_RESULTS",
@@ -1666,8 +1667,8 @@ class WebDAVClient(BaseNextcloudClient):
             # Map namespace URIs to prefixes
             ns_map = {
                 "DAV:": "d",
-                "http://owncloud.org/ns": "oc",
-                "http://nextcloud.org/ns": "nc",
+                "http://owncloud.org/ns": "oc",  # NOSONAR(S5332) XML namespace URI, never fetched
+                "http://nextcloud.org/ns": "nc",  # NOSONAR(S5332) XML namespace URI, never fetched
             }
 
             prefix = ns_map.get(namespace, "d")
@@ -2344,7 +2345,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in root.findall("d:response", ns):
@@ -2432,7 +2433,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         files = []
@@ -2485,8 +2486,10 @@ class WebDAVClient(BaseNextcloudClient):
                 try:
                     dt = parsedate_to_datetime(lastmodified_elem.text)
                     last_modified_timestamp = int(dt.timestamp())
-                except Exception:
-                    pass
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Unparseable getlastmodified %r", lastmodified_elem.text
+                    )
 
             file_info = {
                 "id": int(fileid_elem.text),
@@ -2571,7 +2574,7 @@ class WebDAVClient(BaseNextcloudClient):
         root = ET.fromstring(response.content)
         ns = {
             "d": "DAV:",
-            "oc": "http://owncloud.org/ns",
+            "oc": "http://owncloud.org/ns",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         response_elem = root.find("d:response", ns)
@@ -2665,7 +2668,7 @@ class WebDAVClient(BaseNextcloudClient):
             try:
                 tag_id = int(content_location.rstrip("/").split("/")[-1])
             except (ValueError, IndexError):
-                pass
+                logger.debug("No tag id in Content-Location %r", content_location)
 
         tag_info = {
             "id": tag_id,

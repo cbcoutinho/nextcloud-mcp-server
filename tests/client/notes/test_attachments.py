@@ -4,8 +4,7 @@ import uuid
 
 import pytest
 from httpx2 import HTTPStatusError
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 # Note: nc_client fixture is session-scoped in conftest.py
 # Note: temporary_note and temporary_note_with_attachment fixtures are function-scoped in conftest.py

@@ -2,8 +2,8 @@ import logging
 
 import httpx2
 import pytest
+from nextcloud_client.cookbook import CookbookClient
 
-from nextcloud_mcp_server.client.cookbook import CookbookClient
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_recipe_list_response,

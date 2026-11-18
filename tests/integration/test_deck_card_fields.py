@@ -13,9 +13,9 @@ from datetime import timezone
 
 import pytest
 from mcp import ClientSession
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.capabilities import unmet_capability
-from nextcloud_mcp_server.client import NextcloudClient
 
 pytestmark = pytest.mark.integration
 

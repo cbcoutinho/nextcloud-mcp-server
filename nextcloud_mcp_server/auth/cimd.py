@@ -31,6 +31,7 @@ import anyio
 import httpx2
 
 from nextcloud_mcp_server.config import cfg
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,9 @@ class CIMDError(Exception):
 
 
 def _allowed_hosts() -> set[str]:
-    raw = str(cfg("CIMD_ALLOWED_HOSTS", "") or "")
-    return {host.strip().lower() for host in raw.split(",") if host.strip()}
+    return {
+        host.lower() for host in split_csv(str(cfg("CIMD_ALLOWED_HOSTS", "") or ""))
+    }
 
 
 def cimd_enabled() -> bool:
@@ -258,7 +260,7 @@ def _redirect_uri_matches(redirect_uri: str, registered: list[str]) -> bool:
         or got.hostname not in _LOOPBACK_HOSTS
         or got.username is not None
         or got.password is not None
-        or got.fragment
+        or "#" in redirect_uri  # even an empty fragment (RFC 6749 §3.1.2)
     ):
         return False
     for uri in registered:

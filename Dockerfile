@@ -1,6 +1,6 @@
-FROM docker.io/library/python:3.14-slim-trixie@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966
+FROM docker.io/library/python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d /uv /uvx /bin/
 
 # Install dependencies
 # 1. curl (required for container healthcheck probes)
@@ -20,17 +20,25 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR /src
 
 COPY pyproject.toml uv.lock README.md .
+# uv resolves the workspace from every member's pyproject.toml, so the
+# nextcloud-client member's metadata is needed before the dependency layer.
+COPY packages/nextcloud-client/pyproject.toml packages/nextcloud-client/
 
 # --no-build: every third-party dependency must arrive as a wheel, so no
-# dependency's setup.py executes at image-build time (docker:S8541). This is
-# the sync that installs them all; the second one only adds the project itself,
-# which by definition has to be built and cannot carry the flag.
-RUN uv sync --locked --no-dev --no-install-project --no-build --no-cache \
+# dependency's setup.py executes at image-build time (docker:S8541). The
+# workspace's own packages are still built by the second sync: their backend
+# is uv_build, which runs inside uv, and --no-build only forbids *editable*
+# installs of them, so --no-editable keeps both syncs under the flag.
+RUN uv sync --locked --no-dev --no-install-workspace --no-build --no-cache \
     --extra semantic --extra postgres --extra observability
 
-COPY . .
+# Explicit sources rather than `COPY . .` (docker:S6470); .dockerignore is an
+# allowlist of the same paths.
+COPY nextcloud_mcp_server/ nextcloud_mcp_server/
+COPY packages/ packages/
 
-RUN uv sync --locked --no-dev --no-editable --no-cache --extra semantic --extra postgres --extra observability
+RUN uv sync --locked --no-dev --no-editable --no-build --no-cache \
+    --extra semantic --extra postgres --extra observability
 
 ENV PYTHONUNBUFFERED=1
 # Dump a Python + C-level traceback to stderr on a fatal native fault
@@ -43,6 +51,11 @@ ENV PYTHONFAULTHANDLER=1
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+# OTel HTTP instrumentation emits the old semconv (http.status_code) unless
+# opted in. "http/dup" emits the stable keys (http.response.status_code,
+# http.request.method) as well, so existing dashboards keep working. Set here,
+# not in the chart, so every deployment gets it (Deck #1511).
+ENV OTEL_SEMCONV_STABILITY_OPT_IN=http/dup
 
 # Runtime directory: the settings.toml mount and data/ only. Pre-creating
 # data/ with the right owner matters -- docker seeds a named volume's

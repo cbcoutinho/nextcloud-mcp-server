@@ -6,8 +6,7 @@ import uuid
 import pytest
 from httpx2 import HTTPStatusError
 from mcp import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration

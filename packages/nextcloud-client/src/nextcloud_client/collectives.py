@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.ocs import (
+from .base import BaseNextcloudClient
+from .ocs import (
     OCS_REQUEST_HEADERS,
     describe_ocs_failure,
     parse_ocs_envelope,

@@ -14,8 +14,8 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from nextcloud_client import NextcloudClient
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.scanner import _discover_tagged_files

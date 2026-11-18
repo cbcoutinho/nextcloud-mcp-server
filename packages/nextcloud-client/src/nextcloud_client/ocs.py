@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 #: unless asked for JSON.
 #:
 #: ``OCS-APIRequest: true`` is deliberately *not* here. Every Nextcloud-bound
-#: httpx2 client sends it as a client default (``http.NEXTCLOUD_DEFAULT_HEADERS``
+#: httpx2 client sends it as a client default (``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``
 #: via ``nextcloud_httpx_client``), so no call site can forget it -- a
 #: per-client opt-in is how the Tables v1 routes went without it (GH #1664).
 #: ``tests/unit/test_ocs_headers_are_shared`` fails if any module spells it.
@@ -118,7 +118,8 @@ def parse_ocs_envelope(payload: Any) -> OCSEnvelope:
     raw_status = meta.get("statuscode") or 200
     try:
         status_code = int(raw_status)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: ``json.loads`` accepts ``Infinity``, and int(inf) raises.
         status_code = 500
 
     # One fallback string for all three clients. They previously differed --

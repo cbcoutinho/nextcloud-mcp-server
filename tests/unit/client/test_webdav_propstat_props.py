@@ -7,8 +7,7 @@ across both fabricates empty values for the missing ones.
 
 import pytest
 from lxml import etree
-
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_client.webdav import WebDAVClient
 
 pytestmark = pytest.mark.unit
 

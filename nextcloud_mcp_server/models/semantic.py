@@ -147,14 +147,28 @@ class SemanticSearchResponse(BaseResponse):
         description="Semantic search results with similarity scores"
     )
     query: str = Field(description="The search query used")
-    total_found: int = Field(description="Total number of documents found")
+    total_found: int = Field(
+        description=(
+            "Number of results returned, except for search_method 'exact', "
+            "where it is every matching indexed document (page with offset)"
+        )
+    )
     search_method: str = Field(
         default="semantic",
         description=(
             "Search method used, e.g. 'bm25_hybrid_<fusion>' (dense + BM25 sparse "
             "fused). Keyword-only documents contribute via the sparse side of the "
             "same fused query. 'bm25' means the query ran on BM25 alone and the "
-            "embedding service was not used."
+            "embedding service was not used. 'semantic' is dense-only; 'exact' "
+            "is the unranked exhaustive phrase match."
+        ),
+    )
+    truncated: bool | None = Field(
+        default=None,
+        description=(
+            "search_method 'exact' only: true when the match stopped at its "
+            "cap (20,000 documents or 200,000 chunks per doc type), so "
+            "total_found is a floor. None for ranked searches."
         ),
     )
     granularity: str = Field(

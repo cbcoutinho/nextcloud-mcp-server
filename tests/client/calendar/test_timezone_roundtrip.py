@@ -19,8 +19,7 @@ import datetime
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
+from nextcloud_client.calendar import CalendarClient
 
 pytestmark = pytest.mark.unit
 
@@ -332,9 +331,7 @@ def test_explicit_offset_does_not_inherit_and_does_not_warn(mocker, caplog):
     import logging
 
     vevent = "DTSTART;TZID=America/New_York:20260101T090000\r\n"
-    with caplog.at_level(
-        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
-    ):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.calendar"):
         component = _merge(
             mocker, vevent, {"start_datetime": "2026-03-10T09:00:00-04:00"}
         )
@@ -465,9 +462,7 @@ def test_non_iana_stored_tzid_is_not_inherited_and_does_not_warn(mocker, caplog)
     import logging
 
     vevent = 'DTSTART;TZID="UTC-04:00":20260101T090000\r\n'
-    with caplog.at_level(
-        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
-    ):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.calendar"):
         component = _merge(mocker, vevent, {"start_datetime": "2026-03-10T09:00:00"})
 
     assert component["DTSTART"].dt.replace(tzinfo=None).isoformat() == (
@@ -482,9 +477,7 @@ def test_explicit_unknown_timezone_still_warns(mocker, caplog):
     import logging
 
     vevent = "DTSTART:20260101T090000Z\r\n"
-    with caplog.at_level(
-        logging.WARNING, logger="nextcloud_mcp_server.client.calendar"
-    ):
+    with caplog.at_level(logging.WARNING, logger="nextcloud_client.calendar"):
         _merge(
             mocker,
             vevent,

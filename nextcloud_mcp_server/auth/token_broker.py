@@ -38,33 +38,39 @@ _DEFAULT_REFRESH_TOKEN_LIFETIME = timedelta(days=90)
 _MAX_REFRESH_TOKEN_LIFETIME = timedelta(days=3650)
 
 
+def refresh_token_lifetime(raw: object) -> int | None:
+    """Seconds of IdP-reported ``refresh_expires_in``, or None when unusable.
+
+    A positive int, float or numeric string (AWS Cognito sends a JSON string)
+    is capped at ``_MAX_REFRESH_TOKEN_LIFETIME``. Absent, zero, negative, a
+    bool, or not a number yields None. Zero is included because Keycloak
+    reports ``0`` for offline tokens that do not expire.
+    """
+    # bool is an int subclass, and ``true`` is not a lifetime.
+    if not isinstance(raw, (int, float, str)) or isinstance(raw, bool):
+        return None
+    try:
+        seconds = int(raw)
+    except (ValueError, OverflowError):  # "abc", "1.5", NaN, infinity
+        return None
+    if seconds <= 0:
+        return None
+    return min(seconds, int(_MAX_REFRESH_TOKEN_LIFETIME.total_seconds()))
+
+
 def _refresh_token_expires_at(token_data: dict) -> int:
     """Unix timestamp at which the refresh token in *token_data* expires.
 
-    Uses the IdP's ``refresh_expires_in`` when it is a positive number of
-    seconds. A numeric string is accepted too, as the provisioning paths in
-    ``oauth_routes`` and ``browser_oauth_routes`` already do. Anything else
-    (absent, zero, negative, a bool, or not a number) falls back to
-    ``_DEFAULT_REFRESH_TOKEN_LIFETIME``. Zero is included because Keycloak
-    reports ``0`` for offline tokens that do not expire, and the sliding
-    90-day window is what the broker has always applied to those.
+    Falls back to ``_DEFAULT_REFRESH_TOKEN_LIFETIME`` when the IdP's lifetime
+    is unusable: the sliding 90-day window the broker has always applied.
 
     Storage deletes a refresh token once this time passes, so an expiry later
     than the IdP's keeps a dead token in use, and an earlier one discards a
     live token.
     """
     raw = token_data.get("refresh_expires_in")
-    seconds = 0
-    # bool is an int subclass, and ``true`` is not a lifetime.
-    if isinstance(raw, (int, float, str)) and not isinstance(raw, bool):
-        try:
-            seconds = int(raw)
-        except (ValueError, OverflowError):  # "abc", "1.5", NaN, infinity
-            seconds = 0
-    if seconds > 0:
-        cap = int(_MAX_REFRESH_TOKEN_LIFETIME.total_seconds())
-        lifetime = timedelta(seconds=min(seconds, cap))
-    else:
+    seconds = refresh_token_lifetime(raw)
+    if seconds is None:
         if raw is not None:
             logger.debug(
                 "Ignoring unusable refresh_expires_in=%r, using the %s-day default",
@@ -72,6 +78,8 @@ def _refresh_token_expires_at(token_data: dict) -> int:
                 _DEFAULT_REFRESH_TOKEN_LIFETIME.days,
             )
         lifetime = _DEFAULT_REFRESH_TOKEN_LIFETIME
+    else:
+        lifetime = timedelta(seconds=seconds)
     return int((datetime.now(timezone.utc) + lifetime).timestamp())
 
 

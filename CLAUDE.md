@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Type all function signatures** - Parameters and return types
 - **Type checker**: `ty` is configured for static type checking
   ```bash
-  uv run ty check -- nextcloud_mcp_server
+  uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
   ```
 
 ### Code Quality
@@ -36,7 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   ```bash
   uv run ruff check
   uv run ruff format
-  uv run ty check -- nextcloud_mcp_server
+  uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
   uv run pytest -m unit -n auto -q
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
@@ -84,6 +84,11 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   - `logger.debug()` for expected 404s and normal operations
   - `logger.warning()` for retries and non-critical issues
   - `logger.error()` for actual errors
+- **A handler that turns an exception into `None`, `False`, `continue` or `pass`
+  must log what happened**, unless the fallback value is itself the answer, as in
+  a validation predicate or an optional import. A broad `except Exception` needs
+  `exc_info=True`. Otherwise a bug in the guarded code disappears into a silent
+  default.
 - **HTTP client is `httpx2`, not `httpx`.** `httpx` stays installed (qdrant-client
   and huggingface-hub depend on it), so `import httpx` still works. But
   `except httpx.X` never matches the `httpx2.X` that our clients, mcp, openai and
@@ -98,6 +103,23 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
 - **Mark tests appropriately**: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.oauth`, `@pytest.mark.smoke`
 
 ### Architectural Patterns
+- **The Nextcloud clients are a separate package: `nextcloud_client`.** The
+  source is `packages/nextcloud-client/src/nextcloud_client/`, a uv workspace
+  member published to PyPI as `nextcloud-client` in lockstep with the server
+  (Deck card #1484). It must not import `nextcloud_mcp_server` or server-only
+  libraries (mcp, dynaconf, prometheus, OpenTelemetry, sqlalchemy, …). A new
+  third-party import there goes in *its* `pyproject.toml`.
+  `tests/unit/test_client_import_boundary.py` enforces this. Consequences:
+  - Settings arrive as arguments. `NextcloudClient(..., verify=, keepalive=)`.
+    Server code builds clients with `**nextcloud_client_kwargs()` or
+    `nextcloud_client_from_env()` (both in `nextcloud_mcp_server/http.py`). A
+    bare `NextcloudClient(...)` in server code ignores `NEXTCLOUD_VERIFY_SSL`,
+    `NEXTCLOUD_CA_BUNDLE` and `NEXTCLOUD_HTTP_KEEPALIVE`.
+  - Metrics and traces go through `nextcloud_client.instrumentation.hooks` (no-op by
+    default). `observability/metrics.py` installs the server's implementation.
+    Add a hook method rather than importing `observability` from a client.
+  - Data models a client returns live in `nextcloud_client.models`. The MCP
+    `BaseResponse` envelopes stay in `nextcloud_mcp_server/models/`.
 - **Base classes**: **All app API clients MUST extend `BaseNextcloudClient`** and
   issue requests through its `_make_request`. That method centralizes `_resolve_url`
   (prepends `/index.php` to bare `/apps/...` paths — the universal entry point that
@@ -109,9 +131,11 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
     `_resolve_url`/retry/tracing (and, if it omits `raise_for_status`, breaks 429
     retry). Override only for a genuinely different transport.
   - **Never pass `OCS-APIRequest` yourself.** Every Nextcloud-bound httpx2 client
-    sends it as a client default (`http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
+    sends it as a client default (`nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS`, applied by
     `nextcloud_httpx_client`, which `NextcloudClient` also uses). Build any new
-    Nextcloud-bound `httpx2.AsyncClient` through that factory. Pass only
+    Nextcloud-bound `httpx2.AsyncClient` through that factory (server code:
+    `nextcloud_mcp_server.http.nextcloud_httpx_client`, which adds the
+    configured TLS settings). Pass only
     request-specific headers (`OCS_REQUEST_HEADERS` for OCS JSON, `Depth`,
     `Content-Type`, …). `tests/unit/test_ocs_headers_are_shared.py` enforces
     both rules (GH #1664: the per-call opt-in left the Tables v1 routes without
@@ -253,7 +277,7 @@ from mcp.types import ToolAnnotations
 **See**: `docs/ADR-017-mcp-tool-annotations.md` for detailed rationale and examples
 
 ### Project Structure
-- `nextcloud_mcp_server/client/` - HTTP clients for Nextcloud APIs
+- `packages/nextcloud-client/src/nextcloud_client/` - HTTP clients for Nextcloud APIs
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 - `nextcloud_mcp_server/models/` - Pydantic response models
@@ -456,7 +480,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 
 **Core Components**:
 - `nextcloud_mcp_server/app.py` - MCPServer entry point
-- `nextcloud_mcp_server/client/` - HTTP clients (Notes, Calendar, Contacts, Tables, WebDAV)
+- `packages/nextcloud-client/src/nextcloud_client/` - HTTP clients (Notes, Calendar, Contacts, Tables, WebDAV)
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 
@@ -663,6 +687,36 @@ async def test_notes_api_get_note(mocker):
 
 **When to use**: Response parsing, error handling, request parameter building
 **When NOT to use**: CalDAV/CardDAV/WebDAV protocols, OAuth flows, end-to-end MCP testing
+
+### Property-based tests (Hypothesis)
+
+Unit tier only. When a test's inputs form a family, test a property instead of
+listing cases in `@pytest.mark.parametrize`. A property needs fewer tests, and it
+has found real bugs here that the hand-picked lists missed: CRLF splitting in
+`apply_edits`, non-idempotent `normalize_etag`, vCard N slot shifting, and
+parsers that raised on `Infinity` or an unknown XML encoding.
+
+- **Couple input and expected output in a composite strategy.** An
+  `@st.composite` returns `(input, expected)`, built together, so the test does
+  not re-derive the answer. Examples: `transported_etags` in
+  `tests/unit/client/test_webdav.py` and `statuscodes` in
+  `tests/unit/client/test_ocs.py`.
+- **Filter input shapes with `assume()`** inside the test, rather than a bare
+  `return`. Use `.filter` only for a condition on a single strategy.
+- **Pin every bug a property found as an `@example`** on that property. The
+  regression is then replayed on every run, independent of generation.
+- **Parsers of untrusted input** (webhook payloads, OCS/DAV bodies, provider
+  responses) get a "never raises" property over arbitrary JSON or bytes, with
+  floats left in. `json.loads` accepts `Infinity` and `NaN`.
+- **Keep an example test when it pins a single decision**, not a family of
+  inputs. For example, the 997 wording, or absent `meta` being treated as
+  success.
+- **Profiles:** Hypothesis loads its built-in `ci` profile automatically in CI
+  (derandomized, no deadline). Do not re-register it, or its health-check
+  suppression is lost. `tests/conftest.py` loads a local `dev` profile that only
+  disables the deadline.
+- **Version cap:** `hypothesis` is capped below the next minor version in the
+  dev group, so every bump arrives as a Renovate PR.
 
 ### OAuth Testing
 OAuth tests use **Playwright browser automation** to complete flows programmatically.

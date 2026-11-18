@@ -17,8 +17,7 @@ from __future__ import annotations
 import httpx2
 import pytest
 from caldav.lib import error as caldav_error
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
+from nextcloud_client.calendar import CalendarClient
 
 pytestmark = pytest.mark.unit
 

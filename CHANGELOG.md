@@ -5,6 +5,270 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.213.2 (2026-11-17)
+
+### Fix
+
+- **auth**: request every supported scope upstream by default
+
+## v0.213.1 (2026-11-17)
+
+### Fix
+
+- **observability**: load BM25 at startup and emit stable HTTP status keys
+
+## v0.213.0 (2026-11-16)
+
+### Feat
+
+- **gateway**: authenticate with a projected ServiceAccount token file
+
+### Fix
+
+- **gateway**: address Sonar findings on FileTokenProvider
+- **gateway**: diagnosable token-file failures and stable auth log labels
+
+## v0.212.0 (2026-11-15)
+
+### Feat
+
+- **db**: apply procrastinate 3.11's schema migration via Alembic
+
+### Fix
+
+- **deps**: update dependency procrastinate to >=3.11,<3.12
+
+## v0.211.1 (2026-11-11)
+
+### Fix
+
+- clear SonarCloud new-code security findings on master
+
+## v0.211.0 (2026-11-11)
+
+### BREAKING CHANGE
+
+- the Nextcloud client loggers are renamed from
+`nextcloud_mcp_server.client.*` to `nextcloud_client.*`; update any log
+filters, Loki queries or logging config that match the old names.
+- `nextcloud_mcp_server.client` is now the separate
+`nextcloud_client` package; import from `nextcloud_client` instead.
+- removed `NextcloudClient.from_env()` (use
+`nextcloud_mcp_server.http.nextcloud_client_from_env()`),
+`nextcloud_mcp_server.auth.BearerAuth` (now
+`nextcloud_mcp_server.client.auth.BearerAuth`), the
+`nextcloud_mcp_server.controllers` package and
+`nextcloud_mcp_server.models.users` (now
+`nextcloud_mcp_server.client.models.users`).
+
+### Feat
+
+- **client**: ship py.typed so downstream type checkers use the annotations
+- **client**: publish the Nextcloud clients as the nextcloud-client package
+
+### Refactor
+
+- **client**: decouple the Nextcloud clients from the server
+
+## v0.210.1 (2026-11-11)
+
+### Fix
+
+- **lint**: rename ty ignore rules for ty 0.0.100
+
+## v0.210.0 (2026-11-10)
+
+### Feat
+
+- **contacts**: write addresses (ADR) on create and update
+
+### Fix
+
+- **contacts**: log the post-update re-parse failure as a warning
+- **contacts**: reject a non-str/list ADR type instead of raising
+- **contacts**: keep contact data out of all contacts-client logs
+- **contacts**: keep address values out of logs, parse adr once
+- **contacts**: never let unusable adr input wipe addresses on update
+- **contacts**: warn on truncated ADR strings, log only rejected types
+- **contacts**: treat a None canonical key as absent before aliasing
+- **contacts**: keep a bare CR in ADR components on create
+
+## v0.209.0 (2026-11-10)
+
+### Feat
+
+- **search**: select hybrid, semantic, bm25 or exact on nc_semantic_search
+
+### Fix
+
+- **search**: reject an invalid fusion for every algorithm, and score_threshold with exact
+- **search**: note short exact pages; pin the exact metric label
+
+### Refactor
+
+- **search**: fold the exact branch into _exact_page (S3776)
+- **search**: extract exact paging and truncation from nc_semantic_search
+- **search**: one list of fusion modes; document context with exact
+
+## v0.208.1 (2026-11-09)
+
+### Fix
+
+- **classifier**: cap the image-reference pattern so untrusted text stays linear
+- **classifier**: end image references at a ')' before whitespace
+- **classifier**: ignore markdown markup when scoring text quality
+
+## v0.208.0 (2026-11-09)
+
+### Feat
+
+- **search**: exhaustive phrase match as algorithm "exact"
+
+### Fix
+
+- **search**: report exact truncation only when a document was cut
+- **sar**: compare title-free words on both sides of the subject check
+- **sar**: keep the subject's titled full name; ignore kept addresses as name words
+- **search**: bound exact scans by chunks; report a phrase-less excerpt index
+- **search**: refuse algorithm exact on the deprecated vector-viz endpoint
+- **sar**: keep the subject's name when detected with a title or alone
+
+### Refactor
+
+- **search**: split exact scan and index checks; document per-type caps
+
+## v0.207.3 (2026-11-09)
+
+### Fix
+
+- **mail**: type recipients as list[MailRecipient] only and validate addresses
+- **mail**: accept recipient arrays in send_message and save_draft
+
+## v0.207.2 (2026-11-09)
+
+### Fix
+
+- **classifier**: ignore TOC dot leaders when scoring text quality
+
+### Refactor
+
+- **registry**: move the verdict log into a helper and pin the #1802 repro
+
+## v0.207.1 (2026-11-08)
+
+### Fix
+
+- **config**: warn when DOCUMENT_PARSE_MEM_LIMIT_MB is too small for the parse worker
+
+### Refactor
+
+- **config**: move the parse mem-limit warning into a helper and pin its boundary
+
+## v0.207.0 (2026-11-08)
+
+### Feat
+
+- **tables**: read a view, read a single row, select columns
+
+### Fix
+
+- **tables**: drop semicolons from tool descriptions
+
+### Refactor
+
+- **tables**: address review nits (typing, tighter view test)
+
+## v0.206.1 (2026-11-08)
+
+### Fix
+
+- **documents**: pin OpenBLAS to one thread in the PDF parse worker
+
+## v0.206.0 (2026-11-07)
+
+### BREAKING CHANGE
+
+- tool calls carrying arguments absent from the tool's
+inputSchema now return an error (isError) instead of succeeding with the
+extra keys ignored.
+
+### Fix
+
+- **server**: reject unknown tool arguments instead of ignoring them
+
+## v0.205.4 (2026-11-07)
+
+### Fix
+
+- **config**: warn once per unrecognised boolean; clearer timestamp error
+- **config**: warn on unrecognised boolean spellings; review round 1
+- **auth**: refuse any backslash in _safe_next_url
+- **auth**: reject backslash open redirect in _safe_next_url
+
+### Refactor
+
+- consolidate scalar parsers; replace input-family parametrizes with properties
+
+## v0.205.3 (2026-11-06)
+
+### Fix
+
+- keep an escaped ; or , inside one N, ADR, NICKNAME or CATEGORIES component on read
+
+## v0.205.2 (2026-11-06)
+
+### Fix
+
+- log a malformed webhook event body at warning with its traceback
+- make four payload parsers total over the inputs they claim to accept
+- bind new_string as a lambda default in apply_edits (Sonar S1515)
+- a quote ending in CR must not match half a CRLF pair in apply_edits
+- keep CRLF pairs intact in apply_edits and make normalize_etag idempotent
+
+### Refactor
+
+- reject a non-string webhook event class up front and log parser failures with exc_info
+
+## v0.205.1 (2026-11-06)
+
+### Fix
+
+- **ci**: kill the orphaned apt-get between Playwright install attempts
+- log what was swallowed where a handler falls back silently
+
+## v0.205.0 (2026-11-06)
+
+### Feat
+
+- **calendar**: report truncation in list_events and apply min_duration_minutes
+
+### Fix
+
+- **calendar**: reject negative list_events limit, log when a listing is cut
+- **calendar**: raise bulk-operation match cap from 50 to BULK_EVENT_LIMIT
+- **calendar**: apply event filters before the limit and honour limit across calendars
+- **sar**: cap the shielded case-folder cleanup and log why it failed
+- **sar**: keep the 403 to refused writes and clean up on cancellation
+- **sar**: report a refused case-file write as 403 and remove the new folder
+
+### Refactor
+
+- **calendar**: drop unused _apply_event_filters, note intentional full scan
+
+## v0.204.3 (2026-11-05)
+
+### Fix
+
+- resolve ty 0.0.97 diagnostics
+
+## v0.204.2 (2026-11-05)
+
+### Fix
+
+- make scope-challenge exception handler sync (python:S7503)
+- migrate off decorators removed in Starlette 1.0
+- **deps**: update dependency starlette to v1
+
 ## v0.204.1 (2026-11-02)
 
 ### Fix

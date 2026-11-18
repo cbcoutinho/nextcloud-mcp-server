@@ -14,8 +14,8 @@ recovered, and that it survives the Pydantic mapping the server layer performs.
 import datetime as dt
 
 import pytest
+from nextcloud_client.calendar import CalendarClient
 
-from nextcloud_mcp_server.client.calendar import CalendarClient
 from nextcloud_mcp_server.models.calendar import Todo
 
 pytestmark = pytest.mark.unit

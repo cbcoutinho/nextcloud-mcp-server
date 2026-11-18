@@ -3,9 +3,8 @@
 import logging
 from typing import Any
 
-from nextcloud_mcp_server.models.sharing import ShareType
-
 from .base import BaseNextcloudClient
+from .models.sharing import ShareType
 from .ocs import OCS_REQUEST_HEADERS, describe_ocs_failure, parse_ocs_envelope
 
 logger = logging.getLogger(__name__)

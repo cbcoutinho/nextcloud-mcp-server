@@ -20,7 +20,7 @@ import re
 
 import httpx2
 
-from .gateway import GatewayTokenProvider
+from .gateway import TokenProvider
 
 _NER_CONNECT_TIMEOUT_SECONDS = 5.0
 
@@ -104,7 +104,7 @@ class NerClient:
         self,
         url: str,
         model: str,
-        token_provider: GatewayTokenProvider | None = None,
+        token_provider: TokenProvider | None = None,
         *,
         threshold: float = 0.5,
         timeout_seconds: float = 30.0,

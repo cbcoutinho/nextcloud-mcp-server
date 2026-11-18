@@ -61,7 +61,7 @@ class SimpleProvider(Provider):
         Returns:
             Index in range [0, dimension)
         """
-        hash_bytes = hashlib.md5(word.encode()).digest()
+        hash_bytes = hashlib.md5(word.encode(), usedforsecurity=False).digest()
         hash_int = int.from_bytes(hash_bytes[:4], byteorder="big")
         return hash_int % self.dimension
 

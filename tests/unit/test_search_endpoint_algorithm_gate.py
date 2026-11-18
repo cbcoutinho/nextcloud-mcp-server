@@ -66,7 +66,7 @@ def test_explicit_unknown_algorithm_returns_422(path: str):
     body = resp.json()
     assert body["error"] == "unsupported_search_type"
     assert body["requested"] == "fulltext"
-    assert body["supported_search_types"] == ["semantic", "bm25", "hybrid"]
+    assert body["supported_search_types"] == ["semantic", "bm25", "hybrid", "exact"]
 
 
 @pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/vector-viz/search"])
@@ -85,11 +85,11 @@ def test_supported_algorithm_is_not_rejected(path: str, algorithm: str):
             new=AsyncMock(return_value=("alice", {})),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             side_effect=RuntimeError("stop after the gate"),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.SemanticSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.SemanticSearchAlgorithm",
             side_effect=RuntimeError("stop after the gate"),
         ),
     ):
@@ -100,3 +100,24 @@ def test_supported_algorithm_is_not_rejected(path: str, algorithm: str):
 
     # Not a 422 from the algorithm gate — the request got past it to the search.
     assert resp.status_code != 422
+
+
+def test_exact_is_refused_by_the_deprecated_viz_endpoint():
+    """vector-viz/search has no offset and verifies every result, so it does not
+    serve an exact match; /api/v1/search does."""
+    with (
+        patch(
+            "nextcloud_mcp_server.api.visualization.get_settings",
+            return_value=_vector_sync_on_settings(),
+        ),
+        patch(
+            "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
+            new=AsyncMock(return_value=("alice", {})),
+        ),
+    ):
+        resp = TestClient(_app()).post(
+            "/api/v1/vector-viz/search", json={"query": "q", "algorithm": "exact"}
+        )
+
+    assert resp.status_code == 422
+    assert resp.json()["supported_search_types"] == ["semantic", "bm25", "hybrid"]

@@ -22,6 +22,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from nextcloud_client import NextcloudClient
 from opentelemetry.instrumentation.httpx import (
     HTTPX2ClientInstrumentor,
     HTTPXClientInstrumentor,
@@ -29,6 +30,7 @@ from opentelemetry.instrumentation.httpx import (
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import (
@@ -91,7 +93,6 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     user_info_html,
     vector_sync_status_fragment,
 )
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     Settings,
     get_document_processor_config,
@@ -104,7 +105,7 @@ from nextcloud_mcp_server.config_validators import (
 )
 from nextcloud_mcp_server.errors import NextcloudMCPServer
 from nextcloud_mcp_server.features import semantic_installed
-from nextcloud_mcp_server.http import nextcloud_httpx_client
+from nextcloud_mcp_server.http import nextcloud_client_from_env, nextcloud_httpx_client
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
@@ -131,6 +132,7 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 # The vector/semantic-search stack (vector/, search/, document_processors/,
 # admin/payload_backfill, api/{visualization,vector_sync,sar}, server/{semantic,
@@ -713,6 +715,25 @@ async def _init_qdrant_collection_with_retry() -> None:
     logger.info("Qdrant collection ready")
 
 
+async def _load_bm25_model() -> None:
+    """Load the BM25 sparse model at startup instead of on the first search.
+
+    The first ``get_bm25_service()`` call takes ~1.7 s (HF Hub fetch + load),
+    and concurrent first searches on a fresh pod each paid it (Deck #1511).
+    Loading it here, before the server takes traffic, removes that race.
+    Non-fatal: on failure the lazy load in the search path is the fallback.
+    """
+    from nextcloud_mcp_server.providers import get_bm25_service  # noqa: PLC0415
+
+    try:
+        await get_bm25_service()
+    except Exception:
+        logger.warning(
+            "BM25 model load at startup failed; loading lazily on first search",
+            exc_info=True,
+        )
+
+
 async def _refresh_dependency_health() -> None:
     """Refresh all external dependency statuses concurrently (one pass)."""
     settings = get_settings()
@@ -1049,7 +1070,7 @@ async def app_lifespan_basic(server: MCPServer) -> AsyncGenerator[AppContext]:
     client = None
     if not is_multi_user:
         logger.info("Creating shared Nextcloud client with BasicAuth")
-        client = NextcloudClient.from_env()
+        client = nextcloud_client_from_env()
         logger.info("Client initialization complete")
     else:
         logger.info(
@@ -1561,11 +1582,6 @@ async def setup_oauth_config_for_multi_user_basic(
     return (token_verifier, refresh_token_storage, client_id, client_secret)
 
 
-def _csv_setting(raw: str) -> list[str]:
-    """Split a comma-separated setting into a list, dropping blanks."""
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 #: Room for the JSON-RPC envelope around a maximum-size `nc_webdav_write_file`
 #: argument: method, id, path, content_type, and the quoting of the base64 blob.
 _REQUEST_ENVELOPE_SLACK = 1024 * 1024
@@ -1606,8 +1622,8 @@ def _build_transport_security() -> TransportSecuritySettings:
     """
     settings = get_settings()
     enabled = settings.mcp_dns_rebinding_protection
-    hosts = _csv_setting(settings.mcp_allowed_hosts)
-    origins = _csv_setting(settings.mcp_allowed_origins)
+    hosts = split_csv(settings.mcp_allowed_hosts)
+    origins = split_csv(settings.mcp_allowed_origins)
 
     if not enabled and (hosts or origins):
         logger.warning(
@@ -2039,7 +2055,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             return allowed_tools
 
         # Replace the tool manager's list_tools method
-        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
         logger.info(
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
@@ -2351,12 +2367,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
             # Create client for vector sync (server-level, not per-session)
-            client = NextcloudClient.from_env()
+            client = nextcloud_client_from_env()
 
             # Initialize Qdrant collection before starting background tasks
             logger.info("Initializing Qdrant collection...")
 
             await _init_qdrant_collection_with_retry()
+            await _load_bm25_model()
 
             # Orphan-sweep before scanner starts — card #101.
             await _sweep_orphan_placeholders_if_enabled()
@@ -2538,7 +2555,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 # Store token broker in oauth_context for management API (revoke endpoint)
                 if hasattr(app.state, "oauth_context"):
-                    app.state.oauth_context["token_broker"] = token_broker  # ty: ignore[invalid-assignment]  # Starlette app.state bag is heterogeneous; the inferred value union is too narrow
+                    app.state.oauth_context["token_broker"] = token_broker
                     logger.info(
                         "Token broker added to oauth_context for management API"
                     )
@@ -2547,6 +2564,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info("Initializing Qdrant collection...")
 
                 await _init_qdrant_collection_with_retry()
+                await _load_bm25_model()
 
                 # Orphan-sweep before scanners spawn — card #101. Runs once
                 # across the shared (per-tenant) collection regardless of
@@ -3235,7 +3253,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         app.state.supported_scopes = discover_all_scopes(mcp)
 
     # Add debugging middleware to log Authorization headers and client capabilities
-    @app.middleware("http")
     async def log_auth_headers(request, call_next):
         auth_header = request.headers.get("authorization")
         if request.url.path.startswith("/mcp"):
@@ -3301,12 +3318,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         response = await call_next(request)
         return response
 
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_auth_headers)  # type: ignore[invalid-argument-type]
+
     # Log the inbound User-Agent on management API and webhook receiver routes
     # so we can tell which Astrolabe (or other PHP-side client) build is
     # talking to the backend. Astrolabe sends ``Nextcloud-Astrolabe/<version>``.
     _UA_LOGGED_PATH_PREFIXES = ("/api/v1/", "/webhooks/nextcloud")
 
-    @app.middleware("http")
     async def log_client_user_agent(request, call_next):
         path = request.url.path
         if path.startswith(_UA_LOGGED_PATH_PREFIXES):
@@ -3324,6 +3342,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
         return await call_next(request)
 
+    app.add_middleware(BaseHTTPMiddleware, dispatch=log_client_user_agent)  # type: ignore[invalid-argument-type]
+
     # Add CORS middleware to allow browser-based clients like MCP Inspector.
     #
     # The default is still "*", so behaviour is unchanged — but it is now a
@@ -3334,7 +3354,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # so *any* origin may send credentialed requests. Fine behind a private
     # network or for local Inspector use; not something to leave unexamined on a
     # server reachable from a browser.
-    cors_origins = _csv_setting(get_settings().cors_allow_origins)
+    cors_origins = split_csv(get_settings().cors_allow_origins)
     if "*" in cors_origins:
         logger.warning(
             "CORS allows any origin with credentials (CORS_ALLOW_ORIGINS='*'). "
@@ -3358,9 +3378,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
 
-        @app.exception_handler(InsufficientScopeError)
-        async def handle_insufficient_scope(request, exc: InsufficientScopeError):
+        def handle_insufficient_scope(request, exc: Exception):
             """Return 403 with WWW-Authenticate header for scope challenges."""
+            assert isinstance(exc, InsufficientScopeError)  # registered for this type
             resource_url = (
                 settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
@@ -3381,6 +3401,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 },
             )
 
+        app.add_exception_handler(InsufficientScopeError, handle_insufficient_scope)
         logger.info("WWW-Authenticate scope challenge handler enabled")
 
     # Apply BasicAuthMiddleware for multi-user BasicAuth pass-through mode

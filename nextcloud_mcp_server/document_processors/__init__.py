@@ -1,6 +1,7 @@
 """Document processing plugins for extracting text from various file formats."""
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 from ._ooxml import PictureCaptioner
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
@@ -55,9 +56,7 @@ _registry.register(
 # OCR backend, read straight off Settings rather than the app.py-only
 # processors-dict path those two are wired from -- docling_api_url already
 # lives on the Settings dataclass for exactly this kind of second touchpoint.
-_docling_ocr_lang = [
-    s.strip() for s in (_settings.docling_ocr_lang or "").split(",") if s.strip()
-] or None
+_docling_ocr_lang = split_csv(_settings.docling_ocr_lang) or None
 _captioner = PictureCaptioner(
     caption_images=_settings.office_caption_images,
     docling_api_url=_settings.docling_api_url,

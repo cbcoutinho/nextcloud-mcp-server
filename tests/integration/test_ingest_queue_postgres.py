@@ -265,3 +265,92 @@ async def test_reclaim_backstops_live_worker_doing_strand(fresh_app, monkeypatch
         # Backstop found A (by time-in-doing), retried it → collided with B →
         # discarded the redundant orphan; the live sibling survives to run.
         assert by_status == {"todo": 1}
+
+
+def _fetch_job_skips_null_lock(postgres_url: str) -> bool:
+    """True when procrastinate_fetch_job_v2 carries the 3.11 lock-less fast path."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(postgres_url)
+    try:
+        with engine.connect() as conn:
+            body = conn.execute(
+                text(
+                    "SELECT pg_get_functiondef("
+                    "'procrastinate_fetch_job_v2(character varying[], bigint)'"
+                    "::regprocedure)"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    return "jobs.lock IS NULL" in body
+
+
+async def test_alembic_011_upgrades_existing_ingest_queue(fresh_app, postgres_url):
+    """Revision 011 brings an existing queue's fetch function up to 3.11.
+
+    ``fresh_app`` applies 3.11's ``schema.sql``, so downgrading to 010 first puts
+    the database in the state of a queue created on 3.3-3.10.
+    """
+    from anyio import to_thread
+
+    from nextcloud_mcp_server.migrations import downgrade_database, upgrade_database
+
+    await to_thread.run_sync(upgrade_database, postgres_url, "head")
+    assert _fetch_job_skips_null_lock(postgres_url)
+
+    await to_thread.run_sync(downgrade_database, postgres_url, "010")
+    assert not _fetch_job_skips_null_lock(postgres_url)
+
+    await to_thread.run_sync(upgrade_database, postgres_url, "head")
+    assert _fetch_job_skips_null_lock(postgres_url)
+
+    # The replaced function still dispatches work.
+    async with fresh_app.open_async():
+        await ProcrastinateTaskProducer(fresh_app).send(_task("1"))
+        job = await fresh_app.connector.execute_query_one_async(
+            "SELECT id FROM procrastinate_fetch_job_v2(%(q)s, NULL)",
+            q=[INGEST_QUEUE_NAME],
+        )
+        assert job["id"] is not None
+
+
+async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
+    """With no procrastinate schema yet (fresh install), 011 is a no-op."""
+    from alembic.script import ScriptDirectory
+    from anyio import to_thread
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from nextcloud_mcp_server.migrations import (
+        get_alembic_config,
+        get_current_revision,
+        upgrade_database,
+    )
+
+    engine = create_async_engine(postgres_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
+
+    await to_thread.run_sync(upgrade_database, postgres_url, "head")
+
+    # The chain ran through 011 (skipping its SQL) to the current head.
+    head = ScriptDirectory.from_config(
+        get_alembic_config(postgres_url)
+    ).get_current_head()
+    assert get_current_revision(postgres_url) == head
+    engine = create_async_engine(postgres_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            absent = await conn.scalar(
+                text(
+                    "SELECT to_regprocedure('procrastinate_fetch_job_v2(character varying[], bigint)') IS NULL"
+                )
+            )
+    finally:
+        await engine.dispose()
+    assert absent

@@ -2,8 +2,8 @@ import logging
 
 import httpx2
 import pytest
+from nextcloud_client.tables import TablesClient
 
-from nextcloud_mcp_server.client.tables import TablesClient
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_response,
@@ -324,3 +324,36 @@ def test_tables_transform_row_data():
 
     assert transformed[1]["data"]["Name"] == "Jane Smith"
     assert transformed[1]["data"]["Age"] == 25
+
+
+async def test_tables_get_view_rows(mocker):
+    """get_view_rows hits the v1 view rows route with pagination (GH #1796)."""
+    mock_make_request = mocker.patch.object(
+        TablesClient,
+        "_make_request",
+        return_value=create_mock_response(status_code=200, json_data=[]),
+    )
+
+    client = TablesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    assert await client.get_view_rows(view_id=9, limit=5) == []
+
+    mock_make_request.assert_called_once_with(
+        "GET", "/apps/tables/api/1/views/9/rows", params={"limit": 5}
+    )
+
+
+async def test_tables_get_row(mocker):
+    """get_row hits the v1 single-row route (GH #1796)."""
+    mock_make_request = mocker.patch.object(
+        TablesClient,
+        "_make_request",
+        return_value=create_mock_response(
+            status_code=200, json_data={"id": 5, "tableId": 7, "data": []}
+        ),
+    )
+
+    client = TablesClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    row = await client.get_row(row_id=5)
+
+    assert row["id"] == 5
+    mock_make_request.assert_called_once_with("GET", "/apps/tables/api/1/rows/5")
