@@ -1230,6 +1230,7 @@ def configure_calendar_tools(mcp: MCPServer):
         dtstart: str = "",
         categories: str = "",
         reminders: list[Reminder] | None = None,
+        parent_uid: str = "",
     ):
         """Create a new todo/task in a calendar.
 
@@ -1248,6 +1249,7 @@ def configure_calendar_tools(mcp: MCPServer):
             categories: Comma-separated categories (e.g., "work,urgent")
             reminders: Ordered list of alarms. See ``nc_calendar_create_event``
                 for the shape.
+            parent_uid: UID of the parent task, if this is a sub-task.
 
         Returns:
             Dict with todo creation result
@@ -1262,11 +1264,34 @@ def configure_calendar_tools(mcp: MCPServer):
             "due": due,
             "dtstart": dtstart,
             "categories": categories,
+            "parent_uid": parent_uid,
         }
         if reminders is not None:
             todo_data["reminders"] = _reminders_to_dicts(reminders)
 
         return await client.calendar.create_todo(calendar_name, todo_data)
+
+    @mcp.tool(
+        title="Move Todo Task",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )
+    @require_scopes("todo.write", "calendar.read")
+    @instrument_tool
+    async def nc_calendar_move_todo(
+        source_calendar_name: str,
+        target_calendar_name: str,
+        todo_uid: str,
+        ctx: Context,
+    ) -> dict[str, Any]:
+        """Move a task between calendars while preserving its UID and data.
+
+        The destination copy is created before deleting the source. If that
+        deletion fails, both copies remain and an error identifies them.
+        """
+        client = await get_client(ctx)
+        return await client.calendar.move_todo(
+            source_calendar_name, target_calendar_name, todo_uid
+        )
 
     @mcp.tool(
         title="Update Todo Task",
@@ -1306,6 +1331,7 @@ def configure_calendar_tools(mcp: MCPServer):
         completed: Optional[str] = None,
         categories: Optional[str] = None,
         reminders: list[Reminder] | None = None,
+        parent_uid: Optional[str] = None,
         etag: str = "",
     ) -> UpdateTodoResponse:
         """Update an existing todo/task.
@@ -1327,6 +1353,8 @@ def configure_calendar_tools(mcp: MCPServer):
             categories: New categories (comma-separated)
             reminders: Replacement alarm list. Omit to keep the stored alarms,
                 or pass ``[]`` to clear them.
+            parent_uid: Parent task UID. Omit to keep the current parent. Pass
+                an empty string to clear it.
             etag: The ETag you read this todo with (from nc_calendar_list_todos
                 or a previous update). The write is refused if the todo changed
                 since, so your read-modify-write cycle cannot silently discard
@@ -1363,6 +1391,8 @@ def configure_calendar_tools(mcp: MCPServer):
             todo_data["categories"] = categories
         if reminders is not None:
             todo_data["reminders"] = _reminders_to_dicts(reminders)
+        if parent_uid is not None:
+            todo_data["parent_uid"] = parent_uid
 
         try:
             result = await client.calendar.update_todo(

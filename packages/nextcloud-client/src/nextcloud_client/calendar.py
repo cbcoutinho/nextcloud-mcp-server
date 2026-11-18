@@ -1566,6 +1566,47 @@ class CalendarClient:
             "status_code": 201,
         }
 
+    async def move_todo(
+        self, source_calendar_name: str, target_calendar_name: str, todo_uid: str
+    ) -> dict[str, Any]:
+        """Move a VTODO by copying its complete resource before deleting it.
+
+        The UID and raw iCalendar data (including RELATED-TO links and unknown
+        properties) are preserved. If source deletion fails, both copies remain.
+        """
+        await self._ensure_calendar_home()
+        source = self._get_calendar(source_calendar_name)
+        target = self._get_calendar(target_calendar_name)
+        if source_calendar_name == target_calendar_name:
+            raise ValueError("Source and destination calendars must be different")
+        todo = await self._async_object_by_uid(
+            source, todo_uid, cdav.CompFilter("VTODO")
+        )
+        try:
+            await self._async_object_by_uid(target, todo_uid, cdav.CompFilter("VTODO"))
+        except caldav_error.NotFoundError:
+            pass
+        else:
+            raise ValueError(
+                f"Todo UID {todo_uid} already exists in destination calendar {target_calendar_name}"
+            )
+        await _maybe_await(todo.load(only_if_unloaded=True))
+        if not todo.data:
+            raise ValueError(f"Todo {todo_uid} has no iCalendar data")
+        copied = await target.save_todo(ical=todo.data)  # type: ignore[misc]  # ty: ignore[invalid-await]  # dual-mode
+        outcome = await self._delete_dav_object(
+            source_calendar_name, todo_uid, cdav.CompFilter("VTODO"), "todo"
+        )
+        if not outcome.get("success", True):
+            raise RuntimeError(
+                f"Todo {todo_uid} was copied to {target_calendar_name}, but could not be deleted from {source_calendar_name}; both copies remain"
+            )
+        return {
+            "uid": todo_uid,
+            "href": str(copied.url),
+            "calendar_name": target_calendar_name,
+        }
+
     async def update_todo(
         self,
         calendar_name: str,
@@ -2704,6 +2745,10 @@ class CalendarClient:
         todo.add("uid", todo_uid)
         todo.add("summary", todo_data.get("summary", ""))
         todo.add("description", todo_data.get("description", ""))
+        if todo_data.get("parent_uid"):
+            related = vText(todo_data["parent_uid"])
+            related.params["RELTYPE"] = "PARENT"
+            todo.add("related-to", related)
 
         # Status
         status = todo_data.get("status", "NEEDS-ACTION").upper()
@@ -2869,6 +2914,14 @@ class CalendarClient:
                 "priority": int(component.get("priority", 0)),
                 "percent_complete": int(component.get("percent-complete", 0)),
             }
+            related_values = component.get("related-to")
+            if related_values:
+                if not isinstance(related_values, list):
+                    related_values = [related_values]
+                for related in related_values:
+                    if str(related.params.get("RELTYPE", "PARENT")).upper() == "PARENT":
+                        todo_data["parent_uid"] = str(related)
+                        break
 
             # Handle due date
             due = component.get("due")
@@ -2935,6 +2988,29 @@ class CalendarClient:
                     component["SUMMARY"] = todo_data["summary"]
                 if "description" in todo_data:
                     component["DESCRIPTION"] = todo_data["description"]
+                if "parent_uid" in todo_data:
+                    existing_relations = component.get("RELATED-TO")
+                    relations = (
+                        list(existing_relations)
+                        if isinstance(existing_relations, list)
+                        else [existing_relations]
+                        if existing_relations is not None
+                        else []
+                    )
+                    retained = [
+                        relation
+                        for relation in relations
+                        if str(relation.params.get("RELTYPE", "PARENT")).upper()
+                        != "PARENT"
+                    ]
+                    if relations:
+                        del component["RELATED-TO"]
+                    for relation in retained:
+                        component.add("RELATED-TO", relation)
+                    if todo_data["parent_uid"]:
+                        related = vText(todo_data["parent_uid"])
+                        related.params["RELTYPE"] = "PARENT"
+                        component.add("related-to", related)
                 if "status" in todo_data:
                     status_value = todo_data["status"].upper()
                     component["STATUS"] = status_value
