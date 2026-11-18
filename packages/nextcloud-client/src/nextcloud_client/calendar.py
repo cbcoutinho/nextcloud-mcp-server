@@ -5,6 +5,7 @@ import inspect
 import logging
 import re
 import ssl
+import time
 import uuid
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -389,6 +390,7 @@ class CalendarClient:
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
         self._principal_resolved = False
+        self._calendar_names_cache: tuple[float, frozenset[str]] | None = None
 
     def _calendar_home_url_from_home_set(self, home_set: Any) -> str | None:
         """Normalize a caldav CalendarSet or URL into an absolute home URL."""
@@ -596,6 +598,31 @@ class CalendarClient:
             url=calendar_url,
             name=calendar_name,
         )
+
+    async def _validate_calendar_name(
+        self,
+        calendar_name: str,
+        calendars: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Reject calendars absent from the current DAV calendar listing."""
+        cached = self._calendar_names_cache
+        if calendars is not None:
+            names = frozenset(calendar["name"] for calendar in calendars)
+            self._calendar_names_cache = (time.monotonic(), names)
+        else:
+            now = time.monotonic()
+            if cached is None or now - cached[0] >= 5:
+                current_calendars = await self.list_calendars()
+                names = frozenset(calendar["name"] for calendar in current_calendars)
+                self._calendar_names_cache = (time.monotonic(), names)
+            else:
+                names = cached[1]
+        normalized_name = unquote(calendar_name)
+        if normalized_name not in names:
+            valid_names = ", ".join(sorted(names)) or "(none)"
+            raise ValueError(
+                f"Unknown calendar name '{normalized_name}'. Valid calendar names: {valid_names}."
+            )
 
     async def _async_object_by_uid(
         self, calendar: AsyncCalendar, uid: str, comp_filter: Any = None
@@ -851,6 +878,8 @@ class CalendarClient:
                 f"Failed to create calendar '{calendar_name}': HTTP {response.status}"
             )
 
+        self._calendar_names_cache = None
+
         logger.debug("Created calendar: %s", calendar_name)
 
         # Wait for calendar to be queryable (Nextcloud eventual consistency)
@@ -870,6 +899,7 @@ class CalendarClient:
         # Use absolute URL for deletion
         calendar_url = self._get_calendar_url(calendar_name)
         await self._dav_client.delete(calendar_url)
+        self._calendar_names_cache = None
 
         logger.debug("Deleted calendar: %s", calendar_name)
         return {"status_code": 204}
@@ -892,6 +922,7 @@ class CalendarClient:
         events (GH #1774).
         """
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         if start_datetime or end_datetime:
@@ -1080,6 +1111,7 @@ class CalendarClient:
     ) -> dict[str, Any]:
         """Create a new calendar event."""
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         event_uid = str(uuid.uuid4())
@@ -1121,6 +1153,7 @@ class CalendarClient:
             DavPreconditionFailed: If the event changed since ``etag`` was read.
         """
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         # Find the event by UID using caldav library
@@ -1294,6 +1327,7 @@ class CalendarClient:
         ``DAVError`` base would have masked exactly those.
         """
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         try:
@@ -1355,6 +1389,7 @@ class CalendarClient:
     ) -> tuple[dict[str, Any], str]:
         """Get detailed information about a specific event."""
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         event = await self._async_object_by_uid(
@@ -1472,6 +1507,15 @@ class CalendarClient:
             failures = []
         try:
             calendars = await self.list_calendars()
+            calendar_name = (filters or {}).get("calendar_name")
+            if calendar_name is not None:
+                await self._validate_calendar_name(calendar_name, calendars)
+                normalized_name = unquote(calendar_name)
+                calendars = [
+                    calendar
+                    for calendar in calendars
+                    if calendar["name"] == normalized_name
+                ]
             slots: list[list[dict[str, Any]]] = [[] for _ in calendars]
             limiter = anyio.CapacityLimiter(CALENDAR_FANOUT)
 
@@ -1510,6 +1554,7 @@ class CalendarClient:
     ) -> list[dict[str, Any]]:
         """List todos/tasks in a calendar."""
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         # Get all todos including completed ones (filtering is done client-side)
@@ -1549,6 +1594,7 @@ class CalendarClient:
     ) -> dict[str, Any]:
         """Create a new todo/task."""
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         todo_uid = str(uuid.uuid4())
@@ -1584,6 +1630,7 @@ class CalendarClient:
             DavPreconditionFailed: If the todo changed since ``etag`` was read.
         """
         await self._ensure_calendar_home()
+        await self._validate_calendar_name(calendar_name)
         calendar = self._get_calendar(calendar_name)
 
         try:

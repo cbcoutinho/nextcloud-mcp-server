@@ -55,6 +55,7 @@ def client(mocker):
     mocker.patch.object(
         CalendarClient, "_ensure_calendar_home", mocker.AsyncMock(return_value=None)
     )
+    mocker.patch.object(CalendarClient, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(
         CalendarClient, "_get_calendar", return_value=mocker.MagicMock()
     )

@@ -881,6 +881,8 @@ def configure_calendar_tools(mcp: MCPServer):
             filter_criteria["status"] = status
         if location_contains is not None:
             filter_criteria["location_contains"] = location_contains
+        if calendar_name is not None:
+            filter_criteria["calendar_name"] = calendar_name
         # Add datetime strings for client compatibility
         if start_date:
             filter_criteria["start_date"] = start_date

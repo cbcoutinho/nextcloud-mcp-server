@@ -28,6 +28,7 @@ def _client(mocker, *, delete_raises: Exception | None = None) -> CalendarClient
     client._client = mocker.AsyncMock(spec=httpx2.AsyncClient)
     client._principal_resolved = True
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(
         client, "_get_calendar", mocker.Mock(return_value=mocker.Mock())
     )
