@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.213.3 (2026-11-18)
+
+### Fix
+
+- **auth**: don't forward the IdP id_token from the AS proxy token endpoint
+
 ## v0.213.2 (2026-11-17)
 
 ### Fix
